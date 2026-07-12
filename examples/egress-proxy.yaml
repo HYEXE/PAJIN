@@ -1,0 +1,44 @@
+apiVersion: pajin.dev/v1alpha1
+kind: Campaign
+metadata:
+  name: egress-allowlist-check
+  description: Verify that an HTTP tool can reach only the authorized public target through proxy.
+spec:
+  mode: ai-redteam
+  autonomy: supervised
+  authorization:
+    approvedBy: local-project-owner
+    approvedAt: 2026-07-01T00:00:00+09:00
+    expiresAt: 2030-01-01T00:00:00+09:00
+    evidence: local-development-authorization
+  targets:
+    - type: http
+      id: allowed-public-target
+      endpoint: http://example.com/
+  scope:
+    allow:
+      - http://example.com/**
+    deny:
+      - http://example.org/**
+  accessProfile: blackbox
+  objectives:
+    - Verify network-layer host allowlisting through the PAJIN egress proxy.
+  threatClasses: [A01, A02]
+  rulesOfEngagement:
+    maxToolRiskTier: T2
+    allowedMethods: [GET, HEAD]
+    prohibit:
+      - denial-of-service
+      - real-user-data-access
+    stopOn:
+      - out-of-scope-attempt
+    allowPrivateNetworks: false
+  budgets:
+    durationSeconds: 120
+    maxCostUsd: 0
+    maxAgents: 1
+    maxSpawnDepth: 0
+    maxToolCalls: 3
+  outputs:
+    - markdown-report
+    - json-findings

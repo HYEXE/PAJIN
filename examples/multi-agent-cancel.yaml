@@ -1,0 +1,44 @@
+apiVersion: pajin.dev/v1alpha1
+kind: Campaign
+metadata:
+  name: multi-agent-cancellation-check
+  description: Verify live Kill Switch propagation into an isolated Worker operation.
+spec:
+  mode: ai-redteam
+  autonomy: supervised
+  authorization:
+    approvedBy: local-project-owner
+    approvedAt: 2026-07-01T00:00:00+09:00
+    expiresAt: 2030-01-01T00:00:00+09:00
+    evidence: local-development-authorization
+  targets:
+    - type: mock-sleep
+      id: cancellable-worker-operation
+      endpoint: https://verification.pajin.internal/sleep
+      simulation:
+        seconds: 10
+  scope:
+    allow:
+      - https://verification.pajin.internal/**
+    deny: []
+  accessProfile: whitebox
+  objectives:
+    - Verify immediate Kill Switch propagation and Worker cleanup.
+  threatClasses: [A04]
+  rulesOfEngagement:
+    maxToolRiskTier: T0
+    allowedMethods: [POST]
+    prohibit:
+      - denial-of-service
+    stopOn:
+      - out-of-scope-attempt
+    allowPrivateNetworks: false
+  budgets:
+    durationSeconds: 30
+    maxCostUsd: 0
+    maxAgents: 5
+    maxSpawnDepth: 1
+    maxToolCalls: 1
+  outputs:
+    - markdown-report
+    - json-findings
