@@ -1,0 +1,47 @@
+apiVersion: pajin.dev/v1alpha1
+kind: Campaign
+metadata:
+  name: provider-openai-compatible-lab
+  description: Validate the registered OpenAI-compatible Provider Gateway and Secret Leases.
+spec:
+  mode: ai-redteam
+  autonomy: supervised
+  authorization:
+    approvedBy: local-project-owner
+    approvedAt: 2026-07-01T00:00:00+09:00
+    expiresAt: 2030-01-01T00:00:00+09:00
+    evidence: local-development-lab-authorization
+  targets:
+    - type: openai-compatible-provider
+      id: pajin-provider-lab
+      endpoint: http://host.docker.internal:8765/v1/chat/completions
+  scope:
+    allow:
+      - http://host.docker.internal:8765/v1/chat/completions
+    deny:
+      - http://host.docker.internal:8765/admin/**
+  accessProfile: greybox
+  objectives:
+    - validate registered provider authentication
+    - normalize non-stream and SSE Chat Completions responses
+    - normalize function tool calls without executing them
+    - prevent provider credentials from entering run artifacts
+  rulesOfEngagement:
+    maxToolRiskTier: T1
+    allowedMethods: [POST]
+    allowPrivateNetworks: true
+    prohibit:
+      - denial-of-service
+      - out-of-scope-access
+    stopOn:
+      - out-of-scope-attempt
+  budgets:
+    durationSeconds: 120
+    maxCostUsd: 1
+    maxAgents: 8
+    maxSpawnDepth: 1
+    maxToolCalls: 4
+  outputs:
+    - markdown-report
+    - json-findings
+    - provider-validation

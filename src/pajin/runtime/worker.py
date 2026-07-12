@@ -16,6 +16,8 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from pajin.runtime.secrets import SecretMaterial
+
 
 class WorkerStatus(StrEnum):
     SUCCEEDED = "succeeded"
@@ -56,6 +58,14 @@ class WorkerLimits(BaseModel):
     stderr_bytes: int = Field(default=128_000, ge=1_024, le=10_000_000)
 
 
+class WorkerSecretRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    secret_ref: str = Field(min_length=1, max_length=200)
+    binding: str = Field(pattern=r"^[a-z][a-z0-9-]{0,63}$")
+    ttl_seconds: int = Field(default=30, ge=1, le=300)
+
+
 class WorkerJob(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -66,6 +76,7 @@ class WorkerJob(BaseModel):
     network: NetworkMode = NetworkMode.NONE
     egress_policy: EgressPolicy | None = None
     limits: WorkerLimits = Field(default_factory=WorkerLimits)
+    secret_requests: list[WorkerSecretRequest] = Field(default_factory=list, max_length=4)
 
     @field_validator("image")
     @classmethod
@@ -87,6 +98,9 @@ class WorkerJob(BaseModel):
             raise ValueError("egress policy is not allowed for network-none jobs")
         if self.network is NetworkMode.EGRESS_PROXY and self.egress_policy is None:
             raise ValueError("egress-proxy jobs require an egress policy")
+        bindings = [request.binding for request in self.secret_requests]
+        if len(bindings) != len(set(bindings)):
+            raise ValueError("worker secret bindings must be unique")
         return self
 
 
@@ -108,7 +122,12 @@ class WorkerResult(BaseModel):
 
 class WorkerBackend(Protocol):
     @abstractmethod
-    async def run(self, job: WorkerJob) -> WorkerResult:
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
         """Execute a fully specified worker job and return bounded output."""
 
 
@@ -118,12 +137,19 @@ class SimulatedWorkerBackend:
     name = "simulated"
     allowed_image = "pajin-worker:dev"
 
-    async def run(self, job: WorkerJob) -> WorkerResult:
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
         started_at = datetime.now(UTC)
         if job.image != self.allowed_image:
             return self._rejected(job, started_at, "image is not allowed by simulated backend")
         if job.network is not NetworkMode.NONE:
             return self._rejected(job, started_at, "network access is not supported")
+        if job.secret_requests or secrets:
+            return self._rejected(job, started_at, "secret leases are not supported")
         if job.command not in (["mock-agent-probe"], ["mcp-call"], ["sleep-check"]):
             return self._rejected(job, started_at, "worker action is not supported")
         try:
@@ -225,10 +251,27 @@ class DockerWorkerBackend:
         self._egress_proxy_image = egress_proxy_image
         self._external_network = external_network
 
-    async def run(self, job: WorkerJob) -> WorkerResult:
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
         started_at = datetime.now(UTC)
         if job.image not in self._allowed_images:
             return self._rejected(job, started_at, "container image is not allowlisted")
+        try:
+            wire_stdin = self._wire_stdin(job, secrets or [])
+        except ValueError as exc:
+            return WorkerResult(
+                execution_id=job.execution_id,
+                backend=self.name,
+                status=WorkerStatus.REJECTED,
+                exit_code=None,
+                stderr=str(exc),
+                started_at=started_at,
+                finished_at=datetime.now(UTC),
+            )
 
         container_name = self._container_name(job.execution_id)
         egress_runtime: _EgressRuntime | None = None
@@ -280,7 +323,7 @@ class DockerWorkerBackend:
         timed_out = False
         try:
             assert process.stdin is not None
-            process.stdin.write(job.stdin.encode("utf-8"))
+            process.stdin.write(wire_stdin)
             await process.stdin.drain()
             process.stdin.close()
             await asyncio.wait_for(process.wait(), timeout=job.limits.timeout_seconds)
@@ -562,6 +605,25 @@ class DockerWorkerBackend:
             if len(chunk) > max(remaining, 0):
                 truncated = True
         return b"".join(chunks), truncated
+
+    @staticmethod
+    def _wire_stdin(job: WorkerJob, secrets: list[SecretMaterial]) -> bytes:
+        requested_bindings = {item.binding for item in job.secret_requests}
+        supplied_bindings = {item.binding for item in secrets}
+        if requested_bindings != supplied_bindings:
+            raise ValueError("worker secret material does not match requested bindings")
+        if not secrets:
+            return job.stdin.encode("utf-8")
+        try:
+            payload = json.loads(job.stdin)
+        except json.JSONDecodeError as exc:
+            raise ValueError("secret-bearing Worker stdin must be valid JSON") from exc
+        envelope = {
+            "pajinEnvelopeVersion": 1,
+            "payload": payload,
+            "secrets": {item.binding: item.value for item in secrets},
+        }
+        return json.dumps(envelope, separators=(",", ":")).encode("utf-8")
 
     @staticmethod
     def _container_name(execution_id: str) -> str:
