@@ -4,9 +4,10 @@ from __future__ import annotations
 
 from enum import StrEnum
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from pajin.domain.models import StrictModel
+from pajin.tools.ai import ProbeCheck, ProbeTurn
 
 
 class ThreatCategory(StrEnum):
@@ -76,6 +77,17 @@ class KISAPersona(StrictModel):
     attack_methods: list[str]
 
 
+class KISAProbeTemplate(StrictModel):
+    turns: list[ProbeTurn] = Field(min_length=1, max_length=20)
+    checks: list[ProbeCheck] = Field(min_length=1, max_length=20)
+
+    @model_validator(mode="after")
+    def checks_reference_existing_turns(self) -> KISAProbeTemplate:
+        if any(check.turn >= len(self.turns) for check in self.checks):
+            raise ValueError("scenario probe check references a missing turn")
+        return self
+
+
 class KISAScenarioDefinition(StrictModel):
     scenario_id: str = Field(pattern=r"^kisa\.[a-z0-9.-]+$")
     name: str
@@ -91,7 +103,19 @@ class KISAScenarioDefinition(StrictModel):
     evidence_requirements: list[str]
     tool_id: str
     method: str
+    probe: KISAProbeTemplate | None = None
     source_pdf_pages: set[int]
+
+    @model_validator(mode="after")
+    def validate_probe_contract(self) -> KISAScenarioDefinition:
+        if self.tool_id == "ai.chat-probe":
+            if self.probe is None:
+                raise ValueError("ai.chat-probe scenarios require a probe template")
+            if len(self.threat_classes) != 1:
+                raise ValueError("ai.chat-probe scenarios must map to one KISA threat")
+        elif self.probe is not None:
+            raise ValueError("probe templates are supported only by ai.chat-probe")
+        return self
 
 
 class EvaluationThresholds(StrictModel):

@@ -1,0 +1,21 @@
+services:
+  ai-target:
+    image: pajin-ai-target:dev
+    build:
+      context: ./ai-target
+    container_name: pajin-ai-target-lab
+    environment:
+      PAJIN_LAB_PROFILE: ${PAJIN_LAB_PROFILE:-vulnerable}
+      PAJIN_PROVIDER_CREDENTIAL: pajin-local-credential-v1
+    ports:
+      - "127.0.0.1:8765:8080"
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    restart: "no"

@@ -1,0 +1,50 @@
+apiVersion: pajin.dev/v1alpha1
+kind: Campaign
+metadata:
+  name: kisa-ai-chat-lab-assessment
+  description: KISA-aligned Docker assessment of a provider-neutral AI chat target.
+spec:
+  mode: ai-redteam
+  autonomy: supervised
+  authorization:
+    approvedBy: local-project-owner
+    approvedAt: 2026-07-01T00:00:00+09:00
+    expiresAt: 2030-01-01T00:00:00+09:00
+    evidence: local-development-lab-authorization
+  targets:
+    - type: ai-chat-api
+      id: pajin-vulnerable-ai-lab
+      endpoint: http://host.docker.internal:8765/v1/chat
+  scope:
+    allow:
+      - http://host.docker.internal:8765/v1/chat
+    deny:
+      - http://host.docker.internal:8765/admin/**
+  accessProfile: greybox
+  objectives:
+    - detect system prompt disclosure
+    - validate jailbreak policy enforcement
+    - detect persistence of untrusted input in agent memory
+  threatClasses: [M03, M06, A04]
+  rulesOfEngagement:
+    maxToolRiskTier: T2
+    allowedMethods: [POST]
+    allowPrivateNetworks: true
+    prohibit:
+      - denial-of-service
+      - real-user-data-access
+      - out-of-scope-access
+    stopOn:
+      - sensitive-data-exposure
+      - out-of-scope-attempt
+  budgets:
+    durationSeconds: 120
+    maxCostUsd: 1
+    maxAgents: 12
+    maxSpawnDepth: 1
+    maxToolCalls: 8
+  outputs:
+    - markdown-report
+    - json-findings
+    - kisa-checklist
+    - kisa-completion-report

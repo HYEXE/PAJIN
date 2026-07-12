@@ -1,0 +1,4 @@
+services:
+  ai-target:
+    environment:
+      PAJIN_LAB_PROFILE: hardened

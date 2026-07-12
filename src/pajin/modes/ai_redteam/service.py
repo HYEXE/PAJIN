@@ -169,7 +169,9 @@ class KISAModePack:
         observations = [
             result
             for result in results
-            if result.success and isinstance(result.data.get("vulnerable"), bool)
+            if result.tool_id in {"ai.chat-probe", "mock.agent-probe"}
+            and result.success
+            and isinstance(result.data.get("vulnerable"), bool)
         ]
         attempts = len(observations)
         successes = sum(bool(result.data["vulnerable"]) for result in observations)
@@ -179,7 +181,12 @@ class KISAModePack:
         sensitive_exposures = sum(
             int(result.data.get("sensitiveExposureCount", 0)) for result in results
         )
-        latencies = [(result.finished_at - result.started_at).total_seconds() for result in results]
+        latencies = [
+            float(result.data["meanResponseLatencySeconds"])
+            if isinstance(result.data.get("meanResponseLatencySeconds"), (int, float))
+            else (result.finished_at - result.started_at).total_seconds()
+            for result in results
+        ]
         mean_latency = mean(latencies) if latencies else None
         reproducibility = successes / attempts if attempts >= 2 and successes else None
         return [
