@@ -1,0 +1,31 @@
+apiVersion: pajin.dev/v1alpha1
+kind: CTFChallenge
+metadata:
+  name: web-backup-lab
+  displayName: Synthetic Exposed Backup
+  description: Local-only Web CTF challenge with one fixed backup artifact path.
+spec:
+  category: web
+  scenario: web.exposed-backup-config
+  environment:
+    type: local-docker
+  scope:
+    entryPoint: http://host.docker.internal:8780/backup/config.json.bak
+  authorization:
+    approvedBy: local-lab-owner
+    approvedAt: 2026-07-13T00:00:00Z
+    expiresAt: 2099-07-13T00:00:00Z
+    evidence: synthetic-local-ctf-lab
+  flag:
+    sha256: f27413eb94dd98b0dcb029d54872af0cdc113a4a1e25c20e2c5c1e61c0c4dae1
+    format: "PAJIN{...}"
+  objectives:
+    - Discover and independently verify the synthetic flag from the fixed backup path.
+  budgets:
+    durationSeconds: 60
+    maxCostUsd: 0
+    maxAgents: 5
+    maxSpawnDepth: 1
+    maxToolCalls: 1
+    maxModelCalls: 0
+    maxModelTokens: 0

@@ -37,6 +37,14 @@ from pajin.modes.bug_bounty import (
     load_bug_bounty_finding_index,
     load_bug_bounty_program,
 )
+from pajin.modes.ctf import (
+    CTFChallengeService,
+    CTFFlagValidatorRuntime,
+    CTFModePack,
+    CTFSolveStatus,
+    CTFTriagePlannerRuntime,
+    load_ctf_challenge,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import (
     OpenAICompatibleChatTool,
@@ -60,6 +68,7 @@ from pajin.runtime.worker import (
 from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
+from pajin.tools.ctf import CTFWebBackupProbeTool
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
@@ -85,6 +94,7 @@ def _tool_registry() -> ToolRegistry:
     registry.register(AIChatProbeTool())
     registry.register(AIChatRegressionTool())
     registry.register(BooleanSQLiProbeTool())
+    registry.register(CTFWebBackupProbeTool())
     registry.register(HTTPGetTool())
     registry.register(demo_mcp_tool())
     return registry
@@ -1243,6 +1253,61 @@ def run_bug_bounty_campaign(
     console.print(f"Triage report: {artifacts.report_path.resolve()}")
     console.print(f"Submission drafts: {len(artifacts.submission_paths)}")
     console.print("No external submission was performed.")
+
+
+@app.command("ctf-web-run")
+def run_ctf_web_challenge(
+    challenge_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+) -> None:
+    """Run the fixed local CTF Web challenge without external submission."""
+
+    try:
+        challenge = load_ctf_challenge(challenge_path)
+        campaign = CTFChallengeService().compile_campaign(challenge)
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot start CTF Web challenge:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    runner = MultiAgentCampaignRunner(
+        planner=CTFTriagePlannerRuntime(),
+        validator=CTFFlagValidatorRuntime(),
+        tools=_tool_registry(),
+        policy=PolicyEngine(),
+        worker=_worker_backend("docker"),
+        output_root=output,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    if outcome.status is not RunStatus.COMPLETED:
+        console.print(f"[bold red]CTF Web run failed:[/bold red] {outcome.run_id}")
+        if outcome.cancellation_reason:
+            console.print(f"Reason: {outcome.cancellation_reason}")
+        console.print(f"Run report: {outcome.report_path.resolve()}")
+        raise typer.Exit(code=1)
+
+    try:
+        artifacts = CTFModePack().finalize(challenge, outcome)
+    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]CTF Web finalization failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    result = artifacts.result
+    table = Table(title="PAJIN CTF Web Multi-Agent Run")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Run status", outcome.status.value)
+    table.add_row("Solve status", result.status.value)
+    table.add_row("Agents", str(len(outcome.agents)))
+    table.add_row("Tool calls", str(len(outcome.tool_results)))
+    table.add_row("Independent validations", str(len(outcome.findings)))
+    console.print(table)
+    if result.status is CTFSolveStatus.SOLVED:
+        console.print(f"Verified flag: {result.candidate_flag}")
+    console.print(f"CTF result: {artifacts.result_path.resolve()}")
+    console.print(f"CTF write-up: {artifacts.writeup_path.resolve()}")
+    console.print("No external scoreboard submission was performed.")
+    if result.status is not CTFSolveStatus.SOLVED:
+        raise typer.Exit(code=1)
 
 
 @app.command("evidence-verify")

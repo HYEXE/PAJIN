@@ -6,6 +6,8 @@ import socket
 import subprocess
 import sys
 import time
+from hashlib import sha256
+from re import fullmatch
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
@@ -13,6 +15,7 @@ from urllib.request import Request, urlopen
 
 MAX_AI_RESPONSE_BYTES = 65_536
 MAX_BUG_BOUNTY_RESPONSE_BYTES = 32_768
+MAX_CTF_WEB_RESPONSE_BYTES = 16_384
 
 
 def mock_agent_probe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -181,6 +184,63 @@ def bug_bounty_sqli_probe(payload: dict[str, Any]) -> dict[str, Any]:
         "vulnerable": all(checks.values()),
         "checks": checks,
         "observations": observations,
+        "networkPerformed": True,
+    }
+
+
+def ctf_web_backup_probe(payload: dict[str, Any]) -> dict[str, Any]:
+    target = str(payload["target"])
+    challenge_id = str(payload["challengeId"])
+    scenario_id = str(payload["scenarioId"])
+    if scenario_id != "web.exposed-backup-config":
+        raise ValueError("unsupported CTF Web scenario")
+    parsed = urlsplit(target)
+    if parsed.scheme != "http" or parsed.hostname != "host.docker.internal" or parsed.port != 8780:
+        raise ValueError("CTF Web target must use the fixed local lab authority")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("CTF Web target authority, query, or fragment is invalid")
+    if parsed.path != "/backup/config.json.bak":
+        raise ValueError("CTF Web target must use the fixed backup path")
+
+    request = Request(
+        target,
+        method="GET",
+        headers={"Accept": "application/json", "User-Agent": "PAJIN-CTF-Web-Probe/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read(MAX_CTF_WEB_RESPONSE_BYTES + 1)
+            status = response.status
+    except HTTPError as exc:
+        body = exc.read(MAX_CTF_WEB_RESPONSE_BYTES + 1)
+        status = exc.code
+    except URLError as exc:
+        raise ValueError(f"CTF Web target request failed: {exc.reason}") from exc
+    if len(body) > MAX_CTF_WEB_RESPONSE_BYTES:
+        raise ValueError("CTF Web target response exceeded byte limit")
+    response_data = json.loads(body)
+    if not isinstance(response_data, dict):
+        raise TypeError("CTF Web target response must be an object")
+    if response_data.get("synthetic") is not True:
+        raise ValueError("CTF Web target did not attest a synthetic response")
+    if response_data.get("challengeId") != challenge_id:
+        raise ValueError("CTF Web target challenge identity does not match")
+    candidate = response_data.get("flag")
+    if candidate is not None and not isinstance(candidate, str):
+        raise TypeError("CTF Web candidate flag must be a string")
+    if candidate is not None and fullmatch(r"PAJIN\{[A-Za-z0-9_-]{1,128}\}", candidate) is None:
+        raise ValueError("CTF Web candidate flag format is invalid")
+    if candidate is not None and status != 200:
+        raise ValueError("CTF Web target exposed a flag with a non-success status")
+    return {
+        "target": target,
+        "challengeId": challenge_id,
+        "scenarioId": scenario_id,
+        "status": status,
+        "discovered": status == 200 and candidate is not None,
+        "candidateFlag": candidate,
+        "bodySha256": sha256(body).hexdigest(),
+        "synthetic": True,
         "networkPerformed": True,
     }
 
@@ -626,6 +686,10 @@ def main() -> int:
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")
             result = bug_bounty_sqli_probe(payload)
+        elif action == "ctf-web-backup-probe":
+            if secrets:
+                raise ValueError("worker action does not accept secret bindings")
+            result = ctf_web_backup_probe(payload)
         elif action == "direct-network-check":
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")

@@ -1,0 +1,4 @@
+services:
+  ctf-web-target:
+    environment:
+      PAJIN_CTF_WEB_LAB_PROFILE: hardened

@@ -1,0 +1,20 @@
+services:
+  ctf-web-target:
+    image: pajin-ctf-web-target:dev
+    build:
+      context: ./ctf-web-target
+    container_name: pajin-ctf-web-target-lab
+    environment:
+      PAJIN_CTF_WEB_LAB_PROFILE: ${PAJIN_CTF_WEB_LAB_PROFILE:-vulnerable}
+    ports:
+      - "127.0.0.1:8780:8080"
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.25
+    restart: "no"
