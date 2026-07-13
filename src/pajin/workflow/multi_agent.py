@@ -48,6 +48,7 @@ from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
 
 T = TypeVar("T")
+_MAX_LOCAL_PARALLEL_SPECIALISTS = 16
 
 
 @dataclass(frozen=True)
@@ -90,9 +91,15 @@ class MultiAgentCampaignRunner:
         kill_switch: KillSwitch | None = None,
         kill_after_tool_calls: int | None = None,
         secrets: SecretBroker | None = None,
+        max_parallel_specialists: int = 4,
     ) -> None:
         if kill_after_tool_calls is not None and kill_after_tool_calls < 1:
             raise ValueError("kill_after_tool_calls must be at least one")
+        if not 1 <= max_parallel_specialists <= _MAX_LOCAL_PARALLEL_SPECIALISTS:
+            raise ValueError(
+                "max_parallel_specialists must be between one and "
+                f"{_MAX_LOCAL_PARALLEL_SPECIALISTS}"
+            )
         self._planner = planner
         self._validator = validator
         self._reporter = reporter
@@ -104,6 +111,7 @@ class MultiAgentCampaignRunner:
         self._kill_after_tool_calls = kill_after_tool_calls
         self._observed_tool_calls = 0
         self._secrets = secrets or SecretBroker()
+        self._max_parallel_specialists = max_parallel_specialists
 
     async def run(self, campaign: CampaignManifest) -> MultiAgentRunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
@@ -200,6 +208,7 @@ class MultiAgentCampaignRunner:
                 raise BudgetExceeded("plan requires more agents than the campaign budget allows")
 
             specialist_risk_tiers: list[ToolRiskTier] = []
+            specialist_parallel_safe: list[bool] = []
             for step in plan.steps:
                 try:
                     spec = self._tools.spec(step.request.tool_id)
@@ -208,6 +217,7 @@ class MultiAgentCampaignRunner:
                         f"planner requested unregistered tool: {step.request.tool_id}"
                     ) from exc
                 specialist_risk_tiers.append(spec.risk_tier)
+                specialist_parallel_safe.append(spec.parallel_safe)
 
             validator_access = self._model_access(self._validator)
             reporter_access = self._model_access(self._reporter) if self._reporter else None
@@ -234,8 +244,14 @@ class MultiAgentCampaignRunner:
                             "toolId": step.request.tool_id,
                             "target": step.request.target,
                             "maxAttempts": max_attempts,
+                            "parallelSafe": parallel_safe,
                         }
-                        for step, max_attempts in zip(plan.steps, specialist_attempts, strict=True)
+                        for step, max_attempts, parallel_safe in zip(
+                            plan.steps,
+                            specialist_attempts,
+                            specialist_parallel_safe,
+                            strict=True,
+                        )
                     ],
                 },
             )
@@ -243,10 +259,12 @@ class MultiAgentCampaignRunner:
             specialist_tasks: list[TaskNode] = []
             specialist_agents: dict[str, AgentNode] = {}
             specialist_grants: dict[str, CapabilityGrant] = {}
-            for step, risk_tier, max_attempts in zip(
+            specialist_parallel_contracts: dict[str, bool] = {}
+            for step, risk_tier, max_attempts, parallel_safe in zip(
                 plan.steps,
                 specialist_risk_tiers,
                 specialist_attempts,
+                specialist_parallel_safe,
                 strict=True,
             ):
                 specialist = self._spawn_child(
@@ -276,6 +294,7 @@ class MultiAgentCampaignRunner:
                 specialist_grants[task.task_id] = ledger.record(
                     specialist.capability_grant_id
                 ).grant
+                specialist_parallel_contracts[task.task_id] = parallel_safe
 
             validation_task = TaskNode(
                 title="Independently validate candidate findings",
@@ -288,21 +307,19 @@ class MultiAgentCampaignRunner:
             )
             graph.add(report_task)
 
-            for task in specialist_tasks:
-                if self._check_control(budget, raise_on_cancel=False):
-                    break
-                await self._run_specialist_task(
-                    campaign,
-                    store,
-                    graph,
-                    budget,
-                    ledger,
-                    gateway,
-                    task,
-                    specialist_agents[task.task_id],
-                    specialist_grants[task.task_id],
-                    results,
-                )
+            await self._run_specialist_tasks(
+                campaign,
+                store,
+                graph,
+                budget,
+                ledger,
+                gateway,
+                specialist_tasks,
+                specialist_agents,
+                specialist_grants,
+                specialist_parallel_contracts,
+                results,
+            )
 
             if self._check_control(budget, raise_on_cancel=False):
                 raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
@@ -474,6 +491,93 @@ class MultiAgentCampaignRunner:
             report_path=store.path / report_relative,
             cancellation_reason=self._kill_switch.reason,
         )
+
+    async def _run_specialist_tasks(
+        self,
+        campaign: CampaignManifest,
+        store: RunStore,
+        graph: TaskGraph,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        gateway: ToolGateway,
+        tasks: list[TaskNode],
+        agents: dict[str, AgentNode],
+        grants: dict[str, CapabilityGrant],
+        parallel_contracts: dict[str, bool],
+        results: list[ToolResult],
+    ) -> None:
+        semaphore = asyncio.Semaphore(self._max_parallel_specialists)
+        waves = self._specialist_execution_waves(tasks, parallel_contracts)
+        for wave_index, wave in enumerate(waves, start=1):
+            parallel_safe = all(parallel_contracts[task.task_id] for task in wave)
+            store.append_event(
+                "specialist.wave.started",
+                {
+                    "wave": wave_index,
+                    "taskIds": [task.task_id for task in wave],
+                    "parallelSafe": parallel_safe,
+                    "maxConcurrency": (
+                        min(len(wave), self._max_parallel_specialists) if parallel_safe else 1
+                    ),
+                },
+            )
+            task_results: dict[str, list[ToolResult]] = {task.task_id: [] for task in wave}
+
+            async def execute(
+                task: TaskNode,
+                result_buffer: dict[str, list[ToolResult]],
+            ) -> None:
+                async with semaphore:
+                    if self._check_control(budget, raise_on_cancel=False):
+                        return
+                    await self._run_specialist_task(
+                        campaign,
+                        store,
+                        graph,
+                        budget,
+                        ledger,
+                        gateway,
+                        task,
+                        agents[task.task_id],
+                        grants[task.task_id],
+                        result_buffer[task.task_id],
+                    )
+
+            outcomes = await asyncio.gather(
+                *(execute(task, task_results) for task in wave),
+                return_exceptions=True,
+            )
+            for task in wave:
+                results.extend(task_results[task.task_id])
+            for outcome in outcomes:
+                if isinstance(outcome, BaseException):
+                    raise outcome
+            store.append_event(
+                "specialist.wave.completed",
+                {
+                    "wave": wave_index,
+                    "taskStatuses": {task.task_id: task.status.value for task in wave},
+                },
+            )
+
+    @staticmethod
+    def _specialist_execution_waves(
+        tasks: list[TaskNode],
+        parallel_contracts: dict[str, bool],
+    ) -> list[list[TaskNode]]:
+        waves: list[list[TaskNode]] = []
+        parallel_wave: list[TaskNode] = []
+        for task in tasks:
+            if parallel_contracts[task.task_id]:
+                parallel_wave.append(task)
+                continue
+            if parallel_wave:
+                waves.append(parallel_wave)
+                parallel_wave = []
+            waves.append([task])
+        if parallel_wave:
+            waves.append(parallel_wave)
+        return waves
 
     async def _run_specialist_task(
         self,

@@ -3,6 +3,8 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import (
@@ -138,6 +140,21 @@ class FlakyWorker:
         )
 
 
+class ConcurrencyTrackingWorker(SimulatedWorkerBackend):
+    def __init__(self) -> None:
+        self.active = 0
+        self.max_active = 0
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        try:
+            await asyncio.sleep(0.01)
+            return await super().run(job)
+        finally:
+            self.active -= 1
+
+
 class InventedEvidenceValidator:
     async def validate(
         self,
@@ -177,6 +194,26 @@ def _runner(tmp_path: Path, *, kill_after: int | None = None) -> MultiAgentCampa
         output_root=tmp_path,
         kill_after_tool_calls=kill_after,
     )
+
+
+@pytest.mark.parametrize("max_parallel_specialists", [0, 17])
+def test_local_specialist_concurrency_limit_is_bounded(
+    tmp_path: Path,
+    max_parallel_specialists: int,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+
+    with pytest.raises(ValueError, match="max_parallel_specialists"):
+        MultiAgentCampaignRunner(
+            planner=DeterministicAgentRuntime(),
+            validator=DeterministicAgentRuntime(),
+            tools=registry,
+            policy=PolicyEngine(),
+            worker=SimulatedWorkerBackend(),
+            output_root=tmp_path,
+            max_parallel_specialists=max_parallel_specialists,
+        )
 
 
 def test_dynamic_team_executes_with_attenuated_role_capabilities(tmp_path: Path) -> None:
@@ -283,12 +320,13 @@ def test_supervisor_dynamically_fans_out_one_specialist_per_plan_step(
     )
     registry = ToolRegistry()
     registry.register(MockAgentProbe())
+    worker = ConcurrencyTrackingWorker()
     runner = MultiAgentCampaignRunner(
         planner=TwoStepPlanner(),
         validator=DeterministicAgentRuntime(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=SimulatedWorkerBackend(),
+        worker=worker,
         output_root=tmp_path,
     )
 
@@ -299,6 +337,10 @@ def test_supervisor_dynamically_fans_out_one_specialist_per_plan_step(
     assert len(specialists) == 2
     assert len(outcome.tool_results) == 2
     assert len(outcome.findings) == 2
+    assert worker.max_active == 1
+    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    assert events.count('"event_type":"specialist.wave.started"') == 2
+    assert '"parallelSafe":false' in events
 
 
 def test_specialist_call_budget_reserves_one_attempt_before_retries(

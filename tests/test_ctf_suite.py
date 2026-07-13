@@ -95,7 +95,49 @@ class ContractSuiteWorker:
         )
 
 
-def _run(tmp_path: Path, worker: ContractSuiteWorker):
+class ParallelSuiteWorker(ContractSuiteWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+        self._both_started = asyncio.Event()
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        self.active += 1
+        self.max_active = max(self.max_active, self.active)
+        if self.active == 2:
+            self._both_started.set()
+        try:
+            await asyncio.wait_for(self._both_started.wait(), timeout=1)
+            return await super().run(job)
+        finally:
+            self.active -= 1
+
+
+class KillSwitchSuiteWorker(ContractSuiteWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.crypto_cancelled = False
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        if job.command == ["ctf-web-backup-probe"]:
+            await asyncio.sleep(0.01)
+            return await super().run(job)
+        if job.command == ["ctf-crypto-single-byte-xor"]:
+            try:
+                await asyncio.sleep(5)
+            except asyncio.CancelledError:
+                self.crypto_cancelled = True
+                raise
+        return await super().run(job)
+
+
+def _run(
+    tmp_path: Path,
+    worker: ContractSuiteWorker,
+    *,
+    kill_after_tool_calls: int | None = None,
+):
     registry = ToolRegistry()
     registry.register(CTFWebBackupProbeTool())
     registry.register(CTFCryptoXORTool())
@@ -107,6 +149,7 @@ def _run(tmp_path: Path, worker: ContractSuiteWorker):
         policy=PolicyEngine(),
         worker=worker,
         output_root=tmp_path,
+        kill_after_tool_calls=kill_after_tool_calls,
     )
     return asyncio.run(runner.run(campaign))
 
@@ -236,6 +279,36 @@ def test_suite_run_spawns_category_specialists_and_seals_aggregate_result(
     assert WEB_FLAG in writeup
     assert CRYPTO_FLAG in writeup
     assert "External scoreboard submission: `not performed`" in writeup
+
+
+def test_suite_runs_opted_in_specialists_concurrently(tmp_path: Path) -> None:
+    worker = ParallelSuiteWorker()
+
+    outcome = _run(tmp_path, worker)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert worker.max_active == 2
+    assert [result.request_id for result in outcome.tool_results] == [
+        step.request.request_id for step in outcome.plan.steps
+    ]
+    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event_type":"specialist.wave.started"' in events
+    assert '"parallelSafe":true' in events
+    assert '"maxConcurrency":2' in events
+    assert '"event_type":"specialist.wave.completed"' in events
+
+
+def test_parallel_suite_kill_switch_cancels_an_active_sibling(tmp_path: Path) -> None:
+    worker = KillSwitchSuiteWorker()
+
+    outcome = _run(tmp_path, worker, kill_after_tool_calls=1)
+    verification = verify_run_integrity(outcome.run_path)
+
+    assert outcome.status is RunStatus.CANCELLED
+    assert outcome.cancellation_reason == "deterministic kill-after-tool-calls trigger"
+    assert worker.crypto_cancelled
+    assert len(outcome.tool_results) == 1
+    assert verification.valid
 
 
 def test_suite_finalization_rejects_manifest_drift_after_run(tmp_path: Path) -> None:

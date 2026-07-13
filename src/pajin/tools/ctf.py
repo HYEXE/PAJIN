@@ -136,6 +136,7 @@ class CTFWebBackupProbeTool(Tool):
         evidence_types={"http-observation", "json"},
         network_access=True,
         network_request_cost=1,
+        parallel_safe=True,
     )
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
@@ -188,6 +189,7 @@ class CTFCryptoXORTool(Tool):
         categories={"crypto", "ctf", "offline-analysis"},
         evidence_types={"artifact-analysis", "json"},
         network_access=False,
+        parallel_safe=True,
     )
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
