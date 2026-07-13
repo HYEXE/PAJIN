@@ -17,6 +17,8 @@ plus a Markdown report.
   unspecified addresses are rejected. Private-network Mode Pack exceptions are limited to fixed
   synthetic labs: Bug Bounty uses its `local-lab` profile, while the CTF Web slice permits only
   `host.docker.internal:8780/backup/config.json.bak`.
+- The CTF Crypto slice has no egress policy. It accepts only a content-addressed inline artifact of
+  at most 4 KiB and evaluates exactly 256 single-byte XOR keys inside the no-network Worker.
 - MCP process commands are kept in the Worker catalog. Agents can submit only registered server
   IDs, tool names, and typed arguments.
 - Planner-provided agent identities are ignored; the Supervisor binds each request to the assigned
@@ -190,13 +192,20 @@ docker compose -f containers\compose.bug-bounty-lab.yaml down
 submits a report externally. Generic public Bug Bounty assets remain reviewable and compilable, but
 are not executable until a separately bounded probe profile is implemented.
 
-## Local CTF Web Mode
+## Local CTF Mode
 
-The first CTF vertical slice accepts a typed `CTFChallenge` manifest and runs the existing five-role
-team as Triage Planner, Web Specialist, independent flag Validator, and Reporter under the
-Supervisor. It supports only the synthetic `web.exposed-backup-config` scenario. The manifest keeps
-the expected flag as SHA-256 rather than plaintext and cannot select a Docker image, command,
-target host, port, path, method, or arbitrary probe payload.
+CTF Mode accepts a typed `CTFChallenge` manifest and runs the existing five-role team as Triage
+Planner, category Specialist, independent flag Validator, and Reporter under the Supervisor. The
+Triage Planner currently recognizes two separately bounded scenarios:
+
+- `web.exposed-backup-config` routes to the fixed Web Specialist;
+- `crypto.single-byte-xor` routes to the no-network Crypto Specialist.
+
+Both manifests keep the expected flag as SHA-256 rather than plaintext and cannot select a Docker
+image, command, executable, or scoreboard destination. `ctf-run` is the category-aware entry point;
+`ctf-web-run` remains a backward-compatible alias that rejects non-Web manifests.
+
+### Web challenge
 
 Build the Worker and egress proxy, then start the vulnerable loopback-bound challenge target:
 
@@ -205,7 +214,7 @@ docker build --tag pajin-worker:dev containers\worker
 docker build --tag pajin-egress-proxy:dev containers\egress-proxy
 docker compose -f containers\compose.ctf-web-lab.yaml up --build --detach
 
-.venv\Scripts\pajin ctf-web-run examples\ctf-web-backup-lab.yaml
+.venv\Scripts\pajin ctf-run examples\ctf-web-backup-lab.yaml
 ```
 
 The Triage Planner can create only one `ctf.web-backup-probe` step. The Tool and trusted Worker both
@@ -224,15 +233,35 @@ docker compose `
   -f containers\compose.ctf-web-lab.hardened.yaml `
   up --build --detach --force-recreate
 
-.venv\Scripts\pajin ctf-web-run examples\ctf-web-backup-lab.yaml
+.venv\Scripts\pajin ctf-run examples\ctf-web-backup-lab.yaml
 
 docker compose -f containers\compose.ctf-web-lab.yaml down
 ```
 
+### Crypto challenge
+
+The Crypto manifest carries one bounded inline artifact as lowercase hex plus the SHA-256 of its
+decoded bytes. The compiler derives a logical `artifact.invalid` content address; the manifest does
+not supply any network target or filesystem path. The Tool rechecks the digest before creating a
+Worker Job, and the Worker rechecks it again before evaluating all 256 single-byte XOR keys. The
+Tool declares T0 risk, receives no egress policy, invokes no external process, and returns at most
+one `PAJIN{...}` candidate.
+
+Build the updated Worker and run the synthetic artifact without starting any target service:
+
+```powershell
+docker build --tag pajin-worker:dev containers\worker
+.venv\Scripts\pajin ctf-run examples\ctf-crypto-xor-lab.yaml
+```
+
+The Crypto Specialist never receives the expected flag digest. The independent Validator binds the
+candidate to same-run evidence and compares its SHA-256 with the sealed Campaign value. The write-up
+records category routing, offline analysis, and the final digest decision.
+
 Core execution creates the first evidence-integrity seal; CTF result and write-up finalization
-verifies that root and appends a second seal. `ctf-web-run` is Docker-only and has no scoreboard
-credential, API client, or external submission path. Additional CTF categories require a separate
-typed scenario, Tool grammar, isolated target, independent verification rule, and safety review.
+verifies that root and appends a second seal. `ctf-run` is Docker-only and has no scoreboard
+credential, API client, or external submission path. Additional categories require a separate
+typed scenario, Tool grammar, isolated fixture, independent verification rule, and safety review.
 
 ## KISA AI Red Team Mode Pack
 
@@ -680,4 +709,5 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0014](docs/adr/0014-conservative-bug-bounty-deduplication.md), and
 [ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md), and
 [ADR-0016](docs/adr/0016-tamper-evident-run-integrity.md), and
-[ADR-0017](docs/adr/0017-local-ctf-web-mode.md).
+[ADR-0017](docs/adr/0017-local-ctf-web-mode.md), and
+[ADR-0018](docs/adr/0018-bounded-ctf-crypto-artifacts.md).
