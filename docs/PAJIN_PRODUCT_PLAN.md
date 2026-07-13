@@ -4,8 +4,9 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | Draft v0.1 |
+| 문서 상태 | Implementation Baseline v0.2 |
 | 작성일 | 2026-07-12 |
+| 최종 최신화 | 2026-07-14 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI |
 
@@ -29,6 +30,28 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 - 자동 탐색과 독립 검증 에이전트, 필요 시 HITL을 결합한 낮은 오탐률
 - KISA 가이드에 맞춘 계획, 교전 규칙, 실행 로그, 결과 보고, 재검증 산출물
 - 동일한 코어 위에서 보안 도메인을 Mode Pack과 Skill Pack으로 확장하는 구조
+
+### 1.1 현재 구현 기준선
+
+2026-07-14 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP**다.
+Phase 0-1은 완료되었고 Phase 2의 실행 코어는 완성되었지만 구조화 협업 메모리는 후속
+과제다. Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는
+Control Plane의 첫 수직 조각까지 구현되었다.
+
+| 영역 | 구현 상태 | 현재 경계 |
+| --- | --- | --- |
+| 공통 엔진 | 완료 | Supervisor, Planner, 동적 Specialist, Validator, Reporter와 작업 그래프 실행 |
+| 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
+| 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
+| AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
+| Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
+| CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, lease·heartbeat, 단일 Worker daemon |
+| 제품 UI·생태계 | 미구현 | Web UI, 분산 Worker pool, Pack registry, 외부 플랫폼 연동 |
+
+현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
+제공하지 않는다. 상세 안전 경계와 재현 명령은 저장소 `README.md`, KISA 커버리지는
+`docs/KISA_TRACEABILITY.md`, 확정된 기술 결정은 `docs/adr/`를 기준으로 한다.
 
 ---
 
@@ -549,6 +572,8 @@ capability_grant:
 ## 13. 핵심 기능 요구사항
 
 우선순위는 `P0 = MVP 필수`, `P1 = 첫 공개 버전`, `P2 = 확장`으로 정의한다.
+이 표는 목표 요구사항 백로그이며 현재 구현 완료표가 아니다. 실제 구현 상태와 제한은
+1.1절과 21절을 기준으로 한다.
 
 ### 13.1 Campaign & Scope
 
@@ -719,18 +744,22 @@ stateDiagram-v2
 
 ### 16.1 초기 인터페이스
 
-MVP는 CLI와 YAML Campaign Manifest를 우선한다.
+MVP는 CLI와 YAML Campaign·Mode Pack Manifest를 우선한다. 현재 구현된 명령 표면은 다음과
+같으며, 각 명령의 옵션은 `pajin <command> --help`를 기준으로 한다.
 
-```bash
-pajin campaign validate campaign.yaml
-pajin campaign authorize campaign.yaml
-pajin run campaign.yaml
-pajin status <campaign-id>
-pajin findings <campaign-id>
-pajin report <campaign-id> --format markdown
-pajin retest <finding-id>
-pajin stop <campaign-id> --reason "scope changed"
-```
+| 영역 | 현재 명령 |
+| --- | --- |
+| 공통 실행 | `pajin validate`, `pajin run`, `pajin multi-run`, `pajin multi-cancel-check` |
+| Provider·Agent Loop | `pajin provider-check`, `pajin provider-agent-run`, `pajin tool-loop-run`, `pajin tool-loop-approval-check` |
+| KISA AI Red Team | `pajin kisa-run`, `pajin kisa-plan-remediation`, `pajin kisa-retest` |
+| Bug Bounty | `pajin bug-bounty-review`, `pajin bug-bounty-compile`, `pajin bug-bounty-report`, `pajin bug-bounty-run` |
+| CTF | `pajin ctf-run`, `pajin ctf-web-run`, `pajin ctf-suite-run` |
+| 증적·인프라 점검 | `pajin evidence-verify`, `pajin worker-check`, `pajin egress-check`, `pajin mcp-check` |
+| 서버 프로세스 | `pajin-control-plane`, `pajin-worker-daemon` |
+
+초기 기획에 있던 범용 `authorize`, `status`, `findings`, `report`, `stop` CLI는 아직 별도
+명령으로 구현하지 않았다. 지속 실행의 제출·조회·승인·재개는 현재 선택적 Control Plane
+API가 담당한다. 범용 취소 API와 Web UI는 아직 구현하지 않았다.
 
 ### 16.2 향후 Web UI
 
@@ -753,41 +782,53 @@ pajin stop <campaign-id> --reason "scope changed"
 apiVersion: pajin.dev/v1alpha1
 kind: Campaign
 metadata:
-  name: sample-ai-redteam
+  name: kisa-ai-chat-lab-assessment
+  description: KISA-aligned Docker assessment of a provider-neutral AI chat target.
 spec:
   mode: ai-redteam
   autonomy: supervised
+  authorization:
+    approvedBy: local-project-owner
+    approvedAt: 2026-07-01T00:00:00+09:00
+    expiresAt: 2030-01-01T00:00:00+09:00
+    evidence: local-development-lab-authorization
   targets:
-    - type: llm-api
-      id: staging-assistant
-      endpoint: https://staging.example.com/api/chat
+    - type: ai-chat-api
+      id: pajin-vulnerable-ai-lab
+      endpoint: http://host.docker.internal:8765/v1/chat
   scope:
     allow:
-      - https://staging.example.com/api/chat
+      - http://host.docker.internal:8765/v1/chat
     deny:
-      - https://staging.example.com/api/admin/**
+      - http://host.docker.internal:8765/admin/**
   accessProfile: greybox
   objectives:
-    - test indirect prompt injection resistance
-    - detect unauthorized tool execution
-  threatClasses: [M03, M06, M07, A01, A02, A04]
+    - detect system prompt disclosure
+    - validate jailbreak policy enforcement
+    - detect persistence of untrusted input in agent memory
+  threatClasses: [M03, M06, A04]
   rulesOfEngagement:
     maxToolRiskTier: T2
+    allowedMethods: [POST]
     prohibit:
       - denial-of-service
       - real-user-data-access
+      - out-of-scope-access
     stopOn:
       - sensitive-data-exposure
       - out-of-scope-attempt
+    allowPrivateNetworks: true
   budgets:
-    duration: 2h
-    maxCostUsd: 25
-    maxAgents: 6
-    maxSpawnDepth: 2
+    durationSeconds: 120
+    maxCostUsd: 1
+    maxAgents: 12
+    maxSpawnDepth: 1
+    maxToolCalls: 8
   outputs:
     - markdown-report
     - json-findings
     - kisa-checklist
+    - kisa-completion-report
 ```
 
 ---
@@ -857,52 +898,44 @@ PAJIN은 공격 도구를 다루기 때문에 일반 SaaS보다 강한 내부 �
 | 영역 | 선택 | 이유 |
 | --- | --- | --- |
 | 주 언어 | Python 3.12+ | AI·보안 도구 생태계, 비동기 작업, 빠른 확장 |
-| API | FastAPI + Pydantic | 타입 기반 계약과 비동기 API |
-| CLI | Typer 또는 Click | 초기 운영과 자동화 친화성 |
-| 영속 저장 | PostgreSQL + JSONB | 구조화 데이터와 유연한 메타데이터 |
+| API | FastAPI + Pydantic | 선택적 Control Plane의 타입 기반 계약과 비동기 API로 구현 |
+| CLI | Typer | 초기 운영과 자동화용 기본 인터페이스로 구현 |
+| 영속 저장 | 로컬 Run Store + PostgreSQL | CLI Artifact와 Control Plane Job·승인·감사 상태를 분리해 영속화 |
 | Artifact | 로컬 파일 → S3 호환 객체 저장소 | MVP 단순성 및 확장성 |
-| 작업 큐 | 초기 인프로세스 → Redis/NATS 계열 | 단계적 분산 확장 |
+| 작업 큐 | 인프로세스 실행 + PostgreSQL Job queue | 다중 Worker 원자적 claim·lease·heartbeat·crash requeue 구현, 운영 Worker pool은 후속 과제 |
 | 격리 | Docker → 강화 런타임/gVisor/Kubernetes | 개발 편의와 운영 격리의 단계적 강화 |
 | 정책 | 내부 Policy 인터페이스 → OPA/Cedar 검토 | MVP 속도와 장기 정책 표현력 균형 |
 | 모델 연동 | Provider Gateway | 모델 교체, 비용, 로깅, 재현성 |
-| 관측성 | OpenTelemetry | 벤더 중립 Trace·Metric·Log |
+| 관측성 | Audit Event·Evidence Seal → OpenTelemetry | 현재 로컬 재현성과 무결성 우선, 운영 텔레메트리는 후속 확장 |
 | 외부 도구 | MCP Adapter + Canonical ToolSpec | 프로토콜 종속성 최소화 |
 
 핵심 원칙은 PydanticAI가 모델 기반 계획·검증을 담당하고, Campaign 상태·Capability·정책
 판정·도구 실행·증적은 PAJIN Core가 소유하는 것이다. 초기 Workflow Backend는 로컬 구현을
 사용하며 장기 실행과 분산 워커가 필요한 단계에서 Temporal Adapter를 추가한다.
 
-### 19.1 저장소 구조 후보
+### 19.1 현재 저장소 구조
 
 ```text
-pajin/
-├─ apps/
-│  ├─ api/
-│  ├─ cli/
-│  └─ worker/
-├─ packages/
-│  ├─ core/
-│  ├─ campaigns/
-│  ├─ orchestration/
+PAJIN/
+├─ src/pajin/
 │  ├─ agents/
+│  ├─ control_plane/
+│  ├─ domain/
+│  ├─ modes/
+│  │  ├─ ai_redteam/
+│  │  ├─ bug_bounty/
+│  │  └─ ctf/
 │  ├─ policy/
-│  ├─ tools/
+│  ├─ providers/
+│  ├─ reporting/
 │  ├─ runtime/
-│  ├─ evidence/
-│  ├─ evaluation/
-│  ├─ findings/
-│  └─ reporting/
-├─ modes/
-│  ├─ ai_redteam/
-│  ├─ bug_bounty/
-│  └─ ctf/
-├─ skills/
-├─ toolpacks/
-├─ policies/
-├─ schemas/
-├─ deployments/
+│  ├─ tools/
+│  └─ workflow/
+├─ containers/
+├─ examples/
+├─ scripts/
 ├─ tests/
-└─ docs/
+└─ docs/adr/
 ```
 
 ---
@@ -917,11 +950,11 @@ pajin/
 
 #### 포함
 
-- YAML Campaign Manifest
-- AI Red Team 또는 로컬 CTF 중 하나의 수직 시나리오
-- Campaign 상태 머신
-- 고정된 Planner, Executor, Validator, Reporter 에이전트
-- 최소 2종 Tool Adapter
+- YAML Campaign 및 Mode Pack Manifest
+- AI Red Team, 제한된 로컬 Bug Bounty, Web·Crypto CTF 수직 시나리오
+- Campaign과 Run 상태 모델
+- Supervisor, Planner, 동적 Specialist, 독립 Validator, Reporter 에이전트
+- 등록형 Mock, HTTP, MCP 및 Mode Pack Tool Adapter
 - Docker 기반 격리 워커
 - Capability와 Scope Policy
 - 호출 전 정책 검사와 Kill Switch
@@ -929,6 +962,7 @@ pajin/
 - 후보/확정 Finding 분리
 - Markdown 및 JSON 보고서
 - 동일 입력 기반 재검증
+- 선택적 FastAPI·PostgreSQL Control Plane과 단일 Worker daemon
 
 #### 제외
 
@@ -938,6 +972,9 @@ pajin/
 - 운영 환경 T3/T4 자동 실행
 - 자동 패치와 Pull Request 생성
 - 모든 KISA 산출물의 완전 자동화
+
+현재 구현은 최초 최소 MVP 범위를 넘어 세 Mode Pack과 지속성 Control Plane의 초기 조각을
+포함한다. 단, 지원 시나리오의 폭과 운영 배포 수준은 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -954,7 +991,15 @@ pajin/
 
 ## 21. 단계별 로드맵
 
-### Phase 0 — Foundation & Governance
+| 단계 | 상태 | 2026-07-14 기준 판단 |
+| --- | --- | --- |
+| Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
+| Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
+| Phase 2 | 핵심 완료 | 역할 분리, 동적 Specialist, 검증, 권한 감쇠, 예산·취소·승인 확보; 구조화 협업 메모리는 후속 |
+| Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
+| Phase 4 | 초기 구현 | PostgreSQL Control Plane과 Worker daemon만 구현, 제품 UI·생태계는 미구현 |
+
+### Phase 0 — Foundation & Governance (완료)
 
 - 제품 기획서와 핵심 용어 확정
 - Campaign, Scope, ROE, Capability 스키마 정의
@@ -962,7 +1007,7 @@ pajin/
 - 아키텍처 ADR 작성
 - 안전한 개발·테스트용 샘플 타깃 선정
 
-### Phase 1 — Single-Agent Vertical Slice
+### Phase 1 — Single-Agent Vertical Slice (완료)
 
 - CLI와 Campaign Manifest
 - 단일 에이전트 실행 루프
@@ -970,24 +1015,26 @@ pajin/
 - Docker 워커와 기본 egress 통제
 - Event Log, Artifact, Markdown 보고서
 
-### Phase 2 — Validated Multi-Agent MVP
+### Phase 2 — Validated Multi-Agent MVP (핵심 완료)
 
 - Planner, Specialist, Validator, Reporter 분리
-- 작업 그래프와 공유 메모리
+- 작업 그래프와 동일 Run 증적·Artifact 공유
 - Capability Grant와 감쇠형 위임
 - 후보 Finding 검증 및 중복 처리
 - Kill Switch, 예산, 재시도, 체크포인트
+- 남은 범위: Campaign Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
-### Phase 3 — Mode Packs
+### Phase 3 — Mode Packs (진행 중)
 
-- AI Red Team Mode 정식화
-- Bug Bounty Scope Parser와 보고 템플릿
-- CTF 카테고리별 Specialist
-- KISA 체크리스트와 테스트 완료 보고서
-- 회귀 테스트와 CI/CD 연동
+- AI Red Team: KISA 전체 카탈로그와 A01·A02·A04·M03·M06 실행 시나리오
+- Bug Bounty: Scope Parser, 보수적 중복 판정, 신고서 초안, 고정 로컬 SQLi 랩
+- CTF: Web·Crypto Specialist와 제한된 병렬 Suite
+- KISA 체크리스트, 완료 보고서, 완화 계획, 재검증·정상 기능 회귀
+- 남은 범위: KISA 14개 위협 실행 시나리오, 추가 Bug Bounty·CTF 시나리오, CI/CD 워크플로
 
-### Phase 4 — Platform & Ecosystem
+### Phase 4 — Platform & Ecosystem (초기 구현)
 
+- FastAPI·PostgreSQL 기반 Job queue와 lease-aware Worker daemon은 초기 구현 완료
 - Web UI와 실시간 Agent Graph
 - 분산 Worker Pool
 - 조직·프로젝트·역할 기반 접근 제어
@@ -1043,30 +1090,32 @@ pajin/
 
 ## 24. 오픈 의사결정
 
-구현 전에 다음 항목을 ADR 또는 별도 기획으로 확정해야 한다.
+초기 질문 중 실행 경계와 기술 구조는 ADR-0001부터 ADR-0021까지에서 확정했다. 다음
+항목은 Phase 3-4 진행 전에 추가 결정이 필요하다.
 
-1. 첫 수직 시나리오를 AI Red Team과 CTF 중 무엇으로 할 것인가?
-2. 로컬 전용으로 시작할지, 초기부터 서버·멀티테넌시를 고려할지 결정한다.
-3. 사용자 승인 증빙을 어떤 수준으로 요구할 것인가?
-4. T3 도구의 사전 승인과 건별 승인 경계를 정의한다.
-5. 에이전트 프레임워크를 직접 구현할지 기존 런타임을 활용할지 결정한다.
-6. Campaign Memory의 영속 범위와 학습·재사용 정책을 정한다.
-7. 지원할 첫 LLM Provider와 로컬 모델 범위를 정한다.
-8. Tool Pack 배포와 라이선스·업데이트 정책을 정한다.
-9. KISA 외 OWASP, NIST, MITRE ATLAS 매핑 우선순위를 정한다.
-10. 오픈소스 코어와 향후 상용 기능의 경계를 정한다.
+1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
+2. Web UI의 인증, 세션, 조직·프로젝트 격리와 멀티테넌시 경계
+3. Campaign Memory의 영속 범위, 재사용, 보존·파기 및 학습 사용 정책
+4. MCP·Skill·Tool Pack의 서명, 심사, 라이선스, 버전 고정과 업데이트 정책
+5. KISA 외 OWASP, NIST, MITRE ATLAS 매핑 우선순위
+6. 오픈소스 코어와 향후 상용 기능의 경계
+7. 로컬 Evidence Seal을 외부 서명·객체 저장소에 앵커링하는 운영 방식
 
-### 24.1 권장 초기 결정
+### 24.1 확정된 초기 결정
 
 - **첫 수직 시나리오**: 에이전트형 AI 애플리케이션의 간접 프롬프트 인젝션 및 무단 도구 호출 검증
-- **배포 형태**: 로컬 단일 사용자 우선, 데이터 모델은 조직·프로젝트 구분 가능하게 설계
+- **배포 형태**: 로컬 단일 사용자 우선, 선택적 FastAPI·PostgreSQL Control Plane 병행
 - **기본 자율성**: L2 Supervised
-- **기본 실행 등급**: T0-T2 자동, T3 승인, T4 금지
+- **Tool Loop 실행 등급**: T0-T2 자동, T3-T4는 정확한 호출 단위 승인 필수; Mode Policy는 더 엄격하게 제한 가능
 - **첫 인터페이스**: CLI + YAML
 - **첫 보고 형식**: Markdown + JSON
 - **첫 격리 방식**: 캠페인별 Docker Worker
+- **에이전트 런타임**: PAJIN Core가 상태·정책·실행을 소유하고 PydanticAI는 Agent Runtime Adapter로 제한
+- **첫 Provider 계약**: 등록된 OpenAI-compatible endpoint와 일회용 Secret Lease
 
-이 시나리오는 PAJIN의 핵심 차별점인 멀티 에이전트, MCP/도구 권한, KISA A01-A04 위협, 증적과 재검증을 한 번에 검증할 수 있다.
+첫 `mock-agent` 시나리오는 PAJIN의 멀티 에이전트, MCP/도구 권한, KISA A01·A02,
+증적과 독립 검증을 확인한다. 이후 `ai-chat-api` 시나리오가 A04·M03·M06과 완화 후
+재검증·정상 기능 회귀 범위를 확장했다.
 
 ---
 
@@ -1112,14 +1161,19 @@ pajin/
 
 ---
 
-## 27. 다음 문서
+## 27. 현재 문서와 문서 백로그
 
-이 제품 기획서를 기준으로 다음 문서를 순서대로 작성한다.
+현재 기준 문서는 다음과 같다.
 
-1. `PAJIN_ARCHITECTURE.md` — 컴포넌트, 경계, 이벤트 흐름, 배포 구조
-2. `PAJIN_THREAT_MODEL.md` — 자산, 신뢰 경계, 위협, 통제, 잔여 위험
-3. `PAJIN_DOMAIN_MODEL.md` — 엔터티, 상태 머신, 스키마
-4. `PAJIN_MVP_SPEC.md` — 첫 수직 시나리오와 인수 조건
-5. `adr/` — 기술 및 보안 핵심 의사결정 기록
-6. `schemas/campaign.schema.json` — Campaign Manifest 계약
-7. `policies/` — 모드별 기본 정책과 Tool Risk 분류
+1. `README.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
+2. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
+3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
+4. `docs/adr/0001-0021` — 구현된 런타임·정책·Mode Pack·Control Plane 의사결정
+
+다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
+
+1. `PAJIN_ARCHITECTURE.md` — 컴포넌트, 신뢰 경계, 이벤트 흐름, 배포 구조
+2. `PAJIN_THREAT_MODEL.md` — 자산, 공격자, 위협, 통제, 잔여 위험
+3. `PAJIN_DOMAIN_MODEL.md` — 엔터티, 상태 머신, 공개 스키마
+4. `PAJIN_OPERATIONS.md` — 배포, Secret, 보존·파기, 복구, 증적 앵커링
+5. 공개 Campaign·Mode Pack JSON Schema와 기본 Policy Profile
