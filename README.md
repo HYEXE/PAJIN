@@ -14,8 +14,9 @@ plus a Markdown report.
 - A network-enabled tool receives a campaign-derived egress policy only from the Tool Gateway.
 - Each network execution gets a private internal Docker network and a dedicated allowlist proxy.
 - Public destinations are the default; loopback, link-local, private, reserved, multicast, and
-  unspecified addresses are rejected. The Bug Bounty private-network exception is limited to the
-  fixed `local-lab` profile and `host.docker.internal` entry points.
+  unspecified addresses are rejected. Private-network Mode Pack exceptions are limited to fixed
+  synthetic labs: Bug Bounty uses its `local-lab` profile, while the CTF Web slice permits only
+  `host.docker.internal:8780/backup/config.json.bak`.
 - MCP process commands are kept in the Worker catalog. Agents can submit only registered server
   IDs, tool names, and typed arguments.
 - Planner-provided agent identities are ignored; the Supervisor binds each request to the assigned
@@ -188,6 +189,50 @@ docker compose -f containers\compose.bug-bounty-lab.yaml down
 `bug-bounty-run` always uses the Docker Worker, creates local evidence and triage drafts, and never
 submits a report externally. Generic public Bug Bounty assets remain reviewable and compilable, but
 are not executable until a separately bounded probe profile is implemented.
+
+## Local CTF Web Mode
+
+The first CTF vertical slice accepts a typed `CTFChallenge` manifest and runs the existing five-role
+team as Triage Planner, Web Specialist, independent flag Validator, and Reporter under the
+Supervisor. It supports only the synthetic `web.exposed-backup-config` scenario. The manifest keeps
+the expected flag as SHA-256 rather than plaintext and cannot select a Docker image, command,
+target host, port, path, method, or arbitrary probe payload.
+
+Build the Worker and egress proxy, then start the vulnerable loopback-bound challenge target:
+
+```powershell
+docker build --tag pajin-worker:dev containers\worker
+docker build --tag pajin-egress-proxy:dev containers\egress-proxy
+docker compose -f containers\compose.ctf-web-lab.yaml up --build --detach
+
+.venv\Scripts\pajin ctf-web-run examples\ctf-web-backup-lab.yaml
+```
+
+The Triage Planner can create only one `ctf.web-backup-probe` step. The Tool and trusted Worker both
+enforce one GET to `http://host.docker.internal:8780/backup/config.json.bak`; the Gateway injects
+the private-network egress policy from the compiled Campaign. The Specialist never receives the
+expected digest. The independent Validator hashes the candidate and produces a validated result
+only on a constant-time digest match.
+
+The vulnerable profile should produce `solved` plus `ctf-result.json` and `ctf-writeup.md`. Recreate
+the same target with the hardened override to confirm the backup artifact is absent and the command
+returns an `unsolved` non-zero result:
+
+```powershell
+docker compose `
+  -f containers\compose.ctf-web-lab.yaml `
+  -f containers\compose.ctf-web-lab.hardened.yaml `
+  up --build --detach --force-recreate
+
+.venv\Scripts\pajin ctf-web-run examples\ctf-web-backup-lab.yaml
+
+docker compose -f containers\compose.ctf-web-lab.yaml down
+```
+
+Core execution creates the first evidence-integrity seal; CTF result and write-up finalization
+verifies that root and appends a second seal. `ctf-web-run` is Docker-only and has no scoreboard
+credential, API client, or external submission path. Additional CTF categories require a separate
+typed scenario, Tool grammar, isolated target, independent verification rule, and safety review.
 
 ## KISA AI Red Team Mode Pack
 
@@ -582,6 +627,9 @@ budget.json
 control.json
 ```
 
+Mode Pack extensions can add artifacts such as `ctf-result.json`, `ctf-writeup.md`, KISA assessment
+files, or Bug Bounty triage drafts before appending a linked integrity seal.
+
 ## Evidence integrity verification
 
 Every completed local Run writes `run-integrity.jsonl`. Each seal binds its new artifact paths,
@@ -631,4 +679,5 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0013](docs/adr/0013-bug-bounty-scope-parser.md), and
 [ADR-0014](docs/adr/0014-conservative-bug-bounty-deduplication.md), and
 [ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md), and
-[ADR-0016](docs/adr/0016-tamper-evident-run-integrity.md).
+[ADR-0016](docs/adr/0016-tamper-evident-run-integrity.md), and
+[ADR-0017](docs/adr/0017-local-ctf-web-mode.md).
