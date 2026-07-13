@@ -78,17 +78,25 @@ class BudgetController:
     _started: float = field(init=False)
     agent_count: int = field(init=False, default=0)
     tool_calls: int = field(init=False, default=0)
+    model_calls: int = field(init=False, default=0)
+    model_prompt_tokens: int = field(init=False, default=0)
+    model_completion_tokens: int = field(init=False, default=0)
     cost_usd: float = field(init=False, default=0.0)
+    _elapsed_offset_seconds: float = field(init=False, default=0.0)
 
     def __post_init__(self) -> None:
         self._started = monotonic()
         self.agent_count = 0
         self.tool_calls = 0
+        self.model_calls = 0
+        self.model_prompt_tokens = 0
+        self.model_completion_tokens = 0
         self.cost_usd = 0.0
+        self._elapsed_offset_seconds = 0.0
 
     @property
     def elapsed_seconds(self) -> float:
-        return monotonic() - self._started
+        return self._elapsed_offset_seconds + monotonic() - self._started
 
     @property
     def remaining_seconds(self) -> float:
@@ -119,6 +127,84 @@ class BudgetController:
             raise BudgetExceeded("maximum campaign cost exceeded")
         self.cost_usd += amount_usd
 
+    def check_model_call(self) -> None:
+        self.check_duration()
+        if self.model_calls >= self.budgets.max_model_calls:
+            raise BudgetExceeded("maximum model-call budget exceeded")
+
+    def record_model_call(self) -> None:
+        self.check_model_call()
+        self.model_calls += 1
+
+    def record_model_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+    ) -> None:
+        if prompt_tokens < 0 or completion_tokens < 0:
+            raise ValueError("model token usage cannot be negative")
+        total = prompt_tokens + completion_tokens
+        used = self.model_prompt_tokens + self.model_completion_tokens
+        if used + total > self.budgets.max_model_tokens:
+            raise BudgetExceeded("maximum model-token budget exceeded")
+        if cost_usd < 0:
+            raise ValueError("cost cannot be negative")
+        if self.cost_usd + cost_usd > self.budgets.max_cost_usd:
+            raise BudgetExceeded("maximum campaign cost exceeded")
+        self.model_prompt_tokens += prompt_tokens
+        self.model_completion_tokens += completion_tokens
+        self.cost_usd += cost_usd
+
+    def restore_usage(
+        self,
+        *,
+        agent_count: int,
+        tool_calls: int,
+        model_calls: int,
+        model_prompt_tokens: int,
+        model_completion_tokens: int,
+        cost_usd: float,
+        elapsed_seconds: float,
+    ) -> None:
+        if any(
+            value != 0
+            for value in (
+                self.tool_calls,
+                self.agent_count,
+                self.model_calls,
+                self.model_prompt_tokens,
+                self.model_completion_tokens,
+                self.cost_usd,
+                self._elapsed_offset_seconds,
+            )
+        ):
+            raise ValueError("budget usage can be restored only before execution")
+        if not 0 <= agent_count <= self.budgets.max_agents:
+            raise BudgetExceeded("restored agent usage exceeds campaign budget")
+        if not 0 <= tool_calls <= self.budgets.max_tool_calls:
+            raise BudgetExceeded("restored tool-call usage exceeds campaign budget")
+        if not 0 <= model_calls <= self.budgets.max_model_calls:
+            raise BudgetExceeded("restored model-call usage exceeds campaign budget")
+        total_tokens = model_prompt_tokens + model_completion_tokens
+        if model_prompt_tokens < 0 or model_completion_tokens < 0:
+            raise ValueError("restored model token usage cannot be negative")
+        if total_tokens > self.budgets.max_model_tokens:
+            raise BudgetExceeded("restored model-token usage exceeds campaign budget")
+        if not 0 <= cost_usd <= self.budgets.max_cost_usd:
+            raise BudgetExceeded("restored cost exceeds campaign budget")
+        if not 0 <= elapsed_seconds < self.budgets.duration_seconds:
+            raise BudgetExceeded("restored duration exceeds campaign budget")
+        self.agent_count = agent_count
+        self.tool_calls = tool_calls
+        self.model_calls = model_calls
+        self.model_prompt_tokens = model_prompt_tokens
+        self.model_completion_tokens = model_completion_tokens
+        self.cost_usd = cost_usd
+        self._elapsed_offset_seconds = elapsed_seconds
+        self._started = monotonic()
+
     def check_duration(self) -> None:
         if self.remaining_seconds <= 0:
             raise BudgetExceeded("maximum campaign duration exceeded")
@@ -129,6 +215,12 @@ class BudgetController:
             "maxAgents": self.budgets.max_agents,
             "toolCalls": self.tool_calls,
             "maxToolCalls": self.budgets.max_tool_calls,
+            "modelCalls": self.model_calls,
+            "maxModelCalls": self.budgets.max_model_calls,
+            "modelPromptTokens": self.model_prompt_tokens,
+            "modelCompletionTokens": self.model_completion_tokens,
+            "modelTokens": self.model_prompt_tokens + self.model_completion_tokens,
+            "maxModelTokens": self.budgets.max_model_tokens,
             "costUsd": self.cost_usd,
             "maxCostUsd": self.budgets.max_cost_usd,
             "elapsedSeconds": round(self.elapsed_seconds, 6),

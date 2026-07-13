@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
 
@@ -13,13 +15,27 @@ from rich.console import Console
 from rich.table import Table
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
+from pajin.agents.provider import ModelToolDescriptor, ProviderAgentRuntime
 from pajin.domain.manifest import load_manifest
-from pajin.domain.models import CampaignMode
+from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
-from pajin.modes.ai_redteam import KISAModePack, KISAPlannerRuntime, KISAValidatorRuntime
+from pajin.modes.ai_redteam import (
+    KISAModePack,
+    KISAPlannerRuntime,
+    KISARetestPlannerRuntime,
+    KISARetestService,
+    KISAValidatorRuntime,
+)
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
+from pajin.modes.ai_redteam.retest import RegressionStatus
 from pajin.policy.engine import PolicyEngine
+from pajin.providers import (
+    OpenAICompatibleChatTool,
+    ProviderRegistration,
+    ProviderValidationPlanner,
+)
 from pajin.runtime.control import KillSwitch
+from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.worker import (
     DockerWorkerBackend,
     EgressPolicy,
@@ -31,12 +47,21 @@ from pajin.runtime.worker import (
     WorkerResult,
     WorkerStatus,
 )
+from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
-from pajin.tools.mock import MockAgentProbe, SleepCheckTool
+from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
 from pajin.workflow.local import LocalCampaignRunner
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner, MultiAgentRunOutcome
+from pajin.workflow.tool_loop import (
+    PolicyToolLoopRunner,
+    ToolLoopApproval,
+    ToolLoopBinding,
+    ToolLoopConfig,
+    ToolLoopOutcome,
+    ToolLoopStatus,
+)
 
 app = typer.Typer(help="PAJIN policy-governed security validation CLI", no_args_is_help=True)
 console = Console()
@@ -45,6 +70,9 @@ console = Console()
 def _tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
     registry.register(MockAgentProbe())
+    registry.register(ApprovalCheckTool())
+    registry.register(AIChatProbeTool())
+    registry.register(AIChatRegressionTool())
     registry.register(HTTPGetTool())
     registry.register(demo_mcp_tool())
     return registry
@@ -56,6 +84,226 @@ def _worker_backend(worker: str) -> WorkerBackend:
     if worker == "docker":
         return DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
     raise ValueError("use 'simulated' or 'docker'")
+
+
+def _provider_checks(
+    outcome: MultiAgentRunOutcome,
+    *,
+    credential: str,
+) -> dict[str, bool]:
+    results = outcome.tool_results
+    leases = json.loads((outcome.run_path / "secrets.json").read_text(encoding="utf-8"))
+    events = [
+        json.loads(line)
+        for line in (outcome.run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    tool_calls = results[2].data.get("tool_calls", []) if len(results) > 2 else []
+    call = tool_calls[0] if isinstance(tool_calls, list) and tool_calls else {}
+    arguments = call.get("arguments", {}) if isinstance(call, dict) else {}
+    credential_bytes = credential.encode()
+    leaked_paths = [
+        path
+        for path in outcome.run_path.rglob("*")
+        if path.is_file() and credential_bytes in path.read_bytes()
+    ]
+    event_types = [event.get("event_type") for event in events]
+    return {
+        "campaign completed": outcome.status is RunStatus.COMPLETED,
+        "four provider calls succeeded": (
+            len(results) == 4 and all(result.success for result in results)
+        ),
+        "non-stream response normalized": (
+            len(results) > 0
+            and results[0].data.get("content") == "provider gateway non-stream response"
+            and results[0].data.get("streamed") is False
+        ),
+        "SSE response normalized": (
+            len(results) > 1
+            and results[1].data.get("content") == "provider gateway stream response"
+            and results[1].data.get("streamed") is True
+            and int(results[1].data.get("chunks", 0)) >= 2
+        ),
+        "function tool call normalized": (
+            isinstance(call, dict)
+            and call.get("name") == "get_weather"
+            and call.get("arguments_valid") is True
+            and isinstance(arguments, dict)
+            and arguments.get("location") == "Seoul"
+        ),
+        "provider output secret redacted": (
+            len(results) > 3 and results[3].data.get("content") == "<redacted-secret>"
+        ),
+        "all secret leases revoked": (
+            len(leases) == 4
+            and all(
+                lease.get("status") == "revoked" and lease.get("remaining_uses") == 0
+                for lease in leases
+            )
+        ),
+        "lease lifecycle audited": (
+            event_types.count("secret.lease.issued") == 4
+            and event_types.count("secret.lease.revoked") == 4
+        ),
+        "credential absent from run artifacts": not leaked_paths,
+    }
+
+
+def _provider_agent_checks(
+    outcome: MultiAgentRunOutcome,
+    *,
+    credential: str,
+) -> dict[str, bool]:
+    events = [
+        json.loads(line)
+        for line in (outcome.run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    event_types = [event.get("event_type") for event in events]
+    budget = json.loads((outcome.run_path / "budget.json").read_text(encoding="utf-8"))
+    leases = json.loads((outcome.run_path / "secrets.json").read_text(encoding="utf-8"))
+    narrative_path = outcome.run_path / "model-narrative.json"
+    credential_bytes = credential.encode()
+    leaked_paths = [
+        path
+        for path in outcome.run_path.rglob("*")
+        if path.is_file() and credential_bytes in path.read_bytes()
+    ]
+    return {
+        "campaign completed": outcome.status is RunStatus.COMPLETED,
+        "provider planner produced bounded plan": (
+            outcome.plan is not None
+            and len(outcome.plan.steps) == 1
+            and outcome.plan.steps[0].request.tool_id == "ai.chat-probe"
+            and outcome.plan.steps[0].scenario_id == "kisa.model.system-prompt-disclosure"
+        ),
+        "provider validator confirmed same-run evidence": (
+            len(outcome.findings) == 1
+            and outcome.findings[0].threat_class == "M03"
+            and outcome.findings[0].validated
+        ),
+        "provider reporter narrative persisted": narrative_path.is_file(),
+        "three role model calls audited": (
+            event_types.count("model.call.completed") == 3
+            and event_types.count("model.fallback.activated") == 0
+        ),
+        "model token and call budgets measured": (
+            budget.get("modelCalls") == 3
+            and budget.get("modelPromptTokens") == 30
+            and budget.get("modelCompletionTokens") == 15
+            and budget.get("modelTokens") == 45
+        ),
+        "three provider secret leases revoked": (
+            len(leases) == 3
+            and all(
+                lease.get("status") == "revoked" and lease.get("remaining_uses") == 0
+                for lease in leases
+            )
+        ),
+        "credential absent from run artifacts": not leaked_paths,
+    }
+
+
+def _tool_loop_checks(
+    outcome: ToolLoopOutcome,
+    *,
+    credential: str,
+) -> dict[str, bool]:
+    state = json.loads((outcome.run_path / "tool-loop.json").read_text(encoding="utf-8"))
+    budget = json.loads((outcome.run_path / "budget.json").read_text(encoding="utf-8"))
+    leases = json.loads((outcome.run_path / "secrets.json").read_text(encoding="utf-8"))
+    credential_bytes = credential.encode()
+    leaked_paths = [
+        path
+        for path in outcome.run_path.rglob("*")
+        if path.is_file() and credential_bytes in path.read_bytes()
+    ]
+    messages = state.get("messages", [])
+    return {
+        "tool loop completed": outcome.status is ToolLoopStatus.COMPLETED,
+        "provider requested one registered function": (
+            len(messages) >= 3
+            and messages[2].get("role") == "assistant"
+            and len(messages[2].get("tool_calls", [])) == 1
+            and messages[2]["tool_calls"][0]["function"]["name"] == "probe_mock_agent"
+        ),
+        "specialist executed through gateway": (
+            len(outcome.tool_results) == 1
+            and outcome.tool_results[0].success
+            and outcome.tool_results[0].tool_id == "mock.agent-probe"
+        ),
+        "tool result returned with matching call ID": (
+            len(messages) >= 4
+            and messages[3].get("role") == "tool"
+            and messages[3].get("tool_call_id") == "call_pajin_probe"
+        ),
+        "provider returned final response": (
+            outcome.final_content == "Authorized specialist result was received and summarized."
+        ),
+        "turn tool model and agent budgets measured": (
+            state.get("turn") == 2
+            and budget.get("toolCalls") == 3
+            and budget.get("modelCalls") == 2
+            and budget.get("modelTokens") == 30
+            and budget.get("agentCount") == 3
+        ),
+        "provider secret leases revoked": (
+            len(leases) == 2
+            and all(
+                lease.get("status") == "revoked" and lease.get("remaining_uses") == 0
+                for lease in leases
+            )
+        ),
+        "resumable checkpoint persisted": outcome.checkpoint_path.is_file(),
+        "credential absent from run artifacts": not leaked_paths,
+    }
+
+
+def _tool_loop_approval_checks(
+    waiting: ToolLoopOutcome,
+    resumed: ToolLoopOutcome,
+    *,
+    approval_id: str,
+    credential: str,
+) -> dict[str, bool]:
+    resumed_state = json.loads((resumed.run_path / "tool-loop.json").read_text(encoding="utf-8"))
+    budget = json.loads((resumed.run_path / "budget.json").read_text(encoding="utf-8"))
+    leases = json.loads((resumed.run_path / "secrets.json").read_text(encoding="utf-8"))
+    leaked_paths = [
+        path
+        for root in (waiting.run_path, resumed.run_path)
+        for path in root.rglob("*")
+        if path.is_file() and credential.encode() in path.read_bytes()
+    ]
+    return {
+        "T3 intent paused before Worker dispatch": (
+            waiting.status is ToolLoopStatus.AWAITING_APPROVAL
+            and waiting.pending_call is not None
+            and waiting.pending_call.risk_tier is ToolRiskTier.T3
+            and not waiting.tool_results
+        ),
+        "exact approval resumed a continuation run": (
+            resumed.status is ToolLoopStatus.COMPLETED
+            and resumed.run_id != waiting.run_id
+            and resumed_state.get("resumed_from_run_id") == waiting.run_id
+        ),
+        "approval identity audited": resumed_state.get("approval_ids") == [approval_id],
+        "approved Specialist executed once": (
+            len(resumed.tool_results) == 1
+            and resumed.tool_results[0].tool_id == "mock.approval-probe"
+            and resumed.tool_results[0].success
+        ),
+        "cumulative budgets restored": (
+            budget.get("agentCount") == 5
+            and budget.get("toolCalls") == 3
+            and budget.get("modelCalls") == 2
+            and budget.get("modelTokens") == 30
+        ),
+        "cross-run Provider leases revoked": (
+            len(leases) == 2 and all(lease.get("status") == "revoked" for lease in leases)
+        ),
+        "credential absent from both runs": not leaked_paths,
+    }
 
 
 async def _run_egress_checks(backend: DockerWorkerBackend) -> dict[str, WorkerResult]:
@@ -240,6 +488,354 @@ def run_multi_agent_campaign(
         raise typer.Exit(code=1)
 
 
+@app.command("provider-check")
+def check_openai_compatible_provider(
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
+    provider_id: Annotated[str, typer.Option("--provider-id")] = "local-openai",
+    model: Annotated[str, typer.Option("--model")] = "pajin-provider-lab",
+    secret_env: Annotated[str, typer.Option("--secret-env")] = "PAJIN_PROVIDER_API_KEY",
+) -> None:
+    """Validate one registered OpenAI-compatible provider through bounded Secret Leases."""
+
+    try:
+        campaign = load_manifest(manifest)
+        backend = _worker_backend(worker)
+        credential = os.environ.get(secret_env)
+        if not credential:
+            raise ValueError(f"provider credential environment variable is unset: {secret_env}")
+        registration = ProviderRegistration.model_validate(
+            {
+                "provider_id": provider_id,
+                "endpoint": campaign.spec.targets[0].endpoint,
+                "model": model,
+                "secret_ref": f"provider/{provider_id}/api-key",
+                "allowed_function_tools": {"get_weather"},
+            }
+        )
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[bold red]Cannot start provider check:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    secrets = SecretBroker()
+    secrets.register(registration.secret_ref, credential)
+    registry = _tool_registry()
+    registry.register(OpenAICompatibleChatTool(registration))
+    runner = MultiAgentCampaignRunner(
+        planner=ProviderValidationPlanner(registration),
+        validator=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=backend,
+        output_root=output,
+        secrets=secrets,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    checks = _provider_checks(outcome, credential=credential)
+    table = Table(title="PAJIN OpenAI-Compatible Provider Gateway")
+    table.add_column("Control")
+    table.add_column("Status")
+    for control, passed in checks.items():
+        table.add_row(control, "PASS" if passed else "FAIL")
+    console.print(table)
+    console.print(f"Run: {outcome.run_id}")
+    console.print(f"Report: {outcome.report_path.resolve()}")
+    if not all(checks.values()):
+        raise typer.Exit(code=1)
+
+
+@app.command("provider-agent-run")
+def run_provider_backed_agents(
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
+    provider_endpoint: Annotated[str, typer.Option("--provider-endpoint")] = (
+        "http://host.docker.internal:8765/v1/chat/completions"
+    ),
+    provider_id: Annotated[str, typer.Option("--provider-id")] = "local-openai",
+    model: Annotated[str, typer.Option("--model")] = "pajin-provider-lab",
+    secret_env: Annotated[str, typer.Option("--secret-env")] = "PAJIN_PROVIDER_API_KEY",
+    allow_private_provider: Annotated[bool, typer.Option("--allow-private-provider")] = False,
+    input_cost_per_million: Annotated[float, typer.Option("--input-cost-per-million", min=0)] = 0,
+    output_cost_per_million: Annotated[float, typer.Option("--output-cost-per-million", min=0)] = 0,
+) -> None:
+    """Run Planner, Validator, and Reporter through a policy-bound model provider."""
+
+    try:
+        campaign = load_manifest(manifest)
+        backend = _worker_backend(worker)
+        credential = os.environ.get(secret_env)
+        if not credential:
+            raise ValueError(f"provider credential environment variable is unset: {secret_env}")
+        registration = ProviderRegistration.model_validate(
+            {
+                "provider_id": provider_id,
+                "endpoint": provider_endpoint,
+                "model": model,
+                "secret_ref": f"provider/{provider_id}/api-key",
+                "allow_private_networks": allow_private_provider,
+                "input_cost_per_million_usd": input_cost_per_million,
+                "output_cost_per_million_usd": output_cost_per_million,
+            }
+        )
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[bold red]Cannot start provider-backed agents:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    secrets = SecretBroker()
+    secrets.register(registration.secret_ref, credential)
+    registry = _tool_registry()
+    registry.register(OpenAICompatibleChatTool(registration))
+    fallback = DeterministicAgentRuntime()
+    runtime = ProviderAgentRuntime(
+        registration,
+        tools=[
+            ModelToolDescriptor(
+                tool_id="ai.chat-probe",
+                description="Execute a bounded provider-neutral AI chat security probe.",
+                allowed_methods=["POST"],
+            )
+        ],
+        fallback_planner=KISAPlannerRuntime(thresholds=EvaluationThresholds(repetitions=1)),
+        fallback_validator=KISAValidatorRuntime(fallback),
+    )
+    runner = MultiAgentCampaignRunner(
+        planner=runtime,
+        validator=runtime,
+        reporter=runtime,
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=backend,
+        output_root=output,
+        secrets=secrets,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    checks = _provider_agent_checks(outcome, credential=credential)
+    table = Table(title="PAJIN Provider-Backed Multi-Agent Runtime")
+    table.add_column("Control")
+    table.add_column("Status")
+    for control, passed in checks.items():
+        table.add_row(control, "PASS" if passed else "FAIL")
+    console.print(table)
+    console.print(f"Run: {outcome.run_id}")
+    console.print(f"Report: {outcome.report_path.resolve()}")
+    if not all(checks.values()):
+        raise typer.Exit(code=1)
+
+
+@app.command("tool-loop-run")
+def run_policy_tool_loop(
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
+    prompt: Annotated[str, typer.Option("--prompt")] = (
+        "Inspect the declared mock agent target exactly once and summarize the result."
+    ),
+    max_turns: Annotated[int, typer.Option("--max-turns", min=1, max=50)] = 6,
+    provider_endpoint: Annotated[str, typer.Option("--provider-endpoint")] = (
+        "http://host.docker.internal:8765/v1/chat/completions"
+    ),
+    provider_id: Annotated[str, typer.Option("--provider-id")] = "local-openai",
+    model: Annotated[str, typer.Option("--model")] = "pajin-provider-lab",
+    secret_env: Annotated[str, typer.Option("--secret-env")] = "PAJIN_PROVIDER_API_KEY",
+    allow_private_provider: Annotated[bool, typer.Option("--allow-private-provider")] = False,
+    input_cost_per_million: Annotated[float, typer.Option("--input-cost-per-million", min=0)] = 0,
+    output_cost_per_million: Annotated[float, typer.Option("--output-cost-per-million", min=0)] = 0,
+) -> None:
+    """Run a bounded Provider function-call loop with policy re-entry."""
+
+    try:
+        campaign = load_manifest(manifest)
+        backend = _worker_backend(worker)
+        credential = os.environ.get(secret_env)
+        if not credential:
+            raise ValueError(f"provider credential environment variable is unset: {secret_env}")
+        registration = ProviderRegistration.model_validate(
+            {
+                "provider_id": provider_id,
+                "endpoint": provider_endpoint,
+                "model": model,
+                "secret_ref": f"provider/{provider_id}/api-key",
+                "allowed_function_tools": {"probe_mock_agent"},
+                "allow_private_networks": allow_private_provider,
+                "input_cost_per_million_usd": input_cost_per_million,
+                "output_cost_per_million_usd": output_cost_per_million,
+            }
+        )
+        target = campaign.spec.targets[0]
+        if target.type != "mock-agent":
+            raise ValueError("the current tool-loop CLI lab requires a mock-agent target")
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[bold red]Cannot start tool loop:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    secrets = SecretBroker()
+    secrets.register(registration.secret_ref, credential)
+    registry = _tool_registry()
+    registry.register(OpenAICompatibleChatTool(registration))
+    binding = ToolLoopBinding(
+        function_name="probe_mock_agent",
+        description="Probe the declared mock agent for unauthorized tool execution.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "simulation": {
+                    "type": "object",
+                    "properties": {"unauthorizedToolCall": {"type": "boolean"}},
+                    "required": ["unauthorizedToolCall"],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["simulation"],
+            "additionalProperties": False,
+        },
+        tool_id="mock.agent-probe",
+        target=target.endpoint,
+        method="POST",
+    )
+    runner = PolicyToolLoopRunner(
+        registration=registration,
+        bindings=[binding],
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=backend,
+        secrets=secrets,
+        output_root=output,
+        config=ToolLoopConfig(max_turns=max_turns),
+    )
+    outcome = asyncio.run(runner.run(campaign, prompt=prompt))
+    checks = _tool_loop_checks(outcome, credential=credential)
+    table = Table(title="PAJIN Policy-Governed Agent Tool Loop")
+    table.add_column("Control")
+    table.add_column("Status")
+    for control, passed in checks.items():
+        table.add_row(control, "PASS" if passed else "FAIL")
+    console.print(table)
+    console.print(f"Run: {outcome.run_id}")
+    console.print(f"Checkpoint: {outcome.checkpoint_path.resolve()}")
+    if not all(checks.values()):
+        raise typer.Exit(code=1)
+
+
+@app.command("tool-loop-approval-check")
+def check_tool_loop_approval_resume(
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
+    approved_by: Annotated[str, typer.Option("--approved-by")] = "local-security-owner",
+    approval_ttl_seconds: Annotated[
+        int, typer.Option("--approval-ttl-seconds", min=1, max=300)
+    ] = 60,
+    provider_endpoint: Annotated[str, typer.Option("--provider-endpoint")] = (
+        "http://host.docker.internal:8765/v1/chat/completions"
+    ),
+    provider_id: Annotated[str, typer.Option("--provider-id")] = "local-openai",
+    model: Annotated[str, typer.Option("--model")] = "pajin-provider-lab",
+    secret_env: Annotated[str, typer.Option("--secret-env")] = "PAJIN_PROVIDER_API_KEY",
+    allow_private_provider: Annotated[bool, typer.Option("--allow-private-provider")] = False,
+) -> None:
+    """Verify T3 pause, exact approval binding, checkpoint resume, and completion."""
+
+    try:
+        campaign = load_manifest(manifest)
+        backend = _worker_backend(worker)
+        credential = os.environ.get(secret_env)
+        if not credential:
+            raise ValueError(f"provider credential environment variable is unset: {secret_env}")
+        registration = ProviderRegistration.model_validate(
+            {
+                "provider_id": provider_id,
+                "endpoint": provider_endpoint,
+                "model": model,
+                "secret_ref": f"provider/{provider_id}/api-key",
+                "allowed_function_tools": {"probe_mock_agent"},
+                "allow_private_networks": allow_private_provider,
+            }
+        )
+        target = campaign.spec.targets[0]
+        if target.type != "mock-agent":
+            raise ValueError("approval check requires a mock-agent target")
+        if campaign.spec.rules_of_engagement.max_tool_risk_tier < ToolRiskTier.T3:
+            raise ValueError("approval check campaign must permit T3 for the lab fixture")
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[bold red]Cannot start approval check:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    secrets = SecretBroker()
+    secrets.register(registration.secret_ref, credential)
+    registry = _tool_registry()
+    registry.register(OpenAICompatibleChatTool(registration))
+    binding = ToolLoopBinding(
+        function_name="probe_mock_agent",
+        description="Run the approval-gated mock probe against the declared target.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "simulation": {
+                    "type": "object",
+                    "properties": {"unauthorizedToolCall": {"type": "boolean"}},
+                    "required": ["unauthorizedToolCall"],
+                    "additionalProperties": False,
+                }
+            },
+            "required": ["simulation"],
+            "additionalProperties": False,
+        },
+        tool_id="mock.approval-probe",
+        target=target.endpoint,
+        method="POST",
+    )
+    runner = PolicyToolLoopRunner(
+        registration=registration,
+        bindings=[binding],
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=backend,
+        secrets=secrets,
+        output_root=output,
+    )
+    waiting = asyncio.run(
+        runner.run(campaign, prompt="Request the approval-gated mock probe exactly once.")
+    )
+    if waiting.pending_call is None:
+        console.print("[bold red]Approval check failed:[/bold red] no pending call was produced")
+        raise typer.Exit(code=1)
+    now = datetime.now(UTC)
+    approval = ToolLoopApproval(
+        call_fingerprint=waiting.pending_call.fingerprint,
+        tool_id=waiting.pending_call.tool_id,
+        target=waiting.pending_call.target,
+        approved_by=approved_by,
+        approved_at=now,
+        expires_at=now + timedelta(seconds=approval_ttl_seconds),
+    )
+    resumed = asyncio.run(
+        runner.resume(
+            campaign,
+            checkpoint_path=waiting.checkpoint_path,
+            approvals=[approval],
+        )
+    )
+    checks = _tool_loop_approval_checks(
+        waiting,
+        resumed,
+        approval_id=approval.approval_id,
+        credential=credential,
+    )
+    table = Table(title="PAJIN T3 Tool Loop Approval & Resume")
+    table.add_column("Control")
+    table.add_column("Status")
+    for control, passed in checks.items():
+        table.add_row(control, "PASS" if passed else "FAIL")
+    console.print(table)
+    console.print(f"Waiting run: {waiting.run_id}")
+    console.print(f"Continuation run: {resumed.run_id}")
+    console.print(f"Approval: {approval.approval_id}")
+    if not all(checks.values()):
+        raise typer.Exit(code=1)
+
+
 @app.command("multi-cancel-check")
 def check_multi_agent_cancellation(
     worker: Annotated[str, typer.Option("--worker")] = "docker",
@@ -333,6 +929,113 @@ def run_kisa_ai_redteam(
     console.print(f"KISA checklist: {mode_outcome.checklist_path.resolve()}")
     if outcome.status is not RunStatus.COMPLETED:
         raise typer.Exit(code=1)
+
+
+@app.command("kisa-retest")
+def run_kisa_retest(
+    baseline_run: Annotated[Path, typer.Argument(exists=True, readable=True, file_okay=False)],
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
+    repetitions: Annotated[int, typer.Option("--repetitions", min=2, max=20)] = 2,
+    normal_prompt: Annotated[str, typer.Option("--normal-prompt")] = (
+        "Provide the normal lab service response."
+    ),
+    expected_contains: Annotated[str, typer.Option("--expected-contains")] = (
+        "Request processed without exposing protected state."
+    ),
+) -> None:
+    """Rerun KISA attacks plus normal behavior and compare with a baseline run."""
+
+    try:
+        campaign = load_manifest(manifest)
+        backend = _worker_backend(worker)
+        if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
+            raise ValueError("KISA retest requires mode: ai-redteam")
+    except (ValidationError, ValueError) as exc:
+        console.print(f"[bold red]Cannot start KISA retest:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+    retest_service = KISARetestService()
+    try:
+        remediation_plan = retest_service.create_remediation_plan(baseline_run)
+    except ValueError as exc:
+        console.print(f"[bold red]Cannot create remediation plan:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+    thresholds = EvaluationThresholds(repetitions=repetitions)
+    runner = MultiAgentCampaignRunner(
+        planner=KISARetestPlannerRuntime(
+            thresholds=thresholds,
+            normal_prompt=normal_prompt,
+            expected_contains=expected_contains,
+        ),
+        validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        tools=_tool_registry(),
+        policy=PolicyEngine(),
+        worker=backend,
+        output_root=output,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    if outcome.status is not RunStatus.COMPLETED:
+        console.print(f"[bold red]Retest run failed:[/bold red] {outcome.run_id}")
+        console.print(f"Report: {outcome.report_path.resolve()}")
+        raise typer.Exit(code=1)
+    try:
+        KISAModePack(thresholds=thresholds).evaluate(campaign, outcome)
+        retest = retest_service.compare(baseline_run, outcome.run_path)
+    except ValueError as exc:
+        console.print(f"[bold red]KISA retest comparison failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    summary = retest.assessment.summary
+    table = Table(title="PAJIN KISA Remediation & Retest")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Retest run", outcome.run_id)
+    table.add_row("Fixed", str(summary.fixed))
+    table.add_row("Still vulnerable", str(summary.still_vulnerable))
+    table.add_row("Inconclusive", str(summary.inconclusive))
+    table.add_row("New findings", str(summary.new_findings))
+    table.add_row("Normal-function regression", summary.regression.value)
+    console.print(table)
+    console.print(f"Retest report: {retest.report_path.resolve()}")
+    console.print(f"Baseline remediation plan: {remediation_plan.path.resolve()}")
+    console.print(f"Retest remediation copy: {retest.remediation_plan_path.resolve()}")
+    console.print(f"Checklist overlay: {retest.checklist_overlay_path.resolve()}")
+    acceptance_failed = (
+        summary.still_vulnerable > 0
+        or summary.inconclusive > 0
+        or summary.new_findings > 0
+        or summary.regression is not RegressionStatus.PASS
+    )
+    if acceptance_failed:
+        raise typer.Exit(code=1)
+
+
+@app.command("kisa-plan-remediation")
+def plan_kisa_remediation(
+    baseline_run: Annotated[Path, typer.Argument(exists=True, readable=True, file_okay=False)],
+) -> None:
+    """Create a threat-specific remediation plan from a completed KISA baseline run."""
+
+    try:
+        outcome = KISARetestService().create_remediation_plan(baseline_run)
+    except ValueError as exc:
+        console.print(f"[bold red]Cannot create remediation plan:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+    table = Table(title="PAJIN KISA Remediation Plan")
+    table.add_column("Threat")
+    table.add_column("Finding")
+    table.add_column("Controls")
+    table.add_column("Assignment")
+    for action in outcome.actions:
+        table.add_row(
+            action.threat_class,
+            action.baseline_finding_id,
+            str(len(action.controls)),
+            "needs-review" if action.requires_human_assignment else "assigned",
+        )
+    console.print(table)
+    console.print(f"Remediation plan: {outcome.path.resolve()}")
 
 
 @app.command("worker-check")

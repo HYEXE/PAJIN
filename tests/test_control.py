@@ -19,6 +19,23 @@ def test_agent_depth_and_cost_budgets_fail_closed() -> None:
         budget.record_cost(0.01)
 
 
+def test_model_call_and_token_budgets_are_measured_separately() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    budgets = campaign.spec.budgets.model_copy(
+        update={"max_model_calls": 1, "max_model_tokens": 5, "max_cost_usd": 1}
+    )
+    budget = BudgetController(budgets)
+
+    budget.record_model_call()
+    budget.record_model_usage(prompt_tokens=2, completion_tokens=3, cost_usd=0.25)
+
+    assert budget.snapshot()["modelTokens"] == 5
+    with pytest.raises(BudgetExceeded, match="model-call"):
+        budget.check_model_call()
+    with pytest.raises(BudgetExceeded, match="model-token"):
+        budget.record_model_usage(prompt_tokens=1, completion_tokens=0, cost_usd=0)
+
+
 def test_elapsed_duration_budget_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
     campaign = load_manifest(Path("examples/multi-agent.yaml"))
     readings = iter((0.0, 121.0))

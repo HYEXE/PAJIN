@@ -4,13 +4,20 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypeVar
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
-from pajin.agents.base import PlannerRuntime, ValidatorRuntime
+from pajin.agents.base import (
+    AgentReportNarrative,
+    ModelBoundRuntime,
+    PlannerRuntime,
+    ReporterRuntime,
+    ValidatorRuntime,
+)
 from pajin.domain.models import (
     AgentPlan,
     CampaignManifest,
@@ -30,14 +37,26 @@ from pajin.domain.orchestration import (
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
+from pajin.providers.models import ProviderRegistration
+from pajin.providers.session import PolicyBoundProviderPort
 from pajin.reporting.markdown import render_markdown_report
 from pajin.runtime.control import BudgetController, BudgetExceeded, KillSwitch
+from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
 
 T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class _ModelAccess:
+    registration: ProviderRegistration
+    tool_id: str
+    endpoint: str
+    max_attempts: int
+    risk_tier: ToolRiskTier
 
 
 class MultiAgentRunOutcome(BaseModel):
@@ -63,17 +82,20 @@ class MultiAgentCampaignRunner:
         *,
         planner: PlannerRuntime,
         validator: ValidatorRuntime,
+        reporter: ReporterRuntime | None = None,
         tools: ToolRegistry,
         policy: PolicyEngine,
         worker: WorkerBackend,
         output_root: Path,
         kill_switch: KillSwitch | None = None,
         kill_after_tool_calls: int | None = None,
+        secrets: SecretBroker | None = None,
     ) -> None:
         if kill_after_tool_calls is not None and kill_after_tool_calls < 1:
             raise ValueError("kill_after_tool_calls must be at least one")
         self._planner = planner
         self._validator = validator
+        self._reporter = reporter
         self._tools = tools
         self._policy = policy
         self._worker = worker
@@ -81,6 +103,7 @@ class MultiAgentCampaignRunner:
         self._kill_switch = kill_switch or KillSwitch()
         self._kill_after_tool_calls = kill_after_tool_calls
         self._observed_tool_calls = 0
+        self._secrets = secrets or SecretBroker()
 
     async def run(self, campaign: CampaignManifest) -> MultiAgentRunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
@@ -100,11 +123,18 @@ class MultiAgentCampaignRunner:
 
         supervisor_id = self._agent_id(AgentRole.SUPERVISOR)
         budget.reserve_agent(depth=0)
+        model_endpoints = {
+            access.endpoint
+            for runtime in (self._planner, self._validator, self._reporter)
+            if runtime is not None
+            for access in [self._model_access(runtime)]
+            if access is not None
+        }
         root_grant = ledger.issue_root(
             campaign,
             subject=supervisor_id,
             tools=self._tools.tool_ids(),
-            targets={target.endpoint for target in campaign.spec.targets},
+            targets={target.endpoint for target in campaign.spec.targets} | model_endpoints,
         )
         supervisor = self._add_agent(
             store,
@@ -115,9 +145,17 @@ class MultiAgentCampaignRunner:
             grant=root_grant,
         )
         self._set_agent(store, supervisor, AgentStatus.RUNNING)
+        gateway = ToolGateway(
+            policy=self._policy,
+            tools=self._tools,
+            worker=self._worker,
+            store=store,
+            secrets=self._secrets,
+        )
 
         try:
             self._check_control(budget)
+            planner_access = self._model_access(self._planner)
             planner_agent = self._spawn_child(
                 store,
                 agents,
@@ -126,10 +164,22 @@ class MultiAgentCampaignRunner:
                 parent=supervisor,
                 parent_grant=root_grant,
                 role=AgentRole.PLANNER,
-                tools=set(),
-                targets=set(),
-                max_calls=0,
+                tools={planner_access.tool_id} if planner_access else set(),
+                targets={planner_access.endpoint} if planner_access else set(),
+                max_calls=planner_access.max_attempts if planner_access else 0,
+                max_risk_tier=planner_access.risk_tier if planner_access else ToolRiskTier.T0,
             )
+            if planner_access:
+                self._bind_model_runtime(
+                    self._planner,
+                    planner_access,
+                    campaign,
+                    planner_agent,
+                    ledger,
+                    budget,
+                    gateway,
+                    store,
+                )
             plan_task = TaskNode(
                 title="Create authorized campaign plan",
                 assigned_agent_id=planner_agent.agent_id,
@@ -139,6 +189,7 @@ class MultiAgentCampaignRunner:
             self._set_agent(store, planner_agent, AgentStatus.RUNNING)
             plan = await self._within_budget(self._planner.plan(campaign), budget)
             self._check_control(budget)
+            self._validate_plan_boundary(campaign, plan)
             self._task_transition(store, graph, plan_task.task_id, TaskStatus.SUCCEEDED)
             self._set_agent(store, planner_agent, AgentStatus.COMPLETED)
             store.write_json("plan.json", plan.model_dump(mode="json"))
@@ -202,12 +253,6 @@ class MultiAgentCampaignRunner:
             )
             graph.add(report_task)
 
-            gateway = ToolGateway(
-                policy=self._policy,
-                tools=self._tools,
-                worker=self._worker,
-                store=store,
-            )
             for task in specialist_tasks:
                 if self._check_control(budget, raise_on_cancel=False):
                     break
@@ -227,6 +272,7 @@ class MultiAgentCampaignRunner:
             if self._check_control(budget, raise_on_cancel=False):
                 raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
 
+            validator_access = self._model_access(self._validator)
             validator_agent = self._spawn_child(
                 store,
                 agents,
@@ -235,10 +281,22 @@ class MultiAgentCampaignRunner:
                 parent=supervisor,
                 parent_grant=root_grant,
                 role=AgentRole.VALIDATOR,
-                tools=set(),
-                targets=set(),
-                max_calls=0,
+                tools={validator_access.tool_id} if validator_access else set(),
+                targets={validator_access.endpoint} if validator_access else set(),
+                max_calls=validator_access.max_attempts if validator_access else 0,
+                max_risk_tier=(validator_access.risk_tier if validator_access else ToolRiskTier.T0),
             )
+            if validator_access:
+                self._bind_model_runtime(
+                    self._validator,
+                    validator_access,
+                    campaign,
+                    validator_agent,
+                    ledger,
+                    budget,
+                    gateway,
+                    store,
+                )
             validation_task.assigned_agent_id = validator_agent.agent_id
             self._task_transition(store, graph, validation_task.task_id, TaskStatus.RUNNING)
             self._set_agent(store, validator_agent, AgentStatus.RUNNING)
@@ -252,6 +310,7 @@ class MultiAgentCampaignRunner:
                 "findings.json", [finding.model_dump(mode="json") for finding in findings]
             )
 
+            reporter_access = self._model_access(self._reporter) if self._reporter else None
             reporter_agent = self._spawn_child(
                 store,
                 agents,
@@ -260,13 +319,32 @@ class MultiAgentCampaignRunner:
                 parent=supervisor,
                 parent_grant=root_grant,
                 role=AgentRole.REPORTER,
-                tools=set(),
-                targets=set(),
-                max_calls=0,
+                tools={reporter_access.tool_id} if reporter_access else set(),
+                targets={reporter_access.endpoint} if reporter_access else set(),
+                max_calls=reporter_access.max_attempts if reporter_access else 0,
+                max_risk_tier=(reporter_access.risk_tier if reporter_access else ToolRiskTier.T0),
             )
+            if reporter_access and self._reporter is not None:
+                self._bind_model_runtime(
+                    self._reporter,
+                    reporter_access,
+                    campaign,
+                    reporter_agent,
+                    ledger,
+                    budget,
+                    gateway,
+                    store,
+                )
             report_task.assigned_agent_id = reporter_agent.agent_id
             self._task_transition(store, graph, report_task.task_id, TaskStatus.RUNNING)
             self._set_agent(store, reporter_agent, AgentStatus.RUNNING)
+            narrative: AgentReportNarrative | None = None
+            if self._reporter is not None:
+                narrative = await self._within_budget(
+                    self._reporter.report(campaign, plan, results, findings),
+                    budget,
+                )
+                store.write_json("model-narrative.json", narrative.model_dump(mode="json"))
             final_status = (
                 RunStatus.FAILED
                 if any(task.status is TaskStatus.FAILED for task in specialist_tasks)
@@ -289,6 +367,7 @@ class MultiAgentCampaignRunner:
                 report_graph,
                 budget,
                 final_status,
+                narrative,
             )
             report_relative = store.write_text("report.md", report)
             self._task_transition(store, graph, report_task.task_id, TaskStatus.SUCCEEDED)
@@ -431,6 +510,73 @@ class MultiAgentCampaignRunner:
                 "task.retry_scheduled",
                 {"taskId": task.task_id, "attempt": task.attempts + 1},
             )
+
+    def _model_access(self, runtime: object) -> _ModelAccess | None:
+        if not isinstance(runtime, ModelBoundRuntime):
+            return None
+        registration = ProviderRegistration.model_validate(runtime.model_provider_registration)
+        tool_id = f"provider.{registration.provider_id}.chat"
+        endpoint = str(registration.endpoint)
+        if runtime.model_provider_tool_id != tool_id:
+            raise ValueError("model runtime tool ID differs from provider registration")
+        if runtime.model_provider_endpoint != endpoint:
+            raise ValueError("model runtime endpoint differs from provider registration")
+        if not 1 <= runtime.model_max_attempts <= 3:
+            raise ValueError("model runtime attempts must be between one and three")
+        spec = self._tools.spec(tool_id)
+        if "model-provider" not in spec.categories:
+            raise ValueError("model runtime tool is not registered as a provider")
+        return _ModelAccess(
+            registration=registration,
+            tool_id=tool_id,
+            endpoint=endpoint,
+            max_attempts=runtime.model_max_attempts,
+            risk_tier=spec.risk_tier,
+        )
+
+    @staticmethod
+    def _bind_model_runtime(
+        runtime: object,
+        access: _ModelAccess,
+        campaign: CampaignManifest,
+        agent: AgentNode,
+        ledger: CapabilityLedger,
+        budget: BudgetController,
+        gateway: ToolGateway,
+        store: RunStore,
+    ) -> None:
+        if not isinstance(runtime, ModelBoundRuntime):
+            raise TypeError("runtime does not support a policy-bound model port")
+        grant = ledger.record(agent.capability_grant_id).grant
+        runtime.bind_model_port(
+            PolicyBoundProviderPort(
+                registration=access.registration,
+                campaign=campaign,
+                grant=grant,
+                ledger=ledger,
+                budget=budget,
+                gateway=gateway,
+                store=store,
+            )
+        )
+
+    def _validate_plan_boundary(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+    ) -> None:
+        declared_targets = {target.endpoint for target in campaign.spec.targets}
+        for step in plan.steps:
+            if step.request.target not in declared_targets:
+                raise CapabilityError("planner selected an undeclared campaign target")
+            try:
+                spec = self._tools.spec(step.request.tool_id)
+            except KeyError as exc:
+                raise CapabilityError(
+                    f"planner requested unregistered tool: {step.request.tool_id}"
+                ) from exc
+            if "model-provider" in spec.categories:
+                raise CapabilityError("planner cannot assign the control-plane provider tool")
 
     def _spawn_child(
         self,
@@ -670,6 +816,15 @@ class MultiAgentCampaignRunner:
             "capability.revoked",
             {"rootGrantId": root_grant_id, "revokedGrantIds": revoked, "reason": reason},
         )
+        secret_leases = self._secrets.revoke_all(reason)
+        if secret_leases:
+            store.append_event(
+                "secret.leases.revoked",
+                {
+                    "leaseIds": [lease.lease_id for lease in secret_leases],
+                    "reason": reason,
+                },
+            )
 
     def _write_state(
         self,
@@ -686,6 +841,7 @@ class MultiAgentCampaignRunner:
         store.write_json("capabilities.json", ledger.snapshot())
         store.write_json("budget.json", budget.snapshot())
         store.write_json("control.json", self._kill_switch.snapshot().model_dump(mode="json"))
+        store.write_json("secrets.json", self._secrets.snapshot())
 
     @staticmethod
     def _render_report(
@@ -698,6 +854,7 @@ class MultiAgentCampaignRunner:
         graph: TaskGraph,
         budget: BudgetController,
         status: RunStatus,
+        narrative: AgentReportNarrative | None = None,
     ) -> str:
         base = render_markdown_report(campaign, run_id, plan, results, findings).rstrip()
         lines = [base, "", "## Multi-Agent Execution", ""]
@@ -722,6 +879,25 @@ class MultiAgentCampaignRunner:
             lines.append(
                 f"- `{task.task_id}` — **{task.status.value}** — {task.title} "
                 f"(depends on: {dependencies})"
+            )
+        if narrative is not None:
+            lines.extend(
+                [
+                    "",
+                    "## Model-generated Narrative",
+                    "",
+                    narrative.summary,
+                    "",
+                    f"Risk overview: {narrative.risk_overview}",
+                    "",
+                    "### Recommendations",
+                    "",
+                    *[f"- {item}" for item in narrative.recommendations],
+                    "",
+                    "### Narrative limitations",
+                    "",
+                    *[f"- {item}" for item in narrative.limitations],
+                ]
             )
         return "\n".join(lines) + "\n"
 

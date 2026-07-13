@@ -64,6 +64,18 @@ class MockAgentProbe(Tool):
         )
 
 
+class ApprovalCheckTool(MockAgentProbe):
+    """Safe lab fixture classified T3 to verify explicit approval handling."""
+
+    spec = ToolSpec(
+        tool_id="mock.approval-probe",
+        version="1.0.0",
+        description="Approval-gated mock probe used only to verify T3 workflow controls",
+        risk_tier=ToolRiskTier.T3,
+        categories={"active-test", "approval-verification"},
+    )
+
+
 class SleepCheckTool(Tool):
     """Bounded verification tool used to exercise cooperative campaign cancellation."""
 

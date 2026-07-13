@@ -122,6 +122,13 @@ class Budgets(StrictModel):
     max_agents: int = Field(default=4, alias="maxAgents", ge=1, le=100)
     max_spawn_depth: int = Field(default=1, alias="maxSpawnDepth", ge=0, le=10)
     max_tool_calls: int = Field(default=100, alias="maxToolCalls", ge=1, le=1_000_000)
+    max_model_calls: int = Field(default=20, alias="maxModelCalls", ge=0, le=100_000)
+    max_model_tokens: int = Field(
+        default=1_000_000,
+        alias="maxModelTokens",
+        ge=0,
+        le=1_000_000_000,
+    )
 
 
 class CampaignSpec(StrictModel):
