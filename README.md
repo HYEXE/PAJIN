@@ -26,6 +26,11 @@ plus a Markdown report.
 - Explicit deny scope takes precedence over allow scope.
 - Authorization, capability, risk tier, method, and call budgets are checked before execution.
 - Unregistered tools are rejected before Worker dispatch.
+- Provider endpoints, model IDs, function-tool allowlists, and credential references are fixed by
+  trusted registration; an Agent cannot override them in a chat request.
+- Provider credentials are materialized through audience-bound, single-use Secret Leases and enter
+  the Worker only through its stdin envelope, never Docker arguments, environment variables, Job
+  metadata, events, or evidence.
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
 - A result cannot be reported as confirmed unless the validator marks it as validated.
 
@@ -85,6 +90,249 @@ personnel, business-impact, remediation, and lifecycle-governance questions are 
 technical execution evidence. The generated report supports an assessment; it is not a compliance
 certification.
 
+### Provider-neutral AI Chat/RAG lab
+
+PAJIN defines a fixed, provider-neutral chat contract for authorized AI application targets. The
+registered `ai.chat-probe` Tool can send only bounded POST conversations selected from the KISA
+scenario catalog; it cannot inject arbitrary process commands or grant itself network access. The
+Tool Gateway derives egress from Campaign Scope, and the independent Validator rechecks the raw
+transcript instead of trusting the Tool's vulnerability flag.
+
+Build and start the intentionally vulnerable local target, then run the M03, M06, and A04 campaign:
+
+```powershell
+docker build --tag pajin-worker:dev containers/worker
+docker compose -f containers/compose.ai-lab.yaml up --build --detach
+.venv\Scripts\pajin kisa-run examples\kisa-ai-chat-lab.yaml --worker docker --repetitions 2
+docker compose -f containers/compose.ai-lab.yaml down
+```
+
+The six Specialist Tasks use unique session IDs and cover system-prompt disclosure, jailbreak
+policy bypass, and persistent memory poisoning. The lab binds only to `127.0.0.1:8765`, runs as a
+non-root user with a read-only filesystem and no Linux capabilities, and is not a production AI
+service.
+
+### Remediation and retest loop
+
+Create the remediation plan from a completed vulnerable baseline before applying the change:
+
+```powershell
+.venv\Scripts\pajin kisa-plan-remediation <baseline-run-directory>
+```
+
+After the owner applies the planned controls, recreate the lab with its hardened profile and run
+the same attacks plus two normal-function checks:
+
+```powershell
+docker compose -f containers/compose.ai-lab.yaml `
+  -f containers/compose.ai-lab.hardened.yaml up --detach --force-recreate
+.venv\Scripts\pajin kisa-retest <baseline-run-directory> `
+  examples\kisa-ai-chat-lab.yaml --worker docker --repetitions 2
+docker compose -f containers/compose.ai-lab.yaml `
+  -f containers/compose.ai-lab.hardened.yaml down
+```
+
+`kisa-retest` classifies each baseline Finding as `fixed`, `still-vulnerable`, or `inconclusive`,
+reports any new Finding, and evaluates normal-function regression separately from attack metrics.
+A Finding is `fixed` only when the repeated attack calls succeeded and every result lacked the
+original compromise signal. Missing or failed evidence produces `inconclusive`. The command exits
+non-zero when a Finding remains, evidence is inconclusive, a new Finding appears, or regression
+fails.
+
+The retest run adds `remediation-plan.json`, `kisa-retest.json`,
+`kisa-checklist-overlay.json`, and `kisa-retest-report.md`. The overlay supersedes only five
+evidence-backed KISA items; owner assignment, due dates, and operational adoption remain human
+review items.
+
+## OpenAI-compatible Provider Gateway
+
+PAJIN uses a provider-neutral message and result contract at the Agent boundary. A trusted
+`ProviderRegistration` fixes the Chat Completions endpoint, model, credential reference, streaming
+permission, and allowed function names. The Worker translates that contract to an OpenAI-compatible
+`POST /chat/completions` request and normalizes either a JSON response or data-only SSE stream.
+Function-call argument fragments are assembled and parsed as JSON, but the Provider Gateway never
+executes the requested function; a separately registered PAJIN Tool and Capability Grant would be
+required for execution.
+
+Run the authenticated local validation target and four-Specialist campaign:
+
+```powershell
+docker build --tag pajin-worker:dev containers/worker
+docker build --tag pajin-egress-proxy:dev containers/egress-proxy
+docker compose -f containers/compose.ai-lab.yaml up --build --detach
+$env:PAJIN_PROVIDER_API_KEY='pajin-local-credential-v1' # public local fixture only
+.venv\Scripts\pajin provider-check examples\provider-openai-compatible-lab.yaml --worker docker
+Remove-Item Env:PAJIN_PROVIDER_API_KEY
+docker compose -f containers/compose.ai-lab.yaml down
+```
+
+`provider-check` validates authentication, non-streaming text, SSE text, streamed function calls,
+credential redaction, Lease issuance/revocation, and the absence of the raw credential from every
+run artifact. For a real provider, place its credential in the selected environment variable only;
+do not add it to a Campaign manifest or provider registration file. The current in-memory broker is
+a local runtime boundary, not a production secret manager; a deployment should source values from
+a platform vault and isolate the supervisor process accordingly.
+
+### Provider-backed Planner, Validator, and Reporter
+
+`provider-agent-run` connects the registered Provider Gateway to the three reasoning roles without
+giving them offensive execution authority. Each role receives a distinct developer prompt, a
+strict JSON Schema, and an attenuated Capability containing only the exact Provider Tool and
+endpoint. Campaign, plan, result, and finding data are supplied as untrusted user content. The
+Supervisor validates model-created plans again before Specialist creation and rejects undeclared
+targets, Provider control-plane tools, unregistered tools, and unregistered methods.
+
+Run the complete model-driven M03 lab:
+
+```powershell
+docker compose -f containers/compose.ai-lab.yaml up --build --detach
+$env:PAJIN_PROVIDER_API_KEY='pajin-local-credential-v1' # public local fixture only
+.venv\Scripts\pajin provider-agent-run examples\provider-agent-lab.yaml `
+  --worker docker --allow-private-provider
+Remove-Item Env:PAJIN_PROVIDER_API_KEY
+docker compose -f containers/compose.ai-lab.yaml down
+```
+
+The flow is Provider Planner → isolated `ai.chat-probe` Specialist → Provider Validator → Provider
+Reporter. Validator findings are still accepted only when they cite evidence produced by a
+Specialist in the same run. Reporter output is stored separately in `model-narrative.json` and is
+appended as a clearly subordinate section; it cannot alter canonical findings or execution state.
+
+`maxModelCalls` and `maxModelTokens` bound model usage independently, while actual token usage and
+registration-supplied per-million token rates contribute to `maxCostUsd`. Provider failures,
+refusals, and schema errors retry at most twice before deterministic fallback. Duration, Capability,
+token, and cost exhaustion never activate fallback and terminate the campaign instead.
+Private Provider destinations are denied unless `--allow-private-provider` is explicitly supplied.
+For billable Providers, configure `--input-cost-per-million` and `--output-cost-per-million` from
+the Provider's trusted pricing configuration.
+
+### Policy-governed iterative Tool Loop
+
+`tool-loop-run` exposes strict function definitions to the Provider but treats every returned call
+as an untrusted intent. Parallel calls are disabled. The Supervisor maps the function name to one
+fixed PAJIN Tool, target, method, and JSON Schema; rejects unknown, invalid, parallel, or duplicate
+calls; then creates a new Specialist with a one-call Capability. Only the Specialist result is sent
+back as a `tool` message with the original call ID. The Provider may then return a final response or
+request another bounded turn.
+
+Run the two-turn local loop:
+
+```powershell
+docker compose -f containers/compose.ai-lab.yaml up --build --detach
+$env:PAJIN_PROVIDER_API_KEY='pajin-local-credential-v1' # public local fixture only
+.venv\Scripts\pajin tool-loop-run examples\tool-loop-lab.yaml `
+  --worker docker --allow-private-provider
+Remove-Item Env:PAJIN_PROVIDER_API_KEY
+docker compose -f containers/compose.ai-lab.yaml down
+```
+
+Every transition writes a versioned checkpoint containing conversation state, call fingerprints,
+pending intent, Tool results, and cumulative budget usage, but no credential. Resumption creates a
+linked continuation run and restores Agent, Tool, Model, token, cost, and elapsed-time usage.
+
+T3 and T4 intents never dispatch a Worker without an exact, active approval bound to the call
+fingerprint, Tool ID, and target. The local approval check first proves the T3 intent is paused with
+zero Tool results, then supplies an explicit approval and resumes from that checkpoint:
+
+```powershell
+docker compose -f containers/compose.ai-lab.yaml up --detach
+$env:PAJIN_PROVIDER_API_KEY='pajin-local-credential-v1'
+.venv\Scripts\pajin tool-loop-approval-check examples\tool-loop-approval-lab.yaml `
+  --worker docker --allow-private-provider --approved-by local-security-owner
+Remove-Item Env:PAJIN_PROVIDER_API_KEY
+docker compose -f containers/compose.ai-lab.yaml down
+```
+
+`mock.approval-probe` performs only the safe mock operation but is classified T3 specifically to
+exercise approval controls. Production approvals must come from an authenticated external control
+plane; the lab CLI identity is verification data, not production authentication.
+
+## Durable Control Plane
+
+The optional Control Plane adds authenticated FastAPI endpoints and a PostgreSQL durable Job queue
+without replacing the existing file-backed CLI. Run submission is idempotent, Worker claims use
+bounded leases and heartbeats, crashed leases are requeued, and every transition appends an audit
+event. PostgreSQL rejects update or delete attempts against the event table.
+
+T3/T4 checkpoint creation records the exact call fingerprint, Tool, target, tier, and expiry. The
+checkpoint payload is signed with a key kept outside the database. Only an Approver credential can
+decide the request; only an Operator can consume an approved decision. Resume verifies the stored
+payload and signature before atomically claiming the checkpoint and creating one continuation Job.
+
+Install the optional server dependencies and run locally with SQLite:
+
+```powershell
+.venv\Scripts\python -m pip install -e ".[dev,control-plane]"
+$env:PAJIN_CP_DATABASE_URL='sqlite:///./.pajin/control-plane.db'
+$env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
+$env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
+$env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
+$env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+.venv\Scripts\pajin-control-plane
+```
+
+SQLite is a local compatibility store, not a production multi-Worker queue. Run the PostgreSQL lab
+on loopback instead:
+
+```powershell
+docker compose -f containers/compose.control-plane.yaml up --build --detach --wait
+$env:PAJIN_TEST_POSTGRES_URL=`
+  'postgresql+psycopg://pajin:pajin-control-plane-lab-password@127.0.0.1:55432/pajin_test'
+.venv\Scripts\pytest -q tests/test_control_plane_postgres.py
+Remove-Item Env:PAJIN_TEST_POSTGRES_URL
+docker compose -f containers/compose.control-plane.yaml down --volumes
+```
+
+The Compose credentials are public fixtures for an isolated local lab. Production deployment must
+use a secret manager, TLS termination, network isolation, distinct role credentials, a separately
+held signing key, database backups, and managed schema migrations. See
+[`ADR 0011`](docs/adr/0011-durable-control-plane.md) for state and threat-boundary details.
+
+### Lease-aware Worker daemon
+
+`pajin-worker-daemon` turns queued Control Plane Jobs into existing PAJIN engine runs. It keeps one
+bounded async HTTP connection pool, claims only configured Job kinds, heartbeats throughout execution
+and finalization, retries transient completion calls, and cancels execution if the lease becomes
+stale. Authentication rejection is fatal. SIGTERM stops new claims and drains the active Job.
+
+The initial trusted registry contains:
+
+- `campaign`: strict embedded Campaign manifest → deterministic `LocalCampaignRunner`
+- `tool-loop`: strict embedded Campaign and prompt → real `PolicyToolLoopRunner`
+
+No Job field can name a command, Python module, class, executable, or arbitrary manifest path.
+Unknown kinds and invalid payloads fail closed. The Docker Tool Loop uses a no-network deterministic
+Provider fixture and safe T3 mock Tool, while retaining Provider Gateway, Secret Lease, Capability,
+policy, checkpoint, and approval behavior.
+
+The Control Plane Compose stack starts PostgreSQL, the API, and one non-root Worker daemon:
+
+```powershell
+docker compose -f containers/compose.control-plane.yaml up --detach --no-build --wait
+$env:PAJIN_TEST_CONTROL_PLANE_URL='http://127.0.0.1:18090'
+.venv\Scripts\pytest -q tests/test_worker_daemon_live.py
+Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
+docker compose -f containers/compose.control-plane.yaml down --volumes
+```
+
+The live test submits a Tool Loop Job, waits for the daemon to upload its T3 checkpoint, approves it,
+resumes it, and verifies the continuation Job completed through the real Tool Loop adapter. The
+opt-in crash test additionally kills only the isolated lab Worker container and verifies PostgreSQL
+lease recovery:
+
+```powershell
+$env:PAJIN_TEST_CONTROL_PLANE_URL='http://127.0.0.1:18090'
+$env:PAJIN_TEST_WORKER_CRASH_CONTAINER='containers-worker-daemon-1'
+.venv\Scripts\pytest -q tests/test_worker_daemon_crash_live.py
+Remove-Item Env:PAJIN_TEST_WORKER_CRASH_CONTAINER
+Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
+```
+
+Job delivery is at least once. A crash after an external Tool side effect but before durable
+completion can replay that Tool, so production adapters must propagate destination idempotency keys
+or make replay risk an explicit policy/approval decision. Compose artifacts use tmpfs and are not a
+durable evidence store. See [`ADR 0012`](docs/adr/0012-lease-aware-worker-daemon.md).
+
 ## Dynamic multi-agent engine
 
 Run the deterministic five-role team through the simulated or Docker Worker:
@@ -94,11 +342,12 @@ Run the deterministic five-role team through the simulated or Docker Worker:
 .venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker docker
 ```
 
-The Supervisor creates one Specialist per planned step, while Planner, Validator, and Reporter have
-zero tool-call authority. Tasks form an explicit dependency graph. T0/T1 failures may retry once
-within the same grant; higher-risk tools are never retried automatically. The independent Validator
-can confirm a finding only when its target is declared and every cited artifact was produced by a
-Specialist in the same run.
+The Supervisor creates one Specialist per planned step. Deterministic Planner, Validator, and
+Reporter roles have zero tool-call authority; provider-backed roles receive only their registered
+Provider Tool and endpoint. Tasks form an explicit dependency graph. T0/T1 Specialist failures may
+retry once within the same grant; higher-risk tools are never retried automatically. The
+independent Validator can confirm a finding only when its target is declared and every cited
+artifact was produced by a Specialist in the same run.
 
 Verify live Kill Switch propagation into a running Worker:
 
@@ -222,4 +471,6 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0002](docs/adr/0002-tool-gateway-and-worker-isolation.md), and
 [ADR-0003](docs/adr/0003-egress-proxy-and-mcp-boundary.md), and
 [ADR-0004](docs/adr/0004-dynamic-multi-agent-execution.md), and
-[ADR-0005](docs/adr/0005-kisa-ai-red-team-mode-pack.md).
+[ADR-0005](docs/adr/0005-kisa-ai-red-team-mode-pack.md), and
+[ADR-0006](docs/adr/0006-provider-neutral-ai-chat-probe.md), and
+[ADR-0007](docs/adr/0007-kisa-remediation-and-retest-loop.md).
