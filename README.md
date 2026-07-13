@@ -578,8 +578,11 @@ Run the deterministic five-role team through the simulated or Docker Worker:
 The Supervisor creates one Specialist per planned step. Deterministic Planner, Validator, and
 Reporter roles have zero tool-call authority; provider-backed roles receive only their registered
 Provider Tool and endpoint. Tasks form an explicit dependency graph. T0/T1 Specialist failures may
-retry once within the same grant; higher-risk tools are never retried automatically. The
-independent Validator can confirm a finding only when its target is declared and every cited
+retry once within the same grant only when a retry slot was assigned. After planning, the Supervisor
+first reserves the maximum downstream calls for model-backed Validator and Reporter roles, then one
+call for every Specialist. Remaining calls are assigned in plan order as at most one retry for each
+T0/T1 task. A plan that cannot fund every first Specialist attempt fails before partial fan-out.
+The independent Validator can confirm a finding only when its target is declared and every cited
 artifact was produced by a Specialist in the same run.
 
 Verify live Kill Switch propagation into a running Worker:

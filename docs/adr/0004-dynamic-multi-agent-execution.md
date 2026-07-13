@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Call-budget allocation amended by: ADR 0020
 
 ## Context
 
