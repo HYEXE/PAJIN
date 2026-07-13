@@ -36,6 +36,8 @@ plus a Markdown report.
   metadata, events, or evidence.
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
 - A result cannot be reported as confirmed unless the validator marks it as validated.
+- Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
+  append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
 ## Development setup
 
@@ -572,12 +574,36 @@ plan.json
 findings.json
 report.md
 evidence/
+run-integrity.jsonl
 agents.json
 task-graph.json
 capabilities.json
 budget.json
 control.json
 ```
+
+## Evidence integrity verification
+
+Every completed local Run writes `run-integrity.jsonl`. Each seal binds its new artifact paths,
+byte sizes, media types, SHA-256 digests, available request/Tool/Worker provenance, the current Audit
+Event chain head, and the previous seal root. Core execution produces the first seal; KISA
+assessment, remediation/retest, Bug Bounty triage, and direct Tool Loop checkpoint claims append
+extension seals after verifying the current root.
+
+Verify a Run before consuming or transferring its evidence:
+
+```powershell
+.venv\Scripts\pajin evidence-verify <run-directory>
+```
+
+Verification fails on changed or missing sealed files, unsealed file additions, reordered or edited
+Audit Events, invalid seal links, and appended events without a matching extension seal. A sealed
+artifact cannot be overwritten through `RunStore`.
+
+The root digest provides deterministic local tamper detection, not signer identity or protection
+from a privileged actor who can replace the Run and every externally unanchored digest. Production
+deployment should publish the displayed root to an independent signed transparency or object-store
+record.
 
 ## Test and lint
 
@@ -604,4 +630,5 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0007](docs/adr/0007-kisa-remediation-and-retest-loop.md), and
 [ADR-0013](docs/adr/0013-bug-bounty-scope-parser.md), and
 [ADR-0014](docs/adr/0014-conservative-bug-bounty-deduplication.md), and
-[ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md).
+[ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md), and
+[ADR-0016](docs/adr/0016-tamper-evident-run-integrity.md).
