@@ -1,7 +1,15 @@
 """Local execution state and evidence storage."""
 
 from pajin.runtime.secrets import SecretBroker, SecretLease, SecretLeaseStatus
-from pajin.runtime.store import AuditEvent, RunStore
+from pajin.runtime.store import (
+    AuditEvent,
+    RunIntegrityError,
+    RunIntegritySeal,
+    RunIntegrityVerification,
+    RunStore,
+    SealedArtifact,
+    verify_run_integrity,
+)
 from pajin.runtime.worker import (
     DockerWorkerBackend,
     EgressPolicy,
@@ -20,7 +28,11 @@ __all__ = [
     "DockerWorkerBackend",
     "EgressPolicy",
     "NetworkMode",
+    "RunIntegrityError",
+    "RunIntegritySeal",
+    "RunIntegrityVerification",
     "RunStore",
+    "SealedArtifact",
     "SecretBroker",
     "SecretLease",
     "SecretLeaseStatus",
@@ -31,4 +43,5 @@ __all__ = [
     "WorkerResult",
     "WorkerSecretRequest",
     "WorkerStatus",
+    "verify_run_integrity",
 ]

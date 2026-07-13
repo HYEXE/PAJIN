@@ -19,7 +19,7 @@ from pajin.modes.ai_redteam.models import (
     ChecklistStatus,
     KISAAssessment,
 )
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunStore, verify_run_integrity
 
 
 class RetestFindingStatus(StrEnum):
@@ -170,6 +170,7 @@ class KISARetestService:
                 ),
             },
         )
+        store.seal()
         return KISARemediationPlanOutcome(
             baseline_run_id=baseline.run_id,
             actions=actions,
@@ -290,6 +291,7 @@ class KISARetestService:
                 "regression": summary.regression.value,
             },
         )
+        store.seal()
         return KISARetestOutcome(
             assessment=assessment,
             assessment_path=retest.path / assessment_path,
@@ -315,6 +317,7 @@ class KISARetestService:
     @staticmethod
     def _load_snapshot(path: Path) -> _RunSnapshot:
         resolved = path.resolve()
+        verify_run_integrity(resolved)
         required = {
             "run.json",
             "campaign.json",

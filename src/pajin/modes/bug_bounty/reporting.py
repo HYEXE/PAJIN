@@ -29,7 +29,7 @@ from pajin.modes.bug_bounty.models import (
 )
 from pajin.modes.bug_bounty.service import BugBountyScopeService
 from pajin.policy.scope import normalize_target_url, scope_matches
-from pajin.runtime.store import AuditEvent, RunStore
+from pajin.runtime.store import AuditEvent, RunStore, verify_run_integrity
 
 
 class KnownFindingStatus(StrEnum):
@@ -241,6 +241,7 @@ class BugBountyReportService:
                 "runDuplicates": summary.run_duplicates,
             },
         )
+        store.seal()
         return BugBountyReportArtifacts(
             directory=directory,
             triage_path=snapshot.path / triage_relative,
@@ -529,6 +530,7 @@ class BugBountyReportService:
         run_path: Path,
     ) -> _RunSnapshot:
         resolved = run_path.resolve()
+        verify_run_integrity(resolved)
         required = {"campaign.json", "events.jsonl", "findings.json", "evidence"}
         missing = [name for name in required if not (resolved / name).exists()]
         if missing:

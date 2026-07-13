@@ -103,6 +103,7 @@ class LocalCampaignRunner:
         report = render_markdown_report(campaign, store.run_id, plan, results, confirmed)
         report_relative_path = store.write_text("report.md", report)
         store.append_event("campaign.completed", {"report": report_relative_path})
+        store.seal()
         return RunOutcome(
             run_id=store.run_id,
             run_path=store.path,

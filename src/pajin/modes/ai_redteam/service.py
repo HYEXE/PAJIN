@@ -22,7 +22,7 @@ from pajin.modes.ai_redteam.models import (
     MetricStatus,
     ThreatCoverageResult,
 )
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.workflow.multi_agent import MultiAgentRunOutcome
 
 
@@ -55,6 +55,7 @@ class KISAModePack:
     ) -> KISAModePackOutcome:
         if outcome.plan is None:
             raise ValueError("KISA evaluation requires a completed typed plan")
+        verify_run_integrity(outcome.run_path)
         store = RunStore(outcome.run_id, outcome.run_path)
         scenario_ids = list(
             dict.fromkeys(
@@ -105,6 +106,7 @@ class KISAModePack:
             "task-graph.json",
             "capabilities.json",
             "events.jsonl",
+            "run-integrity.jsonl",
             "evidence/",
             "findings.json",
         ]
@@ -152,6 +154,7 @@ class KISAModePack:
                 "coverageRate": coverage.coverage_rate,
             },
         )
+        store.seal()
         return KISAModePackOutcome(
             assessment=assessment,
             report_path=outcome.run_path / report_path,

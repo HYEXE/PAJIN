@@ -21,6 +21,7 @@ from pajin.modes.ai_redteam.runtime import (
 )
 from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.policy.engine import PolicyEngine
+from pajin.runtime.store import RunIntegrityError
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
 from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
@@ -227,7 +228,7 @@ def test_retest_keeps_validated_findings_open(tmp_path: Path) -> None:
     assert result.assessment.summary.regression is RegressionStatus.PASS
 
 
-def test_retest_does_not_claim_fixed_when_repeat_evidence_is_missing(
+def test_retest_rejects_run_when_sealed_repeat_evidence_is_missing(
     tmp_path: Path,
 ) -> None:
     baseline, _ = _run(tmp_path, retest=False, vulnerable=True)
@@ -242,11 +243,5 @@ def test_retest_does_not_claim_fixed_when_repeat_evidence_is_missing(
     assert len(m03_evidence) == 2
     m03_evidence[0].unlink()
 
-    result = service.compare(baseline.run_path, retest.run_path)
-
-    statuses = {item.threat_class: item.status for item in result.assessment.finding_results}
-    assert statuses["M03"] is RetestFindingStatus.INCONCLUSIVE
-    assert statuses["M06"] is RetestFindingStatus.FIXED
-    assert statuses["A04"] is RetestFindingStatus.FIXED
-    overlay = {item.item_id: item for item in result.assessment.checklist_overlay.items}
-    assert overlay["improve.retest"].status is ChecklistStatus.NO
+    with pytest.raises(RunIntegrityError, match="sealed Run artifact is missing"):
+        service.compare(baseline.run_path, retest.run_path)

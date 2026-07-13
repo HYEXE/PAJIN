@@ -428,6 +428,7 @@ class MultiAgentCampaignRunner:
             },
         )
         self._write_state(store, agents, graph, ledger, budget)
+        store.seal()
         return MultiAgentRunOutcome(
             run_id=store.run_id,
             run_path=store.path,

@@ -45,6 +45,7 @@ from pajin.providers import (
 )
 from pajin.runtime.control import KillSwitch
 from pajin.runtime.secrets import SecretBroker
+from pajin.runtime.store import RunIntegrityError, verify_run_integrity
 from pajin.runtime.worker import (
     DockerWorkerBackend,
     EgressPolicy,
@@ -1242,6 +1243,31 @@ def run_bug_bounty_campaign(
     console.print(f"Triage report: {artifacts.report_path.resolve()}")
     console.print(f"Submission drafts: {len(artifacts.submission_paths)}")
     console.print("No external submission was performed.")
+
+
+@app.command("evidence-verify")
+def verify_run_evidence(
+    run_path: Annotated[Path, typer.Argument(exists=True, readable=True, file_okay=False)],
+) -> None:
+    """Verify a Run's Audit Event chain and sealed artifact digest chain."""
+
+    try:
+        verification = verify_run_integrity(run_path)
+    except (RunIntegrityError, OSError) as exc:
+        console.print(f"[bold red]Run integrity verification failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="PAJIN Run Evidence Integrity")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Run", verification.run_id)
+    table.add_row("Seals", str(verification.seal_count))
+    table.add_row("Artifacts", str(verification.artifact_count))
+    table.add_row("Audit events", str(verification.event_count))
+    table.add_row("Root digest", f"{verification.root_digest[:16]}...")
+    table.add_row("Integrity", "VALID")
+    console.print(table)
+    console.print(f"Root digest: {verification.root_digest}")
 
 
 @app.command("worker-check")

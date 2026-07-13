@@ -17,7 +17,7 @@ from pajin.modes.bug_bounty import (
     load_bug_bounty_finding_index,
     load_bug_bounty_program,
 )
-from pajin.runtime.store import AuditEvent, RunStore
+from pajin.runtime.store import RunStore, verify_run_integrity
 
 
 def _program() -> BugBountyProgramManifest:
@@ -100,24 +100,17 @@ def _run(
             for evidence in finding.evidence:
                 if evidence.startswith("evidence/"):
                     store.write_json(evidence, {"findingId": finding.finding_id})
-    events = [
-        AuditEvent(
-            run_id=store.run_id,
-            event_type="campaign.started",
-            occurred_at=datetime(2026, 7, 13, 1, 30, tzinfo=UTC),
-            payload={"campaign": program.metadata.name, "mode": "bug-bounty"},
-        ),
-        AuditEvent(
-            run_id=store.run_id,
-            event_type="campaign.completed",
-            occurred_at=datetime(2026, 7, 13, 1, 31, tzinfo=UTC),
-            payload={"status": "completed", "report": "report.md"},
-        ),
-    ]
-    store.events_path.write_text(
-        "\n".join(event.model_dump_json() for event in events) + "\n",
-        encoding="utf-8",
+    store.append_event(
+        "campaign.started",
+        {"campaign": program.metadata.name, "mode": "bug-bounty"},
+        occurred_at=datetime(2026, 7, 13, 1, 30, tzinfo=UTC),
     )
+    store.append_event(
+        "campaign.completed",
+        {"status": "completed", "report": "report.md"},
+        occurred_at=datetime(2026, 7, 13, 1, 31, tzinfo=UTC),
+    )
+    store.seal()
     return run_path
 
 
@@ -264,7 +257,7 @@ def test_report_rejects_stale_policy_tampered_campaign_and_invalid_evidence(
     campaign = json.loads(campaign_path.read_text(encoding="utf-8"))
     campaign["spec"]["rulesOfEngagement"]["maxRequestsPerMinute"] = 500
     campaign_path.write_text(json.dumps(campaign), encoding="utf-8")
-    with pytest.raises(ValueError, match="policy differs"):
+    with pytest.raises(ValueError, match="sealed Run artifact changed"):
         BugBountyReportService().report_run(program, tampered_run)
 
     missing_evidence = _finding(
@@ -313,6 +306,7 @@ def test_report_writes_structured_artifacts_event_and_loads_known_index(
     assert artifacts.submission_paths[0].is_file()
     events = (run_path / "events.jsonl").read_text(encoding="utf-8")
     assert '"event_type":"mode-pack.bug-bounty.reported"' in events
+    assert verify_run_integrity(run_path).seal_count == 2
 
     with pytest.raises(ValueError, match="already exists"):
         BugBountyReportService().report_run(

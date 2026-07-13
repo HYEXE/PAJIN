@@ -28,7 +28,7 @@ from pajin.providers.models import (
 from pajin.providers.session import PolicyBoundProviderPort
 from pajin.runtime.control import BudgetController, BudgetExceeded
 from pajin.runtime.secrets import SecretBroker
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.ai import ChatRole
 from pajin.tools.base import ToolRegistry
@@ -252,7 +252,15 @@ class PolicyToolLoopRunner:
             raise ValueError("checkpoint campaign differs from resume campaign")
         if checkpoint.status is not ToolLoopStatus.AWAITING_APPROVAL:
             raise ValueError("only an awaiting-approval checkpoint can be resumed")
-        claim_path = checkpoint_path.with_suffix(checkpoint_path.suffix + ".claimed")
+        resolved_checkpoint = checkpoint_path.resolve()
+        previous_run_path = (
+            resolved_checkpoint.parent.parent
+            if resolved_checkpoint.parent.name == "checkpoints"
+            else None
+        )
+        if previous_run_path is not None:
+            verify_run_integrity(previous_run_path)
+        claim_path = resolved_checkpoint.with_suffix(resolved_checkpoint.suffix + ".claimed")
         if claim_path.exists():
             raise ValueError("approval checkpoint has already been claimed")
         store = RunStore.create(self._output_root, campaign.metadata.name)
@@ -270,6 +278,17 @@ class PolicyToolLoopRunner:
                 handle.write("\n")
         except FileExistsError as exc:
             raise ValueError("approval checkpoint has already been claimed") from exc
+        if previous_run_path is not None:
+            previous_store = RunStore(checkpoint.run_id, previous_run_path)
+            previous_store.append_event(
+                "tool_loop.checkpoint_claimed",
+                {
+                    "checkpoint": resolved_checkpoint.relative_to(previous_run_path).as_posix(),
+                    "checkpointClaim": claim_path.relative_to(previous_run_path).as_posix(),
+                    "continuationRunId": store.run_id,
+                },
+            )
+            previous_store.seal()
         state = checkpoint.model_copy(
             deep=True,
             update={
@@ -653,6 +672,7 @@ class PolicyToolLoopRunner:
                 "error": state.error,
             },
         )
+        store.seal()
         return ToolLoopOutcome(
             run_id=store.run_id,
             run_path=store.path,
