@@ -172,3 +172,43 @@ def test_gateway_is_the_only_component_that_grants_egress(
     assert worker.job.egress_policy.allow == sample_campaign.spec.scope.allow
     assert worker.job.egress_policy.deny == sample_campaign.spec.scope.deny
     assert worker.job.egress_policy.allowed_methods == {"GET", "HEAD", "POST"}
+
+
+def test_gateway_enforces_per_campaign_request_rate(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    rules = sample_campaign.spec.rules_of_engagement.model_copy(
+        update={"max_requests_per_minute": 1}
+    )
+    campaign = sample_campaign.model_copy(
+        update={"spec": sample_campaign.spec.model_copy(update={"rules_of_engagement": rules})}
+    )
+    target = campaign.spec.targets[0]
+    gateway = ToolGateway(
+        policy=PolicyEngine(),
+        tools=_registry(),
+        worker=SimulatedWorkerBackend(),
+        store=RunStore.create(tmp_path, campaign.metadata.name),
+        clock=lambda: datetime(2026, 7, 13, 1, tzinfo=UTC),
+    )
+
+    def request() -> ToolRequest:
+        return ToolRequest(
+            agent_id="agent:planner-local",
+            tool_id="mock.agent-probe",
+            target=target.endpoint,
+            method="POST",
+            arguments={"simulation": target.simulation},
+        )
+
+    first = asyncio.run(
+        gateway.execute(campaign, _grant(campaign, target.endpoint), request(), used_calls=0)
+    )
+    second = asyncio.run(
+        gateway.execute(campaign, _grant(campaign, target.endpoint), request(), used_calls=1)
+    )
+
+    assert first.executed
+    assert not second.executed
+    assert second.decision.policy == "rate-limit"

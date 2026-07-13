@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from collections import deque
+from collections.abc import Callable
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 
 from pydantic import BaseModel, ConfigDict
@@ -48,12 +50,15 @@ class ToolGateway:
         worker: WorkerBackend,
         store: RunStore,
         secrets: SecretBroker | None = None,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._policy = policy
         self._tools = tools
         self._worker = worker
         self._store = store
         self._secrets = secrets or SecretBroker()
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._request_times: deque[datetime] = deque()
 
     async def execute(
         self,
@@ -73,13 +78,19 @@ class ToolGateway:
             )
             return self._deny(request, decision)
 
+        evaluated_at = self._clock()
         decision = self._policy.evaluate_tool_request(
             campaign,
             grant,
             request,
             tool.spec,
             used_calls=used_calls,
+            now=evaluated_at,
         )
+        if decision.allowed:
+            rate_limit_denial = self._reserve_rate_limit_slot(campaign, evaluated_at)
+            if rate_limit_denial is not None:
+                decision = rate_limit_denial
         self._record_policy(request, decision)
         if not decision.allowed:
             return self._deny(request, decision, policy_recorded=True)
@@ -218,6 +229,28 @@ class ToolGateway:
             worker_result=worker_result,
             executed=True,
         )
+
+    def _reserve_rate_limit_slot(
+        self,
+        campaign: CampaignManifest,
+        evaluated_at: datetime,
+    ) -> PolicyDecision | None:
+        limit = campaign.spec.rules_of_engagement.max_requests_per_minute
+        if limit is None:
+            return None
+        if evaluated_at.tzinfo is None:
+            evaluated_at = evaluated_at.replace(tzinfo=UTC)
+        cutoff = evaluated_at - timedelta(minutes=1)
+        while self._request_times and self._request_times[0] <= cutoff:
+            self._request_times.popleft()
+        if len(self._request_times) >= limit:
+            return PolicyDecision(
+                allowed=False,
+                reason=f"campaign rate limit of {limit} requests per minute is exhausted",
+                policy="rate-limit",
+            )
+        self._request_times.append(evaluated_at)
+        return None
 
     def _deny(
         self,

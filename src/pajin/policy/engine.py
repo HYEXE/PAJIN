@@ -35,6 +35,11 @@ class PolicyEngine:
         evaluated_at = now or datetime.now(UTC)
         if not campaign.spec.authorization.is_active(evaluated_at):
             return self._deny("campaign authorization is not active", "authorization")
+        testing_windows = campaign.spec.rules_of_engagement.testing_windows
+        if testing_windows and not any(
+            window.is_active(evaluated_at) for window in testing_windows
+        ):
+            return self._deny("request is outside the approved testing window", "testing-window")
         if grant.campaign != campaign.metadata.name or grant.subject != request.agent_id:
             return self._deny(
                 "capability grant does not belong to this agent and campaign", "grant"
@@ -56,6 +61,13 @@ class PolicyEngine:
             return self._deny("tool risk exceeds campaign rules of engagement", "risk")
         if request.method not in campaign.spec.rules_of_engagement.allowed_methods:
             return self._deny("HTTP method is not allowed by rules of engagement", "method")
+        allowed_categories = campaign.spec.rules_of_engagement.allowed_tool_categories
+        if allowed_categories and not tool.categories <= allowed_categories:
+            disallowed = tool.categories - allowed_categories
+            return self._deny(
+                f"tool categories are not allowlisted: {', '.join(sorted(disallowed))}",
+                "tool-category-allowlist",
+            )
         prohibited = tool.categories & campaign.spec.rules_of_engagement.prohibit
         if prohibited:
             return self._deny(

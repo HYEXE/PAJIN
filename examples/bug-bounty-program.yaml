@@ -1,0 +1,70 @@
+apiVersion: pajin.dev/v1alpha1
+kind: BugBountyProgram
+metadata:
+  name: example-bug-bounty-lab
+  displayName: Example Bug Bounty Lab
+  platform: private-lab
+spec:
+  policy:
+    uri: https://security.example.invalid/bug-bounty/policy
+    retrievedAt: 2026-07-13T00:00:00+09:00
+    rawText: |-
+      Test only the explicitly listed lab API. Do not access real user data, perform
+      denial-of-service testing, use social engineering, or retain evidence beyond 14 days.
+      Submit a minimal-impact reproduction after checking for duplicate reports.
+  scope:
+    inScope:
+      - assetId: lab-api
+        assetType: api
+        pattern: https://api.example.invalid/v1/**
+        entryPoints:
+          - https://api.example.invalid/v1/health
+        eligibleForBounty: true
+        notes: Synthetic-data lab API only.
+      - assetId: lab-web-wildcard
+        assetType: web
+        pattern: https://*.lab.example.invalid/**
+        entryPoints: []
+        eligibleForBounty: true
+        notes: Review-only wildcard until a concrete owned host is approved.
+    outOfScope:
+      - assetId: admin-api
+        pattern: https://api.example.invalid/v1/admin/**
+        reason: Administrative operations are excluded from testing.
+      - assetId: production-web
+        pattern: https://www.example.invalid/**
+        reason: Production customer site is out of scope.
+  rules:
+    maxToolRiskTier: T2
+    allowedMethods: [GET, HEAD]
+    allowedToolCategories: [active-test, http]
+    prohibitedTechniques:
+      - brute-force
+      - mass-assignment
+    stopOn:
+      - unexpected-data-access
+    maxRequestsPerMinute: 20
+    testingWindows:
+      - days: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        startTime: "00:00:00"
+        endTime: "00:00:00"
+        timezone: Asia/Seoul
+  dataHandling:
+    testAccountsOnly: true
+    maxEvidenceRetentionDays: 14
+    redactSecrets: true
+  reporting:
+    severityStandard: CVSS-3.1
+    requiredFields: [title, summary, impact, reproduction, evidence, remediation]
+    duplicateCheckRequired: true
+  objectives:
+    - Validate the authorized lab API with minimum-impact HTTP requests.
+    - Produce evidence suitable for a responsible disclosure submission draft.
+  budgets:
+    durationSeconds: 600
+    maxCostUsd: 0
+    maxAgents: 2
+    maxSpawnDepth: 0
+    maxToolCalls: 10
+    maxModelCalls: 0
+    maxModelTokens: 0

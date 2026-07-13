@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, time
 from enum import IntEnum, StrEnum
 from typing import Any
 from uuid import uuid4
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -28,6 +29,19 @@ class AutonomyLevel(StrEnum):
     SUPERVISED = "supervised"
     POLICY_AUTONOMOUS = "policy-autonomous"
     LAB_AUTONOMOUS = "lab-autonomous"
+
+
+class Weekday(StrEnum):
+    MONDAY = "monday"
+    TUESDAY = "tuesday"
+    WEDNESDAY = "wednesday"
+    THURSDAY = "thursday"
+    FRIDAY = "friday"
+    SATURDAY = "saturday"
+    SUNDAY = "sunday"
+
+
+_WEEKDAYS = tuple(Weekday)
 
 
 class ToolRiskTier(IntEnum):
@@ -96,14 +110,68 @@ class Authorization(StrictModel):
         return approved_at <= now < expires_at
 
 
+class WeeklyTestingWindow(StrictModel):
+    """An enforceable recurring testing window in an IANA time zone."""
+
+    days: set[Weekday] = Field(min_length=1)
+    start_time: time = Field(alias="startTime")
+    end_time: time = Field(alias="endTime")
+    timezone: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_window(self) -> WeeklyTestingWindow:
+        if self.start_time == self.end_time and self.start_time != time(0, 0):
+            raise ValueError(
+                "equal testing-window times are supported only as a 00:00-00:00 full day"
+            )
+        if self.start_time.tzinfo is not None or self.end_time.tzinfo is not None:
+            raise ValueError("testing window times must be local wall-clock times")
+        try:
+            ZoneInfo(self.timezone)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"unknown IANA timezone: {self.timezone}") from exc
+        return self
+
+    def is_active(self, at: datetime | None = None) -> bool:
+        evaluated_at = at or datetime.now(UTC)
+        if evaluated_at.tzinfo is None:
+            evaluated_at = evaluated_at.replace(tzinfo=UTC)
+        local = evaluated_at.astimezone(ZoneInfo(self.timezone))
+        local_time = local.time().replace(tzinfo=None)
+        today = _WEEKDAYS[local.weekday()]
+        if self.start_time == self.end_time:
+            return today in self.days
+        if self.start_time < self.end_time:
+            return today in self.days and self.start_time <= local_time < self.end_time
+
+        if local_time >= self.start_time:
+            return today in self.days
+        previous_day = _WEEKDAYS[(local.weekday() - 1) % len(_WEEKDAYS)]
+        return local_time < self.end_time and previous_day in self.days
+
+
 class RulesOfEngagement(StrictModel):
     max_tool_risk_tier: ToolRiskTier = Field(alias="maxToolRiskTier")
     allowed_methods: set[str] = Field(
         default_factory=lambda: {"GET", "HEAD", "POST"}, alias="allowedMethods"
     )
+    allowed_tool_categories: set[str] = Field(
+        default_factory=set,
+        alias="allowedToolCategories",
+    )
     prohibit: set[str] = Field(default_factory=set)
     stop_on: set[str] = Field(default_factory=set, alias="stopOn")
     allow_private_networks: bool = Field(default=False, alias="allowPrivateNetworks")
+    max_requests_per_minute: int | None = Field(
+        default=None,
+        alias="maxRequestsPerMinute",
+        ge=1,
+        le=60_000,
+    )
+    testing_windows: list[WeeklyTestingWindow] = Field(
+        default_factory=list,
+        alias="testingWindows",
+    )
 
     @field_validator("max_tool_risk_tier", mode="before")
     @classmethod

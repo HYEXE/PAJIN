@@ -1,0 +1,75 @@
+apiVersion: pajin.dev/v1alpha1
+kind: BugBountyProgram
+metadata:
+  name: local-bug-bounty-sqli-lab
+  displayName: PAJIN Local Boolean SQLi Lab
+  platform: local-lab
+spec:
+  policy:
+    uri: https://security.example.invalid/pajin-local-sqli-lab
+    retrievedAt: 2026-07-13T00:00:00+09:00
+    rawText: |-
+      This authorization applies only to the synthetic PAJIN SQLi lab bound to loopback port 8770.
+      Use only the fixed baseline, false-control, and boolean comparison implemented by PAJIN.
+      Do not enumerate data, alter records, use denial of service, or access any other endpoint.
+  scope:
+    inScope:
+      - assetId: synthetic-user-lookup
+        assetType: api
+        pattern: http://host.docker.internal:8770/v1/users/lookup
+        entryPoints:
+          - http://host.docker.internal:8770/v1/users/lookup
+        probeProfile: boolean-sqli-lab
+        eligibleForBounty: false
+        notes: Synthetic records only; local validation lab, not a real bounty target.
+    outOfScope:
+      - assetId: lab-admin-paths
+        pattern: http://host.docker.internal:8770/admin/**
+        reason: Administrative lab endpoints are explicitly excluded.
+  rules:
+    maxToolRiskTier: T2
+    allowedMethods: [GET]
+    allowedToolCategories: [active-test, bug-bounty, http, injection]
+    prohibitedTechniques:
+      - brute-force
+      - data-enumeration
+      - state-change
+    stopOn:
+      - unexpected-data-access
+    maxRequestsPerMinute: 6
+    testingWindows:
+      - days: [monday, tuesday, wednesday, thursday, friday, saturday, sunday]
+        startTime: "00:00:00"
+        endTime: "00:00:00"
+        timezone: Asia/Seoul
+    allowPrivateNetworks: true
+  dataHandling:
+    testAccountsOnly: true
+    maxEvidenceRetentionDays: 7
+    redactSecrets: true
+  reporting:
+    severityStandard: CVSS-3.1
+    requiredFields:
+      - title
+      - summary
+      - target
+      - severity
+      - vulnerability-class
+      - affected-component
+      - root-cause
+      - impact
+      - reproduction
+      - evidence
+      - remediation
+    duplicateCheckRequired: true
+  objectives:
+    - Detect the fixed boolean SQL injection signal with three bounded synthetic requests.
+    - Independently validate same-run evidence and generate a local submission draft.
+  budgets:
+    durationSeconds: 300
+    maxCostUsd: 0
+    maxAgents: 5
+    maxSpawnDepth: 1
+    maxToolCalls: 1
+    maxModelCalls: 0
+    maxModelTokens: 0

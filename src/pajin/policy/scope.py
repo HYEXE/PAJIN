@@ -16,6 +16,8 @@ def _parse_url(value: str, *, pattern: bool) -> SplitResult:
         raise InvalidScopeURL("credentials in URL authority are not allowed")
     if not parsed.hostname:
         raise InvalidScopeURL("URL hostname is required")
+    if parsed.fragment:
+        raise InvalidScopeURL("URL fragments are not part of an enforceable scope")
     hostname = parsed.hostname
     if pattern:
         wildcard_count = hostname.count("*")
@@ -26,16 +28,34 @@ def _parse_url(value: str, *, pattern: bool) -> SplitResult:
     return parsed
 
 
+def _authority(hostname: str, port: int | None, default_port: int) -> str:
+    host = hostname.lower()
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    return host if port in {None, default_port} else f"{host}:{port}"
+
+
 def normalize_target_url(value: str) -> str:
     """Normalize a concrete URL for policy comparison and audit logging."""
 
     parsed = _parse_url(value, pattern=False)
     hostname = parsed.hostname
     assert hostname is not None
-    host = hostname.lower()
     port = parsed.port
     default_port = 443 if parsed.scheme == "https" else 80
-    authority = host if port in {None, default_port} else f"{host}:{port}"
+    authority = _authority(hostname, port, default_port)
+    path = parsed.path or "/"
+    return urlunsplit((parsed.scheme, authority, path, parsed.query, ""))
+
+
+def normalize_scope_pattern(value: str) -> str:
+    """Normalize a constrained HTTP(S) scope rule without expanding its authority."""
+
+    parsed = _parse_url(value, pattern=True)
+    hostname = parsed.hostname
+    assert hostname is not None
+    default_port = 443 if parsed.scheme == "https" else 80
+    authority = _authority(hostname, parsed.port, default_port)
     path = parsed.path or "/"
     return urlunsplit((parsed.scheme, authority, path, parsed.query, ""))
 
