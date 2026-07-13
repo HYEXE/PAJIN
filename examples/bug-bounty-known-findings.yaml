@@ -1,0 +1,11 @@
+apiVersion: pajin.dev/v1alpha1
+kind: BugBountyFindingIndex
+programName: example-bug-bounty-lab
+findings:
+  - externalId: BB-1042
+    target: https://api.example.invalid/v1/health
+    vulnerabilityClass: CWE-89
+    affectedComponent: user lookup query
+    rootCause: Untrusted input is concatenated into a SQL query.
+    status: resolved
+    reference: https://security.example.invalid/reports/BB-1042

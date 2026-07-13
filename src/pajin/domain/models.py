@@ -342,7 +342,11 @@ class Finding(StrictModel):
     threat_class: str
     target: str
     summary: str
+    impact: str | None = None
+    affected_component: str | None = None
+    root_cause: str | None = None
     reproduction: list[str]
     evidence: list[str]
+    remediation: list[str] = Field(default_factory=list)
     confidence: float = Field(ge=0, le=1)
     validated: bool = False

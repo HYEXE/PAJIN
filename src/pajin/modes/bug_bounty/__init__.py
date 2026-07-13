@@ -6,6 +6,16 @@ from pajin.modes.bug_bounty.models import (
     BugBountyScopeApproval,
     BugBountyScopeReview,
 )
+from pajin.modes.bug_bounty.reporting import (
+    BugBountyFindingIndex,
+    BugBountyReportArtifacts,
+    BugBountyReportService,
+    BugBountyTriageReport,
+    DuplicateDisposition,
+    KnownBugBountyFinding,
+    KnownFindingStatus,
+    load_bug_bounty_finding_index,
+)
 from pajin.modes.bug_bounty.service import (
     BugBountyCampaignArtifact,
     BugBountyReviewArtifacts,
@@ -15,11 +25,19 @@ from pajin.modes.bug_bounty.service import (
 
 __all__ = [
     "BugBountyCampaignArtifact",
+    "BugBountyFindingIndex",
     "BugBountyProbeProfile",
     "BugBountyProgramManifest",
+    "BugBountyReportArtifacts",
+    "BugBountyReportService",
     "BugBountyReviewArtifacts",
     "BugBountyScopeApproval",
     "BugBountyScopeReview",
     "BugBountyScopeService",
+    "BugBountyTriageReport",
+    "DuplicateDisposition",
+    "KnownBugBountyFinding",
+    "KnownFindingStatus",
+    "load_bug_bounty_finding_index",
     "load_bug_bounty_program",
 ]

@@ -1,6 +1,6 @@
 """Markdown report renderer for validated campaign results."""
 
-from pajin.domain.models import AgentPlan, CampaignManifest, Finding, ToolResult
+from pajin.domain.models import AgentPlan, CampaignManifest, CampaignMode, Finding, ToolResult
 
 
 def render_markdown_report(
@@ -68,6 +68,11 @@ def render_markdown_report(
     lines.extend(["", "## Validated Findings", ""])
     if not findings:
         lines.append("No validated findings were produced by this campaign.")
+    classification_label = (
+        "KISA threat class"
+        if campaign.spec.mode is CampaignMode.AI_REDTEAM
+        else "Vulnerability class"
+    )
     for finding in findings:
         lines.extend(
             [
@@ -75,28 +80,35 @@ def render_markdown_report(
                 "",
                 f"- ID: `{finding.finding_id}`",
                 f"- Severity: **{finding.severity.value.upper()}**",
-                f"- KISA threat class: `{finding.threat_class}`",
+                f"- {classification_label}: `{finding.threat_class}`",
                 f"- Target: `{finding.target}`",
+                f"- Affected component: `{finding.affected_component or 'Not specified'}`",
+                f"- Root cause: `{finding.root_cause or 'Not specified'}`",
                 f"- Confidence: `{finding.confidence:.2f}`",
                 f"- Independently validated: `{finding.validated}`",
                 "",
                 finding.summary,
                 "",
-                "#### Reproduction",
-                "",
             ]
         )
+        if finding.impact:
+            lines.extend(["#### Impact", "", finding.impact, ""])
+        lines.extend(["#### Reproduction", ""])
         lines.extend(f"{index}. {step}" for index, step in enumerate(finding.reproduction, start=1))
         lines.extend(["", "#### Evidence", ""])
         lines.extend(f"- `{evidence}`" for evidence in finding.evidence)
+        if finding.remediation:
+            lines.extend(["", "#### Remediation", ""])
+            lines.extend(f"- {item}" for item in finding.remediation)
 
     lines.extend(
         [
             "",
             "## Limitations",
             "",
-            "This MVP run used a deterministic mock tool and did not contact a real target. "
-            "The report validates PAJIN's policy, evidence, validation, and reporting path.",
+            "This report contains only evidence captured by the selected Worker and Tool adapters. "
+            "It does not by itself prove target ownership, complete test coverage, or the absence "
+            "of vulnerabilities.",
         ]
     )
     return "\n".join(lines) + "\n"
