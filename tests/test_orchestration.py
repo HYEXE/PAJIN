@@ -69,6 +69,27 @@ class TwoStepPlanner:
         return AgentPlan(summary="Fan out two specialist tasks.", steps=steps)
 
 
+class TwoRetryStepPlanner:
+    async def plan(self, campaign: CampaignManifest) -> AgentPlan:
+        target = campaign.spec.targets[0].endpoint
+        return AgentPlan(
+            summary="Reserve one call for each low-risk Specialist.",
+            steps=[
+                PlannedStep(
+                    title=f"Bounded low-risk probe {index}",
+                    rationale="Verify fair call allocation before retry assignment.",
+                    request=ToolRequest(
+                        agent_id="untrusted-planner-id",
+                        tool_id="test.retry-probe",
+                        target=target,
+                        method="POST",
+                    ),
+                )
+                for index in (1, 2)
+            ],
+        )
+
+
 class RetryProbe(Tool):
     spec = ToolSpec(
         tool_id="test.retry-probe",
@@ -278,6 +299,83 @@ def test_supervisor_dynamically_fans_out_one_specialist_per_plan_step(
     assert len(specialists) == 2
     assert len(outcome.tool_results) == 2
     assert len(outcome.findings) == 2
+
+
+def test_specialist_call_budget_reserves_one_attempt_before_retries(
+    tmp_path: Path,
+) -> None:
+    campaign = _campaign()
+    budgets = campaign.spec.budgets.model_copy(update={"max_agents": 6, "max_tool_calls": 2})
+    campaign = campaign.model_copy(
+        update={"spec": campaign.spec.model_copy(update={"budgets": budgets})}
+    )
+    registry = ToolRegistry()
+    registry.register(RetryProbe())
+    worker = FlakyWorker()
+    runner = MultiAgentCampaignRunner(
+        planner=TwoRetryStepPlanner(),
+        validator=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(campaign))
+
+    assert outcome.status is RunStatus.FAILED
+    assert worker.calls == 2
+    assert [result.success for result in outcome.tool_results] == [False, True]
+    specialist_tasks = [
+        task
+        for task in outcome.task_graph.tasks.values()
+        if task.request is not None and task.request.tool_id == "test.retry-probe"
+    ]
+    assert [task.max_attempts for task in specialist_tasks] == [1, 1]
+    assert [task.status for task in specialist_tasks] == [
+        TaskStatus.FAILED,
+        TaskStatus.SUCCEEDED,
+    ]
+    capabilities = json.loads((outcome.run_path / "capabilities.json").read_text(encoding="utf-8"))
+    specialist_grants = [
+        item["grant"]
+        for item in capabilities
+        if item["grant"]["subject"].startswith("agent:specialist:")
+    ]
+    assert [grant["max_calls"] for grant in specialist_grants] == [1, 1]
+    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event_type":"specialist.call-budget.allocated"' in events
+    assert '"reservedControlCalls":0' in events
+    assert '"unallocatedCalls":0' in events
+
+
+def test_specialist_call_budget_rejects_plan_before_partial_spawn(
+    tmp_path: Path,
+) -> None:
+    campaign = _campaign()
+    budgets = campaign.spec.budgets.model_copy(update={"max_agents": 6, "max_tool_calls": 1})
+    campaign = campaign.model_copy(
+        update={"spec": campaign.spec.model_copy(update={"budgets": budgets})}
+    )
+    registry = ToolRegistry()
+    registry.register(RetryProbe())
+    runner = MultiAgentCampaignRunner(
+        planner=TwoRetryStepPlanner(),
+        validator=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(campaign))
+
+    assert outcome.status is RunStatus.CANCELLED
+    assert outcome.cancellation_reason == (
+        "plan requires more tool calls than the campaign budget allows"
+    )
+    assert not any(agent.role is AgentRole.SPECIALIST for agent in outcome.agents)
+    assert not outcome.tool_results
 
 
 def test_signal_file_kill_switch_stops_before_child_spawn(tmp_path: Path) -> None:

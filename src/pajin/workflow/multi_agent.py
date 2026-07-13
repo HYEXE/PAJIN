@@ -199,9 +199,7 @@ class MultiAgentCampaignRunner:
             if budget.agent_count + required_agents > campaign.spec.budgets.max_agents:
                 raise BudgetExceeded("plan requires more agents than the campaign budget allows")
 
-            specialist_tasks: list[TaskNode] = []
-            specialist_agents: dict[str, AgentNode] = {}
-            specialist_grants: dict[str, CapabilityGrant] = {}
+            specialist_risk_tiers: list[ToolRiskTier] = []
             for step in plan.steps:
                 try:
                     spec = self._tools.spec(step.request.tool_id)
@@ -209,11 +207,48 @@ class MultiAgentCampaignRunner:
                     raise CapabilityError(
                         f"planner requested unregistered tool: {step.request.tool_id}"
                     ) from exc
-                default_attempts = 2 if spec.risk_tier.value <= 1 else 1
-                max_attempts = min(
-                    default_attempts,
-                    ledger.record(root_grant.grant_id).remaining_calls,
-                )
+                specialist_risk_tiers.append(spec.risk_tier)
+
+            validator_access = self._model_access(self._validator)
+            reporter_access = self._model_access(self._reporter) if self._reporter else None
+            reserved_control_calls = sum(
+                access.max_attempts
+                for access in (validator_access, reporter_access)
+                if access is not None
+            )
+            root_remaining_calls = ledger.record(root_grant.grant_id).remaining_calls
+            specialist_call_capacity = root_remaining_calls - reserved_control_calls
+            specialist_attempts = self._allocate_specialist_attempts(
+                specialist_risk_tiers,
+                available_calls=specialist_call_capacity,
+            )
+            store.append_event(
+                "specialist.call-budget.allocated",
+                {
+                    "rootRemainingCalls": root_remaining_calls,
+                    "reservedControlCalls": reserved_control_calls,
+                    "unallocatedCalls": (specialist_call_capacity - sum(specialist_attempts)),
+                    "allocations": [
+                        {
+                            "requestId": step.request.request_id,
+                            "toolId": step.request.tool_id,
+                            "target": step.request.target,
+                            "maxAttempts": max_attempts,
+                        }
+                        for step, max_attempts in zip(plan.steps, specialist_attempts, strict=True)
+                    ],
+                },
+            )
+
+            specialist_tasks: list[TaskNode] = []
+            specialist_agents: dict[str, AgentNode] = {}
+            specialist_grants: dict[str, CapabilityGrant] = {}
+            for step, risk_tier, max_attempts in zip(
+                plan.steps,
+                specialist_risk_tiers,
+                specialist_attempts,
+                strict=True,
+            ):
                 specialist = self._spawn_child(
                     store,
                     agents,
@@ -225,7 +260,7 @@ class MultiAgentCampaignRunner:
                     tools={step.request.tool_id},
                     targets={step.request.target},
                     max_calls=max_attempts,
-                    max_risk_tier=spec.risk_tier,
+                    max_risk_tier=risk_tier,
                 )
                 bound_request = step.request.model_copy(update={"agent_id": specialist.agent_id})
                 task = TaskNode(
@@ -272,7 +307,6 @@ class MultiAgentCampaignRunner:
             if self._check_control(budget, raise_on_cancel=False):
                 raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
 
-            validator_access = self._model_access(self._validator)
             validator_agent = self._spawn_child(
                 store,
                 agents,
@@ -310,7 +344,6 @@ class MultiAgentCampaignRunner:
                 "findings.json", [finding.model_dump(mode="json") for finding in findings]
             )
 
-            reporter_access = self._model_access(self._reporter) if self._reporter else None
             reporter_agent = self._spawn_child(
                 store,
                 agents,
@@ -511,6 +544,26 @@ class MultiAgentCampaignRunner:
                 "task.retry_scheduled",
                 {"taskId": task.task_id, "attempt": task.attempts + 1},
             )
+
+    @staticmethod
+    def _allocate_specialist_attempts(
+        risk_tiers: list[ToolRiskTier],
+        *,
+        available_calls: int,
+    ) -> list[int]:
+        """Reserve one call per Specialist before assigning bounded retry slots."""
+
+        if available_calls < len(risk_tiers):
+            raise BudgetExceeded("plan requires more tool calls than the campaign budget allows")
+        allocations = [1 for _ in risk_tiers]
+        retry_slots = available_calls - len(allocations)
+        for index, risk_tier in enumerate(risk_tiers):
+            if retry_slots == 0:
+                break
+            if risk_tier.value <= ToolRiskTier.T1.value:
+                allocations[index] += 1
+                retry_slots -= 1
+        return allocations
 
     def _model_access(self, runtime: object) -> _ModelAccess | None:
         if not isinstance(runtime, ModelBoundRuntime):

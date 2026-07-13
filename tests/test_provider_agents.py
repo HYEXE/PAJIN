@@ -176,6 +176,9 @@ def test_provider_roles_use_gateway_capabilities_budgets_and_same_run_evidence(
     events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
     assert events.count('"event_type":"model.call.completed"') == 3
     assert '"event_type":"model.fallback.activated"' not in events
+    assert '"event_type":"specialist.call-budget.allocated"' in events
+    assert '"reservedControlCalls":4' in events
+    assert '"unallocatedCalls":1' in events
     capabilities = json.loads((outcome.run_path / "capabilities.json").read_text(encoding="utf-8"))
     role_grants = [
         item["grant"]
@@ -187,6 +190,13 @@ def test_provider_roles_use_gateway_capabilities_budgets_and_same_run_evidence(
     ]
     assert len(role_grants) == 3
     assert all(grant["tools"] == ["provider.role-provider.chat"] for grant in role_grants)
+    specialist_grants = [
+        item["grant"]
+        for item in capabilities
+        if item["grant"]["subject"].startswith("agent:specialist:")
+    ]
+    assert len(specialist_grants) == 1
+    assert specialist_grants[0]["max_calls"] == 1
     provider_evidence = []
     for path in (outcome.run_path / "evidence").glob("*.json"):
         evidence = json.loads(path.read_text(encoding="utf-8"))
