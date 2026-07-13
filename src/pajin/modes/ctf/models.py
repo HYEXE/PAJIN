@@ -1,9 +1,12 @@
-"""Typed contracts for the local-only CTF Web Mode vertical slice."""
+"""Typed contracts for local-only CTF category Mode Packs."""
 
 from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
+from hmac import compare_digest
+from re import fullmatch
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -15,10 +18,13 @@ from pajin.policy.scope import normalize_target_url
 CTF_WEB_BACKUP_PATH = "/backup/config.json.bak"
 CTF_WEB_LAB_HOST = "host.docker.internal"
 CTF_WEB_LAB_PORT = 8780
+CTF_CRYPTO_ARTIFACT_HOST = "artifact.invalid"
+CTF_MAX_INLINE_ARTIFACT_BYTES = 4_096
 
 
 class CTFCategory(StrEnum):
     WEB = "web"
+    CRYPTO = "crypto"
 
 
 class CTFEnvironmentType(StrEnum):
@@ -27,6 +33,7 @@ class CTFEnvironmentType(StrEnum):
 
 class CTFScenario(StrEnum):
     WEB_EXPOSED_BACKUP_CONFIG = "web.exposed-backup-config"
+    CRYPTO_SINGLE_BYTE_XOR = "crypto.single-byte-xor"
 
 
 class CTFSolveStatus(StrEnum):
@@ -74,23 +81,62 @@ class CTFChallengeScope(StrictModel):
         return normalized
 
 
+class CTFInlineArtifact(StrictModel):
+    encoding: Literal["hex"] = "hex"
+    data: str = Field(min_length=2, max_length=CTF_MAX_INLINE_ARTIFACT_BYTES * 2)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    media_type: Literal["application/octet-stream"] = Field(
+        default="application/octet-stream",
+        alias="mediaType",
+    )
+
+    @model_validator(mode="after")
+    def verify_content_address(self) -> CTFInlineArtifact:
+        if fullmatch(r"[a-f0-9]+", self.data) is None:
+            raise ValueError("CTF inline artifact data must be lowercase hexadecimal")
+        if len(self.data) % 2:
+            raise ValueError("CTF inline artifact hex must contain complete bytes")
+        try:
+            decoded = bytes.fromhex(self.data)
+        except ValueError as exc:
+            raise ValueError("CTF inline artifact data must be lowercase hexadecimal") from exc
+        if not 1 <= len(decoded) <= CTF_MAX_INLINE_ARTIFACT_BYTES:
+            raise ValueError("CTF inline artifact exceeds the bounded size")
+        observed = sha256(decoded).hexdigest()
+        if not compare_digest(observed, self.sha256):
+            raise ValueError("CTF inline artifact SHA-256 does not match its decoded bytes")
+        return self
+
+
 class CTFFlagSpec(StrictModel):
     sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     format: Literal["PAJIN{...}"] = "PAJIN{...}"
 
 
 class CTFChallengeSpec(StrictModel):
-    category: Literal[CTFCategory.WEB] = CTFCategory.WEB
-    scenario: Literal[CTFScenario.WEB_EXPOSED_BACKUP_CONFIG] = CTFScenario.WEB_EXPOSED_BACKUP_CONFIG
+    category: CTFCategory
+    scenario: CTFScenario
     environment: CTFEnvironment
-    scope: CTFChallengeScope
+    scope: CTFChallengeScope | None = None
+    artifact: CTFInlineArtifact | None = None
     authorization: Authorization
     flag: CTFFlagSpec
     objectives: list[str] = Field(min_length=1, max_length=5)
     budgets: Budgets = Field(default_factory=default_ctf_budgets)
 
     @model_validator(mode="after")
-    def enforce_local_mvp_budget_ceiling(self) -> CTFChallengeSpec:
+    def enforce_category_contract_and_budget(self) -> CTFChallengeSpec:
+        if self.category is CTFCategory.WEB:
+            if self.scenario is not CTFScenario.WEB_EXPOSED_BACKUP_CONFIG:
+                raise ValueError("CTF Web category requires the exposed-backup scenario")
+            if self.scope is None or self.artifact is not None:
+                raise ValueError("CTF Web category requires scope and forbids inline artifact")
+        elif self.category is CTFCategory.CRYPTO:
+            if self.scenario is not CTFScenario.CRYPTO_SINGLE_BYTE_XOR:
+                raise ValueError("CTF Crypto category requires the single-byte XOR scenario")
+            if self.artifact is None or self.scope is not None:
+                raise ValueError("CTF Crypto category requires inline artifact and forbids scope")
+
         authorization = self.authorization
         for field_name, value in (
             ("approvedAt", authorization.approved_at),
@@ -101,15 +147,15 @@ class CTFChallengeSpec(StrictModel):
 
         budgets = self.budgets
         if budgets.max_agents != 5 or budgets.max_spawn_depth != 1:
-            raise ValueError("CTF Web MVP requires exactly five agents and spawn depth one")
+            raise ValueError("CTF MVP requires exactly five agents and spawn depth one")
         if budgets.max_tool_calls != 1:
-            raise ValueError("CTF Web MVP permits exactly one fixed Tool call")
+            raise ValueError("CTF MVP permits exactly one fixed Tool call")
         if budgets.max_model_calls != 0 or budgets.max_model_tokens != 0:
-            raise ValueError("CTF Web MVP does not permit model-provider calls")
+            raise ValueError("CTF MVP does not permit model-provider calls")
         if budgets.max_cost_usd != 0:
-            raise ValueError("CTF Web MVP requires a zero external-service cost budget")
+            raise ValueError("CTF MVP requires a zero external-service cost budget")
         if budgets.duration_seconds > 120:
-            raise ValueError("CTF Web MVP duration cannot exceed 120 seconds")
+            raise ValueError("CTF MVP duration cannot exceed 120 seconds")
         return self
 
 

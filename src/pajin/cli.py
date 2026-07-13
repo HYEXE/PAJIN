@@ -38,6 +38,7 @@ from pajin.modes.bug_bounty import (
     load_bug_bounty_program,
 )
 from pajin.modes.ctf import (
+    CTFCategory,
     CTFChallengeService,
     CTFFlagValidatorRuntime,
     CTFModePack,
@@ -68,7 +69,7 @@ from pajin.runtime.worker import (
 from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
-from pajin.tools.ctf import CTFWebBackupProbeTool
+from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
@@ -95,6 +96,7 @@ def _tool_registry() -> ToolRegistry:
     registry.register(AIChatRegressionTool())
     registry.register(BooleanSQLiProbeTool())
     registry.register(CTFWebBackupProbeTool())
+    registry.register(CTFCryptoXORTool())
     registry.register(HTTPGetTool())
     registry.register(demo_mcp_tool())
     return registry
@@ -1255,18 +1257,21 @@ def run_bug_bounty_campaign(
     console.print("No external submission was performed.")
 
 
-@app.command("ctf-web-run")
-def run_ctf_web_challenge(
-    challenge_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
-    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+def _execute_ctf_challenge(
+    challenge_path: Path,
+    output: Path,
+    *,
+    required_category: CTFCategory | None = None,
 ) -> None:
-    """Run the fixed local CTF Web challenge without external submission."""
-
     try:
         challenge = load_ctf_challenge(challenge_path)
+        if required_category is not None and challenge.spec.category is not required_category:
+            raise ValueError(
+                f"this command accepts only the {required_category.value} CTF category"
+            )
         campaign = CTFChallengeService().compile_campaign(challenge)
     except (ValidationError, ValueError, OSError) as exc:
-        console.print(f"[bold red]Cannot start CTF Web challenge:[/bold red] {exc}")
+        console.print(f"[bold red]Cannot start CTF challenge:[/bold red] {exc}")
         raise typer.Exit(code=2) from exc
 
     runner = MultiAgentCampaignRunner(
@@ -1279,7 +1284,7 @@ def run_ctf_web_challenge(
     )
     outcome = asyncio.run(runner.run(campaign))
     if outcome.status is not RunStatus.COMPLETED:
-        console.print(f"[bold red]CTF Web run failed:[/bold red] {outcome.run_id}")
+        console.print(f"[bold red]CTF run failed:[/bold red] {outcome.run_id}")
         if outcome.cancellation_reason:
             console.print(f"Reason: {outcome.cancellation_reason}")
         console.print(f"Run report: {outcome.report_path.resolve()}")
@@ -1288,11 +1293,11 @@ def run_ctf_web_challenge(
     try:
         artifacts = CTFModePack().finalize(challenge, outcome)
     except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
-        console.print(f"[bold red]CTF Web finalization failed:[/bold red] {exc}")
+        console.print(f"[bold red]CTF finalization failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 
     result = artifacts.result
-    table = Table(title="PAJIN CTF Web Multi-Agent Run")
+    table = Table(title=f"PAJIN CTF {result.category.value.title()} Multi-Agent Run")
     table.add_column("Measure")
     table.add_column("Value")
     table.add_row("Run status", outcome.status.value)
@@ -1308,6 +1313,30 @@ def run_ctf_web_challenge(
     console.print("No external scoreboard submission was performed.")
     if result.status is not CTFSolveStatus.SOLVED:
         raise typer.Exit(code=1)
+
+
+@app.command("ctf-run")
+def run_ctf_challenge(
+    challenge_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+) -> None:
+    """Run one supported local CTF category without external submission."""
+
+    _execute_ctf_challenge(challenge_path, output)
+
+
+@app.command("ctf-web-run")
+def run_ctf_web_challenge(
+    challenge_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+) -> None:
+    """Backward-compatible alias restricted to the local CTF Web category."""
+
+    _execute_ctf_challenge(
+        challenge_path,
+        output,
+        required_category=CTFCategory.WEB,
+    )
 
 
 @app.command("evidence-verify")

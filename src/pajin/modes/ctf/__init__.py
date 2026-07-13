@@ -3,6 +3,7 @@
 from pajin.modes.ctf.models import (
     CTFCategory,
     CTFChallengeManifest,
+    CTFInlineArtifact,
     CTFRunResult,
     CTFScenario,
     CTFSolveStatus,
@@ -22,6 +23,7 @@ __all__ = [
     "CTFChallengeManifest",
     "CTFChallengeService",
     "CTFFlagValidatorRuntime",
+    "CTFInlineArtifact",
     "CTFModePack",
     "CTFRunArtifacts",
     "CTFRunResult",

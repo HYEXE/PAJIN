@@ -7,6 +7,7 @@ import subprocess
 import sys
 import time
 from hashlib import sha256
+from hmac import compare_digest
 from re import fullmatch
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -16,6 +17,7 @@ from urllib.request import Request, urlopen
 MAX_AI_RESPONSE_BYTES = 65_536
 MAX_BUG_BOUNTY_RESPONSE_BYTES = 32_768
 MAX_CTF_WEB_RESPONSE_BYTES = 16_384
+MAX_CTF_CRYPTO_ARTIFACT_BYTES = 4_096
 
 
 def mock_agent_probe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -242,6 +244,59 @@ def ctf_web_backup_probe(payload: dict[str, Any]) -> dict[str, Any]:
         "bodySha256": sha256(body).hexdigest(),
         "synthetic": True,
         "networkPerformed": True,
+    }
+
+
+def ctf_crypto_single_byte_xor(payload: dict[str, Any]) -> dict[str, Any]:
+    target = str(payload["target"])
+    challenge_id = str(payload["challengeId"])
+    scenario_id = str(payload["scenarioId"])
+    artifact_sha256 = str(payload["artifactSha256"])
+    ciphertext_hex = str(payload["ciphertextHex"])
+    if scenario_id != "crypto.single-byte-xor":
+        raise ValueError("unsupported CTF Crypto scenario")
+    if fullmatch(r"[a-z0-9][a-z0-9-]*", challenge_id) is None:
+        raise ValueError("CTF Crypto challenge ID is invalid")
+    if fullmatch(r"[a-f0-9]{64}", artifact_sha256) is None:
+        raise ValueError("CTF Crypto artifact digest is invalid")
+    expected_target = f"http://artifact.invalid/{challenge_id}/{artifact_sha256}"
+    if target != expected_target:
+        raise ValueError("CTF Crypto target does not match its content address")
+    if fullmatch(r"[a-f0-9]+", ciphertext_hex) is None or len(ciphertext_hex) % 2:
+        raise ValueError("CTF Crypto ciphertext must be complete lowercase hex bytes")
+    try:
+        ciphertext = bytes.fromhex(ciphertext_hex)
+    except ValueError as exc:
+        raise ValueError("CTF Crypto ciphertext is not hexadecimal") from exc
+    if not 1 <= len(ciphertext) <= MAX_CTF_CRYPTO_ARTIFACT_BYTES:
+        raise ValueError("CTF Crypto artifact exceeds the bounded size")
+    observed_digest = sha256(ciphertext).hexdigest()
+    if not compare_digest(observed_digest, artifact_sha256):
+        raise ValueError("CTF Crypto artifact SHA-256 does not match")
+
+    matches: list[tuple[int, str]] = []
+    for key in range(256):
+        plaintext_bytes = bytes(value ^ key for value in ciphertext)
+        try:
+            plaintext = plaintext_bytes.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        if fullmatch(r"PAJIN\{[A-Za-z0-9_-]{1,128}\}", plaintext):
+            matches.append((key, plaintext))
+    if len(matches) > 1:
+        raise ValueError("CTF Crypto analysis produced ambiguous flag candidates")
+    key, candidate = matches[0] if matches else (None, None)
+    return {
+        "target": target,
+        "challengeId": challenge_id,
+        "scenarioId": scenario_id,
+        "artifactSha256": artifact_sha256,
+        "solved": candidate is not None,
+        "candidateFlag": candidate,
+        "key": key,
+        "attemptedKeys": 256,
+        "synthetic": True,
+        "networkPerformed": False,
     }
 
 
@@ -690,6 +745,10 @@ def main() -> int:
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")
             result = ctf_web_backup_probe(payload)
+        elif action == "ctf-crypto-single-byte-xor":
+            if secrets:
+                raise ValueError("worker action does not accept secret bindings")
+            result = ctf_crypto_single_byte_xor(payload)
         elif action == "direct-network-check":
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")

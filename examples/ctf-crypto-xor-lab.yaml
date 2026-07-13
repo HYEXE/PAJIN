@@ -1,0 +1,34 @@
+apiVersion: pajin.dev/v1alpha1
+kind: CTFChallenge
+metadata:
+  name: crypto-xor-lab
+  displayName: Synthetic Single-Byte XOR
+  description: Offline Crypto CTF challenge with one bounded content-addressed artifact.
+spec:
+  category: crypto
+  scenario: crypto.single-byte-xor
+  environment:
+    type: local-docker
+  artifact:
+    encoding: hex
+    data: 67767d7e794c445e59505b5268554e4352684f5845685b56554a
+    sha256: cd63642e4c282f36a73bf4834fbb9587e9b46053823a0b0728e4ccf5904a7880
+    mediaType: application/octet-stream
+  authorization:
+    approvedBy: local-lab-owner
+    approvedAt: 2026-07-13T00:00:00Z
+    expiresAt: 2099-07-13T00:00:00Z
+    evidence: synthetic-local-ctf-crypto-lab
+  flag:
+    sha256: f024839770e2573cde8679f0b446f5379b50dc7e159011fd8bad773b9a750ae6
+    format: "PAJIN{...}"
+  objectives:
+    - Recover and independently verify the synthetic flag from the bounded XOR artifact.
+  budgets:
+    durationSeconds: 60
+    maxCostUsd: 0
+    maxAgents: 5
+    maxSpawnDepth: 1
+    maxToolCalls: 1
+    maxModelCalls: 0
+    maxModelTokens: 0
