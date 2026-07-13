@@ -10,15 +10,29 @@ from pajin.tools.ai import (
     ProbeTurn,
 )
 from pajin.tools.base import Tool, ToolRegistry, ToolSpec
+from pajin.tools.bug_bounty import (
+    BOOLEAN_SQLI_SCENARIO,
+    BooleanSQLiChecks,
+    BooleanSQLiObservation,
+    BooleanSQLiProbeInput,
+    BooleanSQLiProbeOutput,
+    BooleanSQLiProbeTool,
+)
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import MCPToolRegistration, RegisteredMCPTool, demo_mcp_tool
 from pajin.tools.mock import MockAgentProbe
 
 __all__ = [
+    "BOOLEAN_SQLI_SCENARIO",
     "AIChatProbeInput",
     "AIChatProbeTool",
     "AIChatRegressionInput",
     "AIChatRegressionTool",
+    "BooleanSQLiChecks",
+    "BooleanSQLiObservation",
+    "BooleanSQLiProbeInput",
+    "BooleanSQLiProbeOutput",
+    "BooleanSQLiProbeTool",
     "ChatMessage",
     "HTTPGetTool",
     "MCPToolRegistration",

@@ -88,7 +88,11 @@ class ToolGateway:
             now=evaluated_at,
         )
         if decision.allowed:
-            rate_limit_denial = self._reserve_rate_limit_slot(campaign, evaluated_at)
+            rate_limit_denial = self._reserve_rate_limit_slot(
+                campaign,
+                evaluated_at,
+                request_cost=tool.spec.network_request_cost,
+            )
             if rate_limit_denial is not None:
                 decision = rate_limit_denial
         self._record_policy(request, decision)
@@ -234,6 +238,8 @@ class ToolGateway:
         self,
         campaign: CampaignManifest,
         evaluated_at: datetime,
+        *,
+        request_cost: int,
     ) -> PolicyDecision | None:
         limit = campaign.spec.rules_of_engagement.max_requests_per_minute
         if limit is None:
@@ -243,13 +249,16 @@ class ToolGateway:
         cutoff = evaluated_at - timedelta(minutes=1)
         while self._request_times and self._request_times[0] <= cutoff:
             self._request_times.popleft()
-        if len(self._request_times) >= limit:
+        if len(self._request_times) + request_cost > limit:
             return PolicyDecision(
                 allowed=False,
-                reason=f"campaign rate limit of {limit} requests per minute is exhausted",
+                reason=(
+                    f"campaign rate limit of {limit} requests per minute cannot reserve "
+                    f"{request_cost} request units"
+                ),
                 policy="rate-limit",
             )
-        self._request_times.append(evaluated_at)
+        self._request_times.extend(evaluated_at for _ in range(request_cost))
         return None
 
     def _deny(

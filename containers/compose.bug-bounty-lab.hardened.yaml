@@ -1,0 +1,4 @@
+services:
+  bug-bounty-target:
+    environment:
+      PAJIN_BUG_BOUNTY_LAB_PROFILE: hardened

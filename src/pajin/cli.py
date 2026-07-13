@@ -28,6 +28,15 @@ from pajin.modes.ai_redteam import (
 )
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
 from pajin.modes.ai_redteam.retest import RegressionStatus
+from pajin.modes.bug_bounty import (
+    BugBountyPlannerRuntime,
+    BugBountyReportService,
+    BugBountyScopeApproval,
+    BugBountyScopeService,
+    BugBountyValidatorRuntime,
+    load_bug_bounty_finding_index,
+    load_bug_bounty_program,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import (
     OpenAICompatibleChatTool,
@@ -49,6 +58,7 @@ from pajin.runtime.worker import (
 )
 from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
+from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
@@ -73,6 +83,7 @@ def _tool_registry() -> ToolRegistry:
     registry.register(ApprovalCheckTool())
     registry.register(AIChatProbeTool())
     registry.register(AIChatRegressionTool())
+    registry.register(BooleanSQLiProbeTool())
     registry.register(HTTPGetTool())
     registry.register(demo_mcp_tool())
     return registry
@@ -84,6 +95,16 @@ def _worker_backend(worker: str) -> WorkerBackend:
     if worker == "docker":
         return DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
     raise ValueError("use 'simulated' or 'docker'")
+
+
+def _parse_aware_datetime(value: str, *, option: str) -> datetime:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{option} must be an ISO 8601 datetime") from exc
+    if parsed.tzinfo is None:
+        raise ValueError(f"{option} must include a UTC offset or Z")
+    return parsed
 
 
 def _provider_checks(
@@ -1036,6 +1057,191 @@ def plan_kisa_remediation(
         )
     console.print(table)
     console.print(f"Remediation plan: {outcome.path.resolve()}")
+
+
+@app.command("bug-bounty-review")
+def review_bug_bounty_scope(
+    program_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/programs"),
+) -> None:
+    """Normalize a Bug Bounty program policy and emit a digest-bound scope review."""
+
+    try:
+        program = load_bug_bounty_program(program_path)
+        artifacts = BugBountyScopeService().write_review(program, output)
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot review Bug Bounty scope:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    review = artifacts.review
+    table = Table(title="PAJIN Bug Bounty Scope Review")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Program", program.metadata.display_name)
+    table.add_row("In-scope rules", str(len(review.allow)))
+    table.add_row("Out-of-scope rules", str(len(review.deny)))
+    table.add_row("Entry points", str(len(review.entry_points)))
+    table.add_row("Warnings", str(len(review.warnings)))
+    console.print(table)
+    console.print(f"Scope digest: {review.scope_digest}")
+    console.print(f"Scope review: {artifacts.review_markdown_path.resolve()}")
+    console.print("Campaign compilation requires explicit approval of the displayed digest.")
+
+
+@app.command("bug-bounty-compile")
+def compile_bug_bounty_campaign(
+    program_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    scope_digest: Annotated[str, typer.Option("--scope-digest")],
+    approved_by: Annotated[str, typer.Option("--approved-by")],
+    approved_at: Annotated[str, typer.Option("--approved-at")],
+    expires_at: Annotated[str, typer.Option("--expires-at")],
+    evidence: Annotated[str, typer.Option("--evidence")],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/campaigns"),
+) -> None:
+    """Compile a reviewed Bug Bounty policy into an executable Campaign manifest."""
+
+    try:
+        program = load_bug_bounty_program(program_path)
+        approval = BugBountyScopeApproval(
+            scope_digest=scope_digest,
+            approved_by=approved_by,
+            approved_at=_parse_aware_datetime(approved_at, option="--approved-at"),
+            expires_at=_parse_aware_datetime(expires_at, option="--expires-at"),
+            evidence=evidence,
+        )
+        artifact = BugBountyScopeService().write_campaign(
+            program,
+            approval,
+            output / f"{program.metadata.name}.yaml",
+        )
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot compile Bug Bounty campaign:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    campaign = artifact.campaign
+    table = Table(title="Compiled PAJIN Bug Bounty Campaign")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Campaign", campaign.metadata.name)
+    table.add_row("Targets", str(len(campaign.spec.targets)))
+    table.add_row("Max risk", f"T{campaign.spec.rules_of_engagement.max_tool_risk_tier.value}")
+    table.add_row(
+        "Rate limit",
+        f"{campaign.spec.rules_of_engagement.max_requests_per_minute}/minute",
+    )
+    console.print(table)
+    console.print(f"Campaign manifest: {artifact.path.resolve()}")
+
+
+@app.command("bug-bounty-report")
+def report_bug_bounty_findings(
+    program_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    run_path: Annotated[Path, typer.Argument(exists=True, readable=True, file_okay=False)],
+    known_findings: Annotated[
+        Path | None,
+        typer.Option("--known-findings", exists=True, readable=True, dir_okay=False),
+    ] = None,
+) -> None:
+    """Deduplicate validated findings and emit evidence-bound submission drafts."""
+
+    try:
+        program = load_bug_bounty_program(program_path)
+        finding_index = (
+            load_bug_bounty_finding_index(known_findings) if known_findings is not None else None
+        )
+        artifacts = BugBountyReportService().report_run(
+            program,
+            run_path,
+            known_findings=finding_index,
+        )
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot create Bug Bounty report:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    summary = artifacts.report.summary
+    table = Table(title="PAJIN Bug Bounty Finding Triage")
+    table.add_column("Disposition")
+    table.add_column("Count")
+    table.add_row("Ready", str(summary.ready))
+    table.add_row("Needs review", str(summary.needs_review))
+    table.add_row("Known duplicates", str(summary.known_duplicates))
+    table.add_row("Same-run duplicates", str(summary.run_duplicates))
+    console.print(table)
+    console.print(f"Triage report: {artifacts.report_path.resolve()}")
+    console.print(f"Submission drafts: {len(artifacts.submission_paths)}")
+    if summary.needs_review:
+        console.print(
+            "[yellow]Potential duplicates or incomplete required fields need "
+            "operator review.[/yellow]"
+        )
+
+
+@app.command("bug-bounty-run")
+def run_bug_bounty_campaign(
+    program_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+    known_findings: Annotated[
+        Path | None,
+        typer.Option("--known-findings", exists=True, readable=True, dir_okay=False),
+    ] = None,
+) -> None:
+    """Run the fixed Bug Bounty lab probe with Docker and create triage drafts."""
+
+    try:
+        program = load_bug_bounty_program(program_path)
+        campaign = load_manifest(manifest)
+        finding_index = (
+            load_bug_bounty_finding_index(known_findings) if known_findings is not None else None
+        )
+        report_service = BugBountyReportService()
+        report_service.validate_campaign(program, campaign)
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot start Bug Bounty campaign:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    runner = MultiAgentCampaignRunner(
+        planner=BugBountyPlannerRuntime(),
+        validator=BugBountyValidatorRuntime(),
+        tools=_tool_registry(),
+        policy=PolicyEngine(),
+        worker=_worker_backend("docker"),
+        output_root=output,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    if outcome.status is not RunStatus.COMPLETED:
+        console.print(f"[bold red]Bug Bounty run failed:[/bold red] {outcome.run_id}")
+        if outcome.cancellation_reason:
+            console.print(f"Reason: {outcome.cancellation_reason}")
+        console.print(f"Run report: {outcome.report_path.resolve()}")
+        raise typer.Exit(code=1)
+
+    try:
+        artifacts = report_service.report_run(
+            program,
+            outcome.run_path,
+            known_findings=finding_index,
+        )
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Bug Bounty triage failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    summary = artifacts.report.summary
+    table = Table(title="PAJIN Bug Bounty Multi-Agent Run")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Run status", outcome.status.value)
+    table.add_row("Tool calls", str(len(outcome.tool_results)))
+    table.add_row("Validated findings", str(len(outcome.findings)))
+    table.add_row("Ready drafts", str(summary.ready))
+    table.add_row("Needs review", str(summary.needs_review))
+    table.add_row("Known duplicates", str(summary.known_duplicates))
+    table.add_row("Same-run duplicates", str(summary.run_duplicates))
+    console.print(table)
+    console.print(f"Run report: {outcome.report_path.resolve()}")
+    console.print(f"Triage report: {artifacts.report_path.resolve()}")
+    console.print(f"Submission drafts: {len(artifacts.submission_paths)}")
+    console.print("No external submission was performed.")
 
 
 @app.command("worker-check")

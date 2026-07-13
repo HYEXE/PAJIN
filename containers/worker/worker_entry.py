@@ -8,10 +8,11 @@ import sys
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from urllib.request import Request, urlopen
 
 MAX_AI_RESPONSE_BYTES = 65_536
+MAX_BUG_BOUNTY_RESPONSE_BYTES = 32_768
 
 
 def mock_agent_probe(payload: dict[str, Any]) -> dict[str, Any]:
@@ -101,6 +102,87 @@ def http_get(payload: dict[str, Any]) -> dict[str, Any]:
         }
     except URLError as exc:
         return {"target": target, "status": 0, "error": str(exc.reason)}
+
+
+def _get_bug_bounty_observation(target: str, value: str, name: str) -> dict[str, Any]:
+    parsed = urlsplit(target)
+    request_target = urlunsplit(
+        (parsed.scheme, parsed.netloc, parsed.path, urlencode({"id": value}), "")
+    )
+    request = Request(
+        request_target,
+        method="GET",
+        headers={"Accept": "application/json", "User-Agent": "PAJIN-Bug-Bounty-Probe/1.0"},
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            body = response.read(MAX_BUG_BOUNTY_RESPONSE_BYTES + 1)
+            status = response.status
+    except HTTPError as exc:
+        body = exc.read(MAX_BUG_BOUNTY_RESPONSE_BYTES + 1)
+        status = exc.code
+    except URLError as exc:
+        raise ValueError(f"Bug Bounty target request failed: {exc.reason}") from exc
+    if len(body) > MAX_BUG_BOUNTY_RESPONSE_BYTES:
+        raise ValueError("Bug Bounty target response exceeded byte limit")
+    response_data = json.loads(body)
+    if not isinstance(response_data, dict):
+        raise TypeError("Bug Bounty target response must be an object")
+    record_count = response_data.get("recordCount")
+    synthetic = response_data.get("synthetic")
+    if not isinstance(record_count, int) or isinstance(record_count, bool):
+        raise TypeError("Bug Bounty target response requires integer recordCount")
+    if not isinstance(synthetic, bool):
+        raise TypeError("Bug Bounty target response requires boolean synthetic")
+    return {
+        "name": name,
+        "status": status,
+        "recordCount": record_count,
+        "synthetic": synthetic,
+    }
+
+
+def bug_bounty_sqli_probe(payload: dict[str, Any]) -> dict[str, Any]:
+    target = str(payload["target"])
+    scenario_id = str(payload["scenarioId"])
+    if scenario_id != "bug-bounty.api.boolean-sqli-lab":
+        raise ValueError("unsupported Bug Bounty scenario")
+    parsed = urlsplit(target)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise ValueError("Bug Bounty target must be an absolute HTTP(S) URL")
+    if parsed.username or parsed.password or parsed.query or parsed.fragment:
+        raise ValueError("Bug Bounty target authority, query, or fragment is invalid")
+    if not parsed.path.endswith("/v1/users/lookup"):
+        raise ValueError("Bug Bounty scenario is fixed to the lab lookup endpoint")
+
+    observations = [
+        _get_bug_bounty_observation(target, "1", "baseline"),
+        _get_bug_bounty_observation(target, "1' AND '1'='2", "negative-control"),
+        _get_bug_bounty_observation(target, "1' OR '1'='1", "boolean-probe"),
+    ]
+    by_name = {observation["name"]: observation for observation in observations}
+    checks = {
+        "baselineSingleRecord": (
+            by_name["baseline"]["status"] == 200 and by_name["baseline"]["recordCount"] == 1
+        ),
+        "negativeControlEmpty": (
+            by_name["negative-control"]["status"] in {200, 400}
+            and by_name["negative-control"]["recordCount"] == 0
+        ),
+        "booleanProbeExpanded": (
+            by_name["boolean-probe"]["status"] == 200
+            and by_name["boolean-probe"]["recordCount"] > 1
+        ),
+        "syntheticLabOnly": all(observation["synthetic"] for observation in observations),
+    }
+    return {
+        "target": target,
+        "scenarioId": scenario_id,
+        "vulnerable": all(checks.values()),
+        "checks": checks,
+        "observations": observations,
+        "networkPerformed": True,
+    }
 
 
 def _post_ai_turn(target: str, payload: dict[str, Any]) -> tuple[dict[str, Any], float]:
@@ -540,6 +622,10 @@ def main() -> int:
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")
             result = ai_chat_probe(payload)
+        elif action == "bug-bounty-sqli-probe":
+            if secrets:
+                raise ValueError("worker action does not accept secret bindings")
+            result = bug_bounty_sqli_probe(payload)
         elif action == "direct-network-check":
             if secrets:
                 raise ValueError("worker action does not accept secret bindings")

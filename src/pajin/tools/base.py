@@ -20,6 +20,7 @@ class ToolSpec(BaseModel):
     categories: set[str] = Field(default_factory=set)
     evidence_types: set[str] = Field(default_factory=lambda: {"json"})
     network_access: bool = False
+    network_request_cost: int = Field(default=1, ge=1, le=100)
 
 
 class Tool(ABC):

@@ -16,6 +16,10 @@ from pajin.modes.bug_bounty.reporting import (
     KnownFindingStatus,
     load_bug_bounty_finding_index,
 )
+from pajin.modes.bug_bounty.runtime import (
+    BugBountyPlannerRuntime,
+    BugBountyValidatorRuntime,
+)
 from pajin.modes.bug_bounty.service import (
     BugBountyCampaignArtifact,
     BugBountyReviewArtifacts,
@@ -26,6 +30,7 @@ from pajin.modes.bug_bounty.service import (
 __all__ = [
     "BugBountyCampaignArtifact",
     "BugBountyFindingIndex",
+    "BugBountyPlannerRuntime",
     "BugBountyProbeProfile",
     "BugBountyProgramManifest",
     "BugBountyReportArtifacts",
@@ -35,6 +40,7 @@ __all__ = [
     "BugBountyScopeReview",
     "BugBountyScopeService",
     "BugBountyTriageReport",
+    "BugBountyValidatorRuntime",
     "DuplicateDisposition",
     "KnownBugBountyFinding",
     "KnownFindingStatus",
