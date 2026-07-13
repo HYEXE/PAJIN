@@ -1,0 +1,103 @@
+services:
+  postgres:
+    image: postgres:17.10-alpine
+    environment:
+      POSTGRES_DB: pajin_test
+      POSTGRES_USER: pajin
+      POSTGRES_PASSWORD: pajin-control-plane-lab-password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pajin -d pajin_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:55432:5432"
+    read_only: true
+    user: "70:70"
+    tmpfs:
+      - /var/lib/postgresql/data:uid=70,gid=70,mode=0700
+      - /run/postgresql:uid=70,gid=70,mode=0775
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    restart: "no"
+
+  control-plane:
+    image: pajin-control-plane:dev
+    build:
+      context: ..
+      dockerfile: containers/control-plane/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      PAJIN_CP_DATABASE_URL: postgresql+psycopg://pajin:pajin-control-plane-lab-password@postgres:5432/pajin_test
+      PAJIN_CP_OPERATOR_TOKEN: pajin-lab-operator-token-0000000000000001
+      PAJIN_CP_APPROVER_TOKEN: pajin-lab-approver-token-0000000000000001
+      PAJIN_CP_WORKER_TOKEN: pajin-lab-worker-token-000000000000000001
+      PAJIN_CP_CHECKPOINT_KEY: pajin-lab-checkpoint-signing-key-000000000000000000000001
+      PAJIN_CP_HOST: 0.0.0.0
+      PAJIN_CP_PORT: 8090
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8090/readyz', timeout=2)",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    ports:
+      - "127.0.0.1:18090:8090"
+    read_only: true
+    tmpfs:
+      - /tmp
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
+
+  worker-daemon:
+    image: pajin-control-plane:dev
+    command: ["pajin-worker-daemon"]
+    depends_on:
+      control-plane:
+        condition: service_healthy
+    environment:
+      PAJIN_CP_URL: http://control-plane:8090
+      PAJIN_CP_WORKER_TOKEN: pajin-lab-worker-token-000000000000000001
+      PAJIN_WORKER_ID: pajin-compose-worker-1
+      PAJIN_DAEMON_KINDS: campaign,tool-loop
+      PAJIN_DAEMON_LEASE_SECONDS: 6
+      PAJIN_DAEMON_HEARTBEAT_SECONDS: 2
+      PAJIN_DAEMON_LONG_POLL_SECONDS: 10
+      PAJIN_DAEMON_OUTPUT_ROOT: /var/lib/pajin/runs
+      PAJIN_DAEMON_STATUS_PATH: /tmp/pajin-worker-status.json
+    healthcheck:
+      test: ["CMD", "python", "-m", "pajin.control_plane.worker_health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=0750
+      - /var/lib/pajin/runs:uid=10001,gid=10001,mode=0750
+    user: "10001:10001"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 0.5
+    restart: "no"
