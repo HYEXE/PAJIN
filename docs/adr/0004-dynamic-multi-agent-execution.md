@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-07-12
 - Call-budget allocation amended by: ADR 0020
+- Specialist scheduling amended by: ADR 0021
 
 ## Context
 
@@ -80,8 +81,8 @@ boundary.
 
 ### Trade-offs and residual risks
 
-- The local scheduler currently executes ready Specialist tasks sequentially. Parallel execution
-  requires atomic budget and Capability transactions in a durable backend.
+- The local scheduler supports only the bounded opt-in concurrency defined by ADR 0021. Distributed
+  execution still requires atomic budget and Capability transactions in a durable backend.
 - Local JSONL and JSON artifacts are reproducible but not crash-durable workflow checkpoints.
 - Provider token and cost accounting remains zero for deterministic runs; model adapters must report
   provider usage before cost budgets can govern paid calls.

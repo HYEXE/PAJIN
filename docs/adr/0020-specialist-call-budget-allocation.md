@@ -44,5 +44,6 @@ children cannot consume a sibling's required first attempt.
 - Stable plan order decides who receives scarce optional retries; no priority or parallel scheduler
   is introduced.
 
-Future parallel execution requires durable, atomic reservations rather than relying on this local
-single-Supervisor allocation.
+ADR 0021 permits bounded local concurrency only for explicitly opted-in Tools because this
+single-Supervisor allocation fixes every child maximum before dispatch. Distributed execution still
+requires durable, atomic reservations.

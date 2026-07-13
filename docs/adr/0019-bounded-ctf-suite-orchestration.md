@@ -35,10 +35,11 @@ the orchestrator delegates a separate Capability Grant containing only that step
 The Crypto Worker still receives `NetworkMode.NONE`; the Web Worker receives only the fixed egress
 policy for the loopback-bound fixture.
 
-The existing multi-agent runner executes Specialist tasks sequentially. Its call-budget allocator
-reserves one first attempt for each Specialist before assigning retry slots. The Suite's exact
-two-call root budget therefore assigns one call to Web and one to Crypto, with no retry slot that
-one member could consume before the other starts.
+The multi-agent runner's call-budget allocator reserves one first attempt for each Specialist before
+assigning retry slots. The Suite's exact two-call root budget therefore assigns one call to Web and
+one to Crypto. Both fixed Tools declare the separate `parallelSafe` contract, so the local scheduler
+runs them in one bounded wave while preserving plan-ordered results. Neither member receives a retry
+slot that it could consume before the other starts.
 
 Finalization first verifies the core Run seal and reconstructs the exact Suite Campaign from the
 original typed manifests. It then binds each Tool result to its plan request, target, category Tool,
@@ -55,5 +56,5 @@ mismatch, non-overlapping windows, duplicate identities, duplicate categories, c
 missing validation, or unexplained findings fail closed.
 
 The MVP is intentionally not a general CTF playlist. Adding a third member, repeated categories,
-parallel scheduling, new challenge types, external artifacts, or scoreboard integration requires a
-separate decision and additional policy contracts.
+distributed scheduling, new challenge types, external artifacts, or scoreboard integration requires
+a separate decision and additional policy contracts.

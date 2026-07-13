@@ -585,6 +585,12 @@ T0/T1 task. A plan that cannot fund every first Specialist attempt fails before 
 The independent Validator can confirm a finding only when its target is declared and every cited
 artifact was produced by a Specialist in the same run.
 
+Specialist concurrency is opt-in at the Tool contract. `parallelSafe: false` is the default;
+non-opted-in Tools execute as single-task barriers in plan order. Consecutive opted-in tasks run in
+bounded local waves with a default limit of four, while results are restored to plan order before
+validation and reporting. Kill Switch activation cancels active sibling Workers. This local
+cooperative scheduler does not provide distributed or crash-durable reservations.
+
 Verify live Kill Switch propagation into a running Worker:
 
 ```powershell
