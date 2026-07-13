@@ -14,7 +14,8 @@ plus a Markdown report.
 - A network-enabled tool receives a campaign-derived egress policy only from the Tool Gateway.
 - Each network execution gets a private internal Docker network and a dedicated allowlist proxy.
 - Public destinations are the default; loopback, link-local, private, reserved, multicast, and
-  unspecified addresses are rejected unless the rules of engagement explicitly allow private IPs.
+  unspecified addresses are rejected. The Bug Bounty private-network exception is limited to the
+  fixed `local-lab` profile and `host.docker.internal` entry points.
 - MCP process commands are kept in the Worker catalog. Agents can submit only registered server
   IDs, tool names, and typed arguments.
 - Planner-provided agent identities are ignored; the Supervisor binds each request to the assigned
@@ -25,6 +26,8 @@ plus a Markdown report.
   controlled by the PAJIN runtime rather than model instructions.
 - Explicit deny scope takes precedence over allow scope.
 - Authorization, capability, risk tier, method, and call budgets are checked before execution.
+- Optional tool-category allowlists, recurring IANA-timezone testing windows, and per-campaign
+  request rates are enforced by the Policy Engine and Tool Gateway.
 - Unregistered tools are rejected before Worker dispatch.
 - Provider endpoints, model IDs, function-tool allowlists, and credential references are fixed by
   trusted registration; an Agent cannot override them in a chat request.
@@ -58,6 +61,131 @@ uv sync --extra dev
 
 The simulated backend exists only for deterministic development and unit tests. It is not an
 isolation boundary.
+
+## Bug Bounty Scope Parser
+
+Bug Bounty execution starts from a typed program-policy snapshot, not an agent's interpretation of
+free-form scope. The first command normalizes the source policy and emits `program.normalized.json`,
+`scope-review.json`, and an operator-facing `scope-review.md`:
+
+```powershell
+.venv\Scripts\pajin bug-bounty-review examples\bug-bounty-program.yaml
+```
+
+The review prints a SHA-256 scope digest over canonical policy JSON, including the original policy
+text. After comparing the review with the authoritative program page, compile only that exact digest:
+
+```powershell
+.venv\Scripts\pajin bug-bounty-compile examples\bug-bounty-program.yaml `
+  --scope-digest <digest-from-review> `
+  --approved-by <program-owner> `
+  --approved-at 2026-07-13T10:00:00+09:00 `
+  --expires-at 2026-07-20T10:00:00+09:00 `
+  --evidence <authorization-ticket>
+.venv\Scripts\pajin validate .pajin\campaigns\example-bug-bounty-lab.yaml
+```
+
+Any change to the raw policy, assets, methods, tool categories, limits, or time windows invalidates
+the digest. The compiler caps this MVP at T2, injects mandatory prohibitions for denial of service,
+social engineering, persistence, credential stuffing, real-user-data access, and exfiltration, and
+requires concrete entry points that match an allow rule without matching a deny rule. The runtime
+then enforces allow/deny scope, method and category allowlists, weekly test windows, and a sliding
+one-minute request limit before Worker dispatch.
+
+Evidence retention remains an explicit manual control. Duplicate triage can consume a typed local
+snapshot, but synchronizing that snapshot with a platform or issue tracker remains manual.
+
+### Finding triage and submission drafts
+
+After a completed Bug Bounty Campaign has independently validated findings, compare them with an
+optional program-specific known-finding index and generate submission drafts:
+
+```powershell
+.venv\Scripts\pajin bug-bounty-report `
+  examples\bug-bounty-program.yaml `
+  <completed-run-directory> `
+  --known-findings examples\bug-bounty-known-findings.yaml
+```
+
+The reporter rechecks that the Run used the current program digest and exact compiled scope policy,
+accepts only declared targets, and requires every cited evidence file to resolve inside that Run's
+`evidence/` directory. It writes an immutable-input report set under:
+
+```text
+bug-bounty-reports/<triage-id>/
+  bug-bounty-triage.json
+  bug-bounty-report.md
+  submissions/<finding-id>.md
+```
+
+Exact fingerprints use the program, normalized target path and query-parameter names,
+vulnerability class, affected component, and normalized root cause. Only exact matches against an
+unresolved known Finding or the same Run are automatically suppressed. A resolved known Finding or
+the same cause on a different endpoint becomes `needs-review`, preserving possible regressions and
+multi-endpoint impact. Missing impact, remediation, component, or root-cause data produces a draft
+with explicit TODOs instead of an automatic submission.
+
+The generated Markdown is a local draft only. PAJIN does not submit to a Bug Bounty platform or
+claim that the unsigned local evidence has production-grade artifact integrity.
+
+### Automated local Bug Bounty lab
+
+The executable Bug Bounty slice is intentionally narrower than the general scope parser. It runs
+only the compiled `boolean-sqli-lab` profile against the synthetic loopback-bound target. The
+Planner can select only `bug-bounty.boolean-sqli-probe`; the Tool accepts no agent-authored attack
+payload and the trusted Worker performs exactly one baseline, one negative control, and one boolean
+comparison. The Validator ignores the Worker's claimed conclusion and recomputes the signal from
+the three bounded observations. One Tool call reserves three request-rate units.
+
+Build the Worker and egress proxy, then start the vulnerable lab:
+
+```powershell
+docker build --tag pajin-worker:dev containers\worker
+docker build --tag pajin-egress-proxy:dev containers\egress-proxy
+docker compose -f containers\compose.bug-bounty-lab.yaml up --build --detach
+
+.venv\Scripts\pajin bug-bounty-review `
+  examples\bug-bounty-lab-program.yaml `
+  --output .pajin\bug-bounty-lab-review
+```
+
+Inspect the generated review and copy its printed digest into the approval command:
+
+```powershell
+.venv\Scripts\pajin bug-bounty-compile `
+  examples\bug-bounty-lab-program.yaml `
+  --scope-digest <reviewed-digest> `
+  --approved-by <local-lab-owner> `
+  --approved-at <offset-aware-approval-time> `
+  --expires-at <offset-aware-expiry-time> `
+  --evidence <local-authorization-record> `
+  --output .pajin\campaigns
+
+.venv\Scripts\pajin bug-bounty-run `
+  examples\bug-bounty-lab-program.yaml `
+  .pajin\campaigns\local-bug-bounty-sqli-lab.yaml
+```
+
+The vulnerable profile should produce one independently validated draft. Recreate the target with
+the hardened override and run the same digest-approved Campaign again; the fixed probe should then
+produce zero findings:
+
+```powershell
+docker compose `
+  -f containers\compose.bug-bounty-lab.yaml `
+  -f containers\compose.bug-bounty-lab.hardened.yaml `
+  up --build --detach --force-recreate
+
+.venv\Scripts\pajin bug-bounty-run `
+  examples\bug-bounty-lab-program.yaml `
+  .pajin\campaigns\local-bug-bounty-sqli-lab.yaml
+
+docker compose -f containers\compose.bug-bounty-lab.yaml down
+```
+
+`bug-bounty-run` always uses the Docker Worker, creates local evidence and triage drafts, and never
+submits a report externally. Generic public Bug Bounty assets remain reviewable and compilable, but
+are not executable until a separately bounded probe profile is implemented.
 
 ## KISA AI Red Team Mode Pack
 
@@ -473,4 +601,7 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0004](docs/adr/0004-dynamic-multi-agent-execution.md), and
 [ADR-0005](docs/adr/0005-kisa-ai-red-team-mode-pack.md), and
 [ADR-0006](docs/adr/0006-provider-neutral-ai-chat-probe.md), and
-[ADR-0007](docs/adr/0007-kisa-remediation-and-retest-loop.md).
+[ADR-0007](docs/adr/0007-kisa-remediation-and-retest-loop.md), and
+[ADR-0013](docs/adr/0013-bug-bounty-scope-parser.md), and
+[ADR-0014](docs/adr/0014-conservative-bug-bounty-deduplication.md), and
+[ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md).
