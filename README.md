@@ -263,6 +263,35 @@ verifies that root and appends a second seal. `ctf-run` is Docker-only and has n
 credential, API client, or external submission path. Additional categories require a separate
 typed scenario, Tool grammar, isolated fixture, independent verification rule, and safety review.
 
+### Web + Crypto Suite
+
+`ctf-suite-run` compiles exactly one Web manifest and one Crypto manifest into one Campaign. The
+two manifests must have distinct challenge IDs, the same approving authority, and overlapping
+authorization windows. The compiled Campaign uses only their approval-window intersection, binds
+both member contracts into authorization evidence, derives a six-agent budget, and permits exactly
+two Tool calls.
+
+Start the local Web fixture, then run both typed challenges together:
+
+```powershell
+docker compose -f containers\compose.ctf-web-lab.yaml up --build --detach
+
+.venv\Scripts\pajin ctf-suite-run `
+  web-crypto-suite `
+  examples\ctf-web-backup-lab.yaml `
+  examples\ctf-crypto-xor-lab.yaml
+
+docker compose -f containers\compose.ctf-web-lab.yaml down
+```
+
+The deterministic Triage Planner creates one `ctf-web-specialist` and one
+`ctf-crypto-specialist`. Each receives a separate Capability Grant restricted to its own target and
+Tool; the current generic runner executes those tasks sequentially. The aggregate
+`ctf-suite-result.json` retains `solved`, `unsolved`, or `invalid-flag` for each challenge, while
+`ctf-suite-writeup.md` records only independently digest-validated flags. Any non-solved member
+makes the CLI return non-zero after still sealing the complete aggregate evidence. No scoreboard
+submission is available.
+
 ## KISA AI Red Team Mode Pack
 
 Run the KISA-aligned indirect prompt-injection and unauthorized tool-use scenario with two
