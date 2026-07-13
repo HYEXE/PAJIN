@@ -43,6 +43,7 @@ from pajin.modes.ctf import (
     CTFFlagValidatorRuntime,
     CTFModePack,
     CTFSolveStatus,
+    CTFSuiteModePack,
     CTFTriagePlannerRuntime,
     load_ctf_challenge,
 )
@@ -1337,6 +1338,68 @@ def run_ctf_web_challenge(
         output,
         required_category=CTFCategory.WEB,
     )
+
+
+@app.command("ctf-suite-run")
+def run_ctf_suite(
+    suite_name: Annotated[str, typer.Argument()],
+    challenge_paths: Annotated[
+        list[Path],
+        typer.Argument(exists=True, readable=True, dir_okay=False),
+    ],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
+) -> None:
+    """Run one bounded Web/Crypto Suite without external submission."""
+
+    try:
+        challenges = [load_ctf_challenge(path) for path in challenge_paths]
+        campaign = CTFChallengeService().compile_suite(suite_name, challenges)
+    except (ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot start CTF Suite:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    runner = MultiAgentCampaignRunner(
+        planner=CTFTriagePlannerRuntime(),
+        validator=CTFFlagValidatorRuntime(),
+        tools=_tool_registry(),
+        policy=PolicyEngine(),
+        worker=_worker_backend("docker"),
+        output_root=output,
+    )
+    outcome = asyncio.run(runner.run(campaign))
+    if outcome.status is not RunStatus.COMPLETED:
+        console.print(f"[bold red]CTF Suite run failed:[/bold red] {outcome.run_id}")
+        if outcome.cancellation_reason:
+            console.print(f"Reason: {outcome.cancellation_reason}")
+        console.print(f"Run report: {outcome.report_path.resolve()}")
+        raise typer.Exit(code=1)
+
+    try:
+        artifacts = CTFSuiteModePack().finalize(suite_name, challenges, outcome)
+    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]CTF Suite finalization failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    summary = artifacts.result.summary
+    table = Table(title="PAJIN CTF Suite Multi-Agent Run")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Run status", outcome.status.value)
+    table.add_row("Challenges", str(len(artifacts.result.items)))
+    table.add_row("Agents", str(len(outcome.agents)))
+    table.add_row("Tool calls", str(len(outcome.tool_results)))
+    table.add_row("Solved", str(summary.solved))
+    table.add_row("Unsolved", str(summary.unsolved))
+    table.add_row("Invalid flags", str(summary.invalid_flag))
+    console.print(table)
+    for item in artifacts.result.items:
+        if item.status is CTFSolveStatus.SOLVED:
+            console.print(f"Verified flag ({item.challenge_id}): {item.candidate_flag}")
+    console.print(f"CTF Suite result: {artifacts.result_path.resolve()}")
+    console.print(f"CTF Suite write-up: {artifacts.writeup_path.resolve()}")
+    console.print("No external scoreboard submission was performed.")
+    if summary.solved != len(artifacts.result.items):
+        raise typer.Exit(code=1)
 
 
 @app.command("evidence-verify")

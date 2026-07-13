@@ -187,3 +187,34 @@ class CTFRunResult(StrictModel):
             if not self.evidence:
                 raise ValueError("solved CTF result requires Specialist evidence")
         return self
+
+
+class CTFSuiteSummary(StrictModel):
+    solved: int = Field(ge=0)
+    unsolved: int = Field(ge=0)
+    invalid_flag: int = Field(alias="invalidFlag", ge=0)
+
+
+class CTFSuiteResult(StrictModel):
+    run_id: str
+    suite_name: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{2,63}$")
+    items: list[CTFRunResult] = Field(min_length=2, max_length=2)
+    summary: CTFSuiteSummary
+    generated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def require_complete_web_crypto_summary(self) -> CTFSuiteResult:
+        if any(item.run_id != self.run_id for item in self.items):
+            raise ValueError("CTF Suite item run IDs must match the Suite run")
+        if len({item.challenge_id for item in self.items}) != len(self.items):
+            raise ValueError("CTF Suite challenge IDs must be unique")
+        if {item.category for item in self.items} != {CTFCategory.WEB, CTFCategory.CRYPTO}:
+            raise ValueError("CTF Suite requires exactly one Web and one Crypto result")
+        observed = CTFSuiteSummary(
+            solved=sum(item.status is CTFSolveStatus.SOLVED for item in self.items),
+            unsolved=sum(item.status is CTFSolveStatus.UNSOLVED for item in self.items),
+            invalidFlag=sum(item.status is CTFSolveStatus.INVALID_FLAG for item in self.items),
+        )
+        if self.summary != observed:
+            raise ValueError("CTF Suite summary does not match its challenge results")
+        return self

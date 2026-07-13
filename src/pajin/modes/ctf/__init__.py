@@ -7,6 +7,8 @@ from pajin.modes.ctf.models import (
     CTFRunResult,
     CTFScenario,
     CTFSolveStatus,
+    CTFSuiteResult,
+    CTFSuiteSummary,
 )
 from pajin.modes.ctf.runtime import CTFFlagValidatorRuntime, CTFTriagePlannerRuntime
 from pajin.modes.ctf.service import (
@@ -14,6 +16,8 @@ from pajin.modes.ctf.service import (
     CTFChallengeService,
     CTFModePack,
     CTFRunArtifacts,
+    CTFSuiteArtifacts,
+    CTFSuiteModePack,
     load_ctf_challenge,
 )
 
@@ -29,6 +33,10 @@ __all__ = [
     "CTFRunResult",
     "CTFScenario",
     "CTFSolveStatus",
+    "CTFSuiteArtifacts",
+    "CTFSuiteModePack",
+    "CTFSuiteResult",
+    "CTFSuiteSummary",
     "CTFTriagePlannerRuntime",
     "load_ctf_challenge",
 ]

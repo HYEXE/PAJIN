@@ -8,11 +8,14 @@ from datetime import UTC, datetime
 from hashlib import sha256
 from hmac import compare_digest
 from pathlib import Path
+from re import fullmatch
 
 import yaml
 
 from pajin.domain.models import (
+    Authorization,
     AutonomyLevel,
+    Budgets,
     CampaignManifest,
     CampaignMetadata,
     CampaignMode,
@@ -28,6 +31,8 @@ from pajin.modes.ctf.models import (
     CTFChallengeManifest,
     CTFRunResult,
     CTFSolveStatus,
+    CTFSuiteResult,
+    CTFSuiteSummary,
 )
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.tools.ctf import (
@@ -49,6 +54,13 @@ class CTFCampaignArtifact:
 @dataclass(frozen=True)
 class CTFRunArtifacts:
     result: CTFRunResult
+    result_path: Path
+    writeup_path: Path
+
+
+@dataclass(frozen=True)
+class CTFSuiteArtifacts:
+    result: CTFSuiteResult
     result_path: Path
     writeup_path: Path
 
@@ -115,6 +127,128 @@ class CTFChallengeService:
                 budgets=challenge.spec.budgets,
                 outputs=["ctf-result", "ctf-writeup", "evidence-bundle"],
             ),
+        )
+
+    def compile_suite(
+        self,
+        suite_name: str,
+        challenges: list[CTFChallengeManifest],
+        *,
+        evaluated_at: datetime | None = None,
+    ) -> CampaignManifest:
+        """Compile one Web and one Crypto challenge into a shared bounded Campaign."""
+
+        ordered = self._ordered_suite(suite_name, challenges)
+        now = evaluated_at or datetime.now(UTC)
+        authorization = self._suite_authorization(suite_name, ordered)
+        if not authorization.is_active(now):
+            raise ValueError("CTF Suite authorization intersection is not active")
+
+        profiles = [self._profile(challenge) for challenge in ordered]
+        rate_limits = [
+            profile.rules.max_requests_per_minute
+            for profile in profiles
+            if profile.rules.max_requests_per_minute is not None
+        ]
+        rules = RulesOfEngagement(
+            maxToolRiskTier=max(profile.rules.max_tool_risk_tier for profile in profiles),
+            allowedMethods=set().union(*(profile.rules.allowed_methods for profile in profiles)),
+            allowedToolCategories=set().union(
+                *(profile.rules.allowed_tool_categories for profile in profiles)
+            ),
+            prohibit=set().union(*(profile.rules.prohibit for profile in profiles)),
+            stopOn=set().union(*(profile.rules.stop_on for profile in profiles)),
+            allowPrivateNetworks=any(profile.rules.allow_private_networks for profile in profiles),
+            maxRequestsPerMinute=max(rate_limits) if rate_limits else None,
+        )
+        budgets = Budgets(
+            durationSeconds=sum(challenge.spec.budgets.duration_seconds for challenge in ordered),
+            maxCostUsd=0,
+            maxAgents=len(ordered) + 4,
+            maxSpawnDepth=1,
+            maxToolCalls=len(ordered),
+            maxModelCalls=0,
+            maxModelTokens=0,
+        )
+        objectives = [
+            f"[{challenge.metadata.name}] {objective}"
+            for challenge in ordered
+            for objective in challenge.spec.objectives
+        ]
+        return CampaignManifest(
+            apiVersion="pajin.dev/v1alpha1",
+            kind="Campaign",
+            metadata=CampaignMetadata(
+                name=suite_name,
+                description=(
+                    "Local-only CTF Suite with one bounded Web challenge and one bounded "
+                    "Crypto challenge."
+                ),
+            ),
+            spec=CampaignSpec(
+                mode=CampaignMode.CTF,
+                autonomy=AutonomyLevel.LAB_AUTONOMOUS,
+                authorization=authorization,
+                targets=[profile.target for profile in profiles],
+                scope=Scope(
+                    allow=[profile.target.endpoint for profile in profiles],
+                    deny=[],
+                ),
+                accessProfile="mixed",
+                objectives=objectives,
+                rulesOfEngagement=rules,
+                budgets=budgets,
+                outputs=["ctf-suite-result", "ctf-suite-writeup", "evidence-bundle"],
+            ),
+        )
+
+    @staticmethod
+    def _ordered_suite(
+        suite_name: str,
+        challenges: list[CTFChallengeManifest],
+    ) -> list[CTFChallengeManifest]:
+        if fullmatch(r"[a-z0-9][a-z0-9-]{2,63}", suite_name) is None:
+            raise ValueError("CTF Suite name must be a lowercase DNS-style identifier")
+        if len(challenges) != 2:
+            raise ValueError("CTF Suite MVP requires exactly two challenges")
+        if len({challenge.metadata.name for challenge in challenges}) != 2:
+            raise ValueError("CTF Suite challenge IDs must be unique")
+        by_category = {challenge.spec.category: challenge for challenge in challenges}
+        if set(by_category) != {CTFCategory.WEB, CTFCategory.CRYPTO}:
+            raise ValueError("CTF Suite MVP requires exactly one Web and one Crypto challenge")
+        return [by_category[CTFCategory.WEB], by_category[CTFCategory.CRYPTO]]
+
+    @staticmethod
+    def _suite_authorization(
+        suite_name: str,
+        challenges: list[CTFChallengeManifest],
+    ) -> Authorization:
+        approvers = {challenge.spec.authorization.approved_by for challenge in challenges}
+        if len(approvers) != 1:
+            raise ValueError("CTF Suite challenges must have the same approving authority")
+        approved_at = max(challenge.spec.authorization.approved_at for challenge in challenges)
+        expires_at = min(challenge.spec.authorization.expires_at for challenge in challenges)
+        if approved_at >= expires_at:
+            raise ValueError("CTF Suite challenge authorizations do not overlap")
+        members = [
+            {
+                "challengeId": challenge.metadata.name,
+                "category": challenge.spec.category.value,
+                "authorization": challenge.spec.authorization.model_dump(
+                    mode="json", by_alias=True
+                ),
+                "flagSha256": challenge.spec.flag.sha256,
+            }
+            for challenge in challenges
+        ]
+        member_digest = sha256(
+            json.dumps(members, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return Authorization(
+            approvedBy=next(iter(approvers)),
+            approvedAt=approved_at,
+            expiresAt=expires_at,
+            evidence=f"ctf-suite:{suite_name}; members-sha256:{member_digest}",
         )
 
     @staticmethod
@@ -408,6 +542,201 @@ class CTFModePack:
                 "## Defensive lesson",
                 "",
                 lesson,
+            ]
+        )
+        return "\n".join(lines) + "\n"
+
+
+class CTFSuiteModePack:
+    """Verify and seal aggregate results for one bounded Web/Crypto Suite run."""
+
+    def finalize(
+        self,
+        suite_name: str,
+        challenges: list[CTFChallengeManifest],
+        outcome: MultiAgentRunOutcome,
+    ) -> CTFSuiteArtifacts:
+        if outcome.status is not RunStatus.COMPLETED or outcome.plan is None:
+            raise ValueError("CTF Suite finalization requires a completed typed run")
+        verify_run_integrity(outcome.run_path)
+        ordered = CTFChallengeService._ordered_suite(suite_name, challenges)
+        campaign = self._validate_run_campaign(suite_name, ordered, outcome)
+        if len(outcome.plan.steps) != 2 or len(outcome.tool_results) != 2:
+            raise ValueError("CTF Suite MVP requires exactly two Specialist results")
+
+        items: list[CTFRunResult] = []
+        validated_count = 0
+        for challenge in ordered:
+            target = next(
+                (
+                    candidate
+                    for candidate in campaign.spec.targets
+                    if candidate.id == challenge.metadata.name
+                ),
+                None,
+            )
+            if target is None:
+                raise ValueError("CTF Suite target is missing from the sealed Campaign")
+            tool_id = (
+                CTF_WEB_BACKUP_TOOL_ID
+                if challenge.spec.category is CTFCategory.WEB
+                else CTF_CRYPTO_XOR_TOOL_ID
+            )
+            steps = [
+                step
+                for step in outcome.plan.steps
+                if step.request.target == target.endpoint and step.request.tool_id == tool_id
+            ]
+            if len(steps) != 1:
+                raise ValueError("CTF Suite plan does not uniquely bind each Specialist")
+            tool_results = [
+                result
+                for result in outcome.tool_results
+                if result.request_id == steps[0].request.request_id and result.tool_id == tool_id
+            ]
+            if len(tool_results) != 1:
+                raise ValueError("CTF Suite result does not match its Specialist request")
+            tool_result = tool_results[0]
+            candidate = CTFModePack._candidate(challenge, target.endpoint, tool_result.data)
+            candidate_digest = sha256(candidate.encode("utf-8")).hexdigest() if candidate else None
+            expected_digest = challenge.spec.flag.sha256
+            digest_matches = candidate_digest is not None and compare_digest(
+                candidate_digest, expected_digest
+            )
+            threat_class = f"CTF-{challenge.spec.category.value.upper()}"
+            validated = any(
+                finding.validated
+                and finding.threat_class == threat_class
+                and finding.target == target.endpoint
+                and set(finding.evidence) <= set(tool_result.evidence)
+                for finding in outcome.findings
+            )
+            if digest_matches and not validated:
+                raise ValueError("digest-matched CTF Suite candidate lacks independent validation")
+            if digest_matches:
+                status = CTFSolveStatus.SOLVED
+                validated_count += 1
+            elif candidate is not None:
+                status = CTFSolveStatus.INVALID_FLAG
+            else:
+                status = CTFSolveStatus.UNSOLVED
+            items.append(
+                CTFRunResult(
+                    run_id=outcome.run_id,
+                    challenge_id=challenge.metadata.name,
+                    category=challenge.spec.category,
+                    scenario=challenge.spec.scenario,
+                    status=status,
+                    candidate_flag=candidate,
+                    candidate_sha256=candidate_digest,
+                    expected_sha256=expected_digest,
+                    evidence=list(dict.fromkeys(tool_result.evidence)),
+                )
+            )
+        if len(outcome.findings) != validated_count:
+            raise ValueError("CTF Suite findings do not match the independently solved items")
+
+        summary = CTFSuiteSummary(
+            solved=sum(item.status is CTFSolveStatus.SOLVED for item in items),
+            unsolved=sum(item.status is CTFSolveStatus.UNSOLVED for item in items),
+            invalidFlag=sum(item.status is CTFSolveStatus.INVALID_FLAG for item in items),
+        )
+        result = CTFSuiteResult(
+            run_id=outcome.run_id,
+            suite_name=suite_name,
+            items=items,
+            summary=summary,
+        )
+        store = RunStore(outcome.run_id, outcome.run_path)
+        result_relative = store.write_json(
+            "ctf-suite-result.json",
+            result.model_dump(mode="json", by_alias=True),
+        )
+        writeup_relative = store.write_text(
+            "ctf-suite-writeup.md",
+            self._render_writeup(result),
+        )
+        store.append_event(
+            "mode-pack.ctf-suite.completed",
+            {
+                "suiteName": suite_name,
+                "solved": summary.solved,
+                "unsolved": summary.unsolved,
+                "invalidFlag": summary.invalid_flag,
+                "result": result_relative,
+                "writeup": writeup_relative,
+                "externalSubmission": False,
+            },
+        )
+        store.seal()
+        return CTFSuiteArtifacts(
+            result=result,
+            result_path=outcome.run_path / result_relative,
+            writeup_path=outcome.run_path / writeup_relative,
+        )
+
+    @staticmethod
+    def _validate_run_campaign(
+        suite_name: str,
+        challenges: list[CTFChallengeManifest],
+        outcome: MultiAgentRunOutcome,
+    ) -> CampaignManifest:
+        campaign_path = outcome.run_path / "campaign.json"
+        try:
+            raw = json.loads(campaign_path.read_text(encoding="utf-8"))
+            campaign = CampaignManifest.model_validate(raw)
+        except (OSError, json.JSONDecodeError, ValueError) as exc:
+            raise ValueError("sealed CTF Suite campaign is invalid") from exc
+        evaluated_at = max(challenge.spec.authorization.approved_at for challenge in challenges)
+        expected = CTFChallengeService().compile_suite(
+            suite_name,
+            challenges,
+            evaluated_at=evaluated_at,
+        )
+        if campaign != expected:
+            raise ValueError("sealed Run campaign does not match the CTF Suite")
+        return campaign
+
+    @staticmethod
+    def _render_writeup(result: CTFSuiteResult) -> str:
+        lines = [
+            f"# CTF Suite Write-up: {result.suite_name}",
+            "",
+            f"- Run ID: `{result.run_id}`",
+            f"- Solved: `{result.summary.solved}`",
+            f"- Unsolved: `{result.summary.unsolved}`",
+            f"- Invalid flag: `{result.summary.invalid_flag}`",
+            "- External scoreboard submission: `not performed`",
+            "",
+            "## Challenge results",
+            "",
+        ]
+        for item in result.items:
+            lines.extend(
+                [
+                    f"### {item.challenge_id}",
+                    "",
+                    f"- Category: `{item.category.value}`",
+                    f"- Scenario: `{item.scenario.value}`",
+                    f"- Status: `{item.status.value}`",
+                ]
+            )
+            if item.status is CTFSolveStatus.SOLVED:
+                lines.append(f"- Verified flag: `{item.candidate_flag}`")
+            elif item.candidate_sha256 is not None:
+                lines.append(f"- Candidate SHA-256: `{item.candidate_sha256}`")
+            lines.extend(["", "Evidence:", ""])
+            lines.extend(f"- `{evidence}`" for evidence in item.evidence)
+            lines.append("")
+        lines.extend(
+            [
+                "## Execution boundary",
+                "",
+                (
+                    "The Triage Planner created one target-bound Specialist per category. "
+                    "Each candidate was independently digest-validated, and no external "
+                    "scoreboard submission was performed."
+                ),
             ]
         )
         return "\n".join(lines) + "\n"
