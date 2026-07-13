@@ -2,11 +2,28 @@
 
 PAJIN is a policy-governed multi-agent AI red-team and security validation platform.
 
-The current implementation is a policy-governed, worker-backed vertical slice. It validates a
-campaign manifest, dynamically creates a bounded Supervisor/Planner/Specialist/Validator/Reporter
-team, evaluates every tool request through the Tool Gateway, executes registered mock, HTTP, or MCP
-tools in an isolated Docker Worker, independently validates the result, and writes audit evidence
-plus a Markdown report.
+The current implementation is a CLI-first backend MVP. It validates typed campaign and Mode Pack
+manifests, dynamically creates a bounded Supervisor/Planner/Specialist/Validator/Reporter team,
+evaluates every tool request through the Tool Gateway, executes registered mock, HTTP, or MCP tools
+through a simulated or isolated Docker Worker, independently validates results, and writes audit
+evidence plus structured JSON and Markdown reports. An optional FastAPI/PostgreSQL Control Plane and
+lease-aware Worker daemon provide the first durable execution path without replacing the local CLI.
+
+## Current implementation status
+
+The implementation baseline as of 2026-07-14 is:
+
+| Area | Current scope |
+| --- | --- |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, independent validation, and tamper-evident evidence seals |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
+| Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
+| CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, leases, heartbeats, crash recovery, and one Worker daemon |
+| Primary gaps | Web UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+
+The primary operator interface remains CLI + YAML. Generic public-target attack automation,
+external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 
 ## Current safety boundary
 
@@ -48,14 +65,28 @@ Python 3.12 or newer is required.
 
 ```powershell
 python -m venv .venv
-.venv\Scripts\python -m pip install -e ".[dev]"
+.venv\Scripts\python -m pip install -e ".[dev,control-plane]"
 ```
 
 If `uv` is available:
 
 ```powershell
-uv sync --extra dev
+uv sync --extra dev --extra control-plane
 ```
+
+## Supported command surface
+
+| Group | Commands |
+| --- | --- |
+| Core | `validate`, `run`, `multi-run`, `multi-cancel-check` |
+| Provider and agent loop | `provider-check`, `provider-agent-run`, `tool-loop-run`, `tool-loop-approval-check` |
+| KISA AI Red Team | `kisa-run`, `kisa-plan-remediation`, `kisa-retest` |
+| Bug Bounty | `bug-bounty-review`, `bug-bounty-compile`, `bug-bounty-report`, `bug-bounty-run` |
+| CTF | `ctf-run`, `ctf-web-run` (compatibility alias), `ctf-suite-run` |
+| Evidence and infrastructure | `evidence-verify`, `worker-check`, `egress-check`, `mcp-check` |
+
+The optional server processes are installed as `pajin-control-plane` and `pajin-worker-daemon`.
+Run `pajin --help` or `pajin <command> --help` for the authoritative option list.
 
 ## Run the vertical slice
 
@@ -286,7 +317,8 @@ docker compose -f containers\compose.ctf-web-lab.yaml down
 
 The deterministic Triage Planner creates one `ctf-web-specialist` and one
 `ctf-crypto-specialist`. Each receives a separate Capability Grant restricted to its own target and
-Tool; the current generic runner executes those tasks sequentially. The aggregate
+Tool. Both fixed Tools opt in to `parallelSafe`, so the generic runner executes them in the same
+bounded local wave and restores their results to deterministic plan order. The aggregate
 `ctf-suite-result.json` retains `solved`, `unsolved`, or `invalid-flag` for each challenge, while
 `ctf-suite-writeup.md` records only independently digest-validated flags. Any non-solved member
 makes the CLI return non-zero after still sealing the complete aggregate evidence. No scoreboard
@@ -728,6 +760,13 @@ record.
 .venv\Scripts\mypy src
 ```
 
+The default suite keeps live infrastructure tests environment-gated. Set
+`PAJIN_TEST_CONTROL_PLANE_URL` for the Control Plane and Worker-daemon live tests, and
+`PAJIN_TEST_POSTGRES_URL` for the isolated PostgreSQL integration test. The Worker crash-recovery
+test additionally requires `PAJIN_TEST_WORKER_CRASH_CONTAINER` naming its isolated test container.
+Docker smoke checks and Mode Pack labs require a running Docker daemon and the documented local
+images or Compose fixtures.
+
 ## Architecture rule
 
 PydanticAI is an adapter for model-backed planning and validation. It does not own campaign state
@@ -735,17 +774,8 @@ or execute privileged tools directly. Every MCP, CLI, browser, and sandbox call 
 the PAJIN Tool Gateway and Policy Engine.
 
 See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
-[the KISA traceability matrix](docs/KISA_TRACEABILITY.md),
-[ADR-0001](docs/adr/0001-agent-runtime-and-orchestration.md), and
-[ADR-0002](docs/adr/0002-tool-gateway-and-worker-isolation.md), and
-[ADR-0003](docs/adr/0003-egress-proxy-and-mcp-boundary.md), and
-[ADR-0004](docs/adr/0004-dynamic-multi-agent-execution.md), and
-[ADR-0005](docs/adr/0005-kisa-ai-red-team-mode-pack.md), and
-[ADR-0006](docs/adr/0006-provider-neutral-ai-chat-probe.md), and
-[ADR-0007](docs/adr/0007-kisa-remediation-and-retest-loop.md), and
-[ADR-0013](docs/adr/0013-bug-bounty-scope-parser.md), and
-[ADR-0014](docs/adr/0014-conservative-bug-bounty-deduplication.md), and
-[ADR-0015](docs/adr/0015-fixed-bug-bounty-lab-execution.md), and
-[ADR-0016](docs/adr/0016-tamper-evident-run-integrity.md), and
-[ADR-0017](docs/adr/0017-local-ctf-web-mode.md), and
-[ADR-0018](docs/adr/0018-bounded-ctf-crypto-artifacts.md).
+[the KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
+[ADR decision record](docs/adr/). The latest orchestration boundaries are
+[ADR-0019](docs/adr/0019-bounded-ctf-suite-orchestration.md),
+[ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md), and
+[ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md).
