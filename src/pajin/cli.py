@@ -20,6 +20,7 @@ from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
 from pajin.modes.ai_redteam import (
+    KISACandidateProducer,
     KISAModePack,
     KISAPlannerRuntime,
     KISARetestPlannerRuntime,
@@ -639,6 +640,7 @@ def run_provider_backed_agents(
         planner=runtime,
         validator=runtime,
         reporter=runtime,
+        candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
         worker=backend,
@@ -934,6 +936,7 @@ def run_kisa_ai_redteam(
     runner = MultiAgentCampaignRunner(
         planner=planner,
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
         worker=backend,
@@ -1004,6 +1007,7 @@ def run_kisa_retest(
             expected_contains=expected_contains,
         ),
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
         tools=_tool_registry(),
         policy=PolicyEngine(),
         worker=backend,

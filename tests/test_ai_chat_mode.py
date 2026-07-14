@@ -7,8 +7,17 @@ import pytest
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
-from pajin.domain.models import AgentPlan, PlannedStep, ToolRequest, ToolResult
+from pajin.domain.models import (
+    AgentPlan,
+    Finding,
+    FindingSeverity,
+    PlannedStep,
+    ToolRequest,
+    ToolResult,
+)
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
+from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
 from pajin.modes.ai_redteam.runtime import KISAPlannerRuntime, KISAValidatorRuntime
@@ -27,6 +36,9 @@ def _campaign():
 class ContractAIWorker:
     """Return a vulnerable transcript while preserving the real Worker contract."""
 
+    def __init__(self, *, expose_markers: bool = True) -> None:
+        self._expose_markers = expose_markers
+
     async def run(self, job: WorkerJob) -> WorkerResult:
         started_at = datetime.now(UTC)
         assert job.command == ["ai-chat-probe"]
@@ -40,7 +52,11 @@ class ContractAIWorker:
                 for check in probe["checks"]
                 if check["turn"] == index and check["kind"] == "response-contains"
             ]
-            content = " ".join(["lab response", *markers])
+            content = (
+                " ".join(["lab response", *markers])
+                if self._expose_markers
+                else "lab response without a catalog compromise marker"
+            )
             turns.append(
                 {
                     "index": index,
@@ -72,6 +88,7 @@ class ContractAIWorker:
             "scenarioId": probe["scenario_id"],
             "threatClass": probe["threat_class"],
             "sessionId": probe["session_id"],
+            "purpose": "attack",
             "vulnerable": True,
             "observation": "all scenario compromise indicators were observed",
             "turns": turns,
@@ -91,6 +108,36 @@ class ContractAIWorker:
             started_at=started_at,
             finished_at=datetime.now(UTC),
         )
+
+
+class OmissionValidator:
+    """Model a semantic Validator that returns a valid but empty result."""
+
+    async def validate(self, campaign, plan, results):
+        del campaign, plan, results
+        return []
+
+
+class ValidatorOnlyConfirmation:
+    """Attempt to confirm a benign producer-owned observation through legacy output."""
+
+    async def validate(self, campaign, plan, results):
+        del campaign, plan
+        result = results[0]
+        return [
+            Finding(
+                finding_id="validator_only_bypass_attempt",
+                title="Validator-only catalog claim",
+                severity=FindingSeverity.HIGH,
+                threat_class="M03",
+                target=str(result.data["target"]),
+                summary="The Validator claims a marker that the raw transcript does not contain.",
+                reproduction=["Review the cited catalog execution."],
+                evidence=result.evidence,
+                confidence=1,
+                validated=True,
+            )
+        ]
 
 
 def test_ai_chat_probe_tool_prepares_only_fixed_post_contract() -> None:
@@ -216,6 +263,7 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
     runner = MultiAgentCampaignRunner(
         planner=KISAPlannerRuntime(thresholds=thresholds),
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
         worker=ContractAIWorker(),
@@ -240,3 +288,75 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
     assert metrics["sensitive-exposure-count"].status is MetricStatus.FAIL
     assert metrics["mean-response-latency"].value == pytest.approx(0.01)
     assert metrics["mean-response-latency"].status is MetricStatus.PASS
+
+
+def test_kisa_candidate_survives_validator_omission_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    thresholds = EvaluationThresholds(repetitions=2)
+    registry = ToolRegistry()
+    registry.register(AIChatProbeTool())
+    runner = MultiAgentCampaignRunner(
+        planner=KISAPlannerRuntime(thresholds=thresholds),
+        validator=OmissionValidator(),
+        candidate_producer=KISACandidateProducer(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=ContractAIWorker(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 3
+    assert all(
+        candidate.claim.validated is False and candidate.source == "trusted-core:candidate-producer"
+        for candidate in outcome.validation.candidates
+    )
+    assert all(
+        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.reason_codes == [ValidationReasonCode.VALIDATOR_OMITTED]
+        for decision in outcome.validation.decisions
+    )
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
+    persisted = json.loads(
+        (outcome.run_path / "candidate-findings.json").read_text(encoding="utf-8")
+    )
+    assert len(persisted) == 3
+
+
+def test_validator_only_claim_cannot_bypass_kisa_candidate_authority(
+    tmp_path: Path,
+) -> None:
+    thresholds = EvaluationThresholds(repetitions=2)
+    registry = ToolRegistry()
+    registry.register(AIChatProbeTool())
+    runner = MultiAgentCampaignRunner(
+        planner=KISAPlannerRuntime(thresholds=thresholds),
+        validator=ValidatorOnlyConfirmation(),
+        candidate_producer=KISACandidateProducer(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=ContractAIWorker(expose_markers=False),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.candidates[0].source == "legacy-validator-output"
+    decision = outcome.validation.decisions[0]
+    assert decision.disposition is FindingDisposition.NEEDS_REVIEW
+    assert decision.reason_codes == [ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED]
+    events = [
+        json.loads(line)
+        for line in (outcome.run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    produced = next(event for event in events if event["event_type"] == "candidate-set.produced")
+    assert produced["payload"]["candidateCount"] == 0
+    assert produced["payload"]["authoritativeRequestCount"] == 6
+    assert produced["payload"]["authoritativeClaimCount"] == 3

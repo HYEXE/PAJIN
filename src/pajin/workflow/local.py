@@ -7,8 +7,15 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
 
-from pajin.agents.base import AgentRuntime
-from pajin.domain.models import CampaignManifest, CapabilityGrant, Finding, ToolResult
+from pajin.agents.base import AgentRuntime, CandidateProducerRuntime
+from pajin.domain.models import (
+    AgentPlan,
+    CampaignManifest,
+    CapabilityGrant,
+    Finding,
+    ToolResult,
+)
+from pajin.domain.validation import FindingValidationSet, ValidationReasonCode
 from pajin.policy.engine import PolicyEngine
 from pajin.reporting.markdown import render_markdown_report
 from pajin.runtime.control import ExecutionCancellationContext
@@ -21,6 +28,8 @@ from pajin.workflow.cancellation import (
     ensure_cancellation_context,
     record_engine_cleanup,
 )
+from pajin.workflow.validation import validate_findings
+from pajin.workflow.validation_artifacts import write_validation_artifacts
 
 
 class RunOutcome(BaseModel):
@@ -30,6 +39,7 @@ class RunOutcome(BaseModel):
     run_path: Path
     tool_results: list[ToolResult]
     findings: list[Finding]
+    validation: FindingValidationSet
     report_path: Path
 
 
@@ -44,12 +54,14 @@ class LocalCampaignRunner:
         policy: PolicyEngine,
         worker: WorkerBackend,
         output_root: Path,
+        candidate_producer: CandidateProducerRuntime | None = None,
     ) -> None:
         self._agents = agents
         self._tools = tools
         self._policy = policy
         self._worker = worker
         self._output_root = output_root
+        self._candidate_producer = candidate_producer
 
     async def run(
         self,
@@ -116,7 +128,8 @@ class LocalCampaignRunner:
             grant.model_dump(mode="json"),
         )
 
-        plan = await self._agents.plan(campaign)
+        proposed_plan = await self._agents.plan(campaign)
+        plan = AgentPlan.model_validate(proposed_plan.model_dump())
         store.write_json("plan.json", plan.model_dump(mode="json"))
         store.append_event("agent.plan.created", {"steps": len(plan.steps)})
 
@@ -139,17 +152,100 @@ class LocalCampaignRunner:
                 used_calls += 1
             results.append(outcome.result)
 
-        findings = await self._agents.validate(campaign, plan, results)
-        confirmed = [finding for finding in findings if finding.validated]
+        admitted_candidates = []
+        authoritative_request_ids: set[str] = set()
+        authoritative_claim_keys: set[tuple[str, str]] = set()
+        if self._candidate_producer is not None:
+            production = self._candidate_producer.produce(
+                campaign,
+                plan,
+                results,
+            )
+            admitted_candidates = list(production.candidates)
+            authoritative_request_ids = set(production.authoritative_request_ids)
+            authoritative_claim_keys = set(production.authoritative_claim_keys)
+            store.append_event(
+                "candidate-set.produced",
+                {
+                    "producerId": self._candidate_producer.producer_id,
+                    "candidateCount": len(admitted_candidates),
+                    "authoritativeRequestCount": len(authoritative_request_ids),
+                    "authoritativeClaimCount": len(authoritative_claim_keys),
+                    "candidateIds": [candidate.candidate_id for candidate in admitted_candidates],
+                },
+            )
+
+        def finalize_without_validator(
+            reason: ValidationReasonCode,
+        ) -> FindingValidationSet:
+            incomplete_validation = validate_findings(
+                campaign,
+                results,
+                [],
+                store,
+                validator_id=self._agents.agent_id,
+                admitted_candidates=admitted_candidates,
+                producer_authoritative_request_ids=authoritative_request_ids,
+                producer_authoritative_claim_keys=authoritative_claim_keys,
+                validator_unavailable_reason=reason,
+            )
+            write_validation_artifacts(store, incomplete_validation)
+            store.write_json("findings.json", [])
+            return incomplete_validation
+
+        try:
+            findings = await self._agents.validate(campaign, plan, results)
+        except asyncio.CancelledError:
+            try:
+                finalize_without_validator(ValidationReasonCode.VALIDATOR_CANCELLED)
+            except Exception as exc:
+                store.append_event(
+                    "validation.snapshot.failed",
+                    {"errorType": type(exc).__name__},
+                )
+            raise
+        except Exception as exc:
+            try:
+                finalize_without_validator(ValidationReasonCode.VALIDATOR_UNAVAILABLE)
+            except Exception as snapshot_exc:
+                store.append_event(
+                    "validation.snapshot.failed",
+                    {"errorType": type(snapshot_exc).__name__},
+                )
+            store.write_json(
+                "run.json",
+                {"runId": store.run_id, "status": "failed", "stage": "validation"},
+            )
+            store.append_event(
+                "campaign.failed",
+                {"stage": "validation", "errorType": type(exc).__name__},
+            )
+            store.seal()
+            raise
+        validation = validate_findings(
+            campaign,
+            results,
+            findings,
+            store,
+            validator_id=self._agents.agent_id,
+            admitted_candidates=admitted_candidates,
+            producer_authoritative_request_ids=authoritative_request_ids,
+            producer_authoritative_claim_keys=authoritative_claim_keys,
+        )
+        confirmed = validation.confirmed_findings
+        write_validation_artifacts(store, validation)
         store.write_json(
             "findings.json", [finding.model_dump(mode="json") for finding in confirmed]
         )
-        store.append_event(
-            "findings.validated",
-            {"candidateCount": len(findings), "confirmedCount": len(confirmed)},
-        )
 
-        report = render_markdown_report(campaign, store.run_id, plan, results, confirmed)
+        report = render_markdown_report(
+            campaign,
+            store.run_id,
+            plan,
+            results,
+            confirmed,
+            validation,
+        )
         report_relative_path = store.write_text("report.md", report)
         store.append_event("campaign.completed", {"report": report_relative_path})
         store.seal()
@@ -158,5 +254,6 @@ class LocalCampaignRunner:
             run_path=store.path,
             tool_results=results,
             findings=confirmed,
+            validation=validation,
             report_path=store.path / report_relative_path,
         )

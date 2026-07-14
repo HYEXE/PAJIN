@@ -13,17 +13,35 @@ from pajin.domain.models import (
     ToolResult,
     ToolRiskTier,
 )
+from pajin.domain.validation import (
+    CandidateFinding,
+    FindingDisposition,
+    FindingValidationSet,
+    ValidationCheckResult,
+    ValidationCheckStatus,
+    ValidationDecision,
+    ValidationMethod,
+    ValidationReasonCode,
+)
 
 __all__ = [
     "AgentPlan",
     "AutonomyLevel",
     "CampaignManifest",
     "CampaignMode",
+    "CandidateFinding",
     "CapabilityGrant",
     "Finding",
+    "FindingDisposition",
     "FindingSeverity",
+    "FindingValidationSet",
     "PlannedStep",
     "ToolRequest",
     "ToolResult",
     "ToolRiskTier",
+    "ValidationCheckResult",
+    "ValidationCheckStatus",
+    "ValidationDecision",
+    "ValidationMethod",
+    "ValidationReasonCode",
 ]

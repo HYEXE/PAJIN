@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from pajin.agents.base import AgentReportNarrative, CandidateProduction
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import (
@@ -18,6 +19,11 @@ from pajin.domain.models import (
     ToolRiskTier,
 )
 from pajin.domain.orchestration import AgentRole, AgentStatus, RunStatus, TaskStatus
+from pajin.domain.validation import (
+    CandidateFinding,
+    FindingDisposition,
+    ValidationReasonCode,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import (
     CancellationKind,
@@ -198,6 +204,102 @@ class InventedEvidenceValidator:
         ]
 
 
+class UnconfirmedEvidenceValidator:
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        del plan
+        assert results
+        return [
+            Finding(
+                finding_id="finding_multi_review",
+                title="Multi-agent candidate pending review",
+                severity=FindingSeverity.MEDIUM,
+                threat_class="A02",
+                target=campaign.spec.targets[0].endpoint,
+                summary="Preserve this claim without publishing it as confirmed.",
+                reproduction=["Review the same-Run evidence."],
+                evidence=results[0].evidence,
+                confidence=0.5,
+                validated=False,
+            )
+        ]
+
+
+class RecordingCandidateValidator(DeterministicAgentRuntime):
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        assert self._calls == ["producer"]
+        self._calls.append("validator")
+        return await super().validate(campaign, plan, results)
+
+
+class RecordingCandidateProducer:
+    producer_id = "trusted-core:test-candidate-producer"
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def produce(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> CandidateProduction:
+        assert results
+        assert results[0].request_id in {step.request.request_id for step in plan.steps}
+        self._calls.append("producer")
+        result = results[0]
+        candidate = CandidateFinding(
+            candidate_id="candidate_test_trusted_observation",
+            claim=Finding(
+                finding_id="finding_test_trusted_observation",
+                title="Trusted producer observation",
+                severity=FindingSeverity.HIGH,
+                threat_class="A02",
+                target=campaign.spec.targets[0].endpoint,
+                summary="A deterministic producer derived this candidate.",
+                reproduction=["Review the same-Run evidence."],
+                evidence=result.evidence,
+                confidence=1,
+                validated=False,
+            ),
+            source=self.producer_id,
+            source_agent_id=self.producer_id,
+            source_request_ids=[result.request_id],
+            created_at=datetime.now(UTC),
+        )
+        return CandidateProduction(
+            candidates=(candidate,),
+            authoritative_request_ids=frozenset({result.request_id}),
+            authoritative_claim_keys=frozenset(
+                {(candidate.claim.target, candidate.claim.threat_class)}
+            ),
+        )
+
+
+class FailingReporter:
+    async def report(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+        findings: list[Finding],
+    ) -> AgentReportNarrative:
+        del campaign, plan, results, findings
+        raise RuntimeError("bounded reporter failure")
+
+
 def _campaign() -> CampaignManifest:
     return load_manifest(Path("examples/multi-agent.yaml"))
 
@@ -265,6 +367,46 @@ def test_dynamic_team_executes_with_attenuated_role_capabilities(tmp_path: Path)
     assert evidence["policyDecision"]["allowed"] is True
 
 
+def test_multi_agent_runner_produces_candidates_before_validator_without_claim_event_data(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = MultiAgentCampaignRunner(
+        planner=DeterministicAgentRuntime(),
+        validator=RecordingCandidateValidator(calls),
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert calls == ["producer", "validator"]
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.candidates[0].source == "trusted-core:test-candidate-producer"
+    events = [
+        json.loads(line)
+        for line in (outcome.run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    produced = [event for event in events if event["event_type"] == "candidate-set.produced"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("candidate-set.produced") < event_types.index("validation.started")
+    assert [event["payload"] for event in produced] == [
+        {
+            "producerId": "trusted-core:test-candidate-producer",
+            "candidateCount": 1,
+            "authoritativeRequestCount": 1,
+            "authoritativeClaimCount": 1,
+            "candidateIds": ["candidate_test_trusted_observation"],
+        }
+    ]
+
+
 def test_kill_switch_cancels_pending_tasks_and_revokes_all_grants(tmp_path: Path) -> None:
     outcome = asyncio.run(_runner(tmp_path, kill_after=1).run(_campaign()))
 
@@ -285,6 +427,39 @@ def test_kill_switch_cancels_pending_tasks_and_revokes_all_grants(tmp_path: Path
     assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
     run_state = json.loads((outcome.run_path / "run.json").read_text(encoding="utf-8"))
     assert run_state["status"] == "cancelled"
+
+
+def test_kill_after_tool_preserves_trusted_candidate_as_inconclusive(
+    tmp_path: Path,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = MultiAgentCampaignRunner(
+        planner=DeterministicAgentRuntime(),
+        validator=DeterministicAgentRuntime(),
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+        kill_after_tool_calls=1,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.CANCELLED
+    assert calls == ["producer"]
+    assert len(outcome.validation.candidates) == 1
+    decision = outcome.validation.decisions[0]
+    assert decision.disposition is FindingDisposition.INCONCLUSIVE
+    assert decision.reason_codes == [ValidationReasonCode.VALIDATOR_CANCELLED]
+    assert outcome.findings == []
+    persisted = json.loads(
+        (outcome.run_path / "candidate-findings.json").read_text(encoding="utf-8")
+    )
+    assert len(persisted) == 1
+    assert verify_run_integrity(outcome.run_path).valid
 
 
 @pytest.mark.asyncio
@@ -515,5 +690,74 @@ def test_validator_cannot_confirm_finding_with_invented_evidence(tmp_path: Path)
 
     assert outcome.status is RunStatus.COMPLETED
     assert not outcome.findings
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.REJECTED_OBJECTIVE
+    candidates = json.loads(
+        (outcome.run_path / "candidate-findings.json").read_text(encoding="utf-8")
+    )
+    assert candidates[0]["claim"]["finding_id"] == outcome.validation.candidates[0].claim.finding_id
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
     events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
     assert '"event_type":"finding.rejected"' in events
+    assert '"event_type":"validation.rejected-objective"' in events
+
+
+def test_multi_agent_runner_preserves_unconfirmed_candidate_for_review(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = MultiAgentCampaignRunner(
+        planner=DeterministicAgentRuntime(),
+        validator=UnconfirmedEvidenceValidator(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    index = json.loads((outcome.run_path / "validation-index.json").read_text(encoding="utf-8"))
+    assert index["candidatesByDisposition"]["needs-review"] == [
+        outcome.validation.candidates[0].candidate_id
+    ]
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
+    report = outcome.report_path.read_text(encoding="utf-8")
+    assert "Needs review: `1`" in report
+    assert "Multi-agent candidate pending review" not in report
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_reporter_failure_keeps_completed_validation_consistent(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = MultiAgentCampaignRunner(
+        planner=DeterministicAgentRuntime(),
+        validator=DeterministicAgentRuntime(),
+        reporter=FailingReporter(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.FAILED
+    assert len(outcome.findings) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.CONFIRMED
+    persisted = json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8"))
+    assert [item["finding_id"] for item in persisted] == [outcome.findings[0].finding_id]
+    report = outcome.report_path.read_text(encoding="utf-8")
+    assert "Run status: `failed`" in report
+    assert "Confirmed findings: `1`" in report
+    assert "Confirmed: `1`" in report
+    assert outcome.findings[0].title in report
+    assert verify_run_integrity(outcome.run_path).valid

@@ -334,6 +334,13 @@ class AgentPlan(StrictModel):
     summary: str
     steps: list[PlannedStep] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def require_unique_request_ids(self) -> AgentPlan:
+        request_ids = [step.request.request_id for step in self.steps]
+        if len(request_ids) != len(set(request_ids)):
+            raise ValueError("agent plan request IDs must be unique")
+        return self
+
 
 class Finding(StrictModel):
     finding_id: str = Field(default_factory=lambda: f"finding_{uuid4().hex}")

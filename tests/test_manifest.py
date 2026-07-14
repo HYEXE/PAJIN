@@ -1,4 +1,14 @@
-from pajin.domain.models import CampaignManifest, CampaignMode, ToolRiskTier
+import pytest
+from pydantic import ValidationError
+
+from pajin.domain.models import (
+    AgentPlan,
+    CampaignManifest,
+    CampaignMode,
+    PlannedStep,
+    ToolRequest,
+    ToolRiskTier,
+)
 
 
 def test_sample_manifest_is_valid(sample_campaign: CampaignManifest) -> None:
@@ -18,3 +28,29 @@ def test_manifest_rejects_unknown_fields(sample_campaign: CampaignManifest) -> N
         assert "unexpectedPrivilege" in str(exc)
     else:
         raise AssertionError("unknown security-sensitive field was accepted")
+
+
+def test_agent_plan_rejects_duplicate_tool_request_ids() -> None:
+    request = ToolRequest(
+        request_id="tool_duplicate",
+        agent_id="agent:planner:1",
+        tool_id="mock.agent-probe",
+        target="https://target.example/api/chat",
+    )
+
+    with pytest.raises(ValidationError, match="agent plan request IDs must be unique"):
+        AgentPlan(
+            summary="Duplicate request identity is ambiguous for evidence provenance.",
+            steps=[
+                PlannedStep(
+                    title="First request",
+                    rationale="Exercise the first bounded request.",
+                    request=request,
+                ),
+                PlannedStep(
+                    title="Duplicate request",
+                    rationale="This duplicate identity must fail closed.",
+                    request=request.model_copy(),
+                ),
+            ],
+        )

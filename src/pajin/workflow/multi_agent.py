@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from pajin.agents.base import (
     AgentReportNarrative,
+    CandidateProducerRuntime,
     ModelBoundRuntime,
     PlannerRuntime,
     ReporterRuntime,
@@ -35,6 +36,11 @@ from pajin.domain.orchestration import (
     TaskNode,
     TaskStatus,
 )
+from pajin.domain.validation import (
+    CandidateFinding,
+    FindingValidationSet,
+    ValidationReasonCode,
+)
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
 from pajin.providers.models import ProviderRegistration
@@ -56,6 +62,8 @@ from pajin.workflow.cancellation import (
     record_engine_cleanup,
     seal_executor_quiescence,
 )
+from pajin.workflow.validation import validate_findings
+from pajin.workflow.validation_artifacts import write_validation_artifacts
 
 T = TypeVar("T")
 _MAX_LOCAL_PARALLEL_SPECIALISTS = 16
@@ -81,6 +89,7 @@ class MultiAgentRunOutcome(BaseModel):
     task_graph: TaskGraph
     tool_results: list[ToolResult]
     findings: list[Finding]
+    validation: FindingValidationSet
     report_path: Path
     cancellation_reason: str | None = None
 
@@ -98,6 +107,7 @@ class MultiAgentCampaignRunner:
         policy: PolicyEngine,
         worker: WorkerBackend,
         output_root: Path,
+        candidate_producer: CandidateProducerRuntime | None = None,
         kill_switch: KillSwitch | None = None,
         kill_after_tool_calls: int | None = None,
         secrets: SecretBroker | None = None,
@@ -117,6 +127,7 @@ class MultiAgentCampaignRunner:
         self._policy = policy
         self._worker = worker
         self._output_root = output_root
+        self._candidate_producer = candidate_producer
         self._kill_switch = kill_switch or KillSwitch()
         self._kill_after_tool_calls = kill_after_tool_calls
         self._observed_tool_calls = 0
@@ -149,7 +160,18 @@ class MultiAgentCampaignRunner:
         agents: dict[str, AgentNode] = {}
         results: list[ToolResult] = []
         findings: list[Finding] = []
+        validation = FindingValidationSet(
+            candidates=[],
+            decisions=[],
+            confirmed_findings=[],
+        )
         plan: AgentPlan | None = None
+        admitted_candidates: list[CandidateFinding] = []
+        authoritative_request_ids: set[str] = set()
+        authoritative_claim_keys: set[tuple[str, str]] = set()
+        candidate_production_attempted = False
+        validation_snapshot_finalized = False
+        validator_agent_id = "agent:validator:unavailable"
         self._observed_tool_calls = 0
         propagate_cancel = False
 
@@ -185,6 +207,72 @@ class MultiAgentCampaignRunner:
             secrets=self._secrets,
         )
 
+        def ensure_candidate_production() -> None:
+            nonlocal candidate_production_attempted
+            nonlocal admitted_candidates
+            nonlocal authoritative_request_ids
+            nonlocal authoritative_claim_keys
+            if candidate_production_attempted or self._candidate_producer is None or plan is None:
+                return
+            candidate_production_attempted = True
+            try:
+                production = self._candidate_producer.produce(campaign, plan, results)
+            except Exception as exc:
+                store.append_event(
+                    "candidate-set.production-failed",
+                    {
+                        "producerId": self._candidate_producer.producer_id,
+                        "errorType": type(exc).__name__,
+                    },
+                )
+                raise
+            admitted_candidates = list(production.candidates)
+            authoritative_request_ids = set(production.authoritative_request_ids)
+            authoritative_claim_keys = set(production.authoritative_claim_keys)
+            store.append_event(
+                "candidate-set.produced",
+                {
+                    "producerId": self._candidate_producer.producer_id,
+                    "candidateCount": len(admitted_candidates),
+                    "authoritativeRequestCount": len(authoritative_request_ids),
+                    "authoritativeClaimCount": len(authoritative_claim_keys),
+                    "candidateIds": [candidate.candidate_id for candidate in admitted_candidates],
+                },
+            )
+
+        def finalize_unvalidated_candidates(reason: ValidationReasonCode) -> None:
+            nonlocal validation
+            nonlocal findings
+            nonlocal validation_snapshot_finalized
+            if validation_snapshot_finalized:
+                return
+            try:
+                ensure_candidate_production()
+            except Exception:
+                return
+            if not admitted_candidates:
+                return
+            try:
+                validation = validate_findings(
+                    campaign,
+                    results,
+                    [],
+                    store,
+                    validator_id=validator_agent_id,
+                    admitted_candidates=admitted_candidates,
+                    producer_authoritative_request_ids=authoritative_request_ids,
+                    producer_authoritative_claim_keys=authoritative_claim_keys,
+                    validator_unavailable_reason=reason,
+                )
+            except Exception as exc:
+                store.append_event(
+                    "validation.snapshot.failed",
+                    {"errorType": type(exc).__name__},
+                )
+                return
+            findings = []
+            validation_snapshot_finalized = True
+
         try:
             self._check_control(budget)
             planner_access = self._model_access(self._planner)
@@ -219,7 +307,8 @@ class MultiAgentCampaignRunner:
             graph.add(plan_task)
             self._task_transition(store, graph, plan_task.task_id, TaskStatus.RUNNING)
             self._set_agent(store, planner_agent, AgentStatus.RUNNING)
-            plan = await self._within_budget(self._planner.plan(campaign), budget)
+            proposed_plan = await self._within_budget(self._planner.plan(campaign), budget)
+            plan = AgentPlan.model_validate(proposed_plan.model_dump())
             self._check_control(budget)
             self._validate_plan_boundary(campaign, plan)
             self._task_transition(store, graph, plan_task.task_id, TaskStatus.SUCCEEDED)
@@ -348,6 +437,8 @@ class MultiAgentCampaignRunner:
             if self._check_control(budget, raise_on_cancel=False):
                 raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
 
+            ensure_candidate_production()
+
             validator_agent = self._spawn_child(
                 store,
                 agents,
@@ -373,12 +464,24 @@ class MultiAgentCampaignRunner:
                     store,
                 )
             validation_task.assigned_agent_id = validator_agent.agent_id
+            validator_agent_id = validator_agent.agent_id
             self._task_transition(store, graph, validation_task.task_id, TaskStatus.RUNNING)
             self._set_agent(store, validator_agent, AgentStatus.RUNNING)
             candidates = await self._within_budget(
                 self._validator.validate(campaign, plan, results), budget
             )
-            findings = self._accept_validated_findings(campaign, results, candidates, store)
+            validation = validate_findings(
+                campaign,
+                results,
+                candidates,
+                store,
+                validator_id=validator_agent.agent_id,
+                admitted_candidates=admitted_candidates,
+                producer_authoritative_request_ids=authoritative_request_ids,
+                producer_authoritative_claim_keys=authoritative_claim_keys,
+            )
+            validation_snapshot_finalized = True
+            findings = validation.confirmed_findings
             self._task_transition(store, graph, validation_task.task_id, TaskStatus.SUCCEEDED)
             self._set_agent(store, validator_agent, AgentStatus.COMPLETED)
             store.write_json(
@@ -441,7 +544,8 @@ class MultiAgentCampaignRunner:
                 report_graph,
                 budget,
                 final_status,
-                narrative,
+                narrative=narrative,
+                validation=validation,
             )
             report_relative = store.write_text("report.md", report)
             self._task_transition(store, graph, report_task.task_id, TaskStatus.SUCCEEDED)
@@ -463,13 +567,17 @@ class MultiAgentCampaignRunner:
                 context.snapshot().reason,
                 source=context.snapshot().kind.value,
             )
+            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_CANCELLED)
             self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
             final_status = RunStatus.CANCELLED
             report = self._render_cancelled_report(
                 campaign,
                 store.run_id,
+                final_status,
                 plan,
                 results,
+                findings,
+                validation,
                 agents,
                 graph,
                 budget,
@@ -482,13 +590,17 @@ class MultiAgentCampaignRunner:
             propagate_cancel = True
         except (BudgetExceeded, CapabilityError, TimeoutError) as exc:
             self._kill_switch.activate(str(exc), source="runtime-control")
+            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_CANCELLED)
             self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
             final_status = RunStatus.CANCELLED
             report = self._render_cancelled_report(
                 campaign,
                 store.run_id,
+                final_status,
                 plan,
                 results,
+                findings,
+                validation,
                 agents,
                 graph,
                 budget,
@@ -503,14 +615,18 @@ class MultiAgentCampaignRunner:
                 f"unhandled orchestration failure: {type(exc).__name__}: {exc}",
                 source="supervisor",
             )
+            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_UNAVAILABLE)
             self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
             self._set_agent(store, supervisor, AgentStatus.FAILED, error=str(exc))
             final_status = RunStatus.FAILED
             report = self._render_cancelled_report(
                 campaign,
                 store.run_id,
+                final_status,
                 plan,
                 results,
+                findings,
+                validation,
                 agents,
                 graph,
                 budget,
@@ -521,6 +637,7 @@ class MultiAgentCampaignRunner:
                 {"error": str(exc), "report": report_relative},
             )
 
+        write_validation_artifacts(store, validation)
         store.write_json("findings.json", [finding.model_dump(mode="json") for finding in findings])
         store.write_json(
             "run.json",
@@ -545,6 +662,7 @@ class MultiAgentCampaignRunner:
             task_graph=graph,
             tool_results=results,
             findings=findings,
+            validation=validation,
             report_path=store.path / report_relative,
             cancellation_reason=self._kill_switch.reason,
         )
@@ -1013,41 +1131,6 @@ class MultiAgentCampaignRunner:
                 "deterministic kill-after-tool-calls trigger", source="verification-hook"
             )
 
-    @staticmethod
-    def _accept_validated_findings(
-        campaign: CampaignManifest,
-        results: list[ToolResult],
-        candidates: list[Finding],
-        store: RunStore,
-    ) -> list[Finding]:
-        evidence = {item for result in results for item in result.evidence}
-        targets = {target.endpoint for target in campaign.spec.targets}
-        accepted: list[Finding] = []
-        for finding in candidates:
-            reasons: list[str] = []
-            if not finding.validated:
-                reasons.append("validator did not confirm finding")
-            if not finding.evidence or not set(finding.evidence) <= evidence:
-                reasons.append("finding evidence is absent from specialist results")
-            if finding.target not in targets:
-                reasons.append("finding target is not a declared campaign target")
-            if reasons:
-                store.append_event(
-                    "finding.rejected",
-                    {"findingId": finding.finding_id, "reasons": reasons},
-                )
-            else:
-                accepted.append(finding)
-                store.append_event(
-                    "finding.validated",
-                    {"findingId": finding.finding_id, "validator": "independent-agent"},
-                )
-        store.append_event(
-            "findings.validated",
-            {"candidateCount": len(candidates), "confirmedCount": len(accepted)},
-        )
-        return accepted
-
     def _cancel_execution(
         self,
         store: RunStore,
@@ -1106,8 +1189,16 @@ class MultiAgentCampaignRunner:
         budget: BudgetController,
         status: RunStatus,
         narrative: AgentReportNarrative | None = None,
+        validation: FindingValidationSet | None = None,
     ) -> str:
-        base = render_markdown_report(campaign, run_id, plan, results, findings).rstrip()
+        base = render_markdown_report(
+            campaign,
+            run_id,
+            plan,
+            results,
+            findings,
+            validation,
+        ).rstrip()
         lines = [base, "", "## Multi-Agent Execution", ""]
         lines.extend(
             [
@@ -1156,8 +1247,11 @@ class MultiAgentCampaignRunner:
         self,
         campaign: CampaignManifest,
         run_id: str,
+        status: RunStatus,
         plan: AgentPlan | None,
         results: list[ToolResult],
+        findings: list[Finding],
+        validation: FindingValidationSet,
         agents: dict[str, AgentNode],
         graph: TaskGraph,
         budget: BudgetController,
@@ -1169,19 +1263,20 @@ class MultiAgentCampaignRunner:
                     run_id,
                     plan,
                     results,
-                    [],
+                    findings,
                     agents,
                     graph,
                     budget,
-                    RunStatus.CANCELLED,
+                    status,
+                    validation=validation,
                 )
-                + f"\nCancellation reason: `{self._kill_switch.reason}`\n"
+                + f"\nTermination reason: `{self._kill_switch.reason}`\n"
             )
         return (
             f"# PAJIN Campaign Report: {campaign.metadata.name}\n\n"
             f"- Run ID: `{run_id}`\n"
-            "- Run status: `cancelled`\n"
-            f"- Cancellation reason: `{self._kill_switch.reason}`\n"
+            f"- Run status: `{status.value}`\n"
+            f"- Termination reason: `{self._kill_switch.reason}`\n"
             f"- Agents spawned: `{len(agents)}`\n"
             f"- Tasks created: `{len(graph.tasks)}`\n"
         )

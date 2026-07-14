@@ -8,6 +8,7 @@ import pytest
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.orchestration import RunStatus
+from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import ChecklistStatus, EvaluationThresholds
 from pajin.modes.ai_redteam.retest import (
     KISARetestService,
@@ -136,6 +137,7 @@ def _run(
     runner = MultiAgentCampaignRunner(
         planner=planner,
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
         tools=_registry(),
         policy=PolicyEngine(),
         worker=ProfileAIWorker(

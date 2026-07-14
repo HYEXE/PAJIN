@@ -1,11 +1,25 @@
 import asyncio
 import json
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from pajin.agents.base import CandidateProduction
 from pajin.agents.deterministic import DeterministicAgentRuntime
-from pajin.domain.models import AgentPlan, CampaignManifest, PlannedStep, ToolRequest
+from pajin.domain.models import (
+    AgentPlan,
+    CampaignManifest,
+    Finding,
+    FindingSeverity,
+    PlannedStep,
+    ToolRequest,
+    ToolResult,
+)
+from pajin.domain.validation import (
+    CandidateFinding,
+    FindingDisposition,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
 from pajin.runtime.secrets import SecretMaterial
@@ -35,6 +49,117 @@ class UnknownToolRuntime(DeterministicAgentRuntime):
                     ),
                 )
             ],
+        )
+
+
+class UnconfirmedFindingRuntime(DeterministicAgentRuntime):
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        del plan
+        assert results
+        return [
+            Finding(
+                finding_id="finding_needs_review",
+                title="Sensitive unconfirmed candidate",
+                severity=FindingSeverity.MEDIUM,
+                threat_class="A02",
+                target=campaign.spec.targets[0].endpoint,
+                summary="This unconfirmed claim must remain internal to the ledger.",
+                reproduction=["Review the preserved same-Run evidence."],
+                evidence=results[0].evidence,
+                confidence=0.5,
+                validated=False,
+            )
+        ]
+
+
+class RecordingCandidateRuntime(DeterministicAgentRuntime):
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        assert self._calls == ["producer"]
+        self._calls.append("validator")
+        return await super().validate(campaign, plan, results)
+
+
+class BlockingValidationRuntime(DeterministicAgentRuntime):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        del campaign, plan, results
+        self.started.set()
+        await asyncio.Event().wait()
+        raise AssertionError("blocking Validator unexpectedly resumed")
+
+
+class FailingValidationRuntime(DeterministicAgentRuntime):
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        del campaign, plan, results
+        raise RuntimeError("validator unavailable")
+
+
+class RecordingCandidateProducer:
+    producer_id = "trusted-core:test-candidate-producer"
+
+    def __init__(self, calls: list[str]) -> None:
+        self._calls = calls
+
+    def produce(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> CandidateProduction:
+        assert results
+        assert results[0].request_id in {step.request.request_id for step in plan.steps}
+        self._calls.append("producer")
+        result = results[0]
+        candidate = CandidateFinding(
+            candidate_id="candidate_test_trusted_observation",
+            claim=Finding(
+                finding_id="finding_test_trusted_observation",
+                title="Trusted producer observation",
+                severity=FindingSeverity.HIGH,
+                threat_class="A02",
+                target=campaign.spec.targets[0].endpoint,
+                summary="A deterministic producer derived this candidate.",
+                reproduction=["Review the same-Run evidence."],
+                evidence=result.evidence,
+                confidence=1,
+                validated=False,
+            ),
+            source=self.producer_id,
+            source_agent_id=self.producer_id,
+            source_request_ids=[result.request_id],
+            created_at=datetime.now(UTC),
+        )
+        return CandidateProduction(
+            candidates=(candidate,),
+            authoritative_request_ids=frozenset({result.request_id}),
+            authoritative_claim_keys=frozenset(
+                {(candidate.claim.target, candidate.claim.threat_class)}
+            ),
         )
 
 
@@ -78,9 +203,7 @@ async def test_local_runner_seals_cleanup_receipt_on_cooperative_cancellation(
         worker=worker,
         output_root=tmp_path,
     )
-    execution = asyncio.create_task(
-        runner.run(sample_campaign, cancellation=cancellation)
-    )
+    execution = asyncio.create_task(runner.run(sample_campaign, cancellation=cancellation))
     await asyncio.wait_for(worker.started.wait(), timeout=1)
 
     cancellation.cancel(CancellationKind.RUN_CANCELLED, "Control Plane fence observed")
@@ -158,6 +281,70 @@ async def test_direct_task_cancellation_uses_caller_source(
     assert verify_run_integrity(run_path).valid
 
 
+@pytest.mark.asyncio
+async def test_local_validator_cancellation_preserves_candidate_as_inconclusive(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    validator = BlockingValidationRuntime()
+    cancellation = ExecutionCancellationContext()
+    runner = LocalCampaignRunner(
+        agents=validator,
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+    execution = asyncio.create_task(runner.run(sample_campaign, cancellation=cancellation))
+    await asyncio.wait_for(validator.started.wait(), timeout=1)
+
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "cancel validator")
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(execution, timeout=1)
+
+    binding = cancellation.binding
+    assert binding is not None
+    decisions = json.loads((binding.path / "validation-decisions.json").read_text(encoding="utf-8"))
+    assert len(decisions) == 1
+    assert decisions[0]["disposition"] == "inconclusive"
+    assert decisions[0]["reason_codes"] == ["validator-cancelled"]
+    assert calls == ["producer"]
+    assert verify_run_integrity(binding.path).valid
+
+
+def test_local_validator_failure_seals_inconclusive_candidate(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=FailingValidationRuntime(),
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    with pytest.raises(RuntimeError, match="validator unavailable"):
+        asyncio.run(runner.run(sample_campaign))
+
+    run_path = next((tmp_path / sample_campaign.metadata.name).glob("run_*"))
+    decisions = json.loads((run_path / "validation-decisions.json").read_text(encoding="utf-8"))
+    assert decisions[0]["disposition"] == "inconclusive"
+    assert decisions[0]["reason_codes"] == ["validator-unavailable"]
+    run_state = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+    assert run_state["status"] == "failed"
+    assert calls == ["producer"]
+    assert verify_run_integrity(run_path).valid
+
+
 def test_local_vertical_slice_creates_validated_finding_and_report(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -187,7 +374,87 @@ def test_local_vertical_slice_creates_validated_finding_and_report(
     event_types = {event["event_type"] for event in events}
     assert "tool.policy_evaluated" in event_types
     assert "findings.validated" in event_types
+    assert "candidate.finding.created" in event_types
+    assert "candidate-set.produced" not in event_types
+    assert "validation.confirmed" in event_types
     assert "campaign.completed" in event_types
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.CONFIRMED
+    assert (outcome.run_path / "candidate-findings.json").is_file()
+    assert (outcome.run_path / "validation-decisions.json").is_file()
+    assert (outcome.run_path / "validation-index.json").is_file()
+
+
+def test_local_runner_produces_candidates_before_validator_without_claim_event_data(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=RecordingCandidateRuntime(calls),
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    assert calls == ["producer", "validator"]
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.candidates[0].source == "trusted-core:test-candidate-producer"
+    events = [
+        json.loads(line)
+        for line in (outcome.run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    produced = [event for event in events if event["event_type"] == "candidate-set.produced"]
+    event_types = [event["event_type"] for event in events]
+    assert event_types.index("candidate-set.produced") < event_types.index("validation.started")
+    assert [event["payload"] for event in produced] == [
+        {
+            "producerId": "trusted-core:test-candidate-producer",
+            "candidateCount": 1,
+            "authoritativeRequestCount": 1,
+            "authoritativeClaimCount": 1,
+            "candidateIds": ["candidate_test_trusted_observation"],
+        }
+    ]
+
+
+def test_local_runner_preserves_unconfirmed_candidate_for_review(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=UnconfirmedFindingRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    decision = outcome.validation.decisions[0]
+    assert decision.disposition is FindingDisposition.NEEDS_REVIEW
+    candidates = json.loads(
+        (outcome.run_path / "candidate-findings.json").read_text(encoding="utf-8")
+    )
+    assert candidates[0]["claim"]["finding_id"] == "finding_needs_review"
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
+    report = outcome.report_path.read_text(encoding="utf-8")
+    assert "Needs review: `1`" in report
+    assert "Sensitive unconfirmed candidate" not in report
+    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event_type":"validation.needs-review"' in events
+    assert verify_run_integrity(outcome.run_path).valid
 
 
 def test_run_store_accepts_relative_output_root(

@@ -1,6 +1,7 @@
 """Markdown report renderer for validated campaign results."""
 
 from pajin.domain.models import AgentPlan, CampaignManifest, CampaignMode, Finding, ToolResult
+from pajin.domain.validation import FindingDisposition, FindingValidationSet
 
 
 def render_markdown_report(
@@ -9,6 +10,7 @@ def render_markdown_report(
     plan: AgentPlan,
     results: list[ToolResult],
     findings: list[Finding],
+    validation: FindingValidationSet | None = None,
 ) -> str:
     """Render a reproducible technical report from typed run data."""
 
@@ -20,14 +22,20 @@ def render_markdown_report(
         f"- Autonomy: `{campaign.spec.autonomy.value}`",
         f"- Access profile: `{campaign.spec.access_profile}`",
         f"- Confirmed findings: `{len(findings)}`",
-        "",
-        "## Authorization and Scope",
-        "",
-        f"- Approved by: `{campaign.spec.authorization.approved_by}`",
-        f"- Approval evidence: `{campaign.spec.authorization.evidence}`",
-        f"- Authorization expires: `{campaign.spec.authorization.expires_at.isoformat()}`",
-        "- Allowed targets:",
     ]
+    if validation is not None:
+        lines.append(f"- Candidate findings preserved: `{len(validation.candidates)}`")
+    lines.extend(
+        [
+            "",
+            "## Authorization and Scope",
+            "",
+            f"- Approved by: `{campaign.spec.authorization.approved_by}`",
+            f"- Approval evidence: `{campaign.spec.authorization.evidence}`",
+            f"- Authorization expires: `{campaign.spec.authorization.expires_at.isoformat()}`",
+            "- Allowed targets:",
+        ]
+    )
     lines.extend(f"  - `{item}`" for item in campaign.spec.scope.allow)
     lines.append("- Denied targets:")
     lines.extend(f"  - `{item}`" for item in campaign.spec.scope.deny)
@@ -64,6 +72,29 @@ def render_markdown_report(
         if result.error:
             lines.append(f"  - Error: `{result.error}`")
         lines.extend(f"  - Evidence: `{evidence}`" for evidence in result.evidence)
+
+    if validation is not None:
+        disposition_counts = {
+            disposition: sum(
+                decision.disposition is disposition for decision in validation.decisions
+            )
+            for disposition in FindingDisposition
+        }
+        lines.extend(
+            [
+                "",
+                "## Validation Summary",
+                "",
+                f"- Confirmed: `{disposition_counts[FindingDisposition.CONFIRMED]}`",
+                f"- Needs review: `{disposition_counts[FindingDisposition.NEEDS_REVIEW]}`",
+                f"- Inconclusive: `{disposition_counts[FindingDisposition.INCONCLUSIVE]}`",
+                "- Rejected by objective gate: "
+                f"`{disposition_counts[FindingDisposition.REJECTED_OBJECTIVE]}`",
+                "",
+                "Non-confirmed candidates remain internal to the validation ledger and are not "
+                "presented as validated findings.",
+            ]
+        )
 
     lines.extend(["", "## Validated Findings", ""])
     if not findings:

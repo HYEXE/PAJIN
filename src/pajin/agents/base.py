@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from pajin.domain.models import AgentPlan, CampaignManifest, Finding, StrictModel, ToolResult
+from pajin.domain.validation import CandidateFinding
 
 
 class ModelCallFailure(RuntimeError):
@@ -39,6 +41,42 @@ class ValidatorRuntime(Protocol):
         results: list[ToolResult],
     ) -> list[Finding]:
         """Validate observations independently from the executing specialist."""
+
+
+@dataclass(frozen=True)
+class CandidateProduction:
+    """Atomic trusted-candidate output and the confirmation space it owns."""
+
+    candidates: tuple[CandidateFinding, ...]
+    authoritative_request_ids: frozenset[str] = frozenset()
+    authoritative_claim_keys: frozenset[tuple[str, str]] = frozenset()
+
+    def __post_init__(self) -> None:
+        candidate_ids = [candidate.candidate_id for candidate in self.candidates]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("candidate production IDs must be unique")
+        for candidate in self.candidates:
+            if candidate.claim.validated:
+                raise ValueError("candidate production claims must have validated=False")
+            if not set(candidate.source_request_ids) <= self.authoritative_request_ids:
+                raise ValueError("candidate source requests must be inside producer authority")
+            claim_key = (candidate.claim.target, candidate.claim.threat_class)
+            if claim_key not in self.authoritative_claim_keys:
+                raise ValueError("candidate claim must be inside producer authority")
+
+
+class CandidateProducerRuntime(Protocol):
+    """Produce trusted, unconfirmed candidates from same-Run observations."""
+
+    producer_id: str
+
+    def produce(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> CandidateProduction:
+        """Derive candidates and bounded authority without tools or side effects."""
 
 
 class AgentReportNarrative(StrictModel):
