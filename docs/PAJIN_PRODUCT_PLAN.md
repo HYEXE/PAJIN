@@ -47,7 +47,7 @@ Control Plane의 첫 수직 조각까지 구현되었다.
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
 | Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, lease·heartbeat, 단일 Worker daemon |
-| 제품 UI·생태계 | 미구현 | Web UI, 분산 Worker pool, Pack registry, 외부 플랫폼 연동 |
+| 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·목록·상세·이벤트 조회; 승인 UI, Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
 제공하지 않는다. 상세 안전 경계와 재현 명령은 저장소 `README.md`, KISA 커버리지는
@@ -759,11 +759,24 @@ MVP는 CLI와 YAML Campaign·Mode Pack Manifest를 우선한다. 현재 구현�
 
 초기 기획에 있던 범용 `authorize`, `status`, `findings`, `report`, `stop` CLI는 아직 별도
 명령으로 구현하지 않았다. 지속 실행의 제출·조회·승인·재개는 현재 선택적 Control Plane
-API가 담당한다. 범용 취소 API와 Web UI는 아직 구현하지 않았다.
+API가 담당한다. 동일 오리진 Web Console은 제출·목록·상세·이벤트 조회까지만 제공하며,
+범용 취소 API와 승인·재개 UI는 아직 구현하지 않았다.
 
-### 16.2 향후 Web UI
+### 16.2 현재 Web Console과 향후 Web UI
 
-주요 화면:
+현재 `/ui` Web Console은 외부 프런트엔드 의존성 없이 다음 최소 운영 흐름을 제공한다.
+
+- 메모리 전용 Bearer 인증과 역할 확인
+- Operator의 멱등 Run 제출
+- 상태 필터·제한된 offset pagination 기반 Run 목록
+- 선택 Run의 승인된 입력과 append-only 이벤트 조회
+- 수동 또는 5초 polling 기반 상태 갱신
+
+공개 shell에는 데이터가 없고 모든 `/v1` 요청은 기존 역할 인증을 다시 통과한다. Console은
+로컬 단일 테넌트 preview이며 승인·재개·취소, 보고서 다운로드, 사용자 계정과 조직 격리는
+아직 제공하지 않는다.
+
+향후 제품 Web UI의 주요 화면:
 
 - 프로젝트 및 캠페인 대시보드
 - 범위·교전 규칙 편집기
@@ -997,7 +1010,7 @@ PAJIN/
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
 | Phase 2 | 핵심 완료 | 역할 분리, 동적 Specialist, 검증, 권한 감쇠, 예산·취소·승인 확보; 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
-| Phase 4 | 초기 구현 | PostgreSQL Control Plane과 Worker daemon만 구현, 제품 UI·생태계는 미구현 |
+| Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 동일 오리진 Web Console 첫 수직 흐름 구현 |
 
 ### Phase 0 — Foundation & Governance (완료)
 
@@ -1035,7 +1048,8 @@ PAJIN/
 ### Phase 4 — Platform & Ecosystem (초기 구현)
 
 - FastAPI·PostgreSQL 기반 Job queue와 lease-aware Worker daemon은 초기 구현 완료
-- Web UI와 실시간 Agent Graph
+- 동일 오리진 Web Console의 Run 제출·목록·상세·이벤트 모니터링은 초기 구현 완료
+- 승인·재개·취소·보고서 검토 UI와 실시간 Agent Graph
 - 분산 Worker Pool
 - 조직·프로젝트·역할 기반 접근 제어
 - MCP·Skill·Tool Pack 등록과 검증
@@ -1090,7 +1104,7 @@ PAJIN/
 
 ## 24. 오픈 의사결정
 
-초기 질문 중 실행 경계와 기술 구조는 ADR-0001부터 ADR-0021까지에서 확정했다. 다음
+초기 질문 중 실행 경계와 기술 구조는 ADR-0001부터 ADR-0022까지에서 확정했다. 다음
 항목은 Phase 3-4 진행 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
@@ -1168,7 +1182,7 @@ PAJIN/
 1. `README.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. `docs/adr/0001-0021` — 구현된 런타임·정책·Mode Pack·Control Plane 의사결정
+4. `docs/adr/0001-0022` — 구현된 런타임·정책·Mode Pack·Control Plane 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 

@@ -19,8 +19,8 @@ The implementation baseline as of 2026-07-14 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, leases, heartbeats, crash recovery, and one Worker daemon |
-| Primary gaps | Web UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, leases, heartbeats, crash recovery, one Worker daemon, and a same-origin Web Console preview |
+| Primary gaps | Approval/review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -553,6 +553,34 @@ use a secret manager, TLS termination, network isolation, distinct role credenti
 held signing key, database backups, and managed schema migrations. See
 [`ADR 0011`](docs/adr/0011-durable-control-plane.md) for state and threat-boundary details.
 
+### Web Console preview
+
+The Control Plane serves a dependency-free, same-origin operator shell at
+`http://127.0.0.1:8090/ui`. The shell itself contains no Run data and is public so a browser can load
+it without placing a credential in a URL or cookie. All `/v1` data calls still require the existing
+Bearer role checks. After the server above starts, open the URL and enter an Operator, Approver, or
+Auditor credential.
+
+The first Console slice supports:
+
+- authenticated session-role discovery;
+- Operator-only idempotent Run submission for registered `campaign` or `tool-loop` Job kinds;
+- bounded Run listing with state filtering and stable pagination;
+- selected Run input and append-only event inspection;
+- optional five-second polling without WebSocket or SSE state.
+
+Run lists return a summary DTO and never bulk-load or expose submitted input. The selected Run
+detail remains authorized and includes that input. Browser credentials live only in JavaScript
+memory: there is no cookie, local/session storage, IndexedDB, credential URL, or external asset.
+Lock, refresh, tab close, and HTTP 401 clear the in-memory value. A restrictive CSP, no-store cache
+policy, no-referrer policy, same-origin isolation headers, and text-only DOM rendering reduce the
+browser attack surface.
+
+This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
+front of the API before remote use. Approval decisions, checkpoint resume, cancellation, report
+download, Agent Graph, user accounts, and tenant isolation remain API-only or unimplemented. See
+[`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md).
+
 ### Lease-aware Worker daemon
 
 `pajin-worker-daemon` turns queued Control Plane Jobs into existing PAJIN engine runs. It keeps one
@@ -775,7 +803,8 @@ the PAJIN Tool Gateway and Policy Engine.
 
 See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [the KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
-[ADR decision record](docs/adr/). The latest orchestration boundaries are
+[ADR decision record](docs/adr/). The latest implementation decisions are
 [ADR-0019](docs/adr/0019-bounded-ctf-suite-orchestration.md),
 [ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md), and
-[ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md).
+[ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md), and
+[ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md).
