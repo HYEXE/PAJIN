@@ -44,6 +44,9 @@ pajin-worker-daemon = "pajin.control_plane.worker_main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"pajin.control_plane.web" = ["*.html", "*.css", "*.js"]
+
 [tool.pytest.ini_options]
 addopts = "-ra"
 testpaths = ["tests"]

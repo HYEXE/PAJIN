@@ -2,13 +2,13 @@
 
 import asyncio
 import os
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
 from typing import Annotated
 
-from fastapi import Depends, FastAPI, HTTPException, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import text
@@ -30,6 +30,8 @@ from pajin.control_plane.models import (
     PrincipalRole,
     ResumeCheckpointRequest,
     ResumeView,
+    RunListView,
+    RunState,
     RunView,
     SubmissionView,
     SubmitRunRequest,
@@ -47,6 +49,7 @@ from pajin.control_plane.service import (
     ResourceNotFound,
     StateConflict,
 )
+from pajin.control_plane.web_console import console_asset_response, console_index_response
 
 
 @dataclass(frozen=True)
@@ -142,6 +145,19 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.middleware("http")
+    async def prevent_sensitive_response_caching(
+        request: Request,
+        call_next: Callable[[Request], Awaitable[Response]],
+    ) -> Response:
+        response = await call_next(request)
+        if request.url.path.startswith("/v1/"):
+            response.headers["Cache-Control"] = "no-store, max-age=0"
+            response.headers["Pragma"] = "no-cache"
+            response.headers["Referrer-Policy"] = "no-referrer"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
     def authenticate(
         credential: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     ) -> Principal:
@@ -199,12 +215,58 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
             connection.execute(text("SELECT 1"))
         return {"status": "ready"}
 
+    @app.get("/ui", include_in_schema=False)
+    @app.get("/ui/", include_in_schema=False)
+    def web_console() -> Response:
+        return console_index_response()
+
+    @app.get("/ui/assets/app.css", include_in_schema=False)
+    def web_console_css() -> Response:
+        return console_asset_response("app.css")
+
+    @app.get("/ui/assets/app.js", include_in_schema=False)
+    def web_console_javascript() -> Response:
+        return console_asset_response("app.js")
+
+    @app.get("/v1/session", response_model=Principal)
+    def get_session(
+        principal: Annotated[
+            Principal,
+            Depends(
+                require_roles(
+                    PrincipalRole.OPERATOR,
+                    PrincipalRole.APPROVER,
+                    PrincipalRole.AUDITOR,
+                )
+            ),
+        ],
+    ) -> Principal:
+        return principal
+
     @app.post("/v1/runs", response_model=SubmissionView)
     def submit_run(
         request: SubmitRunRequest,
         principal: Annotated[Principal, Depends(require_roles(PrincipalRole.OPERATOR))],
     ) -> SubmissionView:
         return service.submit_run(request, actor=principal.subject)
+
+    @app.get("/v1/runs", response_model=RunListView)
+    def list_runs(
+        _principal: Annotated[
+            Principal,
+            Depends(
+                require_roles(
+                    PrincipalRole.OPERATOR,
+                    PrincipalRole.APPROVER,
+                    PrincipalRole.AUDITOR,
+                )
+            ),
+        ],
+        state_filter: Annotated[RunState | None, Query(alias="state")] = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
+    ) -> RunListView:
+        return service.list_runs(state=state_filter, limit=limit, offset=offset)
 
     @app.get("/v1/runs/{run_id}", response_model=RunView)
     def get_run(

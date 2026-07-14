@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, load_only
 
 from pajin.control_plane.database import (
     ApprovalRecord,
@@ -38,7 +38,9 @@ from pajin.control_plane.models import (
     JobView,
     LeaseRequest,
     ResumeView,
+    RunListView,
     RunState,
+    RunSummaryView,
     RunView,
     SubmissionView,
     SubmitRunRequest,
@@ -143,6 +145,40 @@ class ControlPlaneService:
     def get_run(self, run_id: str) -> RunView:
         with self.repository.transaction() as session:
             return self._run_view(self._run(session, run_id))
+
+    def list_runs(
+        self,
+        *,
+        state: RunState | None,
+        limit: int,
+        offset: int,
+    ) -> RunListView:
+        with self.repository.transaction() as session:
+            filters = () if state is None else (RunRecord.state == state.value,)
+            total = session.scalar(select(func.count()).select_from(RunRecord).where(*filters))
+            records = session.scalars(
+                select(RunRecord)
+                .options(
+                    load_only(
+                        RunRecord.run_id,
+                        RunRecord.campaign_name,
+                        RunRecord.state,
+                        RunRecord.current_checkpoint_id,
+                        RunRecord.created_at,
+                        RunRecord.updated_at,
+                    )
+                )
+                .where(*filters)
+                .order_by(RunRecord.updated_at.desc(), RunRecord.run_id.desc())
+                .offset(offset)
+                .limit(limit)
+            ).all()
+            return RunListView(
+                items=[self._run_summary_view(record) for record in records],
+                total=int(total or 0),
+                limit=limit,
+                offset=offset,
+            )
 
     def get_job(self, job_id: str) -> JobView:
         with self.repository.transaction() as session:
@@ -670,6 +706,17 @@ class ControlPlaneService:
             campaign_name=record.campaign_name,
             state=RunState(record.state),
             input=record.input,
+            current_checkpoint_id=record.current_checkpoint_id,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _run_summary_view(record: RunRecord) -> RunSummaryView:
+        return RunSummaryView(
+            run_id=record.run_id,
+            campaign_name=record.campaign_name,
+            state=RunState(record.state),
             current_checkpoint_id=record.current_checkpoint_id,
             created_at=_aware(record.created_at),
             updated_at=_aware(record.updated_at),

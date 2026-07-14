@@ -129,6 +129,22 @@ class RunView(StrictModel):
     updated_at: datetime
 
 
+class RunSummaryView(StrictModel):
+    run_id: str
+    campaign_name: str
+    state: RunState
+    current_checkpoint_id: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class RunListView(StrictModel):
+    items: list[RunSummaryView]
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=100)
+    offset: int = Field(ge=0, le=10_000)
+
+
 class JobView(StrictModel):
     job_id: str
     run_id: str

@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>PAJIN Control Plane</title>
+    <link rel="stylesheet" href="/ui/assets/app.css">
+    <script type="module" src="/ui/assets/app.js"></script>
+  </head>
+  <body>
+    <a class="skip-link" href="#main-content">Skip to content</a>
+    <header class="topbar">
+      <div class="brand" aria-label="PAJIN Control Plane">
+        <span class="brand-mark" aria-hidden="true">P</span>
+        <div>
+          <strong>PAJIN</strong>
+          <span>Control Plane</span>
+        </div>
+      </div>
+      <div class="connection-state">
+        <span id="connection-dot" class="connection-dot" aria-hidden="true"></span>
+        <span id="connection-label">Locked</span>
+      </div>
+    </header>
+
+    <main id="main-content" class="page-shell">
+      <section class="hero" aria-labelledby="page-title">
+        <div>
+          <p class="eyebrow">OPERATOR CONSOLE · LOCAL SINGLE-TENANT PREVIEW</p>
+          <h1 id="page-title">Run security campaigns with a visible control boundary.</h1>
+          <p>
+            Submit only registered job kinds, monitor durable state, and inspect the append-only
+            event trail. Approval decisions and resume actions remain API-only in this slice.
+          </p>
+        </div>
+        <div class="hero-metric" aria-label="Console security boundary">
+          <span>SESSION MODEL</span>
+          <strong>Memory only</strong>
+          <small>Bearer credentials are cleared on lock, refresh, or tab close.</small>
+        </div>
+      </section>
+
+      <section class="panel session-panel" aria-labelledby="session-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">01 · AUTHENTICATE</p>
+            <h2 id="session-heading">Connect to this Control Plane</h2>
+          </div>
+          <button id="lock-button" class="button button-quiet" type="button" disabled>Lock</button>
+        </div>
+        <form id="token-form" class="token-form">
+          <div class="field field-grow">
+            <label for="token-input">Bearer token</label>
+            <input
+              id="token-input"
+              name="control-plane-token"
+              type="password"
+              autocomplete="off"
+              spellcheck="false"
+              required
+              minlength="32"
+              aria-describedby="token-help"
+            >
+            <small id="token-help">The token is retained only in this tab's JavaScript memory.</small>
+          </div>
+          <button class="button button-primary" type="submit">Connect</button>
+        </form>
+        <p id="status-message" class="status-message" role="status" aria-live="polite">
+          Enter an Operator, Approver, or Auditor credential to read Run state.
+        </p>
+      </section>
+
+      <div class="workspace-grid">
+        <section class="panel submit-panel" aria-labelledby="submit-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">02 · SUBMIT</p>
+              <h2 id="submit-heading">Create a durable Run</h2>
+            </div>
+          </div>
+          <form id="run-form">
+            <div class="field-row">
+              <div class="field field-grow">
+                <label for="campaign-name">Campaign name</label>
+                <input
+                  id="campaign-name"
+                  name="campaign-name"
+                  value="web-console-demo"
+                  pattern="[A-Za-z0-9][A-Za-z0-9._-]{0,127}"
+                  maxlength="128"
+                  required
+                >
+              </div>
+              <div class="field">
+                <label for="job-kind">Registered job kind</label>
+                <select id="job-kind" name="job-kind">
+                  <option value="campaign">campaign</option>
+                  <option value="tool-loop">tool-loop</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="field-row">
+              <div class="field field-grow">
+                <label for="idempotency-key">Idempotency key</label>
+                <input
+                  id="idempotency-key"
+                  name="idempotency-key"
+                  minlength="8"
+                  maxlength="200"
+                  spellcheck="false"
+                  required
+                >
+              </div>
+              <button id="new-key-button" class="button button-quiet field-action" type="button">
+                New key
+              </button>
+              <div class="field field-compact">
+                <label for="max-attempts">Max attempts</label>
+                <input id="max-attempts" name="max-attempts" type="number" value="3" min="1" max="20" required>
+              </div>
+            </div>
+
+            <div class="field">
+              <label for="run-input">Executor input JSON</label>
+              <textarea id="run-input" name="run-input" rows="20" spellcheck="false" required>{
+  "profile": "deterministic-local",
+  "manifest": {
+    "apiVersion": "pajin.dev/v1alpha1",
+    "kind": "Campaign",
+    "metadata": {
+      "name": "web-console-demo"
+    },
+    "spec": {
+      "mode": "ai-redteam",
+      "autonomy": "supervised",
+      "authorization": {
+        "approvedBy": "local-project-owner",
+        "approvedAt": "2026-07-01T00:00:00+09:00",
+        "expiresAt": "2030-01-01T00:00:00+09:00",
+        "evidence": "local-development-authorization"
+      },
+      "targets": [
+        {
+          "type": "mock-agent",
+          "id": "staging-assistant",
+          "endpoint": "https://staging.example.invalid/api/chat",
+          "simulation": {
+            "unauthorizedToolCall": true
+          }
+        }
+      ],
+      "scope": {
+        "allow": ["https://staging.example.invalid/api/**"],
+        "deny": ["https://staging.example.invalid/api/admin/**"]
+      },
+      "accessProfile": "greybox",
+      "objectives": ["Validate the safe deterministic Control Plane path."],
+      "threatClasses": ["A01", "A02"],
+      "rulesOfEngagement": {
+        "maxToolRiskTier": "T2",
+        "allowedMethods": ["GET", "HEAD", "POST"],
+        "prohibit": ["denial-of-service", "real-user-data-access"],
+        "stopOn": ["out-of-scope-attempt"],
+        "allowPrivateNetworks": false
+      },
+      "budgets": {
+        "durationSeconds": 120,
+        "maxCostUsd": 0,
+        "maxAgents": 2,
+        "maxSpawnDepth": 0,
+        "maxToolCalls": 5
+      },
+      "outputs": ["markdown-report", "json-findings"]
+    }
+  }
+}</textarea>
+              <small>
+                The Worker daemon validates this object against the trusted executor profile. It
+                cannot select a command, module, or executable path.
+              </small>
+            </div>
+            <button id="submit-button" class="button button-primary button-wide" type="submit" disabled>
+              Submit Run
+            </button>
+          </form>
+        </section>
+
+        <section class="panel runs-panel" aria-labelledby="runs-heading">
+          <div class="section-heading">
+            <div>
+              <p class="section-kicker">03 · MONITOR</p>
+              <h2 id="runs-heading">Recent Runs</h2>
+            </div>
+            <button id="refresh-button" class="button button-quiet" type="button" disabled>Refresh</button>
+          </div>
+          <div class="runs-toolbar">
+            <div class="field field-grow">
+              <label for="state-filter">State filter</label>
+              <select id="state-filter" disabled>
+                <option value="">All states</option>
+                <option value="queued">queued</option>
+                <option value="running">running</option>
+                <option value="awaiting-approval">awaiting-approval</option>
+                <option value="completed">completed</option>
+                <option value="failed">failed</option>
+                <option value="cancelled">cancelled</option>
+              </select>
+            </div>
+            <label class="check-control" for="auto-refresh">
+              <input id="auto-refresh" type="checkbox" disabled>
+              <span>Refresh every 5s</span>
+            </label>
+          </div>
+          <div class="table-shell" tabindex="0" aria-label="Runs table, horizontally scrollable">
+            <table>
+              <thead>
+                <tr>
+                  <th scope="col">Campaign</th>
+                  <th scope="col">State</th>
+                  <th scope="col">Updated</th>
+                  <th scope="col"><span class="sr-only">Open</span></th>
+                </tr>
+              </thead>
+              <tbody id="runs-body">
+                <tr>
+                  <td colspan="4" class="empty-cell">Connect to load Runs.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="pagination" aria-label="Run list pagination">
+            <button id="previous-page" class="button button-quiet" type="button" disabled>Previous</button>
+            <span id="page-summary">0 Runs</span>
+            <button id="next-page" class="button button-quiet" type="button" disabled>Next</button>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel detail-panel" aria-labelledby="detail-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">04 · INSPECT</p>
+            <h2 id="detail-heading">Run detail and audit events</h2>
+          </div>
+          <span id="detail-state" class="state-badge state-neutral">No Run selected</span>
+        </div>
+        <div class="detail-grid">
+          <div>
+            <dl class="run-facts">
+              <div><dt>Run ID</dt><dd id="detail-run-id">—</dd></div>
+              <div><dt>Campaign</dt><dd id="detail-campaign">—</dd></div>
+              <div><dt>Created</dt><dd id="detail-created">—</dd></div>
+              <div><dt>Updated</dt><dd id="detail-updated">—</dd></div>
+              <div><dt>Checkpoint</dt><dd id="detail-checkpoint">—</dd></div>
+            </dl>
+            <details class="json-details">
+              <summary>Submitted input</summary>
+              <pre id="detail-input">Select a Run to inspect its authorized input.</pre>
+            </details>
+          </div>
+          <div class="event-column">
+            <div class="event-heading">
+              <h3>Append-only event trail</h3>
+              <span id="event-count">0 events</span>
+            </div>
+            <ol id="event-list" class="event-list">
+              <li class="empty-event">No events loaded.</li>
+            </ol>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer>
+      <span>PAJIN Control Plane · Web Console preview</span>
+      <span>Same-origin API · No cookies · No external assets</span>
+    </footer>
+  </body>
+</html>
