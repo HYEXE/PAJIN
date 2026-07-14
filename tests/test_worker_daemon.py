@@ -11,6 +11,8 @@ import pytest
 from pajin.control_plane.client import (
     ControlPlaneClient,
     ControlPlaneLeaseLost,
+    ControlPlaneProtocolError,
+    ControlPlaneRunCancelled,
     ControlPlaneTransientError,
 )
 from pajin.control_plane.executors import (
@@ -27,6 +29,7 @@ from pajin.control_plane.models import (
     CheckpointView,
     ClaimedJob,
     ClaimJobRequest,
+    ControlPlaneConflictCode,
     JobKind,
     JobState,
     JobView,
@@ -34,6 +37,14 @@ from pajin.control_plane.models import (
 )
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig, WorkerDaemonStatus
 from pajin.domain.manifest import load_manifest
+from pajin.runtime.control import (
+    CancellationCleanupStatus,
+    CancellationKind,
+    ExecutionCancellationContext,
+)
+from pajin.runtime.secrets import SecretMaterial
+from pajin.runtime.store import verify_run_integrity
+from pajin.runtime.worker import WorkerJob, WorkerResult
 
 
 def _job(
@@ -73,6 +84,10 @@ class FakeControlPlane:
         self.checkpoints: list[Any] = []
         self.transient_completions = 0
         self.lose_lease = False
+        self.run_cancelled = False
+        self.heartbeat_error: Exception | None = None
+        self.cancel_completion = False
+        self.heartbeat_gate: asyncio.Event | None = None
 
     async def claim(self, _request: Any) -> ClaimedJob | None:
         claimed, self.claimed = self.claimed, None
@@ -80,11 +95,19 @@ class FakeControlPlane:
 
     async def heartbeat(self, _job_id: str, _request: Any) -> JobView:
         self.heartbeats += 1
+        if self.heartbeat_gate is not None:
+            await self.heartbeat_gate.wait()
+        if self.heartbeat_error is not None:
+            raise self.heartbeat_error
+        if self.run_cancelled:
+            raise ControlPlaneRunCancelled("run has been cancelled")
         if self.lose_lease:
             raise ControlPlaneLeaseLost("test lease expired")
         return _job()
 
     async def complete(self, _job_id: str, request: Any) -> JobView:
+        if self.cancel_completion:
+            raise ControlPlaneRunCancelled("run has been cancelled")
         if self.transient_completions:
             self.transient_completions -= 1
             raise ControlPlaneTransientError("temporary completion failure")
@@ -136,14 +159,99 @@ class DelayedExecutor:
     def __init__(self, *, delay: float = 0.12) -> None:
         self.delay = delay
         self.cancelled = False
+        self.started = asyncio.Event()
 
-    async def execute(self, _job: JobView) -> CompletedExecution:
+    async def execute(
+        self,
+        _job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> CompletedExecution:
+        self.started.set()
+        delay = asyncio.create_task(asyncio.sleep(self.delay))
+        cancellation_wait = (
+            asyncio.create_task(cancellation.wait()) if cancellation is not None else None
+        )
         try:
-            await asyncio.sleep(self.delay)
+            watched = {delay}
+            if cancellation_wait is not None:
+                watched.add(cancellation_wait)
+            done, _pending = await asyncio.wait(
+                watched,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancellation_wait is not None and cancellation_wait in done:
+                self.cancelled = True
+                delay.cancel()
+                await asyncio.gather(delay, return_exceptions=True)
+                return CompletedExecution(result={"cancelled": True})
+            if cancellation_wait is not None:
+                cancellation_wait.cancel()
+                await asyncio.gather(cancellation_wait, return_exceptions=True)
+        except asyncio.CancelledError:
+            self.cancelled = True
+            for task in watched:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*watched, return_exceptions=True)
+            raise
+        return CompletedExecution(result={"ok": True})
+
+
+class BlockingCampaignWorker:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(
+        self,
+        _job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        assert not secrets
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
         except asyncio.CancelledError:
             self.cancelled = True
             raise
-        return CompletedExecution(result={"ok": True})
+        raise AssertionError("blocking campaign Worker unexpectedly resumed")
+
+
+class ContextIgnoringExecutor:
+    kind = JobKind.CAMPAIGN
+
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.forced_cancelled = False
+
+    async def execute(
+        self,
+        _job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> CompletedExecution:
+        assert cancellation is not None
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.forced_cancelled = True
+            raise
+        raise AssertionError("ignoring executor unexpectedly resumed")
+
+
+class LegacyExecutor:
+    kind = JobKind.CAMPAIGN
+
+    async def execute(self, _job: JobView) -> CompletedExecution:
+        return CompletedExecution(result={"legacy": True})
+
+
+def test_executor_registry_rejects_adapter_without_cancellation_contract() -> None:
+    with pytest.raises(ValueError, match="cancellation context"):
+        ExecutorRegistry([LegacyExecutor()])  # type: ignore[list-item]
 
 
 @pytest.mark.asyncio
@@ -177,11 +285,12 @@ async def test_daemon_heartbeats_and_retries_idempotent_completion(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_heartbeat_lease_loss_cancels_inflight_execution() -> None:
+async def test_heartbeat_lease_loss_cancels_inflight_execution(tmp_path: Path) -> None:
     claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
     control = FakeControlPlane(claimed)
     control.lose_lease = True
     executor = DelayedExecutor(delay=10)
+    status_path = tmp_path / "status.json"
     daemon = WorkerDaemon(
         client=control,
         executors=ExecutorRegistry([executor]),
@@ -191,6 +300,7 @@ async def test_heartbeat_lease_loss_cancels_inflight_execution() -> None:
             lease_seconds=5,
             heartbeat_seconds=0.05,
             long_poll_seconds=0,
+            status_path=status_path,
         ),
     )
 
@@ -200,6 +310,235 @@ async def test_heartbeat_lease_loss_cancels_inflight_execution() -> None:
     assert executor.cancelled is True
     assert not control.completed
     assert not control.failed
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.state == "lease-lost"
+    assert status.active_job_id is None
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.kind is CancellationKind.LEASE_LOST
+    assert (
+        status.last_cancellation.cleanup_status
+        is CancellationCleanupStatus.EXECUTOR_DRAINED
+    )
+    assert status.last_cancellation.forced_at is None
+    assert "l" * 43 not in status_path.read_text(encoding="utf-8")
+
+
+@pytest.mark.asyncio
+async def test_cancelled_run_maps_to_typed_worker_context(tmp_path: Path) -> None:
+    claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
+    control = FakeControlPlane(claimed)
+    control.run_cancelled = True
+    executor = DelayedExecutor(delay=10)
+    control.heartbeat_gate = executor.started
+    status_path = tmp_path / "status.json"
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry([executor]),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            status_path=status_path,
+        ),
+    )
+
+    with pytest.raises(ControlPlaneRunCancelled):
+        await asyncio.wait_for(daemon.run_once(), timeout=1)
+
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.kind is CancellationKind.RUN_CANCELLED
+    assert status.last_cancellation.reason == "run has been cancelled"
+
+
+@pytest.mark.asyncio
+async def test_control_plane_fence_seals_engine_cleanup_and_quiescence(
+    tmp_path: Path,
+) -> None:
+    campaign = load_manifest(Path("examples/ai-redteam.yaml"))
+    claimed = ClaimedJob(
+        job=_job(
+            payload={
+                "input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}
+            }
+        ),
+        lease_token="l" * 43,
+    )
+    control = FakeControlPlane(claimed)
+    control.lose_lease = True
+    worker = BlockingCampaignWorker()
+    control.heartbeat_gate = worker.started
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry(
+            [CampaignJobExecutor(output_root=tmp_path, worker=worker)]
+        ),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            cancellation_grace_seconds=1,
+        ),
+    )
+
+    with pytest.raises(ControlPlaneLeaseLost, match="lease expired"):
+        await asyncio.wait_for(daemon.run_once(), timeout=2)
+
+    assert worker.cancelled
+    run_path = next((tmp_path / campaign.metadata.name).glob("run_*"))
+    cancellation = (
+        run_path / "cancellation.json"
+    ).read_text(encoding="utf-8")
+    quiescence = (run_path / "quiescence.json").read_text(encoding="utf-8")
+    assert '"cleanupStatus": "cleanup-completed"' in cancellation
+    assert '"cleanupStatus": "quiesced"' in quiescence
+    assert '"controlPlaneAttested": false' in quiescence
+    assert verify_run_integrity(run_path).seal_count == 2
+    assert not control.completed
+    assert not control.failed
+
+
+@pytest.mark.asyncio
+async def test_lease_loss_forces_context_ignoring_executor_after_grace(
+    tmp_path: Path,
+) -> None:
+    claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
+    control = FakeControlPlane(claimed)
+    control.lose_lease = True
+    executor = ContextIgnoringExecutor()
+    control.heartbeat_gate = executor.started
+    status_path = tmp_path / "status.json"
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry([executor]),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            cancellation_grace_seconds=0.05,
+            cancellation_force_seconds=0.5,
+            status_path=status_path,
+        ),
+    )
+
+    with pytest.raises(ControlPlaneLeaseLost, match="lease expired"):
+        await asyncio.wait_for(daemon.run_once(), timeout=1)
+
+    assert executor.forced_cancelled
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.forced_at is not None
+    assert (
+        status.last_cancellation.cleanup_status
+        is CancellationCleanupStatus.EXECUTOR_DRAINED
+    )
+
+
+@pytest.mark.asyncio
+async def test_stop_signal_cooperatively_drains_active_execution(
+    tmp_path: Path,
+) -> None:
+    claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
+    control = FakeControlPlane(claimed)
+    executor = DelayedExecutor(delay=10)
+    stop = asyncio.Event()
+    status_path = tmp_path / "status.json"
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry([executor]),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.5,
+            long_poll_seconds=0,
+            status_path=status_path,
+        ),
+    )
+    daemon_task = asyncio.create_task(daemon.run_forever(stop))
+    await asyncio.wait_for(executor.started.wait(), timeout=1)
+
+    stop.set()
+    await asyncio.wait_for(daemon_task, timeout=1)
+
+    assert executor.cancelled
+    assert not control.completed
+    assert not control.failed
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.state == "stopped"
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.kind is CancellationKind.DAEMON_SHUTDOWN
+    assert (
+        status.last_cancellation.cleanup_status
+        is CancellationCleanupStatus.EXECUTOR_DRAINED
+    )
+
+
+@pytest.mark.asyncio
+async def test_finalization_cancel_is_recorded_as_run_cancelled(tmp_path: Path) -> None:
+    claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
+    control = FakeControlPlane(claimed)
+    control.cancel_completion = True
+    status_path = tmp_path / "status.json"
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry([DelayedExecutor(delay=0)]),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.5,
+            long_poll_seconds=0,
+            status_path=status_path,
+        ),
+    )
+
+    with pytest.raises(ControlPlaneRunCancelled):
+        await daemon.run_once()
+
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.kind is CancellationKind.RUN_CANCELLED
+    assert (
+        status.last_cancellation.cleanup_status
+        is CancellationCleanupStatus.EXECUTOR_DRAINED
+    )
+
+
+@pytest.mark.asyncio
+async def test_protocol_failure_is_fatal_after_execution_cleanup(tmp_path: Path) -> None:
+    claimed = ClaimedJob(job=_job(), lease_token="l" * 43)
+    control = FakeControlPlane(claimed)
+    control.heartbeat_error = ControlPlaneProtocolError("invalid heartbeat response")
+    executor = DelayedExecutor(delay=10)
+    control.heartbeat_gate = executor.started
+    status_path = tmp_path / "status.json"
+    daemon = WorkerDaemon(
+        client=control,
+        executors=ExecutorRegistry([executor]),
+        config=WorkerDaemonConfig(
+            worker_id="worker-test",
+            kinds=["campaign"],
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            status_path=status_path,
+        ),
+    )
+
+    with pytest.raises(ControlPlaneProtocolError):
+        await daemon.run_forever(asyncio.Event())
+
+    status = WorkerDaemonStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+    assert status.state == "fatal"
+    assert status.last_cancellation is not None
+    assert status.last_cancellation.kind is CancellationKind.HEARTBEAT_UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -315,3 +654,53 @@ async def test_async_client_reuses_bearer_auth_and_classifies_stale_lease() -> N
             )
 
     assert seen_authorization == [f"Bearer {token}", f"Bearer {token}"]
+
+
+@pytest.mark.asyncio
+async def test_async_client_classifies_cancelled_run_as_specialized_lease_loss() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            409,
+            json={
+                "detail": "run has been cancelled",
+                "code": ControlPlaneConflictCode.RUN_CANCELLED.value,
+            },
+        )
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token="worker-client-token-00000000000000000001",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ControlPlaneRunCancelled, match="run has been cancelled") as caught:
+            await client.heartbeat(
+                "job_" + "1" * 32,
+                LeaseRequest(
+                    worker_id="worker-client",
+                    lease_token="l" * 43,
+                    lease_seconds=30,
+                ),
+            )
+
+    assert isinstance(caught.value, ControlPlaneLeaseLost)
+
+
+@pytest.mark.asyncio
+async def test_async_client_rejects_malformed_success_response() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"unexpected": "payload"})
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token="worker-client-token-00000000000000000001",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ControlPlaneProtocolError, match="invalid JobView"):
+            await client.heartbeat(
+                "job_" + "1" * 32,
+                LeaseRequest(
+                    worker_id="worker-client",
+                    lease_token="l" * 43,
+                    lease_seconds=30,
+                ),
+            )

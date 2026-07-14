@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi.responses import JSONResponse
@@ -23,6 +23,8 @@ from pajin.control_plane.models import (
     ClaimedJob,
     ClaimJobRequest,
     CompleteJobRequest,
+    ControlPlaneConflictCode,
+    ControlPlaneConflictResponse,
     CreateCheckpointRequest,
     DecideApprovalRequest,
     FailJobRequest,
@@ -49,9 +51,19 @@ from pajin.control_plane.service import (
     ControlPlaneService,
     LeaseRejected,
     ResourceNotFound,
+    RunCancelled,
     StateConflict,
 )
 from pajin.control_plane.web_console import console_asset_response, console_index_response
+
+_WORKER_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ControlPlaneConflictResponse,
+        "description": (
+            "The Control Plane state, Run fence, or Worker lease rejected the operation."
+        ),
+    }
+}
 
 
 @dataclass(frozen=True)
@@ -201,7 +213,16 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     @app.exception_handler(LeaseRejected)
     @app.exception_handler(CheckpointIntegrityError)
     async def conflict_handler(_request: object, exc: Exception) -> JSONResponse:
-        return JSONResponse(status_code=409, content={"detail": str(exc)})
+        code: ControlPlaneConflictCode | None = None
+        if isinstance(exc, RunCancelled):
+            code = ControlPlaneConflictCode.RUN_CANCELLED
+        elif isinstance(exc, LeaseRejected):
+            code = ControlPlaneConflictCode.LEASE_LOST
+        content = ControlPlaneConflictResponse(detail=str(exc), code=code)
+        return JSONResponse(
+            status_code=status.HTTP_409_CONFLICT,
+            content=content.model_dump(mode="json", exclude_none=True),
+        )
 
     @app.exception_handler(ControlPlaneError)
     async def control_error_handler(_request: object, exc: ControlPlaneError) -> JSONResponse:
@@ -363,7 +384,11 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
                 return None
             await asyncio.sleep(min(0.25, remaining))
 
-    @app.post("/v1/worker/jobs/{job_id}/heartbeat", response_model=JobView)
+    @app.post(
+        "/v1/worker/jobs/{job_id}/heartbeat",
+        response_model=JobView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
     def heartbeat(
         job_id: str,
         request: LeaseRequest,
@@ -371,7 +396,11 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     ) -> JobView:
         return service.heartbeat(job_id, request, actor=principal.subject)
 
-    @app.post("/v1/worker/jobs/{job_id}/complete", response_model=JobView)
+    @app.post(
+        "/v1/worker/jobs/{job_id}/complete",
+        response_model=JobView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
     def complete_job(
         job_id: str,
         request: CompleteJobRequest,
@@ -379,7 +408,11 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     ) -> JobView:
         return service.complete_job(job_id, request, actor=principal.subject)
 
-    @app.post("/v1/worker/jobs/{job_id}/fail", response_model=JobView)
+    @app.post(
+        "/v1/worker/jobs/{job_id}/fail",
+        response_model=JobView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
     def fail_job(
         job_id: str,
         request: FailJobRequest,
@@ -390,6 +423,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     @app.post(
         "/v1/worker/jobs/{job_id}/checkpoints",
         response_model=CheckpointCreationView,
+        responses=_WORKER_CONFLICT_RESPONSES,
     )
     def create_checkpoint(
         job_id: str,

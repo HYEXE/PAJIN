@@ -63,6 +63,10 @@ class StateConflict(ControlPlaneError):
     pass
 
 
+class RunCancelled(StateConflict):
+    """Signal that an active Worker must stop because its Run was cancelled."""
+
+
 class LeaseRejected(ControlPlaneError):
     pass
 
@@ -413,6 +417,10 @@ class ControlPlaneService:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            if run.state == RunState.CANCELLED.value:
+                # Keep this message deliberately generic. The operator's cancellation
+                # reason is audit data and must not be disclosed to Worker credentials.
+                raise RunCancelled("run has been cancelled")
             self._require_run_state(run, RunState.RUNNING)
             now = utc_now()
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
@@ -433,7 +441,7 @@ class ControlPlaneService:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
-                raise StateConflict("run has been cancelled")
+                raise RunCancelled("run has been cancelled")
             self._require_lease_identity(job, request.worker_id, request.lease_token)
             if job.state == JobState.SUCCEEDED.value:
                 return self._job_view(job)
@@ -455,6 +463,8 @@ class ControlPlaneService:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            if run.state == RunState.CANCELLED.value:
+                raise RunCancelled("run has been cancelled")
             self._require_run_state(run, RunState.RUNNING)
             now = utc_now()
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
@@ -497,6 +507,8 @@ class ControlPlaneService:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            if run.state == RunState.CANCELLED.value:
+                raise RunCancelled("run has been cancelled")
             self._require_run_state(run, RunState.RUNNING)
             now = utc_now()
             if request.pending_intent.expires_at <= now:

@@ -39,6 +39,12 @@ async def run_from_env() -> None:
         kinds=kinds,
         lease_seconds=int(os.environ.get("PAJIN_DAEMON_LEASE_SECONDS", "15")),
         heartbeat_seconds=float(os.environ.get("PAJIN_DAEMON_HEARTBEAT_SECONDS", "5")),
+        cancellation_grace_seconds=float(
+            os.environ.get("PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS", "2")
+        ),
+        cancellation_force_seconds=float(
+            os.environ.get("PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS", "5")
+        ),
         long_poll_seconds=int(os.environ.get("PAJIN_DAEMON_LONG_POLL_SECONDS", "10")),
         status_path=Path(
             os.environ.get("PAJIN_DAEMON_STATUS_PATH", "/tmp/pajin-worker-status.json")

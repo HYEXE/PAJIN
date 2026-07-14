@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from inspect import Parameter, signature
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
@@ -16,6 +18,7 @@ from pajin.domain.models import CampaignManifest, StrictModel
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.models import NormalizedToolCall, ProviderChatResult, ProviderUsage
+from pajin.runtime.control import ExecutionCancellationContext
 from pajin.runtime.secrets import SecretBroker, SecretMaterial
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
@@ -26,6 +29,7 @@ from pajin.runtime.worker import (
 )
 from pajin.tools.base import ToolRegistry
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
+from pajin.workflow.cancellation import seal_executor_quiescence
 from pajin.workflow.local import LocalCampaignRunner
 from pajin.workflow.tool_loop import (
     PolicyToolLoopRunner,
@@ -63,7 +67,12 @@ type ExecutionOutcome = CompletedExecution | ApprovalCheckpointExecution
 class JobExecutor(Protocol):
     kind: JobKind
 
-    async def execute(self, job: JobView) -> ExecutionOutcome:
+    async def execute(
+        self,
+        job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> ExecutionOutcome:
         """Execute only the typed payload bound to this trusted kind."""
 
 
@@ -115,6 +124,16 @@ class ExecutorRegistry:
     def __init__(self, executors: list[JobExecutor]) -> None:
         self._executors: dict[str, JobExecutor] = {}
         for executor in executors:
+            cancellation_parameter = signature(executor.execute).parameters.get(
+                "cancellation"
+            )
+            if cancellation_parameter is None or cancellation_parameter.kind not in {
+                Parameter.POSITIONAL_OR_KEYWORD,
+                Parameter.KEYWORD_ONLY,
+            }:
+                raise ValueError(
+                    f"Job executor {executor.kind.value} must accept a cancellation context"
+                )
             if executor.kind.value in self._executors:
                 raise ValueError(f"duplicate Job executor: {executor.kind.value}")
             self._executors[executor.kind.value] = executor
@@ -125,11 +144,16 @@ class ExecutorRegistry:
     def kinds(self) -> list[str]:
         return sorted(self._executors)
 
-    async def execute(self, job: JobView) -> ExecutionOutcome:
+    async def execute(
+        self,
+        job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> ExecutionOutcome:
         executor = self._executors.get(job.kind)
         if executor is None:
             raise PermanentExecutionError(f"unregistered Job kind: {job.kind}")
-        return await executor.execute(job)
+        return await executor.execute(job, cancellation=cancellation)
 
 
 class CampaignJobExecutor:
@@ -144,7 +168,12 @@ class CampaignJobExecutor:
         self._output_root = output_root
         self._worker = worker or SimulatedWorkerBackend()
 
-    async def execute(self, job: JobView) -> CompletedExecution:
+    async def execute(
+        self,
+        job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> CompletedExecution:
         job_input = CampaignJobInput.model_validate(self._input(job))
         tools = ToolRegistry()
         tools.register(MockAgentProbe())
@@ -156,7 +185,12 @@ class CampaignJobExecutor:
             worker=self._worker,
             output_root=self._output_root,
         )
-        outcome = await runner.run(job_input.manifest)
+        try:
+            outcome = await runner.run(job_input.manifest, cancellation=cancellation)
+        except asyncio.CancelledError:
+            if cancellation is not None and cancellation.active:
+                seal_executor_quiescence(cancellation)
+            raise
         failed = sum(not result.success for result in outcome.tool_results)
         return CompletedExecution(
             result={
@@ -192,18 +226,37 @@ class ToolLoopJobExecutor:
         self._output_root = output_root
         self._runner_factory = runner_factory or self._deterministic_runner
 
-    async def execute(self, job: JobView) -> ExecutionOutcome:
+    async def execute(
+        self,
+        job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> ExecutionOutcome:
         if "resumeFromCheckpointId" in job.payload:
-            return await self._resume(job)
+            return await self._resume(job, cancellation=cancellation)
         value = job.payload.get("input")
         if not isinstance(value, dict):
             raise PermanentExecutionError("tool-loop Job payload.input must be an object")
         job_input = ToolLoopJobInput.model_validate(value)
         runner = self._runner_factory(job_input.manifest)
-        outcome = await runner.run(job_input.manifest, prompt=job_input.prompt)
+        try:
+            outcome = await runner.run(
+                job_input.manifest,
+                prompt=job_input.prompt,
+                cancellation=cancellation,
+            )
+        except asyncio.CancelledError:
+            if cancellation is not None and cancellation.active:
+                seal_executor_quiescence(cancellation)
+            raise
         return self._translate_outcome(outcome, job_input=job_input)
 
-    async def _resume(self, job: JobView) -> ExecutionOutcome:
+    async def _resume(
+        self,
+        job: JobView,
+        *,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> ExecutionOutcome:
         raw_state = job.payload.get("state")
         raw_approval = job.payload.get("approval")
         approval_id = job.payload.get("approvalId")
@@ -230,11 +283,17 @@ class ToolLoopJobExecutor:
         checkpoint_path = resume_dir / f"attempt-{job.attempts}.json"
         checkpoint_path.write_text(state.tool_loop_checkpoint.model_dump_json(), encoding="utf-8")
         runner = self._runner_factory(state.job_input.manifest)
-        outcome = await runner.resume(
-            state.job_input.manifest,
-            checkpoint_path=checkpoint_path,
-            approvals=[tool_approval],
-        )
+        try:
+            outcome = await runner.resume(
+                state.job_input.manifest,
+                checkpoint_path=checkpoint_path,
+                approvals=[tool_approval],
+                cancellation=cancellation,
+            )
+        except asyncio.CancelledError:
+            if cancellation is not None and cancellation.active:
+                seal_executor_quiescence(cancellation)
+            raise
         return self._translate_outcome(outcome, job_input=state.job_input)
 
     def _translate_outcome(

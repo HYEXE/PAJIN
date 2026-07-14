@@ -6,12 +6,15 @@ from types import TracebackType
 from typing import Any, Self
 
 import httpx
+from pydantic import BaseModel
 
 from pajin.control_plane.models import (
     CheckpointCreationView,
     ClaimedJob,
     ClaimJobRequest,
     CompleteJobRequest,
+    ControlPlaneConflictCode,
+    ControlPlaneConflictResponse,
     CreateCheckpointRequest,
     FailJobRequest,
     JobView,
@@ -29,6 +32,10 @@ class ControlPlaneAuthenticationError(ControlPlaneClientError):
 
 class ControlPlaneLeaseLost(ControlPlaneClientError):
     pass
+
+
+class ControlPlaneRunCancelled(ControlPlaneLeaseLost):
+    """The leased job's Run was cancelled by the Control Plane."""
 
 
 class ControlPlaneTransientError(ControlPlaneClientError):
@@ -84,7 +91,7 @@ class ControlPlaneClient:
         )
         if response.status_code == 204:
             return None
-        return ClaimedJob.model_validate(response.json())
+        return self._validated(response, ClaimedJob)
 
     async def heartbeat(self, job_id: str, request: LeaseRequest) -> JobView:
         response = await self._request(
@@ -92,7 +99,7 @@ class ControlPlaneClient:
             f"/v1/worker/jobs/{job_id}/heartbeat",
             json=request.model_dump(mode="json"),
         )
-        return JobView.model_validate(response.json())
+        return self._validated(response, JobView)
 
     async def complete(self, job_id: str, request: CompleteJobRequest) -> JobView:
         response = await self._request(
@@ -100,7 +107,7 @@ class ControlPlaneClient:
             f"/v1/worker/jobs/{job_id}/complete",
             json=request.model_dump(mode="json"),
         )
-        return JobView.model_validate(response.json())
+        return self._validated(response, JobView)
 
     async def fail(self, job_id: str, request: FailJobRequest) -> JobView:
         response = await self._request(
@@ -108,7 +115,7 @@ class ControlPlaneClient:
             f"/v1/worker/jobs/{job_id}/fail",
             json=request.model_dump(mode="json"),
         )
-        return JobView.model_validate(response.json())
+        return self._validated(response, JobView)
 
     async def checkpoint(
         self,
@@ -120,7 +127,7 @@ class ControlPlaneClient:
             f"/v1/worker/jobs/{job_id}/checkpoints",
             json=request.model_dump(mode="json"),
         )
-        return CheckpointCreationView.model_validate(response.json())
+        return self._validated(response, CheckpointCreationView)
 
     async def _request(
         self,
@@ -144,7 +151,10 @@ class ControlPlaneClient:
         if response.status_code in {401, 403}:
             raise ControlPlaneAuthenticationError("Control Plane rejected Worker authentication")
         if response.status_code == 409:
-            raise ControlPlaneLeaseLost(self._detail(response, "Worker lease was rejected"))
+            conflict = self._validated(response, ControlPlaneConflictResponse)
+            if conflict.code is ControlPlaneConflictCode.RUN_CANCELLED:
+                raise ControlPlaneRunCancelled(conflict.detail)
+            raise ControlPlaneLeaseLost(conflict.detail)
         if response.status_code >= 500:
             raise ControlPlaneTransientError(self._detail(response, "Control Plane server failure"))
         if not 200 <= response.status_code < 300:
@@ -161,3 +171,12 @@ class ControlPlaneClient:
             return fallback
         detail = body.get("detail") if isinstance(body, dict) else None
         return str(detail)[:500] if detail else fallback
+
+    @staticmethod
+    def _validated[T: BaseModel](response: httpx.Response, model: type[T]) -> T:
+        try:
+            return model.model_validate(response.json())
+        except ValueError as exc:
+            raise ControlPlaneProtocolError(
+                f"Control Plane returned an invalid {model.__name__} response"
+            ) from exc

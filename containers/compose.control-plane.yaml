@@ -69,6 +69,7 @@ services:
   worker-daemon:
     image: pajin-control-plane:dev
     command: ["pajin-worker-daemon"]
+    stop_grace_period: 15s
     depends_on:
       control-plane:
         condition: service_healthy
@@ -79,6 +80,8 @@ services:
       PAJIN_DAEMON_KINDS: campaign,tool-loop
       PAJIN_DAEMON_LEASE_SECONDS: 6
       PAJIN_DAEMON_HEARTBEAT_SECONDS: 2
+      PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS: 2
+      PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS: 5
       PAJIN_DAEMON_LONG_POLL_SECONDS: 10
       PAJIN_DAEMON_OUTPUT_ROOT: /var/lib/pajin/runs
       PAJIN_DAEMON_STATUS_PATH: /tmp/pajin-worker-status.json

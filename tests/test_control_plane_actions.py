@@ -16,7 +16,11 @@ from pajin.control_plane.database import (
     JobRecord,
     RunRecord,
 )
-from pajin.control_plane.models import Principal, PrincipalRole
+from pajin.control_plane.models import (
+    ControlPlaneConflictCode,
+    Principal,
+    PrincipalRole,
+)
 
 OPERATOR_TOKEN = "actions-operator-token-that-is-long-and-distinct"
 APPROVER_TOKEN = "actions-approver-token-that-is-long-and-distinct"
@@ -173,6 +177,32 @@ def _events(client: TestClient, run_id: str) -> list[dict[str, object]]:
     response = client.get(f"/v1/runs/{run_id}/events", headers=_auth(AUDITOR_TOKEN))
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_worker_conflict_contract_is_declared_in_openapi(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path / "worker-conflict-openapi.db"))
+    with TestClient(app) as client:
+        document = client.get("/openapi.json").json()
+
+    schemas = document["components"]["schemas"]
+    assert schemas["ControlPlaneConflictCode"]["enum"] == [
+        ControlPlaneConflictCode.RUN_CANCELLED.value,
+        ControlPlaneConflictCode.LEASE_LOST.value,
+    ]
+    conflict_schema = schemas["ControlPlaneConflictResponse"]
+    assert conflict_schema["required"] == ["detail"]
+    assert conflict_schema["properties"]["detail"]["minLength"] == 1
+    assert conflict_schema["properties"]["detail"]["maxLength"] == 500
+    assert "409" not in document["paths"]["/v1/worker/jobs/claim"]["post"]["responses"]
+    expected_schema = {"$ref": "#/components/schemas/ControlPlaneConflictResponse"}
+    for path in (
+        "/v1/worker/jobs/{job_id}/heartbeat",
+        "/v1/worker/jobs/{job_id}/complete",
+        "/v1/worker/jobs/{job_id}/fail",
+        "/v1/worker/jobs/{job_id}/checkpoints",
+    ):
+        conflict = document["paths"][path]["post"]["responses"]["409"]
+        assert conflict["content"]["application/json"]["schema"] == expected_schema
 
 
 def test_current_approval_is_nullable_minimized_and_read_role_protected(
@@ -367,6 +397,21 @@ def test_cancel_leased_run_revokes_lease_and_rejects_stale_worker(
         run_id, job_id = _submit(client, "cancel-leased")
         lease_token = _claim(client, job_id)
 
+        rejected_heartbeat = client.post(
+            f"/v1/worker/jobs/{job_id}/heartbeat",
+            headers=_auth(WORKER_TOKEN),
+            json={
+                "worker_id": "actions-worker-1",
+                "lease_token": "invalid-lease-token-with-sufficient-length-0001",
+                "lease_seconds": 30,
+            },
+        )
+        assert rejected_heartbeat.status_code == 409
+        assert rejected_heartbeat.json() == {
+            "detail": "job lease token is invalid",
+            "code": ControlPlaneConflictCode.LEASE_LOST.value,
+        }
+
         cancelled = _cancel(client, run_id, reason="stop the active worker safely")
         assert cancelled.status_code == 200, cancelled.text
         assert cancelled.json()["applied"] is True
@@ -391,6 +436,10 @@ def test_cancel_leased_run_revokes_lease_and_rejects_stale_worker(
             },
         )
         assert heartbeat.status_code == 409
+        assert heartbeat.json() == {
+            "detail": "run has been cancelled",
+            "code": ControlPlaneConflictCode.RUN_CANCELLED.value,
+        }
         completion = client.post(
             f"/v1/worker/jobs/{job_id}/complete",
             headers=_auth(WORKER_TOKEN),
@@ -401,6 +450,7 @@ def test_cancel_leased_run_revokes_lease_and_rejects_stale_worker(
             },
         )
         assert completion.status_code == 409
+        assert completion.json()["code"] == ControlPlaneConflictCode.RUN_CANCELLED.value
         failure = client.post(
             f"/v1/worker/jobs/{job_id}/fail",
             headers=_auth(WORKER_TOKEN),
@@ -412,6 +462,7 @@ def test_cancel_leased_run_revokes_lease_and_rejects_stale_worker(
             },
         )
         assert failure.status_code == 409
+        assert failure.json()["code"] == ControlPlaneConflictCode.RUN_CANCELLED.value
         checkpoint = client.post(
             f"/v1/worker/jobs/{job_id}/checkpoints",
             headers=_auth(WORKER_TOKEN),
@@ -429,6 +480,7 @@ def test_cancel_leased_run_revokes_lease_and_rejects_stale_worker(
             },
         )
         assert checkpoint.status_code == 409
+        assert checkpoint.json()["code"] == ControlPlaneConflictCode.RUN_CANCELLED.value
         swept = client.post(
             "/v1/maintenance/requeue-expired",
             headers=_auth(OPERATOR_TOKEN),

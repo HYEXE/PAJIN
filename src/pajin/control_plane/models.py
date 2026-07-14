@@ -50,6 +50,20 @@ class PrincipalRole(StrEnum):
     AUDITOR = "auditor"
 
 
+class ControlPlaneConflictCode(StrEnum):
+    """Stable machine-readable causes for Control Plane HTTP 409 responses."""
+
+    RUN_CANCELLED = "run_cancelled"
+    LEASE_LOST = "lease_lost"
+
+
+class ControlPlaneConflictResponse(StrictModel):
+    """Shared JSON body for typed and legacy-compatible conflict responses."""
+
+    detail: str = Field(min_length=1, max_length=500)
+    code: ControlPlaneConflictCode | None = None
+
+
 class Principal(StrictModel):
     subject: str = Field(min_length=1, max_length=200)
     roles: frozenset[PrincipalRole] = Field(min_length=1)
