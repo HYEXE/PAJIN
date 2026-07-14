@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -159,12 +160,16 @@ class ToolGateway:
             ),
         )
         dispatch_started_at = datetime.now(UTC)
+        cancelled = False
         try:
             worker_result = (
                 await self._worker.run(job, secrets=materials)
                 if materials
                 else await self._worker.run(job)
             )
+        except asyncio.CancelledError:
+            cancelled = True
+            raise
         except Exception as exc:
             worker_result = WorkerResult(
                 execution_id=job.execution_id,
@@ -187,6 +192,15 @@ class ToolGateway:
                         "leaseId": revoked.lease_id,
                         "binding": revoked.binding,
                         "reason": revoked.revoked_reason,
+                    },
+                )
+            if cancelled:
+                self._store.append_event(
+                    "worker.cancelled",
+                    {
+                        "requestId": request.request_id,
+                        "executionId": job.execution_id,
+                        "secretLeasesRevoked": len(leases),
                     },
                 )
         worker_result = self._redact_worker_result(worker_result, materials)

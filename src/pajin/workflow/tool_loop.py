@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -26,13 +27,22 @@ from pajin.providers.models import (
     ProviderRegistration,
 )
 from pajin.providers.session import PolicyBoundProviderPort
-from pajin.runtime.control import BudgetController, BudgetExceeded
+from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
+    ExecutionCancellationContext,
+)
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.ai import ChatRole
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import ToolGateway
+from pajin.workflow.cancellation import (
+    await_with_cancellation,
+    ensure_cancellation_context,
+    record_engine_cleanup,
+)
 
 
 class ToolLoopStatus(StrEnum):
@@ -41,6 +51,7 @@ class ToolLoopStatus(StrEnum):
     AWAITING_APPROVAL = "awaiting-approval"
     DENIED = "denied"
     BUDGET_EXHAUSTED = "budget-exhausted"
+    CANCELLED = "cancelled"
     FAILED = "failed"
 
 
@@ -201,10 +212,17 @@ class PolicyToolLoopRunner:
         *,
         prompt: str,
         approvals: list[ToolLoopApproval] | None = None,
+        cancellation: ExecutionCancellationContext | None = None,
     ) -> ToolLoopOutcome:
         if not prompt or len(prompt) > 32_768:
             raise ValueError("tool loop prompt must contain between 1 and 32768 characters")
         store = RunStore.create(self._output_root, campaign.metadata.name)
+        if cancellation is not None:
+            cancellation.bind_run(
+                engine="policy-tool-loop",
+                run_id=store.run_id,
+                path=store.path,
+            )
         state = ToolLoopCheckpoint(
             run_id=store.run_id,
             campaign_name=campaign.metadata.name,
@@ -236,7 +254,10 @@ class PolicyToolLoopRunner:
             "tool_loop.started",
             {"loopId": state.loop_id, "campaign": campaign.metadata.name},
         )
-        return await self._execute(campaign, state, store, approvals or [])
+        execution = self._execute(campaign, state, store, approvals or [], cancellation)
+        if cancellation is not None and cancellation.active:
+            return await execution
+        return await await_with_cancellation(execution, cancellation)
 
     async def resume(
         self,
@@ -244,6 +265,7 @@ class PolicyToolLoopRunner:
         *,
         checkpoint_path: Path,
         approvals: list[ToolLoopApproval],
+        cancellation: ExecutionCancellationContext | None = None,
     ) -> ToolLoopOutcome:
         checkpoint = ToolLoopCheckpoint.model_validate_json(
             checkpoint_path.read_text(encoding="utf-8")
@@ -264,6 +286,12 @@ class PolicyToolLoopRunner:
         if claim_path.exists():
             raise ValueError("approval checkpoint has already been claimed")
         store = RunStore.create(self._output_root, campaign.metadata.name)
+        if cancellation is not None:
+            cancellation.bind_run(
+                engine="policy-tool-loop",
+                run_id=store.run_id,
+                path=store.path,
+            )
         try:
             with claim_path.open("x", encoding="utf-8", newline="\n") as handle:
                 json.dump(
@@ -310,7 +338,10 @@ class PolicyToolLoopRunner:
                 "checkpointClaim": str(claim_path.resolve()),
             },
         )
-        return await self._execute(campaign, state, store, approvals)
+        execution = self._execute(campaign, state, store, approvals, cancellation)
+        if cancellation is not None and cancellation.active:
+            return await execution
+        return await await_with_cancellation(execution, cancellation)
 
     async def _execute(
         self,
@@ -318,6 +349,7 @@ class PolicyToolLoopRunner:
         state: ToolLoopCheckpoint,
         store: RunStore,
         approvals: list[ToolLoopApproval],
+        cancellation: ExecutionCancellationContext | None,
     ) -> ToolLoopOutcome:
         budget = BudgetController(campaign.spec.budgets)
         if state.budget:
@@ -373,6 +405,8 @@ class PolicyToolLoopRunner:
         )
         last_checkpoint = self._save_checkpoint(state, store, budget)
         try:
+            if cancellation is not None and cancellation.active:
+                raise asyncio.CancelledError(cancellation.snapshot().reason)
             while True:
                 if state.pending_call is not None:
                     approval = self._approval_for(state.pending_call, approvals)
@@ -489,6 +523,37 @@ class PolicyToolLoopRunner:
                     state.final_content = response.content
                     break
                 raise ValueError("provider returned neither content nor a function call")
+        except asyncio.CancelledError:
+            context = ensure_cancellation_context(
+                cancellation,
+                engine="policy-tool-loop",
+                store=store,
+            )
+            reason = context.snapshot().reason
+            state.status = ToolLoopStatus.CANCELLED
+            state.error = reason
+            revoked = ledger.revoke(root.grant_id, reason, cascade=True)
+            store.append_event(
+                "capability.revoked",
+                {
+                    "rootGrantId": root.grant_id,
+                    "revokedGrantIds": revoked,
+                    "reason": reason,
+                },
+            )
+            revoked_leases = self._secrets.revoke_all(reason)
+            if revoked_leases:
+                store.append_event(
+                    "secret.leases.revoked",
+                    {
+                        "leaseIds": [lease.lease_id for lease in revoked_leases],
+                        "reason": reason,
+                    },
+                )
+            checkpoint = self._save_checkpoint(state, store, budget)
+            record_engine_cleanup(store, context)
+            self._finish(state, store, budget, ledger, checkpoint)
+            raise
         except BudgetExceeded as exc:
             state.status = ToolLoopStatus.BUDGET_EXHAUSTED
             state.error = str(exc)

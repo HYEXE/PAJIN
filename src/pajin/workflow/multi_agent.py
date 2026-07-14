@@ -40,12 +40,22 @@ from pajin.policy.engine import PolicyEngine
 from pajin.providers.models import ProviderRegistration
 from pajin.providers.session import PolicyBoundProviderPort
 from pajin.reporting.markdown import render_markdown_report
-from pajin.runtime.control import BudgetController, BudgetExceeded, KillSwitch
+from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
+    ExecutionCancellationContext,
+    KillSwitch,
+)
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
+from pajin.workflow.cancellation import (
+    ensure_cancellation_context,
+    record_engine_cleanup,
+    seal_executor_quiescence,
+)
 
 T = TypeVar("T")
 _MAX_LOCAL_PARALLEL_SPECIALISTS = 16
@@ -112,9 +122,22 @@ class MultiAgentCampaignRunner:
         self._observed_tool_calls = 0
         self._secrets = secrets or SecretBroker()
         self._max_parallel_specialists = max_parallel_specialists
+        self._execution_cancellation: ExecutionCancellationContext | None = None
 
-    async def run(self, campaign: CampaignManifest) -> MultiAgentRunOutcome:
+    async def run(
+        self,
+        campaign: CampaignManifest,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> MultiAgentRunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
+        self._execution_cancellation = cancellation
+        if cancellation is not None:
+            cancellation.bind_run(
+                engine="multi-agent",
+                run_id=store.run_id,
+                path=store.path,
+            )
         store.write_json("campaign.json", campaign.model_dump(mode="json", by_alias=True))
         store.append_event(
             "campaign.started",
@@ -128,6 +151,7 @@ class MultiAgentCampaignRunner:
         findings: list[Finding] = []
         plan: AgentPlan | None = None
         self._observed_tool_calls = 0
+        propagate_cancel = False
 
         supervisor_id = self._agent_id(AgentRole.SUPERVISOR)
         budget.reserve_agent(depth=0)
@@ -427,6 +451,35 @@ class MultiAgentCampaignRunner:
                 "campaign.completed",
                 {"status": final_status.value, "report": report_relative},
             )
+        except asyncio.CancelledError:
+            context = ensure_cancellation_context(
+                cancellation,
+                engine="multi-agent",
+                store=store,
+            )
+            cancellation = context
+            self._execution_cancellation = context
+            self._kill_switch.activate(
+                context.snapshot().reason,
+                source=context.snapshot().kind.value,
+            )
+            self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
+            final_status = RunStatus.CANCELLED
+            report = self._render_cancelled_report(
+                campaign,
+                store.run_id,
+                plan,
+                results,
+                agents,
+                graph,
+                budget,
+            )
+            report_relative = store.write_text("report.md", report)
+            store.append_event(
+                "campaign.cancelled",
+                {"reason": self._kill_switch.reason, "report": report_relative},
+            )
+            propagate_cancel = True
         except (BudgetExceeded, CapabilityError, TimeoutError) as exc:
             self._kill_switch.activate(str(exc), source="runtime-control")
             self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
@@ -478,8 +531,12 @@ class MultiAgentCampaignRunner:
             },
         )
         self._write_state(store, agents, graph, ledger, budget)
+        if cancellation is not None and cancellation.active:
+            record_engine_cleanup(store, cancellation)
         store.seal()
-        return MultiAgentRunOutcome(
+        if cancellation is not None and cancellation.active:
+            seal_executor_quiescence(cancellation)
+        outcome = MultiAgentRunOutcome(
             run_id=store.run_id,
             run_path=store.path,
             status=final_status,
@@ -491,6 +548,10 @@ class MultiAgentCampaignRunner:
             report_path=store.path / report_relative,
             cancellation_reason=self._kill_switch.reason,
         )
+        self._execution_cancellation = None
+        if propagate_cancel:
+            raise asyncio.CancelledError(outcome.cancellation_reason)
+        return outcome
 
     async def _run_specialist_tasks(
         self,
@@ -845,29 +906,58 @@ class MultiAgentCampaignRunner:
             await asyncio.gather(operation_task, return_exceptions=True)
             raise
         kill_task = asyncio.create_task(self._kill_switch.wait())
+        cancellation_task = (
+            asyncio.create_task(self._execution_cancellation.wait())
+            if self._execution_cancellation is not None
+            else None
+        )
+        wait_tasks = {operation_task, kill_task}
+        if cancellation_task is not None:
+            wait_tasks.add(cancellation_task)
         try:
             done, _ = await asyncio.wait(
-                {operation_task, kill_task},
+                wait_tasks,
                 timeout=budget.remaining_seconds,
                 return_when=asyncio.FIRST_COMPLETED,
             )
         except asyncio.CancelledError:
             operation_task.cancel()
             kill_task.cancel()
-            await asyncio.gather(operation_task, kill_task, return_exceptions=True)
+            if cancellation_task is not None:
+                cancellation_task.cancel()
+            await asyncio.gather(*wait_tasks, return_exceptions=True)
             raise
+        if cancellation_task is not None and cancellation_task in done:
+            snapshot = cancellation_task.result()
+            self._kill_switch.activate(snapshot.reason, source=snapshot.kind.value)
+            operation_task.cancel()
+            kill_task.cancel()
+            await asyncio.gather(operation_task, kill_task, return_exceptions=True)
+            raise BudgetExceeded(snapshot.reason)
         if kill_task in done:
             operation_task.cancel()
+            if cancellation_task is not None:
+                cancellation_task.cancel()
             await asyncio.gather(operation_task, return_exceptions=True)
+            if cancellation_task is not None:
+                await asyncio.gather(cancellation_task, return_exceptions=True)
             raise BudgetExceeded(kill_task.result())
         if operation_task in done:
             kill_task.cancel()
-            await asyncio.gather(kill_task, return_exceptions=True)
+            if cancellation_task is not None:
+                cancellation_task.cancel()
+            await asyncio.gather(
+                kill_task,
+                *([cancellation_task] if cancellation_task is not None else []),
+                return_exceptions=True,
+            )
             return await operation_task
         self._kill_switch.activate("maximum campaign duration exceeded", source="budget")
         operation_task.cancel()
         kill_task.cancel()
-        await asyncio.gather(operation_task, kill_task, return_exceptions=True)
+        if cancellation_task is not None:
+            cancellation_task.cancel()
+        await asyncio.gather(*wait_tasks, return_exceptions=True)
         raise BudgetExceeded("maximum campaign duration exceeded")
 
     def _check_control(
@@ -876,6 +966,9 @@ class MultiAgentCampaignRunner:
         *,
         raise_on_cancel: bool = True,
     ) -> bool:
+        if self._execution_cancellation is not None and self._execution_cancellation.active:
+            snapshot = self._execution_cancellation.snapshot()
+            self._kill_switch.activate(snapshot.reason, source=snapshot.kind.value)
         self._kill_switch.poll()
         if self._kill_switch.active:
             if raise_on_cancel:

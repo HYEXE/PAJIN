@@ -4,16 +4,187 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from time import monotonic
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from pajin.domain.models import Budgets
 
 
 class BudgetExceeded(RuntimeError):
     """Raised before an operation would exceed a campaign budget."""
+
+
+class CancellationKind(StrEnum):
+    """Fail-closed reasons that can stop one trusted execution stack."""
+
+    RUN_CANCELLED = "run-cancelled"
+    LEASE_LOST = "lease-lost"
+    HEARTBEAT_UNAVAILABLE = "heartbeat-unavailable"
+    DAEMON_SHUTDOWN = "daemon-shutdown"
+    CALLER_CANCELLED = "caller-cancelled"
+
+
+class CancellationCleanupStatus(StrEnum):
+    """Monotonic local cleanup state for one execution cancellation."""
+
+    OBSERVED = "observed"
+    CLEANUP_COMPLETED = "cleanup-completed"
+    EXECUTOR_DRAINED = "executor-drained"
+    QUIESCED = "quiesced"
+    INCOMPLETE = "incomplete"
+
+
+class ExecutionCancellationSnapshot(BaseModel):
+    """Serializable, secret-free cancellation state retained by Workers and Runs."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    api_version: str = Field(
+        default="pajin.dev/execution-cancellation/v1",
+        alias="apiVersion",
+    )
+    job_id: str | None = Field(default=None, alias="jobId")
+    control_plane_run_id: str | None = Field(default=None, alias="controlPlaneRunId")
+    kind: CancellationKind
+    reason: str
+    observed_at: datetime = Field(alias="observedAt")
+    engine: str | None = None
+    engine_run_id: str | None = Field(default=None, alias="engineRunId")
+    cleanup_status: CancellationCleanupStatus = Field(alias="cleanupStatus")
+    forced_at: datetime | None = Field(default=None, alias="forcedAt")
+    cleanup_completed_at: datetime | None = Field(default=None, alias="cleanupCompletedAt")
+    executor_drained_at: datetime | None = Field(default=None, alias="executorDrainedAt")
+    cleanup_error: str | None = Field(default=None, alias="cleanupError")
+
+
+@dataclass(frozen=True)
+class ExecutionRunBinding:
+    """Internal link to a local RunStore; paths are not serialized in receipts."""
+
+    engine: str
+    run_id: str
+    path: Path
+
+
+class ExecutionCancellationContext:
+    """One-way cooperative signal and monotonic cleanup receipt for one Job execution."""
+
+    def __init__(
+        self,
+        *,
+        job_id: str | None = None,
+        control_plane_run_id: str | None = None,
+    ) -> None:
+        self._job_id = job_id
+        self._control_plane_run_id = control_plane_run_id
+        self._event = asyncio.Event()
+        self._kind: CancellationKind | None = None
+        self._reason: str | None = None
+        self._observed_at: datetime | None = None
+        self._binding: ExecutionRunBinding | None = None
+        self._cleanup_status: CancellationCleanupStatus | None = None
+        self._forced_at: datetime | None = None
+        self._cleanup_completed_at: datetime | None = None
+        self._executor_drained_at: datetime | None = None
+        self._cleanup_error: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self._event.is_set()
+
+    @property
+    def binding(self) -> ExecutionRunBinding | None:
+        return self._binding
+
+    def cancel(self, kind: CancellationKind, reason: str) -> bool:
+        """Activate once; later signals cannot replace the first observed cause."""
+
+        if self.active:
+            return False
+        bounded_reason = reason.strip()[:500]
+        self._kind = kind
+        self._reason = bounded_reason or "execution cancellation requested"
+        self._observed_at = datetime.now(UTC)
+        self._cleanup_status = CancellationCleanupStatus.OBSERVED
+        self._event.set()
+        return True
+
+    def bind_run(self, *, engine: str, run_id: str, path: Path) -> None:
+        binding = ExecutionRunBinding(
+            engine=engine[:100],
+            run_id=run_id,
+            path=path.resolve(),
+        )
+        if self._binding is not None and self._binding != binding:
+            raise ValueError("execution cancellation context is already bound to another Run")
+        self._binding = binding
+
+    def mark_forced(self) -> None:
+        self._require_active()
+        if self._forced_at is None:
+            self._forced_at = datetime.now(UTC)
+
+    def mark_cleanup_completed(self) -> None:
+        self._require_active()
+        if self._cleanup_status is CancellationCleanupStatus.INCOMPLETE:
+            return
+        if self._cleanup_completed_at is None:
+            self._cleanup_completed_at = datetime.now(UTC)
+        self._cleanup_status = (
+            CancellationCleanupStatus.QUIESCED
+            if self._executor_drained_at is not None
+            else CancellationCleanupStatus.CLEANUP_COMPLETED
+        )
+
+    def mark_executor_drained(self) -> None:
+        self._require_active()
+        if self._cleanup_status is CancellationCleanupStatus.INCOMPLETE:
+            return
+        if self._executor_drained_at is None:
+            self._executor_drained_at = datetime.now(UTC)
+        self._cleanup_status = (
+            CancellationCleanupStatus.QUIESCED
+            if self._cleanup_completed_at is not None
+            else CancellationCleanupStatus.EXECUTOR_DRAINED
+        )
+
+    def mark_incomplete(self, error: str) -> None:
+        self._require_active()
+        self._cleanup_error = error.strip()[:500] or "execution cleanup did not complete"
+        self._cleanup_status = CancellationCleanupStatus.INCOMPLETE
+
+    async def wait(self) -> ExecutionCancellationSnapshot:
+        await self._event.wait()
+        return self.snapshot()
+
+    def snapshot(self) -> ExecutionCancellationSnapshot:
+        self._require_active()
+        assert self._kind is not None
+        assert self._reason is not None
+        assert self._observed_at is not None
+        assert self._cleanup_status is not None
+        return ExecutionCancellationSnapshot(
+            jobId=self._job_id,
+            controlPlaneRunId=self._control_plane_run_id,
+            kind=self._kind,
+            reason=self._reason,
+            observedAt=self._observed_at,
+            engine=self._binding.engine if self._binding else None,
+            engineRunId=self._binding.run_id if self._binding else None,
+            cleanupStatus=self._cleanup_status,
+            forcedAt=self._forced_at,
+            cleanupCompletedAt=self._cleanup_completed_at,
+            executorDrainedAt=self._executor_drained_at,
+            cleanupError=self._cleanup_error,
+        )
+
+    def _require_active(self) -> None:
+        if not self.active:
+            raise RuntimeError("execution cancellation has not been requested")
 
 
 class ControlSnapshot(BaseModel):

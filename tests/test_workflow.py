@@ -2,10 +2,19 @@ import asyncio
 import json
 from pathlib import Path
 
+import pytest
+
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.models import AgentPlan, CampaignManifest, PlannedStep, ToolRequest
 from pajin.policy.engine import PolicyEngine
-from pajin.runtime.worker import SimulatedWorkerBackend
+from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
+from pajin.runtime.secrets import SecretMaterial
+from pajin.runtime.store import verify_run_integrity
+from pajin.runtime.worker import (
+    SimulatedWorkerBackend,
+    WorkerJob,
+    WorkerResult,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.mock import MockAgentProbe
 from pajin.workflow.local import LocalCampaignRunner
@@ -27,6 +36,126 @@ class UnknownToolRuntime(DeterministicAgentRuntime):
                 )
             ],
         )
+
+
+class BlockingWorker:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(
+        self,
+        _job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        assert not secrets
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("blocking Worker unexpectedly resumed")
+
+
+@pytest.mark.asyncio
+async def test_local_runner_seals_cleanup_receipt_on_cooperative_cancellation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    worker = BlockingWorker()
+    cancellation = ExecutionCancellationContext(
+        job_id="job_" + "1" * 32,
+        control_plane_run_id="run_" + "2" * 32,
+    )
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+    execution = asyncio.create_task(
+        runner.run(sample_campaign, cancellation=cancellation)
+    )
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "Control Plane fence observed")
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(execution, timeout=1)
+
+    assert worker.cancelled
+    binding = cancellation.binding
+    assert binding is not None
+    receipt = json.loads((binding.path / "cancellation.json").read_text(encoding="utf-8"))
+    assert receipt["cancellation"]["kind"] == "run-cancelled"
+    assert receipt["cancellation"]["cleanupStatus"] == "cleanup-completed"
+    assert receipt["resourceCleanupAttested"] is False
+    assert receipt["externalSideEffectsReverted"] is False
+    events = (binding.path / "events.jsonl").read_text(encoding="utf-8")
+    assert '"event_type":"worker.cancelled"' in events
+    assert '"event_type":"execution.cleanup-completed"' in events
+    assert '"event_type":"campaign.cancelled"' in events
+    assert verify_run_integrity(binding.path).valid
+
+
+@pytest.mark.asyncio
+async def test_pre_cancelled_context_blocks_local_dispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    worker = BlockingWorker()
+    cancellation = ExecutionCancellationContext()
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "cancelled before dispatch")
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run(sample_campaign, cancellation=cancellation)
+
+    assert not worker.started.is_set()
+    binding = cancellation.binding
+    assert binding is not None
+    assert (binding.path / "cancellation.json").is_file()
+    assert verify_run_integrity(binding.path).valid
+
+
+@pytest.mark.asyncio
+async def test_direct_task_cancellation_uses_caller_source(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    worker = BlockingWorker()
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+    execution = asyncio.create_task(runner.run(sample_campaign))
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+
+    execution.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await execution
+
+    run_path = next((tmp_path / sample_campaign.metadata.name).glob("run_*"))
+    receipt = json.loads((run_path / "cancellation.json").read_text(encoding="utf-8"))
+    assert receipt["cancellation"]["kind"] == "caller-cancelled"
+    assert verify_run_integrity(run_path).valid
 
 
 def test_local_vertical_slice_creates_validated_finding_and_report(

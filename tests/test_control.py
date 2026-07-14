@@ -5,7 +5,33 @@ import pytest
 import pajin.runtime.control as control_module
 from pajin.domain.manifest import load_manifest
 from pajin.policy.capability import CapabilityError, CapabilityLedger
-from pajin.runtime.control import BudgetController, BudgetExceeded
+from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
+    CancellationCleanupStatus,
+    CancellationKind,
+    ExecutionCancellationContext,
+)
+
+
+def test_execution_cancellation_is_one_way_and_records_monotonic_cleanup() -> None:
+    cancellation = ExecutionCancellationContext(
+        job_id="job_" + "1" * 32,
+        control_plane_run_id="run_" + "2" * 32,
+    )
+
+    assert cancellation.cancel(CancellationKind.RUN_CANCELLED, "operator fence observed")
+    assert not cancellation.cancel(CancellationKind.LEASE_LOST, "later lease failure")
+    cancellation.mark_cleanup_completed()
+    cancellation.mark_executor_drained()
+
+    snapshot = cancellation.snapshot()
+    assert snapshot.kind is CancellationKind.RUN_CANCELLED
+    assert snapshot.reason == "operator fence observed"
+    assert snapshot.cleanup_status is CancellationCleanupStatus.QUIESCED
+    assert snapshot.cleanup_completed_at is not None
+    assert snapshot.executor_drained_at is not None
+    assert snapshot.forced_at is None
 
 
 def test_agent_depth_and_cost_budgets_fail_closed() -> None:

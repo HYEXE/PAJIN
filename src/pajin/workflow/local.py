@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict
@@ -10,10 +11,16 @@ from pajin.agents.base import AgentRuntime
 from pajin.domain.models import CampaignManifest, CapabilityGrant, Finding, ToolResult
 from pajin.policy.engine import PolicyEngine
 from pajin.reporting.markdown import render_markdown_report
+from pajin.runtime.control import ExecutionCancellationContext
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import ToolGateway
+from pajin.workflow.cancellation import (
+    await_with_cancellation,
+    ensure_cancellation_context,
+    record_engine_cleanup,
+)
 
 
 class RunOutcome(BaseModel):
@@ -44,8 +51,50 @@ class LocalCampaignRunner:
         self._worker = worker
         self._output_root = output_root
 
-    async def run(self, campaign: CampaignManifest) -> RunOutcome:
+    async def run(
+        self,
+        campaign: CampaignManifest,
+        *,
+        cancellation: ExecutionCancellationContext | None = None,
+    ) -> RunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
+        if cancellation is not None:
+            cancellation.bind_run(
+                engine="local-campaign",
+                run_id=store.run_id,
+                path=store.path,
+            )
+        try:
+            return await await_with_cancellation(
+                self._execute(campaign, store),
+                cancellation,
+            )
+        except asyncio.CancelledError:
+            context = ensure_cancellation_context(
+                cancellation,
+                engine="local-campaign",
+                store=store,
+            )
+            receipt = record_engine_cleanup(store, context)
+            store.write_json(
+                "run.json",
+                {
+                    "runId": store.run_id,
+                    "status": "cancelled",
+                    "cancellationReceipt": receipt,
+                },
+            )
+            store.append_event(
+                "campaign.cancelled",
+                {
+                    "reason": context.snapshot().reason,
+                    "cancellationReceipt": receipt,
+                },
+            )
+            store.seal()
+            raise
+
+    async def _execute(self, campaign: CampaignManifest, store: RunStore) -> RunOutcome:
         store.append_event(
             "campaign.started",
             {"campaign": campaign.metadata.name, "mode": campaign.spec.mode.value},

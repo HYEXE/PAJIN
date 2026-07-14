@@ -19,7 +19,12 @@ from pajin.domain.models import (
 )
 from pajin.domain.orchestration import AgentRole, AgentStatus, RunStatus, TaskStatus
 from pajin.policy.engine import PolicyEngine
-from pajin.runtime.control import KillSwitch
+from pajin.runtime.control import (
+    CancellationKind,
+    ExecutionCancellationContext,
+    KillSwitch,
+)
+from pajin.runtime.store import verify_run_integrity
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
     WorkerJob,
@@ -155,6 +160,21 @@ class ConcurrencyTrackingWorker(SimulatedWorkerBackend):
             self.active -= 1
 
 
+class CancellationBlockingWorker(SimulatedWorkerBackend):
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("blocking orchestration Worker unexpectedly resumed")
+
+
 class InventedEvidenceValidator:
     async def validate(
         self,
@@ -265,6 +285,42 @@ def test_kill_switch_cancels_pending_tasks_and_revokes_all_grants(tmp_path: Path
     assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
     run_state = json.loads((outcome.run_path / "run.json").read_text(encoding="utf-8"))
     assert run_state["status"] == "cancelled"
+
+
+@pytest.mark.asyncio
+async def test_execution_context_cancels_multi_agent_stack_and_seals_quiescence(
+    tmp_path: Path,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    worker = CancellationBlockingWorker()
+    cancellation = ExecutionCancellationContext(
+        job_id="job_" + "1" * 32,
+        control_plane_run_id="run_" + "2" * 32,
+    )
+    runner = MultiAgentCampaignRunner(
+        planner=DeterministicAgentRuntime(),
+        validator=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+    execution = asyncio.create_task(runner.run(_campaign(), cancellation=cancellation))
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "Control Plane fence observed")
+    outcome = await asyncio.wait_for(execution, timeout=1)
+
+    assert worker.cancelled
+    assert outcome.status is RunStatus.CANCELLED
+    assert outcome.cancellation_reason == "Control Plane fence observed"
+    capabilities = json.loads((outcome.run_path / "capabilities.json").read_text("utf-8"))
+    assert capabilities
+    assert all(item["revoked"] is True for item in capabilities)
+    assert (outcome.run_path / "cancellation.json").is_file()
+    assert (outcome.run_path / "quiescence.json").is_file()
+    assert verify_run_integrity(outcome.run_path).seal_count == 2
 
 
 def test_insufficient_agent_budget_fails_closed_before_specialist_spawn(

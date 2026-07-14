@@ -9,7 +9,9 @@ from pajin.domain.manifest import load_manifest
 from pajin.domain.models import ToolRequest, ToolResult, ToolRiskTier
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
+from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
 from pajin.runtime.secrets import SecretBroker, SecretMaterial
+from pajin.runtime.store import verify_run_integrity
 from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
 from pajin.tools.base import Tool, ToolRegistry, ToolSpec
 from pajin.tools.mock import MockAgentProbe
@@ -133,6 +135,30 @@ class LoopWorker:
         )
 
 
+class BlockingLoopWorker(LoopWorker):
+    def __init__(self) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.cancelled = False
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        if job.command != ["openai-chat-completion"]:
+            return await super().run(job, secrets=secrets)
+        assert secrets and secrets[0].value == "loop-provider-secret"
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled = True
+            raise
+        raise AssertionError("blocking Provider Worker unexpectedly resumed")
+
+
 class HighRiskProbe(Tool):
     spec = ToolSpec(
         tool_id="test.high-risk-probe",
@@ -197,6 +223,71 @@ def _campaign(*, high_risk: bool = False):
     return campaign.model_copy(
         update={"spec": campaign.spec.model_copy(update={"rules_of_engagement": rules})}
     )
+
+
+@pytest.mark.asyncio
+async def test_tool_loop_cancellation_revokes_authority_and_seals_checkpoint(
+    tmp_path: Path,
+) -> None:
+    worker = BlockingLoopWorker()
+    runner, secrets = _runner(tmp_path, worker)
+    cancellation = ExecutionCancellationContext(
+        job_id="job_" + "1" * 32,
+        control_plane_run_id="run_" + "2" * 32,
+    )
+    execution = asyncio.create_task(
+        runner.run(
+            _campaign(),
+            prompt="Inspect the declared mock target.",
+            cancellation=cancellation,
+        )
+    )
+    await asyncio.wait_for(worker.started.wait(), timeout=1)
+
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "Control Plane fence observed")
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(execution, timeout=1)
+
+    assert worker.cancelled
+    binding = cancellation.binding
+    assert binding is not None
+    state = json.loads((binding.path / "tool-loop.json").read_text(encoding="utf-8"))
+    assert state["status"] == "cancelled"
+    checkpoint = json.loads(
+        next((binding.path / "checkpoints").glob("*cancelled.json")).read_text(
+            encoding="utf-8"
+        )
+    )
+    assert checkpoint["status"] == "cancelled"
+    capabilities = json.loads((binding.path / "capabilities.json").read_text(encoding="utf-8"))
+    assert capabilities
+    assert all(item["revoked"] is True for item in capabilities)
+    assert secrets.snapshot()
+    assert all(item["status"] == "revoked" for item in secrets.snapshot())
+    assert verify_run_integrity(binding.path).valid
+
+
+@pytest.mark.asyncio
+async def test_pre_cancelled_context_blocks_tool_loop_provider_dispatch(
+    tmp_path: Path,
+) -> None:
+    worker = LoopWorker()
+    runner, _secrets = _runner(tmp_path, worker)
+    cancellation = ExecutionCancellationContext()
+    cancellation.cancel(CancellationKind.RUN_CANCELLED, "cancelled before dispatch")
+
+    with pytest.raises(asyncio.CancelledError):
+        await runner.run(
+            _campaign(),
+            prompt="Do not dispatch after cancellation.",
+            cancellation=cancellation,
+        )
+
+    assert not worker.provider_requests
+    assert worker.tool_calls == 0
+    binding = cancellation.binding
+    assert binding is not None
+    assert (binding.path / "cancellation.json").is_file()
 
 
 def test_tool_loop_reenters_gateway_and_returns_tool_result_to_provider(tmp_path: Path) -> None:
