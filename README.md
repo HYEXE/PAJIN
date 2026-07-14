@@ -19,8 +19,8 @@ The implementation baseline as of 2026-07-14 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, leases, heartbeats, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Approval/review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
+| Primary gaps | Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -567,6 +567,9 @@ The first Console slice supports:
 - Operator-only idempotent Run submission for registered `campaign` or `tool-loop` Job kinds;
 - bounded Run listing with state filtering and stable pagination;
 - selected Run input and append-only event inspection;
+- minimized current-approval intent review without exposing checkpoint execution state;
+- Approver-only approval or denial, with denial terminating the Run as `cancelled`;
+- Operator-only one-time checkpoint resume and idempotent Run cancellation;
 - optional five-second polling without WebSocket or SSE state.
 
 Run lists return a summary DTO and never bulk-load or expose submitted input. The selected Run
@@ -576,10 +579,16 @@ Lock, refresh, tab close, and HTTP 401 clear the in-memory value. A restrictive 
 policy, no-referrer policy, same-origin isolation headers, and text-only DOM rendering reduce the
 browser attack surface.
 
+Cancellation atomically fences queued or leased Jobs, clears active lease material, revokes a
+pending or approved decision, and records bounded actor/reason events. A leased Worker observes the
+fence as a lost lease and cancels its async execution on the next heartbeat or finalization call.
+This prevents further Control Plane dispatch and result commit; it does not roll back external side
+effects or guarantee immediate physical quiescence for an uncooperative executor.
+
 This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
-front of the API before remote use. Approval decisions, checkpoint resume, cancellation, report
-download, Agent Graph, user accounts, and tenant isolation remain API-only or unimplemented. See
-[`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md).
+front of the API before remote use. Report download, Agent Graph, user accounts, tenant isolation,
+and a fleet-wide approval queue remain unimplemented. See [`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md)
+and [`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md).
 
 ### Lease-aware Worker daemon
 
@@ -805,6 +814,7 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [the KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
 [ADR decision record](docs/adr/). The latest implementation decisions are
 [ADR-0019](docs/adr/0019-bounded-ctf-suite-orchestration.md),
-[ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md), and
-[ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md), and
-[ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md).
+[ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md),
+[ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md),
+[ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md), and
+[ADR-0023](docs/adr/0023-fenced-control-plane-actions.md).

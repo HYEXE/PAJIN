@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Extended by: [ADR 0023](0023-fenced-control-plane-actions.md)
 
 ## Context
 

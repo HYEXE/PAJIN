@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-14
+- Extended by: [ADR 0023](0023-fenced-control-plane-actions.md)
 
 ## Context
 
@@ -43,8 +44,9 @@ Worker credentials cannot access session, Run list, detail, or event endpoints.
 - limit is 1-100 and offset is 0-10,000.
 
 The first UI slice supports idempotent Run submission, bounded listing, selected Run detail, and the
-append-only event trail. Polling is explicit or five-second interval based. Approval decision,
-checkpoint resume, cancellation, report download, Agent Graph, SSE, and WebSocket are excluded.
+append-only event trail. Polling is explicit or five-second interval based. At this decision point,
+approval decision, checkpoint resume, cancellation, report download, Agent Graph, SSE, and WebSocket
+are excluded; ADR 0023 later adds the first three actions without changing this browser boundary.
 
 HTML responses apply a restrictive CSP with same-origin script, style, and API connections only;
 inline attributes, objects, workers, framing, base URLs, and form navigation are denied. UI and API
@@ -58,7 +60,8 @@ write is required.
 ## Consequences
 
 - A local Operator can submit and monitor a durable Run without manually constructing API calls.
-- Approver and Auditor credentials receive a read-only Console because the UI learns their role.
+- This first slice gives Approver and Auditor credentials a read-only Console; ADR 0023 later adds
+  role-gated Approver decisions while Auditor access remains read-only.
 - The browser holds a plaintext token in memory while unlocked; XSS, a privileged extension, or
   DevTools can still read it. CSP, no external assets, same-origin serving, and HTTPS reduce but do
   not eliminate that risk.
