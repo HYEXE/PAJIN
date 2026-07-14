@@ -17,6 +17,8 @@ from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.models import (
     ApprovalView,
     AuditEventView,
+    CancelRunRequest,
+    CancelRunView,
     CheckpointCreationView,
     ClaimedJob,
     ClaimJobRequest,
@@ -283,6 +285,30 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         ],
     ) -> RunView:
         return service.get_run(run_id)
+
+    @app.get("/v1/runs/{run_id}/approval", response_model=ApprovalView | None)
+    def get_current_approval(
+        run_id: str,
+        _principal: Annotated[
+            Principal,
+            Depends(
+                require_roles(
+                    PrincipalRole.OPERATOR,
+                    PrincipalRole.APPROVER,
+                    PrincipalRole.AUDITOR,
+                )
+            ),
+        ],
+    ) -> ApprovalView | None:
+        return service.get_current_approval(run_id)
+
+    @app.post("/v1/runs/{run_id}/cancel", response_model=CancelRunView)
+    def cancel_run(
+        run_id: str,
+        request: CancelRunRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.OPERATOR))],
+    ) -> CancelRunView:
+        return service.cancel_run(run_id, request, actor=principal.subject)
 
     @app.get("/v1/runs/{run_id}/events", response_model=list[AuditEventView])
     def list_events(

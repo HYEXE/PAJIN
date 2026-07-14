@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from pajin.domain.models import StrictModel, ToolRiskTier
 
@@ -26,6 +26,7 @@ class JobState(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     DEAD_LETTER = "dead-letter"
+    CANCELLED = "cancelled"
 
 
 class JobKind(StrEnum):
@@ -39,6 +40,7 @@ class ApprovalState(StrEnum):
     DENIED = "denied"
     CONSUMED = "consumed"
     EXPIRED = "expired"
+    REVOKED = "revoked"
 
 
 class PrincipalRole(StrEnum):
@@ -113,6 +115,26 @@ class CreateCheckpointRequest(StrictModel):
 class DecideApprovalRequest(StrictModel):
     approve: bool
     reason: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("approval decision reason must not be blank")
+        return reason
+
+
+class CancelRunRequest(StrictModel):
+    reason: str = Field(min_length=1, max_length=1_000)
+
+    @field_validator("reason")
+    @classmethod
+    def normalize_reason(cls, value: str) -> str:
+        reason = value.strip()
+        if not reason:
+            raise ValueError("cancellation reason must not be blank")
+        return reason
 
 
 class ResumeCheckpointRequest(StrictModel):
@@ -204,6 +226,13 @@ class SubmissionView(StrictModel):
     run: RunView
     job: JobView
     created: bool
+
+
+class CancelRunView(StrictModel):
+    run: RunView
+    applied: bool
+    cancelled_job_ids: list[str]
+    revoked_approval_ids: list[str]
 
 
 class CheckpointCreationView(StrictModel):

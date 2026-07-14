@@ -8,7 +8,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -26,6 +26,8 @@ from pajin.control_plane.models import (
     ApprovalState,
     ApprovalView,
     AuditEventView,
+    CancelRunRequest,
+    CancelRunView,
     CheckpointCreationView,
     CheckpointView,
     ClaimedJob,
@@ -63,6 +65,19 @@ class StateConflict(ControlPlaneError):
 
 class LeaseRejected(ControlPlaneError):
     pass
+
+
+_CANCELLABLE_RUN_STATES = frozenset(
+    {
+        RunState.QUEUED.value,
+        RunState.RUNNING.value,
+        RunState.AWAITING_APPROVAL.value,
+    }
+)
+_CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.value})
+_REVOCABLE_APPROVAL_STATES = frozenset(
+    {ApprovalState.PENDING.value, ApprovalState.APPROVED.value}
+)
 
 
 def _aware(value: datetime) -> datetime:
@@ -180,6 +195,148 @@ class ControlPlaneService:
                 offset=offset,
             )
 
+    def get_current_approval(self, run_id: str) -> ApprovalView | None:
+        with self.repository.transaction() as session:
+            row = session.execute(
+                select(
+                    RunRecord.state,
+                    RunRecord.current_checkpoint_id,
+                    CheckpointRecord,
+                    ApprovalRecord,
+                )
+                .select_from(RunRecord)
+                .outerjoin(
+                    CheckpointRecord,
+                    and_(
+                        CheckpointRecord.checkpoint_id == RunRecord.current_checkpoint_id,
+                        CheckpointRecord.run_id == RunRecord.run_id,
+                    ),
+                )
+                .outerjoin(
+                    ApprovalRecord,
+                    and_(
+                        ApprovalRecord.checkpoint_id == CheckpointRecord.checkpoint_id,
+                        ApprovalRecord.run_id == RunRecord.run_id,
+                    ),
+                )
+                .where(RunRecord.run_id == run_id)
+            ).one_or_none()
+            if row is None:
+                raise ResourceNotFound("run not found")
+            run_state, checkpoint_id, checkpoint, approval = row
+            if checkpoint_id is None:
+                if run_state == RunState.AWAITING_APPROVAL.value:
+                    raise StateConflict("awaiting-approval Run has no current checkpoint")
+                return None
+            if run_state not in {
+                RunState.AWAITING_APPROVAL.value,
+                RunState.CANCELLED.value,
+            }:
+                raise StateConflict(f"run in {run_state} state cannot have a current checkpoint")
+            if checkpoint is None or approval is None:
+                raise StateConflict("current checkpoint ownership is inconsistent")
+            self._verify_checkpoint(checkpoint)
+            intent = self._checkpoint_intent(checkpoint)
+            if not self._approval_matches_intent(approval, intent):
+                raise StateConflict("approval fields do not match signed checkpoint intent")
+            allowed_states = (
+                {ApprovalState.PENDING.value, ApprovalState.APPROVED.value}
+                if run_state == RunState.AWAITING_APPROVAL.value
+                else {
+                    ApprovalState.DENIED.value,
+                    ApprovalState.EXPIRED.value,
+                    ApprovalState.REVOKED.value,
+                }
+            )
+            if approval.state not in allowed_states:
+                raise StateConflict("approval state does not match the Run lifecycle")
+            return self._approval_view(approval)
+
+    def cancel_run(
+        self,
+        run_id: str,
+        request: CancelRunRequest,
+        *,
+        actor: str,
+    ) -> CancelRunView:
+        with self.repository.transaction() as session:
+            jobs_by_id = {
+                job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)
+            }
+            approvals = self._lock_revocable_approvals(session, run_id)
+            # Resume locks its Approval before it inserts a continuation Job. Re-read Jobs after
+            # acquiring Approval locks so a continuation created while cancellation was waiting
+            # cannot escape the same transaction.
+            jobs_by_id.update(
+                {
+                    job.job_id: job
+                    for job in self._lock_cancellable_jobs(session, run_id)
+                }
+            )
+            run = self._run(session, run_id, lock=True)
+            if run.state == RunState.CANCELLED.value:
+                return CancelRunView(
+                    run=self._run_view(run),
+                    applied=False,
+                    cancelled_job_ids=[],
+                    revoked_approval_ids=[],
+                )
+            if run.state not in _CANCELLABLE_RUN_STATES:
+                raise StateConflict(f"run in {run.state} state cannot be cancelled")
+
+            now = utc_now()
+            cancelled_job_ids: list[str] = []
+            for job in sorted(jobs_by_id.values(), key=lambda item: item.job_id):
+                previous_lease_owner = job.lease_owner
+                self._cancel_job(job, now=now)
+                cancelled_job_ids.append(job.job_id)
+                self._event(
+                    session,
+                    run,
+                    "job.cancelled",
+                    actor,
+                    {
+                        "jobId": job.job_id,
+                        "previousLeaseOwner": previous_lease_owner,
+                        "reason": request.reason,
+                    },
+                )
+
+            revoked_approval_ids: list[str] = []
+            for approval in approvals:
+                approval.state = ApprovalState.REVOKED.value
+                revoked_approval_ids.append(approval.approval_id)
+                self._event(
+                    session,
+                    run,
+                    "approval.revoked",
+                    actor,
+                    {
+                        "approvalId": approval.approval_id,
+                        "checkpointId": approval.checkpoint_id,
+                        "reason": request.reason,
+                    },
+                )
+
+            self._cancel_run_record(
+                session,
+                run,
+                actor=actor,
+                now=now,
+                reason=request.reason,
+                cause="operator-request",
+                extra={
+                    "cancelledJobIds": cancelled_job_ids,
+                    "revokedApprovalIds": revoked_approval_ids,
+                },
+            )
+            return CancelRunView(
+                run=self._run_view(run),
+                applied=True,
+                cancelled_job_ids=cancelled_job_ids,
+                revoked_approval_ids=revoked_approval_ids,
+            )
+
     def get_job(self, job_id: str) -> JobView:
         with self.repository.transaction() as session:
             return self._job_view(self._job(session, job_id))
@@ -195,14 +352,14 @@ class ControlPlaneService:
             return [self._event_view(record) for record in records]
 
     def claim_job(self, request: ClaimJobRequest, *, actor: str) -> ClaimedJob | None:
-        now = utc_now()
+        sweep_time = utc_now()
         with self.repository.transaction() as session:
-            self._expire_leases(session, now=now, actor=actor)
+            self._expire_leases(session, now=sweep_time, actor=actor)
             statement: Select[tuple[JobRecord]] = (
                 select(JobRecord)
                 .where(
                     JobRecord.state == JobState.QUEUED.value,
-                    JobRecord.available_at <= now,
+                    JobRecord.available_at <= sweep_time,
                     JobRecord.kind.in_(request.kinds),
                 )
                 .order_by(JobRecord.priority.desc(), JobRecord.created_at, JobRecord.job_id)
@@ -216,6 +373,18 @@ class ControlPlaneService:
             if job is None:
                 return None
             run = self._run(session, job.run_id, lock=True)
+            now = utc_now()
+            if run.state == RunState.CANCELLED.value:
+                self._cancel_job(job, now=now)
+                self._event(
+                    session,
+                    run,
+                    "job.cancelled",
+                    actor,
+                    {"jobId": job.job_id, "reason": "run was already cancelled"},
+                )
+                return None
+            self._require_run_state(run, RunState.QUEUED)
             lease_token = secrets.token_urlsafe(32)
             job.state = JobState.LEASED.value
             job.lease_owner = request.worker_id
@@ -241,10 +410,11 @@ class ControlPlaneService:
             return ClaimedJob(job=self._job_view(job), lease_token=lease_token)
 
     def heartbeat(self, job_id: str, request: LeaseRequest, *, actor: str) -> JobView:
-        now = utc_now()
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            self._require_run_state(run, RunState.RUNNING)
+            now = utc_now()
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
             job.heartbeat_at = now
             job.lease_expires_at = now + timedelta(seconds=request.lease_seconds)
@@ -259,13 +429,16 @@ class ControlPlaneService:
             return self._job_view(job)
 
     def complete_job(self, job_id: str, request: CompleteJobRequest, *, actor: str) -> JobView:
-        now = utc_now()
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            if run.state == RunState.CANCELLED.value:
+                raise StateConflict("run has been cancelled")
             self._require_lease_identity(job, request.worker_id, request.lease_token)
             if job.state == JobState.SUCCEEDED.value:
                 return self._job_view(job)
+            self._require_run_state(run, RunState.RUNNING)
+            now = utc_now()
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
             job.state = JobState.SUCCEEDED.value
             job.result = request.result
@@ -279,10 +452,11 @@ class ControlPlaneService:
             return self._job_view(job)
 
     def fail_job(self, job_id: str, request: FailJobRequest, *, actor: str) -> JobView:
-        now = utc_now()
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            self._require_run_state(run, RunState.RUNNING)
+            now = utc_now()
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
             job.error = request.error
             job.lease_owner = None
@@ -320,12 +494,13 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> CheckpointCreationView:
-        now = utc_now()
-        if request.pending_intent.expires_at <= now:
-            raise StateConflict("approval intent is already expired")
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
+            self._require_run_state(run, RunState.RUNNING)
+            now = utc_now()
+            if request.pending_intent.expires_at <= now:
+                raise StateConflict("approval intent is already expired")
             self._require_active_lease(job, request.worker_id, request.lease_token, now)
             current_sequence = session.scalar(
                 select(func.max(CheckpointRecord.sequence)).where(
@@ -423,34 +598,71 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ApprovalView:
-        now = utc_now()
+        expired = False
+        view: ApprovalView | None = None
         with self.repository.transaction() as session:
+            approval_reference = self._approval(session, approval_id)
+            checkpoint = self._checkpoint(
+                session, approval_reference.checkpoint_id, lock=True
+            )
             approval = self._approval(session, approval_id, lock=True)
+            if (
+                approval.checkpoint_id != checkpoint.checkpoint_id
+                or approval.run_id != checkpoint.run_id
+            ):
+                raise StateConflict("approval does not belong to its signed checkpoint")
             run = self._run(session, approval.run_id, lock=True)
             if approval.state != ApprovalState.PENDING.value:
                 raise StateConflict("approval has already been decided")
+            self._require_run_state(run, RunState.AWAITING_APPROVAL)
+            self._require_current_checkpoint(run, approval.checkpoint_id)
+            self._verify_checkpoint(checkpoint)
+            intent = self._checkpoint_intent(checkpoint)
+            if not self._approval_matches_intent(approval, intent):
+                raise StateConflict("approval fields do not match signed checkpoint intent")
             if approval.requested_by == actor:
                 raise StateConflict("approval requester cannot decide their own request")
+            now = utc_now()
             if _aware(approval.expires_at) <= now:
-                raise StateConflict("approval request has expired")
-            approval.state = (
-                ApprovalState.APPROVED.value if request.approve else ApprovalState.DENIED.value
-            )
-            approval.decided_by = actor
-            approval.decided_at = now
-            approval.decision_reason = request.reason
-            self._event(
-                session,
-                run,
-                "approval.approved" if request.approve else "approval.denied",
-                actor,
-                {
-                    "approvalId": approval.approval_id,
-                    "checkpointId": approval.checkpoint_id,
-                    "reason": request.reason,
-                },
-            )
-            return self._approval_view(approval)
+                self._expire_approval(session, approval, run, actor=actor, now=now)
+                expired = True
+            else:
+                approval.state = (
+                    ApprovalState.APPROVED.value
+                    if request.approve
+                    else ApprovalState.DENIED.value
+                )
+                approval.decided_by = actor
+                approval.decided_at = now
+                approval.decision_reason = request.reason
+                run.updated_at = now
+                self._event(
+                    session,
+                    run,
+                    "approval.approved" if request.approve else "approval.denied",
+                    actor,
+                    {
+                        "approvalId": approval.approval_id,
+                        "checkpointId": approval.checkpoint_id,
+                        "reason": request.reason,
+                    },
+                )
+                if not request.approve:
+                    self._cancel_run_record(
+                        session,
+                        run,
+                        actor=actor,
+                        now=now,
+                        reason=request.reason,
+                        cause="approval-denied",
+                        extra={"approvalId": approval.approval_id},
+                    )
+                view = self._approval_view(approval)
+        if expired:
+            raise StateConflict("approval request has expired")
+        if view is None:
+            raise RuntimeError("approval decision did not produce a view")
+        return view
 
     def resume_checkpoint(
         self,
@@ -459,90 +671,104 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ResumeView:
-        now = utc_now()
+        expired = False
+        result: ResumeView | None = None
         with self.repository.transaction() as session:
             checkpoint = self._checkpoint(session, checkpoint_id, lock=True)
-            run = self._run(session, checkpoint.run_id, lock=True)
             approval = self._approval(session, approval_id, lock=True)
+            if (
+                approval.checkpoint_id != checkpoint.checkpoint_id
+                or approval.run_id != checkpoint.run_id
+            ):
+                raise StateConflict("approval does not authorize this checkpoint")
+            run = self._run(session, checkpoint.run_id, lock=True)
             self._verify_checkpoint(checkpoint)
+            self._require_run_state(run, RunState.AWAITING_APPROVAL)
+            self._require_current_checkpoint(run, checkpoint.checkpoint_id)
             if checkpoint.claimed_at is not None:
                 raise StateConflict("checkpoint has already been claimed")
-            if approval.checkpoint_id != checkpoint.checkpoint_id:
-                raise StateConflict("approval does not authorize this checkpoint")
             if approval.state != ApprovalState.APPROVED.value:
                 raise StateConflict("checkpoint requires an active approved decision")
+            now = utc_now()
             if _aware(approval.expires_at) <= now:
-                approval.state = ApprovalState.EXPIRED.value
-                raise StateConflict("approval has expired")
-            intent = self._checkpoint_intent(checkpoint)
-            if not self._approval_matches_intent(approval, intent):
-                raise StateConflict("approval fields do not match signed checkpoint intent")
-            raw_job_context = checkpoint.payload.get("job", {})
-            job_context = raw_job_context if isinstance(raw_job_context, dict) else {}
-            continuation_kind = str(job_context.get("kind", "campaign"))
-            continuation_max_attempts = int(job_context.get("maxAttempts", 3))
-            job = JobRecord(
-                job_id=f"job_{uuid4().hex}",
-                run_id=run.run_id,
-                kind=continuation_kind,
-                state=JobState.QUEUED.value,
-                payload={
-                    "resumeFromCheckpointId": checkpoint.checkpoint_id,
-                    "state": checkpoint.payload["state"],
-                    "approvalId": approval.approval_id,
-                    "approval": {
-                        "callFingerprint": approval.call_fingerprint,
-                        "toolId": approval.tool_id,
-                        "target": approval.target,
-                        "riskTier": approval.risk_tier,
-                        "approvedBy": approval.decided_by,
-                        "approvedAt": (
-                            approval.decided_at.isoformat() if approval.decided_at else None
-                        ),
-                        "expiresAt": approval.expires_at.isoformat(),
+                self._expire_approval(session, approval, run, actor=actor, now=now)
+                expired = True
+            else:
+                intent = self._checkpoint_intent(checkpoint)
+                if not self._approval_matches_intent(approval, intent):
+                    raise StateConflict("approval fields do not match signed checkpoint intent")
+                raw_job_context = checkpoint.payload.get("job", {})
+                job_context = raw_job_context if isinstance(raw_job_context, dict) else {}
+                continuation_kind = str(job_context.get("kind", "campaign"))
+                continuation_max_attempts = int(job_context.get("maxAttempts", 3))
+                job = JobRecord(
+                    job_id=f"job_{uuid4().hex}",
+                    run_id=run.run_id,
+                    kind=continuation_kind,
+                    state=JobState.QUEUED.value,
+                    payload={
+                        "resumeFromCheckpointId": checkpoint.checkpoint_id,
+                        "state": checkpoint.payload["state"],
+                        "approvalId": approval.approval_id,
+                        "approval": {
+                            "callFingerprint": approval.call_fingerprint,
+                            "toolId": approval.tool_id,
+                            "target": approval.target,
+                            "riskTier": approval.risk_tier,
+                            "approvedBy": approval.decided_by,
+                            "approvedAt": (
+                                approval.decided_at.isoformat() if approval.decided_at else None
+                            ),
+                            "expiresAt": approval.expires_at.isoformat(),
+                        },
                     },
-                },
-                priority=10,
-                attempts=0,
-                max_attempts=continuation_max_attempts,
-                idempotency_key=f"resume:{checkpoint.checkpoint_id}",
-                available_at=now,
-                lease_owner=None,
-                lease_token_hash=None,
-                lease_expires_at=None,
-                heartbeat_at=None,
-                result=None,
-                error=None,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(job)
-            session.flush()
-            checkpoint.claimed_at = now
-            checkpoint.claimed_by = actor
-            checkpoint.continuation_job_id = job.job_id
-            approval.state = ApprovalState.CONSUMED.value
-            approval.consumed_by = actor
-            approval.consumed_at = now
-            run.state = RunState.QUEUED.value
-            run.updated_at = now
-            self._event(
-                session,
-                run,
-                "checkpoint.claimed",
-                actor,
-                {
-                    "checkpointId": checkpoint.checkpoint_id,
-                    "approvalId": approval.approval_id,
-                    "continuationJobId": job.job_id,
-                },
-            )
-            return ResumeView(
-                run=self._run_view(run),
-                job=self._job_view(job),
-                checkpoint=self._checkpoint_view(checkpoint),
-                approval=self._approval_view(approval),
-            )
+                    priority=10,
+                    attempts=0,
+                    max_attempts=continuation_max_attempts,
+                    idempotency_key=f"resume:{checkpoint.checkpoint_id}",
+                    available_at=now,
+                    lease_owner=None,
+                    lease_token_hash=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    result=None,
+                    error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(job)
+                session.flush()
+                checkpoint.claimed_at = now
+                checkpoint.claimed_by = actor
+                checkpoint.continuation_job_id = job.job_id
+                approval.state = ApprovalState.CONSUMED.value
+                approval.consumed_by = actor
+                approval.consumed_at = now
+                run.state = RunState.QUEUED.value
+                run.current_checkpoint_id = None
+                run.updated_at = now
+                self._event(
+                    session,
+                    run,
+                    "checkpoint.claimed",
+                    actor,
+                    {
+                        "checkpointId": checkpoint.checkpoint_id,
+                        "approvalId": approval.approval_id,
+                        "continuationJobId": job.job_id,
+                    },
+                )
+                result = ResumeView(
+                    run=self._run_view(run),
+                    job=self._job_view(job),
+                    checkpoint=self._checkpoint_view(checkpoint),
+                    approval=self._approval_view(approval),
+                )
+        if expired:
+            raise StateConflict("approval has expired")
+        if result is None:
+            raise RuntimeError("checkpoint resume did not produce a result")
+        return result
 
     def requeue_expired(self, *, actor: str) -> int:
         with self.repository.transaction() as session:
@@ -556,23 +782,37 @@ class ControlPlaneService:
         if self.repository.dialect_name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
         jobs = session.scalars(statement).all()
+        requeued_or_dead_lettered = 0
         for job in jobs:
             run = self._run(session, job.run_id, lock=True)
+            transition_time = utc_now()
+            if run.state == RunState.CANCELLED.value:
+                self._cancel_job(job, now=transition_time)
+                self._event(
+                    session,
+                    run,
+                    "job.cancelled",
+                    actor,
+                    {"jobId": job.job_id, "reason": "cancelled run lease was reaped"},
+                )
+                continue
+            self._require_run_state(run, RunState.RUNNING)
             job.lease_owner = None
             job.lease_token_hash = None
             job.lease_expires_at = None
             job.heartbeat_at = None
-            job.updated_at = now
+            job.updated_at = transition_time
             if job.attempts < job.max_attempts:
                 job.state = JobState.QUEUED.value
-                job.available_at = now
+                job.available_at = transition_time
                 run.state = RunState.QUEUED.value
                 event_type = "job.lease-expired-requeued"
             else:
                 job.state = JobState.DEAD_LETTER.value
                 run.state = RunState.FAILED.value
                 event_type = "job.lease-expired-dead-lettered"
-            run.updated_at = now
+            run.updated_at = transition_time
+            requeued_or_dead_lettered += 1
             self._event(
                 session,
                 run,
@@ -580,7 +820,111 @@ class ControlPlaneService:
                 actor,
                 {"jobId": job.job_id, "attempt": job.attempts},
             )
-        return len(jobs)
+        return requeued_or_dead_lettered
+
+    def _lock_cancellable_jobs(self, session: Session, run_id: str) -> list[JobRecord]:
+        statement = (
+            select(JobRecord)
+            .where(
+                JobRecord.run_id == run_id,
+                JobRecord.state.in_(_CANCELLABLE_JOB_STATES),
+            )
+            .order_by(JobRecord.job_id)
+            .with_for_update()
+        )
+        return list(session.scalars(statement).all())
+
+    def _lock_revocable_approvals(
+        self, session: Session, run_id: str
+    ) -> list[ApprovalRecord]:
+        statement = (
+            select(ApprovalRecord)
+            .where(
+                ApprovalRecord.run_id == run_id,
+                ApprovalRecord.state.in_(_REVOCABLE_APPROVAL_STATES),
+            )
+            .order_by(ApprovalRecord.approval_id)
+            .with_for_update()
+        )
+        return list(session.scalars(statement).all())
+
+    @staticmethod
+    def _cancel_job(job: JobRecord, *, now: datetime) -> None:
+        job.state = JobState.CANCELLED.value
+        job.lease_owner = None
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        job.heartbeat_at = None
+        job.updated_at = now
+
+    def _cancel_run_record(
+        self,
+        session: Session,
+        run: RunRecord,
+        *,
+        actor: str,
+        now: datetime,
+        reason: str,
+        cause: str,
+        extra: dict[str, Any] | None = None,
+    ) -> None:
+        if run.state == RunState.CANCELLED.value:
+            return
+        if run.state not in _CANCELLABLE_RUN_STATES:
+            raise StateConflict(f"run in {run.state} state cannot be cancelled")
+        run.state = RunState.CANCELLED.value
+        run.updated_at = now
+        self._event(
+            session,
+            run,
+            "run.cancelled",
+            actor,
+            {"cause": cause, "reason": reason, **(extra or {})},
+        )
+
+    def _expire_approval(
+        self,
+        session: Session,
+        approval: ApprovalRecord,
+        run: RunRecord,
+        *,
+        actor: str,
+        now: datetime,
+    ) -> None:
+        approval.state = ApprovalState.EXPIRED.value
+        self._event(
+            session,
+            run,
+            "approval.expired",
+            actor,
+            {
+                "approvalId": approval.approval_id,
+                "checkpointId": approval.checkpoint_id,
+                "expiredAt": approval.expires_at.isoformat(),
+            },
+        )
+        self._cancel_run_record(
+            session,
+            run,
+            actor=actor,
+            now=now,
+            reason="approval expired before it could be consumed",
+            cause="approval-expired",
+            extra={"approvalId": approval.approval_id},
+        )
+
+    @staticmethod
+    def _require_run_state(run: RunRecord, expected: RunState) -> None:
+        if run.state == expected.value:
+            return
+        if run.state == RunState.CANCELLED.value:
+            raise StateConflict("run has been cancelled")
+        raise StateConflict(f"run must be {expected.value}, not {run.state}")
+
+    @staticmethod
+    def _require_current_checkpoint(run: RunRecord, checkpoint_id: str) -> None:
+        if run.current_checkpoint_id != checkpoint_id:
+            raise StateConflict("checkpoint is not the Run's current approval boundary")
 
     @staticmethod
     def _require_lease_identity(job: JobRecord, worker_id: str, token: str) -> None:

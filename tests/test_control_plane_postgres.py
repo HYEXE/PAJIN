@@ -1,14 +1,17 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
+from threading import Barrier
 
 import pytest
 from sqlalchemy import select, update
 from sqlalchemy.exc import DatabaseError
 
 from pajin.control_plane.database import (
+    ApprovalRecord,
     CheckpointRecord,
     ControlPlaneRepository,
     EventRecord,
@@ -16,6 +19,7 @@ from pajin.control_plane.database import (
 )
 from pajin.control_plane.models import (
     ApprovalIntent,
+    CancelRunRequest,
     ClaimJobRequest,
     CompleteJobRequest,
     CreateCheckpointRequest,
@@ -23,7 +27,7 @@ from pajin.control_plane.models import (
     SubmitRunRequest,
 )
 from pajin.control_plane.security import CheckpointIntegrityError, CheckpointSigner
-from pajin.control_plane.service import ControlPlaneService, StateConflict
+from pajin.control_plane.service import ControlPlaneService, LeaseRejected, StateConflict
 
 POSTGRES_URL = os.environ.get("PAJIN_TEST_POSTGRES_URL")
 pytestmark = pytest.mark.skipif(
@@ -232,5 +236,176 @@ def test_postgres_skip_locked_approval_recovery_and_tamper_boundary() -> None:
             )
             assert event is not None
             event.event_type = "event.tampered"
+    finally:
+        repository.close()
+
+
+def test_postgres_cancel_and_complete_have_one_terminal_winner() -> None:
+    repository, service = _service()
+    suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    try:
+        submission = service.submit_run(
+            SubmitRunRequest(
+                campaign_name="postgres-cancel-complete",
+                input={"race": "cancel-complete"},
+                idempotency_key=f"postgres-{suffix}-cancel-complete",
+            ),
+            actor="integration-operator",
+        )
+        claimed = service.claim_job(
+            ClaimJobRequest(worker_id="pg-race-worker", lease_seconds=30),
+            actor="integration-worker-service",
+        )
+        assert claimed is not None
+        barrier = Barrier(2)
+
+        def cancel() -> object:
+            barrier.wait()
+            return service.cancel_run(
+                submission.run.run_id,
+                CancelRunRequest(reason="concurrent operator cancellation"),
+                actor="integration-operator",
+            )
+
+        def complete() -> object:
+            barrier.wait()
+            return service.complete_job(
+                claimed.job.job_id,
+                CompleteJobRequest(
+                    worker_id="pg-race-worker",
+                    lease_token=claimed.lease_token,
+                    result={"race": "completed"},
+                ),
+                actor="integration-worker-service",
+            )
+
+        def capture(action: Callable[[], object]) -> tuple[str, object]:
+            try:
+                return "ok", action()
+            except (LeaseRejected, StateConflict) as exc:
+                return "conflict", exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cancel_future = pool.submit(capture, cancel)
+            complete_future = pool.submit(capture, complete)
+            outcomes = [cancel_future.result(timeout=15), complete_future.result(timeout=15)]
+
+        assert sorted(status for status, _result in outcomes) == ["conflict", "ok"]
+        run = service.get_run(submission.run.run_id)
+        job = service.get_job(claimed.job.job_id)
+        if run.state.value == "cancelled":
+            assert job.state.value == "cancelled"
+        else:
+            assert run.state.value == "completed"
+            assert job.state.value == "succeeded"
+        terminal_events = [
+            event.event_type
+            for event in service.list_events(run.run_id)
+            if event.event_type in {"run.cancelled", "run.completed"}
+        ]
+        assert len(terminal_events) == 1
+    finally:
+        repository.close()
+
+
+def test_postgres_cancel_fences_concurrent_checkpoint_resume() -> None:
+    repository, service = _service()
+    suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    try:
+        submission = service.submit_run(
+            SubmitRunRequest(
+                campaign_name="postgres-cancel-resume",
+                input={"race": "cancel-resume"},
+                idempotency_key=f"postgres-{suffix}-cancel-resume",
+            ),
+            actor="integration-operator",
+        )
+        claimed = service.claim_job(
+            ClaimJobRequest(worker_id="pg-resume-worker", lease_seconds=30),
+            actor="integration-worker-service",
+        )
+        assert claimed is not None
+        created = service.create_checkpoint(
+            claimed.job.job_id,
+            CreateCheckpointRequest(
+                worker_id="pg-resume-worker",
+                lease_token=claimed.lease_token,
+                state={"race": "cancel-resume"},
+                pending_intent=ApprovalIntent(
+                    call_fingerprint="e" * 64,
+                    tool_id="mock.approval-probe",
+                    target="lab://postgres-cancel-resume",
+                    risk_tier=3,
+                    expires_at=datetime.now(UTC) + timedelta(minutes=5),
+                ),
+            ),
+            actor="integration-worker-service",
+        )
+        service.decide_approval(
+            created.approval.approval_id,
+            DecideApprovalRequest(approve=True, reason="race fixture approved"),
+            actor="integration-approver",
+        )
+        barrier = Barrier(2)
+
+        def cancel() -> object:
+            barrier.wait()
+            return service.cancel_run(
+                submission.run.run_id,
+                CancelRunRequest(reason="cancel while resume competes"),
+                actor="integration-operator",
+            )
+
+        def resume() -> object:
+            barrier.wait()
+            return service.resume_checkpoint(
+                created.checkpoint.checkpoint_id,
+                created.approval.approval_id,
+                actor="integration-operator",
+            )
+
+        def capture(action: Callable[[], object]) -> tuple[str, object]:
+            try:
+                return "ok", action()
+            except StateConflict as exc:
+                return "conflict", exc
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            cancel_future = pool.submit(capture, cancel)
+            resume_future = pool.submit(capture, resume)
+            outcomes = [cancel_future.result(timeout=15), resume_future.result(timeout=15)]
+
+        assert outcomes[0][0] == "ok"
+        assert outcomes[1][0] in {"ok", "conflict"}
+        assert service.get_run(submission.run.run_id).state.value == "cancelled"
+        with repository.transaction() as session:
+            approval = session.scalar(
+                select(ApprovalRecord).where(
+                    ApprovalRecord.approval_id == created.approval.approval_id
+                )
+            )
+            checkpoint = session.scalar(
+                select(CheckpointRecord).where(
+                    CheckpointRecord.checkpoint_id == created.checkpoint.checkpoint_id
+                )
+            )
+            active_jobs = session.scalars(
+                select(JobRecord).where(
+                    JobRecord.run_id == submission.run.run_id,
+                    JobRecord.state.in_({"queued", "leased"}),
+                )
+            ).all()
+            assert approval is not None and approval.state in {"consumed", "revoked"}
+            assert checkpoint is not None
+            if approval.state == "consumed":
+                assert checkpoint.claimed_at is not None
+                assert checkpoint.continuation_job_id is not None
+            else:
+                assert checkpoint.claimed_at is None
+                assert checkpoint.continuation_job_id is None
+            assert not active_jobs
+        assert [
+            event.event_type for event in service.list_events(submission.run.run_id)
+        ].count("run.cancelled") == 1
     finally:
         repository.close()
