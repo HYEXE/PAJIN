@@ -19,7 +19,7 @@ The implementation baseline as of 2026-07-14 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
 | Primary gaps | Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
@@ -580,22 +580,33 @@ policy, no-referrer policy, same-origin isolation headers, and text-only DOM ren
 browser attack surface.
 
 Cancellation atomically fences queued or leased Jobs, clears active lease material, revokes a
-pending or approved decision, and records bounded actor/reason events. A leased Worker observes the
-fence as a lost lease and cancels its async execution on the next heartbeat or finalization call.
-This prevents further Control Plane dispatch and result commit; it does not roll back external side
-effects or guarantee immediate physical quiescence for an uncooperative executor.
+pending or approved decision, and records bounded actor/reason events. While an executor is active,
+the next rejected heartbeat activates its first-write-wins cancellation context. The Worker gives
+that executor a bounded cooperative cleanup grace period before forced async task cancellation.
+Built-in Local Campaign and Tool Loop runners seal `cancellation.json` after engine cleanup, and
+their trusted Job executors append `quiescence.json` after the owned execution stack unwinds. If the
+engine has already returned, a completion, failure, or checkpoint conflict fences the result
+immediately and records the cause in daemon status; it does not reopen the runner or synthesize a
+cancellation receipt. Neither receipt is a Control Plane acknowledgement: they do not roll back
+external side effects or prove physical quiescence outside that local process.
 
 This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
 front of the API before remote use. Report download, Agent Graph, user accounts, tenant isolation,
-and a fleet-wide approval queue remain unimplemented. See [`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md)
-and [`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md).
+and a fleet-wide approval queue remain unimplemented. See
+[`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md),
+[`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md), and
+[`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md).
 
 ### Lease-aware Worker daemon
 
 `pajin-worker-daemon` turns queued Control Plane Jobs into existing PAJIN engine runs. It keeps one
 bounded async HTTP connection pool, claims only configured Job kinds, heartbeats throughout execution
-and finalization, retries transient completion calls, and cancels execution if the lease becomes
-stale. Authentication rejection is fatal. SIGTERM stops new claims and drains the active Job.
+and finalization, and retries transient completion calls. While an executor is active, Run
+cancellation, lease loss, heartbeat unavailability, or daemon shutdown signals its typed cancellation
+context. Once execution has returned, a finalization conflict is an immediate result fence rather
+than a new cooperative runner-cleanup phase. Authentication rejection is fatal. SIGTERM stops new
+claims, gives the active executor a bounded cooperative cleanup grace period, and then uses forced
+task cancellation as a fallback.
 
 The initial trusted registry contains:
 
@@ -605,7 +616,28 @@ The initial trusted registry contains:
 No Job field can name a command, Python module, class, executable, or arbitrary manifest path.
 Unknown kinds and invalid payloads fail closed. The Docker Tool Loop uses a no-network deterministic
 Provider fixture and safe T3 mock Tool, while retaining Provider Gateway, Secret Lease, Capability,
-policy, checkpoint, and approval behavior.
+policy, checkpoint, and approval behavior. Cancellation source selection is first-write-wins, so a
+later shutdown or transport failure cannot relabel the original cause. A local runner receipt is
+sealed with the Run evidence when cleanup completes; its absence does not imply successful cleanup.
+
+| Worker setting | Default and accepted range | Boundary |
+| --- | --- | --- |
+| `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS` | 2 seconds; 0.05-30 | Cooperative return before the daemon calls `task.cancel()` |
+| `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS` | 5 seconds; 0.05-30 | Bounded wait after forced task cancellation and for each final drain |
+
+The daemon may use one grace window, one forced window, and one additional forced window to drain a
+task that is still pending. A process supervisor must therefore allow more than
+`grace + (2 * force)` plus scheduling margin. The Compose lab pins these defaults and uses a
+15-second `stop_grace_period`, which exceeds its 12-second daemon bound. These are asyncio deadlines:
+they advance only while the process and event loop run, and they cannot preempt synchronous blocking
+code. `SIGKILL`, host loss, and process isolation failure bypass in-process cleanup entirely.
+
+A backend's own cancellation cleanup must also fit the daemon window. The standalone
+`DockerWorkerBackend` has a 20-second internal cleanup cap; the default five-second forced window is
+not sufficient for an adapter that embeds that backend. The current Control Plane Compose adapters
+are deterministic in-process profiles and do not embed it. A custom Docker-backed adapter should use
+a forced window greater than 20 seconds and increase its supervisor allowance accordingly; for
+example, `grace=2`, `force=25`, and a stop grace of at least 60 seconds.
 
 The Control Plane Compose stack starts PostgreSQL, the API, and one non-root Worker daemon:
 
@@ -708,7 +740,8 @@ The Docker backend applies the following fixed profile:
 - non-root UID/GID `65532`
 - bounded writable tmpfs workspace
 - CPU, memory, PID, execution-time, stdout, and stderr limits
-- forced container cleanup after timeout
+- bounded forced-container and per-execution egress-cleanup attempts after timeout, cancellation, or
+  unexpected base exception
 
 ## Egress proxy
 
@@ -768,7 +801,10 @@ files, or Bug Bounty triage drafts before appending a linked integrity seal.
 
 ## Evidence integrity verification
 
-Every completed local Run writes `run-integrity.jsonl`. Each seal binds its new artifact paths,
+Every completed local Run writes `run-integrity.jsonl`. A built-in Local Campaign or Tool Loop run
+that observes cancellation after its store is initialized seals `cancellation.json`; its trusted
+Control Plane executor can append `quiescence.json` in a second integrity extension. Each seal binds
+its new artifact paths,
 byte sizes, media types, SHA-256 digests, available request/Tool/Worker provenance, the current Audit
 Event chain head, and the previous seal root. Core execution produces the first seal; KISA
 assessment, remediation/retest, Bug Bounty triage, and direct Tool Loop checkpoint claims append
@@ -816,5 +852,6 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0019](docs/adr/0019-bounded-ctf-suite-orchestration.md),
 [ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md),
 [ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md),
-[ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md), and
-[ADR-0023](docs/adr/0023-fenced-control-plane-actions.md).
+[ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md),
+[ADR-0023](docs/adr/0023-fenced-control-plane-actions.md), and
+[ADR-0024](docs/adr/0024-cooperative-execution-cancellation.md).

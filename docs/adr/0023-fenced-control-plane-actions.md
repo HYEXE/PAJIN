@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-14
+- Extended by: [ADR 0024](0024-cooperative-execution-cancellation.md)
 
 ## Context
 
@@ -74,15 +75,21 @@ memory-only credential or same-origin security model from ADR 0022.
 
 ## Cancellation boundary
 
-Clearing a lease makes the next Worker heartbeat or finalization call return a lease conflict. The
-daemon then cancels its active async execution task. With default settings this signal is normally
-observed within one heartbeat interval.
+Clearing a lease makes the next Worker heartbeat or finalization call return a lease conflict. With
+default settings this fence is normally observed within one heartbeat interval. Every mutation for
+an already claimed Job (heartbeat, completion, failure, or checkpoint creation) returns structured
+`run_cancelled` when this Run fence wins; ADR 0024 connects that code to a typed, first-write-wins
+cancellation context without disclosing the Operator's reason to the Worker credential. The daemon
+allows a bounded
+cooperative cleanup grace period and then forcibly cancels an execution task that has not returned.
+The Local Campaign and Tool Loop runners can seal a local cancellation receipt before returning.
 
 The durable `cancelled` state means that the Control Plane will not dispatch the fenced Job or accept
-its result. It does not roll back completed external side effects, guarantee that an executor which
-suppresses cancellation has stopped, or replace destination-level idempotency. A future executor
-cancellation context must connect the Control Plane fence to engine Kill Switch cleanup and explicit
-physical-quiescence evidence.
+its result. A runner receipt states only that one local execution path observed cancellation and
+completed its registered cleanup; the Control Plane does not acknowledge it or treat it as
+authoritative physical-quiescence evidence. Neither the fence nor the receipt rolls back completed
+external side effects, guarantees that an executor which suppresses cancellation has stopped, or
+replaces destination-level idempotency.
 
 ## Consequences
 
@@ -94,8 +101,9 @@ physical-quiescence evidence.
   Approval row; future query/report requirements may justify a forward-only schema migration.
 - SQLite tests validate functional state contracts, but PostgreSQL remains the required backend for
   production row-lock semantics and concurrency validation.
-- Fleet-wide approval queues, managed identity, tenant ownership, physical-quiescence attestation,
-  and cancellation of arbitrary external systems remain out of scope.
+- Fleet-wide approval queues, managed identity, tenant ownership, a `cancelling` state and cleanup
+  acknowledgement protocol, Control Plane-authoritative physical-quiescence attestation, and
+  cancellation of arbitrary external systems remain out of scope.
 
 ## Validation
 
@@ -103,8 +111,10 @@ Automated tests cover read-role separation and minimized Approval responses, que
 cancellation, lease-secret removal, stale Worker rejection, approved-then-cancelled resume fencing,
 denial termination, expiry persistence, current-checkpoint invariants, terminal-state conflicts,
 reason bounds, idempotent repeat cancellation, read-only queries, and Console source safety. Existing
-Worker tests verify that a lost lease cancels in-flight async execution. Integrity tests also reject
-unsigned Approval-field drift and cross-Run ownership drift before review, decision, or resume.
+Worker tests verify typed cooperative cancellation and forced fallback when a lost lease interrupts
+in-flight async execution. Runner tests verify sealed local cancellation receipts. Integrity tests
+also reject unsigned Approval-field drift and cross-Run ownership drift before review, decision, or
+resume.
 Opt-in PostgreSQL tests race cancellation against completion and checkpoint resume to verify the
 row-lock contract on the production database backend.
 
@@ -113,3 +123,4 @@ row-lock contract on the production database backend.
 - [ADR 0011: PostgreSQL durable Control Plane](0011-durable-control-plane.md)
 - [ADR 0012: Lease-aware Worker daemon](0012-lease-aware-worker-daemon.md)
 - [ADR 0022: Same-origin Control Plane Web Console](0022-same-origin-control-plane-web-console.md)
+- [ADR 0024: Cooperative execution cancellation](0024-cooperative-execution-cancellation.md)

@@ -777,7 +777,12 @@ Plane API가 담당하며, 동일 오리진 Web Console이 선택 Run의 동일 
 공개 shell에는 데이터가 없고 모든 `/v1` 요청은 기존 역할 인증을 다시 통과한다. Console은
 로컬 단일 테넌트 preview이며 보고서 다운로드, fleet 단위 승인 큐, 사용자 계정과 조직
 격리는 아직 제공하지 않는다. 취소는 추가 dispatch와 결과 commit을 fence하지만 이미 발생한
-외부 부작용을 되돌리거나 비협조적 executor의 즉시 정지를 보장하지 않는다.
+외부 부작용을 되돌리거나 임의 executor의 즉시 정지를 보장하지 않는다. Worker는 취소된 Run,
+lease 상실, heartbeat 불능, daemon 종료를 타입화된 first-wins 컨텍스트로 trusted executor에
+전달하고, 제한된 협력 정리 시간 뒤 강제 task 취소로 전환한다. Local Campaign·Tool Loop는
+`cancellation.json` 정리 영수증을, trusted executor는 `quiescence.json` 로컬 실행 스택 종료
+영수증을 추가 seal로 보존한다. 이는 Control Plane의 정리 승인이나 외부 시스템의 물리적 정지
+증명이 아니며, `cancelling` 상태와 fenced cleanup acknowledgement는 후속 범위다.
 
 향후 제품 Web UI의 주요 화면:
 
@@ -1052,6 +1057,8 @@ PAJIN/
 
 - FastAPI·PostgreSQL 기반 Job queue와 lease-aware Worker daemon은 초기 구현 완료
 - 동일 오리진 Web Console의 Run 제출·조회·승인·재개·취소는 초기 구현 완료
+- typed 취소 전파, bounded cooperative grace·forced fallback, 로컬 정리·quiescence seal은 초기 구현 완료
+- 남은 취소 범위: `cancelling` 전이, Worker별 신뢰 ID, fenced cleanup acknowledgement와 중앙 영수증 검증
 - fleet 단위 승인 큐, 보고서 검토 UI와 실시간 Agent Graph
 - 분산 Worker Pool
 - 조직·프로젝트·역할 기반 접근 제어
