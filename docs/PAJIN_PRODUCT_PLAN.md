@@ -4,11 +4,44 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | Implementation Baseline v0.2 |
+| 문서 상태 | Product Baseline v0.3 |
 | 작성일 | 2026-07-12 |
-| 최종 최신화 | 2026-07-14 |
+| 최종 최신화 | 2026-07-15 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI |
+
+---
+
+## 0. 문서 권한과 변경 통제
+
+이 문서는 PAJIN의 제품 목표, 범위, 용어와 불변 품질 기준을 정의하는 최상위 기준선이다.
+문서 사이에 충돌이 있으면 다음 순서로 해석한다.
+
+1. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 불변 원칙과 수용 기준
+2. 같은 범위의 이전 결정을 명시적으로 amend 또는 supersede한 가장 최근 Accepted ADR — 불변 원칙을 구현하기 위한 기술 결정
+3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항과 구현 증적의 연결 상태
+4. `README.md` — 현재 코드의 실행 방법, 지원 범위와 알려진 구현 격차
+
+ADR은 제품 기획서의 불변 원칙을 구체화할 수 있지만 암묵적으로 완화할 수 없다. 불변 원칙을
+바꾸려면 이 기획서를 먼저 개정하고, 변경 사유와 이행 영향을 새 ADR에 기록한 뒤 구현해야
+한다. 코드나 README의 현재 동작이 기준선과 다르면 이를 새로운 기획으로 간주하지 않고
+명시적인 구현 격차로 관리한다.
+
+### 0.1 고정된 Finding 검증 원칙
+
+다음 원칙은 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)이
+구체화하며, 구현 편의를 이유로 낮출 수 없다.
+
+- 기존 증거를 다시 읽고 의미를 판정하는 Semantic Validator는 증거 심사자이지 독립
+  재현 실행자가 아니다.
+- Candidate는 별도의 제한된 Reproducer가 새 요청과 새 증적 계보로 동일 주장을 재현하고,
+  Mode 소유의 Oracle과 객관적 증적 게이트가 이를 지지해야만 `confirmed`가 될 수 있다.
+- LLM은 공격 Tool, 임의 명령, URL 또는 Capability Grant를 직접 생성·실행하지 않는다.
+  LLM이 제안한 비실행형 `ReplayIntent`는 신뢰 경계 안의 컴파일러와 정책 검사를 거쳐야 한다.
+- 독립 재현이 아직 실행되지 않았거나 자동 재현 대상이 아니면 최대 `needs-review`, 실행
+  장애·취소·시간 초과로 결론을 내리지 못하면 `inconclusive`다.
+- 기존에 봉인된 Run은 다시 쓰지 않는다. 과거의 재현 없는 `confirmed`는 legacy 판정으로
+  식별하며 이 기준선의 `confirmed`로 재해석하지 않는다.
 
 ---
 
@@ -33,14 +66,14 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 
 ### 1.1 현재 구현 기준선
 
-2026-07-14 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP**다.
+2026-07-15 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
 Phase 0-1은 완료되었고 Phase 2의 실행 코어는 완성되었지만 구조화 협업 메모리는 후속
 과제다. Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는
 Control Plane의 첫 수직 조각까지 구현되었다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
-| 공통 엔진 | 완료 | Supervisor, Planner, 동적 Specialist, Validator, Reporter와 작업 그래프 실행 |
+| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Restricted Reproducer 미구현 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
@@ -449,7 +482,8 @@ Execution Plane은 실제 도구를 격리된 환경에서 실행한다.
 | Code Agent | 소스·구성·의존성 분석 | 저장소 읽기, 제한된 빌드·테스트 |
 | AI Security Agent | 모델·RAG·에이전트 공격 | Target Connector, 공격 데이터셋 |
 | CTF Specialist | 카테고리별 문제 풀이 | 격리된 분석·공격 도구 |
-| Validator | 후보 취약점 독립 재현 | 후보별 최소 권한 도구 |
+| Semantic Validator | 후보 주장·증거 분석과 비실행형 ReplayIntent 제안 | Provider 호출만 허용, 공격 도구 없음 |
+| Restricted Reproducer | 후보 취약점 독립 재현 | 원 요청에 결박된 replay 전용 최소 권한 도구 |
 | Judge | 정량·정성 평가와 불일치 탐지 | 규칙, 분류기, 평가 모델 |
 | Reporter | 기술·비즈니스·규제 보고 | 확정 Finding 및 증적 읽기 |
 | Retest Agent | 수정 후 재공격과 정상 기능 확인 | 저장된 재현 자산과 대상 접근 |
@@ -661,7 +695,7 @@ capability_grant:
 | Trace | 에이전트 대화, 작업, 도구 호출을 연결한 실행 추적 |
 | Artifact | 파일, 스크린샷, 로그, 패킷, 재현 스크립트 |
 | CandidateFinding | 탐색 단계에서 발견된 후보 |
-| Finding | 검증된 취약점과 영향·근본 원인 |
+| Finding | 독립 재현으로 확정된 취약점과 영향·근본 원인 |
 | Evaluation | Judge와 사람의 판정 및 기준 |
 | Remediation | 담당자, 조치 내용, 기한, 상태 |
 | Retest | 동일·변형 공격 및 정상 기능 회귀 결과 |
@@ -673,17 +707,23 @@ capability_grant:
 ```mermaid
 stateDiagram-v2
     [*] --> Candidate
-    Candidate --> Validating
-    Validating --> Confirmed
-    Validating --> Rejected
-    Validating --> Duplicate
+    Candidate --> SemanticReview
+    SemanticReview --> NeedsReview: 재현 미실행·불일치·승인 필요
+    SemanticReview --> RejectedObjective: 범위·증적·출처 게이트 실패
+    SemanticReview --> Reproducing: 재현 가능·정책 허용
+    Reproducing --> Confirmed: 독립 재현과 Oracle 성공
+    Reproducing --> Inconclusive: 취소·시간 초과·비결정성
+    Reproducing --> RejectedObjective: Oracle의 결정적 반증
     Confirmed --> Reported
     Reported --> Remediating
     Remediating --> Retesting
     Retesting --> Closed: fixed
-    Retesting --> Confirmed: still reproducible
+    Retesting --> Confirmed: 독립 재현됨
     Reported --> AcceptedRisk
 ```
+
+`Duplicate`는 검증 disposition이 아니라 별도의 triage 관계다. 중복 판정은 Candidate와
+Validation Decision을 삭제하거나 바꾸지 않는다.
 
 ### 14.3 Finding 필수 필드
 
@@ -712,14 +752,31 @@ stateDiagram-v2
 1. **Deterministic Checks**: 정규식, 스키마, 응답 코드, 도구 호출, 데이터 유출 토큰 등
 2. **Specialized Classifier**: 유해성, 인젝션, 비밀정보, 정책 분류 모델
 3. **LLM Judge**: 맥락, 실행 가능성, 도메인 영향 평가
-4. **Independent Validator**: 다른 프롬프트·모델·환경에서 재현
-5. **Human Review**: Critical, 판단 불일치, 신규 공격, 법적·윤리적 모호성
+4. **Semantic Validator**: 다른 프롬프트·모델로 주장, 맥락, 영향과 재현 조건 심사
+5. **Restricted Reproducer + Oracle**: 별도 실행 환경의 새 요청·증적으로 독립 재현
+6. **Human Review**: Critical, 판단 불일치, 신규 공격, 법적·윤리적 모호성
+
+Candidate 보존, 다중 검증 상태와 결정론적 증적 게이트는
+[`ADR-0025`](adr/0025-candidate-validation-ledger-and-replay-boundary.md)를 따른다. Stage 1은
+legacy Validator가 반환한 Finding을 Candidate로 보존하고 Candidate별 Decision snapshot을
+구현했다. [`ADR-0026`](adr/0026-trusted-kisa-candidate-admission.md)은 KISA
+`ai.chat-probe`의 카탈로그, typed 요청, 실행 identity와 실제 transcript를 재검산하는 trusted
+Candidate Producer를 추가했다.
+
+두 단계는 Candidate admission과 증거 심사를 강화하지만 독립 재현을 구현하지 않는다.
+[`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
+Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도
+Restricted Reproducer의 새 요청·증적과 Mode Oracle 성공 없이는 `confirmed`로 승격할 수 없다.
+현재 코드는 일부 semantic 경로에서 `findings.json`에 legacy `confirmed` 호환 출력을 만들 수
+있으므로 기준선에 미달하는 알려진 구현 격차다. Restricted Replay가 완성될 때까지 해당 출력을
+제품 수준의 Confirmed로 해석해서는 안 된다. Validator-only 우회 차단, Candidate 보존,
+취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
 
 ### 15.2 신뢰도 계산 요소
 
 - 동일 조건 반복 성공률
 - 변형 입력에서의 성공률
-- 독립 Validator의 재현 여부
+- Restricted Reproducer의 독립 재현 성공 여부
 - 직접 관찰된 시스템 상태 변화
 - 증적 완전성
 - Judge 간 일치도
@@ -974,13 +1031,13 @@ PAJIN/
 - YAML Campaign 및 Mode Pack Manifest
 - AI Red Team, 제한된 로컬 Bug Bounty, Web·Crypto CTF 수직 시나리오
 - Campaign과 Run 상태 모델
-- Supervisor, Planner, 동적 Specialist, 독립 Validator, Reporter 에이전트
+- Supervisor, Planner, 동적 Specialist, Semantic Validator, Restricted Reproducer, Reporter 역할
 - 등록형 Mock, HTTP, MCP 및 Mode Pack Tool Adapter
 - Docker 기반 격리 워커
 - Capability와 Scope Policy
 - 호출 전 정책 검사와 Kill Switch
 - 이벤트·Trace·Artifact 저장
-- 후보/확정 Finding 분리
+- 후보/확정 Finding 분리, KISA trusted Candidate admission과 버전된 Confirmed 호환 출력
 - Markdown 및 JSON 보고서
 - 동일 입력 기반 재검증
 - 선택적 FastAPI·PostgreSQL Control Plane과 단일 Worker daemon
@@ -994,8 +1051,9 @@ PAJIN/
 - 자동 패치와 Pull Request 생성
 - 모든 KISA 산출물의 완전 자동화
 
-현재 구현은 최초 최소 MVP 범위를 넘어 세 Mode Pack과 지속성 Control Plane의 초기 조각을
-포함한다. 단, 지원 시나리오의 폭과 운영 배포 수준은 Phase 3-4의 후속 범위다.
+현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack과 지속성 Control Plane의 초기
+조각까지 포함한다. 그러나 Restricted Reproducer가 없어 MVP의 Finding 확정 기준은 아직
+충족하지 못했다. 지원 시나리오의 폭과 운영 배포 수준도 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -1003,20 +1061,23 @@ PAJIN/
 - 부모보다 넓은 권한의 하위 에이전트를 생성할 수 없다.
 - 예산 또는 시간 초과 시 실행이 자동 중단된다.
 - 모든 Tool Invocation이 Trace와 Audit Event를 남긴다.
-- Finding은 Validator의 재현 결과 없이는 Confirmed가 될 수 없다.
+- Finding은 Restricted Reproducer의 독립 재현 성공 결과 없이는 Confirmed가 될 수 없다.
 - 보고서에서 입력, 출력, 모델·도구 버전, 재현 절차를 확인할 수 있다.
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
+
+2026-07-15 현재 Candidate admission, Semantic Validator와 objective gate는 구현됐지만
+Restricted Reproducer가 없어 독립 재현 관련 완료 기준은 아직 충족하지 못했다.
 
 ---
 
 ## 21. 단계별 로드맵
 
-| 단계 | 상태 | 2026-07-14 기준 판단 |
+| 단계 | 상태 | 2026-07-15 기준 판단 |
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 핵심 완료 | 역할 분리, 동적 Specialist, 검증, 권한 감쇠, 예산·취소·승인 확보; 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, 권한 감쇠, 예산·취소·승인은 구현; Restricted Reproducer와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1036,14 +1097,15 @@ PAJIN/
 - Docker 워커와 기본 egress 통제
 - Event Log, Artifact, Markdown 보고서
 
-### Phase 2 — Validated Multi-Agent MVP (핵심 완료)
+### Phase 2 — Validated Multi-Agent MVP (진행 중)
 
 - Planner, Specialist, Validator, Reporter 분리
 - 작업 그래프와 동일 Run 증적·Artifact 공유
 - Capability Grant와 감쇠형 위임
 - 후보 Finding 검증 및 중복 처리
 - Kill Switch, 예산, 재시도, 체크포인트
-- 남은 범위: Campaign Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
+- 남은 범위: Restricted Reproducer, Replay Compiler·Grant·Outcome, Confirmed Gate 교정,
+  Campaign Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
 ### Phase 3 — Mode Packs (진행 중)
 
@@ -1114,7 +1176,7 @@ PAJIN/
 
 ## 24. 오픈 의사결정
 
-초기 질문 중 실행 경계와 기술 구조는 ADR-0001부터 ADR-0023까지에서 확정했다. 다음
+초기 질문 중 실행 경계와 기술 구조는 ADR-0001부터 ADR-0027까지에서 확정했다. 다음
 항목은 Phase 3-4 진행 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
@@ -1134,11 +1196,12 @@ PAJIN/
 - **첫 인터페이스**: CLI + YAML
 - **첫 보고 형식**: Markdown + JSON
 - **첫 격리 방식**: 캠페인별 Docker Worker
+- **Finding 확정 경계**: 별도 제한 재현의 성공 증적과 objective gate 없이는 Confirmed 금지
 - **에이전트 런타임**: PAJIN Core가 상태·정책·실행을 소유하고 PydanticAI는 Agent Runtime Adapter로 제한
 - **첫 Provider 계약**: 등록된 OpenAI-compatible endpoint와 일회용 Secret Lease
 
 첫 `mock-agent` 시나리오는 PAJIN의 멀티 에이전트, MCP/도구 권한, KISA A01·A02,
-증적과 독립 검증을 확인한다. 이후 `ai-chat-api` 시나리오가 A04·M03·M06과 완화 후
+증적과 분리된 증거 심사를 확인한다. 이후 `ai-chat-api` 시나리오가 A04·M03·M06과 완화 후
 재검증·정상 기능 회귀 범위를 확장했다.
 
 ---
@@ -1187,12 +1250,12 @@ PAJIN/
 
 ## 27. 현재 문서와 문서 백로그
 
-현재 기준 문서는 다음과 같다.
+현재 기준 문서는 다음과 같다. 문서 권한 순서는 이 문서의 0장을 따른다.
 
 1. `README.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. `docs/adr/0001-0023` — 구현된 런타임·정책·Mode Pack·Control Plane 의사결정
+4. `docs/adr/0001-0027` — 런타임·정책·Mode Pack·Control Plane과 단계적 Validator 설계 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 

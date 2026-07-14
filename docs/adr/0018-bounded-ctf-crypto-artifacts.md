@@ -41,7 +41,7 @@ process. It does not call a shell, subprocess, package manager, model, MCP serve
 Only ASCII plaintext matching the complete `PAJIN{...}` grammar is retained. Zero matches produces
 an unsolved observation; more than one match fails closed as ambiguous.
 
-The existing independent Validator reparses the observation, verifies the artifact and challenge
+The existing Mode-specific digest Validator reparses the observation, verifies the artifact and challenge
 identity, requires same-run evidence, and hashes the candidate against the expected digest. The
 generic runner still enforces target and evidence binding. `CTFModePack` emits the same result and
 write-up schema used by Web, including category-specific route and offline-analysis details, then

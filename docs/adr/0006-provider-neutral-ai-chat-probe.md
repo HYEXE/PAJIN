@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> 이 문서의 Validator는 원 transcript를 재검산하는 증거 심사 경계다. ADR 0027 이후 제품
+> 수준의 Confirmed에는 별도 Restricted Reproducer의 새 요청·증적과 Oracle 성공이 필요하다.
 
 ## Context
 
@@ -83,6 +87,7 @@ docker compose -f containers/compose.ai-lab.yaml down
 .venv\Scripts\mypy src
 ```
 
-인수 조건은 M03·M06·A04 여섯 Specialist Task, 100% 요청 위협 커버리지, 독립 검증된 세
-Finding, Finding별 두 Docker 증적, 모든 호출의 egress proxy allow 기록, 표적 응답 지연
+당시 구현 인수 조건은 M03·M06·A04 여섯 Specialist Task, 100% 요청 위협 커버리지, legacy
+validation Finding 세 건, Finding별 두 Docker 증적, 모든 호출의 egress proxy allow 기록, 표적 응답 지연
 측정, 조작된 vulnerability flag 거부, 종료 후 임시 컨테이너·네트워크 정리다.
+이 세 Finding은 ADR 0027의 Restricted Replay 전까지 제품 수준의 Confirmed가 아니다.

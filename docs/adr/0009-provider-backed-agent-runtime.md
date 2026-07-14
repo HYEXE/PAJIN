@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> Provider Validator output is semantic evidence review. ADR 0027 prohibits it from creating
+> product-level `confirmed` without a separate successful Candidate-bound ReplayOutcome.
 
 ## Context
 

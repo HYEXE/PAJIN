@@ -2,10 +2,15 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> 현재 remediation/retest 서비스는 legacy validation Finding을 사용한다. ADR 0027의
+> Restricted Replay가 구현되기 전 판정은 제품 수준의 Confirmed·fixed·still-vulnerable을
+> 증명하지 않는다.
 
 ## Context
 
-초기 KISA Mode Pack은 취약점 발견·독립 검증·보고까지 수행하지만 완화 방안, 개선 과제,
+초기 KISA Mode Pack은 취약점 발견·분리된 증거 심사·보고까지 수행하지만 완화 방안, 개선 과제,
 재검증, 정상 기능과 회귀 확인은 미충족으로 남겼다. 단순히 후속 Run에서 Finding이 사라진
 사실만으로 수정 완료를 선언하면 실행 실패, 증적 손실, Validator 오류를 실제 수정으로
 오인할 수 있다. 보안 통제가 정상 기능을 훼손해도 공격 결과만 비교하면 이를 발견하지
@@ -40,7 +45,8 @@
 
 1. Finding fingerprint는 위협 코드, 대상, 정규화 제목으로 계산하며 실행별 임의 Finding ID와
    분리한다.
-2. 재검증에서 같은 fingerprint가 독립 검증되면 `still-vulnerable`이다.
+2. 현재 호환 구현은 재검증에서 같은 fingerprint가 다시 심사되면 `still-vulnerable`로
+   기록한다. 제품 수준 판정에는 양쪽 Run의 ADR 0027 ReplayOutcome이 필요하다.
 3. Finding이 없더라도 동일 위협의 기대 반복 횟수가 모두 성공적으로 실행되고 각 결과의
    공격 신호가 false인 경우에만 `fixed`다.
 4. 반복 횟수 미달, 도구 실패, 증적 누락, 비취약 판정 부족은 `inconclusive`다.
@@ -88,6 +94,6 @@ docker compose -f containers/compose.ai-lab.yaml `
   -f containers/compose.ai-lab.hardened.yaml down
 ```
 
-인수 조건은 계획 이벤트가 재검증 시작보다 먼저 발생하고, M03·M06·A04가 각각 두 개의
+당시 호환 인수 조건은 계획 이벤트가 재검증 시작보다 먼저 발생하고, M03·M06·A04가 각각 두 개의
 비취약 Docker 증적으로 `fixed`, 정상 기능이 2/2 `pass`, 신규·미확정 결과가 0건이며 모든
 호출이 egress proxy allow 증적을 갖고 종료 후 컨테이너·네트워크가 남지 않는 것이다.

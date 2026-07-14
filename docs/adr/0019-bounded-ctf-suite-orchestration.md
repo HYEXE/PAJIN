@@ -43,7 +43,7 @@ slot that it could consume before the other starts.
 
 Finalization first verifies the core Run seal and reconstructs the exact Suite Campaign from the
 original typed manifests. It then binds each Tool result to its plan request, target, category Tool,
-same-run evidence, and independent validated Finding. Each member is classified independently as
+same-run evidence, and Mode-specific digest-verified solve observation. Each member is classified independently as
 `solved`, `unsolved`, or `invalid-flag`. The aggregate `ctf-suite-result.json` and
 `ctf-suite-writeup.md` are appended before a second seal. There is no credential, client, or route
 for scoreboard submission.

@@ -5,6 +5,9 @@
 이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행
 통제, 증적, 결과 산출물에 연결한다. 페이지는 첨부 PDF의 물리 페이지를 기준으로 한다.
 
+> 최종 최신화: 2026-07-15. Candidate admission과 증거 심사는 구현됐지만, 제품 수준의
+> Confirmed에 필요한 Restricted Reproducer는 아직 구현되지 않았다.
+
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
 인증을 의미하지 않는다.
@@ -17,8 +20,13 @@ flowchart LR
     C --> S["Scenario Selection<br/>대상 유형·요청 위협"]
     S --> P["Planner<br/>반복 가능한 Task Graph"]
     P --> X["Specialists<br/>Tool Gateway·Docker Worker"]
-    X --> V["Independent Validator<br/>증적 출처 게이트·중복 제거"]
-    V --> E["Evaluation<br/>지표·커버리지·체크리스트"]
+    X --> CP["Trusted Candidate Producer<br/>구현"]
+    CP --> V["Semantic Validator<br/>증거 심사·구현"]
+    V -. "후속 구현" .-> RR["Restricted Reproducer<br/>새 요청·새 증적"]
+    RR --> O["Mode Oracle·Objective Gate"]
+    V --> L["Legacy compatibility projection<br/>제품 Confirmed 아님"]
+    O --> E["Evaluation<br/>지표·커버리지·체크리스트"]
+    L --> E
     E --> R["KISA Artifacts<br/>Markdown·JSON"]
 ```
 
@@ -28,12 +36,12 @@ flowchart LR
 | --- | ---: | --- | --- | --- |
 | AI 시스템 계층과 공격 표면 | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `kisa-test-plan.json`의 `scenarioDefinitions` | 구현 |
 | 19개 위협 분류 D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | `kisa-results.json`의 요청·실행·미실행 위협 | 전체 카탈로그 구현 |
-| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, `KISAMetricResult` | 공격 성공률, 차단·거부율, 재현율, 민감정보 노출, 지연, 커버리지 | 구현 |
-| 위험 등급 | 27 | Validator Finding `severity`, 체크리스트 판정 | `findings.json`, `kisa-results.json` | 기술 등급 구현, 비즈니스 우선순위는 사람 검토 |
+| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, `KISAMetricResult` | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지 | 부분 구현: 독립 재현 성공률은 후속 |
+| 위험 등급 | 27 | Candidate/legacy Finding `severity`, 체크리스트 판정 | `candidate-findings.json`, `findings.json`, `kisa-results.json` | 부분 구현: 기술 등급은 생성, 제품 Confirmed와 비즈니스 우선순위는 미완료 |
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | 독립 Validator와 결정론적 증적 게이트 | `findings.json`, `kisa-results.json` | 구현 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, 결정론적 증적 게이트 | `candidate-findings.json`, `validation-decisions.json`, `findings.json`, `kisa-results.json` | 부분 구현: Restricted Reproducer 미구현 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트 | `evidence/`, `events.jsonl`, `kisa-execution-log.json` | 구현 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -63,8 +71,9 @@ flowchart LR
 - `kisa.agent.memory-poisoning-persistence`: A04 동일 세션 후속 턴의 오염 표식 지속
 
 각 시나리오는 실제 Docker Worker에서 egress proxy를 거쳐 고정된 Chat API 계약만
-호출한다. 독립 Validator는 Tool이 제공한 `vulnerable` 값을 신뢰하지 않고, 계획에 기록된
-판정 마커를 원문 대화 응답에서 다시 확인한다.
+호출한다. Trusted Candidate Producer와 Semantic Validator는 Tool이 제공한 `vulnerable` 값을
+신뢰하지 않고 계획에 기록된 판정 마커를 원문 대화 응답에서 다시 확인한다. 이는 원 실행의
+증거 심사이며, 새 요청과 증적 계보를 만드는 독립 재현은 아니다.
 
 ## 5. 체크리스트 판정 원칙
 
@@ -79,7 +88,10 @@ flowchart LR
 관행적으로 통과시키지 않는다. Docker 실행이 실제 증적에서 관찰된 경우에만 격리 환경
 항목을 `yes`로 판정한다.
 
-## 6. 재현 명령과 기대 결과
+## 6. 캠페인 실행 재현 명령과 기대 결과
+
+이 절의 명령은 개발자가 전체 Campaign을 다시 실행하는 방법이다. Candidate별 Restricted
+ReplayOutcome을 생성하는 Validator 독립 재현 단계와는 구분한다.
 
 ```powershell
 .venv\Scripts\pajin kisa-run examples\kisa-ai-redteam.yaml --worker docker --repetitions 2
@@ -87,14 +99,15 @@ flowchart LR
 
 현재 예제의 기대 결과는 다음과 같다.
 
-- Supervisor, Planner, 반복별 Specialist, Validator, Reporter가 별도 역할로 실행된다.
+- Supervisor, Planner, 반복별 Specialist, Candidate Producer, Semantic Validator, Reporter가
+  분리된 역할 또는 신뢰 경계로 실행된다.
 - A01·A02는 실행되고 A04는 대상 연결 시나리오 부재로 커버리지 갭에 남는다.
-- 두 번의 공격 성공 증적은 독립 Validator 이후 하나의 Finding으로 중복 제거된다.
-- Finding은 두 개의 Docker Worker 증적을 참조한다.
+- 두 번의 공격 성공 증적은 하나의 Candidate와 legacy validation Finding으로 중복 제거된다.
+- Candidate와 legacy Finding은 두 개의 Docker Worker 증적을 참조한다.
 - 공격 성공률과 차단·거부율 임계값은 실패하고 민감정보 노출과 지연 임계값은 통과한다.
 - 표 28-30 대응 JSON, 전체 체크리스트 JSON, 평가 JSON, Markdown 보고서가 생성된다.
 
-공급자 중립 AI Chat Lab은 다음 명령으로 별도 재현한다.
+공급자 중립 AI Chat Lab Campaign은 다음 명령으로 별도 실행한다.
 
 ```powershell
 docker compose -f containers/compose.ai-lab.yaml up --build --detach
@@ -102,12 +115,14 @@ docker compose -f containers/compose.ai-lab.yaml up --build --detach
 docker compose -f containers/compose.ai-lab.yaml down
 ```
 
-이 Campaign은 M03·M06·A04에 대해 6개 반복 Task, 100% 요청 위협 커버리지, 독립 검증된
-Finding 3건과 Finding별 Docker 증적 2건을 기대한다.
+이 Campaign은 M03·M06·A04에 대해 6개 반복 Task, 100% 요청 위협 커버리지, Candidate 3건과
+Candidate별 Docker 증적 2건을 기대한다. 현재 호환 경로는 semantic support와 objective gate
+통과 후 `findings.json`에 legacy `confirmed` 3건을 기록할 수 있지만 ReplayOutcome을 만들지
+않으므로 제품 수준의 Confirmed 기대 건수는 0건이다.
 
 ## 7. 완화 및 재검증 폐루프
 
-완화 계획은 기준 Run의 검증 Finding에서 먼저 생성하고 감사 이벤트 시간을 기록한다. 각
+현재 완화 계획은 기준 Run의 legacy validation Finding에서 먼저 생성하고 감사 이벤트 시간을 기록한다. 각
 계획은 안정적 Finding fingerprint, 위협별 기술 통제, 재검증 수용 기준, 원본 증적을 가진다.
 실제 담당자와 기한은 자동으로 추정하지 않고 `needs-review`로 남긴다.
 
@@ -123,10 +138,13 @@ docker compose -f containers/compose.ai-lab.yaml `
 
 | 판정 | 조건 |
 | --- | --- |
-| `fixed` | 동일 위협의 기대 반복 횟수를 모두 성공적으로 실행했고 모든 공격 신호가 사라짐 |
-| `still-vulnerable` | 독립 Validator가 재검증 Run에서도 동일 Finding을 확정함 |
+| `fixed` | 독립 재현 계약의 기대 반복 횟수를 모두 실행했고 모든 공격 신호가 사라짐 |
+| `still-vulnerable` | 기준 Run과 재검증 Run에서 동일 Finding의 Restricted Replay가 성공함 |
 | `inconclusive` | 실행 실패, 증적 누락 또는 기대 반복 횟수 미달로 수정 여부를 증명하지 못함 |
-| `new` | 기준 Run fingerprint에 없던 검증 Finding이 재검증 Run에서 생성됨 |
+| `new` | 기준 Run fingerprint에 없던 reproduction-backed Confirmed Finding이 재검증 Run에서 생성됨 |
+
+Restricted Reproducer가 구현되기 전 현재 `kisa-retest` 판정은 legacy 호환 의미다. 이를 운영
+환경의 수정 완료, 지속 취약 또는 신규 Confirmed 판정으로 사용해서는 안 된다.
 
 정상 기능은 `ai.normal-probe`로 별도 실행하므로 공격 성공률과 차단율을 희석하지 않는다.
 `kisa-checklist-overlay.json`은 다음 항목만 새 증적으로 대체한다.
@@ -139,6 +157,8 @@ docker compose -f containers/compose.ai-lab.yaml `
 
 ## 8. 알려진 제한과 다음 확장
 
+- Restricted Reproducer, replay-specific Grant와 ReplayOutcome이 미구현이다. Candidate
+  admission과 원 증거 심사만으로 생성된 현재 `findings.json` 항목은 legacy 의미다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는
@@ -148,3 +168,7 @@ docker compose -f containers/compose.ai-lab.yaml `
 - 공급자별 인증·스트리밍·도구 호출을 표준 Chat 계약으로 변환하는 Provider Adapter와
   정상/공격 데이터셋이 추가되어야 한다.
 - 운영 수준에서는 Artifact 무결성 서명, 보존·파기 정책, 승인 워크플로가 추가로 필요하다.
+
+Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.md),
+[ADR 0026](adr/0026-trusted-kisa-candidate-admission.md),
+[ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md)을 따른다.

@@ -2,6 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> The Validator and final-gate behavior below records the original implementation decision. Under
+> ADR 0027, semantic support and same-Run evidence checks alone cannot create product-level
+> `confirmed`; a fresh Candidate-bound ReplayOutcome is also required.
 - Call-budget allocation amended by: ADR 0020
 - Specialist scheduling amended by: ADR 0021
 
@@ -22,7 +27,8 @@ boundary.
 
 1. `MultiAgentCampaignRunner` is the local Supervisor and owns the complete run state.
 2. Every run starts with a Supervisor and dynamically creates a Planner, one Specialist per planned
-   step, an independent Validator, and a Reporter.
+   step, a separate Semantic Validator, and a Reporter. ADR 0027 adds a trusted Restricted
+   Reproducer boundary to the product-level validation pipeline.
 3. The Planner returns a typed `AgentPlan` but cannot spawn agents or execute tools. The Supervisor
    ignores every planner-provided `agent_id` and binds each request to the actual Specialist.
 4. Tasks are stored in a typed acyclic dependency graph with explicit waiting, running, succeeded,
@@ -102,7 +108,9 @@ boundary.
 .venv\Scripts\mypy src
 ```
 
-Acceptance requires five completed role agents and one validated finding in the normal Docker run;
+The original acceptance requires five completed role agents and one legacy validation Finding in
+the normal Docker run; that Finding is not product-level Confirmed until ADR 0027-compliant
+reproduction succeeds;
 a live Worker dispatch followed by cancelled Specialist/Validator/Reporter tasks, complete Grant
 revocation, and no residual PAJIN container or network in the cancellation run; plus passing tests
 for sibling budget non-amplification, dynamic fan-out, bounded retry, external signal cancellation,

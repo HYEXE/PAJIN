@@ -1,7 +1,12 @@
 # ADR 0014: Conservative Bug Bounty finding deduplication
 
-- Status: Accepted
+- Status: Accepted for deduplication; submission eligibility amended by ADR 0027
 - Date: 2026-07-13
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> The current reporter can consume legacy validation Findings. They are local review drafts, not
+> reproduction-backed Confirmed submissions. After ADR 0027 migration, only a Finding with a
+> successful Candidate-bound ReplayOutcome can become submission-ready.
 
 ## Context
 
@@ -24,7 +29,9 @@ Bug Bounty reporter loads only a completed Run and performs these checks before 
 2. its authorization evidence contains the current canonical program scope digest;
 3. compiled targets, allow/deny scope, risk, methods, tool categories, prohibitions, stop
    conditions, rate, time windows, and budgets still match the reviewed program;
-4. each Finding is independently validated and targets a declared, allowed endpoint;
+4. each Finding passes the current validation compatibility gate and targets a declared, allowed
+   endpoint; after ADR 0027 migration, submission-ready additionally requires a successful
+   Candidate-bound ReplayOutcome;
 5. every evidence path resolves to a real file under the same Run's `evidence/` directory.
 
 The optional `BugBountyFindingIndex` is a strict, program-bound snapshot of known external findings.
@@ -77,8 +84,9 @@ may leave more work for the operator than a semantic deduplicator, which is inte
 The known-finding index is currently a local snapshot; there is no HackerOne, Bugcrowd, Jira, or
 GitHub synchronization. Local Run artifacts are not yet signed by a durable evidence service, so
 same-Run path validation detects substitution boundaries but not privileged filesystem tampering.
-The reporter does not calculate CVSS, prove business impact, or submit reports. Those remain future
-validated integrations.
+The reporter does not calculate CVSS, prove business impact, or submit reports. A draft sourced from
+legacy validation also does not prove product-level confirmation. Those remain future validated
+integrations.
 
 ## Validation
 

@@ -2,28 +2,36 @@
 
 PAJIN is a policy-governed multi-agent AI red-team and security validation platform.
 
-The current implementation is a CLI-first backend MVP. It validates typed campaign and Mode Pack
-manifests, dynamically creates a bounded Supervisor/Planner/Specialist/Validator/Reporter team,
-evaluates every tool request through the Tool Gateway, executes registered mock, HTTP, or MCP tools
-through a simulated or isolated Docker Worker, independently validates results, and writes audit
-evidence plus structured JSON and Markdown reports. An optional FastAPI/PostgreSQL Control Plane and
-lease-aware Worker daemon provide the first durable execution path without replacing the local CLI.
+The current implementation is a CLI-first backend approaching MVP. It validates typed campaign and
+Mode Pack manifests, dynamically creates a bounded Supervisor/Planner/Specialist/Semantic
+Validator/Reporter team, evaluates every tool request through the Tool Gateway, executes registered
+mock, HTTP, or MCP tools through a simulated or isolated Docker Worker, admits Candidates, reviews
+them through separate semantic and objective evidence gates, and writes audit evidence plus
+structured JSON and Markdown reports. An optional FastAPI/PostgreSQL Control Plane and lease-aware
+Worker daemon provide the first durable execution path without replacing the local CLI.
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-14 is:
+The implementation baseline as of 2026-07-15 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, independent validation, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, and tamper-evident evidence seals |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Primary gaps | Restricted Reproducer and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
+
+> **Validation status:** PAJIN currently implements trusted Candidate admission, semantic review,
+> objective evidence gates, and sealed Decision snapshots. It does not yet execute an independent
+> restricted reproduction. Some existing paths can still write a legacy `confirmed` compatibility
+> Finding after semantic support and the objective gate; under the product baseline and
+> [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md), that result is only
+> `needs-review` until a fresh Candidate-bound ReplayOutcome succeeds.
 
 ## Current safety boundary
 
@@ -55,7 +63,8 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   the Worker only through its stdin envelope, never Docker arguments, environment variables, Job
   metadata, events, or evidence.
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
-- A result cannot be reported as confirmed unless the validator marks it as validated.
+- Product-level confirmation requires a successful independent Restricted Reproducer outcome and
+  the objective gate; a Semantic Validator mark alone is insufficient.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -133,8 +142,8 @@ snapshot, but synchronizing that snapshot with a platform or issue tracker remai
 
 ### Finding triage and submission drafts
 
-After a completed Bug Bounty Campaign has independently validated findings, compare them with an
-optional program-specific known-finding index and generate submission drafts:
+After a completed Bug Bounty Campaign has validation findings, compare them with an optional
+program-specific known-finding index and generate submission drafts:
 
 ```powershell
 .venv\Scripts\pajin bug-bounty-report `
@@ -163,6 +172,8 @@ with explicit TODOs instead of an automatic submission.
 
 The generated Markdown is a local draft only. PAJIN does not submit to a Bug Bounty platform or
 claim that the unsigned local evidence has production-grade artifact integrity.
+The current draft flow consumes the legacy validation projection. Until the control-set probe is
+executed again with a new replay request and evidence lineage, it is not product-level Confirmed.
 
 ### Automated local Bug Bounty lab
 
@@ -171,7 +182,8 @@ only the compiled `boolean-sqli-lab` profile against the synthetic loopback-boun
 Planner can select only `bug-bounty.boolean-sqli-probe`; the Tool accepts no agent-authored attack
 payload and the trusted Worker performs exactly one baseline, one negative control, and one boolean
 comparison. The Validator ignores the Worker's claimed conclusion and recomputes the signal from
-the three bounded observations. One Tool call reserves three request-rate units.
+the three bounded observations. This protects the evidence-review boundary but reuses the original
+execution and is not independent reproduction. One Tool call reserves three request-rate units.
 
 Build the Worker and egress proxy, then start the vulnerable lab:
 
@@ -202,7 +214,7 @@ Inspect the generated review and copy its printed digest into the approval comma
   .pajin\campaigns\local-bug-bounty-sqli-lab.yaml
 ```
 
-The vulnerable profile should produce one independently validated draft. Recreate the target with
+The vulnerable profile currently produces one legacy validation draft. Recreate the target with
 the hardened override and run the same digest-approved Campaign again; the fixed probe should then
 produce zero findings:
 
@@ -251,8 +263,8 @@ docker compose -f containers\compose.ctf-web-lab.yaml up --build --detach
 The Triage Planner can create only one `ctf.web-backup-probe` step. The Tool and trusted Worker both
 enforce one GET to `http://host.docker.internal:8780/backup/config.json.bak`; the Gateway injects
 the private-network egress policy from the compiled Campaign. The Specialist never receives the
-expected digest. The independent Validator hashes the candidate and produces a validated result
-only on a constant-time digest match.
+expected digest. The Mode-specific digest Validator hashes the candidate and produces a verified
+solve result only on a constant-time digest match.
 
 The vulnerable profile should produce `solved` plus `ctf-result.json` and `ctf-writeup.md`. Recreate
 the same target with the hardened override to confirm the backup artifact is absent and the command
@@ -285,9 +297,9 @@ docker build --tag pajin-worker:dev containers\worker
 .venv\Scripts\pajin ctf-run examples\ctf-crypto-xor-lab.yaml
 ```
 
-The Crypto Specialist never receives the expected flag digest. The independent Validator binds the
-candidate to same-run evidence and compares its SHA-256 with the sealed Campaign value. The write-up
-records category routing, offline analysis, and the final digest decision.
+The Crypto Specialist never receives the expected flag digest. The Mode-specific digest Validator
+binds the candidate to same-run evidence and compares its SHA-256 with the sealed Campaign value.
+The write-up records category routing, offline analysis, and the final digest decision.
 
 Core execution creates the first evidence-integrity seal; CTF result and write-up finalization
 verifies that root and appends a second seal. `ctf-run` is Docker-only and has no scoreboard
@@ -336,7 +348,8 @@ independent repetitions:
 
 The Mode Pack maps the 19 threat classes in the KISA AI Security Red Teaming Guide to a typed
 catalog, selects target-compatible scenarios, executes each scenario through separate Specialist
-agents, and deduplicates only independently validated findings. Requested threats without an
+agents, and deduplicates Candidate and legacy validation findings after same-Run evidence checks.
+This does not yet provide independent reproduction-backed confirmation. Requested threats without an
 executable target-linked scenario are retained as explicit coverage gaps.
 
 In addition to the standard run artifacts, `kisa-run` writes:
@@ -360,8 +373,9 @@ certification.
 PAJIN defines a fixed, provider-neutral chat contract for authorized AI application targets. The
 registered `ai.chat-probe` Tool can send only bounded POST conversations selected from the KISA
 scenario catalog; it cannot inject arbitrary process commands or grant itself network access. The
-Tool Gateway derives egress from Campaign Scope, and the independent Validator rechecks the raw
-transcript instead of trusting the Tool's vulnerability flag.
+Tool Gateway derives egress from Campaign Scope, and the Semantic Validator rechecks the raw
+transcript instead of trusting the Tool's vulnerability flag. This is semantic and deterministic
+evidence review over the original execution, not a second reproduction request.
 
 Build and start the intentionally vulnerable local target, then run the M03, M06, and A04 campaign:
 
@@ -458,10 +472,12 @@ Remove-Item Env:PAJIN_PROVIDER_API_KEY
 docker compose -f containers/compose.ai-lab.yaml down
 ```
 
-The flow is Provider Planner → isolated `ai.chat-probe` Specialist → Provider Validator → Provider
-Reporter. Validator findings are still accepted only when they cite evidence produced by a
-Specialist in the same run. Reporter output is stored separately in `model-narrative.json` and is
-appended as a clearly subordinate section; it cannot alter canonical findings or execution state.
+The implemented flow is Provider Planner → isolated `ai.chat-probe` Specialist → trusted Candidate
+Producer → Provider Semantic Validator → objective gate → Provider Reporter. Validator findings are
+accepted only when they cite evidence produced by a Specialist in the same run. The Restricted
+Reproducer stage required before product-level confirmation is not implemented yet. Reporter output
+is stored separately in `model-narrative.json` and is appended as a clearly subordinate section; it
+cannot alter canonical findings or execution state.
 
 `maxModelCalls` and `maxModelTokens` bound model usage independently, while actual token usage and
 registration-supplied per-million token rates contribute to `maxCostUsd`. Provider failures,
@@ -683,8 +699,16 @@ retry once within the same grant only when a retry slot was assigned. After plan
 first reserves the maximum downstream calls for model-backed Validator and Reporter roles, then one
 call for every Specialist. Remaining calls are assigned in plan order as at most one retry for each
 T0/T1 task. A plan that cannot fund every first Specialist attempt fails before partial fan-out.
-The independent Validator can confirm a finding only when its target is declared and every cited
-artifact was produced by a Specialist in the same run.
+The Semantic Validator can support a Candidate only when its target is declared and every cited
+artifact was produced by a Specialist in the same run. For cataloged KISA `ai.chat-probe`
+scenarios, a Tool-less trusted Candidate Producer independently recomputes the raw transcript
+checks before validation. A semantic Validator that returns no Finding therefore leaves a
+`needs-review` Candidate instead of deleting the observation. The current compatibility path can
+still create a legacy `confirmed` Finding from matching semantic support plus the common objective
+gate, but ADR 0027 supersedes that meaning: a fresh Restricted Reproducer outcome is also required
+for product-level confirmation. Validator-only claims inside the Producer's request or target/threat
+authority remain review Candidates, and cancellation or Validator failure preserves already
+observable Candidates as `inconclusive`.
 
 Specialist concurrency is opt-in at the Tool contract. `parallelSafe: false` is the default;
 non-opted-in Tools execute as single-task barriers in plan order. Consecutive opted-in tasks run in
@@ -785,6 +809,9 @@ campaign.json
 run.json
 events.jsonl
 plan.json
+candidate-findings.json
+validation-decisions.json
+validation-index.json
 findings.json
 report.md
 evidence/
@@ -795,6 +822,16 @@ capabilities.json
 budget.json
 control.json
 ```
+
+The Candidate and Decision snapshots preserve every Finding returned by the legacy Validator and
+every observation admitted by an enabled trusted Candidate Producer, together with its
+deterministic disposition. `validation-index.json` is an ID-only status view, while the legacy
+`findings.json` currently contains the legacy confirmed-only compatibility projection. Entries
+without a Candidate-bound ReplayOutcome are not product-level Confirmed and must be treated as
+legacy semantic confirmation. The current trusted producer is limited to exact KISA AI chat catalog
+contracts; it does not trust a generic `vulnerable` field and gives the Semantic Validator no attack
+or replay Tools. Its atomic production also reserves request and target/threat confirmation space so
+a Validator cannot bypass a zero Candidate result through the legacy adapter.
 
 Mode Pack extensions can add artifacts such as `ctf-result.json`, `ctf-writeup.md`, KISA assessment
 files, or Bug Bounty triage drafts before appending a linked integrity seal.
@@ -853,5 +890,8 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md),
 [ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md),
 [ADR-0022](docs/adr/0022-same-origin-control-plane-web-console.md),
-[ADR-0023](docs/adr/0023-fenced-control-plane-actions.md), and
-[ADR-0024](docs/adr/0024-cooperative-execution-cancellation.md).
+[ADR-0023](docs/adr/0023-fenced-control-plane-actions.md),
+[ADR-0024](docs/adr/0024-cooperative-execution-cancellation.md),
+[ADR-0025](docs/adr/0025-candidate-validation-ledger-and-replay-boundary.md),
+[ADR-0026](docs/adr/0026-trusted-kisa-candidate-admission.md), and
+[ADR-0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).

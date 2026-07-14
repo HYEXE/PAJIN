@@ -2,6 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-07-13
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> Recomputing the original control-set observations is evidence review, not independent
+> reproduction. ADR 0027 requires a distinct replay request and evidence lineage before a security
+> Finding becomes product-level `confirmed`.
 
 ## Context
 
@@ -63,7 +68,8 @@ positive and negative integration test.
 It is not a general SQL injection scanner. It does not discover parameters, accept arbitrary
 payloads, crawl, enumerate records, calculate CVSS, authenticate to a bounty platform, or prove
 that a production target is vulnerable. Adding another vulnerability class requires a new typed
-profile, Worker command, request cost, independent Validator rule, and safety review.
+profile, Worker command, request cost, Mode-owned evidence-review and replay contracts, and safety
+review.
 
 ## Validation
 

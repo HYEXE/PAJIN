@@ -2,6 +2,10 @@
 
 - Status: Accepted
 - Date: 2026-07-12
+- Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
+
+> 이 문서의 독립 검증·확정 표현은 당시 증거 심사 구현을 기록한다. ADR 0027 이후 제품
+> 수준의 Confirmed에는 별도 Restricted Reproducer의 새 요청·증적과 Oracle 성공이 필요하다.
 
 ## Context
 
@@ -27,12 +31,13 @@ KISA 「AI 보안 레드티밍 가이드」는 위협 분류, 레드티밍 절�
 4. 첫 실행 시나리오는 `mock-agent` 대상의 간접 프롬프트 인젝션·비인가 도구 호출이며
    A01·A02를 다룬다.
 
-### 실행과 독립 검증
+### 실행과 분리된 증거 심사
 
 1. 시나리오 반복 수만큼 별도 Specialist Task를 만들고 기존 Tool Gateway, 정책,
    Capability 감쇠, Docker Worker, 예산, Kill Switch 경계를 그대로 사용한다.
-2. Specialist는 Finding을 확정할 수 없다. 별도 Validator가 같은 Run의 증적만 사용해
-   판정하고 PAJIN의 결정론적 게이트가 증적 출처와 Scope를 다시 확인한다.
+2. Specialist는 Finding을 확정할 수 없다. 별도 Semantic Validator가 같은 Run의 증적만
+   사용해 심사하고 PAJIN의 결정론적 게이트가 증적 출처와 Scope를 다시 확인한다. 이는
+   독립 재현이 아니며 ADR 0027의 Restricted Reproducer가 별도로 필요하다.
 3. 반복 실행에서 나온 동일 Finding은 제목·위협·대상을 기준으로 합치되 모든 재현 증적을
    보존하고 보수적인 신뢰도를 적용한다.
 
@@ -59,7 +64,7 @@ Markdown 보고서를 추가한다. 모든 KISA 산출물은 출처 페이지 �
 
 - 가이드 요구사항이 Campaign 선택부터 실행·검증·보고까지 추적된다.
 - 수록된 위협과 실제 테스트 커버리지가 분리되어 누락이 숨겨지지 않는다.
-- 반복 실행과 독립 검증으로 단일 실행 결과보다 재현성이 높다.
+- 반복 실행과 분리된 증거 심사로 단일 실행 결과보다 신뢰도가 높지만 독립 재현을 증명하지는 않는다.
 - 조직적 판단을 자동 통과시키지 않아 과도한 준수 주장을 방지한다.
 - Mode Pack이 기존 보안 경계를 우회하지 않고 동일한 Tool Gateway와 Worker를 재사용한다.
 
@@ -82,6 +87,6 @@ Markdown 보고서를 추가한다. 모든 KISA 산출물은 출처 페이지 �
 .venv\Scripts\mypy src
 ```
 
-인수 조건은 19개 위협과 52개 체크리스트의 스키마 검증, A01·A02 두 번 실행과 A04의 명시적
-미실행 사유, 독립 검증 후 한 개 Finding과 두 개 Worker 증적, KISA JSON·Markdown 산출물,
+당시 인수 조건은 19개 위협과 52개 체크리스트의 스키마 검증, A01·A02 두 번 실행과 A04의 명시적
+미실행 사유, 증거 심사 후 한 개 legacy Finding과 두 개 Worker 증적, KISA JSON·Markdown 산출물,
 그리고 전체 정적·동적 테스트 통과다.
