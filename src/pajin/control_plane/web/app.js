@@ -11,7 +11,13 @@ const session = {
   pageItems: 0,
   refreshTimer: null,
   refreshing: false,
+  actionBusy: false,
+  roles: new Set(),
+  currentRun: null,
+  currentApproval: null,
   canSubmit: false,
+  canOperate: false,
+  canApprove: false,
 };
 
 const elements = {
@@ -43,6 +49,18 @@ const elements = {
   detailUpdated: document.querySelector("#detail-updated"),
   detailCheckpoint: document.querySelector("#detail-checkpoint"),
   detailInput: document.querySelector("#detail-input"),
+  approvalState: document.querySelector("#approval-state"),
+  approvalTool: document.querySelector("#approval-tool"),
+  approvalTarget: document.querySelector("#approval-target"),
+  approvalRisk: document.querySelector("#approval-risk"),
+  approvalExpires: document.querySelector("#approval-expires"),
+  approvalDecision: document.querySelector("#approval-decision"),
+  workflowReason: document.querySelector("#workflow-reason"),
+  workflowHelp: document.querySelector("#workflow-help"),
+  approveButton: document.querySelector("#approve-button"),
+  denyButton: document.querySelector("#deny-button"),
+  resumeButton: document.querySelector("#resume-button"),
+  cancelButton: document.querySelector("#cancel-button"),
   eventCount: document.querySelector("#event-count"),
   eventList: document.querySelector("#event-list"),
 };
@@ -63,7 +81,10 @@ function newIdempotencyKey() {
 }
 
 function setConnected(connected, roles = []) {
-  session.canSubmit = connected && roles.includes("operator");
+  session.roles = new Set(connected ? roles : []);
+  session.canOperate = connected && session.roles.has("operator");
+  session.canApprove = connected && session.roles.has("approver");
+  session.canSubmit = session.canOperate;
   elements.connectionState.classList.toggle("connected", connected);
   elements.connectionLabel.textContent = connected
     ? roles.map((role) => role.replace("-", " ")).join(" · ")
@@ -73,10 +94,13 @@ function setConnected(connected, roles = []) {
   elements.refreshButton.disabled = !connected;
   elements.stateFilter.disabled = !connected;
   elements.autoRefresh.disabled = !connected;
+  updateWorkflowControls();
 }
 
 function clearDetail() {
   session.selectedRunId = null;
+  session.currentRun = null;
+  session.currentApproval = null;
   elements.detailState.textContent = "No Run selected";
   elements.detailState.className = "state-badge state-neutral";
   elements.detailRunId.textContent = "—";
@@ -86,6 +110,7 @@ function clearDetail() {
   elements.detailCheckpoint.textContent = "—";
   elements.detailInput.textContent = "Select a Run to inspect its authorized input.";
   elements.eventCount.textContent = "0 events";
+  renderApproval(null);
   const empty = document.createElement("li");
   empty.className = "empty-event";
   empty.textContent = "No events loaded.";
@@ -116,6 +141,7 @@ function stopAutoRefresh() {
 
 function lockConsole(message = "Console locked. The in-memory credential was cleared.") {
   session.token = "";
+  session.actionBusy = false;
   session.canSubmit = false;
   elements.tokenInput.value = "";
   stopAutoRefresh();
@@ -266,6 +292,66 @@ function setDetailState(value) {
   elements.detailState.className = `state-badge state-${value}`;
 }
 
+function isCancellableRun(run) {
+  return run !== null && ["queued", "running", "awaiting-approval"].includes(run.state);
+}
+
+function updateWorkflowControls() {
+  const run = session.currentRun;
+  const approval = session.currentApproval;
+  const pendingApproval = approval !== null && approval.state === "pending";
+  const resumableApproval = approval !== null
+    && approval.state === "approved"
+    && run !== null
+    && run.state === "awaiting-approval"
+    && run.current_checkpoint_id === approval.checkpoint_id;
+  const cancellable = isCancellableRun(run);
+  const busy = session.actionBusy;
+
+  elements.approveButton.disabled = busy || !session.canApprove || !pendingApproval;
+  elements.denyButton.disabled = busy || !session.canApprove || !pendingApproval;
+  elements.resumeButton.disabled = busy || !session.canOperate || !resumableApproval;
+  elements.cancelButton.disabled = busy || !session.canOperate || !cancellable;
+  elements.workflowReason.disabled = busy
+    || !(session.canApprove && pendingApproval || session.canOperate && cancellable);
+
+  if (run === null) {
+    elements.workflowHelp.textContent = "Select a Run to load its current approval boundary.";
+  } else if (pendingApproval && session.canApprove) {
+    elements.workflowHelp.textContent = "Review the signed intent summary and record a decision reason.";
+  } else if (resumableApproval && session.canOperate) {
+    elements.workflowHelp.textContent = "The approval is active. Resume will create one continuation Job.";
+  } else if (cancellable && session.canOperate) {
+    elements.workflowHelp.textContent = "Cancellation fences dispatch and result commit; external side effects are not rolled back.";
+  } else {
+    elements.workflowHelp.textContent = "This credential has read-only access to the current workflow state.";
+  }
+}
+
+function renderApproval(approval) {
+  session.currentApproval = approval;
+  if (approval === null) {
+    elements.approvalState.textContent = "No approval";
+    elements.approvalTool.textContent = "—";
+    elements.approvalTarget.textContent = "—";
+    elements.approvalRisk.textContent = "—";
+    elements.approvalExpires.textContent = "—";
+    elements.approvalDecision.textContent = "—";
+    updateWorkflowControls();
+    return;
+  }
+
+  elements.approvalState.textContent = approval.state;
+  elements.approvalTool.textContent = approval.intent.tool_id;
+  elements.approvalTarget.textContent = approval.intent.target;
+  elements.approvalRisk.textContent = `T${approval.intent.risk_tier}`;
+  elements.approvalExpires.textContent = formatTime(approval.intent.expires_at);
+  elements.approvalDecision.textContent = approval.decided_by
+    ? `${approval.decided_by}: ${approval.decision_reason || approval.state}`
+    : approval.state;
+  updateWorkflowControls();
+}
+
 function renderEvents(events) {
   const visible = events.slice(-MAX_RENDERED_EVENTS);
   const omitted = events.length - visible.length;
@@ -304,13 +390,15 @@ function renderEvents(events) {
 }
 
 async function loadDetail(runId) {
-  const [run, events] = await Promise.all([
+  const [run, events, approval] = await Promise.all([
     apiRequest(`/v1/runs/${encodeURIComponent(runId)}`),
     apiRequest(`/v1/runs/${encodeURIComponent(runId)}/events`),
+    apiRequest(`/v1/runs/${encodeURIComponent(runId)}/approval`),
   ]);
   if (session.selectedRunId !== runId) {
     return;
   }
+  session.currentRun = run;
   setDetailState(run.state);
   elements.detailRunId.textContent = run.run_id;
   elements.detailCampaign.textContent = run.campaign_name;
@@ -318,6 +406,7 @@ async function loadDetail(runId) {
   elements.detailUpdated.textContent = formatTime(run.updated_at);
   elements.detailCheckpoint.textContent = run.current_checkpoint_id || "—";
   elements.detailInput.textContent = JSON.stringify(run.input, null, 2);
+  renderApproval(approval);
   renderEvents(events);
 }
 
@@ -352,6 +441,104 @@ async function refreshCurrent({ quiet = false } = {}) {
   }
 }
 
+function requiredWorkflowReason() {
+  const reason = elements.workflowReason.value.trim();
+  if (!reason) {
+    announce("Record a decision or cancellation reason before continuing.", "error");
+    elements.workflowReason.focus();
+    return null;
+  }
+  return reason;
+}
+
+async function refreshActionState(runId) {
+  if (!session.token) {
+    return;
+  }
+  await loadRuns();
+  if (session.selectedRunId === runId) {
+    await loadDetail(runId);
+  }
+}
+
+async function performWorkflowAction(runId, pendingMessage, successMessage, operation) {
+  if (session.actionBusy) {
+    return;
+  }
+  session.actionBusy = true;
+  updateWorkflowControls();
+  announce(pendingMessage);
+  try {
+    await operation();
+    elements.workflowReason.value = "";
+    await refreshActionState(runId);
+    announce(successMessage, "success");
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Workflow action failed.";
+    try {
+      await refreshActionState(runId);
+    } catch {
+      // Preserve the authoritative action error; the next manual refresh can retry state loading.
+    }
+    announce(message, "error");
+  } finally {
+    session.actionBusy = false;
+    updateWorkflowControls();
+  }
+}
+
+async function decideCurrentApproval(approve) {
+  const run = session.currentRun;
+  const approval = session.currentApproval;
+  const reason = requiredWorkflowReason();
+  if (run === null || approval === null || reason === null) {
+    return;
+  }
+  await performWorkflowAction(
+    run.run_id,
+    approve ? "Recording approval decision…" : "Recording denial decision…",
+    approve ? "Approval recorded." : "Approval denied and Run cancelled.",
+    () => apiRequest(`/v1/approvals/${encodeURIComponent(approval.approval_id)}/decision`, {
+      method: "POST",
+      body: JSON.stringify({ approve, reason }),
+    }),
+  );
+}
+
+async function resumeCurrentCheckpoint() {
+  const run = session.currentRun;
+  const approval = session.currentApproval;
+  if (run === null || approval === null) {
+    return;
+  }
+  await performWorkflowAction(
+    run.run_id,
+    "Claiming the approved checkpoint…",
+    "Checkpoint consumed and continuation Job queued.",
+    () => apiRequest(`/v1/checkpoints/${encodeURIComponent(approval.checkpoint_id)}/resume`, {
+      method: "POST",
+      body: JSON.stringify({ approval_id: approval.approval_id }),
+    }),
+  );
+}
+
+async function cancelCurrentRun() {
+  const run = session.currentRun;
+  const reason = requiredWorkflowReason();
+  if (run === null || reason === null) {
+    return;
+  }
+  await performWorkflowAction(
+    run.run_id,
+    "Fencing Run dispatch and result commit…",
+    "Run cancellation recorded.",
+    () => apiRequest(`/v1/runs/${encodeURIComponent(run.run_id)}/cancel`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    }),
+  );
+}
+
 elements.tokenForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const candidate = elements.tokenInput.value.trim();
@@ -382,6 +569,10 @@ elements.tokenForm.addEventListener("submit", async (event) => {
 
 elements.lockButton.addEventListener("click", () => lockConsole());
 elements.newKeyButton.addEventListener("click", newIdempotencyKey);
+elements.approveButton.addEventListener("click", () => decideCurrentApproval(true));
+elements.denyButton.addEventListener("click", () => decideCurrentApproval(false));
+elements.resumeButton.addEventListener("click", resumeCurrentCheckpoint);
+elements.cancelButton.addEventListener("click", cancelCurrentRun);
 
 elements.runForm.addEventListener("submit", async (event) => {
   event.preventDefault();

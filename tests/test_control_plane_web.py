@@ -270,6 +270,8 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
     assert re.search(r"<script(?![^>]+src=)", markup) is None
     assert re.search(r"\son[a-z]+\s*=", markup, re.IGNORECASE) is None
     assert re.search(r'id="token-input"[^>]+type="password"', markup) is not None
+    for action_id in ("approve-button", "deny-button", "resume-button", "cancel-button"):
+        assert re.search(fr'id="{action_id}"[^>]+disabled', markup) is not None
     assert OPERATOR_TOKEN not in markup
     assert APPROVER_TOKEN not in markup
     assert WORKER_TOKEN not in markup
@@ -295,6 +297,15 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         'cache: "no-store"',
         'apiRequest("/v1/runs"',
         'apiRequest("/v1/session"',
+        "session.canApprove",
+        "session.canOperate",
+        "encodeURIComponent(approval.approval_id)",
+        "encodeURIComponent(approval.checkpoint_id)",
+        "encodeURIComponent(run.run_id)",
+        "/approval`)",
+        "/decision`",
+        "/resume`",
+        "/cancel`",
         "pagehide",
     ):
         assert required in javascript

@@ -360,6 +360,17 @@ small {
   background: rgba(34, 68, 57, 0.72);
 }
 
+.button-danger {
+  color: #ffd6d6;
+  border-color: rgba(255, 123, 123, 0.42);
+  background: rgba(125, 31, 37, 0.42);
+}
+
+.button-danger:hover:not(:disabled) {
+  border-color: var(--danger);
+  background: rgba(156, 39, 46, 0.58);
+}
+
 .button-wide {
   width: 100%;
   margin-top: 1rem;
@@ -367,7 +378,8 @@ small {
 
 .button:disabled,
 input:disabled,
-select:disabled {
+select:disabled,
+textarea:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
@@ -576,6 +588,56 @@ pre {
   font-size: 0.78rem;
   font-weight: 800;
   cursor: pointer;
+}
+
+.workflow-control {
+  margin-top: 0.8rem;
+  padding: 0.85rem;
+  border: 1px solid var(--line-soft);
+  background: rgba(7, 17, 15, 0.4);
+  border-radius: 9px;
+}
+
+.workflow-facts {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0;
+}
+
+.workflow-facts div {
+  display: grid;
+  grid-template-columns: 78px minmax(0, 1fr);
+  gap: 0.6rem;
+}
+
+.workflow-facts dt,
+.workflow-help {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.workflow-facts dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: #dcebe5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.7rem;
+}
+
+.workflow-reason-field {
+  margin-top: 0.85rem;
+}
+
+.workflow-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+  margin-top: 0.75rem;
+}
+
+.workflow-help {
+  margin: 0.7rem 0 0;
+  line-height: 1.45;
 }
 
 pre {

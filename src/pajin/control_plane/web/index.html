@@ -31,7 +31,8 @@
           <h1 id="page-title">Run security campaigns with a visible control boundary.</h1>
           <p>
             Submit only registered job kinds, monitor durable state, and inspect the append-only
-            event trail. Approval decisions and resume actions remain API-only in this slice.
+            event trail. Approval decisions, checkpoint resume, and cooperative cancellation are
+            role-gated at the API boundary.
           </p>
         </div>
         <div class="hero-metric" aria-label="Console security boundary">
@@ -259,6 +260,46 @@
               <summary>Submitted input</summary>
               <pre id="detail-input">Select a Run to inspect its authorized input.</pre>
             </details>
+            <section class="workflow-control" aria-labelledby="workflow-heading">
+              <div class="event-heading">
+                <h3 id="workflow-heading">Approval and execution control</h3>
+                <span id="approval-state">No approval</span>
+              </div>
+              <dl class="workflow-facts">
+                <div><dt>Tool</dt><dd id="approval-tool">—</dd></div>
+                <div><dt>Target</dt><dd id="approval-target">—</dd></div>
+                <div><dt>Risk tier</dt><dd id="approval-risk">—</dd></div>
+                <div><dt>Expires</dt><dd id="approval-expires">—</dd></div>
+                <div><dt>Decision</dt><dd id="approval-decision">—</dd></div>
+              </dl>
+              <div class="field workflow-reason-field">
+                <label for="workflow-reason">Decision or cancellation reason</label>
+                <textarea
+                  id="workflow-reason"
+                  rows="3"
+                  maxlength="1000"
+                  placeholder="Record the bounded operational reason."
+                  disabled
+                ></textarea>
+              </div>
+              <div class="workflow-actions" aria-label="Run workflow actions">
+                <button id="approve-button" class="button button-primary" type="button" disabled>
+                  Approve
+                </button>
+                <button id="deny-button" class="button button-quiet" type="button" disabled>
+                  Deny
+                </button>
+                <button id="resume-button" class="button button-quiet" type="button" disabled>
+                  Resume
+                </button>
+                <button id="cancel-button" class="button button-danger" type="button" disabled>
+                  Cancel Run
+                </button>
+              </div>
+              <p id="workflow-help" class="workflow-help">
+                Select a Run to load its current approval boundary.
+              </p>
+            </section>
           </div>
           <div class="event-column">
             <div class="event-heading">
