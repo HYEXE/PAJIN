@@ -24,9 +24,11 @@ from pajin.modes.ai_redteam import (
     KISACandidateProducer,
     KISAModePack,
     KISAPlannerRuntime,
+    KISAReplayCoordinator,
     KISARetestPlannerRuntime,
     KISARetestService,
     KISAValidatorRuntime,
+    required_kisa_replay_calls,
 )
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
 from pajin.modes.ai_redteam.retest import RegressionStatus
@@ -55,7 +57,7 @@ from pajin.providers import (
     ProviderRegistration,
     ProviderValidationPlanner,
 )
-from pajin.runtime.control import KillSwitch
+from pajin.runtime.control import BudgetController, KillSwitch
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunIntegrityError, verify_run_integrity
 from pajin.runtime.worker import (
@@ -73,6 +75,7 @@ from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
+from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
@@ -481,8 +484,7 @@ def run_campaign(
     console.print(f"Failed tool calls: {failed_tools}")
     console.print(f"Confirmed findings: {len(outcome.findings)}")
     console.print(
-        "Needs review: "
-        f"{_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
+        f"Needs review: {_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
     )
     console.print(f"Report: {outcome.report_path.resolve()}")
     if failed_tools:
@@ -530,8 +532,7 @@ def run_multi_agent_campaign(
     console.print(f"Tool calls: {len(outcome.tool_results)}")
     console.print(f"Confirmed findings: {len(outcome.findings)}")
     console.print(
-        "Needs review: "
-        f"{_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
+        f"Needs review: {_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
     )
     if outcome.cancellation_reason:
         console.print(f"Cancellation: {outcome.cancellation_reason}")
@@ -933,7 +934,7 @@ def check_multi_agent_cancellation(
 def run_kisa_ai_redteam(
     manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
     output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
-    worker: Annotated[str, typer.Option("--worker")] = "simulated",
+    worker: Annotated[str, typer.Option("--worker")] = "docker",
     repetitions: Annotated[int, typer.Option("--repetitions", min=2, max=20)] = 2,
 ) -> None:
     """Run the KISA-aligned AI Red Team Mode Pack and emit guide artifacts."""
@@ -943,24 +944,66 @@ def run_kisa_ai_redteam(
         backend = _worker_backend(worker)
         if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
             raise ValueError("KISA Mode Pack requires mode: ai-redteam")
+        thresholds = EvaluationThresholds(repetitions=repetitions)
+        planner = KISAPlannerRuntime(thresholds=thresholds)
+        preflight_plan = asyncio.run(planner.plan(campaign))
+        required_calls = len(preflight_plan.steps) + required_kisa_replay_calls(
+            preflight_plan,
+            repetitions=repetitions,
+        )
+        if required_calls > campaign.spec.budgets.max_tool_calls:
+            raise ValueError(
+                "maxToolCalls must reserve the original KISA plan and every automatic "
+                f"replay attempt (requires at least {required_calls})"
+            )
     except (ValidationError, ValueError) as exc:
         console.print(f"[bold red]Cannot start KISA campaign:[/bold red] {exc}")
         raise typer.Exit(code=2) from exc
-    thresholds = EvaluationThresholds(repetitions=repetitions)
-    planner = KISAPlannerRuntime(thresholds=thresholds)
     registry = _tool_registry()
+    policy = PolicyEngine()
+    budget = BudgetController(campaign.spec.budgets)
+    rate_limits = RequestRateLimitLedger()
     runner = MultiAgentCampaignRunner(
         planner=planner,
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
         candidate_producer=KISACandidateProducer(),
         tools=registry,
-        policy=PolicyEngine(),
+        policy=policy,
         worker=backend,
         output_root=output,
     )
-    outcome = asyncio.run(runner.run(campaign))
+    coordinator = KISAReplayCoordinator(
+        tools=registry,
+        policy=policy,
+        worker=backend,
+        output_root=output / "replay",
+        repetitions=repetitions,
+        required_successes=repetitions,
+    )
+
+    async def execute_kisa():
+        outcome = await runner.run(
+            campaign,
+            budget=budget,
+            rate_limits=rate_limits,
+        )
+        replay_batch = None
+        if outcome.status is RunStatus.COMPLETED:
+            replay_batch = await coordinator.reproduce(
+                campaign,
+                outcome.run_path,
+                budget=budget,
+                rate_limits=rate_limits,
+            )
+        return outcome, replay_batch
+
     try:
-        mode_outcome = KISAModePack(thresholds=thresholds).evaluate(campaign, outcome)
+        outcome, replay_batch = asyncio.run(execute_kisa())
+        mode_outcome = KISAModePack(thresholds=thresholds).evaluate(
+            campaign,
+            outcome,
+            replay_batch,
+        )
     except ValueError as exc:
         console.print(f"[bold red]KISA evaluation failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
@@ -975,6 +1018,14 @@ def run_kisa_ai_redteam(
     table.add_row("Threat coverage", f"{mode_outcome.assessment.coverage.coverage_rate:.1%}")
     table.add_row("Confirmed findings", str(len(outcome.findings)))
     table.add_row(
+        "Replay Oracle supports",
+        str(
+            sum(record.supports_claim for record in replay_batch.records)
+            if replay_batch is not None
+            else 0
+        ),
+    )
+    table.add_row(
         "Finding needs review",
         str(_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)),
     )
@@ -985,7 +1036,10 @@ def run_kisa_ai_redteam(
     console.print(table)
     console.print(f"KISA report: {mode_outcome.report_path.resolve()}")
     console.print(f"KISA checklist: {mode_outcome.checklist_path.resolve()}")
-    if outcome.status is not RunStatus.COMPLETED:
+    replay_execution_failed = replay_batch is not None and any(
+        record.execution_status != "succeeded" for record in replay_batch.records
+    )
+    if outcome.status is not RunStatus.COMPLETED or replay_execution_failed:
         raise typer.Exit(code=1)
 
 

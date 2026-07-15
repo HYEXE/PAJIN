@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from statistics import mean
@@ -22,6 +23,7 @@ from pajin.modes.ai_redteam.models import (
     MetricStatus,
     ThreatCoverageResult,
 )
+from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome, KISAReplayRecord
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.workflow.multi_agent import MultiAgentRunOutcome
 
@@ -34,6 +36,7 @@ class KISAModePackOutcome:
     test_plan_path: Path
     completion_report_path: Path
     execution_log_path: Path
+    replay_index_path: Path | None = None
 
 
 class KISAModePack:
@@ -52,6 +55,7 @@ class KISAModePack:
         self,
         campaign: CampaignManifest,
         outcome: MultiAgentRunOutcome,
+        replay_batch: KISAReplayBatchOutcome | None = None,
     ) -> KISAModePackOutcome:
         if outcome.plan is None:
             raise ValueError("KISA evaluation requires a completed typed plan")
@@ -105,11 +109,23 @@ class KISAModePack:
             "plan.json",
             "task-graph.json",
             "capabilities.json",
+            "rate-limits.json",
             "events.jsonl",
             "run-integrity.jsonl",
             "evidence/",
             "findings.json",
         ]
+        replay_index_path: str | None = None
+        replay_records: tuple[KISAReplayRecord, ...] | None = None
+        if replay_batch is not None:
+            if replay_batch.source_run_id != outcome.run_id:
+                raise ValueError("KISA replay batch belongs to another source Run")
+            replay_records = replay_batch.verified_records(outcome.run_path)
+            reusable_assets.append("kisa-replay-index.json")
+            replay_index_path = store.write_json(
+                "kisa-replay-index.json",
+                replay_batch.index_payload(outcome.run_path),
+            )
         assessment = KISAAssessment(
             run_id=outcome.run_id,
             scenario_ids=scenario_ids,
@@ -143,7 +159,7 @@ class KISAModePack:
         )
         report_path = store.write_text(
             "kisa-report.md",
-            self._render_report(campaign, outcome, assessment),
+            self._render_report(campaign, outcome, assessment, replay_records),
         )
         store.append_event(
             "mode-pack.kisa.completed",
@@ -152,6 +168,7 @@ class KISAModePack:
                 "checklist": checklist_path,
                 "report": report_path,
                 "coverageRate": coverage.coverage_rate,
+                "replayIndex": replay_index_path,
             },
         )
         store.seal()
@@ -162,6 +179,9 @@ class KISAModePack:
             test_plan_path=outcome.run_path / test_plan_path,
             completion_report_path=outcome.run_path / completion_path,
             execution_log_path=outcome.run_path / execution_log_path,
+            replay_index_path=(
+                outcome.run_path / replay_index_path if replay_index_path is not None else None
+            ),
         )
 
     def _metrics(
@@ -299,7 +319,7 @@ class KISAModePack:
     ) -> list[ChecklistResult]:
         evidence = {
             "team": ["agents.json", "task-graph.json", "capabilities.json"],
-            "campaign": ["campaign.json", "budget.json", "control.json"],
+            "campaign": ["campaign.json", "budget.json", "rate-limits.json", "control.json"],
             "scenario": ["plan.json", "kisa-test-plan.json"],
             "execution": ["events.jsonl", "evidence/"],
             "report": ["report.md", "findings.json", "kisa-report.md"],
@@ -586,6 +606,11 @@ class KISAModePack:
                 "kisa-results.json",
                 "kisa-checklist.json",
                 "kisa-report.md",
+                *(
+                    ["kisa-replay-index.json"]
+                    if "kisa-replay-index.json" in assessment.reusable_assets
+                    else []
+                ),
                 "evidence/",
             ],
             "reusableTestAssets": assessment.reusable_assets,
@@ -616,6 +641,7 @@ class KISAModePack:
         campaign: CampaignManifest,
         outcome: MultiAgentRunOutcome,
         assessment: KISAAssessment,
+        replay_records: Sequence[KISAReplayRecord] | None = None,
     ) -> str:
         lines = [
             f"# KISA AI Red Team Mode Pack Report: {campaign.metadata.name}",
@@ -686,6 +712,20 @@ class KISAModePack:
                     f"- Evidence: `{', '.join(finding.evidence)}`",
                     "",
                     finding.summary,
+                    "",
+                ]
+            )
+        if replay_records is not None:
+            support_count = sum(record.supports_claim for record in replay_records)
+            lines.extend(
+                [
+                    "## Independent restricted replay (M5 evidence-only)",
+                    "",
+                    f"- Eligible replay records: `{len(replay_records)}`",
+                    f"- Oracle-supporting replay records: `{support_count}`",
+                    "- Source and replay evidence are separated in `kisa-replay-index.json`.",
+                    "- These records do not change Candidate dispositions; the M6 common gate "
+                    "must reload each sealed receipt before confirmation.",
                     "",
                 ]
             )

@@ -20,13 +20,9 @@ from pajin.domain.models import (
 )
 from pajin.domain.validation import CandidateFinding
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
+from pajin.modes.ai_redteam.evidence import evaluate_kisa_transcript
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
-from pajin.tools.ai import (
-    AIChatProbeInput,
-    AIChatProbeOutput,
-    ProbePurpose,
-    evaluate_probe_check,
-)
+from pajin.tools.ai import AIChatProbeInput
 
 
 @dataclass
@@ -85,7 +81,6 @@ class KISACandidateProducer:
                 step=step,
                 result=result,
                 scenario=scenario,
-                probe=probe,
             ):
                 continue
 
@@ -187,12 +182,8 @@ class KISACandidateProducer:
         step: PlannedStep,
         result: ToolResult,
         scenario: KISAScenarioDefinition,
-        probe: AIChatProbeInput,
     ) -> bool:
         request = step.request
-        probe_template = scenario.probe
-        if probe_template is None:
-            return False
         if (
             result.request_id != request.request_id
             or result.tool_id != request.tool_id
@@ -203,50 +194,14 @@ class KISACandidateProducer:
             return False
 
         try:
-            output = AIChatProbeOutput.model_validate(result.data)
+            evaluation = evaluate_kisa_transcript(
+                scenario=scenario,
+                request=request,
+                output_value=result.data,
+            )
         except ValueError:
             return False
-        if (
-            output.target != request.target
-            or output.scenario_id != probe.scenario_id
-            or output.threat_class != probe.threat_class
-            or output.session_id != probe.session_id
-            or output.purpose is not ProbePurpose.ATTACK
-            or not output.network_performed
-        ):
-            return False
-
-        if len(output.turns) != len(probe.turns):
-            return False
-        turns = [turn.model_dump(mode="json", by_alias=True) for turn in output.turns]
-        expected_messages = [
-            [message.model_dump(mode="json") for message in turn.messages] for turn in probe.turns
-        ]
-        for index, turn in enumerate(output.turns):
-            if (
-                turn.index != index
-                or turn.name != probe.turns[index].name
-                or turn.request.session_id != probe.session_id
-                or [
-                    message.model_dump(mode="json") for message in turn.request.messages
-                ]
-                != expected_messages[index]
-                or turn.response.session_id != probe.session_id
-            ):
-                return False
-
-        if len(output.checks) != len(probe.checks):
-            return False
-        for observed, check in zip(output.checks, probe.checks, strict=True):
-            if (
-                observed.check_id != check.check_id
-                or observed.kind is not check.kind
-                or observed.turn != check.turn
-                or observed.sensitive is not check.sensitive
-            ):
-                return False
-
-        return all(evaluate_probe_check(check, turns) for check in probe_template.checks)
+        return evaluation.supports_claim
 
     def _to_candidate(
         self,
