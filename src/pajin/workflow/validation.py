@@ -56,7 +56,9 @@ def validate_findings(
 
     Objective checks are evaluated before the legacy ``Finding.validated`` signal.
     Any malformed scope or evidence input therefore fails closed instead of being
-    promoted to a confirmed finding. Validator-only findings remain supported for
+    promoted to a confirmed finding. A positive legacy Validator signal is evidence
+    review only and remains ``needs-review`` until a Candidate-bound independent
+    ReplayOutcome is available. Validator-only findings remain supported for
     compatibility, unless they overlap admitted same-Run evidence but fail strict
     one-to-one reconciliation.
     """
@@ -311,12 +313,23 @@ def validate_findings(
                         ValidationReasonCode.VALIDATOR_CONFIRMED,
                     )
                 )
-                disposition = FindingDisposition.CONFIRMED
-                reason_codes = [ValidationReasonCode.VALIDATOR_CONFIRMED]
-                decision_summary = (
-                    "Objective checks passed and the legacy validator confirmed the finding."
+                checks.append(
+                    _check(
+                        "independent-reproduction",
+                        ValidationCheckStatus.FAIL,
+                        (
+                            "No successful Candidate-bound independent ReplayOutcome "
+                            "is available."
+                        ),
+                        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING,
+                    )
                 )
-                confirmed_findings.append(finding.model_copy(update={"validated": True}))
+                disposition = FindingDisposition.NEEDS_REVIEW
+                reason_codes = [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+                decision_summary = (
+                    "Objective checks and semantic review passed, but independent reproduction "
+                    "has not run."
+                )
             else:
                 checks.append(
                     _check(

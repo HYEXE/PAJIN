@@ -24,9 +24,9 @@ flowchart LR
     CP --> V["Semantic Validator<br/>증거 심사·구현"]
     V -. "후속 구현" .-> RR["Restricted Reproducer<br/>새 요청·새 증적"]
     RR --> O["Mode Oracle·Objective Gate"]
-    V --> L["Legacy compatibility projection<br/>제품 Confirmed 아님"]
+    V --> N["Candidate·Decision Ledger<br/>needs-review"]
     O --> E["Evaluation<br/>지표·커버리지·체크리스트"]
-    L --> E
+    N --> E
     E --> R["KISA Artifacts<br/>Markdown·JSON"]
 ```
 
@@ -116,15 +116,16 @@ docker compose -f containers/compose.ai-lab.yaml down
 ```
 
 이 Campaign은 M03·M06·A04에 대해 6개 반복 Task, 100% 요청 위협 커버리지, Candidate 3건과
-Candidate별 Docker 증적 2건을 기대한다. 현재 호환 경로는 semantic support와 objective gate
-통과 후 `findings.json`에 legacy `confirmed` 3건을 기록할 수 있지만 ReplayOutcome을 만들지
-않으므로 제품 수준의 Confirmed 기대 건수는 0건이다.
+Candidate별 Docker 증적 2건을 기대한다. semantic support와 objective gate를 통과해도
+ReplayOutcome이 없으므로 세 Candidate는 `independent-reproduction-missing` 사유의
+`needs-review`로 남고, 새 Run의 `findings.json`과 제품 수준 Confirmed 기대 건수는 모두 0건이다.
 
 ## 7. 완화 및 재검증 폐루프
 
-현재 완화 계획은 기준 Run의 legacy validation Finding에서 먼저 생성하고 감사 이벤트 시간을 기록한다. 각
-계획은 안정적 Finding fingerprint, 위협별 기술 통제, 재검증 수용 기준, 원본 증적을 가진다.
-실제 담당자와 기한은 자동으로 추정하지 않고 `needs-review`로 남긴다.
+완화 계획과 취약점 상태 재검증은 기준 Run의 reproduction-backed Finding만 대상으로 한다.
+따라서 Restricted Replay 이전의 새 Run에서는 Candidate가 보존되더라도 완화 action은 비어 있고,
+retest가 `fixed` 또는 `still-vulnerable`을 주장하지 않는다. 정상 기능 회귀는 별도로 측정하며,
+`improve.retest`는 제품 Confirmed 기준선이 생길 때까지 `needs-review`로 남는다.
 
 ```powershell
 .venv\Scripts\pajin kisa-plan-remediation <baseline-run-directory>

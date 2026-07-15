@@ -98,6 +98,7 @@ def test_validation_enum_wire_values_are_stable() -> None:
     ]
     assert {item.value for item in ValidationReasonCode} == {
         "validator-confirmed",
+        "independent-reproduction-missing",
         "validator-disagreed",
         "validator-omitted",
         "validator-unavailable",

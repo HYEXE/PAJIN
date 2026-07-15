@@ -113,7 +113,7 @@ def _event_records(store: RunStore) -> list[dict[str, object]]:
     return [json.loads(line) for line in store.events_path.read_text(encoding="utf-8").splitlines()]
 
 
-def test_gate_preserves_every_candidate_and_uses_legacy_signal_after_objective_checks(
+def test_gate_preserves_candidates_but_blocks_semantic_only_confirmation(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -156,19 +156,21 @@ def test_gate_preserves_every_candidate_and_uses_legacy_signal_after_objective_c
     ]
     assert validation.candidates[1].source_request_ids == ["tool_request_2"]
     assert [decision.disposition for decision in validation.decisions] == [
-        FindingDisposition.CONFIRMED,
+        FindingDisposition.NEEDS_REVIEW,
         FindingDisposition.NEEDS_REVIEW,
     ]
-    assert validation.decisions[0].reason_codes == [ValidationReasonCode.VALIDATOR_CONFIRMED]
+    assert validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     assert validation.decisions[1].reason_codes == [ValidationReasonCode.VALIDATOR_DISAGREED]
-    assert validation.confirmed_findings == [confirmed]
+    assert not validation.confirmed_findings
 
     events = _event_records(store)
     assert [event["event_type"] for event in events] == [
         "candidate.finding.created",
         "validation.started",
-        "validation.confirmed",
-        "finding.validated",
+        "validation.needs-review",
+        "finding.rejected",
         "candidate.finding.created",
         "validation.started",
         "validation.needs-review",
@@ -187,10 +189,10 @@ def test_gate_preserves_every_candidate_and_uses_legacy_signal_after_objective_c
     summary = events[-1]["payload"]
     assert isinstance(summary, dict)
     assert summary["candidateCount"] == 2
-    assert summary["confirmedCount"] == 1
+    assert summary["confirmedCount"] == 0
     assert summary["dispositionCounts"] == {
-        "confirmed": 1,
-        "needs-review": 1,
+        "confirmed": 0,
+        "needs-review": 2,
         "inconclusive": 0,
         "rejected-objective": 0,
     }
@@ -235,7 +237,13 @@ def test_gate_preserves_duplicate_finding_ids_with_ordered_unique_candidate_ids(
         validation.candidates[0].candidate_id,
         validation.candidates[1].candidate_id,
     ]
-    assert validation.confirmed_findings == [first, second]
+    assert not validation.confirmed_findings
+    assert all(
+        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.reason_codes
+        == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        for decision in validation.decisions
+    )
 
 
 def test_gate_preserves_validator_omitted_admitted_candidate_for_review(
@@ -481,9 +489,11 @@ def test_gate_reconciles_rephrased_validator_signal_to_admitted_candidate(
     assert validation.candidates == [candidate]
     assert validation.candidates[0].claim == claim
     assert validation.candidates[0].claim.validated is False
-    assert validation.decisions[0].disposition is FindingDisposition.CONFIRMED
-    assert validation.confirmed_findings == [claim.model_copy(update={"validated": True})]
-    assert validation.confirmed_findings[0].title == claim.title
+    assert validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
+    assert not validation.confirmed_findings
 
 
 def test_gate_blocks_mismatched_validator_output_from_legacy_confirmation(
@@ -893,9 +903,10 @@ def test_gate_keeps_declared_non_http_lab_targets_supported(
 
     decision = validation.decisions[0]
     scope_check = next(check for check in decision.checks if check.check_id == "target-scope")
-    assert decision.disposition is FindingDisposition.CONFIRMED
+    assert decision.disposition is FindingDisposition.NEEDS_REVIEW
+    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
     assert scope_check.status is ValidationCheckStatus.PASS
-    assert validation.confirmed_findings == [validation.candidates[0].claim]
+    assert not validation.confirmed_findings
 
 
 def test_gate_requires_explicit_non_http_scope_and_honors_deny(

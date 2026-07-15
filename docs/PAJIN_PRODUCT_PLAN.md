@@ -767,10 +767,11 @@ Candidate Producer를 추가했다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
 Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도
 Restricted Reproducer의 새 요청·증적과 Mode Oracle 성공 없이는 `confirmed`로 승격할 수 없다.
-현재 코드는 일부 semantic 경로에서 `findings.json`에 legacy `confirmed` 호환 출력을 만들 수
-있으므로 기준선에 미달하는 알려진 구현 격차다. Restricted Replay가 완성될 때까지 해당 출력을
-제품 수준의 Confirmed로 해석해서는 안 된다. Validator-only 우회 차단, Candidate 보존,
-취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
+현재 공통 게이트는 semantic support와 objective gate만 통과한 Candidate를
+`independent-reproduction-missing` 사유의 `needs-review`로 보존하고 `findings.json`에서
+제외한다. 이로써 semantic-only 승격은 차단됐지만, 실제 `confirmed`를 만들 Restricted Replay와
+Mode Oracle은 아직 구현되지 않았다. Validator-only 우회 차단, Candidate 보존, 취소·실패 시
+`inconclusive` 봉인은 그대로 유지한다.
 
 ### 15.2 신뢰도 계산 요소
 

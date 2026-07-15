@@ -8,6 +8,7 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.modes.ai_redteam.models import (
     ChecklistStatus,
@@ -114,8 +115,13 @@ def test_kisa_mode_pack_emits_honest_metrics_checklist_and_artifacts(
 
     assert outcome.status is RunStatus.COMPLETED
     assert len(outcome.tool_results) == 2
-    assert len(outcome.findings) == 1
-    assert len(outcome.findings[0].evidence) == 2
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    assert len(outcome.validation.candidates[0].claim.evidence) == 2
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     assert assessment.coverage.requested == {"A01", "A02", "A04"}
     assert assessment.coverage.executed == {"A01", "A02"}
     assert assessment.coverage.untested == {"A04"}
@@ -132,7 +138,7 @@ def test_kisa_mode_pack_emits_honest_metrics_checklist_and_artifacts(
     assert checklist["env.least-privilege"].status is ChecklistStatus.YES
     assert checklist["exec.hitl"].status is ChecklistStatus.NEEDS_REVIEW
     assert checklist["report.business-impact"].status is ChecklistStatus.NEEDS_REVIEW
-    assert checklist["report.mitigation"].status is ChecklistStatus.NO
+    assert checklist["report.mitigation"].status is ChecklistStatus.NOT_APPLICABLE
     assert checklist["improve.retest"].status is ChecklistStatus.NO
     assert sum(assessment.checklist_summary.model_dump().values()) == 52
 

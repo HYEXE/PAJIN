@@ -180,18 +180,17 @@ def test_trusted_worker_performs_one_fixed_ctf_web_request(
 
 
 @pytest.mark.parametrize(
-    ("candidate", "expected_status", "finding_count"),
+    ("candidate", "expected_status"),
     [
-        (FLAG, CTFSolveStatus.SOLVED, 1),
-        (None, CTFSolveStatus.UNSOLVED, 0),
-        ("PAJIN{wrong_flag}", CTFSolveStatus.INVALID_FLAG, 0),
+        (FLAG, CTFSolveStatus.SOLVED),
+        (None, CTFSolveStatus.UNSOLVED),
+        ("PAJIN{wrong_flag}", CTFSolveStatus.INVALID_FLAG),
     ],
 )
 def test_ctf_multi_agent_run_classifies_flag_outcomes_and_seals_writeup(
     tmp_path: Path,
     candidate: str | None,
     expected_status: CTFSolveStatus,
-    finding_count: int,
 ) -> None:
     outcome, mode_pack = _run(tmp_path, candidate)
 
@@ -201,7 +200,7 @@ def test_ctf_multi_agent_run_classifies_flag_outcomes_and_seals_writeup(
     assert outcome.status is RunStatus.COMPLETED
     assert len(outcome.agents) == 5
     assert len(outcome.tool_results) == 1
-    assert len(outcome.findings) == finding_count
+    assert outcome.findings == []
     assert artifacts.result.status is expected_status
     assert artifacts.result_path.is_file()
     assert artifacts.writeup_path.is_file()

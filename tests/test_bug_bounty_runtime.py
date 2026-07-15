@@ -17,6 +17,7 @@ from pajin.domain.models import (
     ToolRiskTier,
 )
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.modes.bug_bounty import (
     BugBountyPlannerRuntime,
     BugBountyProgramManifest,
@@ -285,7 +286,9 @@ def test_gateway_reserves_all_three_http_request_units(tmp_path: Path) -> None:
     assert "3 request units" in outcome.decision.reason
 
 
-def test_multi_agent_run_creates_evidence_bound_ready_draft(tmp_path: Path) -> None:
+def test_multi_agent_run_keeps_semantic_only_bug_bounty_candidate_unsubmitted(
+    tmp_path: Path,
+) -> None:
     campaign = _campaign()
     worker = ContractBugBountyWorker()
     registry = ToolRegistry()
@@ -305,13 +308,17 @@ def test_multi_agent_run_creates_evidence_bound_ready_draft(tmp_path: Path) -> N
     assert outcome.status is RunStatus.COMPLETED
     assert len(outcome.agents) == 5
     assert len(outcome.tool_results) == 1
-    assert len(outcome.findings) == 1
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     assert worker.jobs
-    assert artifacts.report.summary.ready == 1
+    assert artifacts.report.summary.ready == 0
     assert artifacts.report.summary.needs_review == 0
-    assert len(artifacts.submission_paths) == 1
-    assert artifacts.submission_paths[0].is_file()
-    assert "Vulnerability class" in outcome.report_path.read_text(encoding="utf-8")
+    assert artifacts.submission_paths == []
+    assert "Needs review: `1`" in outcome.report_path.read_text(encoding="utf-8")
 
 
 def test_bug_bounty_run_cli_is_docker_only_and_never_submits_externally(

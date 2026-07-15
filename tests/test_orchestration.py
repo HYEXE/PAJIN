@@ -342,7 +342,10 @@ def test_dynamic_team_executes_with_attenuated_role_capabilities(tmp_path: Path)
     outcome = asyncio.run(_runner(tmp_path).run(_campaign()))
 
     assert outcome.status is RunStatus.COMPLETED
-    assert len(outcome.findings) == 1
+    assert outcome.findings == []
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     assert {agent.role for agent in outcome.agents} == set(AgentRole)
     assert all(agent.status is AgentStatus.COMPLETED for agent in outcome.agents)
     assert all(task.status is TaskStatus.SUCCEEDED for task in outcome.task_graph.tasks.values())
@@ -567,7 +570,11 @@ def test_supervisor_dynamically_fans_out_one_specialist_per_plan_step(
     assert outcome.status is RunStatus.COMPLETED
     assert len(specialists) == 2
     assert len(outcome.tool_results) == 2
-    assert len(outcome.findings) == 2
+    assert outcome.findings == []
+    assert all(
+        decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        for decision in outcome.validation.decisions
+    )
     assert worker.max_active == 1
     events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
     assert events.count('"event_type":"specialist.wave.started"') == 2
@@ -751,13 +758,16 @@ def test_reporter_failure_keeps_completed_validation_consistent(
     outcome = asyncio.run(runner.run(_campaign()))
 
     assert outcome.status is RunStatus.FAILED
-    assert len(outcome.findings) == 1
-    assert outcome.validation.decisions[0].disposition is FindingDisposition.CONFIRMED
+    assert outcome.findings == []
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     persisted = json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8"))
-    assert [item["finding_id"] for item in persisted] == [outcome.findings[0].finding_id]
+    assert persisted == []
     report = outcome.report_path.read_text(encoding="utf-8")
     assert "Run status: `failed`" in report
-    assert "Confirmed findings: `1`" in report
-    assert "Confirmed: `1`" in report
-    assert outcome.findings[0].title in report
+    assert "Confirmed findings: `0`" in report
+    assert "Confirmed: `0`" in report
+    assert "Needs review: `1`" in report
     assert verify_run_integrity(outcome.run_path).valid
