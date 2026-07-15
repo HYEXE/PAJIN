@@ -133,6 +133,9 @@ class ModeReplayContract(ReplayArtifactModel):
     replay_safe: bool = False
     idempotent: bool = False
     session_policy: ReplaySessionPolicy
+    materializer_id: _Identifier | None = None
+    materializer_version: _Version | None = None
+    ephemeral_argument_fields: set[_Identifier] = Field(default_factory=set, max_length=10)
     repetitions: int = Field(ge=1, le=20)
     required_successes: int = Field(ge=1, le=20)
     oracle_id: _Identifier
@@ -155,6 +158,16 @@ class ModeReplayContract(ReplayArtifactModel):
     def validate_automatic_replay_boundary(self) -> ModeReplayContract:
         if self.required_successes > self.repetitions:
             raise ValueError("required successes cannot exceed repetitions")
+        if self.session_policy is ReplaySessionPolicy.STATELESS:
+            if self.materializer_id is not None or self.materializer_version is not None:
+                raise ValueError("stateless replay cannot declare a session materializer")
+            if self.ephemeral_argument_fields:
+                raise ValueError("stateless replay cannot declare ephemeral arguments")
+        elif self.session_policy is ReplaySessionPolicy.FRESH_SESSION:
+            if self.materializer_id is None or self.materializer_version is None:
+                raise ValueError("fresh-session replay requires a session materializer")
+            if self.ephemeral_argument_fields != {"session_id"}:
+                raise ValueError("fresh-session replay may change only session_id")
         if not self.automatic:
             return self
         if not self.replay_safe:
@@ -277,6 +290,9 @@ class CompiledReplaySpec(ReplayArtifactModel):
     replay_safe: Literal[True]
     idempotent: Literal[True]
     session_policy: ReplaySessionPolicy
+    materializer_id: _Identifier | None = None
+    materializer_version: _Version | None = None
+    ephemeral_argument_fields: set[_Identifier] = Field(default_factory=set, max_length=10)
     repetitions: int = Field(ge=1, le=20)
     required_successes: int = Field(ge=1, le=20)
     oracle_id: _Identifier
@@ -312,6 +328,16 @@ class CompiledReplaySpec(ReplayArtifactModel):
             raise ValueError("secret_lease_ids must be unique")
         if self.required_successes > self.repetitions:
             raise ValueError("required successes cannot exceed repetitions")
+        if self.session_policy is ReplaySessionPolicy.STATELESS:
+            if self.materializer_id is not None or self.materializer_version is not None:
+                raise ValueError("stateless replay cannot declare a session materializer")
+            if self.ephemeral_argument_fields:
+                raise ValueError("stateless replay cannot declare ephemeral arguments")
+        elif self.session_policy is ReplaySessionPolicy.FRESH_SESSION:
+            if self.materializer_id is None or self.materializer_version is None:
+                raise ValueError("fresh-session replay requires a session materializer")
+            if self.ephemeral_argument_fields != {"session_id"}:
+                raise ValueError("fresh-session replay may change only session_id")
         if self.max_calls != self.repetitions:
             raise ValueError("compiled replay call budget must exactly match repetitions")
         if self.risk_tier > ToolRiskTier.T2:
@@ -346,8 +372,7 @@ class ReplayCompilation(ReplayArtifactModel):
         if len(self.original_evidence) != len(set(self.original_evidence)):
             raise ValueError("compiled original evidence references must be unique")
         if any(
-            reference not in packet.candidate.claim.evidence
-            for reference in self.original_evidence
+            reference not in packet.candidate.claim.evidence for reference in self.original_evidence
         ):
             raise ValueError("compiled replay references evidence outside the Candidate")
         if spec.original_request_digest != replay_request_digest(request):
@@ -395,6 +420,9 @@ class ReplayCompilation(ReplayArtifactModel):
             or spec.method != contract.method
             or spec.risk_tier != contract.risk_tier
             or spec.session_policy != contract.session_policy
+            or spec.materializer_id != contract.materializer_id
+            or spec.materializer_version != contract.materializer_version
+            or spec.ephemeral_argument_fields != contract.ephemeral_argument_fields
             or spec.repetitions != contract.repetitions
             or spec.required_successes != contract.required_successes
             or spec.oracle_id != contract.oracle_id
@@ -430,6 +458,46 @@ class ReplayCompilation(ReplayArtifactModel):
         return self
 
 
+class ReplayMaterialization(ReplayArtifactModel):
+    """Auditable arguments produced by one trusted session materializer."""
+
+    kind: Literal["ReplayMaterialization"] = "ReplayMaterialization"
+    materialization_id: _Identifier
+    spec_id: _Identifier
+    attempt_number: int = Field(ge=1, le=20)
+    replay_request_id: _Identifier
+    materializer_id: _Identifier
+    materializer_version: _Version
+    changed_fields: set[_Identifier] = Field(min_length=1, max_length=10)
+    source_argument_digest: _Sha256
+    arguments: dict[str, JsonValue] = Field(max_length=100)
+    argument_digest: _Sha256
+    source_session_digest: _Sha256
+    materialized_session_digest: _Sha256
+    materialized_at: datetime
+
+    @field_validator("materialized_at")
+    @classmethod
+    def normalize_materialized_at(cls, value: datetime) -> datetime:
+        return _normalize_utc(value, field_name="materialized_at")
+
+    @model_validator(mode="after")
+    def validate_materialization(self) -> ReplayMaterialization:
+        if self.changed_fields != {"session_id"}:
+            raise ValueError("fresh-session materialization may change only session_id")
+        if self.argument_digest != replay_argument_digest(self.arguments):
+            raise ValueError("materialized argument digest does not match arguments")
+        session_id = self.arguments.get("session_id")
+        if not isinstance(session_id, str):
+            raise ValueError("fresh-session materialization requires a string session_id")
+        digest = sha256(session_id.encode("utf-8")).hexdigest()
+        if self.materialized_session_digest != digest:
+            raise ValueError("materialized session digest does not match session_id")
+        if self.source_session_digest == self.materialized_session_digest:
+            raise ValueError("fresh-session materialization must not reuse the source session")
+        return self
+
+
 class ReplayAttempt(ReplayArtifactModel):
     """One fresh Tool execution and its Candidate-bound evidence lineage."""
 
@@ -441,6 +509,7 @@ class ReplayAttempt(ReplayArtifactModel):
     replay_request_id: _Identifier
     status: ReplayAttemptStatus
     observation_schema: _Identifier
+    materialization: ReplayMaterialization | None = None
     observation: dict[str, JsonValue] = Field(default_factory=dict, max_length=100)
     evidence: list[_EvidenceReference] = Field(default_factory=list, max_length=100)
     error: str | None = Field(default=None, max_length=2_000)
@@ -461,6 +530,13 @@ class ReplayAttempt(ReplayArtifactModel):
             raise ValueError("replay attempt cannot finish before it starts")
         if len(self.evidence) != len(set(self.evidence)):
             raise ValueError("replay attempt evidence references must be unique")
+        if self.materialization is not None and (
+            self.materialization.spec_id != self.spec_id
+            or self.materialization.attempt_number != self.attempt_number
+            or self.materialization.replay_request_id != self.replay_request_id
+            or self.materialization.materialized_at > self.started_at
+        ):
+            raise ValueError("replay materialization must match its attempt")
         if self.status is ReplayAttemptStatus.SUCCEEDED:
             if not self.observation or not self.evidence:
                 raise ValueError("successful replay attempt requires observation and evidence")
@@ -509,6 +585,15 @@ class ReplayOracleResult(ReplayArtifactModel):
             and self.support_count < self.required_support_count
         ):
             raise ValueError("supporting Oracle verdict must meet its required support count")
+        if self.verdict is ReplayOracleVerdict.CONTRADICTS and self.support_count != 0:
+            raise ValueError("contradicting Oracle verdict cannot report supporting attempts")
+        if (
+            self.verdict is ReplayOracleVerdict.INCONCLUSIVE
+            and self.support_count >= self.required_support_count
+        ):
+            raise ValueError("inconclusive Oracle verdict cannot meet the support threshold")
+        if self.support_count == 0 and self.supporting_evidence:
+            raise ValueError("Oracle cannot cite supporting evidence with zero support count")
         return self
 
 
@@ -640,6 +725,9 @@ class ReplayArtifactSet(ReplayArtifactModel):
             spec.method != contract.method
             or spec.risk_tier != contract.risk_tier
             or spec.session_policy != contract.session_policy
+            or spec.materializer_id != contract.materializer_id
+            or spec.materializer_version != contract.materializer_version
+            or spec.ephemeral_argument_fields != contract.ephemeral_argument_fields
             or spec.repetitions != contract.repetitions
             or spec.required_successes != contract.required_successes
             or spec.oracle_id != contract.oracle_id
@@ -681,14 +769,49 @@ class ReplayArtifactSet(ReplayArtifactModel):
         attempt_numbers = [attempt.attempt_number for attempt in outcome.attempts]
         if len(attempt_numbers) != len(set(attempt_numbers)):
             raise ValueError("replay attempt numbers must be unique")
+        if attempt_numbers != list(range(1, len(attempt_numbers) + 1)):
+            raise ValueError("replay attempt numbers must be contiguous and ordered from one")
         if any(number > spec.repetitions for number in attempt_numbers):
             raise ValueError("replay attempt number exceeds the compiled repetition budget")
         if any(
-            attempt.observation_schema != spec.observation_schema
-            for attempt in outcome.attempts
+            attempt.observation_schema != spec.observation_schema for attempt in outcome.attempts
         ):
             raise ValueError("replay observation schema must match the compiled replay spec")
+        if spec.session_policy is ReplaySessionPolicy.STATELESS:
+            if any(attempt.materialization is not None for attempt in outcome.attempts):
+                raise ValueError("stateless replay attempts cannot contain materialization")
+        elif spec.session_policy is ReplaySessionPolicy.FRESH_SESSION and outcome.attempts:
+            materializations = [attempt.materialization for attempt in outcome.attempts]
+            if any(item is None for item in materializations):
+                raise ValueError("fresh-session replay attempts require materialization")
+            source_session = spec.arguments.get("session_id")
+            if not isinstance(source_session, str):
+                raise ValueError("fresh-session replay spec requires a string session_id")
+            source_session_digest = sha256(source_session.encode("utf-8")).hexdigest()
+            materialized_session_digests: list[str] = []
+            for item in materializations:
+                assert item is not None
+                if (
+                    item.materializer_id != spec.materializer_id
+                    or item.materializer_version != spec.materializer_version
+                    or item.changed_fields != spec.ephemeral_argument_fields
+                    or item.source_argument_digest != spec.argument_digest
+                    or item.source_session_digest != source_session_digest
+                ):
+                    raise ValueError("replay materialization must match the compiled spec")
+                materialized_session_digests.append(item.materialized_session_digest)
+            if len(materialized_session_digests) != len(set(materialized_session_digests)):
+                raise ValueError("fresh replay sessions must be unique across attempts")
         oracle = outcome.oracle_result
+        if outcome.execution_status is ReplayExecutionStatus.SUCCEEDED and (
+            len(outcome.attempts) != spec.repetitions
+            or any(
+                attempt.status is not ReplayAttemptStatus.SUCCEEDED for attempt in outcome.attempts
+            )
+        ):
+            raise ValueError(
+                "successful replay outcome requires every compiled repetition to succeed"
+            )
         if oracle is not None and (
             oracle.oracle_id != spec.oracle_id
             or oracle.oracle_version != spec.oracle_version

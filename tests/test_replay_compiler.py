@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -51,9 +52,7 @@ EVIDENCE = "evidence/tool_original_m03_1.json"
 
 
 def _scenario() -> KISAScenarioDefinition:
-    return next(
-        item for item in KISA_CATALOG.scenarios if item.scenario_id == SCENARIO_ID
-    )
+    return next(item for item in KISA_CATALOG.scenarios if item.scenario_id == SCENARIO_ID)
 
 
 def _campaign() -> CampaignManifest:
@@ -180,6 +179,9 @@ def _contract(**updates: object) -> ModeReplayContract:
         "replay_safe": True,
         "idempotent": True,
         "session_policy": ReplaySessionPolicy.FRESH_SESSION,
+        "materializer_id": "kisa.ai-chat-fresh-session",
+        "materializer_version": "1.0.0",
+        "ephemeral_argument_fields": {"session_id"},
         "repetitions": 2,
         "required_successes": 2,
         "oracle_id": "kisa.exact-marker",
@@ -359,6 +361,24 @@ def test_compiler_rejects_target_tool_argument_and_evidence_substitution() -> No
     )
 
 
+def test_compiler_rejects_schema_valid_kisa_template_substitution() -> None:
+    _planned, executed = _requests()
+    arguments = deepcopy(executed.arguments)
+    turns = arguments["turns"]
+    assert isinstance(turns, list)
+    turns[0]["messages"][0]["content"] = "schema-valid substituted prompt"
+    plan, request = _replace_request_arguments(arguments)
+
+    _assert_reason(
+        ReplayCompileReason.SCENARIO_TEMPLATE_MISMATCH,
+        lambda: _compile(
+            plan=plan,
+            original_request=request,
+            trusted_original_request_digest=replay_request_digest(request),
+        ),
+    )
+
+
 def test_prompt_injection_text_cannot_expand_compiled_authority() -> None:
     intent = _intent(
         comparison_goals=[
@@ -415,9 +435,7 @@ def test_compiler_rejects_secret_fields_plaintext_and_non_lease_references() -> 
     )
     _assert_reason(
         ReplayCompileReason.SECRET_ARGUMENT,
-        lambda: _compile(
-            secret_lease_ids=["lease_replay_m03_1", "lease_replay_m03_1"]
-        ),
+        lambda: _compile(secret_lease_ids=["lease_replay_m03_1", "lease_replay_m03_1"]),
     )
 
 
@@ -460,7 +478,7 @@ def test_compiler_rechecks_cancellation_authorization_scope_and_budget() -> None
 
     _assert_reason(
         ReplayCompileReason.BUDGET_EXCEEDED,
-        lambda: _compile(used_campaign_calls=7),
+        lambda: _compile(used_campaign_calls=campaign.spec.budgets.max_tool_calls - 1),
     )
 
 
@@ -473,11 +491,7 @@ def test_replay_grant_ttl_is_capped_by_campaign_authorization() -> None:
         evidence="short-local-development-lab-authorization",
     )
     short_campaign = campaign.model_copy(
-        update={
-            "spec": campaign.spec.model_copy(
-                update={"authorization": short_authorization}
-            )
-        }
+        update={"spec": campaign.spec.model_copy(update={"authorization": short_authorization})}
     )
 
     compiled = _compile(

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 
 import pytest
 from pydantic import ValidationError
@@ -13,6 +14,7 @@ from pajin.domain.replay import (
     ReplayBinding,
     ReplayExecutionStatus,
     ReplayIntent,
+    ReplayMaterialization,
     ReplayOracleResult,
     ReplayOracleVerdict,
     ReplayOutcome,
@@ -111,6 +113,9 @@ def _contract(**updates: object) -> ModeReplayContract:
         "replay_safe": True,
         "idempotent": True,
         "session_policy": ReplaySessionPolicy.FRESH_SESSION,
+        "materializer_id": "kisa.ai-chat-fresh-session",
+        "materializer_version": "1.0.0",
+        "ephemeral_argument_fields": {"session_id"},
         "repetitions": 2,
         "required_successes": 2,
         "oracle_id": "kisa.exact-marker",
@@ -183,6 +188,9 @@ def _spec(**updates: object) -> CompiledReplaySpec:
         "replay_safe": True,
         "idempotent": True,
         "session_policy": ReplaySessionPolicy.FRESH_SESSION,
+        "materializer_id": "kisa.ai-chat-fresh-session",
+        "materializer_version": "1.0.0",
+        "ephemeral_argument_fields": {"session_id"},
         "repetitions": 2,
         "required_successes": 2,
         "oracle_id": "kisa.exact-marker",
@@ -204,14 +212,37 @@ def _attempt(
     request_id: str | None = None,
     binding: ReplayBinding | None = None,
 ) -> ReplayAttempt:
+    source_arguments = _arguments()
+    materialized_arguments = {
+        **source_arguments,
+        "session_id": f"pajin:replay:attempt:{attempt_number}",
+    }
+    replay_request_id = request_id or f"tool_replay_{attempt_number}"
     return ReplayAttempt(
         attempt_id=f"replay-attempt_{attempt_number}",
         spec_id="compiled-replay_1",
         binding=binding or _binding(),
         attempt_number=attempt_number,
-        replay_request_id=request_id or f"tool_replay_{attempt_number}",
+        replay_request_id=replay_request_id,
         status=ReplayAttemptStatus.SUCCEEDED,
         observation_schema="pajin.ai-chat-probe-output/v1",
+        materialization=ReplayMaterialization(
+            materialization_id=f"replay-materialization_{attempt_number}",
+            spec_id="compiled-replay_1",
+            attempt_number=attempt_number,
+            replay_request_id=replay_request_id,
+            materializer_id="kisa.ai-chat-fresh-session",
+            materializer_version="1.0.0",
+            changed_fields={"session_id"},
+            source_argument_digest=replay_argument_digest(source_arguments),
+            arguments=materialized_arguments,
+            argument_digest=replay_argument_digest(materialized_arguments),
+            source_session_digest=sha256(str(source_arguments["session_id"]).encode()).hexdigest(),
+            materialized_session_digest=sha256(
+                str(materialized_arguments["session_id"]).encode()
+            ).hexdigest(),
+            materialized_at=NOW,
+        ),
         observation={"scenarioId": "kisa.model.system-prompt-disclosure"},
         evidence=[f"evidence/tool_replay_{attempt_number}.json"],
         started_at=NOW + timedelta(seconds=attempt_number),
@@ -350,9 +381,7 @@ def test_compiled_spec_binds_digest_budget_and_short_lived_authority() -> None:
 def test_replay_artifact_set_round_trips_complete_candidate_bound_lineage() -> None:
     artifacts = _artifact_set()
 
-    restored = ReplayArtifactSet.model_validate_json(
-        artifacts.model_dump_json(by_alias=True)
-    )
+    restored = ReplayArtifactSet.model_validate_json(artifacts.model_dump_json(by_alias=True))
 
     assert restored == artifacts
     assert restored.outcome.supports_claim is True

@@ -30,6 +30,12 @@ from pajin.domain.replay import (
     replay_request_digest,
 )
 from pajin.policy.engine import PolicyEngine
+from pajin.replay.tickets import (
+    ReplayExecutionTicket,
+    ReplayTicketContext,
+    ReplayTicketIssuer,
+    replay_context_digest,
+)
 from pajin.tools.base import ToolSpec
 
 REPLAY_GRANT_TTL = timedelta(minutes=5)
@@ -82,6 +88,7 @@ class ReplayCompileReason(StrEnum):
     SPECIALIST_GRANT_INVALID = "specialist-grant-invalid"
     TOOL_UNREGISTERED = "tool-unregistered"
     REPLAY_NOT_ELIGIBLE = "replay-not-eligible"
+    SCENARIO_TEMPLATE_MISMATCH = "scenario-template-mismatch"
     ARGUMENT_NOT_ALLOWLISTED = "argument-not-allowlisted"
     SECRET_ARGUMENT = "secret-argument"
     POLICY_DENIED = "policy-denied"
@@ -144,8 +151,7 @@ class ReplayCompiler:
                 "replay Run must differ from the Candidate Run",
             )
         if used_campaign_calls < 0 or (
-            used_campaign_calls + contract.repetitions
-            > campaign.spec.budgets.max_tool_calls
+            used_campaign_calls + contract.repetitions > campaign.spec.budgets.max_tool_calls
         ):
             raise ReplayCompilationError(
                 ReplayCompileReason.BUDGET_EXCEEDED,
@@ -185,6 +191,7 @@ class ReplayCompiler:
             contract,
             forbidden_secret_values,
         )
+        _validate_scenario_arguments(scenario, original_request.arguments)
         leases = _validate_secret_lease_ids(secret_lease_ids)
 
         argument_digest = replay_argument_digest(original_request.arguments)
@@ -303,6 +310,9 @@ class ReplayCompiler:
             replay_safe=True,
             idempotent=True,
             session_policy=contract.session_policy,
+            materializer_id=contract.materializer_id,
+            materializer_version=contract.materializer_version,
+            ephemeral_argument_fields=contract.ephemeral_argument_fields,
             repetitions=contract.repetitions,
             required_successes=contract.required_successes,
             oracle_id=contract.oracle_id,
@@ -323,6 +333,78 @@ class ReplayCompiler:
             spec=spec,
             grant=grant,
         )
+
+    @staticmethod
+    def compile_ticket(
+        *,
+        ticket_issuer: ReplayTicketIssuer,
+        candidate_source_root_digest: str,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        original_request: ToolRequest,
+        specialist_grant: CapabilityGrant,
+        validation_packet: ValidationPacket,
+        intent: ReplayIntent,
+        contract: ModeReplayContract,
+        scenario: ReplayScenarioDefinition,
+        registered_tools: Mapping[str, ToolSpec],
+        evidence_by_request: Mapping[str, Collection[str]],
+        trusted_original_request_digest: str,
+        trusted_original_evidence_digest: str,
+        replay_run_id: str,
+        used_campaign_calls: int,
+        compiled_at: datetime,
+        cancellation_active: bool = False,
+        secret_lease_ids: Collection[str] = (),
+        forbidden_secret_values: Collection[str] = (),
+    ) -> ReplayExecutionTicket:
+        """Compile and atomically admit one opaque, single-use runtime ticket."""
+
+        compilation = ReplayCompiler.compile(
+            campaign=campaign,
+            plan=plan,
+            original_request=original_request,
+            specialist_grant=specialist_grant,
+            validation_packet=validation_packet,
+            intent=intent,
+            contract=contract,
+            scenario=scenario,
+            registered_tools=registered_tools,
+            evidence_by_request=evidence_by_request,
+            trusted_original_request_digest=trusted_original_request_digest,
+            trusted_original_evidence_digest=trusted_original_evidence_digest,
+            replay_run_id=replay_run_id,
+            used_campaign_calls=used_campaign_calls,
+            compiled_at=compiled_at,
+            cancellation_active=cancellation_active,
+            secret_lease_ids=secret_lease_ids,
+            forbidden_secret_values=forbidden_secret_values,
+        )
+        tool_spec = registered_tools[contract.tool_id]
+        context = ReplayTicketContext(
+            candidate_source_root_digest=candidate_source_root_digest,
+            campaign_digest=replay_context_digest(campaign.model_dump(mode="json", by_alias=True)),
+            tool_spec_digest=replay_context_digest(tool_spec.model_dump(mode="json")),
+            scenario_digest=replay_scenario_digest(scenario),
+        )
+        return ticket_issuer.issue_from_compiler(compilation, context=context)
+
+
+def replay_scenario_digest(scenario: ReplayScenarioDefinition) -> str:
+    """Fingerprint the trusted scenario attributes consumed by the compiler."""
+
+    model_dump = getattr(scenario, "model_dump", None)
+    if callable(model_dump):
+        return replay_context_digest(model_dump(mode="python", by_alias=True))
+    return replay_context_digest(
+        {
+            "scenarioId": scenario.scenario_id,
+            "targetTypes": sorted(scenario.target_types),
+            "threatClasses": sorted(scenario.threat_classes),
+            "toolId": scenario.tool_id,
+            "method": scenario.method.upper(),
+        }
+    )
 
 
 def _validate_identity(
@@ -382,9 +464,7 @@ def _validate_plan(
     original_request: ToolRequest,
     scenario: ReplayScenarioDefinition,
 ) -> str:
-    steps = [
-        step for step in plan.steps if step.request.request_id == original_request.request_id
-    ]
+    steps = [step for step in plan.steps if step.request.request_id == original_request.request_id]
     if len(steps) != 1:
         raise ReplayCompilationError(
             ReplayCompileReason.PROVENANCE_MISMATCH,
@@ -417,11 +497,9 @@ def _validate_specialist_grant(
         or request.tool_id not in grant.tools
         or request.target not in grant.targets
         or tool_spec.risk_tier > grant.max_risk_tier
-        or grant.max_risk_tier
-        > campaign.spec.rules_of_engagement.max_tool_risk_tier
+        or grant.max_risk_tier > campaign.spec.rules_of_engagement.max_tool_risk_tier
         or grant.max_calls < 1
-        or _normalize_utc(grant.expires_at)
-        > _normalize_utc(campaign.spec.authorization.expires_at)
+        or _normalize_utc(grant.expires_at) > _normalize_utc(campaign.spec.authorization.expires_at)
     ):
         raise ReplayCompilationError(
             ReplayCompileReason.SPECIALIST_GRANT_INVALID,
@@ -475,6 +553,20 @@ def _validate_replay_eligibility(contract: ModeReplayContract, tool_spec: ToolSp
         raise ReplayCompilationError(
             ReplayCompileReason.REPLAY_NOT_ELIGIBLE,
             "Tool or Mode contract is not eligible for automatic restricted replay",
+        )
+
+
+def _validate_scenario_arguments(
+    scenario: ReplayScenarioDefinition,
+    arguments: Mapping[str, object],
+) -> None:
+    """Apply a Mode-owned exact-template check when the scenario supplies one."""
+
+    matches = getattr(scenario, "matches_replay_arguments", None)
+    if callable(matches) and not bool(matches(arguments)):
+        raise ReplayCompilationError(
+            ReplayCompileReason.SCENARIO_TEMPLATE_MISMATCH,
+            "original arguments do not match the trusted Mode scenario template",
         )
 
 

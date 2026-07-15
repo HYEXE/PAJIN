@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum
 
 from pydantic import Field, model_validator
 
 from pajin.domain.models import StrictModel
-from pajin.tools.ai import ProbeCheck, ProbeTurn
+from pajin.tools.ai import AIChatProbeInput, ProbeCheck, ProbeTurn
 
 
 class ThreatCategory(StrEnum):
@@ -116,6 +117,23 @@ class KISAScenarioDefinition(StrictModel):
         elif self.probe is not None:
             raise ValueError("probe templates are supported only by ai.chat-probe")
         return self
+
+    def matches_replay_arguments(self, arguments: Mapping[str, object]) -> bool:
+        """Match the exact catalog probe while permitting only a valid session identity."""
+
+        if self.tool_id != "ai.chat-probe" or self.probe is None:
+            return False
+        try:
+            probe = AIChatProbeInput.model_validate(arguments)
+        except ValueError:
+            return False
+        return (
+            len(self.threat_classes) == 1
+            and probe.scenario_id == self.scenario_id
+            and probe.threat_class == next(iter(self.threat_classes))
+            and probe.turns == self.probe.turns
+            and probe.checks == self.probe.checks
+        )
 
 
 class EvaluationThresholds(StrictModel):
