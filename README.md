@@ -16,19 +16,21 @@ The implementation baseline as of 2026-07-15 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned restricted-replay contracts, and tamper-evident evidence seals |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Restricted Reproducer and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Primary gaps | Replay Compiler, replay-specific Grant, Restricted Reproducer runtime and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 
 > **Validation status:** PAJIN currently implements trusted Candidate admission, semantic review,
-> objective evidence gates, and sealed Decision snapshots. It does not yet execute an independent
-> restricted reproduction. The common gate therefore retains semantic-positive Candidates as
+> objective evidence gates, sealed Decision snapshots, and versioned `ValidationPacket`,
+> `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`,
+> and `ReplayOutcome` contracts. These contracts do not compile or execute an independent restricted
+> reproduction yet. The common gate therefore retains semantic-positive Candidates as
 > `needs-review` with `independent-reproduction-missing`, and the confirmed-only `findings.json`
 > projection remains empty until a fresh Candidate-bound ReplayOutcome succeeds, as required by
 > [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
@@ -65,6 +67,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
 - Product-level confirmation requires a successful independent Restricted Reproducer outcome and
   the objective gate; a Semantic Validator mark alone is insufficient.
+- `ReplayIntent` is a strict, non-executable schema: raw Tool requests, commands, arbitrary URLs,
+  Capability Grants, and undeclared executable fields are rejected. Versioned replay artifacts bind
+  Candidate, Run, original and replay request, Mode, scenario, Tool, target, and threat identities
+  before any future replay authority can be issued.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -713,7 +719,9 @@ T0/T1 task. A plan that cannot fund every first Specialist attempt fails before 
 The Semantic Validator can support a Candidate only when its target is declared and every cited
 artifact was produced by a Specialist in the same run. For cataloged KISA `ai.chat-probe`
 scenarios, a Tool-less trusted Candidate Producer independently recomputes the raw transcript
-checks before validation. A semantic Validator that returns no Finding therefore leaves a
+checks before validation. The Tool, Candidate Producer, and deterministic Validator parse the same
+strict `AIChatProbeOutput` contract and do not trust Worker-authored `matched` or `vulnerable`
+verdict fields. A semantic Validator that returns no Finding therefore leaves a
 `needs-review` Candidate instead of deleting the observation. Matching semantic support plus the
 common objective gate also remains `needs-review` with `independent-reproduction-missing`; it cannot
 enter the confirmed compatibility projection until a fresh Restricted Reproducer outcome exists.
