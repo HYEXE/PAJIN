@@ -8,7 +8,7 @@
 | 작성일 | 2026-07-12 |
 | 최종 최신화 | 2026-07-15 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
-| 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI |
+| 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
 ---
 
@@ -67,14 +67,17 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 ### 1.1 현재 구현 기준선
 
 2026-07-15 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
-Phase 0-1은 완료되었고 Phase 2의 실행 코어, 제한 재현 계약 계층과 결정론적 Replay
-Compiler·전용 Grant는 구현되었지만 Restricted Reproducer 실행과 구조화 협업 메모리는 후속
-과제다. Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는
-Control Plane의 첫 수직 조각까지 구현되었다.
+Phase 0-1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
+Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
+Oracle·runner coordinator·replay index는 구현되었다. M6 공통 Confirmed Gate, verified receipt
+재로딩 기반 disposition 승격, 다른 Mode의 session materializer·Oracle과 구조화 협업 메모리는
+후속 과제다.
+Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
+Plane의 첫 수직 조각까지 구현되었다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
-| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; 버전형 Replay 계약과 결정론적 Compiler·전용 Grant 구현, Restricted Reproducer 미구현 |
+| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·stateless 실행과 등록형 fresh-session materializer 기반 구현; verified receipt를 소비하는 공통 Gate는 후속 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
@@ -764,7 +767,7 @@ legacy Validator가 반환한 Finding을 Candidate로 보존하고 Candidate별 
 `ai.chat-probe`의 카탈로그, typed 요청, 실행 identity와 실제 transcript를 재검산하는 trusted
 Candidate Producer를 추가했다.
 
-두 단계는 Candidate admission과 증거 심사를 강화하지만 독립 재현을 구현하지 않는다.
+두 단계 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
 Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도
 Restricted Reproducer의 새 요청·증적과 Mode Oracle 성공 없이는 `confirmed`로 승격할 수 없다.
@@ -775,9 +778,24 @@ Restricted Reproducer의 새 요청·증적과 Mode Oracle 성공 없이는 `con
 `AIChatProbeOutput`은 구현됐다. 계약은 Candidate·Run·원 요청·새 요청·Mode·Scenario·Tool·
 Target·Threat를 결박하고 실행 가능한 모델 출력과 식별자 치환을 거부한다. 결정론적 Replay
 Compiler는 원 Plan·실제 ToolRequest·Specialist Grant·증적 digest를 대조하고 Scope·취소·승인·
-예산을 재검사한 뒤 5분 이하·비위임·단일 Tool·단일 Target의 전용 Grant만 발급한다. 실제
-Restricted Reproducer·Mode Oracle 실행과 산출물 저장은 아직 구현되지 않았다. Validator-only
-우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
+예산을 재검사한 뒤 5분 이하·비위임·단일 Tool·단일 Target의 전용 Grant와 opaque 단일 사용
+ticket을 발급한다. Restricted Reproducer는 ticket을 원자적으로 claim하고 `stateless` 작업 또는
+등록된 신뢰 materializer의 제한된 fresh-session 작업을 기존 Tool Gateway·Worker로 실행한다.
+캠페인 공용 예산·rate limit과 부모 취소를 async Mode Oracle까지 적용하고 Tool Adapter의 신규
+Secret Lease 요청을 금지한다. 새 request·정확히 대응하는 evidence JSON·typed Oracle 결과를
+검증한 다음 별도 replay Run을 두 번 seal한다. 전용 loader는 Artifact digest, 두 Seal의 직접
+계보와 ticket 최종화를 다시 대조한다. 등록되지 않은 session-bearing 계약은 계속
+`unsupported`로 닫혀 있다.
+
+`kisa-run`의 Multi-Agent 경로는 봉인된 원 Run을 검증한 뒤 eligible trusted Candidate를 별도
+replay Run에서 실행한다. M03·M06·A04 fresh-session materializer는 compiler-bound 인자 중
+`session_id`만 반복별로 교체하며, live Oracle은 Worker의 `vulnerable`·`matched` 값을 무시하고
+원문 transcript와 카탈로그 check를 재계산한다. `kisa-replay-index.json`은 원 Candidate·Decision·
+request와 replay Run·Outcome·receipt seal root를 연결하지만
+`confirmationMutationApplied: false`를 유지한다. M6 공통 Gate가 각 영수증을 디스크에서 다시
+검증하기 전에는 Candidate disposition과 `findings.json`을 변경하지 않으므로 Confirmed는 계속
+0건이다. Validator-only 우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로
+유지한다.
 
 ### 15.2 신뢰도 계산 요소
 
@@ -1058,10 +1076,11 @@ PAJIN/
 - 자동 패치와 Pull Request 생성
 - 모든 KISA 산출물의 완전 자동화
 
-현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, 제한 재현 계약·Compiler·Grant
-계층과 지속성 Control Plane의 초기 조각까지 포함한다. 그러나 Restricted Reproducer와 Mode
-Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못했다. 지원 시나리오의 폭과
-운영 배포 수준도 Phase 3-4의 후속 범위다.
+현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, Replay 계약·Compiler·Grant,
+stateless Restricted Reproducer, exact KISA fresh-session 실행·live transcript Oracle·runner
+coordinator와 지속성 Control Plane의 초기 조각까지 포함한다. 그러나 verified receipt를
+재로딩하는 M6 공통 Confirmed Gate가 연결되지 않아 MVP의 Finding 확정 기준은 아직 충족하지
+못했다. 지원 시나리오의 폭과 운영 배포 수준도 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -1074,9 +1093,10 @@ Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못�
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
 
-2026-07-15 현재 Candidate admission, Semantic Validator, objective gate, 버전형 Replay 계약과
-결정론적 Compiler·전용 Grant는 구현됐지만 Restricted Reproducer·Mode Oracle 실행이 없어
-독립 재현 관련 완료 기준은 아직 충족하지 못했다.
+2026-07-15 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
+단일 사용 ticket·Restricted Reproducer와 exact KISA fresh-session materializer·live Oracle·
+runner coordinator는 구현됐다. M6 공통 Gate의 verified receipt 재로딩과 disposition 승격이
+연결되지 않아 독립 재현 관련 제품 완료 기준은 아직 충족하지 못했다.
 
 ---
 
@@ -1086,7 +1106,7 @@ Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못�
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant, 권한 감쇠, 예산·취소·승인은 구현; Replay 실행과 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer와 exact KISA fresh-session Oracle/coordinator, 권한 감쇠, 예산·취소·승인은 구현; M6 공통 Gate와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1115,8 +1135,13 @@ Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못�
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
-- 남은 범위: Restricted Reproducer·Mode Oracle 실행과 저장, Confirmed Gate 교정,
-  Campaign Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
+- opaque 단일 사용 ticket, stateless Restricted Reproducer, 공용 예산·rate limit·취소,
+  Secret Lease 요청 차단, 새 evidence 검증과 이중 seal verified loader
+- exact KISA M03·M06·A04 fresh-session materializer, raw transcript Oracle, Multi-Agent runner
+  coordinator와 source/replay 분리 index
+- 남은 범위: M6 공통 Confirmed Gate와 verified receipt 재로딩, KISA retest 및 다른 Mode의
+  session-bearing driver·Oracle 연결, Campaign Facts·Hypotheses·Agent Working Memory의 구조화된
+  영속 계층
 
 ### Phase 3 — Mode Packs (진행 중)
 
@@ -1234,6 +1259,20 @@ Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못�
 - 도구 선택, 파라미터 조정, 공격 체인 구성 자동화
 - 브라우저, 네트워크, 바이너리, 클라우드, 포렌식 Tool Pack
 
+### XBOW에서 학습할 요소
+
+XBOW의 공식 공개 저장소에서는 핵심 플랫폼 구현을 제공하지 않고 현재 공개 지원 범위는 웹
+애플리케이션과 API이므로, PAJIN은 공식 제품·문서에서 확인되는 동작을 Bug Bounty/Web
+침투테스트 요구의 참고로만 사용한다.
+
+- 문서·자격증명·API 명세를 결합한 공격 표면 매핑과 컨텍스트 기반 우선순위화
+- Coordinator, 단기 집중형 공격 에이전트, CWE별 검증 로직을 분리한 자율 침투테스트 흐름
+- 검증된 Finding에는 실제 익스플로잇·재현 절차·증거를 포함하고, Informational Finding과
+  분리하며 수정 후 재검증하는 흐름
+- Scope, 보호 URL, 영향 증명 수준, 감사 로그, API·Webhook을 통한 운영 통제
+- 공개 104개 Validation Benchmarks는 2026년 기준 포화되고 기반 취약점이 모델 학습
+  데이터에 포함되었으므로, 현재 성능 비교가 아닌 격리·회귀 테스트 참고 자료로만 사용
+
 ### PAJIN의 차별화 방향
 
 - MCP 자체보다 상위에 위치하는 일관된 정책·권한 계층
@@ -1251,6 +1290,10 @@ Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못�
 - KISA, 「AI 보안 레드티밍 가이드」, 2026.07
 - [usestrix/strix](https://github.com/usestrix/strix)
 - [0x4m4/hexstrike-ai](https://github.com/0x4m4/hexstrike-ai)
+- [XBOW Platform](https://xbow.com/platform)
+- [XBOW Documentation](https://docs.xbow.com/)
+- [XBOW API Reference](https://docs.xbow.com/api/)
+- [XBOW Validation Benchmarks](https://github.com/xbow-engineering/validation-benchmarks) — 공개 세트는 2026년 기준 포화·학습 데이터 포함 상태로 역사적·회귀 참고용
 - ISO/IEC AWI TS 42119-7, Artificial intelligence — Testing of AI — Part 7: Red teaming
 - NIST AI 100-2, Adversarial Machine Learning Taxonomy and Terminology
 - OWASP Generative AI Red Teaming Guide
