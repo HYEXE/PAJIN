@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: In progress; semantic-only confirmation is blocked, Restricted Replay is planned
+- Implementation: In progress; semantic-only confirmation, versioned Replay contracts, deterministic compilation, and dedicated Replay grants are implemented, while replay execution remains planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -124,21 +124,42 @@ provenance, actor identity, approval record, and Oracle result required of autom
 As of 2026-07-15, PAJIN implements Candidate admission, semantic reconciliation, objective evidence
 gating, Decision snapshots, final Run sealing, and the first fail-closed migration step. Semantic
 support without ReplayOutcome is retained as `needs-review` with
-`independent-reproduction-missing` and is excluded from `findings.json`. PAJIN does not yet implement
-`ReplayIntent` compilation, a replay-specific Grant, Restricted Reproducer execution, or
-`ReplayOutcome` artifacts, so new runs cannot produce a product-level Confirmed Finding.
+`independent-reproduction-missing` and is excluded from `findings.json`. PAJIN also defines strict,
+versioned `ValidationPacket`, `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`,
+`ReplayAttempt`, `ReplayOracleResult`, and `ReplayOutcome` contracts. The contracts bind Candidate,
+Run, original and replay request, Mode, scenario, Tool, target, and threat identities; reject
+executable intent fields and cross-artifact substitution; and give `ValidationDecision` an explicit
+ReplayOutcome reference. `ai.chat-probe` Tool interpretation, trusted Candidate production, and
+deterministic validation share the same strict `AIChatProbeOutput` contract while recomputing rather
+than trusting Worker verdict fields.
+
+PAJIN also implements a pure deterministic `ReplayCompiler`. It checks the trusted Plan, the actual
+Specialist-bound `ToolRequest`, the original Specialist Grant, Candidate evidence, trusted request
+and evidence digests, registered Scenario and Tool contracts, Scope, cancellation, authorization,
+and remaining repetition budget. It copies only allowlisted original arguments, rejects
+secret-bearing fields and known plaintext secret values, and emits a separate five-minute-or-less,
+non-delegable, single-Tool, single-target `ReplayCapabilityGrant`. Compiler IDs are deterministic
+over the authority-bearing inputs, while Semantic Validator rationale and comparison text cannot
+alter the compiled operation.
+
+The compiler is not wired into a runner yet. PAJIN does not implement Restricted Reproducer
+execution, a live Mode Oracle, or persisted replay artifacts, so new runs still cannot produce a
+product-level Confirmed Finding.
 
 Migration proceeds in this order:
 
 1. **Implemented:** prevent semantic-only Decisions from entering the confirmed compatibility
    projection and retain them as `needs-review` with `independent-reproduction-missing`;
-2. add typed `ReplayIntent`, compiled replay specification, replay Grant, and `ReplayOutcome`
-   contracts with Candidate and request lineage;
-3. implement the KISA `ai.chat-probe` restricted-replay vertical slice and Mode Oracle;
-4. require a successful ReplayOutcome in the common confirmation gate;
-5. version external artifacts and reports so consumers can distinguish legacy semantic
+2. **Implemented at the schema boundary:** add typed `ValidationPacket`, `ReplayIntent`, Mode
+   contract, compiled replay specification, attempts, Oracle result, and `ReplayOutcome` contracts
+   with Candidate and request lineage;
+3. **Implemented at the pure compilation boundary:** add the deterministic Replay Compiler and
+   replay-specific Capability Grant with fail-closed policy and lineage checks;
+4. implement the KISA `ai.chat-probe` Restricted Reproducer vertical slice and live Mode Oracle;
+5. require a successful ReplayOutcome in the common confirmation gate;
+6. version external artifacts and reports so consumers can distinguish legacy semantic
    confirmation from reproduction-backed confirmation; and
-6. add eligible Mode contracts incrementally without introducing a generic replay predicate.
+7. add eligible Mode contracts incrementally without introducing a generic replay predicate.
 
 Existing sealed Runs are immutable and must not be rewritten. A historical `confirmed` Decision
 without a ReplayOutcome is interpreted under legacy semantics and cannot be promoted by
@@ -173,6 +194,15 @@ Implementation is complete only when tests prove that:
 - Local and Multi-Agent runners enforce the same confirmation rule;
 - KISA reports and `findings.json` distinguish legacy and reproduction-backed confirmation; and
 - migration does not rewrite historical Run seals.
+
+The schema-boundary regression suites are `tests/test_replay_models.py` and
+`tests/test_ai_chat_contracts.py`. The compiler boundary is covered by
+`tests/test_replay_compiler.py`. Together they cover executable intent rejection, version and
+legacy-read policy, replay eligibility metadata, duplicate and same-request rejection, Candidate/
+Run/target/scenario/Tool/argument/evidence/Grant substitution, confused-deputy inputs, Scope·budget·
+authorization·cancellation checks, shared Tool/Producer output typing, and untrusted verdict flags.
+The remaining requirements above apply to execution, persistence, Mode Oracle, and confirmation
+gate milestones.
 
 ## References
 

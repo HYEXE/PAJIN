@@ -91,6 +91,7 @@ class ValidationDecision(StrictModel):
     supporting_evidence: list[_EvidenceReference] = Field(max_length=1_000)
     contradicting_evidence: list[_EvidenceReference] = Field(max_length=1_000)
     replay_request_ids: list[_Identifier] = Field(max_length=1_000)
+    replay_outcome_ids: list[_Identifier] = Field(default_factory=list, max_length=1_000)
     checks: list[ValidationCheckResult] = Field(max_length=100)
     decided_at: datetime
 
@@ -109,6 +110,8 @@ class ValidationDecision(StrictModel):
             raise ValueError("contradicting_evidence must be unique")
         if len(self.replay_request_ids) != len(set(self.replay_request_ids)):
             raise ValueError("replay_request_ids must be unique")
+        if len(self.replay_outcome_ids) != len(set(self.replay_outcome_ids)):
+            raise ValueError("replay_outcome_ids must be unique")
         check_ids = [check.check_id for check in self.checks]
         if len(check_ids) != len(set(check_ids)):
             raise ValueError("validation check IDs must be unique within a decision")
