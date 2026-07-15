@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest, ToolRiskTier
+from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import (
@@ -13,6 +14,7 @@ from pajin.runtime.worker import (
     WorkerResult,
     WorkerStatus,
 )
+from pajin.tools.ai import AIChatProbeInput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import ToolGateway
 from pajin.tools.http import HTTPGetTool
@@ -212,3 +214,58 @@ def test_gateway_enforces_per_campaign_request_rate(
     assert first.executed
     assert not second.executed
     assert second.decision.policy == "rate-limit"
+
+
+def test_gateway_counts_every_ai_chat_turn_against_the_request_rate(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    rules = sample_campaign.spec.rules_of_engagement.model_copy(
+        update={"max_requests_per_minute": 1}
+    )
+    campaign = sample_campaign.model_copy(
+        update={"spec": sample_campaign.spec.model_copy(update={"rules_of_engagement": rules})}
+    )
+    scenario = next(
+        item
+        for item in KISA_CATALOG.scenarios
+        if item.scenario_id == "kisa.agent.memory-poisoning-persistence"
+    )
+    assert scenario.probe is not None
+    request = ToolRequest(
+        agent_id="agent:planner-local",
+        tool_id="ai.chat-probe",
+        target=campaign.spec.targets[0].endpoint,
+        method="POST",
+        arguments=AIChatProbeInput(
+            scenario_id=scenario.scenario_id,
+            threat_class="A04",
+            session_id="pajin:test:rate",
+            turns=scenario.probe.turns,
+            checks=scenario.probe.checks,
+        ).model_dump(mode="json"),
+    )
+    registry = ToolRegistry()
+    registry.register(AIChatProbeTool())
+    gateway = ToolGateway(
+        policy=PolicyEngine(),
+        tools=registry,
+        worker=NeverWorker(),
+        store=RunStore.create(tmp_path, campaign.metadata.name),
+        clock=lambda: datetime(2026, 7, 15, 1, tzinfo=UTC),
+    )
+    grant = CapabilityGrant(
+        subject=request.agent_id,
+        campaign=campaign.metadata.name,
+        tools={request.tool_id},
+        targets={request.target},
+        max_risk_tier=ToolRiskTier.T2,
+        max_calls=1,
+        expires_at=campaign.spec.authorization.expires_at,
+    )
+
+    outcome = asyncio.run(gateway.execute(campaign, grant, request, used_calls=0))
+
+    assert AIChatProbeTool().network_request_cost(request) == 2
+    assert not outcome.executed
+    assert outcome.decision.policy == "rate-limit"

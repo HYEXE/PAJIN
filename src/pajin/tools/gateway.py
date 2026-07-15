@@ -7,6 +7,8 @@ from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from threading import Lock
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict
 
@@ -40,6 +42,60 @@ class GatewayOutcome(BaseModel):
     executed: bool = False
 
 
+class RequestRateLimitLedger:
+    """Campaign-scoped request reservations shared by original and replay Gateways."""
+
+    def __init__(self) -> None:
+        self._ledger_id = f"rate-ledger_{uuid4().hex}"
+        self._request_times: dict[str, deque[datetime]] = {}
+        self._lock = Lock()
+
+    @property
+    def ledger_id(self) -> str:
+        return self._ledger_id
+
+    def snapshot(self) -> dict[str, object]:
+        with self._lock:
+            return {
+                "ledgerId": self._ledger_id,
+                "reservationCounts": {
+                    campaign: len(times) for campaign, times in sorted(self._request_times.items())
+                },
+            }
+
+    def reserve(
+        self,
+        campaign: CampaignManifest,
+        evaluated_at: datetime,
+        *,
+        request_cost: int,
+    ) -> PolicyDecision | None:
+        limit = campaign.spec.rules_of_engagement.max_requests_per_minute
+        if limit is None:
+            return None
+        if evaluated_at.tzinfo is None:
+            evaluated_at = evaluated_at.replace(tzinfo=UTC)
+        cutoff = evaluated_at - timedelta(minutes=1)
+        with self._lock:
+            request_times = self._request_times.setdefault(
+                campaign.metadata.name,
+                deque(),
+            )
+            while request_times and request_times[0] <= cutoff:
+                request_times.popleft()
+            if len(request_times) + request_cost > limit:
+                return PolicyDecision(
+                    allowed=False,
+                    reason=(
+                        f"campaign rate limit of {limit} requests per minute cannot reserve "
+                        f"{request_cost} request units"
+                    ),
+                    policy="rate-limit",
+                )
+            request_times.extend(evaluated_at for _ in range(request_cost))
+        return None
+
+
 class ToolGateway:
     """Authorize, dispatch, bound, audit, and record a tool request."""
 
@@ -51,6 +107,8 @@ class ToolGateway:
         worker: WorkerBackend,
         store: RunStore,
         secrets: SecretBroker | None = None,
+        rate_limits: RequestRateLimitLedger | None = None,
+        allow_secret_requests: bool = True,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._policy = policy
@@ -58,8 +116,9 @@ class ToolGateway:
         self._worker = worker
         self._store = store
         self._secrets = secrets or SecretBroker()
+        self._rate_limits = rate_limits or RequestRateLimitLedger()
+        self._allow_secret_requests = allow_secret_requests
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._request_times: deque[datetime] = deque()
 
     async def execute(
         self,
@@ -89,19 +148,36 @@ class ToolGateway:
             now=evaluated_at,
         )
         if decision.allowed:
-            rate_limit_denial = self._reserve_rate_limit_slot(
-                campaign,
-                evaluated_at,
-                request_cost=tool.spec.network_request_cost,
-            )
-            if rate_limit_denial is not None:
-                decision = rate_limit_denial
+            try:
+                request_cost = tool.network_request_cost(request)
+                if (
+                    isinstance(request_cost, bool)
+                    or not isinstance(request_cost, int)
+                    or not tool.spec.network_request_cost <= request_cost <= 100
+                ):
+                    raise ValueError("Tool returned an invalid network request cost")
+            except (TypeError, ValueError):
+                decision = PolicyDecision(
+                    allowed=False,
+                    reason="tool request does not have a valid bounded network request cost",
+                    policy="tool-network-request-cost",
+                )
+            else:
+                rate_limit_denial = self._reserve_rate_limit_slot(
+                    campaign,
+                    evaluated_at,
+                    request_cost=request_cost,
+                )
+                if rate_limit_denial is not None:
+                    decision = rate_limit_denial
         self._record_policy(request, decision)
         if not decision.allowed:
             return self._deny(request, decision, policy_recorded=True)
 
         try:
             job = tool.prepare(request)
+            if job.secret_requests and not self._allow_secret_requests:
+                raise ValueError("this Tool Gateway execution forbids Secret Lease requests")
             if job.network is not NetworkMode.NONE or job.egress_policy is not None:
                 raise ValueError("Tool Adapter cannot grant itself network access")
             if tool.spec.network_access:
@@ -255,25 +331,11 @@ class ToolGateway:
         *,
         request_cost: int,
     ) -> PolicyDecision | None:
-        limit = campaign.spec.rules_of_engagement.max_requests_per_minute
-        if limit is None:
-            return None
-        if evaluated_at.tzinfo is None:
-            evaluated_at = evaluated_at.replace(tzinfo=UTC)
-        cutoff = evaluated_at - timedelta(minutes=1)
-        while self._request_times and self._request_times[0] <= cutoff:
-            self._request_times.popleft()
-        if len(self._request_times) + request_cost > limit:
-            return PolicyDecision(
-                allowed=False,
-                reason=(
-                    f"campaign rate limit of {limit} requests per minute cannot reserve "
-                    f"{request_cost} request units"
-                ),
-                policy="rate-limit",
-            )
-        self._request_times.extend(evaluated_at for _ in range(request_cost))
-        return None
+        return self._rate_limits.reserve(
+            campaign,
+            evaluated_at,
+            request_cost=request_cost,
+        )
 
     def _deny(
         self,

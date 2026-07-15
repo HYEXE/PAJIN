@@ -27,6 +27,12 @@ class ToolSpec(BaseModel):
 class Tool(ABC):
     spec: ToolSpec
 
+    def network_request_cost(self, request: ToolRequest) -> int:
+        """Return trusted request units; multi-request adapters may override this floor."""
+
+        del request
+        return self.spec.network_request_cost
+
     @abstractmethod
     def prepare(self, request: ToolRequest) -> WorkerJob:
         """Translate a canonical request into an isolated worker job."""

@@ -91,6 +91,7 @@ class ExecutionCancellationContext:
         self._cleanup_completed_at: datetime | None = None
         self._executor_drained_at: datetime | None = None
         self._cleanup_error: str | None = None
+        self._children: list[ExecutionCancellationContext] = []
 
     @property
     def active(self) -> bool:
@@ -111,7 +112,29 @@ class ExecutionCancellationContext:
         self._observed_at = datetime.now(UTC)
         self._cleanup_status = CancellationCleanupStatus.OBSERVED
         self._event.set()
+        for child in tuple(self._children):
+            child.cancel(kind, self._reason)
         return True
+
+    def fork_for_run(
+        self,
+        *,
+        engine: str,
+        run_id: str,
+        path: Path,
+    ) -> ExecutionCancellationContext:
+        """Create a run-local child signal without rebinding the parent Run."""
+
+        child = ExecutionCancellationContext(
+            job_id=self._job_id,
+            control_plane_run_id=self._control_plane_run_id,
+        )
+        child.bind_run(engine=engine, run_id=run_id, path=path)
+        if self.active:
+            snapshot = self.snapshot()
+            child.cancel(snapshot.kind, snapshot.reason)
+        self._children.append(child)
+        return child
 
     def bind_run(self, *, engine: str, run_id: str, path: Path) -> None:
         binding = ExecutionRunBinding(

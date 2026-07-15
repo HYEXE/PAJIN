@@ -228,6 +228,11 @@ class AIChatProbeTool(Tool):
         network_access=True,
     )
 
+    def network_request_cost(self, request: ToolRequest) -> int:
+        """The Worker performs exactly one bounded POST for every declared turn."""
+
+        return len(AIChatProbeInput.model_validate(request.arguments).turns)
+
     def prepare(self, request: ToolRequest) -> WorkerJob:
         if request.method != "POST":
             raise ValueError("AI chat probes require POST")
@@ -307,6 +312,9 @@ class AIChatRegressionTool(AIChatProbeTool):
         evidence_types={"json", "conversation"},
         network_access=True,
     )
+
+    def network_request_cost(self, request: ToolRequest) -> int:
+        return len(AIChatRegressionInput.model_validate(request.arguments).turns)
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
         if request.method != "POST":

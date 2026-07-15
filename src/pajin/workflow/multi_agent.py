@@ -56,7 +56,7 @@ from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
-from pajin.tools.gateway import GatewayOutcome, ToolGateway
+from pajin.tools.gateway import GatewayOutcome, RequestRateLimitLedger, ToolGateway
 from pajin.workflow.cancellation import (
     ensure_cancellation_context,
     record_engine_cleanup,
@@ -140,6 +140,8 @@ class MultiAgentCampaignRunner:
         campaign: CampaignManifest,
         *,
         cancellation: ExecutionCancellationContext | None = None,
+        budget: BudgetController | None = None,
+        rate_limits: RequestRateLimitLedger | None = None,
     ) -> MultiAgentRunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
         self._execution_cancellation = cancellation
@@ -154,7 +156,10 @@ class MultiAgentCampaignRunner:
             "campaign.started",
             {"campaign": campaign.metadata.name, "engine": "multi-agent"},
         )
-        budget = BudgetController(campaign.spec.budgets)
+        if budget is not None and budget.budgets != campaign.spec.budgets:
+            raise ValueError("shared budget does not match the Campaign budget contract")
+        budget = budget or BudgetController(campaign.spec.budgets)
+        rate_limits = rate_limits or RequestRateLimitLedger()
         ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
         graph = TaskGraph()
         agents: dict[str, AgentNode] = {}
@@ -205,6 +210,7 @@ class MultiAgentCampaignRunner:
             worker=self._worker,
             store=store,
             secrets=self._secrets,
+            rate_limits=rate_limits,
         )
 
         def ensure_candidate_production() -> None:
@@ -647,7 +653,7 @@ class MultiAgentCampaignRunner:
                 "cancellationReason": self._kill_switch.reason,
             },
         )
-        self._write_state(store, agents, graph, ledger, budget)
+        self._write_state(store, agents, graph, ledger, budget, rate_limits)
         if cancellation is not None and cancellation.active:
             record_engine_cleanup(store, cancellation)
         store.seal()
@@ -1167,6 +1173,7 @@ class MultiAgentCampaignRunner:
         graph: TaskGraph,
         ledger: CapabilityLedger,
         budget: BudgetController,
+        rate_limits: RequestRateLimitLedger,
     ) -> None:
         store.write_json(
             "agents.json", [agent.model_dump(mode="json") for agent in agents.values()]
@@ -1174,6 +1181,7 @@ class MultiAgentCampaignRunner:
         store.write_json("task-graph.json", graph.model_dump(mode="json"))
         store.write_json("capabilities.json", ledger.snapshot())
         store.write_json("budget.json", budget.snapshot())
+        store.write_json("rate-limits.json", rate_limits.snapshot())
         store.write_json("control.json", self._kill_switch.snapshot().model_dump(mode="json"))
         store.write_json("secrets.json", self._secrets.snapshot())
 
