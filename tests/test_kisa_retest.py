@@ -8,12 +8,12 @@ import pytest
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import ChecklistStatus, EvaluationThresholds
 from pajin.modes.ai_redteam.retest import (
     KISARetestService,
     RegressionStatus,
-    RetestFindingStatus,
 )
 from pajin.modes.ai_redteam.runtime import (
     KISAPlannerRuntime,
@@ -170,7 +170,7 @@ def test_retest_requires_remediation_plan_before_comparison(tmp_path: Path) -> N
         KISARetestService().compare(baseline.run_path, retest.run_path)
 
 
-def test_retest_closes_findings_and_emits_kisa_overlay(tmp_path: Path) -> None:
+def test_retest_does_not_close_semantic_only_candidates(tmp_path: Path) -> None:
     baseline, _ = _run(tmp_path, retest=False, vulnerable=True)
     retest, retest_mode = _run(tmp_path, retest=True, vulnerable=False)
 
@@ -180,25 +180,29 @@ def test_retest_closes_findings_and_emits_kisa_overlay(tmp_path: Path) -> None:
 
     assert baseline.status is RunStatus.COMPLETED
     assert retest.status is RunStatus.COMPLETED
-    assert len(baseline.findings) == 3
-    assert len(plan.actions) == 3
+    assert baseline.findings == []
+    assert len(baseline.validation.candidates) == 3
+    assert all(
+        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.reason_codes
+        == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        for decision in baseline.validation.decisions
+    )
+    assert plan.actions == []
     assert plan.path == baseline.run_path / "remediation-plan.json"
     assert retest.findings == []
     assert len(retest.tool_results) == 8
-    assert result.assessment.summary.fixed == 3
+    assert result.assessment.summary.fixed == 0
     assert result.assessment.summary.still_vulnerable == 0
     assert result.assessment.summary.inconclusive == 0
     assert result.assessment.summary.new_findings == 0
     assert result.assessment.summary.regression is RegressionStatus.PASS
-    assert all(
-        item.status is RetestFindingStatus.FIXED for item in result.assessment.finding_results
-    )
-    assert all(len(item.retest_evidence) == 2 for item in result.assessment.finding_results)
+    assert result.assessment.finding_results == []
 
     overlay = {item.item_id: item for item in result.assessment.checklist_overlay.items}
-    assert overlay["report.mitigation"].status is ChecklistStatus.YES
+    assert overlay["report.mitigation"].status is ChecklistStatus.NOT_APPLICABLE
     assert overlay["improve.tasks"].status is ChecklistStatus.NEEDS_REVIEW
-    assert overlay["improve.retest"].status is ChecklistStatus.YES
+    assert overlay["improve.retest"].status is ChecklistStatus.NEEDS_REVIEW
     assert overlay["improve.normal"].status is ChecklistStatus.YES
     assert overlay["improve.regression"].status is ChecklistStatus.YES
     assert {
@@ -213,7 +217,9 @@ def test_retest_closes_findings_and_emits_kisa_overlay(tmp_path: Path) -> None:
     assert metrics["block-refusal-rate"].value == 1
 
 
-def test_retest_keeps_validated_findings_open(tmp_path: Path) -> None:
+def test_retest_does_not_mark_semantic_only_candidates_still_vulnerable(
+    tmp_path: Path,
+) -> None:
     baseline, _ = _run(tmp_path, retest=False, vulnerable=True)
     retest, _ = _run(tmp_path, retest=True, vulnerable=True)
 
@@ -222,11 +228,8 @@ def test_retest_keeps_validated_findings_open(tmp_path: Path) -> None:
     result = service.compare(baseline.run_path, retest.run_path)
 
     assert result.assessment.summary.fixed == 0
-    assert result.assessment.summary.still_vulnerable == 3
-    assert all(
-        item.status is RetestFindingStatus.STILL_VULNERABLE
-        for item in result.assessment.finding_results
-    )
+    assert result.assessment.summary.still_vulnerable == 0
+    assert result.assessment.finding_results == []
     assert result.assessment.summary.regression is RegressionStatus.PASS
 
 

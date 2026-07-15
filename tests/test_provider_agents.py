@@ -10,6 +10,7 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.agents.provider import ModelToolDescriptor, ProviderAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderMessage, ProviderRegistration
 from pajin.runtime.control import BudgetExceeded
@@ -166,8 +167,12 @@ def test_provider_roles_use_gateway_capabilities_budgets_and_same_run_evidence(
     outcome = asyncio.run(runner.run(campaign))
 
     assert outcome.status.value == "completed"
-    assert len(outcome.findings) == 1
-    assert outcome.findings[0].evidence == outcome.tool_results[0].evidence
+    assert outcome.findings == []
+    assert outcome.validation.candidates[0].claim.evidence == outcome.tool_results[0].evidence
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     assert (outcome.run_path / "model-narrative.json").is_file()
     budget = json.loads((outcome.run_path / "budget.json").read_text(encoding="utf-8"))
     assert budget["toolCalls"] == 4

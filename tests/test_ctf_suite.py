@@ -257,7 +257,7 @@ def test_suite_run_spawns_category_specialists_and_seals_aggregate_result(
     assert len(outcome.agents) == 6
     assert sum(agent.role is AgentRole.SPECIALIST for agent in outcome.agents) == 2
     assert len(outcome.tool_results) == 2
-    assert len(outcome.findings) == 2
+    assert outcome.findings == []
     assert outcome.plan is not None
     assert {step.persona for step in outcome.plan.steps} == {
         "ctf-web-specialist",

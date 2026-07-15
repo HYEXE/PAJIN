@@ -79,10 +79,9 @@ and set `validated: true` only when the Decision references a successful ReplayO
 Validator can support or dispute the claim, but it cannot confirm it alone, rewrite the admitted
 claim, or erase it by returning an empty list.
 
-The implementation as of 2026-07-15 still allows matching semantic support plus the objective gate
-to create a legacy `confirmed` projection. This is a documented migration gap. Until Restricted
-Reproducer support is implemented, that Candidate must be interpreted as `needs-review` at the
-product level.
+The M1 migration now blocks matching semantic support plus the objective gate from creating a
+`confirmed` projection. Until Restricted Reproducer support is implemented, that Candidate is
+persisted as `needs-review` with `independent-reproduction-missing`.
 
 Validator-only Findings for Tool families without a trusted producer continue through the ADR 0025
 legacy adapter. This preserves current compatibility while making the incomplete coverage explicit.
@@ -141,9 +140,9 @@ Candidate-admission tests must prove that:
   remain compatible.
 
 The Restricted Reproducer migration must additionally prove that only a successful Candidate-bound
-ReplayOutcome plus the objective gate creates the confirmed projection. Existing tests that expect
-semantic support alone to create `confirmed` cover legacy compatibility behavior and must be
-changed during that migration.
+ReplayOutcome plus the objective gate creates the confirmed projection. Tests now require semantic
+support without ReplayOutcome to remain outside `findings.json`; historical sealed runs retain their
+legacy interpretation without rewrite.
 
 ## References
 

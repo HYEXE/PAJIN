@@ -214,8 +214,7 @@ def test_crypto_multi_agent_run_routes_specialist_and_seals_result(tmp_path: Pat
     assert outcome.status is RunStatus.COMPLETED
     assert len(outcome.agents) == 5
     assert len(outcome.tool_results) == 1
-    assert len(outcome.findings) == 1
-    assert outcome.findings[0].threat_class == "CTF-CRYPTO"
+    assert outcome.findings == []
     assert outcome.plan is not None
     assert outcome.plan.steps[0].persona == "ctf-crypto-specialist"
     assert artifacts.result.status is CTFSolveStatus.SOLVED

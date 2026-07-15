@@ -5,6 +5,7 @@ from pathlib import Path
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import ToolRequest
+from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.worker import NetworkMode, SimulatedWorkerBackend
 from pajin.tools.base import ToolRegistry
@@ -36,7 +37,9 @@ def test_registered_mcp_tool_exposes_only_catalog_identifiers_to_worker() -> Non
     assert "/usr/local/bin/python" not in job.stdin
 
 
-def test_registered_mcp_workflow_produces_validated_finding(tmp_path: Path) -> None:
+def test_registered_mcp_workflow_preserves_candidate_without_confirming_it(
+    tmp_path: Path,
+) -> None:
     campaign = load_manifest(Path("examples/mcp-tool.yaml"))
     registry = ToolRegistry()
     registry.register(demo_mcp_tool())
@@ -50,8 +53,12 @@ def test_registered_mcp_workflow_produces_validated_finding(tmp_path: Path) -> N
 
     outcome = asyncio.run(runner.run(campaign))
 
-    assert len(outcome.findings) == 1
-    assert outcome.findings[0].validated
+    assert outcome.findings == []
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
     evidence = json.loads(
         next((outcome.run_path / "evidence").glob("*.json")).read_text(encoding="utf-8")
     )

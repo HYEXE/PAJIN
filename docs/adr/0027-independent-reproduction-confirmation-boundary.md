@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: Planned; the current semantic/objective gate does not yet satisfy this boundary
+- Implementation: In progress; semantic-only confirmation is blocked, Restricted Replay is planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -122,18 +122,16 @@ provenance, actor identity, approval record, and Oracle result required of autom
 ## Current implementation gap and migration
 
 As of 2026-07-15, PAJIN implements Candidate admission, semantic reconciliation, objective evidence
-gating, Decision snapshots, and final Run sealing. It does not implement `ReplayIntent` compilation,
-a replay-specific Grant, Restricted Reproducer execution, or `ReplayOutcome` artifacts.
-
-The current ADR 0025/0026 compatibility path can write `confirmed` after semantic support and the
-objective gate alone. This is a known product-baseline violation, not a new product decision. Until
-the code is migrated, such output must be treated as **legacy semantic confirmation**, not
-product-level Confirmed.
+gating, Decision snapshots, final Run sealing, and the first fail-closed migration step. Semantic
+support without ReplayOutcome is retained as `needs-review` with
+`independent-reproduction-missing` and is excluded from `findings.json`. PAJIN does not yet implement
+`ReplayIntent` compilation, a replay-specific Grant, Restricted Reproducer execution, or
+`ReplayOutcome` artifacts, so new runs cannot produce a product-level Confirmed Finding.
 
 Migration proceeds in this order:
 
-1. prevent semantic-only Decisions from entering the confirmed compatibility projection and retain
-   them as `needs-review` with `independent-reproduction-missing`;
+1. **Implemented:** prevent semantic-only Decisions from entering the confirmed compatibility
+   projection and retain them as `needs-review` with `independent-reproduction-missing`;
 2. add typed `ReplayIntent`, compiled replay specification, replay Grant, and `ReplayOutcome`
    contracts with Candidate and request lineage;
 3. implement the KISA `ai.chat-probe` restricted-replay vertical slice and Mode Oracle;

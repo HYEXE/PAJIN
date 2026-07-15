@@ -30,6 +30,7 @@ class ValidationMethod(StrEnum):
 
 class ValidationReasonCode(StrEnum):
     VALIDATOR_CONFIRMED = "validator-confirmed"
+    INDEPENDENT_REPRODUCTION_MISSING = "independent-reproduction-missing"
     VALIDATOR_DISAGREED = "validator-disagreed"
     VALIDATOR_OMITTED = "validator-omitted"
     VALIDATOR_UNAVAILABLE = "validator-unavailable"

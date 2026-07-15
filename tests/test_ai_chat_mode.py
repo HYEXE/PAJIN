@@ -275,8 +275,19 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
 
     assert outcome.status is RunStatus.COMPLETED
     assert len(outcome.tool_results) == 6
-    assert {finding.threat_class for finding in outcome.findings} == {"M03", "M06", "A04"}
-    assert all(len(finding.evidence) == 2 for finding in outcome.findings)
+    assert outcome.findings == []
+    assert {candidate.claim.threat_class for candidate in outcome.validation.candidates} == {
+        "M03",
+        "M06",
+        "A04",
+    }
+    assert all(len(candidate.claim.evidence) == 2 for candidate in outcome.validation.candidates)
+    assert all(
+        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.reason_codes
+        == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        for decision in outcome.validation.decisions
+    )
     assessment = mode_outcome.assessment
     assert assessment.coverage.executed == {"M03", "M06", "A04"}
     assert assessment.coverage.untested == set()

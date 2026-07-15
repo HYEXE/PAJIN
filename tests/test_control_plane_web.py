@@ -347,5 +347,9 @@ async def test_web_console_default_campaign_executes_through_trusted_adapter(
 
     assert result.result["engine"] == "local-campaign"
     assert result.result["toolCalls"] == 1
-    assert result.result["validatedFindings"] == 1
-    assert Path(str(result.result["reportPath"])).is_file()
+    assert result.result["validatedFindings"] == 0
+    assert result.result["confirmedFindings"] == 0
+    assert result.result["needsReviewCandidates"] == 1
+    report_path = Path(str(result.result["reportPath"]))
+    assert report_path.is_file()
+    assert "Needs review: `1`" in report_path.read_text(encoding="utf-8")

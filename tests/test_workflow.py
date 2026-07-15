@@ -19,6 +19,7 @@ from pajin.domain.models import (
 from pajin.domain.validation import (
     CandidateFinding,
     FindingDisposition,
+    ValidationReasonCode,
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
@@ -345,7 +346,7 @@ def test_local_validator_failure_seals_inconclusive_candidate(
     assert verify_run_integrity(run_path).valid
 
 
-def test_local_vertical_slice_creates_validated_finding_and_report(
+def test_local_vertical_slice_keeps_semantic_only_finding_out_of_confirmed_report(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -361,11 +362,11 @@ def test_local_vertical_slice_creates_validated_finding_and_report(
 
     outcome = asyncio.run(runner.run(sample_campaign))
 
-    assert len(outcome.findings) == 1
-    assert outcome.findings[0].validated
+    assert outcome.findings == []
     assert outcome.report_path.exists()
     report = outcome.report_path.read_text(encoding="utf-8")
-    assert "Untrusted instruction triggered an unauthorized tool call" in report
+    assert "Needs review: `1`" in report
+    assert "Untrusted instruction triggered an unauthorized tool call" not in report
 
     events = [
         json.loads(line)
@@ -376,10 +377,15 @@ def test_local_vertical_slice_creates_validated_finding_and_report(
     assert "findings.validated" in event_types
     assert "candidate.finding.created" in event_types
     assert "candidate-set.produced" not in event_types
-    assert "validation.confirmed" in event_types
+    assert "validation.needs-review" in event_types
+    assert "validation.confirmed" not in event_types
     assert "campaign.completed" in event_types
     assert len(outcome.validation.candidates) == 1
-    assert outcome.validation.decisions[0].disposition is FindingDisposition.CONFIRMED
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.validation.decisions[0].reason_codes == [
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
+    ]
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
     assert (outcome.run_path / "candidate-findings.json").is_file()
     assert (outcome.run_path / "validation-decisions.json").is_file()
     assert (outcome.run_path / "validation-index.json").is_file()

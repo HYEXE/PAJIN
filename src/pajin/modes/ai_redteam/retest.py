@@ -531,9 +531,20 @@ class KISARetestService:
                 source_pdf_pages=definition.source_pdf_pages,
             )
 
-        conclusive = all(
+        conclusive = bool(finding_results) and all(
             result.status is not RetestFindingStatus.INCONCLUSIVE for result in finding_results
         )
+        if not finding_results:
+            retest_status = ChecklistStatus.NEEDS_REVIEW
+            retest_rationale = (
+                "독립 재현으로 확인된 기준 Finding이 없어 재검증 결과를 연결할 수 없음"
+            )
+        elif conclusive:
+            retest_status = ChecklistStatus.YES
+            retest_rationale = "동일 공격을 반복 실행하고 원본 Finding과 결과를 연결함"
+        else:
+            retest_status = ChecklistStatus.NO
+            retest_rationale = "일부 Finding의 재검증 증적이 불충분함"
         regression_status = (
             ChecklistStatus.YES
             if regression.status is RegressionStatus.PASS
@@ -556,12 +567,8 @@ class KISARetestService:
             ),
             item(
                 "improve.retest",
-                ChecklistStatus.YES if conclusive else ChecklistStatus.NO,
-                (
-                    "동일 공격을 반복 실행하고 원본 Finding과 결과를 연결함"
-                    if conclusive
-                    else "일부 Finding의 재검증 증적이 불충분함"
-                ),
+                retest_status,
+                retest_rationale,
                 ["kisa-retest.json", "evidence/"],
                 automated=True,
             ),

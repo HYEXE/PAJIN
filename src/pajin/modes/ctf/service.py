@@ -355,18 +355,10 @@ class CTFModePack:
         digest_matches = candidate_digest is not None and compare_digest(
             candidate_digest, expected_digest
         )
-        threat_class = f"CTF-{challenge.spec.category.value.upper()}"
-        validated = any(
-            finding.validated
-            and finding.threat_class == threat_class
-            and finding.target == target.endpoint
-            and set(finding.evidence) <= set(tool_result.evidence)
-            for finding in outcome.findings
-        )
-        if digest_matches and not validated:
-            raise ValueError("digest-matched CTF candidate lacks an independent validated finding")
-
-        if digest_matches and validated:
+        # CTF flag verification is a deterministic Mode solve state, not a security
+        # Finding confirmation. ADR 0027 therefore keeps this digest gate independent
+        # from the common Candidate/ReplayOutcome confirmation projection.
+        if digest_matches:
             status = CTFSolveStatus.SOLVED
         elif candidate is not None:
             status = CTFSolveStatus.INVALID_FLAG
@@ -504,7 +496,7 @@ class CTFModePack:
             "",
             f"1. The Triage Planner classified the typed challenge as {category.value}.",
             f"2. {specialist_step}",
-            "3. The independent Validator hashed the candidate and compared only digests.",
+            "3. The Mode-owned solve verifier hashed the candidate and compared only digests.",
             "4. The Reporter produced this evidence-bound write-up.",
             "",
             "## Observation",
@@ -565,7 +557,6 @@ class CTFSuiteModePack:
             raise ValueError("CTF Suite MVP requires exactly two Specialist results")
 
         items: list[CTFRunResult] = []
-        validated_count = 0
         for challenge in ordered:
             target = next(
                 (
@@ -603,19 +594,8 @@ class CTFSuiteModePack:
             digest_matches = candidate_digest is not None and compare_digest(
                 candidate_digest, expected_digest
             )
-            threat_class = f"CTF-{challenge.spec.category.value.upper()}"
-            validated = any(
-                finding.validated
-                and finding.threat_class == threat_class
-                and finding.target == target.endpoint
-                and set(finding.evidence) <= set(tool_result.evidence)
-                for finding in outcome.findings
-            )
-            if digest_matches and not validated:
-                raise ValueError("digest-matched CTF Suite candidate lacks independent validation")
             if digest_matches:
                 status = CTFSolveStatus.SOLVED
-                validated_count += 1
             elif candidate is not None:
                 status = CTFSolveStatus.INVALID_FLAG
             else:
@@ -633,9 +613,6 @@ class CTFSuiteModePack:
                     evidence=list(dict.fromkeys(tool_result.evidence)),
                 )
             )
-        if len(outcome.findings) != validated_count:
-            raise ValueError("CTF Suite findings do not match the independently solved items")
-
         summary = CTFSuiteSummary(
             solved=sum(item.status is CTFSolveStatus.SOLVED for item in items),
             unsolved=sum(item.status is CTFSolveStatus.UNSOLVED for item in items),

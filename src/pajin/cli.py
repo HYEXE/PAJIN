@@ -19,6 +19,7 @@ from pajin.agents.provider import ModelToolDescriptor, ProviderAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.validation import FindingDisposition, FindingValidationSet
 from pajin.modes.ai_redteam import (
     KISACandidateProducer,
     KISAModePack,
@@ -88,6 +89,13 @@ from pajin.workflow.tool_loop import (
 
 app = typer.Typer(help="PAJIN policy-governed security validation CLI", no_args_is_help=True)
 console = Console()
+
+
+def _disposition_count(
+    validation: FindingValidationSet,
+    disposition: FindingDisposition,
+) -> int:
+    return sum(decision.disposition is disposition for decision in validation.decisions)
 
 
 def _tool_registry() -> ToolRegistry:
@@ -471,7 +479,11 @@ def run_campaign(
     failed_tools = sum(not result.success for result in outcome.tool_results)
     console.print(f"[bold green]Campaign completed:[/bold green] {outcome.run_id}")
     console.print(f"Failed tool calls: {failed_tools}")
-    console.print(f"Validated findings: {len(outcome.findings)}")
+    console.print(f"Confirmed findings: {len(outcome.findings)}")
+    console.print(
+        "Needs review: "
+        f"{_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
+    )
     console.print(f"Report: {outcome.report_path.resolve()}")
     if failed_tools:
         raise typer.Exit(code=1)
@@ -516,7 +528,11 @@ def run_multi_agent_campaign(
     console.print(table)
     console.print(f"Run status: {outcome.status.value}")
     console.print(f"Tool calls: {len(outcome.tool_results)}")
-    console.print(f"Validated findings: {len(outcome.findings)}")
+    console.print(f"Confirmed findings: {len(outcome.findings)}")
+    console.print(
+        "Needs review: "
+        f"{_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)}"
+    )
     if outcome.cancellation_reason:
         console.print(f"Cancellation: {outcome.cancellation_reason}")
     console.print(f"Report: {outcome.report_path.resolve()}")
@@ -957,7 +973,11 @@ def run_kisa_ai_redteam(
     table.add_column("Value")
     table.add_row("Run status", outcome.status.value)
     table.add_row("Threat coverage", f"{mode_outcome.assessment.coverage.coverage_rate:.1%}")
-    table.add_row("Validated findings", str(len(outcome.findings)))
+    table.add_row("Confirmed findings", str(len(outcome.findings)))
+    table.add_row(
+        "Finding needs review",
+        str(_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)),
+    )
     table.add_row("Failed metric thresholds", str(failed_metrics))
     table.add_row("Checklist yes", str(summary.yes))
     table.add_row("Checklist no", str(summary.no))
@@ -1250,9 +1270,13 @@ def run_bug_bounty_campaign(
     table.add_column("Value")
     table.add_row("Run status", outcome.status.value)
     table.add_row("Tool calls", str(len(outcome.tool_results)))
-    table.add_row("Validated findings", str(len(outcome.findings)))
+    table.add_row("Confirmed findings", str(len(outcome.findings)))
+    table.add_row(
+        "Candidate needs review",
+        str(_disposition_count(outcome.validation, FindingDisposition.NEEDS_REVIEW)),
+    )
     table.add_row("Ready drafts", str(summary.ready))
-    table.add_row("Needs review", str(summary.needs_review))
+    table.add_row("Triage needs review", str(summary.needs_review))
     table.add_row("Known duplicates", str(summary.known_duplicates))
     table.add_row("Same-run duplicates", str(summary.run_duplicates))
     console.print(table)

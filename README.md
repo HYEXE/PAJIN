@@ -28,10 +28,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 
 > **Validation status:** PAJIN currently implements trusted Candidate admission, semantic review,
 > objective evidence gates, and sealed Decision snapshots. It does not yet execute an independent
-> restricted reproduction. Some existing paths can still write a legacy `confirmed` compatibility
-> Finding after semantic support and the objective gate; under the product baseline and
-> [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md), that result is only
-> `needs-review` until a fresh Candidate-bound ReplayOutcome succeeds.
+> restricted reproduction. The common gate therefore retains semantic-positive Candidates as
+> `needs-review` with `independent-reproduction-missing`, and the confirmed-only `findings.json`
+> projection remains empty until a fresh Candidate-bound ReplayOutcome succeeds, as required by
+> [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
 
 ## Current safety boundary
 
@@ -70,17 +70,28 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 
 ## Development setup
 
-Python 3.12 or newer is required.
+Python 3.12 or newer is supported. The repository `.python-version` selects Python 3.12 as the
+portable contributor and CI baseline.
+
+The checked-in root `uv.lock` is the canonical dependency lock for the application, development
+tools, and optional Control Plane. Create an exact environment from a clean clone with:
+
+```powershell
+uv sync --locked --extra dev --extra control-plane
+```
+
+Use `uv lock` after an intentional dependency constraint change and review the resulting lockfile
+diff. Use `uv lock --upgrade-package <package>` for a targeted upgrade rather than refreshing every
+package implicitly. The Docker Worker remains a separate execution boundary and continues to use
+`containers/worker/requirements.lock`.
+
+For environments where `uv` is unavailable, the editable pip install remains a supported
+bootstrap path, but it resolves within the declared version ranges and is not the reproducible
+quality-gate environment:
 
 ```powershell
 python -m venv .venv
 .venv\Scripts\python -m pip install -e ".[dev,control-plane]"
-```
-
-If `uv` is available:
-
-```powershell
-uv sync --extra dev --extra control-plane
 ```
 
 ## Supported command surface
@@ -703,12 +714,12 @@ The Semantic Validator can support a Candidate only when its target is declared 
 artifact was produced by a Specialist in the same run. For cataloged KISA `ai.chat-probe`
 scenarios, a Tool-less trusted Candidate Producer independently recomputes the raw transcript
 checks before validation. A semantic Validator that returns no Finding therefore leaves a
-`needs-review` Candidate instead of deleting the observation. The current compatibility path can
-still create a legacy `confirmed` Finding from matching semantic support plus the common objective
-gate, but ADR 0027 supersedes that meaning: a fresh Restricted Reproducer outcome is also required
-for product-level confirmation. Validator-only claims inside the Producer's request or target/threat
-authority remain review Candidates, and cancellation or Validator failure preserves already
-observable Candidates as `inconclusive`.
+`needs-review` Candidate instead of deleting the observation. Matching semantic support plus the
+common objective gate also remains `needs-review` with `independent-reproduction-missing`; it cannot
+enter the confirmed compatibility projection until a fresh Restricted Reproducer outcome exists.
+Validator-only claims inside the Producer's request or target/threat authority remain review
+Candidates, and cancellation or Validator failure preserves already observable Candidates as
+`inconclusive`.
 
 Specialist concurrency is opt-in at the Tool contract. `parallelSafe: false` is the default;
 non-opted-in Tools execute as single-task barriers in plan order. Consecutive opted-in tasks run in
@@ -826,12 +837,13 @@ control.json
 The Candidate and Decision snapshots preserve every Finding returned by the legacy Validator and
 every observation admitted by an enabled trusted Candidate Producer, together with its
 deterministic disposition. `validation-index.json` is an ID-only status view, while the legacy
-`findings.json` currently contains the legacy confirmed-only compatibility projection. Entries
-without a Candidate-bound ReplayOutcome are not product-level Confirmed and must be treated as
-legacy semantic confirmation. The current trusted producer is limited to exact KISA AI chat catalog
-contracts; it does not trust a generic `vulnerable` field and gives the Semantic Validator no attack
-or replay Tools. Its atomic production also reserves request and target/threat confirmation space so
-a Validator cannot bypass a zero Candidate result through the legacy adapter.
+`findings.json` contains only reproduction-backed confirmed projections. Because Restricted Replay
+is not implemented yet, new runs produce `Confirmed 0 / Needs Review N` for semantic-positive
+Candidates. Historical sealed runs may still contain legacy semantic confirmations and remain
+immutable. The current trusted producer is limited to exact KISA AI chat catalog contracts; it does
+not trust a generic `vulnerable` field and gives the Semantic Validator no attack or replay Tools.
+Its atomic production also reserves request and target/threat confirmation space so a Validator
+cannot bypass a zero Candidate result through the legacy adapter.
 
 Mode Pack extensions can add artifacts such as `ctf-result.json`, `ctf-writeup.md`, KISA assessment
 files, or Bug Bounty triage drafts before appending a linked integrity seal.

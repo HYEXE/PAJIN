@@ -15,6 +15,7 @@ from pydantic import Field, model_validator
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.control_plane.models import ApprovalIntent, JobKind, JobView
 from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.domain.validation import FindingDisposition
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.models import NormalizedToolCall, ProviderChatResult, ProviderUsage
@@ -192,6 +193,10 @@ class CampaignJobExecutor:
                 seal_executor_quiescence(cancellation)
             raise
         failed = sum(not result.success for result in outcome.tool_results)
+        needs_review = sum(
+            decision.disposition is FindingDisposition.NEEDS_REVIEW
+            for decision in outcome.validation.decisions
+        )
         return CompletedExecution(
             result={
                 "engine": "local-campaign",
@@ -201,6 +206,8 @@ class CampaignJobExecutor:
                 "toolCalls": len(outcome.tool_results),
                 "failedToolCalls": failed,
                 "validatedFindings": len(outcome.findings),
+                "confirmedFindings": len(outcome.findings),
+                "needsReviewCandidates": needs_review,
             }
         )
 
