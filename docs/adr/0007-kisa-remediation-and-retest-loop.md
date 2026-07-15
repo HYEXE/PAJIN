@@ -4,9 +4,10 @@
 - Date: 2026-07-12
 - Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 
-> 현재 remediation/retest 서비스는 legacy validation Finding을 사용한다. ADR 0027의
-> Restricted Replay가 구현되기 전 판정은 제품 수준의 Confirmed·fixed·still-vulnerable을
-> 증명하지 않는다.
+> 현재 remediation/retest 서비스는 legacy validation Finding을 사용한다. 기본 `kisa-run`에는
+> ADR 0027의 exact fresh-session driver와 live transcript Oracle이 연결됐지만, verified receipt를
+> 소비하는 공통 Gate와 `kisa-retest` 연결 전 판정은 제품 수준의 Confirmed·fixed·
+> still-vulnerable을 증명하지 않는다.
 
 ## Context
 

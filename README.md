@@ -16,12 +16,12 @@ The implementation baseline as of 2026-07-15 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned restricted-replay contracts, a deterministic Replay Compiler with dedicated grants, and tamper-evident evidence seals |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, stateless and registered fresh-session Restricted Reproducer paths, and tamper-evident evidence seals |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; and evidence-only fresh-session replay for the exact M03, M06, and A04 chat contracts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Restricted Reproducer runtime, live Mode Oracles and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Primary gaps | Common Confirmed Gate integration with verified replay-receipt reloading, non-KISA session materializers and Mode Oracles, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -31,11 +31,18 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`,
 > and `ReplayOutcome` contracts. A pure deterministic compiler now checks the original Plan, bound
 > Tool request, Specialist grant, evidence digests, Scope, authorization, cancellation and budget,
-> then emits only a five-minute non-delegable `ReplayCapabilityGrant`. No runner executes that spec
-> or produces a live Mode Oracle result yet. The common gate therefore retains semantic-positive
-> Candidates as
-> `needs-review` with `independent-reproduction-missing`, and the confirmed-only `findings.json`
-> projection remains empty until a fresh Candidate-bound ReplayOutcome succeeds, as required by
+> then emits only a five-minute non-delegable `ReplayCapabilityGrant` and single-use execution
+> ticket. A separate Restricted Reproducer claims one ticket, executes compiled operations through
+> the existing Tool Gateway and Worker, produces fresh request/evidence lineage, forbids Tool-authored
+> Secret Lease requests, applies the Campaign deadline and cancellation through an async Mode
+> Oracle, and returns a twice-sealed receipt with a verified disk loader. Exact KISA
+> `ai.chat-probe` contracts now use a trusted fresh-session materializer and a raw-transcript Mode
+> Oracle. After a completed source Run is sealed, `kisa-run` coordinates Candidate-bound replay in
+> distinct replay Runs, with one new session per attempt and the same shared Campaign budget and rate
+> limits. Worker-authored `vulnerable` and `matched` fields are not trusted. Other session-bearing
+> contracts still fail closed without a registered trusted materializer. Replay records remain
+> evidence-only until the M6 common gate reloads each sealed receipt, so Candidates stay
+> `needs-review` and the confirmed-only `findings.json` projection remains empty, as required by
 > [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
 
 ## Current safety boundary
@@ -73,8 +80,14 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - `ReplayIntent` is a strict, non-executable schema: raw Tool requests, commands, arbitrary URLs,
   Capability Grants, and undeclared executable fields are rejected. Versioned replay artifacts bind
   Candidate, Run, original and replay request, Mode, scenario, Tool, target, and threat identities
-  before the deterministic compiler can issue a candidate-bound, non-delegable replay Grant. The
-  Grant is not executable until the separate Restricted Reproducer runtime is implemented.
+  before the deterministic compiler can issue a candidate-bound, non-delegable replay Grant and
+  opaque single-use execution ticket. The Restricted Reproducer rechecks the Campaign, Tool,
+  scenario fingerprint, shared budget/rate ledger, fresh evidence JSON, sealed artifact digest, and
+  finalized ticket receipt before a Mode Oracle can support the claim. Replay dispatch and Oracle
+  evaluation share deadline/cancellation bounds, and the Tool Adapter cannot request new Secret
+  Leases. The exact KISA M03, M06, and A04 `ai.chat-probe` contracts may materialize only a fresh
+  per-attempt `session_id`; every other catalog argument remains compiler-bound. Unregistered
+  session-bearing contracts fail closed.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -411,6 +424,13 @@ The six Specialist Tasks use unique session IDs and cover system-prompt disclosu
 policy bypass, and persistent memory poisoning. The lab binds only to `127.0.0.1:8765`, runs as a
 non-root user with a read-only filesystem and no Linux capabilities, and is not a production AI
 service.
+
+A completed `kisa-run` additionally reproduces eligible trusted M03, M06, and A04 Candidates in
+separate replay Runs. Each attempt uses a session distinct from the source execution and every other
+attempt. The live KISA Oracle recomputes the exact catalog checks from the raw transcript, and the
+source/replay link is written to `kisa-replay-index.json` with
+`confirmationMutationApplied: false`. This produces independent replay evidence, but not yet
+product-level confirmation.
 
 ### Remediation and retest loop
 
@@ -843,15 +863,28 @@ agents.json
 task-graph.json
 capabilities.json
 budget.json
+rate-limits.json
 control.json
+kisa-replay-index.json  # kisa-run only
 ```
+
+The Restricted Reproducer uses a distinct replay Run. Its `replay/`
+directory stores the Validation Packet, Mode contract, non-executable intent, compiled spec,
+dedicated grant, attempts, Oracle result, aggregate outcome, and verification receipt. The first
+integrity seal binds the outcome and complete artifact set; the receipt records that verified root,
+and a second seal binds the receipt. `kisa-run` now coordinates this boundary for exact M03, M06,
+and A04 Candidates after sealing the source Run. The replay is still an evidence-only path, not a
+product-level confirmation path.
 
 The Candidate and Decision snapshots preserve every Finding returned by the legacy Validator and
 every observation admitted by an enabled trusted Candidate Producer, together with its
 deterministic disposition. `validation-index.json` is an ID-only status view, while the legacy
-`findings.json` contains only reproduction-backed confirmed projections. Because Restricted Replay
-is not implemented yet, new runs produce `Confirmed 0 / Needs Review N` for semantic-positive
-Candidates. Historical sealed runs may still contain legacy semantic confirmations and remain
+`findings.json` contains only reproduction-backed confirmed projections. The KISA coordinator now
+writes separately sealed fresh-session ReplayOutcomes and a source-side `kisa-replay-index.json`,
+but deliberately does not mutate Candidate or Decision snapshots. Until the M6 common validation
+gate reloads and verifies those receipts, new runs therefore produce
+`Confirmed 0 / Needs Review N` for semantic-positive Candidates. Historical sealed runs may still
+contain legacy semantic confirmations and remain
 immutable. The current trusted producer is limited to exact KISA AI chat catalog contracts; it does
 not trust a generic `vulnerable` field and gives the Semantic Validator no attack or replay Tools.
 Its atomic production also reserves request and target/threat confirmation space so a Validator

@@ -2,7 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: In progress; semantic-only confirmation, versioned Replay contracts, deterministic compilation, and dedicated Replay grants are implemented, while replay execution remains planned
+- Implementation: In progress; restricted replay with single-use tickets, verified seals, and exact
+  KISA fresh-session drivers and Oracles is implemented, while common-gate integration and
+  additional Mode integrations remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -142,9 +144,32 @@ non-delegable, single-Tool, single-target `ReplayCapabilityGrant`. Compiler IDs 
 over the authority-bearing inputs, while Semantic Validator rationale and comparison text cannot
 alter the compiled operation.
 
-The compiler is not wired into a runner yet. PAJIN does not implement Restricted Reproducer
-execution, a live Mode Oracle, or persisted replay artifacts, so new runs still cannot produce a
-product-level Confirmed Finding.
+PAJIN now implements a Restricted Reproducer foundation for stateless operations and explicitly
+registered Mode-owned materializers. The Compiler issues
+an opaque, single-use ticket bound to the Candidate source seal, Campaign, Tool specification, and
+Scenario digest. The runtime atomically claims the ticket, rechecks trusted inputs, executes exact
+compiled arguments through the existing Tool Gateway and Worker, and consumes shared Campaign
+budget and rate-limit state. Campaign duration and cancellation bound both dispatch and the async
+Mode Oracle, while Tool-authored Secret Lease requests fail closed. The runtime accepts only fresh
+request evidence whose JSON provenance exactly matches the Gateway and Worker result. A successful
+or terminal replay is stored in a distinct replay Run; an initial seal binds the outcome and artifact
+set, and a second seal binds a verified receipt that references the first root. A dedicated loader
+reopens the Run, verifies both seal roots and canonical artifact digests, and checks ticket-ledger
+finalization instead of trusting a mutable in-memory result. Session-bearing contracts fail closed
+as `unsupported` unless an exact trusted Mode session materializer is registered.
+
+The `kisa-run` Multi-Agent path now verifies a sealed source Run and coordinates exact M03, M06,
+and A04 `ai.chat-probe` Candidates in separate replay Runs. These three scenarios are explicitly
+allowlisted; a structural predicate cannot opt future scenarios into automatic replay. The trusted
+materializer changes only `session_id`, the Gateway charges every chat turn against the Campaign
+request-rate ledger, and the live Oracle recomputes catalog checks from the raw transcript without
+trusting Worker verdict flags. Before the KISA report writes `kisa-replay-index.json`, it reloads
+each twice-sealed receipt with the ticket verifier and rebuilds the public record from canonical
+artifacts. The records are evidence-only: the common confirmation-gate consumer and Local/KISA
+retest integration are not implemented, so new product runs still cannot produce a
+reproduction-backed Confirmed Finding. The future gate must likewise reload from `run_path` rather
+than consume a mutable convenience object, and a CPU-bound production Oracle must use a separately
+bounded execution boundary instead of blocking the cooperative async runtime.
 
 Migration proceeds in this order:
 
@@ -155,11 +180,18 @@ Migration proceeds in this order:
    with Candidate and request lineage;
 3. **Implemented at the pure compilation boundary:** add the deterministic Replay Compiler and
    replay-specific Capability Grant with fail-closed policy and lineage checks;
-4. implement the KISA `ai.chat-probe` Restricted Reproducer vertical slice and live Mode Oracle;
-5. require a successful ReplayOutcome in the common confirmation gate;
-6. version external artifacts and reports so consumers can distinguish legacy semantic
+4. **Implemented at the standalone runtime boundary:** add opaque single-use tickets, stateless and
+   registered-materializer Gateway/Worker execution, fresh evidence provenance, shared
+   budget/rate/cancellation controls,
+   bounded async Oracle dispatch, Secret Lease denial, distinct outcomes, and a twice-sealed replay
+   receipt with a ticket-bound verified loader;
+5. **Implemented at the KISA evidence boundary:** add the exact M03, M06, and A04
+   `ai.chat-probe` fresh-session driver, raw-transcript live Mode Oracle, sealed source/replay
+   coordinator, and verified evidence-only replay index;
+6. require a successful verified ReplayOutcome receipt in the common confirmation gate;
+7. version external artifacts and reports so consumers can distinguish legacy semantic
    confirmation from reproduction-backed confirmation; and
-7. add eligible Mode contracts incrementally without introducing a generic replay predicate.
+8. add eligible Mode contracts incrementally without introducing a generic replay predicate.
 
 Existing sealed Runs are immutable and must not be rewritten. A historical `confirmed` Decision
 without a ReplayOutcome is interpreted under legacy semantics and cannot be promoted by
@@ -171,8 +203,8 @@ reinterpretation; it must be reproduced in a new Run.
   confirmation boundary.
 - The LLM does not receive general offensive execution authority; the Reproducer gets only a
   compiled, candidate-bound Grant.
-- Confirmed output will temporarily decrease until restricted replay is implemented, which is an
-  intentional fail-closed result.
+- Confirmed output remains fail-closed until the common confirmation gate consumes verified
+  receipts; additional Modes require their own explicit replay integrations.
 - Replay adds target effects, latency, cost, evidence volume, and non-determinism management.
 - Unsafe or non-idempotent Candidates require a separately designed approval and manual
   reproduction path.
@@ -197,12 +229,20 @@ Implementation is complete only when tests prove that:
 
 The schema-boundary regression suites are `tests/test_replay_models.py` and
 `tests/test_ai_chat_contracts.py`. The compiler boundary is covered by
-`tests/test_replay_compiler.py`. Together they cover executable intent rejection, version and
-legacy-read policy, replay eligibility metadata, duplicate and same-request rejection, Candidate/
-Run/target/scenario/Tool/argument/evidence/Grant substitution, confused-deputy inputs, Scope·budget·
-authorization·cancellation checks, shared Tool/Producer output typing, and untrusted verdict flags.
-The remaining requirements above apply to execution, persistence, Mode Oracle, and confirmation
-gate milestones.
+`tests/test_replay_compiler.py`, and `tests/test_replay_runtime.py` covers single-use and concurrent
+ticket claims, stateless and registered fresh-session dispatch, fresh request/evidence provenance,
+substitution rejection,
+shared budget/rate limits, child cancellation, dispatch/Oracle deadlines, Tool-authored Secret
+Lease denial, timeout and unavailable outcomes, typed Oracle binding, mutable-memory substitution,
+distinct replay storage, ticket finalization, and twice-verified seals. Together they cover executable intent
+rejection, version and legacy-read policy, replay eligibility metadata, duplicate and same-request
+rejection, Candidate/Run/target/scenario/Tool/argument/evidence/Grant substitution,
+confused-deputy inputs, Scope·budget·authorization·cancellation checks, shared Tool/Producer output
+typing, and untrusted verdict flags. `tests/test_kisa_replay.py` additionally covers the explicit
+three-scenario opt-in, fresh and unique sessions, raw-transcript recomputation, multi-turn request
+rate accounting, mutable record rejection, sealed source-state binding, and the evidence-only KISA
+runner coordinator. The remaining requirements above apply to the common confirmation gate,
+Local/KISA retest integration, and additional explicitly opted-in Mode contracts.
 
 ## References
 
