@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: In progress; semantic-only confirmation is blocked and versioned Replay contracts exist, while Replay compilation and execution remain planned
+- Implementation: In progress; semantic-only confirmation, versioned Replay contracts, deterministic compilation, and dedicated Replay grants are implemented, while replay execution remains planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -133,9 +133,18 @@ ReplayOutcome reference. `ai.chat-probe` Tool interpretation, trusted Candidate 
 deterministic validation share the same strict `AIChatProbeOutput` contract while recomputing rather
 than trusting Worker verdict fields.
 
-PAJIN does not yet implement Replay Compiler execution, a replay-specific Grant, Restricted
-Reproducer execution, a live Mode Oracle, or persisted replay artifacts, so new runs still cannot
-produce a product-level Confirmed Finding.
+PAJIN also implements a pure deterministic `ReplayCompiler`. It checks the trusted Plan, the actual
+Specialist-bound `ToolRequest`, the original Specialist Grant, Candidate evidence, trusted request
+and evidence digests, registered Scenario and Tool contracts, Scope, cancellation, authorization,
+and remaining repetition budget. It copies only allowlisted original arguments, rejects
+secret-bearing fields and known plaintext secret values, and emits a separate five-minute-or-less,
+non-delegable, single-Tool, single-target `ReplayCapabilityGrant`. Compiler IDs are deterministic
+over the authority-bearing inputs, while Semantic Validator rationale and comparison text cannot
+alter the compiled operation.
+
+The compiler is not wired into a runner yet. PAJIN does not implement Restricted Reproducer
+execution, a live Mode Oracle, or persisted replay artifacts, so new runs still cannot produce a
+product-level Confirmed Finding.
 
 Migration proceeds in this order:
 
@@ -144,7 +153,8 @@ Migration proceeds in this order:
 2. **Implemented at the schema boundary:** add typed `ValidationPacket`, `ReplayIntent`, Mode
    contract, compiled replay specification, attempts, Oracle result, and `ReplayOutcome` contracts
    with Candidate and request lineage;
-3. implement the Replay Compiler and replay-specific Capability Grant;
+3. **Implemented at the pure compilation boundary:** add the deterministic Replay Compiler and
+   replay-specific Capability Grant with fail-closed policy and lineage checks;
 4. implement the KISA `ai.chat-probe` Restricted Reproducer vertical slice and live Mode Oracle;
 5. require a successful ReplayOutcome in the common confirmation gate;
 6. version external artifacts and reports so consumers can distinguish legacy semantic
@@ -186,10 +196,12 @@ Implementation is complete only when tests prove that:
 - migration does not rewrite historical Run seals.
 
 The schema-boundary regression suites are `tests/test_replay_models.py` and
-`tests/test_ai_chat_contracts.py`. They cover executable intent rejection, version and legacy-read
-policy, replay eligibility metadata, duplicate and same-request rejection, Candidate/Run/target/
-scenario/Tool/threat substitution, shared Tool/Producer output typing, and untrusted verdict flags.
-The remaining requirements above apply to the compiler, execution, persistence, and confirmation
+`tests/test_ai_chat_contracts.py`. The compiler boundary is covered by
+`tests/test_replay_compiler.py`. Together they cover executable intent rejection, version and
+legacy-read policy, replay eligibility metadata, duplicate and same-request rejection, Candidate/
+Run/target/scenario/Tool/argument/evidence/Grant substitution, confused-deputy inputs, Scope·budget·
+authorization·cancellation checks, shared Tool/Producer output typing, and untrusted verdict flags.
+The remaining requirements above apply to execution, persistence, Mode Oracle, and confirmation
 gate milestones.
 
 ## References

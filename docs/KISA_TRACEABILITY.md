@@ -5,9 +5,9 @@
 이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행
 통제, 증적, 결과 산출물에 연결한다. 페이지는 첨부 PDF의 물리 페이지를 기준으로 한다.
 
-> 최종 최신화: 2026-07-15. Candidate admission, 증거 심사와 버전형 제한 재현 계약은
-> 구현됐지만, 제품 수준의 Confirmed에 필요한 Replay Compiler·Grant·Restricted Reproducer
-> 실행은 아직 구현되지 않았다.
+> 최종 최신화: 2026-07-15. Candidate admission, 증거 심사, 버전형 제한 재현 계약과
+> 결정론적 Replay Compiler·전용 Grant는 구현됐지만, 제품 수준의 Confirmed에 필요한
+> Restricted Reproducer·Mode Oracle 실행은 아직 구현되지 않았다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -24,7 +24,8 @@ flowchart LR
     X --> CP["Trusted Candidate Producer<br/>구현"]
     CP --> V["Semantic Validator<br/>증거 심사·구현"]
     V --> RC["Versioned Replay Contracts<br/>스키마 구현"]
-    RC -. "Compiler·Grant·실행 후속" .-> RR["Restricted Reproducer<br/>새 요청·새 증적"]
+    RC --> RG["Deterministic Compiler + Replay Grant<br/>구현"]
+    RG -. "실행 후속" .-> RR["Restricted Reproducer<br/>새 요청·새 증적"]
     RR --> O["Mode Oracle·Objective Gate"]
     V --> N["Candidate·Decision Ledger<br/>needs-review"]
     O --> E["Evaluation<br/>지표·커버리지·체크리스트"]
@@ -162,9 +163,9 @@ Restricted Reproducer가 구현되기 전 현재 `kisa-retest` 판정은 legacy 
 ## 8. 알려진 제한과 다음 확장
 
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome
-  계약은 구현됐지만 Replay Compiler, replay-specific Grant와 Restricted Reproducer 실행은
-  미구현이다. Candidate admission과 원 증거 심사만으로 생성된 현재 `findings.json` 항목은
-  legacy 의미다.
+  계약과 결정론적 Replay Compiler·전용 Grant는 구현됐지만 Restricted Reproducer·Mode Oracle
+  실행과 저장은 미구현이다. Candidate admission과 원 증거 심사만으로 생성된 현재
+  `findings.json` 항목은 legacy 의미다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

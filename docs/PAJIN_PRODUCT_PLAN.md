@@ -67,14 +67,14 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 ### 1.1 현재 구현 기준선
 
 2026-07-15 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
-Phase 0-1은 완료되었고 Phase 2의 실행 코어와 제한 재현 계약 계층은 구현되었지만 실제
-Replay Compiler·Grant·Restricted Reproducer와 구조화 협업 메모리는 후속 과제다. Phase 3
-Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control Plane의
-첫 수직 조각까지 구현되었다.
+Phase 0-1은 완료되었고 Phase 2의 실행 코어, 제한 재현 계약 계층과 결정론적 Replay
+Compiler·전용 Grant는 구현되었지만 Restricted Reproducer 실행과 구조화 협업 메모리는 후속
+과제다. Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는
+Control Plane의 첫 수직 조각까지 구현되었다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
-| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; 버전형 Replay 계약 구현, Compiler·Grant·Restricted Reproducer 미구현 |
+| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; 버전형 Replay 계약과 결정론적 Compiler·전용 Grant 구현, Restricted Reproducer 미구현 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
@@ -773,9 +773,11 @@ Restricted Reproducer의 새 요청·증적과 Mode Oracle 성공 없이는 `con
 제외한다. 버전형 `ValidationPacket`, `ReplayIntent`, `ModeReplayContract`,
 `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`, `ReplayOutcome` 계약과 공통
 `AIChatProbeOutput`은 구현됐다. 계약은 Candidate·Run·원 요청·새 요청·Mode·Scenario·Tool·
-Target·Threat를 결박하고 실행 가능한 모델 출력과 식별자 치환을 거부하지만, 실제 Replay
-Compiler·전용 Grant·Restricted Reproducer·Mode Oracle 실행은 아직 구현되지 않았다.
-Validator-only 우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
+Target·Threat를 결박하고 실행 가능한 모델 출력과 식별자 치환을 거부한다. 결정론적 Replay
+Compiler는 원 Plan·실제 ToolRequest·Specialist Grant·증적 digest를 대조하고 Scope·취소·승인·
+예산을 재검사한 뒤 5분 이하·비위임·단일 Tool·단일 Target의 전용 Grant만 발급한다. 실제
+Restricted Reproducer·Mode Oracle 실행과 산출물 저장은 아직 구현되지 않았다. Validator-only
+우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
 
 ### 15.2 신뢰도 계산 요소
 
@@ -1056,10 +1058,10 @@ PAJIN/
 - 자동 패치와 Pull Request 생성
 - 모든 KISA 산출물의 완전 자동화
 
-현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, 제한 재현 계약 계층과 지속성
-Control Plane의 초기 조각까지 포함한다. 그러나 Replay Compiler·Grant·Restricted Reproducer
-실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못했다. 지원 시나리오의 폭과 운영
-배포 수준도 Phase 3-4의 후속 범위다.
+현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, 제한 재현 계약·Compiler·Grant
+계층과 지속성 Control Plane의 초기 조각까지 포함한다. 그러나 Restricted Reproducer와 Mode
+Oracle 실행이 없어 MVP의 Finding 확정 기준은 아직 충족하지 못했다. 지원 시나리오의 폭과
+운영 배포 수준도 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -1072,9 +1074,9 @@ Control Plane의 초기 조각까지 포함한다. 그러나 Replay Compiler·Gr
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
 
-2026-07-15 현재 Candidate admission, Semantic Validator, objective gate와 버전형 Replay
-계약은 구현됐지만 Replay Compiler·Grant·Restricted Reproducer 실행이 없어 독립 재현 관련
-완료 기준은 아직 충족하지 못했다.
+2026-07-15 현재 Candidate admission, Semantic Validator, objective gate, 버전형 Replay 계약과
+결정론적 Compiler·전용 Grant는 구현됐지만 Restricted Reproducer·Mode Oracle 실행이 없어
+독립 재현 관련 완료 기준은 아직 충족하지 못했다.
 
 ---
 
@@ -1084,7 +1086,7 @@ Control Plane의 초기 조각까지 포함한다. 그러나 Replay Compiler·Gr
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약, 권한 감쇠, 예산·취소·승인은 구현; Replay 실행과 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant, 권한 감쇠, 예산·취소·승인은 구현; Replay 실행과 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1112,7 +1114,8 @@ Control Plane의 초기 조각까지 포함한다. 그러나 Replay Compiler·Gr
 - 후보 Finding 검증 및 중복 처리
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
-- 남은 범위: Replay Compiler·전용 Grant·Restricted Reproducer·Mode Oracle 실행, Confirmed Gate 교정,
+- 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
+- 남은 범위: Restricted Reproducer·Mode Oracle 실행과 저장, Confirmed Gate 교정,
   Campaign Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
 ### Phase 3 — Mode Packs (진행 중)

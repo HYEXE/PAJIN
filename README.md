@@ -16,12 +16,12 @@ The implementation baseline as of 2026-07-15 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned restricted-replay contracts, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned restricted-replay contracts, a deterministic Replay Compiler with dedicated grants, and tamper-evident evidence seals |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios with remediation and retest artifacts |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Replay Compiler, replay-specific Grant, Restricted Reproducer runtime and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
+| Primary gaps | Restricted Reproducer runtime, live Mode Oracles and reproduction-backed confirmation, Finding/report review UI, distributed Worker pool, general Tool/Skill/MCP pack registry, external platform integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -29,8 +29,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > **Validation status:** PAJIN currently implements trusted Candidate admission, semantic review,
 > objective evidence gates, sealed Decision snapshots, and versioned `ValidationPacket`,
 > `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`,
-> and `ReplayOutcome` contracts. These contracts do not compile or execute an independent restricted
-> reproduction yet. The common gate therefore retains semantic-positive Candidates as
+> and `ReplayOutcome` contracts. A pure deterministic compiler now checks the original Plan, bound
+> Tool request, Specialist grant, evidence digests, Scope, authorization, cancellation and budget,
+> then emits only a five-minute non-delegable `ReplayCapabilityGrant`. No runner executes that spec
+> or produces a live Mode Oracle result yet. The common gate therefore retains semantic-positive
+> Candidates as
 > `needs-review` with `independent-reproduction-missing`, and the confirmed-only `findings.json`
 > projection remains empty until a fresh Candidate-bound ReplayOutcome succeeds, as required by
 > [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
@@ -70,7 +73,8 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - `ReplayIntent` is a strict, non-executable schema: raw Tool requests, commands, arbitrary URLs,
   Capability Grants, and undeclared executable fields are rejected. Versioned replay artifacts bind
   Candidate, Run, original and replay request, Mode, scenario, Tool, target, and threat identities
-  before any future replay authority can be issued.
+  before the deterministic compiler can issue a candidate-bound, non-delegable replay Grant. The
+  Grant is not executable until the separate Restricted Reproducer runtime is implemented.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
