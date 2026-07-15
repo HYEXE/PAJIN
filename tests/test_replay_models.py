@@ -82,6 +82,7 @@ def _packet(**updates: object) -> ValidationPacket:
 def _binding(**updates: object) -> ReplayBinding:
     values: dict[str, object] = {
         "candidate_id": "candidate_kisa_1",
+        "campaign": "kisa-ai-chat-lab-assessment",
         "candidate_run_id": "run_candidate_1",
         "replay_run_id": "run_replay_1",
         "original_request_id": "tool_original_1",
@@ -170,10 +171,13 @@ def _spec(**updates: object) -> CompiledReplaySpec:
         "spec_id": "compiled-replay_1",
         "intent_id": "replay-intent_1",
         "contract_id": "replay-contract:kisa-m03:v1",
+        "original_plan_step_id": "step_m03_1",
         "binding": _binding(),
         "method": "POST",
         "arguments": arguments,
         "argument_digest": replay_argument_digest(arguments),
+        "original_request_digest": "b" * 64,
+        "original_evidence_digest": "c" * 64,
         "secret_lease_ids": [],
         "risk_tier": ToolRiskTier.T2,
         "replay_safe": True,
@@ -386,6 +390,7 @@ def test_compiled_replay_rejects_candidate_packet_substitution(
     ("field", "value"),
     [
         ("candidate_id", "candidate_substituted"),
+        ("campaign", "foreign-campaign"),
         ("replay_run_id", "run_foreign"),
         ("scenario_id", "kisa.model.jailbreak-policy-bypass"),
         ("tool_id", "shell.exec"),

@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
 from typing import Annotated, Literal
 
 from pydantic import Field, JsonValue, field_validator, model_validator
 
-from pajin.domain.models import CampaignMode, StrictModel, ToolRiskTier
+from pajin.domain.models import (
+    CampaignMode,
+    CapabilityGrant,
+    StrictModel,
+    ToolRequest,
+    ToolRiskTier,
+)
 from pajin.domain.validation import CandidateFinding
 
 REPLAY_API_VERSION: Literal["pajin.dev/replay/v1alpha1"] = "pajin.dev/replay/v1alpha1"
@@ -186,6 +192,7 @@ class ReplayBinding(StrictModel):
     """Identity tuple that every compiled, executed, and evaluated record repeats."""
 
     candidate_id: _Identifier
+    campaign: _Identifier
     candidate_run_id: _Identifier
     replay_run_id: _Identifier
     original_request_id: _Identifier
@@ -198,6 +205,59 @@ class ReplayBinding(StrictModel):
     target: str = Field(min_length=1, max_length=2_000)
 
 
+class ReplayCapabilityGrant(CapabilityGrant):
+    """Dedicated, non-delegable authority issued only for one compiled replay."""
+
+    api_version: Literal["pajin.dev/replay/v1alpha1"] = Field(
+        default=REPLAY_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["ReplayCapabilityGrant"] = "ReplayCapabilityGrant"
+    purpose: Literal["restricted-replay"] = "restricted-replay"
+    contract_id: _Identifier
+    candidate_id: _Identifier
+    candidate_run_id: _Identifier
+    replay_run_id: _Identifier
+    original_request_id: _Identifier
+    original_grant_id: _Identifier
+    original_subject: _Identifier
+    tool_id: _Identifier
+    target: str = Field(min_length=1, max_length=2_000)
+    repetitions: int = Field(ge=1, le=20)
+    ttl_seconds: Literal[300] = 300
+    parent_grant_id: None = None
+    delegable: Literal[False] = False
+    depth: Literal[0] = 0
+
+    @field_validator("issued_at", "expires_at")
+    @classmethod
+    def normalize_timestamps(cls, value: datetime, info: object) -> datetime:
+        field_name = getattr(info, "field_name", "timestamp")
+        return _normalize_utc(value, field_name=field_name)
+
+    @model_validator(mode="after")
+    def validate_replay_authority(self) -> ReplayCapabilityGrant:
+        if self.subject != f"reproducer:{self.grant_id}":
+            raise ValueError("replay capability subject must be derived from its grant ID")
+        if self.subject == self.original_subject:
+            raise ValueError("replay capability subject must differ from the Specialist")
+        if self.grant_id == self.original_grant_id:
+            raise ValueError("replay capability cannot reuse the Specialist grant ID")
+        if self.candidate_run_id == self.replay_run_id:
+            raise ValueError("replay capability requires a distinct replay Run")
+        if self.tools != {self.tool_id}:
+            raise ValueError("replay capability must contain exactly its compiled Tool")
+        if self.targets != {self.target}:
+            raise ValueError("replay capability must contain exactly its compiled target")
+        if self.max_calls != self.repetitions:
+            raise ValueError("replay capability call budget must match repetitions")
+        if self.max_risk_tier > ToolRiskTier.T2:
+            raise ValueError("replay capability risk ceiling is restricted to T0-T2")
+        if self.expires_at > self.issued_at + timedelta(seconds=self.ttl_seconds):
+            raise ValueError("replay capability exceeds the fixed TTL ceiling")
+        return self
+
+
 class CompiledReplaySpec(ReplayArtifactModel):
     """Trusted executable specification produced after deterministic compilation."""
 
@@ -205,10 +265,13 @@ class CompiledReplaySpec(ReplayArtifactModel):
     spec_id: _Identifier
     intent_id: _Identifier | None = None
     contract_id: _Identifier
+    original_plan_step_id: _Identifier
     binding: ReplayBinding
     method: str = Field(min_length=1, max_length=20)
     arguments: dict[str, JsonValue] = Field(max_length=100)
     argument_digest: _Sha256
+    original_request_digest: _Sha256
+    original_evidence_digest: _Sha256
     secret_lease_ids: list[_Identifier] = Field(default_factory=list, max_length=20)
     risk_tier: ToolRiskTier
     replay_safe: Literal[True]
@@ -255,6 +318,115 @@ class CompiledReplaySpec(ReplayArtifactModel):
             raise ValueError("compiled automatic replay is restricted to T0-T2")
         if self.expires_at <= self.compiled_at:
             raise ValueError("compiled replay authority must expire after compilation")
+        return self
+
+
+class ReplayCompilation(ReplayArtifactModel):
+    """Complete deterministic compiler output before any replay is executed."""
+
+    kind: Literal["ReplayCompilation"] = "ReplayCompilation"
+    validation_packet: ValidationPacket
+    contract: ModeReplayContract
+    intent: ReplayIntent
+    original_request: ToolRequest
+    original_evidence: list[_EvidenceReference] = Field(min_length=1, max_length=100)
+    spec: CompiledReplaySpec
+    grant: ReplayCapabilityGrant
+
+    @model_validator(mode="after")
+    def validate_compilation_bindings(self) -> ReplayCompilation:
+        packet = self.validation_packet
+        contract = self.contract
+        intent = self.intent
+        request = self.original_request
+        spec = self.spec
+        binding = spec.binding
+        grant = self.grant
+
+        if len(self.original_evidence) != len(set(self.original_evidence)):
+            raise ValueError("compiled original evidence references must be unique")
+        if any(
+            reference not in packet.candidate.claim.evidence
+            for reference in self.original_evidence
+        ):
+            raise ValueError("compiled replay references evidence outside the Candidate")
+        if spec.original_request_digest != replay_request_digest(request):
+            raise ValueError("compiled replay original request digest does not match")
+        if spec.original_evidence_digest != replay_evidence_digest(self.original_evidence):
+            raise ValueError("compiled replay original evidence digest does not match")
+        if spec.arguments != request.arguments:
+            raise ValueError("compiled replay arguments must match the original request")
+        if (
+            binding.original_request_id != request.request_id
+            or binding.tool_id != request.tool_id
+            or binding.target != request.target
+            or spec.method != request.method
+        ):
+            raise ValueError("compiled replay operation must match the original request")
+        if (
+            packet.replay_contract_id != contract.contract_id
+            or binding.candidate_id != packet.candidate.candidate_id
+            or binding.candidate_run_id != packet.candidate_run_id
+            or binding.mode != packet.mode
+            or binding.scenario_id != packet.scenario_id
+            or binding.target_id != packet.target_id
+            or binding.target != packet.target
+            or binding.threat_class != packet.threat_class
+            or binding.original_request_id not in packet.original_request_ids
+        ):
+            raise ValueError("compiled replay binding must match the validation packet")
+        if (
+            intent.intent_id != spec.intent_id
+            or intent.replay_contract_id != contract.contract_id
+            or intent.candidate_id != binding.candidate_id
+            or intent.candidate_run_id != binding.candidate_run_id
+            or intent.original_request_id != binding.original_request_id
+            or intent.mode != binding.mode
+            or intent.scenario_id != binding.scenario_id
+            or intent.threat_class != binding.threat_class
+        ):
+            raise ValueError("ReplayIntent references must match the compiled replay binding")
+        if (
+            spec.contract_id != contract.contract_id
+            or binding.mode != contract.mode
+            or binding.scenario_id != contract.scenario_id
+            or binding.tool_id != contract.tool_id
+            or binding.tool_version != contract.tool_version
+            or spec.method != contract.method
+            or spec.risk_tier != contract.risk_tier
+            or spec.session_policy != contract.session_policy
+            or spec.repetitions != contract.repetitions
+            or spec.required_successes != contract.required_successes
+            or spec.oracle_id != contract.oracle_id
+            or spec.oracle_version != contract.oracle_version
+            or spec.observation_schema != contract.observation_schema
+            or spec.semantic_support_required != contract.semantic_support_required
+            or packet.semantic_support_required != contract.semantic_support_required
+            or not contract.automatic
+            or not contract.replay_safe
+            or not contract.idempotent
+        ):
+            raise ValueError("compiled replay policy must match the automatic Mode contract")
+        if not set(spec.arguments) <= contract.allowed_argument_fields:
+            raise ValueError("compiled replay arguments exceed the Mode contract allowlist")
+        if (
+            spec.grant_id != grant.grant_id
+            or grant.contract_id != contract.contract_id
+            or grant.candidate_id != binding.candidate_id
+            or grant.candidate_run_id != binding.candidate_run_id
+            or grant.replay_run_id != binding.replay_run_id
+            or grant.original_request_id != binding.original_request_id
+            or grant.original_subject != request.agent_id
+            or grant.campaign != binding.campaign
+            or grant.tool_id != binding.tool_id
+            or grant.target != binding.target
+            or grant.max_risk_tier != spec.risk_tier
+            or grant.max_calls != spec.max_calls
+            or grant.repetitions != spec.repetitions
+            or grant.issued_at != spec.compiled_at
+            or grant.expires_at != spec.expires_at
+        ):
+            raise ValueError("replay capability must match the compiled replay specification")
         return self
 
 
@@ -535,6 +707,29 @@ def replay_argument_digest(arguments: Mapping[str, object]) -> str:
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def replay_request_digest(request: ToolRequest) -> str:
+    """Bind the exact original Tool request, including its Specialist identity."""
+
+    canonical = json.dumps(
+        request.model_dump(mode="json"),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def replay_evidence_digest(references: list[str]) -> str:
+    """Bind an ordered, duplicate-free original evidence lineage."""
+
+    canonical = json.dumps(
+        references,
+        ensure_ascii=False,
+        separators=(",", ":"),
     ).encode("utf-8")
     return sha256(canonical).hexdigest()
 
