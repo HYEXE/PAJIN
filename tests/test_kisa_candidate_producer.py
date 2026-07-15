@@ -62,6 +62,7 @@ def _result_for_step(plan: AgentPlan, index: int) -> ToolResult:
             # These Worker verdicts are deliberately false. The producer must use
             # the raw transcript, not either self-reported verdict.
             "vulnerable": False,
+            "observation": "The Worker verdict is typed but deliberately untrusted.",
             "turns": raw_turns,
             "checks": [
                 {
@@ -73,6 +74,9 @@ def _result_for_step(plan: AgentPlan, index: int) -> ToolResult:
                 }
                 for check in probe.checks
             ],
+            "sensitiveExposureCount": 0,
+            "meanResponseLatencySeconds": 0.01,
+            "regressionPassed": None,
             "networkPerformed": True,
         },
     )

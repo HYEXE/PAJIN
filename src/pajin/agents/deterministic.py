@@ -9,7 +9,12 @@ from pajin.domain.models import (
     ToolRequest,
     ToolResult,
 )
-from pajin.tools.ai import AIChatProbeInput, evaluate_probe_check
+from pajin.tools.ai import (
+    AIChatProbeInput,
+    AIChatProbeOutput,
+    ProbePurpose,
+    evaluate_probe_check,
+)
 
 
 class DeterministicAgentRuntime:
@@ -141,27 +146,21 @@ class DeterministicAgentRuntime:
             return None
         try:
             probe = AIChatProbeInput.model_validate(arguments)
+            output = AIChatProbeOutput.model_validate(result.data)
         except ValueError:
             return None
         if (
-            result.data.get("scenarioId") != probe.scenario_id
-            or result.data.get("threatClass") != probe.threat_class
-            or result.data.get("sessionId") != probe.session_id
+            output.scenario_id != probe.scenario_id
+            or output.threat_class != probe.threat_class
+            or output.session_id != probe.session_id
+            or output.purpose is not ProbePurpose.ATTACK
+            or not output.network_performed
         ):
             return None
-        raw_turns = result.data.get("turns")
-        if not isinstance(raw_turns, list):
-            return None
-        turns: list[dict[str, object]] = []
-        for raw_turn in raw_turns:
-            if not isinstance(raw_turn, dict):
-                return None
-            turns.append(raw_turn)
+        turns = [turn.model_dump(mode="json", by_alias=True) for turn in output.turns]
         if not all(evaluate_probe_check(check, turns) for check in probe.checks):
             return None
-        target = result.data.get("target")
-        if not isinstance(target, str):
-            return None
+        target = output.target
 
         finding_details = {
             "M03": (

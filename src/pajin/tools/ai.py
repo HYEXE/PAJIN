@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 
-from pydantic import Field, model_validator
+from pydantic import Field, JsonValue, StrictBool, model_validator
 
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
@@ -77,6 +77,144 @@ class AIChatRegressionInput(StrictModel):
         return self
 
 
+class ProbePurpose(StrEnum):
+    ATTACK = "attack"
+    REGRESSION = "regression"
+
+
+class AIChatProbeRequestMetadata(StrictModel):
+    scenario_id: str = Field(alias="scenarioId", min_length=1, max_length=200)
+    turn: int = Field(strict=True, ge=0, le=19)
+
+
+class AIChatProbeTurnRequest(StrictModel):
+    session_id: str = Field(
+        alias="sessionId",
+        min_length=3,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    messages: list[ChatMessage] = Field(min_length=1, max_length=20)
+    metadata: AIChatProbeRequestMetadata | None = None
+
+
+class AIChatProbeSafety(StrictModel):
+    blocked: StrictBool = False
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class AIChatProbeTurnResponse(StrictModel):
+    session_id: str = Field(
+        alias="sessionId",
+        min_length=3,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    message: ChatMessage
+    tool_calls: list[JsonValue] = Field(default_factory=list, alias="toolCalls", max_length=100)
+    safety: AIChatProbeSafety = Field(default_factory=AIChatProbeSafety)
+    memory_writes: list[str] = Field(default_factory=list, alias="memoryWrites", max_length=100)
+    model: str | None = Field(default=None, max_length=200)
+
+    @model_validator(mode="after")
+    def require_assistant_message(self) -> AIChatProbeTurnResponse:
+        if self.message.role is not ChatRole.ASSISTANT:
+            raise ValueError("AI probe response message role must be assistant")
+        return self
+
+
+class AIChatProbeTurnRecord(StrictModel):
+    index: int = Field(strict=True, ge=0, le=19)
+    name: str = Field(min_length=1, max_length=100)
+    request: AIChatProbeTurnRequest
+    response: AIChatProbeTurnResponse
+    response_latency_seconds: float | None = Field(
+        default=None,
+        alias="responseLatencySeconds",
+        strict=True,
+        ge=0,
+    )
+
+
+class AIChatProbeCheckRecord(StrictModel):
+    check_id: str = Field(
+        alias="checkId",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9.-]*$",
+    )
+    kind: ProbeCheckKind
+    turn: int = Field(strict=True, ge=0, le=19)
+    matched: StrictBool
+    sensitive: StrictBool = False
+
+
+class AIChatProbeOutput(StrictModel):
+    """Typed Worker observation shared by the Tool and trusted Candidate Producer."""
+
+    target: str = Field(min_length=1, max_length=2_000)
+    scenario_id: str = Field(
+        alias="scenarioId",
+        pattern=r"^(kisa|retest)\.[a-z0-9.-]+$",
+    )
+    threat_class: str = Field(alias="threatClass", pattern=r"^[DMAS]\d{2}$")
+    session_id: str = Field(
+        alias="sessionId",
+        min_length=3,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_.:-]*$",
+    )
+    purpose: ProbePurpose
+    vulnerable: StrictBool
+    observation: str = Field(min_length=1, max_length=2_000)
+    turns: list[AIChatProbeTurnRecord] = Field(min_length=1, max_length=20)
+    checks: list[AIChatProbeCheckRecord] = Field(min_length=1, max_length=20)
+    sensitive_exposure_count: int = Field(
+        alias="sensitiveExposureCount",
+        strict=True,
+        ge=0,
+        le=20,
+    )
+    mean_response_latency_seconds: float = Field(
+        alias="meanResponseLatencySeconds",
+        strict=True,
+        ge=0,
+    )
+    regression_passed: StrictBool | None = Field(default=None, alias="regressionPassed")
+    network_performed: StrictBool = Field(alias="networkPerformed")
+
+    @model_validator(mode="after")
+    def validate_transcript_contract(self) -> AIChatProbeOutput:
+        indexes = [turn.index for turn in self.turns]
+        if indexes != list(range(len(self.turns))):
+            raise ValueError("AI probe turn indexes must be contiguous and zero-based")
+        if any(
+            turn.request.session_id != self.session_id
+            or turn.response.session_id != self.session_id
+            for turn in self.turns
+        ):
+            raise ValueError("AI probe turn sessions must match the output session")
+        for turn in self.turns:
+            if turn.request.metadata is not None and (
+                turn.request.metadata.scenario_id != self.scenario_id
+                or turn.request.metadata.turn != turn.index
+            ):
+                raise ValueError("AI probe request metadata must match the output identity")
+        check_ids = [check.check_id for check in self.checks]
+        if len(check_ids) != len(set(check_ids)):
+            raise ValueError("AI probe output check IDs must be unique")
+        if any(check.turn >= len(self.turns) for check in self.checks):
+            raise ValueError("AI probe output check references a missing turn")
+        if self.purpose is ProbePurpose.ATTACK and self.regression_passed is not None:
+            raise ValueError("attack probe output must not contain a regression verdict")
+        if self.purpose is ProbePurpose.REGRESSION:
+            if self.regression_passed is None:
+                raise ValueError("regressionPassed must be boolean for regression output")
+            if self.vulnerable:
+                raise ValueError("regression output cannot claim a vulnerability")
+        return self
+
+
 class AIChatProbeTool(Tool):
     """Execute bounded multi-turn probes against the PAJIN AI chat contract."""
 
@@ -118,11 +256,10 @@ class AIChatProbeTool(Tool):
                 error=f"worker {result.status.value}: {result.stderr or 'no error detail'}",
             )
         try:
-            data = json.loads(result.stdout)
-            if not isinstance(data, dict):
-                raise TypeError("worker output must be a JSON object")
-            self._validate_output_shape(data)
-        except (json.JSONDecodeError, TypeError, ValueError, KeyError) as exc:
+            raw = json.loads(result.stdout)
+            output = AIChatProbeOutput.model_validate(raw)
+            self._validate_output_identity(request, output)
+        except (json.JSONDecodeError, ValueError) as exc:
             return ToolResult(
                 request_id=request.request_id,
                 tool_id=request.tool_id,
@@ -137,40 +274,25 @@ class AIChatProbeTool(Tool):
             success=True,
             started_at=result.started_at,
             finished_at=result.finished_at,
-            data=data,
+            data=output.model_dump(mode="json", by_alias=True),
         )
 
-    @staticmethod
-    def _validate_output_shape(data: dict[str, object]) -> None:
-        required = {
-            "target": str,
-            "scenarioId": str,
-            "threatClass": str,
-            "sessionId": str,
-            "vulnerable": bool,
-            "turns": list,
-            "checks": list,
-            "sensitiveExposureCount": int,
-        }
-        for field, expected_type in required.items():
-            if not isinstance(data[field], expected_type):
-                raise TypeError(f"{field} must be {expected_type.__name__}")
-        latency = data.get("meanResponseLatencySeconds")
-        if not isinstance(latency, (int, float)) or isinstance(latency, bool) or latency < 0:
-            raise TypeError("meanResponseLatencySeconds must be a non-negative number")
-        turns = data["turns"]
-        checks = data["checks"]
-        assert isinstance(turns, list)
-        assert isinstance(checks, list)
-        for turn in turns:
-            if not isinstance(turn, dict) or not isinstance(turn.get("response"), dict):
-                raise TypeError("each turn must contain a response object")
-            message = turn["response"].get("message")
-            if not isinstance(message, dict) or not isinstance(message.get("content"), str):
-                raise TypeError("each response must contain message.content")
-        for check in checks:
-            if not isinstance(check, dict) or not isinstance(check.get("matched"), bool):
-                raise TypeError("each check must contain a boolean matched value")
+    def _validate_output_identity(
+        self,
+        request: ToolRequest,
+        output: AIChatProbeOutput,
+    ) -> None:
+        probe = AIChatProbeInput.model_validate(request.arguments)
+        if (
+            output.target != request.target
+            or output.scenario_id != probe.scenario_id
+            or output.threat_class != probe.threat_class
+            or output.session_id != probe.session_id
+            or output.purpose is not ProbePurpose.ATTACK
+        ):
+            raise ValueError("worker output identity does not match the AI probe request")
+        if not output.network_performed:
+            raise ValueError("worker did not attest network execution")
 
 
 class AIChatRegressionTool(AIChatProbeTool):
@@ -210,19 +332,22 @@ class AIChatRegressionTool(AIChatProbeTool):
             network=NetworkMode.NONE,
         )
 
-    def interpret(self, request: ToolRequest, result: WorkerResult) -> ToolResult:
-        interpreted = super().interpret(request, result)
-        if not interpreted.success:
-            return interpreted
-        if not isinstance(interpreted.data.get("regressionPassed"), bool):
-            return interpreted.model_copy(
-                update={
-                    "success": False,
-                    "data": {},
-                    "error": "invalid AI regression output: regressionPassed must be boolean",
-                }
-            )
-        return interpreted
+    def _validate_output_identity(
+        self,
+        request: ToolRequest,
+        output: AIChatProbeOutput,
+    ) -> None:
+        probe = AIChatRegressionInput.model_validate(request.arguments)
+        if (
+            output.target != request.target
+            or output.scenario_id != "retest.normal-chat-function"
+            or output.threat_class != "A00"
+            or output.session_id != probe.session_id
+            or output.purpose is not ProbePurpose.REGRESSION
+        ):
+            raise ValueError("worker output identity does not match the AI regression request")
+        if not output.network_performed:
+            raise ValueError("worker did not attest network execution")
 
 
 def evaluate_probe_check(check: ProbeCheck, turn_records: list[dict[str, object]]) -> bool:
