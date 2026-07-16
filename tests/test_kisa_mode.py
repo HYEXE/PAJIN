@@ -161,5 +161,6 @@ def test_kisa_mode_pack_emits_honest_metrics_checklist_and_artifacts(
     assert set(execution_log[0]) == {"uniqueId", "dateTime", "description", "impact"}
     report = mode_outcome.report_path.read_text(encoding="utf-8")
     assert "not a compliance certification" in report
+    assert "verified replay confirmation was not applied" in report
     assert "A04" in report
     assert "needs-review" in report

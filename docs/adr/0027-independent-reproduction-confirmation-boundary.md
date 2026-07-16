@@ -2,9 +2,9 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: In progress; restricted replay with single-use tickets, verified seals, and exact
-  KISA fresh-session drivers and Oracles is implemented, while common-gate integration and
-  additional Mode integrations remain planned
+- Implementation: In progress; restricted replay, the receipt-reloading common gate, append-only
+  versioned validation projections, and exact KISA fresh-session integration are implemented, while
+  durable ticket verification, baseline-bound negative retest, and additional Modes remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -155,21 +155,24 @@ request evidence whose JSON provenance exactly matches the Gateway and Worker re
 or terminal replay is stored in a distinct replay Run; an initial seal binds the outcome and artifact
 set, and a second seal binds a verified receipt that references the first root. A dedicated loader
 reopens the Run, verifies both seal roots and canonical artifact digests, and checks ticket-ledger
-finalization instead of trusting a mutable in-memory result. Session-bearing contracts fail closed
-as `unsupported` unless an exact trusted Mode session materializer is registered.
+finalization against the originally issued compilation digest, Candidate source root, and replay Run
+instead of trusting a mutable in-memory result. Session-bearing contracts fail closed as
+`unsupported` unless an exact trusted Mode session materializer is registered.
 
-The `kisa-run` Multi-Agent path now verifies a sealed source Run and coordinates exact M03, M06,
+The `kisa-run` Multi-Agent path verifies a sealed source Run and coordinates exact M03, M06,
 and A04 `ai.chat-probe` Candidates in separate replay Runs. These three scenarios are explicitly
 allowlisted; a structural predicate cannot opt future scenarios into automatic replay. The trusted
 materializer changes only `session_id`, the Gateway charges every chat turn against the Campaign
 request-rate ledger, and the live Oracle recomputes catalog checks from the raw transcript without
-trusting Worker verdict flags. Before the KISA report writes `kisa-replay-index.json`, it reloads
-each twice-sealed receipt with the ticket verifier and rebuilds the public record from canonical
-artifacts. The records are evidence-only: the common confirmation-gate consumer and Local/KISA
-retest integration are not implemented, so new product runs still cannot produce a
-reproduction-backed Confirmed Finding. The future gate must likewise reload from `run_path` rather
-than consume a mutable convenience object, and a CPU-bound production Oracle must use a separately
-bounded execution boundary instead of blocking the cooperative async runtime.
+trusting Worker verdict flags. After replay, the common gate accepts only replay Run paths, reloads
+each twice-sealed receipt with the ticket verifier, checks source-seal membership and exact Candidate
+binding, and applies the shared reason matrix. It appends `validation/v1alpha1` Decision, Finding,
+index, and Markdown artifacts in a new seal instead of rewriting the flat pre-replay snapshot. The
+KISA assessment and replay index consume that projection and expose confirmation basis and receipt
+lineage. Durable ticket verification across process restarts, baseline-bound negative retest proof,
+Local/Control Plane replay orchestration, and additional Mode integrations remain follow-up work. A
+CPU-bound production Oracle must still use a separately bounded execution boundary instead of
+blocking the cooperative async runtime.
 
 Migration proceeds in this order:
 
@@ -185,12 +188,14 @@ Migration proceeds in this order:
    budget/rate/cancellation controls,
    bounded async Oracle dispatch, Secret Lease denial, distinct outcomes, and a twice-sealed replay
    receipt with a ticket-bound verified loader;
-5. **Implemented at the KISA evidence boundary:** add the exact M03, M06, and A04
+5. **Implemented at the KISA replay boundary:** add the exact M03, M06, and A04
    `ai.chat-probe` fresh-session driver, raw-transcript live Mode Oracle, sealed source/replay
-   coordinator, and verified evidence-only replay index;
-6. require a successful verified ReplayOutcome receipt in the common confirmation gate;
-7. version external artifacts and reports so consumers can distinguish legacy semantic
-   confirmation from reproduction-backed confirmation; and
+   coordinator, and verified replay index;
+6. **Implemented for the common gate and KISA path:** require a verified ReplayOutcome receipt,
+   reloaded from its replay Run, before a Decision can become reproduction-backed `confirmed`;
+7. **Implemented as an append-only v1alpha1 projection:** version Decisions, Findings, index, and
+   report so consumers can distinguish legacy semantic confirmation from reproduction-backed
+   confirmation; and
 8. add eligible Mode contracts incrementally without introducing a generic replay predicate.
 
 Existing sealed Runs are immutable and must not be rewritten. A historical `confirmed` Decision
@@ -203,7 +208,7 @@ reinterpretation; it must be reproduced in a new Run.
   confirmation boundary.
 - The LLM does not receive general offensive execution authority; the Reproducer gets only a
   compiled, candidate-bound Grant.
-- Confirmed output remains fail-closed until the common confirmation gate consumes verified
+- Confirmed output remains fail-closed and is emitted only when the common gate consumes verified
   receipts; additional Modes require their own explicit replay integrations.
 - Replay adds target effects, latency, cost, evidence volume, and non-determinism management.
 - Unsafe or non-idempotent Candidates require a separately designed approval and manual
@@ -224,7 +229,8 @@ Implementation is complete only when tests prove that:
 - only a successful typed Oracle result plus the objective gate, and Semantic Validator support
   where required by the Mode, creates `confirmed`;
 - Local and Multi-Agent runners enforce the same confirmation rule;
-- KISA reports and `findings.json` distinguish legacy and reproduction-backed confirmation; and
+- KISA reports and versioned Finding artifacts distinguish legacy and reproduction-backed
+  confirmation; and
 - migration does not rewrite historical Run seals.
 
 The schema-boundary regression suites are `tests/test_replay_models.py` and
@@ -234,15 +240,20 @@ ticket claims, stateless and registered fresh-session dispatch, fresh request/ev
 substitution rejection,
 shared budget/rate limits, child cancellation, dispatch/Oracle deadlines, Tool-authored Secret
 Lease denial, timeout and unavailable outcomes, typed Oracle binding, mutable-memory substitution,
-distinct replay storage, ticket finalization, and twice-verified seals. Together they cover executable intent
+distinct replay storage, issued-compilation-bound ticket finalization, and twice-verified seals.
+Together they cover executable intent
 rejection, version and legacy-read policy, replay eligibility metadata, duplicate and same-request
 rejection, Candidate/Run/target/scenario/Tool/argument/evidence/Grant substitution,
 confused-deputy inputs, Scope·budget·authorization·cancellation checks, shared Tool/Producer output
-typing, and untrusted verdict flags. `tests/test_kisa_replay.py` additionally covers the explicit
+typing, and untrusted verdict flags. `tests/test_confirmation_gate.py` fixes the common disposition
+matrix for supporting, contradicting, inconclusive, failed, cancelled, timed-out, unavailable, and
+unsupported ReplayOutcomes. Versioned-artifact tests cover fail-closed legacy separation and fixed
+paths. `tests/test_kisa_replay.py` additionally covers the explicit
 three-scenario opt-in, fresh and unique sessions, raw-transcript recomputation, multi-turn request
-rate accounting, mutable record rejection, sealed source-state binding, and the evidence-only KISA
-runner coordinator. The remaining requirements above apply to the common confirmation gate,
-Local/KISA retest integration, and additional explicitly opted-in Mode contracts.
+rate accounting, mutable record rejection, sealed source-state binding, receipt reloading, immutable
+source artifacts, and reproduction-backed KISA projection. The remaining requirements apply to
+baseline-bound negative KISA retest, durable/offline ticket verification, Local and Control Plane
+replay orchestration, and additional explicitly opted-in Mode contracts.
 
 ## References
 

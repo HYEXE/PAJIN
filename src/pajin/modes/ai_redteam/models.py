@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -199,6 +200,13 @@ class KISAAssessment(StrictModel):
     metrics: list[KISAMetricResult]
     checklist: list[ChecklistResult]
     checklist_summary: ChecklistSummary
+    validation_artifact_version: Literal["legacy-unversioned", "pajin.dev/validation/v1alpha1"] = (
+        "legacy-unversioned"
+    )
+    confirmation_semantics: Literal["legacy-unversioned", "verified-independent-replay"] = (
+        "legacy-unversioned"
+    )
+    confirmation_artifact: str | None = None
     confirmed_finding_ids: list[str]
     residual_risks: list[str]
     reusable_assets: list[str]

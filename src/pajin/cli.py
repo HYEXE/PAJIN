@@ -24,6 +24,7 @@ from pajin.modes.ai_redteam import (
     KISACandidateProducer,
     KISAModePack,
     KISAPlannerRuntime,
+    KISAReplayBatchOutcome,
     KISAReplayCoordinator,
     KISARetestPlannerRuntime,
     KISARetestService,
@@ -79,6 +80,7 @@ from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
+from pajin.workflow.confirmation import apply_confirmed_gate
 from pajin.workflow.local import LocalCampaignRunner
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner, MultiAgentRunOutcome
 from pajin.workflow.tool_loop import (
@@ -981,7 +983,7 @@ def run_kisa_ai_redteam(
         required_successes=repetitions,
     )
 
-    async def execute_kisa():
+    async def execute_kisa() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome | None]:
         outcome = await runner.run(
             campaign,
             budget=budget,
@@ -995,6 +997,20 @@ def run_kisa_ai_redteam(
                 budget=budget,
                 rate_limits=rate_limits,
             )
+            if replay_batch.verified_results:
+                confirmation = apply_confirmed_gate(
+                    source_run_path=outcome.run_path,
+                    replay_run_paths=[
+                        result.run_path for result in replay_batch.verified_results.values()
+                    ],
+                    tickets=replay_batch.authority.verifier(),
+                )
+                outcome = outcome.model_copy(
+                    update={
+                        "validation": confirmation.validation,
+                        "findings": confirmation.product_confirmed_findings,
+                    }
+                )
         return outcome, replay_batch
 
     try:

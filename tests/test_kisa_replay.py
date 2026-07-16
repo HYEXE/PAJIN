@@ -36,7 +36,12 @@ from pajin.domain.replay import (
     replay_evidence_digest,
     replay_request_digest,
 )
-from pajin.domain.validation import CandidateFinding, FindingDisposition
+from pajin.domain.validation import (
+    CandidateFinding,
+    ConfirmationBasis,
+    FindingDisposition,
+    ValidationReasonCode,
+)
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
 from pajin.modes.ai_redteam.models import EvaluationThresholds, KISAScenarioDefinition
@@ -61,11 +66,12 @@ from pajin.replay.runtime import (
 )
 from pajin.replay.tickets import ReplayExecutionAuthority
 from pajin.runtime.control import BudgetController
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
 from pajin.tools.ai import AIChatProbeInput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
+from pajin.workflow.confirmation import apply_confirmed_gate
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner
 
 NOW = datetime(2026, 7, 15, 8, 0, tzinfo=UTC)
@@ -566,7 +572,7 @@ def test_scenario_digest_is_stable_across_python_hash_seeds() -> None:
     assert digests == {replay_scenario_digest(_scenario("kisa.model.system-prompt-disclosure"))}
 
 
-def test_kisa_coordinator_replays_sealed_multi_agent_candidates_without_confirmation(
+def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     tmp_path: Path,
 ) -> None:
     campaign = _campaign()
@@ -627,6 +633,32 @@ def test_kisa_coordinator_replays_sealed_multi_agent_candidates_without_confirma
     forged_batch = replace(batch, records=forged_records)
     with pytest.raises(ValueError, match="public records differ"):
         KISAModePack(thresholds=thresholds).evaluate(campaign, outcome, forged_batch)
+    with pytest.raises(KeyError, match="unknown replay execution ticket"):
+        apply_confirmed_gate(
+            source_run_path=outcome.run_path,
+            replay_run_paths=[result.run_path for result in batch.verified_results.values()],
+            tickets=ReplayExecutionAuthority().verifier(),
+        )
+    assert not (outcome.run_path / "validation/v1alpha1/index.json").exists()
+
+    mutable_result = next(iter(batch.verified_results.values()))
+    assert mutable_result.artifact_set.outcome.oracle_result is not None
+    mutable_result.artifact_set.outcome.oracle_result.verdict = ReplayOracleVerdict.INCONCLUSIVE
+    assert mutable_result.artifact_set.outcome.supports_claim is False
+    source_root_digest = verify_run_integrity(outcome.run_path).root_digest
+    confirmation = apply_confirmed_gate(
+        source_run_path=outcome.run_path,
+        replay_run_paths=[result.run_path for result in batch.verified_results.values()],
+        tickets=batch.authority.verifier(),
+    )
+    outcome = outcome.model_copy(
+        update={
+            "validation": confirmation.validation,
+            "findings": confirmation.product_confirmed_findings,
+        }
+    )
+    assert len(outcome.findings) == 3
+    mutable_result.artifact_set.outcome.oracle_result.verdict = ReplayOracleVerdict.SUPPORTS
     mode_outcome = KISAModePack(thresholds=thresholds).evaluate(
         campaign,
         outcome,
@@ -634,21 +666,51 @@ def test_kisa_coordinator_replays_sealed_multi_agent_candidates_without_confirma
     )
 
     assert outcome.status is RunStatus.COMPLETED
-    assert outcome.findings == []
+    assert len(outcome.findings) == 3
     assert len(batch.records) == 3
     assert all(record.supports_claim for record in batch.records)
     assert all(record.replay_run_id != outcome.run_id for record in batch.records)
     assert all(
-        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        decision.disposition is FindingDisposition.CONFIRMED
+        and decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+        and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
+        and len(decision.replay_lineage) == 1
         for decision in outcome.validation.decisions
     )
+    assert json.loads((outcome.run_path / "findings.json").read_text(encoding="utf-8")) == []
+    versioned_findings = json.loads(
+        (outcome.run_path / "validation/v1alpha1/findings.json").read_text(encoding="utf-8")
+    )
+    assert len(versioned_findings["findings"]) == 3
+    seals = [
+        json.loads(line)
+        for line in (outcome.run_path / "run-integrity.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    assert source_root_digest in {seal["root_digest"] for seal in seals}
+    assert verify_run_integrity(outcome.run_path).root_digest != source_root_digest
     assert budget.tool_calls == 12
     assert len(set(worker.sessions)) == 12
     assert set(worker.sessions[:6]).isdisjoint(worker.sessions[6:])
     assert mode_outcome.replay_index_path is not None
     replay_index = json.loads(mode_outcome.replay_index_path.read_text(encoding="utf-8"))
-    assert replay_index["confirmationMutationApplied"] is False
+    assert replay_index["confirmationMutationApplied"] is True
+    assert replay_index["confirmationArtifact"] == "validation/v1alpha1/index.json"
     assert len(replay_index["records"]) == 3
+    assert mode_outcome.assessment.confirmation_semantics == "verified-independent-replay"
+    assert mode_outcome.assessment.validation_artifact_version == ("pajin.dev/validation/v1alpha1")
+    assert mode_outcome.assessment.confirmation_artifact == "validation/v1alpha1/index.json"
+    report = mode_outcome.report_path.read_text(encoding="utf-8")
+    assert "Confirmation semantics: `verified-independent-replay`" in report
+    assert "Confirmation basis: `verified-independent-replay`" in report
+    assert "Source evidence count:" in report
+    assert "ReplayOutcome:" in report
+    assert "Replay evidence count:" in report
+    assert "Receipt seal:" in report
+    assert "Receipt seal:" in (outcome.run_path / "validation/v1alpha1/report.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_kisa_cli_defaults_to_docker_and_rejects_unreserved_replay_budget(
