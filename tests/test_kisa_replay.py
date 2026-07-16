@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from typer.testing import CliRunner
@@ -75,6 +76,10 @@ from pajin.replay.runtime import (
     ReplayOracleRegistry,
     ReplayRuntimeReason,
     VerifiedReplayResult,
+)
+from pajin.replay.sqlite_tickets import (
+    SQLiteReplayExecutionAuthority,
+    SQLiteReplayTicketFinalizationVerifier,
 )
 from pajin.replay.tickets import ReplayExecutionAuthority
 from pajin.runtime.control import BudgetController
@@ -885,6 +890,13 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     policy = PolicyEngine()
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
+    ticket_ledger = tmp_path / "ticket-state" / "positive-replay-tickets.sqlite3"
+    ticket_authority_calls: list[Path] = []
+
+    def ticket_authority_factory() -> SQLiteReplayExecutionAuthority:
+        ticket_authority_calls.append(ticket_ledger)
+        return SQLiteReplayExecutionAuthority(ticket_ledger)
+
     runner = MultiAgentCampaignRunner(
         planner=KISAPlannerRuntime(thresholds=thresholds),
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
@@ -901,6 +913,7 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
         output_root=tmp_path / "replay-runs",
         repetitions=2,
         required_successes=2,
+        ticket_authority_factory=ticket_authority_factory,
     )
 
     async def execute():
@@ -928,6 +941,14 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
         return outcome, batch
 
     outcome, batch = asyncio.run(execute())
+    assert ticket_authority_calls == [ticket_ledger]
+    assert ticket_ledger.is_file()
+    batch = replace(
+        batch,
+        tickets=SQLiteReplayTicketFinalizationVerifier(ticket_ledger),
+    )
+    assert not hasattr(batch.tickets, "issuer")
+    assert not hasattr(batch.tickets, "claimer")
     forged_records = (
         batch.records[0].model_copy(update={"supports_claim": False}),
         *batch.records[1:],
@@ -951,7 +972,7 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     confirmation = apply_confirmed_gate(
         source_run_path=outcome.run_path,
         replay_run_paths=[result.run_path for result in batch.verified_results.values()],
-        tickets=batch.authority.verifier(),
+        tickets=batch.tickets,
     )
     outcome = outcome.model_copy(
         update={
@@ -1065,7 +1086,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         replay_run_paths=[
             result.run_path for result in confirmation_batch.verified_results.values()
         ],
-        tickets=confirmation_batch.authority.verifier(),
+        tickets=confirmation_batch.tickets,
     )
     baseline = baseline.model_copy(
         update={
@@ -1191,12 +1212,20 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         explicit_defense=True,
         forge_positive=True,
     )
+    retest_ticket_ledger = tmp_path / "ticket-state" / "negative-replay-tickets.sqlite3"
+    retest_ticket_authority_calls: list[Path] = []
+
+    def retest_ticket_authority_factory() -> SQLiteReplayExecutionAuthority:
+        retest_ticket_authority_calls.append(retest_ticket_ledger)
+        return SQLiteReplayExecutionAuthority(retest_ticket_ledger)
+
     retest_coordinator = KISARetestReplayCoordinator(
         tools=tools,
         policy=policy,
         worker=negative_worker,
         output_root=tmp_path / "negative-runs",
         repetitions=2,
+        ticket_authority_factory=retest_ticket_authority_factory,
     )
     attack_plan = AgentPlan.model_validate_json(
         (baseline.run_path / "plan.json").read_text(encoding="utf-8")
@@ -1285,6 +1314,14 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
             rate_limits=retest_rates,
         )
     )
+    assert retest_ticket_authority_calls == [retest_ticket_ledger]
+    assert retest_ticket_ledger.is_file()
+    batch = replace(
+        batch,
+        tickets=SQLiteReplayTicketFinalizationVerifier(retest_ticket_ledger),
+    )
+    assert not hasattr(batch.tickets, "issuer")
+    assert not hasattr(batch.tickets, "claimer")
     records = batch.verified_records(baseline.run_path, retest_store.path)
 
     assert batch.purpose is ReplayPurpose.REMEDIATION_RETEST
@@ -1394,3 +1431,52 @@ def test_kisa_cli_defaults_to_docker_and_rejects_unreserved_replay_budget(
     assert result.exit_code == 2
     assert selected_workers == ["docker"]
     assert "requires at least 18" in result.output
+
+
+def test_kisa_cli_fails_closed_when_durable_ticket_ledger_is_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    output = tmp_path / "runs"
+    ledger = output / "replay" / "replay-tickets.sqlite3"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"not a SQLite database")
+
+    class FakeRunner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                status=RunStatus.COMPLETED,
+                run_path=output / "candidate-run",
+            )
+
+    class LedgerOpeningCoordinator:
+        def __init__(self, **kwargs: object) -> None:
+            self.ticket_authority_factory = kwargs["ticket_authority_factory"]
+
+        async def reproduce(self, *_args: object, **_kwargs: object) -> None:
+            assert callable(self.ticket_authority_factory)
+            self.ticket_authority_factory()
+            raise AssertionError("a corrupt durable ledger must fail during authority open")
+
+    monkeypatch.setattr(cli_module, "_worker_backend", lambda _worker: object())
+    monkeypatch.setattr(cli_module, "MultiAgentCampaignRunner", FakeRunner)
+    monkeypatch.setattr(cli_module, "KISAReplayCoordinator", LedgerOpeningCoordinator)
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "kisa-run",
+            "examples/kisa-ai-chat-lab.yaml",
+            "--output",
+            str(output),
+            "--worker",
+            "simulated",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "KISA evaluation failed" in result.output
+    assert "ledger initialization failed" in result.output

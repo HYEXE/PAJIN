@@ -16,12 +16,12 @@ The implementation baseline as of 2026-07-16 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Durable replay-ticket verification across process restarts, Local and Control Plane replay orchestration, non-KISA session materializers and Mode Oracles, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Control Plane replay-ticket orchestration, non-KISA Local replay orchestration, session materializers and Mode Oracles, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -50,7 +50,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > Restricted Replay가 기준 Candidate의 정확한 공격 계약을 실행한다. 모든 기대 반복이 성공하고
 > canonical receipt를 다시 검증한 trusted negative Oracle이 명시적으로
 > `ReplayOracleVerdict.CONTRADICTS`를 반환할
-> 때만 해당 Finding을 `fixed`로 닫는다.
+> 때만 해당 Finding을 `fixed`로 닫는다. 로컬 KISA positive/negative 경로는 개별 sealed replay
+> Run 밖의 안정된 SQLite 원장에 ticket 발급 context와 `issued → claimed → finalized` 전이 및
+> event journal을 원자적으로 기록한다. `mode=ro` verifier는 프로세스를 다시 시작한 뒤에도
+> compilation, source root, replay Run, artifact digest와 최종 seal root를 대조한다. 자세한
+> 신뢰 경계는 [ADR 0028](docs/adr/0028-durable-local-replay-ticket-ledger.md)을 따른다.
 
 ## Current safety boundary
 
@@ -100,6 +104,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   Leases. The exact KISA M03, M06, and A04 `ai.chat-probe` contracts may materialize only a fresh
   per-attempt `session_id`; every other catalog argument remains compiler-bound. Unregistered
   session-bearing contracts fail closed.
+- Local KISA replay ticket state is stored in a stable SQLite ledger outside the sealed replay Run.
+  The ledger uses atomic single-use state transitions and a read-only verifier, but it is trusted as
+  a local database under the host OS account/ACL boundary. It is not a portable signed proof, an
+  off-host attestation, or the PostgreSQL Control Plane replay authority.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -138,7 +146,7 @@ python -m venv .venv
 | KISA AI Red Team | `kisa-run`, `kisa-plan-remediation`, `kisa-retest` |
 | Bug Bounty | `bug-bounty-review`, `bug-bounty-compile`, `bug-bounty-report`, `bug-bounty-run` |
 | CTF | `ctf-run`, `ctf-web-run` (compatibility alias), `ctf-suite-run` |
-| Evidence and infrastructure | `evidence-verify`, `worker-check`, `egress-check`, `mcp-check` |
+| Evidence and infrastructure | `evidence-verify`, `replay-verify`, `worker-check`, `egress-check`, `mcp-check` |
 
 The optional server processes are installed as `pajin-control-plane` and `pajin-worker-daemon`.
 Run `pajin --help` or `pajin <command> --help` for the authoritative option list.
@@ -447,6 +455,19 @@ projected, `confirmationMutationApplied` is `true`; a run with no eligible verif
 Decision/Finding/report projection; the original flat artifacts remain the immutable pre-replay
 snapshot.
 
+로컬 positive replay ticket 원장은 선택한 output root의
+`<output>/replay/replay-tickets.sqlite3`에 저장된다. 발급된 compilation과 source root, replay
+Run, 최종 artifact digest 및 receipt seal root는 실행 프로세스가 종료된 뒤 새 read-only
+verifier로 다시 확인할 수 있다.
+
+```powershell
+.venv\Scripts\pajin replay-verify <replay-run-directory> `
+  --ledger <output>\replay\replay-tickets.sqlite3
+```
+
+`replay-verify`는 ledger를 생성하거나 ticket 상태를 변경하지 않는다. 파일 누락, ticket 미완료,
+context·digest·Run·seal 불일치는 fail closed로 종료한다.
+
 ### Remediation and retest loop
 
 Create the remediation plan from a completed vulnerable baseline before applying the change:
@@ -505,6 +526,12 @@ retest Run은 `remediation-plan.json`, `kisa-retest.json`, `kisa-retest-index.js
 `kisa-checklist-overlay.json`, `kisa-retest-report.md`와 baseline-bound replay/receipt lineage를
 append-only seal로 보호한다. overlay는 증적으로 확인한 다섯 KISA 항목만 supersede하고,
 담당자·기한·운영 반영은 계속 사람 검토 항목으로 남긴다.
+
+negative replay ticket은 `<output>/retest-replay/replay-tickets.sqlite3` 원장에 같은 원자적
+상태 전이와 발급 context를 기록한다. 재시작 후 검증 명령은 위와 동일하며 `--ledger`에 이
+retest 원장 경로를 지정한다. 이 로컬 원장은 기존 인메모리 API의 단위 테스트 호환 경계를
+대체하지 않으며, PostgreSQL Control Plane replay나 외부 검증 가능한 서명 proof를 제공하지
+않는다.
 
 ## OpenAI-compatible Provider Gateway
 
@@ -1000,5 +1027,6 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
 [ADR-0023](docs/adr/0023-fenced-control-plane-actions.md),
 [ADR-0024](docs/adr/0024-cooperative-execution-cancellation.md),
 [ADR-0025](docs/adr/0025-candidate-validation-ledger-and-replay-boundary.md),
-[ADR-0026](docs/adr/0026-trusted-kisa-candidate-admission.md), and
-[ADR-0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
+[ADR-0026](docs/adr/0026-trusted-kisa-candidate-admission.md),
+[ADR-0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md), and
+[ADR-0028](docs/adr/0028-durable-local-replay-ticket-ledger.md).

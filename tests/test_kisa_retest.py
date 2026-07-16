@@ -266,7 +266,7 @@ def _confirmed_baseline(tmp_path: Path, *, campaign=None):
     confirmation = apply_confirmed_gate(
         source_run_path=outcome.run_path,
         replay_run_paths=[result.run_path for result in batch.verified_results.values()],
-        tickets=batch.authority.verifier(),
+        tickets=batch.tickets,
     )
     outcome = outcome.model_copy(
         update={

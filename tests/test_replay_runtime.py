@@ -51,9 +51,14 @@ from pajin.replay.runtime import (
     VerifiedReplayResult,
     load_verified_replay_result,
 )
+from pajin.replay.sqlite_tickets import (
+    SQLiteReplayExecutionAuthority,
+    SQLiteReplayTicketFinalizationVerifier,
+)
 from pajin.replay.tickets import (
     ReplayExecutionAuthority,
     ReplayExecutionTicket,
+    ReplayTicketAuthority,
     replay_context_digest,
 )
 from pajin.runtime.control import (
@@ -99,7 +104,7 @@ class ReplayFixture:
     source_store: RunStore
     replay_store: RunStore
     source_root_digest: str
-    authority: ReplayExecutionAuthority
+    authority: ReplayTicketAuthority
     ticket: ReplayExecutionTicket
     scenario: MockReplayScenario
 
@@ -377,6 +382,7 @@ def _fixture(
     session_policy: ReplaySessionPolicy = ReplaySessionPolicy.STATELESS,
     campaign: CampaignManifest | None = None,
     allowed_argument_fields: set[str] | None = None,
+    ticket_authority: ReplayTicketAuthority | None = None,
 ) -> ReplayFixture:
     resolved = campaign or _campaign()
     scenario = MockReplayScenario()
@@ -512,7 +518,7 @@ def _fixture(
         issued_at=NOW - timedelta(minutes=10),
         depth=1,
     )
-    authority = ReplayExecutionAuthority()
+    authority = ticket_authority if ticket_authority is not None else ReplayExecutionAuthority()
     ticket = ReplayCompiler.compile_ticket(
         ticket_issuer=authority.issuer(),
         candidate_source_root_digest=source_root,
@@ -733,6 +739,72 @@ def test_verified_loader_ignores_mutated_in_memory_replay_result(tmp_path: Path)
     assert not reloaded.artifact_set.outcome.supports_claim
     assert reloaded.receipt_seal_root_digest == result.receipt_seal_root_digest
     assert reloaded.verification.root_digest == result.verification.root_digest
+
+
+def test_sqlite_ticket_ledger_survives_restart_for_read_only_revalidation(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "state" / "replay-tickets.sqlite3"
+    authority = SQLiteReplayExecutionAuthority(ledger_path, clock=lambda: NOW)
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        ticket_authority=authority,
+    )
+    runtime = _runtime(
+        fixture,
+        worker=CountingWorker(),
+        oracle=ThresholdMockOracle(fixture.scenario),
+    )
+
+    result = _run(fixture, runtime)
+    run_path = result.run_path
+    expected_ticket_id = result.receipt.ticket_id
+    expected_root_digest = result.verification.root_digest
+
+    del runtime
+    del fixture
+    del authority
+
+    reloaded = load_verified_replay_result(
+        run_path,
+        tickets=SQLiteReplayTicketFinalizationVerifier(ledger_path),
+    )
+
+    assert reloaded.receipt.ticket_id == expected_ticket_id
+    assert reloaded.verification.root_digest == expected_root_digest
+
+
+def test_verified_loader_rejects_read_only_verifier_from_wrong_sqlite_ledger(
+    tmp_path: Path,
+) -> None:
+    ledger_path = tmp_path / "state" / "replay-tickets.sqlite3"
+    authority = SQLiteReplayExecutionAuthority(ledger_path, clock=lambda: NOW)
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        ticket_authority=authority,
+    )
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    wrong_ledger_path = tmp_path / "other-state" / "replay-tickets.sqlite3"
+    wrong_authority = SQLiteReplayExecutionAuthority(
+        wrong_ledger_path,
+        clock=lambda: NOW,
+    )
+    del wrong_authority
+
+    with pytest.raises(PermissionError, match="unknown replay ticket"):
+        load_verified_replay_result(
+            result.run_path,
+            tickets=SQLiteReplayTicketFinalizationVerifier(wrong_ledger_path),
+        )
 
 
 def test_verified_loader_digests_legacy_wire_json_before_applying_defaults(

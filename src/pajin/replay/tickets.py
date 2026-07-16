@@ -1,4 +1,4 @@
-"""Single-use in-memory authority for compiler-issued replay execution."""
+"""Single-use authorities for compiler-issued replay execution."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ _REPLAY_COMPILATION_SET_PATHS = (
 
 @dataclass(frozen=True, slots=True)
 class ReplayExecutionTicket:
-    """Opaque, non-serializable handle to one admitted compiler output."""
+    """Opaque handle to one admitted compiler output; the ledger retains authority."""
 
     ticket_id: str
 
@@ -81,10 +81,75 @@ class _ReplayTicketEntry:
     artifact_set_digest: str | None = None
 
 
+class _ReplayTicketIssueBackend(Protocol):
+    """Internal capability consumed only by the compiler-side facade."""
+
+    def _issue(
+        self,
+        token: object,
+        compilation: ReplayCompilation,
+        *,
+        context: ReplayTicketContext,
+    ) -> ReplayExecutionTicket: ...
+
+
+class _ReplayTicketClaimBackend(Protocol):
+    """Internal capability consumed only by the restricted runtime facade."""
+
+    def _claim(
+        self,
+        token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        expected_replay_run_id: str,
+        expected_candidate_source_root_digest: str,
+        expected_campaign_digest: str,
+        claimed_at: datetime,
+    ) -> ClaimedReplayExecution: ...
+
+    def _finalize(
+        self,
+        token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        finalized_at: datetime,
+    ) -> None: ...
+
+    def _verify_finalized(
+        self,
+        token: object,
+        ticket_id: str,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
+    ) -> None: ...
+
+
+class _ReplayTicketVerifyBackend(Protocol):
+    """Internal capability consumed only by a read-only verifier facade."""
+
+    def _verify_finalized(
+        self,
+        token: object,
+        ticket_id: str,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
+    ) -> None: ...
+
+
 class ReplayTicketIssuer:
     """Compiler-side facade; do not expose it to model or external request handlers."""
 
-    def __init__(self, authority: ReplayExecutionAuthority, token: object) -> None:
+    def __init__(self, authority: _ReplayTicketIssueBackend, token: object) -> None:
         self.__authority = authority
         self.__token = token
 
@@ -100,7 +165,7 @@ class ReplayTicketIssuer:
 class ReplayTicketClaimer:
     """Runtime-side facade that can claim and finalize, but never issue, tickets."""
 
-    def __init__(self, authority: ReplayExecutionAuthority, token: object) -> None:
+    def __init__(self, authority: _ReplayTicketClaimBackend, token: object) -> None:
         self.__authority = authority
         self.__token = token
 
@@ -178,7 +243,7 @@ class ReplayTicketFinalizationVerifier(Protocol):
 class ReplayTicketVerifier:
     """Read-only ticket-ledger facade for future confirmation gates."""
 
-    def __init__(self, authority: ReplayExecutionAuthority, token: object) -> None:
+    def __init__(self, authority: _ReplayTicketVerifyBackend, token: object) -> None:
         self.__authority = authority
         self.__token = token
 
@@ -201,6 +266,19 @@ class ReplayTicketVerifier:
             candidate_source_root_digest=candidate_source_root_digest,
             replay_run_id=replay_run_id,
         )
+
+
+class ReplayTicketAuthority(Protocol):
+    """Role-separated issuer, runtime, and verifier factory used by coordinators."""
+
+    def issuer(self) -> ReplayTicketIssuer:
+        """Return a compiler-only ticket issuer."""
+
+    def claimer(self) -> ReplayTicketClaimer:
+        """Return a runtime-only claim/finalization facade."""
+
+    def verifier(self) -> ReplayTicketFinalizationVerifier:
+        """Return a read-only finalized-ticket verifier."""
 
 
 class ReplayExecutionAuthority:
@@ -231,7 +309,7 @@ class ReplayExecutionAuthority:
     ) -> ReplayExecutionTicket:
         if token is not self.__issuer_token:
             raise PermissionError("invalid replay ticket issuer authority")
-        canonical = _canonical_compilation(compilation)
+        canonical = canonical_replay_compilation_bytes(compilation)
         trusted = ReplayCompilation.model_validate_json(canonical)
         digest = sha256(canonical).hexdigest()
         ticket = ReplayExecutionTicket(ticket_id=f"replay-ticket_{uuid4().hex}")
@@ -443,7 +521,9 @@ def _canonical_json(value: object) -> str:
     )
 
 
-def _canonical_compilation(compilation: ReplayCompilation) -> bytes:
+def canonical_replay_compilation_bytes(compilation: ReplayCompilation) -> bytes:
+    """Serialize a typed compilation exactly as ticket authorities persist it."""
+
     return json.dumps(
         canonical_replay_compilation_payload(compilation),
         ensure_ascii=False,

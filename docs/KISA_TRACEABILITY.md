@@ -11,7 +11,9 @@
 > append-only `validation/v1alpha1` Confirmed 투영을 구현했다. flat `findings.json`은 봉인된
 > 원 snapshot으로 보존하며 제품 소비자는 versioned 투영을 사용한다. M6-05는 이 투영의
 > reproduction-backed baseline에 결박된 negative ReplayOutcome과 별도 정상 기능 회귀를
-> hardened `kisa-retest` 경로에 연결했다.
+> hardened `kisa-retest` 경로에 연결했다. M6-06은 로컬 KISA positive/negative ticket을 stable
+> SQLite 원장에 영속화하고 프로세스 재시작 뒤 read-only verifier와 CLI로 receipt 결박을 다시
+> 검증하는 경계를 추가했다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -29,11 +31,14 @@ flowchart LR
     CP --> V["Semantic Validator<br/>증거 심사·구현"]
     V --> RC["Versioned Replay Contracts<br/>스키마 구현"]
     RC --> RG["Deterministic Compiler + Replay Grant<br/>구현"]
-    RG --> RR["Restricted Reproducer<br/>새 요청·새 증적·이중 seal 구현"]
+    RG --> TL["SQLite Ticket Ledger<br/>원자 상태 전이·event journal"]
+    TL --> RR["Restricted Reproducer<br/>새 요청·새 증적·이중 seal 구현"]
     RR --> KD["KISA Fresh-session Driver<br/>M03·M06·A04 구현"]
     KD --> O["Live KISA Transcript Oracle<br/>원문 재판정 구현"]
     O --> RI["Replay Index<br/>원본·재현 증적 분리"]
-    RI --> CG["Common Confirmed Gate<br/>receipt 재검증·구현"]
+    RI --> DV["Read-only Ticket Verifier<br/>재시작 후 finalization 대조"]
+    TL --> DV
+    DV --> CG["Common Confirmed Gate<br/>receipt 재검증·구현"]
     CG --> VP["validation/v1alpha1<br/>Decision·Finding·Report"]
     VP --> BR["Baseline-bound Retest<br/>exact Candidate·receipt 결박"]
     BR --> NR["Restricted Negative Replay<br/>별도 공격 Run"]
@@ -60,8 +65,8 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약 구현; 조직 영향 분석 후속 |
-| 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트 | `evidence/`, `events.jsonl`, `kisa-execution-log.json` | 구현 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약과 로컬 재시작 후 receipt 검증 구현; 조직 영향 분석 후속 |
+| 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
 | 테스트 계획(표 28) | 64 | `_test_plan` | `kisa-test-plan.json` | 구현 |
@@ -144,6 +149,21 @@ materialize하고, Oracle은 Worker 판정 플래그 대신 원문 transcript에
 Candidate·Decision·flat `findings.json`은 덮어쓰지 않고 `validation/v1alpha1`에 최종 Decision과
 Finding을 새 seal로 추가하므로, 취약 fixture의 제품 수준 Confirmed 기대 건수는 3건이다.
 
+positive replay ticket은 개별 sealed replay Run 밖의
+`<output>/replay/replay-tickets.sqlite3`에 저장된다. 이 원장은 canonical compilation, source
+root, replay Run과 Campaign·Tool·Scenario issuance context digest를 결박하고
+`issued → claimed → finalized` 상태 전이와 event journal을 원자적으로 기록한다. 실행
+프로세스가 종료된 뒤에는 다음 명령이 DB를 `mode=ro`로 열어 receipt ticket, artifact digest와
+최종 seal root를 다시 검증한다.
+
+```powershell
+.venv\Scripts\pajin replay-verify <replay-run-directory> `
+  --ledger <output>\replay\replay-tickets.sqlite3
+```
+
+명령은 누락된 ledger를 생성하거나 ticket 상태를 변경하지 않는다. 미완료 ticket이나
+compilation·source/replay 계보·digest·seal 불일치는 fail closed다.
+
 ## 7. 완화 및 재검증 폐루프
 
 완화 계획과 취약점 상태 재검증은 기준 Run의 reproduction-backed Finding만 대상으로 한다.
@@ -197,6 +217,12 @@ fail한다. `kisa-plan-remediation`은 versioned baseline projection과 기존 s
 결박하며 이후 baseline 변경을 거부한다. assessment와 report에는 ReplayOutcome·replay Run·
 request·evidence·Oracle·receipt lineage를 기록한다.
 
+baseline-bound negative replay ticket은 `<output>/retest-replay/replay-tickets.sqlite3`의 별도
+stable 원장에 같은 상태 전이와 issuance context를 보존한다. 재시작 후 검증은 위
+`replay-verify` 명령의 `--ledger`에 이 retest 원장을 지정한다. 이 검증은 retest 판정의
+Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며, 공통 Gate가 전체 계보를
+계속 검증한다.
+
 정상 기능은 `ai.normal-probe`로 별도 실행하므로 공격 성공률과 차단율을 희석하지 않는다.
 `kisa-checklist-overlay.json`은 다음 항목만 새 증적으로 대체한다.
 
@@ -224,6 +250,10 @@ request·evidence·Oracle·receipt lineage를 기록한다.
   artifact를 변경하지 않고 versioned Decision·Finding·report와 receipt lineage를 새 seal로
   추가한다. 같은 receipt 경계는 reproduction-backed baseline의 negative KISA retest에도
   적용되며, 일반 retest Run의 정상 기능 결과와 공격 replay 증명을 분리한다.
+- 로컬 KISA positive/negative 경로의 single-use ticket은 stable SQLite 원장과 프로세스 재시작
+  후 read-only verifier에 연결됐다. 기존 인메모리 authority는 단위 테스트와 API 호환 경계로
+  유지된다. SQLite DB와 OS account/ACL이 로컬 trust anchor이므로, 이 원장은 PostgreSQL
+  Control Plane replay authority나 외부 감사자가 독립 검증할 portable 서명 proof가 아니다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는
@@ -236,4 +266,5 @@ request·evidence·Oracle·receipt lineage를 기록한다.
 
 Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.md),
 [ADR 0026](adr/0026-trusted-kisa-candidate-admission.md),
-[ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md)을 따른다.
+[ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md),
+[ADR 0028](adr/0028-durable-local-replay-ticket-ledger.md)을 따른다.

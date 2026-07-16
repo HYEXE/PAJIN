@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated
@@ -58,6 +59,11 @@ from pajin.providers import (
     OpenAICompatibleChatTool,
     ProviderRegistration,
     ProviderValidationPlanner,
+)
+from pajin.replay.runtime import load_verified_replay_result
+from pajin.replay.sqlite_tickets import (
+    SQLiteReplayExecutionAuthority,
+    SQLiteReplayTicketFinalizationVerifier,
 )
 from pajin.runtime.control import BudgetController, KillSwitch
 from pajin.runtime.secrets import SecretBroker
@@ -982,6 +988,9 @@ def run_kisa_ai_redteam(
         output_root=output / "replay",
         repetitions=repetitions,
         required_successes=repetitions,
+        ticket_authority_factory=lambda: SQLiteReplayExecutionAuthority(
+            output / "replay" / "replay-tickets.sqlite3"
+        ),
     )
 
     async def execute_kisa() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome | None]:
@@ -1004,7 +1013,7 @@ def run_kisa_ai_redteam(
                     replay_run_paths=[
                         result.run_path for result in replay_batch.verified_results.values()
                     ],
-                    tickets=replay_batch.authority.verifier(),
+                    tickets=replay_batch.tickets,
                 )
                 outcome = outcome.model_copy(
                     update={
@@ -1021,7 +1030,15 @@ def run_kisa_ai_redteam(
             outcome,
             replay_batch,
         )
-    except ValueError as exc:
+    except (
+        KeyError,
+        RunIntegrityError,
+        RuntimeError,
+        ValidationError,
+        ValueError,
+        OSError,
+        sqlite3.Error,
+    ) as exc:
         console.print(f"[bold red]KISA evaluation failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
     failed_metrics = sum(
@@ -1123,6 +1140,9 @@ def run_kisa_retest(
         worker=backend,
         output_root=output / "retest-replay",
         repetitions=repetitions,
+        ticket_authority_factory=lambda: SQLiteReplayExecutionAuthority(
+            output / "retest-replay" / "replay-tickets.sqlite3"
+        ),
     )
 
     async def execute_retest() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome | None]:
@@ -1150,7 +1170,15 @@ def run_kisa_retest(
 
     try:
         outcome, replay_batch = asyncio.run(execute_retest())
-    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+    except (
+        KeyError,
+        RunIntegrityError,
+        RuntimeError,
+        ValidationError,
+        ValueError,
+        OSError,
+        sqlite3.Error,
+    ) as exc:
         console.print(f"[bold red]KISA retest execution failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
     if outcome.status is not RunStatus.COMPLETED:
@@ -1166,7 +1194,15 @@ def run_kisa_retest(
             outcome.run_path,
             replay_batch=replay_batch,
         )
-    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+    except (
+        KeyError,
+        RunIntegrityError,
+        RuntimeError,
+        ValidationError,
+        ValueError,
+        OSError,
+        sqlite3.Error,
+    ) as exc:
         console.print(f"[bold red]KISA retest comparison failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -1590,6 +1626,43 @@ def verify_run_evidence(
     table.add_row("Integrity", "VALID")
     console.print(table)
     console.print(f"Root digest: {verification.root_digest}")
+
+
+@app.command("replay-verify")
+def verify_replay_ticket(
+    replay_run: Annotated[Path, typer.Argument()],
+    ledger: Annotated[Path, typer.Option("--ledger", dir_okay=False)],
+) -> None:
+    """Verify a sealed replay Run against a durable read-only ticket ledger."""
+
+    try:
+        if not replay_run.is_dir():
+            raise ValueError("replay Run directory does not exist")
+        tickets = SQLiteReplayTicketFinalizationVerifier(ledger)
+        verified = load_verified_replay_result(replay_run, tickets=tickets)
+    except (
+        KeyError,
+        RunIntegrityError,
+        RuntimeError,
+        ValidationError,
+        ValueError,
+        OSError,
+        sqlite3.Error,
+    ) as exc:
+        console.print(f"[bold red]Replay verification failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title="PAJIN Durable Replay Ticket Verification")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Replay run", verified.verification.run_id)
+    table.add_row("Ticket", verified.receipt.ticket_id)
+    table.add_row("Source root", verified.receipt.candidate_source_root_digest)
+    table.add_row("Receipt seal root", verified.receipt_seal_root_digest)
+    table.add_row("Ledger", str(ledger.resolve()))
+    table.add_row("Verification", "VALID")
+    console.print(table)
+    console.print(f"Root digest: {verified.receipt_seal_root_digest}")
 
 
 @app.command("worker-check")

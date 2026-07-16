@@ -177,3 +177,75 @@ def test_kisa_retest_cli_reserves_normal_probe_retry_budget(
 
     assert result.exit_code == 2, result.output
     assert "requires at least 7" in result.output
+
+
+def test_kisa_retest_cli_fails_closed_when_durable_ticket_ledger_is_corrupt(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = tmp_path / "baseline"
+    baseline.mkdir()
+    output = tmp_path / "runs"
+    ledger = output / "retest-replay" / "replay-tickets.sqlite3"
+    ledger.parent.mkdir(parents=True)
+    ledger.write_bytes(b"not a SQLite database")
+
+    class FakeRetestService:
+        def create_remediation_plan(self, _baseline_run: Path) -> SimpleNamespace:
+            return SimpleNamespace(actions=[], path=baseline / "remediation-plan.json")
+
+        def build_retest_contexts(
+            self,
+            _baseline_run: Path,
+            _retest_run_path: Path,
+        ) -> dict[str, object]:
+            return {}
+
+    class FakePlanner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def plan(self, _campaign: object) -> SimpleNamespace:
+            return SimpleNamespace(steps=[])
+
+    class FakeRunner:
+        def __init__(self, **_kwargs: object) -> None:
+            pass
+
+        async def run(self, *_args: object, **_kwargs: object) -> SimpleNamespace:
+            return SimpleNamespace(
+                status=RunStatus.COMPLETED,
+                run_path=output / "retest-run",
+            )
+
+    class LedgerOpeningCoordinator:
+        def __init__(self, **kwargs: object) -> None:
+            self.ticket_authority_factory = kwargs["ticket_authority_factory"]
+
+        async def reproduce(self, *_args: object, **_kwargs: object) -> None:
+            assert callable(self.ticket_authority_factory)
+            self.ticket_authority_factory()
+            raise AssertionError("a corrupt durable ledger must fail during authority open")
+
+    monkeypatch.setattr(cli, "_worker_backend", lambda _worker: object())
+    monkeypatch.setattr(cli, "KISARetestService", FakeRetestService)
+    monkeypatch.setattr(cli, "KISARetestPlannerRuntime", FakePlanner)
+    monkeypatch.setattr(cli, "MultiAgentCampaignRunner", FakeRunner)
+    monkeypatch.setattr(cli, "KISARetestReplayCoordinator", LedgerOpeningCoordinator)
+
+    result = CliRunner().invoke(
+        cli.app,
+        [
+            "kisa-retest",
+            str(baseline),
+            "examples/kisa-ai-chat-lab.yaml",
+            "--output",
+            str(output),
+            "--worker",
+            "simulated",
+        ],
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "KISA retest execution failed" in result.output
+    assert "ledger initialization failed" in result.output

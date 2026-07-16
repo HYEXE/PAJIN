@@ -70,7 +70,11 @@ from pajin.replay.runtime import (
     VerifiedReplayResult,
     load_verified_replay_result,
 )
-from pajin.replay.tickets import ReplayExecutionAuthority
+from pajin.replay.tickets import (
+    ReplayExecutionAuthority,
+    ReplayTicketAuthority,
+    ReplayTicketFinalizationVerifier,
+)
 from pajin.runtime.control import BudgetController, ExecutionCancellationContext
 from pajin.runtime.store import RunIntegrityVerification, RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerBackend
@@ -173,12 +177,12 @@ class KISAReplayRecord(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class KISAReplayBatchOutcome:
-    """Sealed KISA replay receipts plus untrusted, canonically rebuildable records."""
+    """Sealed receipts, rebuildable records, and their read-only ticket verifier."""
 
     source_run_id: str
     records: tuple[KISAReplayRecord, ...]
     verified_results: Mapping[str, VerifiedReplayResult]
-    authority: ReplayExecutionAuthority
+    tickets: ReplayTicketFinalizationVerifier
     purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     retest_run_id: str | None = None
     contexts: Mapping[str, ReplayRetestContext] = field(default_factory=dict)
@@ -225,12 +229,11 @@ class KISAReplayBatchOutcome:
             raise ValueError("KISA replay public records contain missing or duplicate Candidates")
 
         canonical: list[KISAReplayRecord] = []
-        verifier = self.authority.verifier()
         for candidate in validation.candidates:
             snapshot = self.verified_results.get(candidate.candidate_id)
             if snapshot is None:
                 continue
-            verified = load_verified_replay_result(snapshot.run_path, tickets=verifier)
+            verified = load_verified_replay_result(snapshot.run_path, tickets=self.tickets)
             if verified != snapshot:
                 raise ValueError("KISA replay in-memory result differs from its sealed receipt")
             outcome = verified.artifact_set.outcome
@@ -321,7 +324,6 @@ class KISAReplayBatchOutcome:
             CapabilityRecord.model_validate(item)
             for item in _read_json_list(baseline_root / "capabilities.json")
         ]
-        verifier = self.authority.verifier()
         canonical: list[KISAReplayRecord] = []
         replay_run_ids: set[str] = set()
         outcome_ids: set[str] = set()
@@ -345,7 +347,10 @@ class KISAReplayBatchOutcome:
                 catalog=self.catalog,
             )
             snapshot_result = self.verified_results[candidate_id]
-            verified = load_verified_replay_result(snapshot_result.run_path, tickets=verifier)
+            verified = load_verified_replay_result(
+                snapshot_result.run_path,
+                tickets=self.tickets,
+            )
             if verified != snapshot_result:
                 raise ValueError("KISA retest in-memory result differs from its sealed receipt")
             artifact_set = verified.artifact_set
@@ -917,6 +922,7 @@ class KISAReplayCoordinator:
         repetitions: int = 2,
         required_successes: int | None = None,
         catalog: KISACatalog = KISA_CATALOG,
+        ticket_authority_factory: Callable[[], ReplayTicketAuthority] = ReplayExecutionAuthority,
     ) -> None:
         self._tools = tools
         self._policy = policy
@@ -925,6 +931,7 @@ class KISAReplayCoordinator:
         self._repetitions = repetitions
         self._required_successes = required_successes
         self._catalog = catalog
+        self._ticket_authority_factory = ticket_authority_factory
 
     async def reproduce(
         self,
@@ -979,7 +986,7 @@ class KISAReplayCoordinator:
                 "eligible Candidate before any replay Run is created"
             )
 
-        authority = ReplayExecutionAuthority()
+        authority = self._ticket_authority_factory()
         materializers, oracles = kisa_replay_registries(self._catalog)
         records: list[KISAReplayRecord] = []
         verified_results: dict[str, VerifiedReplayResult] = {}
@@ -1026,7 +1033,7 @@ class KISAReplayCoordinator:
             source_run_id=verification.run_id,
             records=tuple(records),
             verified_results=verified_results,
-            authority=authority,
+            tickets=authority.verifier(),
             purpose=ReplayPurpose.CONFIRMATION,
             catalog=self._catalog,
         )
@@ -1044,6 +1051,7 @@ class KISARetestReplayCoordinator:
         output_root: Path,
         repetitions: int = 2,
         catalog: KISACatalog = KISA_CATALOG,
+        ticket_authority_factory: Callable[[], ReplayTicketAuthority] = ReplayExecutionAuthority,
     ) -> None:
         self._tools = tools
         self._policy = policy
@@ -1051,6 +1059,7 @@ class KISARetestReplayCoordinator:
         self._output_root = output_root
         self._repetitions = repetitions
         self._catalog = catalog
+        self._ticket_authority_factory = ticket_authority_factory
         # Validate the bounded contract before any replay Run can be created.
         if not 2 <= repetitions <= 20:
             raise ValueError("KISA retest repetitions must be between 2 and 20")
@@ -1136,7 +1145,7 @@ class KISARetestReplayCoordinator:
             CapabilityRecord.model_validate(item)
             for item in _read_json_list(baseline_root / "capabilities.json")
         ]
-        authority = ReplayExecutionAuthority()
+        authority = self._ticket_authority_factory()
         materializers, oracles = kisa_replay_registries(
             self._catalog,
             purpose=ReplayPurpose.REMEDIATION_RETEST,
@@ -1185,7 +1194,7 @@ class KISARetestReplayCoordinator:
             source_run_id=baseline_verification.run_id,
             records=tuple(records),
             verified_results=verified_results,
-            authority=authority,
+            tickets=authority.verifier(),
             purpose=ReplayPurpose.REMEDIATION_RETEST,
             retest_run_id=retest_verification.run_id,
             contexts=dict(contexts),
@@ -1218,7 +1227,7 @@ async def _execute_kisa_replay(
     source: _SourceReplayContext,
     contract: ModeReplayContract,
     retest_context: ReplayRetestContext | None,
-    authority: ReplayExecutionAuthority,
+    authority: ReplayTicketAuthority,
     materializers: ReplayMaterializerRegistry,
     oracles: ReplayOracleRegistry,
     budget: BudgetController,

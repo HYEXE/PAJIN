@@ -23,16 +23,22 @@ from pajin.replay.runtime import (
     load_verified_replay_result,
     replay_run_store,
 )
+from pajin.replay.sqlite_tickets import (
+    SQLiteReplayExecutionAuthority,
+    SQLiteReplayTicketFinalizationVerifier,
+)
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
     ReplayExecutionAuthority,
     ReplayExecutionTicket,
+    ReplayTicketAuthority,
     ReplayTicketClaimer,
     ReplayTicketContext,
     ReplayTicketFinalizationVerifier,
     ReplayTicketIssuer,
     ReplayTicketState,
     ReplayTicketVerifier,
+    canonical_replay_compilation_bytes,
     replay_context_digest,
 )
 
@@ -50,6 +56,7 @@ __all__ = [
     "ReplayRuntimeReason",
     "ReplayScenarioDefinition",
     "ReplaySessionMaterializer",
+    "ReplayTicketAuthority",
     "ReplayTicketClaimer",
     "ReplayTicketContext",
     "ReplayTicketFinalizationVerifier",
@@ -59,7 +66,10 @@ __all__ = [
     "ReplayVerificationReceipt",
     "RestrictedReplayRuntimeError",
     "RestrictedReproducerRuntime",
+    "SQLiteReplayExecutionAuthority",
+    "SQLiteReplayTicketFinalizationVerifier",
     "VerifiedReplayResult",
+    "canonical_replay_compilation_bytes",
     "load_verified_replay_result",
     "replay_context_digest",
     "replay_run_store",
