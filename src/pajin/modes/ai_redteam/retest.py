@@ -20,6 +20,7 @@ from pajin.modes.ai_redteam.models import (
     KISAAssessment,
 )
 from pajin.runtime.store import RunStore, verify_run_integrity
+from pajin.workflow.validation_artifacts import load_validation_snapshot
 
 
 class RetestFindingStatus(StrEnum):
@@ -185,7 +186,6 @@ class KISARetestService:
         remediation_actions = self._load_remediation_plan(baseline)
         baseline_by_key = {self._finding_key(item): item for item in baseline.findings}
         retest_by_key = {self._finding_key(item): item for item in retest.findings}
-        expected_by_threat = self._expected_attack_repetitions(baseline)
         finding_results: list[RetestFindingResult] = []
         for key, finding in baseline_by_key.items():
             repeated = retest_by_key.get(key)
@@ -196,20 +196,17 @@ class KISARetestService:
             ]
             if repeated is not None:
                 status = RetestFindingStatus.STILL_VULNERABLE
-                rationale = "독립 Validator가 재검증 Run에서도 동일 Finding을 확인함"
+                rationale = (
+                    "재검증 Run의 공통 Gate가 verified ReplayOutcome으로 동일 Finding을 확인함"
+                )
                 retest_finding_id = repeated.finding_id
                 retest_evidence = repeated.evidence
-            elif self._fixed_with_complete_evidence(
-                attack_evidence,
-                expected=expected_by_threat.get(finding.threat_class, 2),
-            ):
-                status = RetestFindingStatus.FIXED
-                rationale = "동일 위협의 반복 공격이 모두 실행되었고 공격 신호가 관찰되지 않음"
-                retest_finding_id = None
-                retest_evidence = [item.relative_path for item in attack_evidence]
             else:
                 status = RetestFindingStatus.INCONCLUSIVE
-                rationale = "동일 위협의 성공적인 반복 실행 또는 비취약 증적이 충분하지 않음"
+                rationale = (
+                    "기준 Candidate에 결박된 verified negative ReplayOutcome이 없어 "
+                    "원 실행의 비취약 신호만으로 fixed를 판정하지 않음"
+                )
                 retest_finding_id = None
                 retest_evidence = [item.relative_path for item in attack_evidence]
             finding_results.append(
@@ -330,9 +327,7 @@ class KISARetestService:
         run = json.loads((resolved / "run.json").read_text(encoding="utf-8"))
         if run.get("status") != "completed":
             raise ValueError("KISA retest comparison requires completed runs")
-        findings_data = json.loads((resolved / "findings.json").read_text(encoding="utf-8"))
-        if not isinstance(findings_data, list):
-            raise ValueError("findings.json must contain a list")
+        validation_snapshot = load_validation_snapshot(resolved)
         evidence: list[_EvidenceRecord] = []
         for item_path in sorted((resolved / "evidence").glob("*.json")):
             payload = json.loads(item_path.read_text(encoding="utf-8"))
@@ -382,7 +377,7 @@ class KISARetestService:
             assessment=KISAAssessment.model_validate_json(
                 (resolved / "kisa-results.json").read_text(encoding="utf-8")
             ),
-            findings=[Finding.model_validate(item) for item in findings_data],
+            findings=validation_snapshot.product_confirmed_findings,
             evidence=evidence,
         )
 
@@ -408,26 +403,6 @@ class KISARetestService:
     def _fingerprint(cls, finding: Finding) -> str:
         canonical = "\x1f".join(cls._finding_key(finding))
         return "pajin-finding:" + sha256(canonical.encode("utf-8")).hexdigest()[:20]
-
-    @staticmethod
-    def _expected_attack_repetitions(snapshot: _RunSnapshot) -> dict[str, int]:
-        counts: dict[str, int] = {}
-        for item in snapshot.evidence:
-            if item.tool_id == "ai.chat-probe" and item.threat_class is not None:
-                counts[item.threat_class] = counts.get(item.threat_class, 0) + 1
-        return {threat: max(2, count) for threat, count in counts.items()}
-
-    @staticmethod
-    def _fixed_with_complete_evidence(
-        records: list[_EvidenceRecord],
-        *,
-        expected: int,
-    ) -> bool:
-        return (
-            len(records) >= expected
-            and all(item.success for item in records)
-            and all(item.vulnerable is False for item in records)
-        )
 
     @classmethod
     def _remediation(cls, finding: Finding) -> RemediationAction:

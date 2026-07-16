@@ -26,6 +26,11 @@ from pajin.modes.ai_redteam.models import (
 from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome, KISAReplayRecord
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.workflow.multi_agent import MultiAgentRunOutcome
+from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_INDEX_PATH,
+    ValidationSnapshotSemantics,
+    load_validation_snapshot,
+)
 
 
 @dataclass(frozen=True)
@@ -59,12 +64,26 @@ class KISAModePack:
     ) -> KISAModePackOutcome:
         if outcome.plan is None:
             raise ValueError("KISA evaluation requires a completed typed plan")
+        plan = outcome.plan
         verify_run_integrity(outcome.run_path)
+        validation_snapshot = load_validation_snapshot(outcome.run_path)
+        if (
+            validation_snapshot.semantics is ValidationSnapshotSemantics.LEGACY_UNVERSIONED
+            and validation_snapshot.validation != outcome.validation
+        ):
+            raise ValueError("KISA in-memory validation differs from the sealed source snapshot")
+        outcome = outcome.model_copy(
+            update={
+                "validation": validation_snapshot.validation,
+                "findings": validation_snapshot.product_confirmed_findings,
+            }
+        )
+        confirmation_applied = (
+            validation_snapshot.semantics is ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
+        )
         store = RunStore(outcome.run_id, outcome.run_path)
         scenario_ids = list(
-            dict.fromkeys(
-                step.scenario_id for step in outcome.plan.steps if step.scenario_id is not None
-            )
+            dict.fromkeys(step.scenario_id for step in plan.steps if step.scenario_id is not None)
         )
         scenario_map = {scenario.scenario_id: scenario for scenario in self._catalog.scenarios}
         unknown_scenarios = set(scenario_ids) - set(scenario_map)
@@ -115,16 +134,33 @@ class KISAModePack:
             "evidence/",
             "findings.json",
         ]
+        if confirmation_applied:
+            reusable_assets.extend(
+                [
+                    VERSIONED_VALIDATION_INDEX_PATH,
+                    "validation/v1alpha1/decisions.json",
+                    "validation/v1alpha1/findings.json",
+                    "validation/v1alpha1/report.md",
+                ]
+            )
         replay_index_path: str | None = None
         replay_records: tuple[KISAReplayRecord, ...] | None = None
         if replay_batch is not None:
             if replay_batch.source_run_id != outcome.run_id:
                 raise ValueError("KISA replay batch belongs to another source Run")
             replay_records = replay_batch.verified_records(outcome.run_path)
+            if confirmation_applied:
+                self._validate_confirmation_lineage(outcome, replay_records)
             reusable_assets.append("kisa-replay-index.json")
             replay_index_path = store.write_json(
                 "kisa-replay-index.json",
-                replay_batch.index_payload(outcome.run_path),
+                replay_batch.index_payload(
+                    outcome.run_path,
+                    confirmation_applied=confirmation_applied,
+                    confirmation_artifact=(
+                        VERSIONED_VALIDATION_INDEX_PATH if confirmation_applied else None
+                    ),
+                ),
             )
         assessment = KISAAssessment(
             run_id=outcome.run_id,
@@ -133,6 +169,15 @@ class KISAModePack:
             metrics=metrics,
             checklist=checklist,
             checklist_summary=summary,
+            validation_artifact_version=(
+                validation_snapshot.index.api_version
+                if validation_snapshot.index is not None
+                else "legacy-unversioned"
+            ),
+            confirmation_semantics=validation_snapshot.semantics.value,
+            confirmation_artifact=(
+                VERSIONED_VALIDATION_INDEX_PATH if confirmation_applied else None
+            ),
             confirmed_finding_ids=[item.finding_id for item in outcome.findings],
             residual_risks=residual_risks,
             reusable_assets=reusable_assets,
@@ -183,6 +228,31 @@ class KISAModePack:
                 outcome.run_path / replay_index_path if replay_index_path is not None else None
             ),
         )
+
+    @staticmethod
+    def _validate_confirmation_lineage(
+        outcome: MultiAgentRunOutcome,
+        records: Sequence[KISAReplayRecord],
+    ) -> None:
+        decisions = {
+            decision.candidate_id: decision
+            for decision in outcome.validation.decisions
+            if decision.replay_lineage
+        }
+        if set(decisions) != {record.candidate_id for record in records}:
+            raise ValueError("KISA replay records differ from the confirmation projection")
+        for record in records:
+            decision = decisions[record.candidate_id]
+            if len(decision.replay_lineage) != 1:
+                raise ValueError("KISA confirmation Decision must reference exactly one replay")
+            lineage = decision.replay_lineage[0]
+            if (
+                decision.supersedes_decision_id != record.decision_id
+                or lineage.replay_run_id != record.replay_run_id
+                or lineage.replay_outcome_id != record.outcome_id
+                or lineage.receipt_seal_root_digest != record.receipt_seal_root_digest
+            ):
+                raise ValueError("KISA confirmation lineage differs from its sealed replay record")
 
     def _metrics(
         self,
@@ -643,12 +713,23 @@ class KISAModePack:
         assessment: KISAAssessment,
         replay_records: Sequence[KISAReplayRecord] | None = None,
     ) -> str:
+        method = (
+            "automated repeated scenarios, semantic Validator, deterministic evidence gate, "
+            "and verified restricted replay"
+            if assessment.confirmation_semantics == "verified-independent-replay"
+            else (
+                "automated repeated scenarios, semantic Validator, and deterministic evidence "
+                "gate; verified replay confirmation was not applied"
+            )
+        )
         lines = [
             f"# KISA AI Red Team Mode Pack Report: {campaign.metadata.name}",
             "",
             f"- Run ID: `{outcome.run_id}`",
             f"- Run status: `{outcome.status.value}`",
             f"- Guide baseline: `{assessment.guide} ({assessment.guide_date})`",
+            f"- Confirmation semantics: `{assessment.confirmation_semantics}`",
+            f"- Validation artifact: `{assessment.confirmation_artifact or 'legacy-unversioned'}`",
             "- Important: this automated mapping is evidence support, "
             "not a compliance certification.",
             "",
@@ -659,8 +740,7 @@ class KISAModePack:
             f"- Executed KISA threats: `{', '.join(sorted(assessment.coverage.executed))}`",
             f"- Threat coverage: `{assessment.coverage.coverage_rate:.1%}`",
             f"- Scenario repetitions: `{self._thresholds.repetitions}`",
-            "- Method: automated repeated scenarios, independent Validator, "
-            "deterministic evidence gate",
+            f"- Method: {method}",
             "",
             "## Scenario coverage",
             "",
@@ -699,7 +779,18 @@ class KISAModePack:
         lines.extend(["", "## Confirmed findings", ""])
         if not outcome.findings:
             lines.append("No independently validated finding was produced.")
+        decisions_by_finding_id = {
+            candidate.claim.finding_id: next(
+                decision
+                for decision in outcome.validation.decisions
+                if decision.candidate_id == candidate.candidate_id
+            )
+            for candidate in outcome.validation.candidates
+        }
         for finding in outcome.findings:
+            decision = decisions_by_finding_id[finding.finding_id]
+            if decision.confirmation_basis is None:
+                raise ValueError("KISA confirmed Finding is missing its confirmation basis")
             lines.extend(
                 [
                     f"### {finding.title}",
@@ -708,24 +799,38 @@ class KISAModePack:
                     f"- KISA threat: `{finding.threat_class}`",
                     f"- Severity: `{finding.severity.value}`",
                     f"- Target: `{finding.target}`",
-                    f"- Reproducibility evidence count: `{len(finding.evidence)}`",
-                    f"- Evidence: `{', '.join(finding.evidence)}`",
-                    "",
-                    finding.summary,
+                    f"- Confirmation basis: `{decision.confirmation_basis.value}`",
+                    f"- Source evidence count: `{len(finding.evidence)}`",
+                    f"- Source evidence: `{', '.join(finding.evidence)}`",
                     "",
                 ]
             )
+            for lineage in decision.replay_lineage:
+                lines.extend(
+                    [
+                        f"- Replay Run: `{lineage.replay_run_id}`",
+                        f"- ReplayOutcome: `{lineage.replay_outcome_id}`",
+                        f"- Receipt seal: `{lineage.receipt_seal_root_digest}`",
+                        f"- Replay evidence count: `{len(lineage.replay_evidence)}`",
+                        f"- Replay evidence: `{', '.join(lineage.replay_evidence)}`",
+                    ]
+                )
+            lines.extend(["", finding.summary, ""])
         if replay_records is not None:
             support_count = sum(record.supports_claim for record in replay_records)
             lines.extend(
                 [
-                    "## Independent restricted replay (M5 evidence-only)",
+                    "## Independent restricted replay",
                     "",
                     f"- Eligible replay records: `{len(replay_records)}`",
                     f"- Oracle-supporting replay records: `{support_count}`",
                     "- Source and replay evidence are separated in `kisa-replay-index.json`.",
-                    "- These records do not change Candidate dispositions; the M6 common gate "
-                    "must reload each sealed receipt before confirmation.",
+                    (
+                        "- Confirmation basis and receipt lineage are sealed in "
+                        "`validation/v1alpha1/index.json` and its Decision set."
+                        if outcome.findings
+                        else ("- No replay record satisfied every common confirmation condition.")
+                    ),
                     "",
                 ]
             )

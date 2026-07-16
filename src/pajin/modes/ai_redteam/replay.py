@@ -17,7 +17,6 @@ from pajin.domain.models import (
     CampaignManifest,
     CampaignMode,
     CapabilityGrant,
-    Finding,
     StrictModel,
     ToolRequest,
     ToolResult,
@@ -41,7 +40,6 @@ from pajin.domain.replay import (
 from pajin.domain.validation import (
     CandidateFinding,
     FindingDisposition,
-    FindingValidationSet,
     ValidationDecision,
     ValidationReasonCode,
 )
@@ -69,6 +67,7 @@ from pajin.runtime.worker import WorkerBackend
 from pajin.tools.ai import AIChatProbeOutput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, RequestRateLimitLedger
+from pajin.workflow.validation_artifacts import load_source_validation_artifacts
 
 KISA_REPLAY_MATERIALIZER_ID = "kisa.ai-chat-fresh-session"
 KISA_REPLAY_MATERIALIZER_VERSION = "1.0.0"
@@ -118,7 +117,7 @@ class KISAReplayBatchOutcome:
         source_verification = verify_run_integrity(source_root)
         if source_verification.run_id != self.source_run_id:
             raise ValueError("KISA replay batch belongs to another sealed source Run")
-        validation = _load_validation_set(source_root)
+        validation = load_source_validation_artifacts(source_root)
         candidates = {item.candidate_id: item for item in validation.candidates}
         decisions = {item.candidate_id: item for item in validation.decisions}
         if set(self.verified_results) != {record.candidate_id for record in self.records}:
@@ -172,15 +171,33 @@ class KISAReplayBatchOutcome:
             raise ValueError("KISA replay public records differ from sealed canonical outcomes")
         return records
 
-    def index_payload(self, source_run_path: Path) -> dict[str, object]:
+    def index_payload(
+        self,
+        source_run_path: Path,
+        *,
+        confirmation_applied: bool = False,
+        confirmation_artifact: str | None = None,
+    ) -> dict[str, object]:
+        if confirmation_applied != (confirmation_artifact is not None):
+            raise ValueError(
+                "KISA replay index confirmation flag and artifact reference must agree"
+            )
         records = self.verified_records(source_run_path)
         return {
+            "apiVersion": "pajin.dev/kisa-replay-index/v1alpha1",
+            "kind": "KISAReplayIndex",
             "sourceRunId": self.source_run_id,
-            "confirmationMutationApplied": False,
+            "confirmationMutationApplied": confirmation_applied,
+            "confirmationArtifact": confirmation_artifact,
             "records": [record.model_dump(mode="json") for record in records],
             "boundary": (
-                "Replay results are independently sealed evidence. The M6 common gate must "
-                "reload them before changing a Candidate disposition."
+                "The common gate reloaded every sealed receipt and appended a versioned "
+                "reproduction-backed projection."
+                if confirmation_applied
+                else (
+                    "Replay results are independently sealed evidence and have not changed "
+                    "a Candidate disposition."
+                )
             ),
         }
 
@@ -303,7 +320,7 @@ class KISAAIChatSessionMaterializer:
             or not self._scenario.matches_replay_arguments(spec.arguments)
         ):
             raise ValueError("compiled replay does not match the KISA materializer")
-        arguments = json.loads(
+        arguments: dict[str, JsonValue] = json.loads(
             json.dumps(
                 spec.arguments,
                 ensure_ascii=False,
@@ -507,7 +524,7 @@ class KISAReplayCoordinator:
         if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
             raise ValueError("KISA replay requires an AI Red Team Campaign")
         plan = AgentPlan.model_validate(_read_json(source_root / "plan.json"))
-        validation = _load_validation_set(source_root)
+        validation = load_source_validation_artifacts(source_root)
         candidates = validation.candidates
         decisions = validation.decisions
         _validate_shared_execution_state(
@@ -817,22 +834,6 @@ def _eligible_for_kisa_replay(
         candidate.source == "trusted-core:candidate-producer"
         and decision.disposition is FindingDisposition.NEEDS_REVIEW
         and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
-    )
-
-
-def _load_validation_set(source_root: Path) -> FindingValidationSet:
-    return FindingValidationSet(
-        candidates=[
-            CandidateFinding.model_validate(item)
-            for item in _read_json_list(source_root / "candidate-findings.json")
-        ],
-        decisions=[
-            ValidationDecision.model_validate(item)
-            for item in _read_json_list(source_root / "validation-decisions.json")
-        ],
-        confirmed_findings=[
-            Finding.model_validate(item) for item in _read_json_list(source_root / "findings.json")
-        ],
     )
 
 

@@ -592,6 +592,25 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
     assert result.verification.seal_count == 2
     assert verify_run_integrity(result.run_path).root_digest == result.verification.root_digest
 
+    verifier = fixture.authority.verifier()
+    verifier.verify_finalized(
+        result.receipt.ticket_id,
+        final_seal_root_digest=result.receipt_seal_root_digest,
+        artifact_set_digest=result.receipt.artifact_set_digest,
+        compilation_digest=result.receipt.compilation_digest,
+        candidate_source_root_digest=result.receipt.candidate_source_root_digest,
+        replay_run_id=result.receipt.replay_run_id,
+    )
+    with pytest.raises(PermissionError, match="does not match"):
+        verifier.verify_finalized(
+            result.receipt.ticket_id,
+            final_seal_root_digest=result.receipt_seal_root_digest,
+            artifact_set_digest=result.receipt.artifact_set_digest,
+            compilation_digest="0" * 64,
+            candidate_source_root_digest=result.receipt.candidate_source_root_digest,
+            replay_run_id=result.receipt.replay_run_id,
+        )
+
     events = [
         json.loads(line)
         for line in fixture.replay_store.events_path.read_text(encoding="utf-8").splitlines()

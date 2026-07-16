@@ -66,18 +66,19 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 
 ### 1.1 현재 구현 기준선
 
-2026-07-15 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
+2026-07-16 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
 Phase 0-1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
 Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
-Oracle·runner coordinator·replay index는 구현되었다. M6 공통 Confirmed Gate, verified receipt
-재로딩 기반 disposition 승격, 다른 Mode의 session materializer·Oracle과 구조화 협업 메모리는
-후속 과제다.
+Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
+`validation/v1alpha1` 투영은 구현되었다. durable ticket 검증, 기준 Candidate 결박형 negative
+KISA retest, Local·Control Plane replay orchestration, 다른 Mode의 materializer·Oracle과 구조화
+협업 메모리는 후속 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
-| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·stateless 실행과 등록형 fresh-session materializer 기반 구현; verified receipt를 소비하는 공통 Gate는 후속 |
+| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·Restricted Reproducer 및 receipt 재로딩 공통 Gate 구현; KISA 이외 replay orchestration은 후속 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
@@ -791,11 +792,12 @@ Secret Lease 요청을 금지한다. 새 request·정확히 대응하는 evidenc
 replay Run에서 실행한다. M03·M06·A04 fresh-session materializer는 compiler-bound 인자 중
 `session_id`만 반복별로 교체하며, live Oracle은 Worker의 `vulnerable`·`matched` 값을 무시하고
 원문 transcript와 카탈로그 check를 재계산한다. `kisa-replay-index.json`은 원 Candidate·Decision·
-request와 replay Run·Outcome·receipt seal root를 연결하지만
-`confirmationMutationApplied: false`를 유지한다. M6 공통 Gate가 각 영수증을 디스크에서 다시
-검증하기 전에는 Candidate disposition과 `findings.json`을 변경하지 않으므로 Confirmed는 계속
-0건이다. Validator-only 우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로
-유지한다.
+request와 replay Run·Outcome·receipt seal root를 연결한다. 공통 Gate는 메모리 객체를 신뢰하지
+않고 각 replay Run의 이중 seal과 ticket finalization을 다시 검증한 뒤 공통 reason matrix를
+적용한다. 원 flat Candidate·Decision·`findings.json`은 변경하지 않고 새 seal의
+`validation/v1alpha1` Decision·Finding·Markdown 투영만 추가한다. verified receipt가 있을 때
+index의 `confirmationMutationApplied`는 `true`이며, 없으면 fail-closed `false`다. Validator-only
+우회 차단, Candidate 보존, 취소·실패 시 `inconclusive` 봉인은 그대로 유지한다.
 
 ### 15.2 신뢰도 계산 요소
 
@@ -1078,9 +1080,10 @@ PAJIN/
 
 현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, Replay 계약·Compiler·Grant,
 stateless Restricted Reproducer, exact KISA fresh-session 실행·live transcript Oracle·runner
-coordinator와 지속성 Control Plane의 초기 조각까지 포함한다. 그러나 verified receipt를
-재로딩하는 M6 공통 Confirmed Gate가 연결되지 않아 MVP의 Finding 확정 기준은 아직 충족하지
-못했다. 지원 시나리오의 폭과 운영 배포 수준도 Phase 3-4의 후속 범위다.
+coordinator, receipt 재로딩 공통 Gate와 지속성 Control Plane의 초기 조각까지 포함한다. 지원
+KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는 Finding 확정 기준을
+충족하며, replay가 연결되지 않은 Local·Control Plane·다른 Mode 경로는 계속 fail closed다.
+지원 시나리오의 폭과 운영 배포 수준은 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -1093,20 +1096,21 @@ coordinator와 지속성 Control Plane의 초기 조각까지 포함한다. 그�
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
 
-2026-07-15 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
+2026-07-16 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
 단일 사용 ticket·Restricted Reproducer와 exact KISA fresh-session materializer·live Oracle·
-runner coordinator는 구현됐다. M6 공통 Gate의 verified receipt 재로딩과 disposition 승격이
-연결되지 않아 독립 재현 관련 제품 완료 기준은 아직 충족하지 못했다.
+runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only disposition 투영이
+구현됐다. KISA 외 실행 경로는 ReplayOutcome을 생성하지 않으므로 Confirmed를 내지 않으며,
+durable/offline ticket 검증과 negative retest 증명은 별도 완료 기준으로 남아 있다.
 
 ---
 
 ## 21. 단계별 로드맵
 
-| 단계 | 상태 | 2026-07-15 기준 판단 |
+| 단계 | 상태 | 2026-07-16 기준 판단 |
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer와 exact KISA fresh-session Oracle/coordinator, 권한 감쇠, 예산·취소·승인은 구현; M6 공통 Gate와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate와 exact KISA fresh-session Oracle/coordinator, 권한 감쇠, 예산·취소·승인은 구현; durable replay 검증·negative retest와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1139,9 +1143,11 @@ runner coordinator는 구현됐다. M6 공통 Gate의 verified receipt 재로딩
   Secret Lease 요청 차단, 새 evidence 검증과 이중 seal verified loader
 - exact KISA M03·M06·A04 fresh-session materializer, raw transcript Oracle, Multi-Agent runner
   coordinator와 source/replay 분리 index
-- 남은 범위: M6 공통 Confirmed Gate와 verified receipt 재로딩, KISA retest 및 다른 Mode의
-  session-bearing driver·Oracle 연결, Campaign Facts·Hypotheses·Agent Working Memory의 구조화된
-  영속 계층
+- verified receipt를 내부에서 재로딩하는 공통 Confirmed Gate, reason matrix, 원 seal을 보존하는
+  `validation/v1alpha1` Decision·Finding·Markdown 투영과 KISA report 연결
+- 남은 범위: durable/offline ticket 검증, 기준 Candidate 결박형 negative KISA retest,
+  Local·Control Plane 및 다른 Mode의 session-bearing driver·Oracle 연결, Campaign
+  Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
 ### Phase 3 — Mode Packs (진행 중)
 

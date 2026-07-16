@@ -5,10 +5,11 @@
 이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행
 통제, 증적, 결과 산출물에 연결한다. 페이지는 첨부 PDF의 물리 페이지를 기준으로 한다.
 
-> 최종 최신화: 2026-07-15. Candidate admission, 원 증거 심사, 제한 재현 계약, Replay
+> 최종 최신화: 2026-07-16. Candidate admission, 원 증거 심사, 제한 재현 계약, Replay
 > Compiler·단일 사용 ticket·Restricted Reproducer와 M03·M06·A04용 trusted fresh-session
-> materializer·live KISA transcript Oracle·runner coordinator·분리형 replay index를 구현했다.
-> 제품 수준 Confirmed 승격과 `findings.json` 반영은 M6 공통 Gate 연결 전까지 구현되지 않았다.
+> materializer·live KISA transcript Oracle·runner coordinator, receipt 재로딩 공통 Gate와
+> append-only `validation/v1alpha1` Confirmed 투영을 구현했다. flat `findings.json`은 봉인된
+> 원 snapshot으로 보존하며 제품 소비자는 versioned 투영을 사용한다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -30,9 +31,11 @@ flowchart LR
     RR --> KD["KISA Fresh-session Driver<br/>M03·M06·A04 구현"]
     KD --> O["Live KISA Transcript Oracle<br/>원문 재판정 구현"]
     O --> RI["Replay Index<br/>원본·재현 증적 분리"]
-    RI -. "M6 후속" .-> CG["Common Confirmed Gate<br/>미구현"]
+    RI --> CG["Common Confirmed Gate<br/>receipt 재검증·구현"]
+    CG --> VP["validation/v1alpha1<br/>Decision·Finding·Report"]
     V --> N["Candidate·Decision Ledger<br/>needs-review"]
     O --> E["Evaluation<br/>지표·커버리지·체크리스트"]
+    VP --> E
     N --> E
     E --> R["KISA Artifacts<br/>Markdown·JSON"]
 ```
@@ -43,19 +46,19 @@ flowchart LR
 | --- | ---: | --- | --- | --- |
 | AI 시스템 계층과 공격 표면 | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `kisa-test-plan.json`의 `scenarioDefinitions` | 구현 |
 | 19개 위협 분류 D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | `kisa-results.json`의 요청·실행·미실행 위협 | 전체 카탈로그 구현 |
-| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, `KISAMetricResult`, evidence-only replay index | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support | 부분 구현: M6 이후 canonical Confirmed 지표 반영 후속 |
-| 위험 등급 | 27 | Candidate/legacy Finding `severity`, 체크리스트 판정 | `candidate-findings.json`, `findings.json`, `kisa-results.json` | 부분 구현: 기술 등급은 생성, 제품 Confirmed와 비즈니스 우선순위는 미완료 |
+| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, `KISAMetricResult`, replay index, 공통 Confirmed Gate | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support, versioned Confirmed ID | 부분 구현: 기술 지표와 canonical Confirmed 연결 구현, 비즈니스 영향 지표 후속 |
+| 위험 등급 | 27 | Candidate/Finding `severity`, 공통 Confirmed Gate, 체크리스트 판정 | `candidate-findings.json`, `validation/v1alpha1/findings.json`, `kisa-results.json` | 부분 구현: reproduction-backed 기술 등급 생성, 조직별 비즈니스 우선순위는 미완료 |
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle | 원 Run 산출물, 별도 replay Runs, `kisa-replay-index.json` | 부분 구현: M6 공통 Confirmed Gate와 canonical metric 반영 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, 공통 Confirmed Gate | 원 Run, 별도 replay Runs, `kisa-replay-index.json`, `validation/v1alpha1/` | 지원 KISA 계약 구현; negative retest와 조직 영향 분석 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트 | `evidence/`, `events.jsonl`, `kisa-execution-log.json` | 구현 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
 | 테스트 계획(표 28) | 64 | `_test_plan` | `kisa-test-plan.json` | 구현 |
 | 테스트 완료 보고(표 29) | 64-65 | `_completion_report` | `kisa-completion-report.json` | 구현 |
 | 테스트 실행 기록(표 30) | 65 | `_execution_log` | `kisa-execution-log.json` | 구현 |
-| 완화·재검증·회귀 확인 | 43-44, 51 | `KISARetestService` | `remediation-plan.json`, `kisa-retest.json` | 구현 |
+| 완화·재검증·회귀 확인 | 43-44, 51 | `KISARetestService` | `remediation-plan.json`, `kisa-retest.json` | 부분 구현: versioned baseline만 소비, negative ReplayOutcome 연동 전 fixed 판정 차단 |
 
 ## 4. 위협 카탈로그와 실행 커버리지
 
@@ -128,9 +131,9 @@ docker compose -f containers/compose.ai-lab.yaml down
 항목만 별도 replay Run에서 실행한다. 반복마다 원 실행 및 다른 반복과 구별되는 session ID를
 materialize하고, Oracle은 Worker 판정 플래그 대신 원문 transcript에서 카탈로그 check를 다시
 계산한다. 취약 프로필에서는 3개 replay record가 Oracle support를 가질 수 있지만
-`confirmationMutationApplied`는 `false`이고 원 Candidate·Decision·체크리스트를 덮어쓰지 않는다.
-세 Candidate는 M6 공통 Gate 전까지 `needs-review`로 남으므로 `findings.json`과 제품 수준
-Confirmed 기대 건수는 계속 0건이다.
+공통 Gate가 영수증을 다시 검증하면 `confirmationMutationApplied`는 `true`가 된다. 원
+Candidate·Decision·flat `findings.json`은 덮어쓰지 않고 `validation/v1alpha1`에 최종 Decision과
+Finding을 새 seal로 추가하므로, 취약 fixture의 제품 수준 Confirmed 기대 건수는 3건이다.
 
 ## 7. 완화 및 재검증 폐루프
 
@@ -151,14 +154,16 @@ docker compose -f containers/compose.ai-lab.yaml `
 
 | 판정 | 조건 |
 | --- | --- |
-| `fixed` | 독립 재현 계약의 기대 반복 횟수를 모두 실행했고 모든 공격 신호가 사라짐 |
+| `fixed` | 기준 Candidate에 결박된 verified negative ReplayOutcome이 기대 반복을 충족함(후속 구현) |
 | `still-vulnerable` | 기준 Run과 재검증 Run에서 동일 Finding의 Restricted Replay가 성공함 |
 | `inconclusive` | 실행 실패, 증적 누락 또는 기대 반복 횟수 미달로 수정 여부를 증명하지 못함 |
 | `new` | 기준 Run fingerprint에 없던 reproduction-backed Confirmed Finding이 재검증 Run에서 생성됨 |
 
-현재 기본 `kisa-run`에는 fresh-session Reproducer와 live Oracle이 연결됐지만 `kisa-retest` 및
-공통 Confirmed Gate에는 아직 연결되지 않았다. 따라서 retest 판정을 운영 환경의 `fixed`,
-`still-vulnerable`, `new` Confirmed 판정으로 사용해서는 안 된다.
+현재 기본 `kisa-run`에는 fresh-session Reproducer, live Oracle과 공통 Confirmed Gate가 연결됐다.
+`kisa-retest` reader는 versioned Confirmed baseline만 소비하지만 기준 Candidate 결박형 negative
+ReplayOutcome과 retest replay orchestration은 아직 없다. 따라서 원 실행의 비취약 신호만으로
+`fixed`를 주장하지 않고 `inconclusive`로 닫으며, 이 단계의 결과를 운영 환경의 최종
+`fixed`·`still-vulnerable`·`new` 판정으로 사용해서는 안 된다.
 
 정상 기능은 `ai.normal-probe`로 별도 실행하므로 공격 성공률과 차단율을 희석하지 않는다.
 `kisa-checklist-overlay.json`은 다음 항목만 새 증적으로 대체한다.
@@ -174,8 +179,9 @@ docker compose -f containers/compose.ai-lab.yaml `
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Materialization·Attempt·
   Oracle·Outcome 계약, Replay Compiler·전용 Grant·별도 replay Run 저장과 exact M03·M06·A04
   `ai.chat-probe` fresh-session driver/live Oracle은 구현됐다. 결과는 봉인 영수증을 다시 읽어
-  canonical record와 일치할 때만 `kisa-replay-index.json`에 기록한다. M6 공통 Gate 전에는 이
-  증적이 Candidate disposition이나 `findings.json`을 변경하지 않는다.
+  canonical record와 일치할 때만 공통 Gate와 `kisa-replay-index.json`이 소비한다. Gate는 원
+  artifact를 변경하지 않고 versioned Decision·Finding·report와 receipt lineage를 새 seal로
+  추가한다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

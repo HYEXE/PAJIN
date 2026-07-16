@@ -89,6 +89,7 @@ def test_validation_enum_wire_values_are_stable() -> None:
         "legacy-validator",
         "deterministic-gate",
         "hybrid-legacy-gate",
+        "restricted-replay-gate",
     ]
     assert [item.value for item in ValidationCheckStatus] == [
         "pass",
@@ -99,6 +100,16 @@ def test_validation_enum_wire_values_are_stable() -> None:
     assert {item.value for item in ValidationReasonCode} == {
         "validator-confirmed",
         "independent-reproduction-missing",
+        "independent-reproduction-confirmed",
+        "replay-not-eligible",
+        "replay-approval-required",
+        "replay-cancelled",
+        "replay-timed-out",
+        "replay-rate-limited",
+        "replay-target-unavailable",
+        "replay-execution-failed",
+        "replay-oracle-inconclusive",
+        "replay-oracle-contradicted",
         "validator-disagreed",
         "validator-omitted",
         "validator-unavailable",

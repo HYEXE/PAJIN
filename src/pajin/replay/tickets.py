@@ -136,12 +136,18 @@ class ReplayTicketClaimer:
         *,
         final_seal_root_digest: str,
         artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
     ) -> None:
         self.__authority._verify_finalized(
             self.__token,
             ticket_id,
             final_seal_root_digest=final_seal_root_digest,
             artifact_set_digest=artifact_set_digest,
+            compilation_digest=compilation_digest,
+            candidate_source_root_digest=candidate_source_root_digest,
+            replay_run_id=replay_run_id,
         )
 
 
@@ -154,8 +160,11 @@ class ReplayTicketFinalizationVerifier(Protocol):
         *,
         final_seal_root_digest: str,
         artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
     ) -> None:
-        """Reject unless the ticket finalized with these exact sealed digests."""
+        """Reject unless final seals and issued compiler lineage all match exactly."""
 
 
 class ReplayTicketVerifier:
@@ -171,12 +180,18 @@ class ReplayTicketVerifier:
         *,
         final_seal_root_digest: str,
         artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
     ) -> None:
         self.__authority._verify_finalized(
             self.__token,
             ticket_id,
             final_seal_root_digest=final_seal_root_digest,
             artifact_set_digest=artifact_set_digest,
+            compilation_digest=compilation_digest,
+            candidate_source_root_digest=candidate_source_root_digest,
+            replay_run_id=replay_run_id,
         )
 
 
@@ -298,6 +313,9 @@ class ReplayExecutionAuthority:
         *,
         final_seal_root_digest: str,
         artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
     ) -> None:
         if token is not self.__claimer_token and token is not self.__verifier_token:
             raise PermissionError("invalid replay ticket verification authority")
@@ -310,6 +328,9 @@ class ReplayExecutionAuthority:
             if (
                 entry.final_seal_root_digest != final_seal_root_digest
                 or entry.artifact_set_digest != artifact_set_digest
+                or entry.compilation_digest != compilation_digest
+                or entry.context.candidate_source_root_digest != candidate_source_root_digest
+                or entry.replay_run_id != replay_run_id
             ):
                 raise PermissionError(
                     "replay ticket finalization does not match the sealed receipt"

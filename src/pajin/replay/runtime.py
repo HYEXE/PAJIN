@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 from uuid import uuid4
 
 from pydantic import ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
@@ -212,7 +212,7 @@ class ReplayOracleRegistry:
 class ReplayVerificationReceipt(StrictModel):
     """Persisted proof that replay artifacts were sealed and verified."""
 
-    api_version: str = Field(
+    api_version: Literal["pajin.dev/replay-verification-receipt/v1"] = Field(
         default="pajin.dev/replay-verification-receipt/v1",
         alias="apiVersion",
     )
@@ -314,6 +314,9 @@ def load_verified_replay_result(
         receipt.ticket_id,
         final_seal_root_digest=receipt_seal.root_digest,
         artifact_set_digest=artifact_digest,
+        compilation_digest=receipt.compilation_digest,
+        candidate_source_root_digest=receipt.candidate_source_root_digest,
+        replay_run_id=receipt.replay_run_id,
     )
     return VerifiedReplayResult(
         artifact_set=artifact_set,
@@ -837,6 +840,9 @@ class GatewayRestrictedReproducerRuntime:
     ) -> ReplayRuntimeReason | None:
         spec = compilation.spec
         binding = spec.binding
+        claim = self._claim
+        if claim is None:
+            return ReplayRuntimeReason.TOOL_CONTRACT_MISMATCH
         if (
             campaign.metadata.name != binding.campaign
             or campaign.spec.mode is not binding.mode
@@ -855,7 +861,7 @@ class GatewayRestrictedReproducerRuntime:
                 materializer = self._materializers.resolve(spec)
             except KeyError:
                 return ReplayRuntimeReason.MATERIALIZER_UNREGISTERED
-            if self._claim.context.scenario_digest != materializer.scenario_digest:
+            if claim.context.scenario_digest != materializer.scenario_digest:
                 return ReplayRuntimeReason.MATERIALIZER_UNREGISTERED
         if spec.secret_lease_ids:
             return ReplayRuntimeReason.SECRET_LEASE_UNSUPPORTED
@@ -869,8 +875,7 @@ class GatewayRestrictedReproducerRuntime:
             or tool.spec.risk_tier != spec.risk_tier
             or compilation.contract.tool_id != tool.spec.tool_id
             or compilation.contract.tool_version != tool.spec.version
-            or self._claim is None
-            or self._claim.context.tool_spec_digest
+            or claim.context.tool_spec_digest
             != replay_context_digest(tool.spec.model_dump(mode="json"))
         ):
             return ReplayRuntimeReason.TOOL_CONTRACT_MISMATCH
@@ -878,7 +883,7 @@ class GatewayRestrictedReproducerRuntime:
             oracle = self._oracles.resolve(spec)
         except KeyError:
             return ReplayRuntimeReason.ORACLE_UNREGISTERED
-        if self._claim.context.scenario_digest != oracle.scenario_digest:
+        if claim.context.scenario_digest != oracle.scenario_digest:
             return ReplayRuntimeReason.ORACLE_UNREGISTERED
         return None
 
