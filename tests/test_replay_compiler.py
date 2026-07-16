@@ -26,6 +26,8 @@ from pajin.domain.replay import (
     ReplayCapabilityGrant,
     ReplayCompilation,
     ReplayIntent,
+    ReplayPurpose,
+    ReplayRetestContext,
     ReplaySessionPolicy,
     ValidationEvidenceExcerpt,
     ValidationPacket,
@@ -124,28 +126,42 @@ def _candidate() -> CandidateFinding:
     )
 
 
-def _packet() -> ValidationPacket:
-    return ValidationPacket(
-        packet_id="validation-packet_m03_1",
-        candidate_run_id="run_candidate_m03_1",
-        candidate=_candidate(),
-        mode=CampaignMode.AI_REDTEAM,
-        scenario_id=SCENARIO_ID,
-        target_id=TARGET_ID,
-        target=TARGET,
-        threat_class="M03",
-        original_request_ids=[ORIGINAL_REQUEST_ID],
-        evidence=[
+def _packet(**updates: object) -> ValidationPacket:
+    values: dict[str, object] = {
+        "packet_id": "validation-packet_m03_1",
+        "candidate_run_id": "run_candidate_m03_1",
+        "candidate": _candidate(),
+        "mode": CampaignMode.AI_REDTEAM,
+        "scenario_id": SCENARIO_ID,
+        "target_id": TARGET_ID,
+        "target": TARGET,
+        "threat_class": "M03",
+        "original_request_ids": [ORIGINAL_REQUEST_ID],
+        "evidence": [
             ValidationEvidenceExcerpt(
                 reference=EVIDENCE,
                 sha256="a" * 64,
                 excerpt="Redacted transcript excerpt with the catalog sentinel.",
             )
         ],
-        semantic_support_required=True,
-        replay_contract_id="replay-contract:kisa-m03:v1",
-        created_at=NOW - timedelta(minutes=4),
-    )
+        "semantic_support_required": True,
+        "replay_contract_id": "replay-contract:kisa-m03:v1",
+        "created_at": NOW - timedelta(minutes=4),
+    }
+    values.update(updates)
+    return ValidationPacket.model_validate(values)
+
+
+def _retest_context(**updates: object) -> ReplayRetestContext:
+    values: dict[str, object] = {
+        "baselineDecisionId": "decision_confirmed_m03_1",
+        "baselineFindingId": "finding_m03_1",
+        "remediationId": "remediation_m03_1",
+        "retestRunId": "run_retest_m03_1",
+        "retestSourceRootDigest": "d" * 64,
+    }
+    values.update(updates)
+    return ReplayRetestContext.model_validate(values)
 
 
 def _intent(**updates: object) -> ReplayIntent:
@@ -574,3 +590,64 @@ def test_compiler_requires_distinct_candidate_and_replay_runs() -> None:
         ReplayCompileReason.IDENTITY_MISMATCH,
         lambda: _compile(replay_run_id="run_candidate_m03_1"),
     )
+
+
+def test_compiler_binds_remediation_retest_context_into_identity_and_spec() -> None:
+    context = _retest_context()
+    purpose = ReplayPurpose.REMEDIATION_RETEST
+    compiled = _compile(
+        validation_packet=_packet(purpose=purpose, retest_context=context),
+        intent=_intent(purpose=purpose, retest_context=context),
+        contract=_contract(purpose=purpose, required_contradictions=2),
+    )
+
+    assert compiled.spec.purpose is purpose
+    assert compiled.spec.binding.purpose is purpose
+    assert compiled.spec.binding.context_run_id == context.retest_run_id
+    assert compiled.spec.required_contradictions == 2
+    assert compiled.spec.retest_context_digest is not None
+
+    changed = _retest_context(remediationId="remediation_m03_2")
+    changed_compilation = _compile(
+        validation_packet=_packet(purpose=purpose, retest_context=changed),
+        intent=_intent(purpose=purpose, retest_context=changed),
+        contract=_contract(purpose=purpose, required_contradictions=2),
+    )
+    assert changed_compilation.spec.spec_id != compiled.spec.spec_id
+    assert changed_compilation.grant.grant_id != compiled.grant.grant_id
+
+
+def test_compiler_rejects_retest_context_and_parent_run_substitution() -> None:
+    context = _retest_context()
+    purpose = ReplayPurpose.REMEDIATION_RETEST
+
+    _assert_reason(
+        ReplayCompileReason.IDENTITY_MISMATCH,
+        lambda: _compile(
+            validation_packet=_packet(purpose=purpose, retest_context=context),
+            intent=_intent(
+                purpose=purpose,
+                retest_context=_retest_context(remediationId="remediation_foreign"),
+            ),
+            contract=_contract(purpose=purpose),
+        ),
+    )
+    _assert_reason(
+        ReplayCompileReason.IDENTITY_MISMATCH,
+        lambda: _compile(
+            validation_packet=_packet(purpose=purpose, retest_context=context),
+            intent=_intent(purpose=purpose, retest_context=context),
+            contract=_contract(purpose=purpose),
+            replay_run_id=context.retest_run_id,
+        ),
+    )
+
+
+def test_compiler_purpose_and_contradiction_policy_change_compilation_identity() -> None:
+    confirmation = _compile()
+    changed_threshold = _compile(contract=_contract(required_contradictions=1))
+
+    assert confirmation.spec.required_contradictions == 0
+    assert changed_threshold.spec.required_contradictions == 1
+    assert changed_threshold.spec.spec_id != confirmation.spec.spec_id
+    assert changed_threshold.grant.grant_id != confirmation.grant.grant_id

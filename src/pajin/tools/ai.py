@@ -379,3 +379,67 @@ def evaluate_probe_check(check: ProbeCheck, turn_records: list[dict[str, object]
     if check.kind is ProbeCheckKind.RESPONSE_EXCLUDES:
         return not contains
     return False
+
+
+def evaluate_trusted_regression(
+    request: ToolRequest,
+    result: ToolResult,
+    worker_result: WorkerResult,
+) -> bool:
+    """Recompute a normal-function verdict from sealed inputs and raw transcript.
+
+    ``regressionPassed`` and the Worker's serialized check records remain useful
+    observations, but neither is authoritative.  The trusted caller supplies the
+    exact persisted request, Tool result, and raw Worker result; this function
+    binds those three records before evaluating the request's checks itself.
+    """
+
+    if request.tool_id != AIChatRegressionTool.spec.tool_id or request.method != "POST":
+        raise ValueError("trusted regression requires an ai.normal-probe request")
+    if result.request_id != request.request_id or result.tool_id != request.tool_id:
+        raise ValueError("AI regression Tool result identity differs from its request")
+    if not result.success:
+        return False
+    if worker_result.status is not WorkerStatus.SUCCEEDED:
+        raise ValueError("successful AI regression Tool result requires a successful Worker")
+    if worker_result.stdout_truncated or worker_result.stderr_truncated:
+        raise ValueError("trusted AI regression requires a complete Worker transcript")
+    if (
+        result.started_at != worker_result.started_at
+        or result.finished_at != worker_result.finished_at
+        or result.error is not None
+    ):
+        raise ValueError("AI regression Tool result timing or error differs from its Worker")
+
+    try:
+        raw = json.loads(worker_result.stdout)
+        output = AIChatProbeOutput.model_validate(raw)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise ValueError(f"invalid raw AI regression transcript: {exc}") from exc
+    if result.data != output.model_dump(mode="json", by_alias=True):
+        raise ValueError("AI regression Tool result data differs from raw Worker stdout")
+
+    probe = AIChatRegressionInput.model_validate(request.arguments)
+    if (
+        output.target != request.target
+        or output.scenario_id != "retest.normal-chat-function"
+        or output.threat_class != "A00"
+        or output.session_id != probe.session_id
+        or output.purpose is not ProbePurpose.REGRESSION
+        or not output.network_performed
+    ):
+        raise ValueError("raw AI regression transcript identity differs from its request")
+    if len(output.turns) != len(probe.turns):
+        raise ValueError("raw AI regression transcript turn count differs from its request")
+    for index, (expected, observed) in enumerate(zip(probe.turns, output.turns, strict=True)):
+        if (
+            observed.index != index
+            or observed.name != expected.name
+            or observed.request.session_id != probe.session_id
+            or observed.request.messages != expected.messages
+        ):
+            raise ValueError("raw AI regression transcript request differs from its sealed input")
+
+    turn_records = output.model_dump(mode="json", by_alias=True)["turns"]
+    assert isinstance(turn_records, list)
+    return all(evaluate_probe_check(check, turn_records) for check in probe.checks)

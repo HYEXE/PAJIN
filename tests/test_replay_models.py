@@ -18,10 +18,13 @@ from pajin.domain.replay import (
     ReplayOracleResult,
     ReplayOracleVerdict,
     ReplayOutcome,
+    ReplayPurpose,
+    ReplayRetestContext,
     ReplaySessionPolicy,
     ValidationEvidenceExcerpt,
     ValidationPacket,
     replay_argument_digest,
+    replay_retest_context_digest,
 )
 from pajin.domain.validation import (
     CandidateFinding,
@@ -98,6 +101,18 @@ def _binding(**updates: object) -> ReplayBinding:
     }
     values.update(updates)
     return ReplayBinding.model_validate(values)
+
+
+def _retest_context(**updates: object) -> ReplayRetestContext:
+    values: dict[str, object] = {
+        "baselineDecisionId": "decision_confirmed_1",
+        "baselineFindingId": "finding_kisa_1",
+        "remediationId": "remediation_kisa_1",
+        "retestRunId": "run_retest_1",
+        "retestSourceRootDigest": "d" * 64,
+    }
+    values.update(updates)
+    return ReplayRetestContext.model_validate(values)
 
 
 def _contract(**updates: object) -> ModeReplayContract:
@@ -394,6 +409,202 @@ def test_replay_artifact_set_round_trips_complete_candidate_bound_lineage() -> N
     future_wire["apiVersion"] = "pajin.dev/replay/v2"
     with pytest.raises(ValidationError, match=r"pajin\.dev/replay/v1alpha1"):
         ReplayArtifactSet.model_validate(future_wire)
+
+
+def test_retest_context_is_required_and_exactly_bound_for_remediation_replay() -> None:
+    context = _retest_context()
+    binding = _binding(
+        purpose=ReplayPurpose.REMEDIATION_RETEST,
+        context_run_id=context.retest_run_id,
+    )
+    packet = _packet(purpose=ReplayPurpose.REMEDIATION_RETEST, retest_context=context)
+    contract = _contract(purpose=ReplayPurpose.REMEDIATION_RETEST)
+    intent = _intent(purpose=ReplayPurpose.REMEDIATION_RETEST, retest_context=context)
+    spec = _spec(
+        purpose=ReplayPurpose.REMEDIATION_RETEST,
+        retest_context_digest=replay_retest_context_digest(context),
+        binding=binding,
+    )
+    attempts = [_attempt(1, binding=binding), _attempt(2, binding=binding)]
+    outcome = _outcome(
+        binding=binding,
+        attempts=attempts,
+        attempt_ids=[attempt.attempt_id for attempt in attempts],
+        replay_request_ids=[attempt.replay_request_id for attempt in attempts],
+        evidence=[reference for attempt in attempts for reference in attempt.evidence],
+        oracle_result=_oracle(attempts).model_copy(update={"binding": binding}),
+    )
+
+    artifacts = _artifact_set(
+        validation_packet=packet,
+        contract=contract,
+        intent=intent,
+        spec=spec,
+        outcome=outcome,
+    )
+
+    assert artifacts.spec.binding.context_run_id == context.retest_run_id
+    assert context.model_dump(mode="json", by_alias=True)["baselineDecisionId"] == (
+        "decision_confirmed_1"
+    )
+
+    changed = _retest_context(remediationId="remediation_substituted")
+    with pytest.raises(ValidationError, match="retest context"):
+        _artifact_set(
+            validation_packet=packet,
+            contract=contract,
+            intent=_intent(
+                purpose=ReplayPurpose.REMEDIATION_RETEST,
+                retest_context=changed,
+            ),
+            spec=spec,
+            outcome=outcome,
+        )
+
+    with pytest.raises(ValidationError, match="require a ReplayIntent"):
+        _artifact_set(
+            validation_packet=packet,
+            contract=contract,
+            intent=None,
+            spec=spec.model_copy(update={"intent_id": None}),
+            outcome=outcome,
+        )
+
+
+def test_retest_context_rejects_missing_foreign_or_reused_lineage() -> None:
+    with pytest.raises(ValidationError, match="requires retest context"):
+        _packet(purpose=ReplayPurpose.REMEDIATION_RETEST)
+    with pytest.raises(ValidationError, match="cannot contain retest context"):
+        _packet(retest_context=_retest_context())
+    with pytest.raises(ValidationError, match="baseline finding"):
+        _packet(
+            purpose=ReplayPurpose.REMEDIATION_RETEST,
+            retest_context=_retest_context(baselineFindingId="finding_foreign"),
+        )
+    with pytest.raises(ValidationError, match="must differ from the Candidate Run"):
+        _packet(
+            purpose=ReplayPurpose.REMEDIATION_RETEST,
+            retest_context=_retest_context(retestRunId="run_candidate_1"),
+        )
+
+
+def test_oracle_contradiction_thresholds_and_evidence_are_typed() -> None:
+    attempts = [_attempt(1), _attempt(2)]
+    oracle = ReplayOracleResult(
+        oracle_result_id="replay-oracle_contradicts_1",
+        spec_id="compiled-replay_1",
+        binding=_binding(),
+        oracle_id="kisa.exact-marker",
+        oracle_version="1.0.0",
+        observation_schema="pajin.ai-chat-probe-output/v1",
+        verdict=ReplayOracleVerdict.CONTRADICTS,
+        attempt_ids=[attempt.attempt_id for attempt in attempts],
+        supporting_evidence=[],
+        contradicting_evidence=[attempts[0].evidence[0], attempts[1].evidence[0]],
+        support_count=0,
+        required_support_count=2,
+        contradiction_count=2,
+        required_contradiction_count=2,
+        summary="Both observations objectively contradict the bound claim.",
+        evaluated_at=NOW + timedelta(seconds=4),
+    )
+    outcome = _outcome(oracle_result=oracle)
+    assert outcome.contradicts_claim is True
+
+    values = oracle.model_dump()
+    values["contradiction_count"] = 1
+    with pytest.raises(ValidationError, match="required contradiction count"):
+        ReplayOracleResult.model_validate(values)
+
+    values = oracle.model_dump()
+    values["supporting_evidence"] = [attempts[0].evidence[0]]
+    values["support_count"] = 1
+    with pytest.raises(ValidationError, match="disjoint"):
+        ReplayOracleResult.model_validate(values)
+
+    values = oracle.model_dump()
+    values["support_count"] = 1
+    values["contradiction_count"] = 2
+    with pytest.raises(ValidationError, match="cannot exceed evaluated attempts"):
+        ReplayOracleResult.model_validate(values)
+
+
+def test_legacy_zero_threshold_contradiction_is_confirmation_only() -> None:
+    attempts = [_attempt(1), _attempt(2)]
+    legacy_confirmation = ReplayOracleResult(
+        oracle_result_id="replay-oracle_legacy_contradicts_1",
+        spec_id="compiled-replay_1",
+        binding=_binding(),
+        oracle_id="kisa.exact-marker",
+        oracle_version="1.0.0",
+        observation_schema="pajin.ai-chat-probe-output/v1",
+        verdict=ReplayOracleVerdict.CONTRADICTS,
+        attempt_ids=[attempt.attempt_id for attempt in attempts],
+        support_count=0,
+        required_support_count=2,
+        summary="Legacy confirmation recorded a zero-support contradiction.",
+        evaluated_at=NOW + timedelta(seconds=4),
+    )
+    assert legacy_confirmation.verdict is ReplayOracleVerdict.CONTRADICTS
+
+    unthresholded_confirmation = legacy_confirmation.model_dump()
+    unthresholded_confirmation["contradiction_count"] = 1
+    with pytest.raises(ValidationError, match="required contradiction count"):
+        ReplayOracleResult.model_validate(unthresholded_confirmation)
+
+    retest_values = legacy_confirmation.model_dump()
+    retest_values["binding"] = _binding(
+        purpose=ReplayPurpose.REMEDIATION_RETEST,
+        context_run_id="run_retest_1",
+    )
+    with pytest.raises(ValidationError, match="required contradiction count"):
+        ReplayOracleResult.model_validate(retest_values)
+
+
+def test_retest_contradiction_count_requires_one_evidence_reference_per_count() -> None:
+    attempts = [_attempt(1), _attempt(2)]
+    values: dict[str, object] = {
+        "oracle_result_id": "replay-oracle_retest_contradicts_1",
+        "spec_id": "compiled-replay_1",
+        "binding": _binding(
+            purpose=ReplayPurpose.REMEDIATION_RETEST,
+            context_run_id="run_retest_1",
+        ),
+        "oracle_id": "kisa.exact-marker",
+        "oracle_version": "1.0.0",
+        "observation_schema": "pajin.ai-chat-probe-output/v1",
+        "verdict": ReplayOracleVerdict.CONTRADICTS,
+        "attempt_ids": [attempt.attempt_id for attempt in attempts],
+        "support_count": 0,
+        "required_support_count": 2,
+        "contradiction_count": 2,
+        "required_contradiction_count": 2,
+        "summary": "Both typed retest observations contradicted the baseline claim.",
+        "evaluated_at": NOW + timedelta(seconds=4),
+    }
+
+    with pytest.raises(ValidationError, match="evidence for every count"):
+        ReplayOracleResult.model_validate(values)
+
+    values["contradicting_evidence"] = [attempts[0].evidence[0]]
+    with pytest.raises(ValidationError, match="evidence for every count"):
+        ReplayOracleResult.model_validate(values)
+
+    values["contradicting_evidence"] = [
+        attempts[0].evidence[0],
+        attempts[1].evidence[0],
+    ]
+    oracle = ReplayOracleResult.model_validate(values)
+    assert len(oracle.contradicting_evidence) == oracle.contradiction_count
+
+
+def test_artifact_set_binds_oracle_contradiction_threshold_to_spec() -> None:
+    attempts = [_attempt(1), _attempt(2)]
+    oracle = _oracle(attempts).model_copy(update={"required_contradiction_count": 1})
+    outcome = _outcome(oracle_result=oracle)
+
+    with pytest.raises(ValidationError, match="Oracle contract"):
+        _artifact_set(outcome=outcome)
 
 
 @pytest.mark.parametrize(

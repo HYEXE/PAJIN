@@ -33,6 +33,7 @@ from pajin.domain.replay import (
     ReplayIntent,
     ReplayOracleResult,
     ReplayOracleVerdict,
+    ReplayPurpose,
     ReplaySessionPolicy,
     ValidationEvidenceExcerpt,
     ValidationPacket,
@@ -101,6 +102,30 @@ class ReplayFixture:
     authority: ReplayExecutionAuthority
     ticket: ReplayExecutionTicket
     scenario: MockReplayScenario
+
+
+class RecordingReplayTicketVerifier:
+    def __init__(self, *, expected_compilation_digest: str) -> None:
+        self.expected_compilation_digest = expected_compilation_digest
+        self.called = False
+
+    def verify_finalized(
+        self,
+        ticket_id: str,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
+    ) -> None:
+        assert ticket_id
+        assert final_seal_root_digest
+        assert artifact_set_digest
+        assert candidate_source_root_digest
+        assert replay_run_id
+        assert compilation_digest == self.expected_compilation_digest
+        self.called = True
 
 
 class ThresholdMockOracle:
@@ -351,6 +376,7 @@ def _fixture(
     repetitions: int = 2,
     session_policy: ReplaySessionPolicy = ReplaySessionPolicy.STATELESS,
     campaign: CampaignManifest | None = None,
+    allowed_argument_fields: set[str] | None = None,
 ) -> ReplayFixture:
     resolved = campaign or _campaign()
     scenario = MockReplayScenario()
@@ -470,7 +496,7 @@ def _fixture(
         oracle_version=ThresholdMockOracle.oracle_version,
         observation_schema=ThresholdMockOracle.observation_schema,
         semantic_support_required=False,
-        allowed_argument_fields={"simulation"},
+        allowed_argument_fields=allowed_argument_fields or {"simulation"},
     )
     grant = CapabilityGrant(
         grant_id="grant_specialist_mock_1",
@@ -563,6 +589,26 @@ def _run(
     )
 
 
+def _reseal_replay_artifacts(
+    run_path: Path,
+    receipt_payload: dict[str, object],
+) -> None:
+    receipt_path = run_path / "replay/verification-receipt.json"
+    integrity_path = run_path / "run-integrity.jsonl"
+    replay_run_id = receipt_payload["replay_run_id"]
+    assert isinstance(replay_run_id, str)
+    receipt_path.unlink()
+    integrity_path.unlink()
+    resealer = RunStore(run_id=replay_run_id, path=run_path)
+    artifact_seal = resealer.seal()
+    receipt_payload["artifact_seal_root_digest"] = artifact_seal.root_digest
+    receipt_path.write_text(
+        json.dumps(receipt_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    resealer.seal()
+
+
 def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
     tmp_path: Path,
 ) -> None:
@@ -591,6 +637,10 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
     assert result.receipt.artifact_set_digest
     assert result.verification.seal_count == 2
     assert verify_run_integrity(result.run_path).root_digest == result.verification.root_digest
+    compilation_payload = json.loads(
+        (result.run_path / "replay/compilation.json").read_text(encoding="utf-8")
+    )
+    assert result.receipt.compilation_digest == replay_context_digest(compilation_payload)
 
     verifier = fixture.authority.verifier()
     verifier.verify_finalized(
@@ -636,6 +686,30 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
         )
 
 
+def test_reproducer_seals_deterministically_sorted_compilation_sets(tmp_path: Path) -> None:
+    allowed_fields = {"simulation", *(f"optional_field_{number:02d}" for number in range(32))}
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        allowed_argument_fields=allowed_fields,
+    )
+
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    compilation_payload = json.loads(
+        (result.run_path / "replay/compilation.json").read_text(encoding="utf-8")
+    )
+
+    assert compilation_payload["contract"]["allowed_argument_fields"] == sorted(allowed_fields)
+    assert result.receipt.compilation_digest == replay_context_digest(compilation_payload)
+
+
 def test_verified_loader_ignores_mutated_in_memory_replay_result(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path, vulnerable=False, repetitions=1)
     result = _run(
@@ -659,6 +733,200 @@ def test_verified_loader_ignores_mutated_in_memory_replay_result(tmp_path: Path)
     assert not reloaded.artifact_set.outcome.supports_claim
     assert reloaded.receipt_seal_root_digest == result.receipt_seal_root_digest
     assert reloaded.verification.root_digest == result.verification.root_digest
+
+
+def test_verified_loader_digests_legacy_wire_json_before_applying_defaults(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path, vulnerable=False, repetitions=1)
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    run_path = result.run_path
+    compilation_path = run_path / "replay/compilation.json"
+    receipt_path = run_path / "replay/verification-receipt.json"
+
+    compilation_payload = json.loads(compilation_path.read_text(encoding="utf-8"))
+    for section_name, default_fields in (
+        ("validation_packet", ("purpose", "retest_context")),
+        ("contract", ("purpose", "required_contradictions")),
+        ("intent", ("purpose", "retest_context")),
+        (
+            "spec",
+            ("purpose", "retest_context_digest", "required_contradictions"),
+        ),
+    ):
+        section = compilation_payload[section_name]
+        assert isinstance(section, dict)
+        for field_name in default_fields:
+            section.pop(field_name)
+    binding = compilation_payload["spec"]["binding"]
+    assert isinstance(binding, dict)
+    binding.pop("purpose")
+    binding.pop("context_run_id")
+    compilation_path.write_text(
+        json.dumps(compilation_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    legacy_wire_digest = replay_context_digest(compilation_payload)
+
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt_payload["compilation_digest"] = legacy_wire_digest
+    _reseal_replay_artifacts(run_path, receipt_payload)
+
+    verifier = RecordingReplayTicketVerifier(
+        expected_compilation_digest=legacy_wire_digest,
+    )
+    reloaded = load_verified_replay_result(run_path, tickets=verifier)
+
+    assert verifier.called
+    assert reloaded.receipt.compilation_digest == legacy_wire_digest
+    assert reloaded.artifact_set.validation_packet.purpose is ReplayPurpose.CONFIRMATION
+    assert reloaded.artifact_set.contract.required_contradictions == 0
+    assert reloaded.artifact_set.spec.binding.context_run_id is None
+
+
+def test_verified_loader_accepts_legacy_compilation_set_order(
+    tmp_path: Path,
+) -> None:
+    allowed_fields = {"simulation", *(f"optional_field_{number:02d}" for number in range(32))}
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        allowed_argument_fields=allowed_fields,
+    )
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    run_path = result.run_path
+    compilation_path = run_path / "replay/compilation.json"
+    receipt_path = run_path / "replay/verification-receipt.json"
+    compilation_payload = json.loads(compilation_path.read_text(encoding="utf-8"))
+    ordered_fields = compilation_payload["contract"]["allowed_argument_fields"]
+    assert ordered_fields == sorted(allowed_fields)
+    compilation_payload["contract"]["allowed_argument_fields"] = list(reversed(ordered_fields))
+    compilation_path.write_text(
+        json.dumps(compilation_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    assert replay_context_digest(compilation_payload) != result.receipt.compilation_digest
+
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    _reseal_replay_artifacts(run_path, receipt_payload)
+    verifier = RecordingReplayTicketVerifier(
+        expected_compilation_digest=result.receipt.compilation_digest,
+    )
+
+    reloaded = load_verified_replay_result(run_path, tickets=verifier)
+
+    assert verifier.called
+    assert reloaded.artifact_set.contract.allowed_argument_fields == allowed_fields
+
+
+def test_verified_loader_accepts_legacy_missing_defaults_and_reversed_set_order(
+    tmp_path: Path,
+) -> None:
+    allowed_fields = {"simulation", *(f"optional_field_{number:02d}" for number in range(49))}
+    assert len(allowed_fields) == 50
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        allowed_argument_fields=allowed_fields,
+    )
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    run_path = result.run_path
+    compilation_path = run_path / "replay/compilation.json"
+    receipt_path = run_path / "replay/verification-receipt.json"
+    compilation_payload = json.loads(compilation_path.read_text(encoding="utf-8"))
+    for section_name, default_fields in (
+        ("validation_packet", ("purpose", "retest_context")),
+        ("contract", ("purpose", "required_contradictions")),
+        ("intent", ("purpose", "retest_context")),
+        (
+            "spec",
+            ("purpose", "retest_context_digest", "required_contradictions"),
+        ),
+    ):
+        section = compilation_payload[section_name]
+        assert isinstance(section, dict)
+        for field_name in default_fields:
+            section.pop(field_name)
+    binding = compilation_payload["spec"]["binding"]
+    assert isinstance(binding, dict)
+    binding.pop("purpose")
+    binding.pop("context_run_id")
+
+    ordered_fields = compilation_payload["contract"]["allowed_argument_fields"]
+    assert ordered_fields == sorted(allowed_fields)
+    legacy_receipt_digest = replay_context_digest(compilation_payload)
+    compilation_payload["contract"]["allowed_argument_fields"] = list(reversed(ordered_fields))
+    compilation_path.write_text(
+        json.dumps(compilation_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    assert replay_context_digest(compilation_payload) != legacy_receipt_digest
+
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt_payload["compilation_digest"] = legacy_receipt_digest
+    _reseal_replay_artifacts(run_path, receipt_payload)
+    verifier = RecordingReplayTicketVerifier(
+        expected_compilation_digest=legacy_receipt_digest,
+    )
+
+    reloaded = load_verified_replay_result(run_path, tickets=verifier)
+
+    assert verifier.called
+    assert reloaded.receipt.compilation_digest == legacy_receipt_digest
+    assert reloaded.artifact_set.contract.allowed_argument_fields == allowed_fields
+
+
+def test_verified_loader_rejects_resealed_semantic_compilation_tamper(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path, repetitions=1)
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    run_path = result.run_path
+    compilation_path = run_path / "replay/compilation.json"
+    receipt_path = run_path / "replay/verification-receipt.json"
+    compilation_payload = json.loads(compilation_path.read_text(encoding="utf-8"))
+    compilation_payload["contract"]["oracle_id"] = "test.substituted-oracle"
+    compilation_path.write_text(
+        json.dumps(compilation_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    _reseal_replay_artifacts(run_path, receipt_payload)
+    verifier = RecordingReplayTicketVerifier(
+        expected_compilation_digest=result.receipt.compilation_digest,
+    )
+
+    with pytest.raises(ValueError, match="compilation"):
+        load_verified_replay_result(run_path, tickets=verifier)
+    assert not verifier.called
 
 
 def test_replay_ticket_claim_is_atomic_and_single_use(tmp_path: Path) -> None:

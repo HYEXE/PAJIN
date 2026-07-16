@@ -3,11 +3,14 @@
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.modes.ai_redteam.replay import (
+    KISAAIChatNegativeRetestOracle,
     KISAAIChatReplayOracle,
     KISAAIChatSessionMaterializer,
     KISAReplayBatchOutcome,
     KISAReplayCoordinator,
     KISAReplayRecord,
+    KISARetestReplayCoordinator,
+    kisa_negative_retest_contract,
     kisa_replay_contract,
     kisa_replay_registries,
     required_kisa_replay_calls,
@@ -26,6 +29,7 @@ from pajin.modes.ai_redteam.service import KISAModePack
 
 __all__ = [
     "KISA_CATALOG",
+    "KISAAIChatNegativeRetestOracle",
     "KISAAIChatReplayOracle",
     "KISAAIChatSessionMaterializer",
     "KISACandidateProducer",
@@ -37,8 +41,10 @@ __all__ = [
     "KISAReplayRecord",
     "KISARetestOutcome",
     "KISARetestPlannerRuntime",
+    "KISARetestReplayCoordinator",
     "KISARetestService",
     "KISAValidatorRuntime",
+    "kisa_negative_retest_contract",
     "kisa_replay_contract",
     "kisa_replay_registries",
     "required_kisa_replay_calls",

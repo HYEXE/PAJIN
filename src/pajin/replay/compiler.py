@@ -24,10 +24,12 @@ from pajin.domain.replay import (
     ReplayCapabilityGrant,
     ReplayCompilation,
     ReplayIntent,
+    ReplayPurpose,
     ValidationPacket,
     replay_argument_digest,
     replay_evidence_digest,
     replay_request_digest,
+    replay_retest_context_digest,
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.replay.tickets import (
@@ -145,10 +147,13 @@ class ReplayCompiler:
                 ReplayCompileReason.AUTHORIZATION_INACTIVE,
                 "campaign authorization is not active at compilation time",
             )
-        if replay_run_id == validation_packet.candidate_run_id:
+        context = validation_packet.retest_context
+        if replay_run_id == validation_packet.candidate_run_id or (
+            context is not None and replay_run_id == context.retest_run_id
+        ):
             raise ReplayCompilationError(
                 ReplayCompileReason.IDENTITY_MISMATCH,
-                "replay Run must differ from the Candidate Run",
+                "replay Run must differ from Candidate and parent Retest Runs",
             )
         if used_campaign_calls < 0 or (
             used_campaign_calls + contract.repetitions > campaign.spec.budgets.max_tool_calls
@@ -234,6 +239,8 @@ class ReplayCompiler:
             campaign=campaign.metadata.name,
             candidate_run_id=validation_packet.candidate_run_id,
             replay_run_id=replay_run_id,
+            purpose=validation_packet.purpose,
+            context_run_id=context.retest_run_id if context is not None else None,
             original_request_id=original_request.request_id,
             mode=campaign.spec.mode,
             scenario_id=scenario.scenario_id,
@@ -298,6 +305,10 @@ class ReplayCompiler:
             spec_id=spec_id,
             intent_id=intent.intent_id,
             contract_id=contract.contract_id,
+            purpose=validation_packet.purpose,
+            retest_context_digest=(
+                replay_retest_context_digest(context) if context is not None else None
+            ),
             original_plan_step_id=plan_step_id,
             binding=binding,
             method=original_request.method,
@@ -315,6 +326,7 @@ class ReplayCompiler:
             ephemeral_argument_fields=contract.ephemeral_argument_fields,
             repetitions=contract.repetitions,
             required_successes=contract.required_successes,
+            required_contradictions=contract.required_contradictions,
             oracle_id=contract.oracle_id,
             oracle_version=contract.oracle_version,
             observation_schema=contract.observation_schema,
@@ -429,10 +441,13 @@ def _validate_identity(
         or candidate.claim.threat_class != packet.threat_class
         or packet.threat_class not in campaign.spec.threat_classes
         or packet.replay_contract_id != contract.contract_id
+        or packet.purpose != contract.purpose
     ):
         _identity_error("Candidate or validation packet does not match the Campaign")
     if (
         intent.replay_contract_id != contract.contract_id
+        or intent.purpose != packet.purpose
+        or intent.retest_context != packet.retest_context
         or intent.candidate_id != candidate.candidate_id
         or intent.candidate_run_id != packet.candidate_run_id
         or intent.original_request_id != original_request.request_id
@@ -441,6 +456,16 @@ def _validate_identity(
         or intent.threat_class != packet.threat_class
     ):
         _identity_error("ReplayIntent identity does not match the trusted Candidate lineage")
+    context = packet.retest_context
+    if packet.purpose is ReplayPurpose.CONFIRMATION:
+        if context is not None:
+            _identity_error("confirmation replay cannot bind remediation retest context")
+    elif (
+        context is None
+        or context.baseline_finding_id != candidate.claim.finding_id
+        or context.retest_run_id == packet.candidate_run_id
+    ):
+        _identity_error("remediation retest context does not match Candidate lineage")
     if (
         scenario.scenario_id != packet.scenario_id
         or scenario.scenario_id != contract.scenario_id
@@ -659,6 +684,14 @@ def _compilation_digest(
         "compiledAt": compiled_at.isoformat(),
         "contract": _canonical_value(contract.model_dump(mode="python", by_alias=True)),
         "intentId": intent.intent_id,
+        "purpose": validation_packet.purpose.value,
+        "retestContext": (
+            _canonical_value(
+                validation_packet.retest_context.model_dump(mode="python", by_alias=True)
+            )
+            if validation_packet.retest_context is not None
+            else None
+        ),
         "originalEvidenceDigest": original_evidence_digest,
         "originalGrantId": original_grant_id,
         "originalPlanStepId": original_plan_step_id,

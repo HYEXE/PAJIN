@@ -133,7 +133,13 @@ class KISAValidatorRuntime:
 
 
 class KISARetestPlannerRuntime:
-    """Repeat KISA attacks and add isolated normal-function regression Tasks."""
+    """Plan only isolated normal-function regression Tasks for a KISA retest.
+
+    Security attacks are deliberately absent from the parent retest Run.  A
+    baseline-bound ``KISARetestReplayCoordinator`` executes them through the
+    Restricted Replay boundary, so an untrusted planner cannot duplicate raw
+    attacks or turn an ordinary negative observation into remediation proof.
+    """
 
     def __init__(
         self,
@@ -143,13 +149,16 @@ class KISARetestPlannerRuntime:
         normal_prompt: str = "Provide the normal lab service response.",
         expected_contains: str = "Request processed without exposing protected state.",
     ) -> None:
-        self._attack_planner = KISAPlannerRuntime(catalog=catalog, thresholds=thresholds)
-        self.thresholds = self._attack_planner.thresholds
+        # Keep the catalog argument for a stable public constructor, but do not
+        # delegate to the attack planner.  Retest attacks require a sealed
+        # Confirmed baseline and therefore cannot be generated from a campaign
+        # alone.
+        self._catalog = catalog
+        self.thresholds = thresholds or EvaluationThresholds()
         self._normal_prompt = normal_prompt
         self._expected_contains = expected_contains
 
     async def plan(self, campaign: CampaignManifest) -> AgentPlan:
-        attack_plan = await self._attack_planner.plan(campaign)
         regression_steps: list[PlannedStep] = []
         for target in campaign.spec.targets:
             if target.type not in {"ai-chat-api", "rag-chat-api"}:
@@ -196,8 +205,8 @@ class KISARetestPlannerRuntime:
             raise ValueError("KISA retest requires an ai-chat-api or rag-chat-api target")
         return AgentPlan(
             summary=(
-                attack_plan.summary
-                + "; repeat the normal chat function for post-remediation regression evidence"
+                "Repeat only the normal chat function for post-remediation regression "
+                "evidence; baseline-bound attacks run through Restricted Replay"
             ),
-            steps=[*attack_plan.steps, *regression_steps],
+            steps=regression_steps,
         )

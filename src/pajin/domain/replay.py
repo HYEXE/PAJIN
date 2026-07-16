@@ -67,6 +67,23 @@ class ReplayOracleVerdict(StrEnum):
     INCONCLUSIVE = "inconclusive"
 
 
+class ReplayPurpose(StrEnum):
+    """The validation objective for one independently executed replay."""
+
+    CONFIRMATION = "confirmation"
+    REMEDIATION_RETEST = "remediation-retest"
+
+
+class ReplayRetestContext(StrictModel):
+    """Immutable baseline and parent-Run lineage for a remediation retest."""
+
+    baseline_decision_id: _Identifier = Field(alias="baselineDecisionId")
+    baseline_finding_id: _Identifier = Field(alias="baselineFindingId")
+    remediation_id: _Identifier = Field(alias="remediationId")
+    retest_run_id: _Identifier = Field(alias="retestRunId")
+    retest_source_root_digest: _Sha256 = Field(alias="retestSourceRootDigest")
+
+
 class ValidationEvidenceExcerpt(StrictModel):
     """A bounded, redacted excerpt that remains explicitly untrusted."""
 
@@ -85,6 +102,8 @@ class ValidationPacket(ReplayArtifactModel):
     packet_id: _Identifier
     candidate_run_id: _Identifier
     candidate: CandidateFinding
+    purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
+    retest_context: ReplayRetestContext | None = None
     mode: CampaignMode
     scenario_id: _Identifier
     target_id: _Identifier
@@ -115,6 +134,17 @@ class ValidationPacket(ReplayArtifactModel):
         candidate_evidence = set(self.candidate.claim.evidence)
         if any(reference not in candidate_evidence for reference in references):
             raise ValueError("validation packet may include only candidate evidence")
+        if self.purpose is ReplayPurpose.CONFIRMATION:
+            if self.retest_context is not None:
+                raise ValueError("confirmation validation packet cannot contain retest context")
+        else:
+            context = self.retest_context
+            if context is None:
+                raise ValueError("remediation retest validation packet requires retest context")
+            if context.baseline_finding_id != self.candidate.claim.finding_id:
+                raise ValueError("retest baseline finding must match the packet Candidate")
+            if context.retest_run_id == self.candidate_run_id:
+                raise ValueError("parent Retest Run must differ from the Candidate Run")
         return self
 
 
@@ -123,6 +153,7 @@ class ModeReplayContract(ReplayArtifactModel):
 
     kind: Literal["ModeReplayContract"] = "ModeReplayContract"
     contract_id: _Identifier
+    purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     mode: CampaignMode
     scenario_id: _Identifier
     tool_id: _Identifier
@@ -138,6 +169,7 @@ class ModeReplayContract(ReplayArtifactModel):
     ephemeral_argument_fields: set[_Identifier] = Field(default_factory=set, max_length=10)
     repetitions: int = Field(ge=1, le=20)
     required_successes: int = Field(ge=1, le=20)
+    required_contradictions: int = Field(default=0, ge=0, le=20)
     oracle_id: _Identifier
     oracle_version: _Version
     observation_schema: _Identifier
@@ -158,6 +190,8 @@ class ModeReplayContract(ReplayArtifactModel):
     def validate_automatic_replay_boundary(self) -> ModeReplayContract:
         if self.required_successes > self.repetitions:
             raise ValueError("required successes cannot exceed repetitions")
+        if self.required_contradictions > self.repetitions:
+            raise ValueError("required contradictions cannot exceed repetitions")
         if self.session_policy is ReplaySessionPolicy.STATELESS:
             if self.materializer_id is not None or self.materializer_version is not None:
                 raise ValueError("stateless replay cannot declare a session materializer")
@@ -187,6 +221,8 @@ class ReplayIntent(ReplayArtifactModel):
     replay_contract_id: _Identifier
     candidate_id: _Identifier
     candidate_run_id: _Identifier
+    purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
+    retest_context: ReplayRetestContext | None = None
     original_request_id: _Identifier
     mode: CampaignMode
     scenario_id: _Identifier
@@ -200,6 +236,19 @@ class ReplayIntent(ReplayArtifactModel):
     def normalize_created_at(cls, value: datetime) -> datetime:
         return _normalize_utc(value, field_name="created_at")
 
+    @model_validator(mode="after")
+    def validate_retest_context(self) -> ReplayIntent:
+        if self.purpose is ReplayPurpose.CONFIRMATION:
+            if self.retest_context is not None:
+                raise ValueError("confirmation ReplayIntent cannot contain retest context")
+        else:
+            context = self.retest_context
+            if context is None:
+                raise ValueError("remediation retest ReplayIntent requires retest context")
+            if context.retest_run_id == self.candidate_run_id:
+                raise ValueError("parent Retest Run must differ from the Candidate Run")
+        return self
+
 
 class ReplayBinding(StrictModel):
     """Identity tuple that every compiled, executed, and evaluated record repeats."""
@@ -208,6 +257,8 @@ class ReplayBinding(StrictModel):
     campaign: _Identifier
     candidate_run_id: _Identifier
     replay_run_id: _Identifier
+    purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
+    context_run_id: _Identifier | None = None
     original_request_id: _Identifier
     mode: CampaignMode
     scenario_id: _Identifier
@@ -216,6 +267,20 @@ class ReplayBinding(StrictModel):
     tool_version: _Version
     target_id: _Identifier
     target: str = Field(min_length=1, max_length=2_000)
+
+    @model_validator(mode="after")
+    def validate_run_identities(self) -> ReplayBinding:
+        if self.candidate_run_id == self.replay_run_id:
+            raise ValueError("replay Run must differ from the Candidate Run")
+        if self.purpose is ReplayPurpose.CONFIRMATION:
+            if self.context_run_id is not None:
+                raise ValueError("confirmation replay binding cannot contain a context Run")
+        else:
+            if self.context_run_id is None:
+                raise ValueError("remediation retest replay binding requires a context Run")
+            if self.context_run_id in {self.candidate_run_id, self.replay_run_id}:
+                raise ValueError("parent Retest Run must differ from Candidate and replay Runs")
+        return self
 
 
 class ReplayCapabilityGrant(CapabilityGrant):
@@ -278,6 +343,8 @@ class CompiledReplaySpec(ReplayArtifactModel):
     spec_id: _Identifier
     intent_id: _Identifier | None = None
     contract_id: _Identifier
+    purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
+    retest_context_digest: _Sha256 | None = None
     original_plan_step_id: _Identifier
     binding: ReplayBinding
     method: str = Field(min_length=1, max_length=20)
@@ -295,6 +362,7 @@ class CompiledReplaySpec(ReplayArtifactModel):
     ephemeral_argument_fields: set[_Identifier] = Field(default_factory=set, max_length=10)
     repetitions: int = Field(ge=1, le=20)
     required_successes: int = Field(ge=1, le=20)
+    required_contradictions: int = Field(default=0, ge=0, le=20)
     oracle_id: _Identifier
     oracle_version: _Version
     observation_schema: _Identifier
@@ -328,6 +396,15 @@ class CompiledReplaySpec(ReplayArtifactModel):
             raise ValueError("secret_lease_ids must be unique")
         if self.required_successes > self.repetitions:
             raise ValueError("required successes cannot exceed repetitions")
+        if self.required_contradictions > self.repetitions:
+            raise ValueError("required contradictions cannot exceed repetitions")
+        if self.purpose != self.binding.purpose:
+            raise ValueError("compiled replay purpose must match its binding")
+        if self.purpose is ReplayPurpose.CONFIRMATION:
+            if self.retest_context_digest is not None:
+                raise ValueError("confirmation compiled replay cannot bind retest context")
+        elif self.retest_context_digest is None:
+            raise ValueError("remediation retest compiled replay requires a context digest")
         if self.session_policy is ReplaySessionPolicy.STATELESS:
             if self.materializer_id is not None or self.materializer_version is not None:
                 raise ValueError("stateless replay cannot declare a session materializer")
@@ -390,6 +467,10 @@ class ReplayCompilation(ReplayArtifactModel):
             raise ValueError("compiled replay operation must match the original request")
         if (
             packet.replay_contract_id != contract.contract_id
+            or packet.purpose != contract.purpose
+            or packet.purpose != intent.purpose
+            or packet.purpose != spec.purpose
+            or packet.purpose != binding.purpose
             or binding.candidate_id != packet.candidate.candidate_id
             or binding.candidate_run_id != packet.candidate_run_id
             or binding.mode != packet.mode
@@ -400,6 +481,16 @@ class ReplayCompilation(ReplayArtifactModel):
             or binding.original_request_id not in packet.original_request_ids
         ):
             raise ValueError("compiled replay binding must match the validation packet")
+        if packet.retest_context != intent.retest_context:
+            raise ValueError("ReplayIntent retest context must match the validation packet")
+        if packet.retest_context is None:
+            if spec.retest_context_digest is not None or binding.context_run_id is not None:
+                raise ValueError("confirmation replay cannot bind remediation retest context")
+        elif (
+            spec.retest_context_digest != replay_retest_context_digest(packet.retest_context)
+            or binding.context_run_id != packet.retest_context.retest_run_id
+        ):
+            raise ValueError("compiled replay retest context must exactly match the packet")
         if (
             intent.intent_id != spec.intent_id
             or intent.replay_contract_id != contract.contract_id
@@ -425,6 +516,7 @@ class ReplayCompilation(ReplayArtifactModel):
             or spec.ephemeral_argument_fields != contract.ephemeral_argument_fields
             or spec.repetitions != contract.repetitions
             or spec.required_successes != contract.required_successes
+            or spec.required_contradictions != contract.required_contradictions
             or spec.oracle_id != contract.oracle_id
             or spec.oracle_version != contract.oracle_version
             or spec.observation_schema != contract.observation_schema
@@ -560,8 +652,11 @@ class ReplayOracleResult(ReplayArtifactModel):
     verdict: ReplayOracleVerdict
     attempt_ids: list[_Identifier] = Field(min_length=1, max_length=20)
     supporting_evidence: list[_EvidenceReference] = Field(default_factory=list, max_length=100)
+    contradicting_evidence: list[_EvidenceReference] = Field(default_factory=list, max_length=100)
     support_count: int = Field(ge=0, le=20)
     required_support_count: int = Field(ge=1, le=20)
+    contradiction_count: int = Field(default=0, ge=0, le=20)
+    required_contradiction_count: int = Field(default=0, ge=0, le=20)
     summary: _BoundedText
     evaluated_at: datetime
 
@@ -576,24 +671,62 @@ class ReplayOracleResult(ReplayArtifactModel):
             raise ValueError("oracle attempt IDs must be unique")
         if len(self.supporting_evidence) != len(set(self.supporting_evidence)):
             raise ValueError("oracle supporting evidence must be unique")
-        if self.support_count > len(self.attempt_ids):
-            raise ValueError("oracle support count cannot exceed evaluated attempts")
+        if len(self.contradicting_evidence) != len(set(self.contradicting_evidence)):
+            raise ValueError("oracle contradicting evidence must be unique")
+        if set(self.supporting_evidence) & set(self.contradicting_evidence):
+            raise ValueError("oracle supporting and contradicting evidence must be disjoint")
+        if self.support_count + self.contradiction_count > len(self.attempt_ids):
+            raise ValueError("oracle result counts cannot exceed evaluated attempts")
         if self.required_support_count > len(self.attempt_ids):
             raise ValueError("oracle required support count cannot exceed evaluated attempts")
-        if (
-            self.verdict is ReplayOracleVerdict.SUPPORTS
-            and self.support_count < self.required_support_count
-        ):
+        if self.required_contradiction_count > len(self.attempt_ids):
+            raise ValueError("oracle required contradiction count cannot exceed evaluated attempts")
+        supports = self.support_count >= self.required_support_count
+        contradicts = (
+            self.required_contradiction_count > 0
+            and self.contradiction_count >= self.required_contradiction_count
+        )
+        if supports and contradicts:
+            raise ValueError("oracle support and contradiction thresholds cannot both be met")
+        if self.verdict is ReplayOracleVerdict.SUPPORTS and not supports:
             raise ValueError("supporting Oracle verdict must meet its required support count")
-        if self.verdict is ReplayOracleVerdict.CONTRADICTS and self.support_count != 0:
-            raise ValueError("contradicting Oracle verdict cannot report supporting attempts")
+        if self.verdict is ReplayOracleVerdict.SUPPORTS and contradicts:
+            raise ValueError("supporting Oracle verdict cannot meet contradiction threshold")
+        legacy_contradicts = (
+            self.verdict is ReplayOracleVerdict.CONTRADICTS
+            # v1 confirmation artifacts predate typed contradiction thresholds.
+            # Retests never receive this compatibility exception: a "fixed"
+            # projection must carry an explicit, baseline-bound threshold.
+            and self.binding.purpose is ReplayPurpose.CONFIRMATION
+            and self.required_contradiction_count == 0
+            and self.contradiction_count == 0
+            and self.support_count == 0
+        )
         if (
-            self.verdict is ReplayOracleVerdict.INCONCLUSIVE
-            and self.support_count >= self.required_support_count
+            self.verdict is ReplayOracleVerdict.CONTRADICTS
+            and not contradicts
+            and not legacy_contradicts
         ):
-            raise ValueError("inconclusive Oracle verdict cannot meet the support threshold")
+            raise ValueError(
+                "contradicting Oracle verdict must meet its required contradiction count"
+            )
+        if self.verdict is ReplayOracleVerdict.CONTRADICTS and supports:
+            raise ValueError("contradicting Oracle verdict cannot meet support threshold")
+        if self.verdict is ReplayOracleVerdict.INCONCLUSIVE and (supports or contradicts):
+            raise ValueError("inconclusive Oracle verdict cannot meet an Oracle threshold")
         if self.support_count == 0 and self.supporting_evidence:
             raise ValueError("Oracle cannot cite supporting evidence with zero support count")
+        if self.contradiction_count == 0 and self.contradicting_evidence:
+            raise ValueError(
+                "Oracle cannot cite contradicting evidence with zero contradiction count"
+            )
+        if (
+            self.binding.purpose is ReplayPurpose.REMEDIATION_RETEST
+            and self.contradiction_count > len(self.contradicting_evidence)
+        ):
+            # Every typed retest contradiction needs at least one sealed evidence
+            # reference; a count alone must never be promotable to ``fixed``.
+            raise ValueError("remediation retest contradictions require evidence for every count")
         return self
 
 
@@ -666,6 +799,8 @@ class ReplayOutcome(ReplayArtifactModel):
                 raise ValueError("replay Oracle attempts must exactly match the outcome")
             if any(reference not in self.evidence for reference in oracle.supporting_evidence):
                 raise ValueError("replay Oracle references evidence outside the outcome")
+            if any(reference not in self.evidence for reference in oracle.contradicting_evidence):
+                raise ValueError("replay Oracle references evidence outside the outcome")
             if oracle.evaluated_at > self.completed_at:
                 raise ValueError("replay outcome cannot complete before Oracle evaluation")
         if any(attempt.finished_at > self.completed_at for attempt in self.attempts):
@@ -678,6 +813,14 @@ class ReplayOutcome(ReplayArtifactModel):
             self.execution_status is ReplayExecutionStatus.SUCCEEDED
             and self.oracle_result is not None
             and self.oracle_result.verdict is ReplayOracleVerdict.SUPPORTS
+        )
+
+    @property
+    def contradicts_claim(self) -> bool:
+        return (
+            self.execution_status is ReplayExecutionStatus.SUCCEEDED
+            and self.oracle_result is not None
+            and self.oracle_result.verdict is ReplayOracleVerdict.CONTRADICTS
         )
 
 
@@ -700,7 +843,10 @@ class ReplayArtifactSet(ReplayArtifactModel):
         if packet.replay_contract_id != contract.contract_id:
             raise ValueError("validation packet must reference the Mode replay contract")
         if (
-            binding.candidate_id != packet.candidate.candidate_id
+            packet.purpose != contract.purpose
+            or packet.purpose != spec.purpose
+            or packet.purpose != binding.purpose
+            or binding.candidate_id != packet.candidate.candidate_id
             or binding.candidate_run_id != packet.candidate_run_id
             or binding.mode != packet.mode
             or binding.scenario_id != packet.scenario_id
@@ -710,6 +856,14 @@ class ReplayArtifactSet(ReplayArtifactModel):
             or binding.original_request_id not in packet.original_request_ids
         ):
             raise ValueError("compiled replay binding must match the validation packet")
+        if packet.retest_context is None:
+            if spec.retest_context_digest is not None or binding.context_run_id is not None:
+                raise ValueError("confirmation replay cannot bind remediation retest context")
+        elif (
+            spec.retest_context_digest != replay_retest_context_digest(packet.retest_context)
+            or binding.context_run_id != packet.retest_context.retest_run_id
+        ):
+            raise ValueError("compiled replay retest context must exactly match the packet")
         if packet.semantic_support_required != contract.semantic_support_required:
             raise ValueError("validation packet semantic policy must match the Mode contract")
         if spec.contract_id != contract.contract_id:
@@ -730,6 +884,7 @@ class ReplayArtifactSet(ReplayArtifactModel):
             or spec.ephemeral_argument_fields != contract.ephemeral_argument_fields
             or spec.repetitions != contract.repetitions
             or spec.required_successes != contract.required_successes
+            or spec.required_contradictions != contract.required_contradictions
             or spec.oracle_id != contract.oracle_id
             or spec.oracle_version != contract.oracle_version
             or spec.observation_schema != contract.observation_schema
@@ -748,6 +903,7 @@ class ReplayArtifactSet(ReplayArtifactModel):
                 raise ValueError("compiled replay intent ID must match the ReplayIntent")
             if (
                 intent.replay_contract_id != contract.contract_id
+                or intent.purpose != packet.purpose
                 or intent.candidate_id != binding.candidate_id
                 or intent.candidate_run_id != binding.candidate_run_id
                 or intent.original_request_id != binding.original_request_id
@@ -756,6 +912,10 @@ class ReplayArtifactSet(ReplayArtifactModel):
                 or intent.threat_class != binding.threat_class
             ):
                 raise ValueError("ReplayIntent references must match the compiled replay binding")
+            if intent.retest_context != packet.retest_context:
+                raise ValueError("ReplayIntent retest context must match the validation packet")
+        elif packet.purpose is ReplayPurpose.REMEDIATION_RETEST:
+            raise ValueError("remediation retest artifacts require a ReplayIntent")
         elif spec.intent_id is not None:
             raise ValueError("compiled replay references a missing ReplayIntent")
 
@@ -817,6 +977,7 @@ class ReplayArtifactSet(ReplayArtifactModel):
             or oracle.oracle_version != spec.oracle_version
             or oracle.observation_schema != spec.observation_schema
             or oracle.required_support_count != spec.required_successes
+            or oracle.required_contradiction_count != spec.required_contradictions
         ):
             raise ValueError("replay Oracle contract must match the compiled replay spec")
         return self
@@ -853,6 +1014,18 @@ def replay_evidence_digest(references: list[str]) -> str:
         references,
         ensure_ascii=False,
         separators=(",", ":"),
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def replay_retest_context_digest(context: ReplayRetestContext) -> str:
+    """Bind every baseline and parent-Run field of a remediation retest."""
+
+    canonical = json.dumps(
+        context.model_dump(mode="json", by_alias=True),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
     ).encode("utf-8")
     return sha256(canonical).hexdigest()
 

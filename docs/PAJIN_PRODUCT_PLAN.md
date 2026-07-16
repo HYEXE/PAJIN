@@ -6,7 +6,7 @@
 | --- | --- |
 | 문서 상태 | Product Baseline v0.3 |
 | 작성일 | 2026-07-12 |
-| 최종 최신화 | 2026-07-15 |
+| 최종 최신화 | 2026-07-16 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -42,6 +42,13 @@ ADR은 제품 기획서의 불변 원칙을 구체화할 수 있지만 암묵적
   장애·취소·시간 초과로 결론을 내리지 못하면 `inconclusive`다.
 - 기존에 봉인된 Run은 다시 쓰지 않는다. 과거의 재현 없는 `confirmed`는 legacy 판정으로
   식별하며 이 기준선의 `confirmed`로 재해석하지 않는다.
+- 수정 완료(`fixed`)는 봉인된 `validation/v1alpha1`의 reproduction-backed Confirmed Finding에
+  정확히 결박된 별도 Restricted Replay와 canonical receipt가 있을 때만 주장한다. 모든 기대
+  반복에서 trusted negative Oracle이 원 취약점 주장을 명시적으로 반증해야 하며, 단순 신호
+  부재나 Worker 판정은 증명이 아니다.
+- 정상 기능 회귀는 취약점의 `fixed` 상태와 분리해 기록한다. 개별 Finding이 수정됐더라도
+  포괄적인 release-level 재검증 성공은 별도의 fresh discovery에서 신규 Finding이 없고 정상
+  기능 회귀가 통과해야 한다.
 
 ---
 
@@ -70,9 +77,9 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 Phase 0-1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
 Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
 Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
-`validation/v1alpha1` 투영은 구현되었다. durable ticket 검증, 기준 Candidate 결박형 negative
-KISA retest, Local·Control Plane replay orchestration, 다른 Mode의 materializer·Oracle과 구조화
-협업 메모리는 후속 과제다.
+`validation/v1alpha1` 투영, 기준 Candidate 결박형 negative KISA retest Gate는 구현되었다.
+durable ticket 검증, Local·Control Plane replay orchestration, 다른 Mode의
+materializer·Oracle과 구조화 협업 메모리는 후속 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
 
@@ -81,7 +88,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·Restricted Reproducer 및 receipt 재로딩 공통 Gate 구현; KISA 이외 replay orchestration은 후속 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
-| AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행 |
+| AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
 | Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon |
@@ -703,7 +710,7 @@ capability_grant:
 | Finding | 독립 재현으로 확정된 취약점과 영향·근본 원인 |
 | Evaluation | Judge와 사람의 판정 및 기준 |
 | Remediation | 담당자, 조치 내용, 기한, 상태 |
-| Retest | 동일·변형 공격 및 정상 기능 회귀 결과 |
+| Retest | immutable baseline 결박형 공격 ReplayOutcome과 별도 정상 기능 회귀 결과 |
 | Report | 특정 시점의 결과 산출물 |
 | AuditEvent | 변경 불가능한 보안·운영 이벤트 |
 
@@ -722,13 +729,19 @@ stateDiagram-v2
     Confirmed --> Reported
     Reported --> Remediating
     Remediating --> Retesting
-    Retesting --> Closed: fixed
-    Retesting --> Confirmed: 독립 재현됨
+    Retesting --> Closed: verified negative ReplayOutcome
+    Retesting --> Confirmed: verified positive ReplayOutcome
     Reported --> AcceptedRisk
 ```
 
 `Duplicate`는 검증 disposition이 아니라 별도의 triage 관계다. 중복 판정은 Candidate와
 Validation Decision을 삭제하거나 바꾸지 않는다.
+
+`Closed`는 과거의 Confirmed Decision을 삭제하거나 `rejected-objective`로 바꾸는 상태가 아니다.
+봉인된 baseline의 이력은 그대로 유지하고, 정확히 결박된 retest 관계가 trusted negative
+Oracle의 `contradicts` 결과와 canonical receipt를 가질 때 별도의 lifecycle 상태로 추가한다.
+기존 positive Oracle에서 support가 관찰되지 않은 결과는 계속 `inconclusive`이며 `Closed`의
+근거로 사용할 수 없다.
 
 ### 14.3 Finding 필수 필드
 
@@ -1092,6 +1105,8 @@ KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는
 - 예산 또는 시간 초과 시 실행이 자동 중단된다.
 - 모든 Tool Invocation이 Trace와 Audit Event를 남긴다.
 - Finding은 Restricted Reproducer의 독립 재현 성공 결과 없이는 Confirmed가 될 수 없다.
+- reproduction-backed Confirmed baseline은 Candidate-bound verified negative ReplayOutcome 없이는
+  `fixed` 또는 `Closed`가 될 수 없다.
 - 보고서에서 입력, 출력, 모델·도구 버전, 재현 절차를 확인할 수 있다.
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
@@ -1099,8 +1114,42 @@ KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는
 2026-07-16 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
 단일 사용 ticket·Restricted Reproducer와 exact KISA fresh-session materializer·live Oracle·
 runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only disposition 투영이
-구현됐다. KISA 외 실행 경로는 ReplayOutcome을 생성하지 않으므로 Confirmed를 내지 않으며,
-durable/offline ticket 검증과 negative retest 증명은 별도 완료 기준으로 남아 있다.
+구현됐다. M6-05는 같은 receipt 경계를 KISA hardened retest에 연결해 baseline-bound negative
+증명과 정상 기능 회귀를 분리했다. KISA 외 실행 경로는 ReplayOutcome을 생성하지 않으므로
+Confirmed를 내지 않으며, durable/offline ticket 검증은 별도 완료 기준으로 남아 있다.
+
+### 20.4 M6-05 hardened KISA retest Exit Gate
+
+M6-05는 다음 조건을 모두 만족해야 완료된 것으로 본다.
+
+- baseline loader는 봉인된 `validation/v1alpha1`의 reproduction-backed Confirmed Finding만
+  허용하고 legacy flat·semantic-only·미확정 baseline은 거부한다.
+- 각 retest 증명은 Candidate, source Decision, versioned Finding, remediation action,
+  baseline/retest Run과 seal root, original/replay request, scenario, threat, Tool, target을
+  정확히 결박한다. ID·digest·receipt·seal 불일치는 `inconclusive`로 축소하지 않고 hard fail한다.
+- normal parent retest는 정상 기능 probe와 regression만 담당하며, 취약점 상태는 별도의
+  baseline-bound Restricted Replay 공격 결과로 판정한다.
+- 모든 기대 반복이 성공하고 verified canonical receipt의 trusted negative Oracle verdict가
+  `ReplayOracleVerdict.CONTRADICTS`일 때만 `fixed`다. `ReplayOracleVerdict.SUPPORTS`는
+  `still-vulnerable`, 혼합 결과·terminal outcome·
+  반복 부족·명시적 방어 증적 부재는 `inconclusive`다.
+- positive confirmation Oracle의 zero-support 판정은 계속 `inconclusive`다. Worker가 제공한
+  `vulnerable=false`나 공격 신호 부재만으로 negative 증명을 만들 수 없다.
+- M03·M06·A04 negative predicate는 결정론 KISA Lab에 등록된 정확한 방어 응답과 전 턴 marker·
+  `toolCalls`·`memoryWrites` 부재를 trusted core가 재계산한다. A04는 쓰기 거부와 후속 비지속
+  조회를 구분하며, `safety.blocked`·reason 메타데이터만으로는 반증을 만들 수 없다. 등록 응답과
+  메타데이터가 불일치하거나 방어 문구·target이 미등록이면 `inconclusive`다.
+- remediation plan은 versioned baseline projection과 기존 seal entry를 덮어쓰지 않고 append한
+  뒤 새 current root를 만든다. retest receipt는 그 root를 결박하며 이후 baseline 변경은 hard
+  fail한다. ReplayOutcome·request·evidence·Oracle·receipt는 각각 별도 replay Run에 봉인하고,
+  parent Run에는 검증된 replay lineage와 receipt root를 가리키는 assessment·index·report를 새
+  seal로 추가한다.
+- 정상 기능 regression은 Finding 상태와 독립적으로 기록한다. `kisa-retest` CLI의 범위 한정
+  Gate는 모든 baseline Finding이 `fixed`, `still-vulnerable`·`inconclusive`가 0, 실행 중 관찰된
+  새 Confirmed Finding이 0, regression이 `pass`일 때만 성공한다. 이 Gate는 baseline 폐루프만
+  검증하며 신규 위협 유형은 `not assessed`다. 포괄적인 신규 취약점 Gate는 별도의 fresh
+  `pajin kisa-run`으로 수행하되 현재 실행 가능한 시나리오에 한정한다. 미구현 KISA 위협은 계속
+  `not assessed`다.
 
 ---
 
@@ -1110,7 +1159,7 @@ durable/offline ticket 검증과 negative retest 증명은 별도 완료 기준�
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate와 exact KISA fresh-session Oracle/coordinator, 권한 감쇠, 예산·취소·승인은 구현; durable replay 검증·negative retest와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 권한 감쇠, 예산·취소·승인은 구현; durable replay 검증과 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1145,8 +1194,10 @@ durable/offline ticket 검증과 negative retest 증명은 별도 완료 기준�
   coordinator와 source/replay 분리 index
 - verified receipt를 내부에서 재로딩하는 공통 Confirmed Gate, reason matrix, 원 seal을 보존하는
   `validation/v1alpha1` Decision·Finding·Markdown 투영과 KISA report 연결
-- 남은 범위: durable/offline ticket 검증, 기준 Candidate 결박형 negative KISA retest,
-  Local·Control Plane 및 다른 Mode의 session-bearing driver·Oracle 연결, Campaign
+- reproduction-backed baseline의 exact Candidate·Decision·Finding·remediation·Run/root 계보에
+  결박된 KISA negative ReplayOutcome, hardened retest Gate와 별도 정상 기능 regression
+- 남은 범위: durable/offline ticket 검증, Local·Control Plane 및 다른 Mode의
+  session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
 ### Phase 3 — Mode Packs (진행 중)
@@ -1154,7 +1205,7 @@ durable/offline ticket 검증과 negative retest 증명은 별도 완료 기준�
 - AI Red Team: KISA 전체 카탈로그와 A01·A02·A04·M03·M06 실행 시나리오
 - Bug Bounty: Scope Parser, 보수적 중복 판정, 신고서 초안, 고정 로컬 SQLi 랩
 - CTF: Web·Crypto Specialist와 제한된 병렬 Suite
-- KISA 체크리스트, 완료 보고서, 완화 계획, 재검증·정상 기능 회귀
+- KISA 체크리스트, 완료 보고서, 완화 계획, baseline-bound hardened 재검증·정상 기능 회귀
 - 남은 범위: KISA 14개 위협 실행 시나리오, 추가 Bug Bounty·CTF 시나리오, CI/CD 워크플로
 
 ### Phase 4 — Platform & Ecosystem (초기 구현)

@@ -19,6 +19,7 @@ from pajin.tools.ai import (
     ProbeCheckKind,
     ProbePurpose,
     ProbeTurn,
+    evaluate_trusted_regression,
 )
 
 
@@ -244,3 +245,56 @@ def test_ai_chat_regression_tool_requires_regression_specific_output() -> None:
     assert rejected.success is False
     assert rejected.error is not None
     assert "regressionPassed" in rejected.error
+
+
+def test_trusted_regression_ignores_forged_worker_verdict_and_check_flags() -> None:
+    regression = AIChatRegressionInput(
+        session_id="pajin:test:regression:forged",
+        turns=[
+            ProbeTurn(
+                name="normal-use",
+                messages=[ChatMessage(role=ChatRole.USER, content="Say hello.")],
+            )
+        ],
+        checks=[
+            ProbeCheck(
+                check_id="normal-response",
+                kind=ProbeCheckKind.RESPONSE_CONTAINS,
+                turn=0,
+                value="hello",
+            )
+        ],
+    )
+    tool = AIChatRegressionTool()
+    request = ToolRequest(
+        request_id="tool_regression_forged",
+        agent_id="agent:test",
+        tool_id=tool.spec.tool_id,
+        target="https://ai.example.test/v1/chat",
+        method="POST",
+        arguments=regression.model_dump(mode="json"),
+    )
+    raw = _output(
+        target=request.target,
+        scenario_id="retest.normal-chat-function",
+        threat_class="A00",
+        session_id=regression.session_id,
+        turns=regression.turns,
+        checks=regression.checks,
+        purpose=ProbePurpose.REGRESSION,
+    )
+    turns = raw["turns"]
+    assert isinstance(turns, list)
+    assert isinstance(turns[0], dict)
+    response = turns[0]["response"]
+    assert isinstance(response, dict)
+    message = response["message"]
+    assert isinstance(message, dict)
+    message["content"] = "normal response without the expected marker"
+    worker_result = _worker_result(raw)
+    tool_result = tool.interpret(request, worker_result)
+
+    assert tool_result.success is True
+    assert tool_result.data["regressionPassed"] is True
+    assert tool_result.data["checks"][0]["matched"] is True
+    assert evaluate_trusted_regression(request, tool_result, worker_result) is False

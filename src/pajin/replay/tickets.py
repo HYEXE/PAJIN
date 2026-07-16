@@ -10,10 +10,18 @@ from enum import Enum, StrEnum
 from hashlib import sha256
 from pathlib import Path
 from threading import Lock
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import uuid4
 
 from pajin.domain.replay import ReplayCompilation
+
+_REPLAY_COMPILATION_SET_PATHS = (
+    ("contract", "ephemeral_argument_fields"),
+    ("contract", "allowed_argument_fields"),
+    ("spec", "ephemeral_argument_fields"),
+    ("grant", "tools"),
+    ("grant", "targets"),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -350,6 +358,51 @@ def replay_context_digest(value: object) -> str:
     return sha256(payload).hexdigest()
 
 
+def canonical_replay_compilation_payload(
+    compilation: ReplayCompilation,
+) -> dict[str, object]:
+    """Return the deterministic JSON object issued and sealed for one compilation.
+
+    The Python-mode dump deliberately preserves sets until ``_canonical_context``
+    sorts them. Converting to JSON mode first would turn sets into order-sensitive
+    lists and could make the ticket digest differ from the later sealed wire object.
+    """
+
+    trusted = ReplayCompilation.model_validate(compilation.model_dump(mode="python", by_alias=True))
+    payload = _canonical_context(trusted)
+    if not isinstance(payload, dict):  # pragma: no cover - ReplayCompilation is a mapping model
+        raise TypeError("canonical replay compilation must be a JSON object")
+    return cast(dict[str, object], payload)
+
+
+def canonicalize_replay_compilation_wire_sets(
+    payload: Mapping[str, object],
+) -> dict[str, object]:
+    """Sort only v1 compilation fields whose typed contract is a set.
+
+    This is a narrow compatibility transform for already-sealed v1 artifacts whose
+    receipt and ``compilation.json`` serialized the same set in different orders.
+    It starts from the decoded wire object, so fields absent from that historical
+    wire stay absent. Ordered lists such as evidence and comparison goals are never
+    reordered.
+    """
+
+    normalized = _canonical_context(payload)
+    if not isinstance(normalized, dict):  # pragma: no cover - the input is a mapping
+        raise TypeError("replay compilation wire must be a JSON object")
+    for parent_name, field_name in _REPLAY_COMPILATION_SET_PATHS:
+        parent = normalized.get(parent_name)
+        if not isinstance(parent, dict) or field_name not in parent:
+            continue
+        value = parent[field_name]
+        if not isinstance(value, list):
+            raise TypeError(
+                f"replay compilation set field {parent_name}.{field_name} must be a list"
+            )
+        parent[field_name] = sorted(value, key=_canonical_json)
+    return cast(dict[str, object], normalized)
+
+
 def _canonical_context(value: object) -> object:
     """Normalize trusted context without relying on process-specific set ordering."""
 
@@ -391,9 +444,8 @@ def _canonical_json(value: object) -> str:
 
 
 def _canonical_compilation(compilation: ReplayCompilation) -> bytes:
-    trusted = ReplayCompilation.model_validate(compilation.model_dump(mode="python", by_alias=True))
     return json.dumps(
-        trusted.model_dump(mode="json", by_alias=True),
+        canonical_replay_compilation_payload(compilation),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

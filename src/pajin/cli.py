@@ -32,6 +32,7 @@ from pajin.modes.ai_redteam import (
     required_kisa_replay_calls,
 )
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
+from pajin.modes.ai_redteam.replay import KISARetestReplayCoordinator
 from pajin.modes.ai_redteam.retest import RegressionStatus
 from pajin.modes.bug_bounty import (
     BugBountyPlannerRuntime,
@@ -1073,45 +1074,99 @@ def run_kisa_retest(
         "Request processed without exposing protected state."
     ),
 ) -> None:
-    """Rerun KISA attacks plus normal behavior and compare with a baseline run."""
+    """Verify remediation with baseline-bound replays and normal regression probes."""
 
+    retest_service = KISARetestService()
     try:
         campaign = load_manifest(manifest)
         backend = _worker_backend(worker)
         if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
             raise ValueError("KISA retest requires mode: ai-redteam")
-    except (ValidationError, ValueError) as exc:
-        console.print(f"[bold red]Cannot start KISA retest:[/bold red] {exc}")
-        raise typer.Exit(code=2) from exc
-    retest_service = KISARetestService()
-    try:
         remediation_plan = retest_service.create_remediation_plan(baseline_run)
-    except ValueError as exc:
-        console.print(f"[bold red]Cannot create remediation plan:[/bold red] {exc}")
-        raise typer.Exit(code=2) from exc
-    thresholds = EvaluationThresholds(repetitions=repetitions)
-    runner = MultiAgentCampaignRunner(
-        planner=KISARetestPlannerRuntime(
+        thresholds = EvaluationThresholds(repetitions=repetitions)
+        planner = KISARetestPlannerRuntime(
             thresholds=thresholds,
             normal_prompt=normal_prompt,
             expected_contains=expected_contains,
-        ),
+        )
+        preflight_plan = asyncio.run(planner.plan(campaign))
+        # Normal probes are T1 operations and may consume one bounded retry each.
+        # Reserve their worst-case calls before sharing the Campaign budget with
+        # the baseline-bound negative replay coordinator.
+        required_calls = 2 * len(preflight_plan.steps) + len(remediation_plan.actions) * repetitions
+        if required_calls > campaign.spec.budgets.max_tool_calls:
+            raise ValueError(
+                "maxToolCalls must reserve every normal-function probe retry and "
+                "baseline-bound negative replay attempt "
+                f"(requires at least {required_calls})"
+            )
+    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]Cannot start KISA retest:[/bold red] {exc}")
+        raise typer.Exit(code=2) from exc
+
+    registry = _tool_registry()
+    policy = PolicyEngine()
+    budget = BudgetController(campaign.spec.budgets)
+    rate_limits = RequestRateLimitLedger()
+    runner = MultiAgentCampaignRunner(
+        planner=planner,
         validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
         candidate_producer=KISACandidateProducer(),
-        tools=_tool_registry(),
-        policy=PolicyEngine(),
+        tools=registry,
+        policy=policy,
         worker=backend,
         output_root=output,
     )
-    outcome = asyncio.run(runner.run(campaign))
+    coordinator = KISARetestReplayCoordinator(
+        tools=registry,
+        policy=policy,
+        worker=backend,
+        output_root=output / "retest-replay",
+        repetitions=repetitions,
+    )
+
+    async def execute_retest() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome | None]:
+        outcome = await runner.run(
+            campaign,
+            budget=budget,
+            rate_limits=rate_limits,
+        )
+        if outcome.status is not RunStatus.COMPLETED:
+            return outcome, None
+
+        # The parent Run intentionally contains only normal-function probes.  Do
+        # not project an attack-scenario Mode Pack assessment onto that evidence;
+        # bind the sealed parent Run directly into every negative replay context.
+        contexts = retest_service.build_retest_contexts(baseline_run, outcome.run_path)
+        replay_batch = await coordinator.reproduce(
+            campaign,
+            baseline_run,
+            outcome.run_path,
+            contexts=contexts,
+            budget=budget,
+            rate_limits=rate_limits,
+        )
+        return outcome, replay_batch
+
+    try:
+        outcome, replay_batch = asyncio.run(execute_retest())
+    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
+        console.print(f"[bold red]KISA retest execution failed:[/bold red] {exc}")
+        raise typer.Exit(code=1) from exc
     if outcome.status is not RunStatus.COMPLETED:
         console.print(f"[bold red]Retest run failed:[/bold red] {outcome.run_id}")
         console.print(f"Report: {outcome.report_path.resolve()}")
         raise typer.Exit(code=1)
+    if replay_batch is None:
+        console.print("[bold red]KISA retest replay did not produce a sealed batch.[/bold red]")
+        raise typer.Exit(code=1)
     try:
-        KISAModePack(thresholds=thresholds).evaluate(campaign, outcome)
-        retest = retest_service.compare(baseline_run, outcome.run_path)
-    except ValueError as exc:
+        retest = retest_service.compare(
+            baseline_run,
+            outcome.run_path,
+            replay_batch=replay_batch,
+        )
+    except (RunIntegrityError, ValidationError, ValueError, OSError) as exc:
         console.print(f"[bold red]KISA retest comparison failed:[/bold red] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -1123,15 +1178,27 @@ def run_kisa_retest(
     table.add_row("Fixed", str(summary.fixed))
     table.add_row("Still vulnerable", str(summary.still_vulnerable))
     table.add_row("Inconclusive", str(summary.inconclusive))
-    table.add_row("New findings", str(summary.new_findings))
+    table.add_row("New threat discovery", "Not assessed — run fresh `pajin kisa-run`")
+    if summary.new_findings:
+        table.add_row(
+            "Unexpected new confirmed findings observed",
+            str(summary.new_findings),
+        )
+    table.add_row("Verified negative replay receipts", str(len(replay_batch.verified_results)))
     table.add_row("Normal-function regression", summary.regression.value)
     console.print(table)
     console.print(f"Retest report: {retest.report_path.resolve()}")
     console.print(f"Baseline remediation plan: {remediation_plan.path.resolve()}")
     console.print(f"Retest remediation copy: {retest.remediation_plan_path.resolve()}")
     console.print(f"Checklist overlay: {retest.checklist_overlay_path.resolve()}")
+    console.print(
+        "[yellow]Scope note:[/yellow] this command closes the supplied baseline findings; "
+        "it is not a full re-scan for newly introduced threat classes. Run a fresh "
+        "`pajin kisa-run` as a separate discovery gate for currently supported scenarios."
+    )
     acceptance_failed = (
-        summary.still_vulnerable > 0
+        summary.fixed != len(remediation_plan.actions)
+        or summary.still_vulnerable > 0
         or summary.inconclusive > 0
         or summary.new_findings > 0
         or summary.regression is not RegressionStatus.PASS

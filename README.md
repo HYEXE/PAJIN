@@ -16,12 +16,12 @@ The implementation baseline as of 2026-07-16 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, stateless and registered fresh-session Restricted Reproducer paths, and tamper-evident evidence seals |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay; and verified reproduction-backed confirmation projections |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Durable replay-ticket verification across process restarts, baseline-bound negative KISA retest receipts, Local and Control Plane replay orchestration, non-KISA session materializers and Mode Oracles, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Durable replay-ticket verification across process restarts, Local and Control Plane replay orchestration, non-KISA session materializers and Mode Oracles, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -44,7 +44,13 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > reopens every KISA replay Run, verifies both seals and ticket finalization, applies the shared
 > reason matrix, and appends `validation/v1alpha1/` without rewriting the sealed source snapshot.
 > Only verified reproduction-backed Decisions enter that versioned Finding projection, as required
-> by [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md).
+> by [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.md). M6-05의 KISA
+> retest 경로는 이 투영의 reproduction-backed Confirmed Finding만 기준선으로 받아들인다.
+> 일반 retest Run은 정상 기능 probe와 regression을 담당하고, 별도의 baseline-bound
+> Restricted Replay가 기준 Candidate의 정확한 공격 계약을 실행한다. 모든 기대 반복이 성공하고
+> canonical receipt를 다시 검증한 trusted negative Oracle이 명시적으로
+> `ReplayOracleVerdict.CONTRADICTS`를 반환할
+> 때만 해당 Finding을 `fixed`로 닫는다.
 
 ## Current safety boundary
 
@@ -78,6 +84,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
 - Product-level confirmation requires a successful independent Restricted Reproducer outcome and
   the objective gate; a Semantic Validator mark alone is insufficient.
+- KISA `fixed` 판정은 봉인된 `validation/v1alpha1`의 reproduction-backed baseline과 exact
+  Candidate/Decision/Finding/remediation/retest Run/root/request/scenario/threat/Tool/target 결박을
+  요구한다. 단순한 공격 신호 부재, Worker 판정 플래그, 또는 `supports_claim == false`는 negative
+  증명이 아니다. 결박·무결성 불일치는 명령을 fail closed로 종료하며 baseline artifact를
+  변경하지 않는다.
 - `ReplayIntent` is a strict, non-executable schema: raw Tool requests, commands, arbitrary URLs,
   Capability Grants, and undeclared executable fields are rejected. Versioned replay artifacts bind
   Candidate, Run, original and replay request, Mode, scenario, Tool, target, and threat identities
@@ -384,8 +395,9 @@ independent repetitions:
 The Mode Pack maps the 19 threat classes in the KISA AI Security Red Teaming Guide to a typed
 catalog, selects target-compatible scenarios, executes each scenario through separate Specialist
 agents, and deduplicates Candidate and legacy validation findings after same-Run evidence checks.
-This does not yet provide independent reproduction-backed confirmation. Requested threats without an
-executable target-linked scenario are retained as explicit coverage gaps.
+M03·M06·A04의 trusted Candidate는 별도 replay Run과 공통 Gate를 거쳐 reproduction-backed
+Confirmed 투영으로 승격될 수 있다. 그 밖의 요청 위협은 실행 가능한 target-linked scenario와
+명시적인 replay 계약이 추가될 때까지 coverage gap 또는 `needs-review`로 남는다.
 
 In addition to the standard run artifacts, `kisa-run` writes:
 
@@ -455,17 +467,44 @@ docker compose -f containers/compose.ai-lab.yaml `
   -f containers/compose.ai-lab.hardened.yaml down
 ```
 
-`kisa-retest` classifies each baseline Finding as `fixed`, `still-vulnerable`, or `inconclusive`,
-reports any new Finding, and evaluates normal-function regression separately from attack metrics.
-A Finding is `fixed` only when the repeated attack calls succeeded and every result lacked the
-original compromise signal. Missing or failed evidence produces `inconclusive`. The command exits
-non-zero when a Finding remains, evidence is inconclusive, a new Finding appears, or regression
-fails.
+`kisa-retest`는 봉인된 `validation/v1alpha1`에 reproduction-backed Confirmed로 기록된 baseline
+Finding만 소비한다. legacy flat Finding, semantic-only Candidate, 미확정 baseline은 재검증
+기준으로 받아들이지 않는다. 일반 parent retest Run은 정상 기능 probe와 regression을
+수행하고, baseline-bound Restricted Replay는 각 기준 Candidate의 원 request·scenario·threat·
+Tool·target을 그대로 컴파일해 별도 공격 replay Run에서 실행한다. 두 경로의 결과는 구분해
+기록하되 호출은 같은 Campaign 예산·rate limit·취소 경계를 소비한다.
 
-The retest run adds `remediation-plan.json`, `kisa-retest.json`,
-`kisa-checklist-overlay.json`, and `kisa-retest-report.md`. The overlay supersedes only five
-evidence-backed KISA items; owner assignment, due dates, and operational adoption remain human
-review items.
+재검증 Gate는 canonical receipt를 디스크에서 다시 열어 Candidate, source Decision, versioned
+Finding, remediation action, baseline/retest Run과 seal root, original/replay request, scenario,
+threat, Tool, target 결박을 확인한다. 모든 기대 반복이 성공하고 trusted negative Oracle이 원
+compromise claim에 대해 명시적으로 `ReplayOracleVerdict.CONTRADICTS`를 반환할 때만 `fixed`다. verified
+`ReplayOracleVerdict.SUPPORTS`는
+`still-vulnerable`, support와 contradiction이 섞였거나 반복 부족·실행 실패·취소·timeout·target
+unavailable·명시적인 방어 증적 부재는 `inconclusive`다. 기존 positive Oracle은 zero support를
+계속 `inconclusive`로 처리하며, Worker의 `vulnerable=false`나 단순 신호 부재만으로 `fixed`를
+주장하지 않는다. 결박 또는 무결성 불일치는 상태로 축소하지 않고 명령을 fail closed로
+종료한다.
+
+현재 trusted negative predicate는 결정론 KISA Lab의 M03·M06·A04에 등록된 정확한 방어 응답,
+전 턴 compromise marker 부재, `toolCalls`·`memoryWrites` 부재를 함께 재계산한다. A04는 첫 쓰기
+거부와 후속 조회의 비지속 응답을 구분한다. `safety.blocked`·reason만으로는 반증이 되지 않으며
+등록 응답과 불일치하는 메타데이터, 미등록 방어 문구나 target은 안전하게 `inconclusive`다.
+
+정상 기능 regression은 Finding 상태와 독립적으로 평가한다. `kisa-retest`의 범위 한정 Exit
+Gate는 모든 baseline Finding이 `fixed`, `still-vulnerable`·`inconclusive`가 0, 실행 중 관찰된
+새 Confirmed Finding이 0, regression이 `pass`일 때만 열린다. 그 밖의 결과는 산출물을 봉인한
+뒤 non-zero로 종료한다. 이 명령은 baseline 폐루프이지 새로운 위협 유형을 찾는 전체 재스캔이
+아니다. 신규 취약점 부재까지 주장하려면 별도의 fresh `pajin kisa-run` discovery Gate를 실행해야
+한다. 이 discovery도 현재 실행 가능한 시나리오 범위만 다루며, 나머지 KISA 위협은 아직
+`not assessed`다.
+
+`kisa-plan-remediation`은 versioned baseline projection과 기존 seal entry를 덮어쓰지 않고
+`remediation-plan.json`과 event를 append한 뒤 새 current root를 만든다. `kisa-retest`는 이
+확정된 root를 모든 baseline-bound receipt에 결박하며, 이후 baseline 변경은 hard fail한다.
+retest Run은 `remediation-plan.json`, `kisa-retest.json`, `kisa-retest-index.json`,
+`kisa-checklist-overlay.json`, `kisa-retest-report.md`와 baseline-bound replay/receipt lineage를
+append-only seal로 보호한다. overlay는 증적으로 확인한 다섯 KISA 항목만 supersede하고,
+담당자·기한·운영 반영은 계속 사람 검토 항목으로 남긴다.
 
 ## OpenAI-compatible Provider Gateway
 
@@ -879,6 +918,14 @@ integrity seal binds the outcome and complete artifact set; the receipt records 
 and a second seal binds the receipt. `kisa-run` now coordinates this boundary for exact M03, M06,
 and A04 Candidates after sealing the source Run. `kisa-run` then passes those replay Run paths to
 the common gate, which reloads canonical receipts instead of trusting mutable in-memory records.
+
+`kisa-retest`도 같은 receipt loader와 Restricted Reproducer 경계를 사용하지만 확인 목적은
+분리한다. parent retest Run의 정상 기능 결과를 negative 증명으로 재해석하지 않고,
+봉인된 baseline Candidate에 결박된 별도 replay Run만 `fixed`·`still-vulnerable` 판정에 사용한다.
+retest assessment에는 baseline과 remediation lineage, replay Run/Outcome/request/evidence ID,
+Oracle verdict와 receipt seal lineage가 포함된다. versioned projection과 기존 baseline seal
+entry는 immutable하며, remediation plan append 후 확정된 current root가 retest receipt에
+결박된다.
 
 The Candidate and Decision snapshots preserve every Finding returned by the legacy Validator and
 every observation admitted by an enabled trusted Candidate Producer, together with its

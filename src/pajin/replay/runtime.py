@@ -40,6 +40,8 @@ from pajin.replay.tickets import (
     ReplayExecutionTicket,
     ReplayTicketClaimer,
     ReplayTicketFinalizationVerifier,
+    canonical_replay_compilation_payload,
+    canonicalize_replay_compilation_wire_sets,
     replay_context_digest,
 )
 from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
@@ -257,7 +259,13 @@ def load_verified_replay_result(
         artifact_bytes = artifact_path.read_bytes()
         receipt = ReplayVerificationReceipt.model_validate_json(receipt_path.read_bytes())
         artifact_set = ReplayArtifactSet.model_validate_json(artifact_bytes)
-        compilation = ReplayCompilation.model_validate_json(compilation_path.read_bytes())
+        compilation_payload = json.loads(compilation_path.read_bytes())
+        if not isinstance(compilation_payload, dict):
+            raise ValueError("sealed replay compilation must be a JSON object")
+        # Digest the sealed wire object before Pydantic supplies defaults. This keeps
+        # v1 confirmation artifacts verifiable when newer readers add default fields,
+        # while the separate typed parse below still enforces the current contract.
+        compilation_digest = replay_context_digest(compilation_payload)
         seals = [
             RunIntegritySeal.model_validate_json(line)
             for line in (root / "run-integrity.jsonl").read_text(encoding="utf-8").splitlines()
@@ -267,13 +275,43 @@ def load_verified_replay_result(
         raise ValueError("sealed replay receipt artifacts could not be loaded") from exc
 
     artifact_digest = sha256(artifact_bytes).hexdigest()
-    compilation_digest = replay_context_digest(compilation.model_dump(mode="json", by_alias=True))
+    compilation: ReplayCompilation | None = None
+    if receipt.compilation_digest != compilation_digest:
+        try:
+            compilation = ReplayCompilation.model_validate(compilation_payload)
+        except ValueError as exc:
+            raise ValueError("sealed replay compilation could not be validated") from exc
+        # Compatibility for already-sealed v1 artifacts written before compilation
+        # set fields shared one deterministic serializer. The finalized ticket digest
+        # and the semantic artifact comparisons below remain mandatory, so this does
+        # not authorize a different compilation.
+        legacy_typed_digest = replay_context_digest(
+            compilation.model_dump(mode="json", by_alias=True)
+        )
+        deterministic_typed_digest = replay_context_digest(compilation)
+        # Some already-sealed v1 artifacts both predate newer default fields and
+        # serialized set-valued fields in a different order between the ticket and
+        # compilation wire. Normalize only those declared set paths on the original
+        # wire object: arbitrary ordered lists remain order-sensitive.
+        legacy_wire_set_digest = replay_context_digest(
+            canonicalize_replay_compilation_wire_sets(compilation_payload)
+        )
+        if receipt.compilation_digest not in {
+            legacy_typed_digest,
+            deterministic_typed_digest,
+            legacy_wire_set_digest,
+        }:
+            raise ValueError("sealed replay receipt does not match its canonical compilation")
+    if compilation is None:
+        try:
+            compilation = ReplayCompilation.model_validate(compilation_payload)
+        except ValueError as exc:
+            raise ValueError("sealed replay compilation could not be validated") from exc
     if (
         receipt.replay_run_id != verification.run_id
         or artifact_set.outcome.binding.replay_run_id != verification.run_id
         or receipt.artifact_set_path != artifact_relative
         or receipt.artifact_set_digest != artifact_digest
-        or receipt.compilation_digest != compilation_digest
         or artifact_set.validation_packet != compilation.validation_packet
         or artifact_set.contract != compilation.contract
         or artifact_set.intent != compilation.intent
@@ -1330,13 +1368,19 @@ class GatewayRestrictedReproducerRuntime:
             "replay/intent.json": compilation.intent,
             "replay/compiled-spec.json": compilation.spec,
             "replay/capability-grant.json": compilation.grant,
-            "replay/compilation.json": compilation,
         }
         for path, artifact in artifacts.items():
             self._store.write_json(
                 path,
                 artifact.model_dump(mode="json", by_alias=True),
             )
+        compilation_payload = canonical_replay_compilation_payload(compilation)
+        claim = self._claim
+        if claim is None:
+            raise RuntimeError("replay ticket claim is missing while persisting compilation")
+        if replay_context_digest(compilation_payload) != claim.compilation_digest:
+            raise RuntimeError("replay ticket digest differs from canonical compilation wire")
+        self._store.write_json("replay/compilation.json", compilation_payload)
 
     def _record_attempt(self, attempt: ReplayAttempt) -> None:
         self._store.append_event(

@@ -2,9 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Implementation: In progress; restricted replay, the receipt-reloading common gate, append-only
-  versioned validation projections, and exact KISA fresh-session integration are implemented, while
-  durable ticket verification, baseline-bound negative retest, and additional Modes remain planned
+- Amended: 2026-07-16 — M6-05 baseline-bound negative KISA retest 경계 추가
+- Implementation: In progress; restricted replay, the receipt-reloading common confirmation/retest
+  gates, append-only versioned validation projections, exact KISA fresh-session integration, and
+  baseline-bound negative KISA retest are implemented, while durable ticket verification and
+  additional Modes remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
@@ -103,6 +105,49 @@ rejection.
 enter it after migration. Candidate preservation, duplicate triage, reporting state, and retest
 state remain separate concerns.
 
+### Retest invariant
+
+이미 reproduction-backed `confirmed`가 된 Finding의 수정 여부는 confirmation disposition을
+다시 쓰지 않고 별도의 retest lifecycle 결과로 기록한다. confirmation Gate에서 typed Oracle의
+`contradicts`는 Candidate의 objective rejection 근거지만, sealed Confirmed baseline에 정확히
+결박된 Retest Gate에서 verified `contradicts`는 `fixed` 근거다. 과거 Confirmed Decision과
+Finding은 immutable history로 남으며 `rejected-objective`로 재해석하지 않는다.
+
+Retest Gate는 다음 조건을 모두 요구한다.
+
+1. baseline은 sealed `validation/v1alpha1`의 reproduction-backed Confirmed Decision/Finding과
+   canonical receipt lineage를 가져야 한다. legacy flat Finding, semantic-only Candidate,
+   unreproduced historical confirmation은 허용하지 않는다.
+2. retest proof는 exact Candidate, source Decision, versioned Finding, remediation action,
+   baseline/retest Run과 integrity root, original/replay request, Mode, scenario, threat, Tool,
+   target을 결박한다. 표시용 fingerprint나 mutable in-memory record는 이 결박을 대신하지 않는다.
+3. normal parent retest는 정상 기능 probe와 regression을 담당한다. baseline 취약점 상태는
+   별도의 Candidate-bound Restricted Replay 공격 Run과 verified canonical receipt만 판정한다.
+4. 모든 계약상 반복이 성공하고 retest 목적의 trusted negative Oracle이 원 claim에 대해
+   `ReplayOracleVerdict.CONTRADICTS`를 반환할 때만 `fixed`다. verified
+   `ReplayOracleVerdict.SUPPORTS`는 `still-vulnerable`이다.
+5. support와 contradiction이 섞이거나, terminal outcome·반복 부족·명시적 방어 증적 부재가
+   발생하면 `inconclusive`다. Candidate나 artifact 결박·무결성 불일치는 lifecycle 상태로
+   축소하지 않고 Gate 전체를 fail closed로 거부한다.
+6. 정상 기능 regression은 개별 Finding 상태와 독립적이다. `kisa-retest`의 범위 한정 성공은
+   모든 baseline Finding이 `fixed`, unresolved와 실행 중 관찰된 new Finding이 없고 regression이
+   `pass`일 때만 가능하다. 이 경계는 baseline 폐루프이며 신규 위협 유형은 평가하지 않는다.
+   release Gate는 현재 실행 가능한 시나리오의 별도 fresh discovery Run을 요구하며, 미구현
+   위협은 계속 `not assessed`다.
+
+기존 positive confirmation Oracle의 의미는 바꾸지 않는다. zero support, non-match 또는
+`supports_claim == false`는 계속 `inconclusive`일 수 있으며 negative 증명과 동치가 아니다.
+Worker-authored `vulnerable=false`나 단순 compromise marker 부재도 `fixed` 근거가 아니다. 오직
+전체 기대 반복의 canonical observation에서 명시적인 방어 결과를 검증하도록 등록된 trusted
+negative Oracle만 `contradicts`를 만들 수 있다.
+
+The first KISA negative predicates are deliberately narrow: exact deterministic-lab defense
+responses registered for M03, M06, and both A04 turns, plus the absence of compromise markers,
+tool calls, and memory writes. `safety.blocked` or its reason is not an independent contradiction
+signal, and metadata inconsistent with the registered response fails closed. Unknown target wording
+remains `inconclusive` until a separately reviewed predicate or trusted policy-enforcement receipt
+is registered.
+
 ### Human reproduction
 
 Human review cannot change a Candidate directly to `confirmed`. A future manual reproduction path
@@ -114,7 +159,9 @@ provenance, actor identity, approval record, and Oracle result required of autom
 - **KISA AI Red Team:** `ai.chat-probe` is designated as the first restricted-replay vertical slice.
   Reproduction must use the exact catalog scenario and target, a new request identity, a new session where the
   scenario requires isolation, and a separate evidence lineage. The Producer still ignores Worker
-  verdict fields and independently recomputes catalog checks.
+  verdict fields and independently recomputes catalog checks. Hardened retest는 normal parent Run과
+  baseline-bound 공격 Replay를 분리하고, exact M03·M06·A04 baseline Candidate의 모든 기대 반복을
+  trusted negative Oracle이 명시적으로 반증한 verified receipt만 `fixed`로 소비한다.
 - **Bug Bounty:** an existing deterministic control-set Oracle satisfies this ADR only when it
   evaluates a distinct reproduction execution and evidence lineage. Re-reading the original
   Specialist result is not reproduction.
@@ -169,10 +216,21 @@ each twice-sealed receipt with the ticket verifier, checks source-seal membershi
 binding, and applies the shared reason matrix. It appends `validation/v1alpha1` Decision, Finding,
 index, and Markdown artifacts in a new seal instead of rewriting the flat pre-replay snapshot. The
 KISA assessment and replay index consume that projection and expose confirmation basis and receipt
-lineage. Durable ticket verification across process restarts, baseline-bound negative retest proof,
-Local/Control Plane replay orchestration, and additional Mode integrations remain follow-up work. A
-CPU-bound production Oracle must still use a separately bounded execution boundary instead of
-blocking the cooperative async runtime.
+lineage.
+
+M6-05의 `kisa-retest` 경로는 sealed versioned Confirmed baseline을 다시 검증하고 각 Finding의
+Candidate, source Decision, remediation action과 모든 authority-bearing identity에 결박된 별도
+Restricted Replay를 실행한다. normal parent retest의 정상 기능 결과는 negative proof로
+재사용하지 않는다. Retest Gate는 replay Run의 canonical receipt를 다시 열어 trusted negative
+Oracle이 모든 기대 반복을 `contradicts`했을 때만 `fixed`를 기록하고, `supports`는
+`still-vulnerable`, mixed/terminal/증명 부족은 `inconclusive`로 닫는다. 결박이나 seal 불일치는
+hard fail한다. remediation plan과 event는 versioned projection과 기존 seal entry를 덮어쓰지
+않고 baseline에 append하며, retest는 그 뒤 확정된 current root를 receipt에 결박한다. 결박 후
+baseline이 달라지면 Gate는 결과를 만들지 않는다.
+
+Durable ticket verification across process restarts, Local/Control Plane replay orchestration, and
+additional Mode integrations remain follow-up work. A CPU-bound production Oracle must still use a
+separately bounded execution boundary instead of blocking the cooperative async runtime.
 
 Migration proceeds in this order:
 
@@ -195,8 +253,11 @@ Migration proceeds in this order:
    reloaded from its replay Run, before a Decision can become reproduction-backed `confirmed`;
 7. **Implemented as an append-only v1alpha1 projection:** version Decisions, Findings, index, and
    report so consumers can distinguish legacy semantic confirmation from reproduction-backed
-   confirmation; and
-8. add eligible Mode contracts incrementally without introducing a generic replay predicate.
+   confirmation;
+8. **Implemented for M6-05 KISA retest:** accept only sealed reproduction-backed baselines, separate
+   normal parent regression from baseline-bound attack replay, reload verified negative receipts,
+   and require an all-repetition trusted `contradicts` verdict before `fixed`; and
+9. add eligible Mode contracts incrementally without introducing a generic replay predicate.
 
 Existing sealed Runs are immutable and must not be rewritten. A historical `confirmed` Decision
 without a ReplayOutcome is interpreted under legacy semantics and cannot be promoted by
@@ -210,6 +271,10 @@ reinterpretation; it must be reproduced in a new Run.
   compiled, candidate-bound Grant.
 - Confirmed output remains fail-closed and is emitted only when the common gate consumes verified
   receipts; additional Modes require their own explicit replay integrations.
+- `fixed`도 fail-closed이며 baseline-bound Retest Gate가 verified canonical negative receipt를
+  소비할 때만 생성된다. baseline의 과거 confirmation은 append-only retest 관계와 분리된다.
+- 정상 기능 regression과 취약점 상태를 분리해 원 취약점이 수정됐더라도 기능 회귀가 있는
+  실행을 전체 성공으로 보고하지 않는다.
 - Replay adds target effects, latency, cost, evidence volume, and non-determinism management.
 - Unsafe or non-idempotent Candidates require a separately designed approval and manual
   reproduction path.
@@ -230,8 +295,20 @@ Implementation is complete only when tests prove that:
   where required by the Mode, creates `confirmed`;
 - Local and Multi-Agent runners enforce the same confirmation rule;
 - KISA reports and versioned Finding artifacts distinguish legacy and reproduction-backed
-  confirmation; and
-- migration does not rewrite historical Run seals.
+  confirmation;
+- migration does not rewrite historical Run seals;
+- KISA retest가 legacy flat·semantic-only·미확정 baseline을 거부하고 sealed
+  `validation/v1alpha1` Confirmed baseline만 소비한다;
+- exact Candidate/Decision/Finding/remediation/baseline·retest Run/root/request/scenario/threat/
+  Tool/target substitution과 receipt·seal 변조가 hard fail한다;
+- 모든 기대 반복의 trusted negative Oracle verdict가 `contradicts`일 때만 `fixed`이고,
+  `supports`는 `still-vulnerable`, mixed·terminal·반복 부족·증적 부재는 `inconclusive`다;
+- positive Oracle의 zero-support와 Worker-authored negative flag가 `fixed`를 만들지 못한다;
+- normal parent regression과 baseline-bound attack replay가 분리되고, regression 실패는 Finding
+  상태를 덮어쓰지 않지만 CLI 성공을 차단한다; and
+- remediation plan append가 versioned baseline projection과 기존 seal entry를 덮어쓰지 않고 새
+  current root를 만들며, retest가 그 root와 outcome·request·evidence·receipt lineage를 정확히
+  결박해 append-only로 봉인한다.
 
 The schema-boundary regression suites are `tests/test_replay_models.py` and
 `tests/test_ai_chat_contracts.py`. The compiler boundary is covered by
@@ -251,9 +328,12 @@ unsupported ReplayOutcomes. Versioned-artifact tests cover fail-closed legacy se
 paths. `tests/test_kisa_replay.py` additionally covers the explicit
 three-scenario opt-in, fresh and unique sessions, raw-transcript recomputation, multi-turn request
 rate accounting, mutable record rejection, sealed source-state binding, receipt reloading, immutable
-source artifacts, and reproduction-backed KISA projection. The remaining requirements apply to
-baseline-bound negative KISA retest, durable/offline ticket verification, Local and Control Plane
-replay orchestration, and additional explicitly opted-in Mode contracts.
+source artifacts, and reproduction-backed KISA projection. `tests/test_kisa_retest.py` and
+`tests/test_kisa_retest_cli.py` cover the M6-05 sealed baseline admission, exact retest binding,
+negative/supporting/mixed/terminal disposition matrix, canonical receipt reloading, forged negative
+signal rejection, parent regression separation, immutable baseline, and CLI Exit Gate. The
+remaining requirements apply to durable/offline ticket verification, Local and Control Plane replay
+orchestration, and additional explicitly opted-in Mode contracts.
 
 ## References
 
