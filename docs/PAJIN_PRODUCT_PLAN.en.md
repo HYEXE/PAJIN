@@ -88,9 +88,12 @@ verified receipt reload common Gate, append-only `validation/v1alpha1` projectio
 negative KISA retest Gate. The stable SQLite ledger and post-restart read-only verifier for M6-06 persist local KISA
 positive and negative replay tickets. M6-07A added the exact KISA Candidate -> SQLite replay -> common Gate path with
 explicit opt-in for general Local execution. Default Local execution does not perform automatic replay. Control Plane
-replay-ticket orchestration is split into M6-07B. Before implementation,
-[`ADR-0029`](adr/0029-control-plane-replay-orchestration.en.md) must be accepted to finalize artifact handoff, lease
-fencing, PostgreSQL ticket/batch/item, and durable budget/rate design. Portable/off-host signed proof, materializers
+replay-ticket orchestration is split into M6-07B. [`ADR-0029`](adr/0029-control-plane-replay-orchestration.en.md)
+was Accepted on 2026-07-17. Its first authority-state slice now implements a versioned Replay aggregate schema,
+repository-managed v1-to-v2 migration with strict startup validation, internal-only payload, and atomic batch,
+burn-on-claim, heartbeat, lease-expiry, and cancellation transitions. M6-07B remains incomplete pending Artifact
+admission, new-identity retry issuance, durable permits, executor/finalization/Gate wiring, and live PostgreSQL
+migration and locking acceptance. Portable/off-host signed proof, materializers
 and Oracles for other Modes, and structured collaboration memory are follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 has been implemented through the
 first vertical slice of the Control Plane.
@@ -103,7 +106,7 @@ first vertical slice of the Control Plane.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; replay orchestration is M6-07B and requires acceptance of ADR-0029 first |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; the first ADR-0029 Replay authority-state slice implements versioned schema/migration and burn-on-claim, while Artifact, retry, permit, executor/finalization/Gate, and live PostgreSQL acceptance remain incomplete |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -1240,9 +1243,11 @@ M6-07 is split into two scopes with different execution-authority and durability
   lease recovery, distributed Workers, or portable attestation.
 
 **M6-07B Control Plane replay orchestration** is incomplete. It does not reinterpret arbitrary results from existing
-Campaign Jobs and local absolute paths as replay authority. Before implementation proceeds, ADR-0029 must be
-accepted. Before completion can be claimed, its forward migration and acceptance suite must also pass. The ADR
-defines at least the following.
+Campaign Jobs and local absolute paths as replay authority. ADR-0029 was Accepted on 2026-07-17, and implementation
+has delivered only its first authority-state slice: versioned schema and repository-managed v1-to-v2 migration,
+strict internal payload, and burn-on-claim lifecycle. Artifact admission, new-identity retry issuance, durable permits,
+executor/finalization/Gate wiring, and live PostgreSQL migration and locking acceptance remain outstanding, so full
+completion cannot be claimed. The Accepted ADR defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
 - Fencing, claim/finalize, and crash policy that do not conflict with Worker lease and retry;
@@ -1258,7 +1263,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, and approval are implemented; Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, and the first Control Plane Replay authority-state slice are implemented; remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, Worker daemon, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1299,8 +1304,11 @@ defines at least the following.
   read-only finalization verifier after process restart, and `pajin replay-verify`
 - Explicit `pajin run --kisa-replay` Local KISA Candidate -> SQLite replay -> common Gate orchestration;
   default Local execution does not automatically replay and remains in the one-process, one-writer scope
-- Remaining scope: after ADR-0029 is accepted, PostgreSQL Control Plane replay batch, item, ticket, artifact handoff,
-  lease fencing, durable budget and rate, portable or off-host signed proof, session-bearing driver and Oracle
+- First authority-state slice under Accepted ADR-0029: versioned PostgreSQL Control Plane Replay batch, item, ticket,
+  and event schema, repository-managed v1-to-v2 migration, strict internal payload, lease fencing, and burn-on-claim
+- Remaining ADR-0029 scope: Artifact handoff and source admission, new-identity retry issuance, durable budget and rate,
+  executor/finalization/Gate wiring, live PostgreSQL migration and locking acceptance, portable or off-host signed proof,
+  session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
   Facts, Hypotheses, and Agent Working Memory
 
@@ -1373,9 +1381,11 @@ defines at least the following.
 
 ## 24. Open Decisions
 
-The execution boundary and technical structure are recorded across ADR-0001 through ADR-0029. ADR-0001 through
-ADR-0028 are Accepted, while ADR-0029 remains Proposed and defines the unimplemented M6-07B Control Plane replay
-orchestration boundary. The following items need additional decisions before further Phase 3-4 work proceeds.
+The execution boundary and technical structure are recorded across ADR-0001 through ADR-0029, all of which are
+Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice is
+implemented, but M6-07B remains incomplete pending Artifact admission, retry issuance, durable permits,
+executor/finalization/Gate wiring, and live PostgreSQL migration and locking acceptance. The following items need
+additional decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
 2. Authentication, sessions, organization and project isolation, and multi-tenancy boundary for the Web UI
@@ -1470,7 +1480,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0029 - runtime, policy, Mode Pack, Control Plane, stepwise Validator, and replay orchestration decisions; ADR-0001 through ADR-0028 are Accepted, and ADR-0029 is Proposed
+4. ADR-0001 through ADR-0029 - Accepted runtime, policy, Mode Pack, Control Plane, stepwise Validator, and replay orchestration decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

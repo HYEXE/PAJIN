@@ -33,6 +33,7 @@ from pajin.control_plane.models import (
     CompleteJobRequest,
     CreateCheckpointRequest,
     FailJobRequest,
+    JobKind,
     JobView,
     LeaseRequest,
 )
@@ -66,7 +67,7 @@ class WorkerControlPlanePort(Protocol):
 
 class WorkerDaemonConfig(StrictModel):
     worker_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-    kinds: list[str] = Field(min_length=1, max_length=20)
+    kinds: list[JobKind] = Field(min_length=1, max_length=20)
     lease_seconds: int = Field(default=15, ge=5, le=300)
     heartbeat_seconds: float = Field(default=5, ge=0.05, le=120)
     long_poll_seconds: int = Field(default=10, ge=0, le=20)

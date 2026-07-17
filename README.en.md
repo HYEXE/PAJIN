@@ -115,8 +115,12 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   off-host attestation, or the PostgreSQL Control Plane replay authority.
 - The explicit Local KISA coordinator is limited to one process and one writer, and only the exact
   M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
-  predicate or a distributed lock. Control Plane replay requires a separate ADR 0029 covering
-  artifact handoff, lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state.
+  predicate or a distributed lock. Accepted ADR 0029 governs Control Plane replay artifact handoff,
+  lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state. Its first
+  authority-state slice implements the versioned aggregate schema, repository-managed v1-to-v2
+  migration, strict internal payload, and burn-on-claim lifecycle. M6-07B remains incomplete pending
+  Artifact admission, retry issuance, durable permits, executor/finalization/Gate wiring, and live
+  PostgreSQL migration and locking acceptance.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -1068,4 +1072,4 @@ See [the product plan](docs/PAJIN_PRODUCT_PLAN.en.md),
 [ADR-0026](docs/adr/0026-trusted-kisa-candidate-admission.en.md),
 [ADR-0027](docs/adr/0027-independent-reproduction-confirmation-boundary.en.md),
 [ADR-0028](docs/adr/0028-durable-local-replay-ticket-ledger.en.md), and
-[Proposed ADR-0029](docs/adr/0029-control-plane-replay-orchestration.en.md).
+[ADR-0029](docs/adr/0029-control-plane-replay-orchestration.en.md).

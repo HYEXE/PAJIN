@@ -14,6 +14,7 @@ from pajin.control_plane.executors import (
     ExecutorRegistry,
     ToolLoopJobExecutor,
 )
+from pajin.control_plane.models import JobKind
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig
 
 
@@ -33,7 +34,7 @@ async def run_from_env() -> None:
         ]
     )
     raw_kinds = os.environ.get("PAJIN_DAEMON_KINDS", "campaign,tool-loop")
-    kinds = [item.strip() for item in raw_kinds.split(",") if item.strip()]
+    kinds = [JobKind(item.strip()) for item in raw_kinds.split(",") if item.strip()]
     config = WorkerDaemonConfig(
         worker_id=os.environ.get("PAJIN_WORKER_ID", f"worker-{socket.gethostname().lower()}"),
         kinds=kinds,

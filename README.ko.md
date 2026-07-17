@@ -114,8 +114,12 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   PostgreSQL Control Plane replay authority가 아닙니다.
 - 명시적 Local KISA coordinator는 한 process와 한 writer로 제한되며, 정확한 M03, M06, A04
   `ai.chat-probe` 계약만 allowlist에 포함됩니다. generic structural replay predicate나
-  distributed lock이 아닙니다. Control Plane replay에는 artifact handoff, lease fencing,
-  PostgreSQL ticket/batch/item state, durable budget/rate state를 다루는 별도 ADR 0029가 필요합니다.
+  distributed lock이 아닙니다. 승인된 ADR 0029는 Control Plane replay의 artifact handoff, lease
+  fencing, PostgreSQL ticket/batch/item state, durable budget/rate state를 규정합니다. 첫 권위 상태
+  조각은 버전형 집합체 스키마, 저장소 관리형 v1→v2 마이그레이션, 엄격한 내부 payload와
+  burn-on-claim 수명주기를 구현합니다. Artifact 입장, 재시도 발행, 영속형 permit,
+  executor/finalization/Gate 연결과 실제 PostgreSQL 마이그레이션·잠금 인수 검증이 남아 있어
+  M6-07B 전체는 아직 미완료입니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 
@@ -1055,5 +1059,5 @@ Tool Gateway와 Policy Engine을 통과해야 합니다.
 [ADR-0025](docs/adr/0025-candidate-validation-ledger-and-replay-boundary.ko.md),
 [ADR-0026](docs/adr/0026-trusted-kisa-candidate-admission.ko.md),
 [ADR-0027](docs/adr/0027-independent-reproduction-confirmation-boundary.ko.md),
-[ADR-0028](docs/adr/0028-durable-local-replay-ticket-ledger.ko.md), 그리고 제안 상태인
+[ADR-0028](docs/adr/0028-durable-local-replay-ticket-ledger.ko.md), 그리고
 [ADR-0029](docs/adr/0029-control-plane-replay-orchestration.ko.md)입니다.

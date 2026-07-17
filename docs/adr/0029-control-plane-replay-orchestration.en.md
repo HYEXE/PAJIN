@@ -2,8 +2,8 @@
 
 # ADR 0029: Control Plane Replay orchestration and burn-on-claim delivery
 
-- Status: Proposed
-- Date: 2026-07-16
+- Status: Accepted
+- Date: 2026-07-17
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -11,11 +11,15 @@
 
 ## Status note
 
-This ADR is a proposal that defines the distributed trust boundary and delivery semantics before
-M6-07B is implemented. The PostgreSQL aggregate, Artifact repository, internal Replay Job, API, and
-Gate described below are not yet considered implemented. Until this decision becomes Accepted and
-passes a forward migration and acceptance suite, the Control Plane cannot claim to provide durable
-Replay orchestration.
+This ADR was Accepted on 2026-07-17 and fixes the distributed trust boundary and delivery semantics
+for M6-07B. The first authority-state slice now includes a versioned Replay aggregate schema, a
+repository-managed v1-to-v2 migration with strict startup validation, an internal-only strict Job
+payload, and atomic batch creation, burn-on-claim, heartbeat, lease-expiry, and cancellation state
+transitions. This does not complete M6-07B. The Artifact repository and server-owned source
+admission, new-identity retry issuance, durable budget/rate permits, Replay executor wiring, typed
+server-side artifact finalization and result-digest verification, the Gate, and live PostgreSQL
+migration/locking acceptance remain outstanding. Until those boundaries are complete, the Control
+Plane cannot claim to provide full durable Replay orchestration.
 
 ## Context
 
@@ -26,24 +30,24 @@ failure boundaries exist among the Operator, Control Plane API, PostgreSQL, Work
 artifact storage. Pathnames, mutable runtime objects, or SQLite files from the local path must not
 be extended into remote Worker trust.
 
-The current implementation has the following concrete gaps:
+At the time this decision was written, the implementation had the following concrete gaps:
 
-- [`JobKind` and `CompleteJobRequest`](../../src/pajin/control_plane/models.py) define only the
-  public `campaign`/`tool-loop` kinds and an arbitrary `dict` result. They have no Replay-specific
+- [`JobKind` and `CompleteJobRequest`](../../src/pajin/control_plane/models.py) defined only the
+  public `campaign`/`tool-loop` kinds and an arbitrary `dict` result. They had no Replay-specific
   typed finalization, ticket fence, or result digest.
-- [`ControlPlaneRepository.initialize`](../../src/pajin/control_plane/database.py) currently uses
-  `create_all` and creates only Run, Job, checkpoint, approval, and event tables. It has no Replay
+- [`ControlPlaneRepository.initialize`](../../src/pajin/control_plane/database.py) used
+  `create_all` and created only Run, Job, checkpoint, approval, and event tables. It had no Replay
   schema or deployable forward-migration path.
 - [`ControlPlaneService.claim_job`, `complete_job`, and `_expire_leases`](../../src/pajin/control_plane/service.py)
-  lease a normal Job, store result JSON as-is to complete the entire Run, and return the same Job
-  row to queued when its lease expires. Those requeue semantics are inappropriate for a
+  leased a normal Job, stored result JSON as-is to complete the entire Run, and returned the same
+  Job row to queued when its lease expired. Those requeue semantics were inappropriate for a
   burn-on-claim Replay ticket.
-- [`WorkerDaemon._finalize`](../../src/pajin/control_plane/worker.py) retries the same completion
-  call after a transport failure, but the current server does not reopen Replay artifacts and
-  verify the exact result digest.
+- [`WorkerDaemon._finalize`](../../src/pajin/control_plane/worker.py) retried the same completion
+  call after a transport failure, but the server did not reopen Replay artifacts and verify the
+  exact result digest.
 - [`CampaignJobExecutor` and `ToolLoopJobExecutor`](../../src/pajin/control_plane/executors.py)
-  benefit from using a trusted registry, but their result `runPath` is an absolute path on the
-  Worker host. The API process cannot guarantee that path's object identity, immutability, or seal.
+  used a trusted registry, but their result `runPath` was an absolute path on the Worker host. The
+  API process could not guarantee that path's object identity, immutability, or seal.
 - [`GatewayRestrictedReproducerRuntime._finish`](../../src/pajin/replay/runtime.py) seals artifacts
   twice in one process, finalizes the ticket, and then reopens the verified result. Moving this
   sequence so that a Worker also owns PostgreSQL authority would trust the Worker's self-verification.
@@ -52,14 +56,22 @@ The current implementation has the following concrete gaps:
   [`SQLiteReplayExecutionAuthority`](../../src/pajin/replay/sqlite_tickets.py) is the reference
   point for local restart verification. Neither replaces a distributed queue and artifact handoff.
 
+The first implementation slice after acceptance closes part of that baseline without weakening the
+decision: public Job kinds remain `campaign` and `tool-loop`, while a separately typed internal
+Replay payload is persisted with batch/item/ticket/event authority state and burn-on-claim fencing.
+Repository startup now performs a versioned v1-to-v2 migration or rejects incompatible schema
+state. Generic Job completion and failure paths remain unavailable to Replay Jobs. The remaining
+Artifact, retry issuance, permit, executor, typed finalization, Gate, and live PostgreSQL acceptance
+work listed in the status note is intentionally still outside the completed slice.
+
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
 lease recovery of a normal Job must also be explicitly reconciled with the burn-on-claim rule of a
 single-use Replay ticket.
 
-## Proposed decision
+## Decision
 
-If this ADR is Accepted, M6-07B adopts the following boundaries.
+M6-07B adopts the following boundaries.
 
 ### Separation of Local M6-07A and Control Plane M6-07B
 

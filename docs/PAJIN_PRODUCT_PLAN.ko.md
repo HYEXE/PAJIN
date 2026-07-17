@@ -84,9 +84,13 @@ Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-onl
 M6-06의 stable SQLite 원장과 재시작 후 read-only verifier는 로컬 KISA positive/negative
 replay ticket을 영속화한다. M6-07A는 일반 Local 실행에 명시적으로 opt-in하는 exact KISA
 Candidate→SQLite replay→공통 Gate 경로를 추가했다. 기본 Local 실행은 자동 replay를 하지
-않는다. Control Plane replay-ticket orchestration은 M6-07B로 분리한다. 구현 전에
-[`ADR-0029`](adr/0029-control-plane-replay-orchestration.ko.md)를 Accepted로 전환해 artifact handoff,
-lease fencing, PostgreSQL ticket/batch/item과 영속형 budget/rate 설계를 확정해야 한다.
+않는다. Control Plane replay-ticket orchestration은 M6-07B로 분리한다.
+[`ADR-0029`](adr/0029-control-plane-replay-orchestration.ko.md)는 2026-07-17에 승인되었고, 확정된
+경계에 따른 첫 권위 상태 조각은 버전형 Replay 집합체 스키마, 엄격한 시작 검증을 포함한 저장소
+관리형 v1→v2 마이그레이션, 내부 전용 payload, 원자적 batch·burn-on-claim·heartbeat·lease
+만료·취소 전이를 구현했다. Artifact 입장, 새 identity를 사용하는 재시도 발행, 영속형 permit,
+executor/finalization/Gate 연결과 실제 PostgreSQL 마이그레이션·잠금 인수 검증이 남아 있어
+M6-07B 전체는 미완료다.
 Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
@@ -100,7 +104,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; replay orchestration은 ADR-0029 승인이 선행돼야 하는 M6-07B |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029의 첫 Replay 권위 상태 조각은 버전형 스키마·마이그레이션과 burn-on-claim을 구현했으며 Artifact·재시도·permit·executor/finalization/Gate와 실제 PostgreSQL 인수 검증은 미완료 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1242,9 +1246,11 @@ M6-07은 실행 권한과 영속성 경계가 다른 두 범위로 분리한다.
   recovery, distributed Worker 또는 portable attestation을 제공한다고 주장하지 않는다.
 
 **M6-07B Control Plane replay orchestration**은 미완료다. 기존 Campaign Job의 임의 result와
-로컬 절대 경로를 replay authority로 재해석하지 않는다. 구현 전에 ADR-0029를 Accepted로
-전환해야 한다. 완료를 주장하려면 forward migration과 acceptance suite도 통과해야 한다.
-ADR은 최소한 다음을 정의한다.
+로컬 절대 경로를 replay authority로 재해석하지 않는다. ADR-0029는 2026-07-17에 승인되었고 그
+결정의 첫 권위 상태 조각인 버전형 스키마와 저장소 관리형 v1→v2 마이그레이션, 엄격한 내부
+payload, burn-on-claim 수명주기만 구현했다. Artifact 입장, 새 identity를 사용하는 재시도 발행,
+영속형 permit, executor/finalization/Gate 연결과 실제 PostgreSQL 마이그레이션·잠금 인수 검증이
+남아 있어 전체 완료를 주장할 수 없다. 승인된 ADR은 최소한 다음을 정의한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
 - Worker lease·retry와 충돌하지 않는 fencing, claim/finalize 및 crash 정책;
@@ -1260,7 +1266,7 @@ ADR은 최소한 다음을 정의한다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인은 구현; Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인과 첫 Control Plane Replay 권위 상태 조각은 구현; 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1301,8 +1307,12 @@ ADR은 최소한 다음을 정의한다.
   프로세스 재시작 뒤 read-only finalization verifier와 `pajin replay-verify`
 - 명시적 `pajin run --kisa-replay` Local KISA Candidate→SQLite replay→공통 Gate orchestration;
   기본 Local 실행은 자동 replay를 하지 않으며 단일 프로세스·단일 writer 범위
-- 남은 범위: ADR-0029 Accepted 전환 이후 PostgreSQL Control Plane replay batch/item/ticket·artifact handoff·
-  lease fencing·영속형 budget/rate, portable/off-host 서명 proof, KISA 외
+- 승인된 ADR-0029의 첫 권위 상태 조각: 버전형 PostgreSQL Control Plane Replay
+  batch/item/ticket/event 스키마, 저장소 관리형 v1→v2 마이그레이션, 엄격한 내부 payload,
+  lease fencing과 burn-on-claim
+- 남은 ADR-0029 범위: Artifact handoff와 소스 입장, 새 identity를 사용하는 재시도 발행,
+  영속형 budget/rate, executor/finalization/Gate 연결, 실제 PostgreSQL 마이그레이션·잠금 인수 검증,
+  portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
@@ -1375,9 +1385,11 @@ ADR은 최소한 다음을 정의한다.
 
 ## 24. 오픈 의사결정
 
-실행 경계와 기술 구조는 ADR-0001부터 ADR-0029까지에 기록돼 있다. ADR-0001부터 ADR-0028은
-Accepted이며, ADR-0029는 아직 Proposed 상태다. ADR-0029는 미구현 상태인 M6-07B Control Plane
-replay orchestration의 경계를 정의한다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
+실행 경계와 기술 구조는 모두 승인된 ADR-0001부터 ADR-0029까지에 기록돼 있다. ADR-0029는
+M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각은 구현됐지만
+Artifact 입장, 재시도 발행, 영속형 permit, executor/finalization/Gate 연결과 실제 PostgreSQL
+마이그레이션·잠금 인수 검증이 남아 있어 M6-07B 전체는 미완료다. 다음 항목은 Phase 3-4의 후속
+작업 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
 2. Web UI의 인증, 세션, 조직·프로젝트 격리와 멀티테넌시 경계
@@ -1474,7 +1486,7 @@ XBOW의 공식 공개 저장소에서는 핵심 플랫폼 구현을 제공하지
 1. `README.ko.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.ko.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.ko.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. ADR-0001부터 ADR-0029까지 — 런타임·정책·Mode Pack·Control Plane, 단계적 Validator와 replay orchestration 의사결정; ADR-0001부터 ADR-0028은 Accepted이고 ADR-0029는 Proposed
+4. ADR-0001부터 ADR-0029까지 — 승인된 런타임·정책·Mode Pack·Control Plane, 단계적 Validator와 replay orchestration 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 

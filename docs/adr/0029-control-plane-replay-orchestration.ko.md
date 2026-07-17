@@ -2,8 +2,8 @@
 
 # ADR 0029: Control Plane Replay 오케스트레이션과 burn-on-claim 전달
 
-- 상태: 제안됨
-- 날짜: 2026-07-16
+- 상태: 승인됨
+- 날짜: 2026-07-17
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -11,10 +11,14 @@
 
 ## 상태 참고
 
-이 ADR은 M6-07B를 구현하기 전에 분산 신뢰 경계와 전달 의미를 고정하기 위한 제안이다. 아래의
-PostgreSQL aggregate, Artifact repository, internal Replay Job, API와 Gate는 아직 구현 완료로
-간주하지 않는다. 이 결정을 Accepted로 바꾸고 forward migration과 acceptance suite를 통과하기
-전에는 Control Plane이 durable Replay orchestration을 제공한다고 주장할 수 없다.
+이 ADR은 2026-07-17에 승인되어 M6-07B의 분산 신뢰 경계와 전달 의미를 확정했다. 첫 권위 상태
+조각에는 이제 버전이 지정된 Replay 집합체 스키마, 엄격한 시작 검증을 포함한 저장소 관리형
+v1→v2 마이그레이션, 내부 전용 엄격한 Job payload, 원자적 batch 생성, burn-on-claim,
+heartbeat, lease 만료 및 취소 상태 전이가 포함된다. 이것이 M6-07B 전체 완료를 뜻하지는 않는다.
+Artifact 저장소와 서버 소유 소스 입장, 새 identity를 사용하는 재시도 발행, 영속형 budget/rate
+permit, Replay executor 연결, 타입이 지정된 서버 측 artifact 확정과 결과 digest 검증, Gate,
+실제 PostgreSQL 마이그레이션·잠금 인수 검증은 남아 있다. 이 경계가 모두 완료되기 전에는
+Control Plane이 완전한 영속형 Replay 오케스트레이션을 제공한다고 주장할 수 없다.
 
 ## 맥락
 
@@ -24,23 +28,23 @@ M6-07A와 M6-07B는 같은 KISA Replay 계약을 사용하더라도 authority가
 PostgreSQL, Worker daemon과 artifact storage 사이에 process 및 실패 경계가 있다. 로컬 경로의
 경로명, mutable runtime 객체 또는 SQLite 파일을 원격 Worker 신뢰로 확장해서는 안 된다.
 
-현재 구현에는 다음과 같은 구체적인 공백이 있다.
+이 결정을 작성할 당시 구현에는 다음과 같은 구체적인 공백이 있었다.
 
 - [`JobKind`와 `CompleteJobRequest`](../../src/pajin/control_plane/models.py)는 public
-  `campaign`/`tool-loop` 종류와 임의의 `dict` 결과만 정의한다. Replay 전용 typed finalization,
-  ticket fence와 result digest가 없다.
-- [`ControlPlaneRepository.initialize`](../../src/pajin/control_plane/database.py)는 현재
-  `create_all`을 사용하고 Run, Job, checkpoint, approval, event table만 만든다. Replay schema와
-  배포 가능한 forward migration 경로가 없다.
+  `campaign`/`tool-loop` 종류와 임의의 `dict` 결과만 정의했다. Replay 전용 typed finalization,
+  ticket fence와 result digest가 없었다.
+- [`ControlPlaneRepository.initialize`](../../src/pajin/control_plane/database.py)는
+  `create_all`을 사용하고 Run, Job, checkpoint, approval, event table만 만들었다. Replay schema와
+  배포 가능한 forward migration 경로가 없었다.
 - [`ControlPlaneService.claim_job`, `complete_job`, `_expire_leases`](../../src/pajin/control_plane/service.py)는
   일반 Job을 lease하고, 결과 JSON을 그대로 저장해 Run 전체를 완료하며, lease가 만료되면 같은
-  Job row를 다시 queued로 돌린다. burn-on-claim Replay ticket에는 이 재큐잉 의미가 맞지 않는다.
+  Job row를 다시 queued로 돌렸다. burn-on-claim Replay ticket에는 이 재큐잉 의미가 맞지 않았다.
 - [`WorkerDaemon._finalize`](../../src/pajin/control_plane/worker.py)는 전송 실패 시 같은 completion
-  호출을 재시도하지만, 현재 서버는 Replay artifact를 다시 열어 exact result digest를 검증하지
-  않는다.
+  호출을 재시도했지만, 서버는 Replay artifact를 다시 열어 exact result digest를 검증하지
+  않았다.
 - [`CampaignJobExecutor`와 `ToolLoopJobExecutor`](../../src/pajin/control_plane/executors.py)는
-  trusted registry를 사용한다는 장점이 있지만 결과의 `runPath`가 Worker 호스트의 절대 경로다.
-  API 프로세스가 그 경로의 object identity, 불변성 또는 seal을 보장하지 않는다.
+  trusted registry를 사용했지만 결과의 `runPath`가 Worker 호스트의 절대 경로였다. API
+  프로세스가 그 경로의 object identity, 불변성 또는 seal을 보장할 수 없었다.
 - [`GatewayRestrictedReproducerRuntime._finish`](../../src/pajin/replay/runtime.py)는 한 프로세스 안에서
   artifact를 두 번 seal하고 ticket을 finalize한 다음 verified result를 다시 연다. 이 순서를
   Worker가 PostgreSQL authority까지 소유하는 형태로 옮기면 Worker의 자기 검증을 신뢰하게 된다.
@@ -49,14 +53,22 @@ PostgreSQL, Worker daemon과 artifact storage 사이에 process 및 실패 경�
   [`SQLiteReplayExecutionAuthority`](../../src/pajin/replay/sqlite_tickets.py)는 로컬 재시작
   검증의 기준점이다. 둘 다 분산 queue와 artifact handoff를 대신하지 않는다.
 
+승인 후 첫 구현 조각은 이 결정의 경계를 약화하지 않고 기준선의 일부를 해소했다. public Job
+kind는 `campaign`과 `tool-loop`로 유지하고, 별도로 typed된 internal Replay payload를
+batch/item/ticket/event authority state와 burn-on-claim fencing에 결박해 영속화한다. Repository
+startup은 이제 versioned v1→v2 migration을 수행하거나 호환되지 않는 schema state를 거부한다.
+일반 Job completion/failure 경로는 Replay Job에 계속 사용할 수 없다. 상태 참고에 열거한 Artifact,
+retry 발행, permit, executor, typed finalization, Gate와 실제 PostgreSQL acceptance 작업은 의도적으로
+완료된 조각 밖에 남아 있다.
+
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
 at-least-once lease 복구와 single-use Replay ticket의 burn-on-claim 규칙도 명시적으로 결합해야
 한다.
 
-## 제안 결정
+## 결정
 
-이 ADR이 Accepted되면 M6-07B는 아래 경계를 채택한다.
+M6-07B는 아래 경계를 채택한다.
 
 ### 로컬 M6-07A와 Control Plane M6-07B 분리
 

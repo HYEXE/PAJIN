@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import hmac
 import secrets
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import Select, and_, func, select
+from sqlalchemy import Select, and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -18,6 +19,10 @@ from pajin.control_plane.database import (
     ControlPlaneRepository,
     EventRecord,
     JobRecord,
+    ReplayBatchRecord,
+    ReplayEventRecord,
+    ReplayItemRecord,
+    ReplayTicketRecord,
     RunRecord,
     utc_now,
 )
@@ -25,6 +30,7 @@ from pajin.control_plane.models import (
     ApprovalIntent,
     ApprovalState,
     ApprovalView,
+    ArtifactRef,
     AuditEventView,
     CancelRunRequest,
     CancelRunView,
@@ -34,11 +40,24 @@ from pajin.control_plane.models import (
     ClaimJobRequest,
     CompleteJobRequest,
     CreateCheckpointRequest,
+    CreateReplayBatchRequest,
     DecideApprovalRequest,
     FailJobRequest,
+    InternalJobKind,
+    JobKind,
     JobState,
     JobView,
     LeaseRequest,
+    ReplayBatchState,
+    ReplayBatchView,
+    ReplayClaimRequest,
+    ReplayClaimView,
+    ReplayItemState,
+    ReplayItemView,
+    ReplayJobPayload,
+    ReplayLeaseRequest,
+    ReplayTicketState,
+    ReplayTicketView,
     ResumeView,
     RunListView,
     RunState,
@@ -48,7 +67,8 @@ from pajin.control_plane.models import (
     SubmitRunRequest,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
-from pajin.domain.models import ToolRiskTier
+from pajin.domain.models import CampaignMode, ToolRiskTier
+from pajin.domain.replay import ReplayPurpose
 
 
 class ControlPlaneError(RuntimeError):
@@ -79,8 +99,18 @@ _CANCELLABLE_RUN_STATES = frozenset(
     }
 )
 _CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.value})
-_REVOCABLE_APPROVAL_STATES = frozenset(
-    {ApprovalState.PENDING.value, ApprovalState.APPROVED.value}
+_REVOCABLE_APPROVAL_STATES = frozenset({ApprovalState.PENDING.value, ApprovalState.APPROVED.value})
+_INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
+_REPLAY_TICKET_TTL = timedelta(minutes=5)
+_ACTIVE_REPLAY_TICKET_STATES = frozenset(
+    {ReplayTicketState.ISSUED.value, ReplayTicketState.CLAIMED.value}
+)
+_TERMINAL_REPLAY_ITEM_STATES = frozenset(
+    {
+        ReplayItemState.GATED.value,
+        ReplayItemState.FAILED.value,
+        ReplayItemState.CANCELLED.value,
+    }
 )
 
 
@@ -91,9 +121,19 @@ def _aware(value: datetime) -> datetime:
 class ControlPlaneService:
     """Coordinate durable state transitions under database transactions."""
 
-    def __init__(self, repository: ControlPlaneRepository, signer: CheckpointSigner) -> None:
+    def __init__(
+        self,
+        repository: ControlPlaneRepository,
+        signer: CheckpointSigner,
+        *,
+        replay_executor_profiles: Mapping[str, frozenset[str]] | None = None,
+    ) -> None:
         self.repository = repository
         self.signer = signer
+        self._replay_executor_profiles = {
+            subject: frozenset(profiles)
+            for subject, profiles in (replay_executor_profiles or {}).items()
+        }
 
     def submit_run(self, request: SubmitRunRequest, *, actor: str) -> SubmissionView:
         try:
@@ -160,6 +200,247 @@ class ControlPlaneService:
                 if existing is None:
                     raise
                 return self._existing_submission(session, existing)
+
+    def create_replay_batch(
+        self,
+        request: CreateReplayBatchRequest,
+        *,
+        actor: str,
+    ) -> ReplayBatchView:
+        """Create server-owned Replay authority without exposing a public Job kind."""
+
+        try:
+            with self.repository.transaction() as session:
+                existing = session.scalar(
+                    select(ReplayBatchRecord).where(
+                        ReplayBatchRecord.idempotency_key == request.idempotency_key
+                    )
+                )
+                if existing is not None:
+                    return self._existing_replay_batch(
+                        session,
+                        existing,
+                        request=request,
+                        actor=actor,
+                    )
+
+                source_run = self._run(session, request.source.run_id, lock=True)
+                self._require_run_state(source_run, RunState.COMPLETED)
+                if source_run.campaign_name != request.campaign_name:
+                    raise StateConflict(
+                        "Replay batch campaign does not match the admitted source Run"
+                    )
+                if (
+                    request.mode is not CampaignMode.AI_REDTEAM
+                    or request.purpose is not ReplayPurpose.CONFIRMATION
+                ):
+                    raise StateConflict(
+                        "this Replay vertical slice accepts only AI Red Team confirmation"
+                    )
+                now = utc_now()
+                batch = ReplayBatchRecord(
+                    batch_id=f"replay-batch_{uuid4().hex}",
+                    source_run_id=request.source.run_id,
+                    idempotency_key=request.idempotency_key,
+                    campaign_name=request.campaign_name,
+                    created_by=actor,
+                    source_artifact_id=request.source.artifact_id,
+                    source_repository_version=request.source.repository_version,
+                    source_content_digest=request.source.content_digest,
+                    source_root_digest=request.source.integrity_root_digest,
+                    source_media_type=request.source.media_type,
+                    source_schema_kind=request.source.schema_kind,
+                    source_byte_length=request.source.byte_length,
+                    source_created_by=request.source.created_by,
+                    mode=request.mode.value,
+                    purpose=request.purpose.value,
+                    policy_version=request.policy_version,
+                    state=ReplayBatchState.RUNNING.value,
+                    cas_version=1,
+                    cancellation_reason=None,
+                    created_at=now,
+                    updated_at=now,
+                    cancelled_at=None,
+                )
+                session.add(batch)
+                session.flush()
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.batch.created",
+                    actor,
+                    {
+                        "sourceArtifactId": request.source.artifact_id,
+                        "sourceRepositoryVersion": request.source.repository_version,
+                        "sourceRootDigest": request.source.integrity_root_digest,
+                        "itemCount": len(request.items),
+                    },
+                    run_id=source_run.run_id,
+                )
+
+                for ordinal, admitted in enumerate(request.items):
+                    replay_run_id = f"run_{uuid4().hex}"
+                    item_id = f"replay-item_{uuid4().hex}"
+                    ticket_id = f"replay-ticket_{uuid4().hex}"
+                    job_id = f"job_{uuid4().hex}"
+                    attempt = 1
+                    fencing_value = 1
+                    payload = ReplayJobPayload(
+                        batch_id=batch.batch_id,
+                        item_id=item_id,
+                        ticket_id=ticket_id,
+                        replay_run_id=replay_run_id,
+                        source=request.source,
+                        mode=request.mode,
+                        purpose=request.purpose,
+                        policy_version=request.policy_version,
+                        candidate_id=admitted.candidate_id,
+                        candidate_digest=admitted.candidate_digest,
+                        contract_digest=admitted.contract_digest,
+                        compilation_digest=admitted.compilation_digest,
+                        grant_digest=admitted.grant_digest,
+                        attempt=attempt,
+                        fencing_value=fencing_value,
+                    )
+                    replay_run = RunRecord(
+                        run_id=replay_run_id,
+                        campaign_name=request.campaign_name,
+                        state=RunState.QUEUED.value,
+                        input={"replay": payload.model_dump(mode="json")},
+                        submission_key=f"replay:{batch.batch_id}:{ordinal}",
+                        current_checkpoint_id=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(replay_run)
+                    session.flush()
+                    item = ReplayItemRecord(
+                        item_id=item_id,
+                        batch_id=batch.batch_id,
+                        source_run_id=batch.source_run_id,
+                        replay_run_id=replay_run_id,
+                        ordinal=ordinal,
+                        candidate_id=admitted.candidate_id,
+                        candidate_digest=admitted.candidate_digest,
+                        contract_digest=admitted.contract_digest,
+                        compilation_digest=admitted.compilation_digest,
+                        grant_digest=admitted.grant_digest,
+                        state=ReplayItemState.QUEUED.value,
+                        required_attempts=admitted.required_attempts,
+                        max_attempts=admitted.max_attempts,
+                        attempts=attempt,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(item)
+                    session.flush()
+                    job = JobRecord(
+                        job_id=job_id,
+                        run_id=replay_run_id,
+                        kind=_INTERNAL_REPLAY_KIND,
+                        state=JobState.QUEUED.value,
+                        payload=payload.model_dump(mode="json"),
+                        priority=0,
+                        attempts=0,
+                        max_attempts=1,
+                        idempotency_key=f"replay:{item_id}:{attempt}",
+                        available_at=now,
+                        lease_owner=None,
+                        lease_token_hash=None,
+                        lease_expires_at=None,
+                        heartbeat_at=None,
+                        result=None,
+                        error=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    session.add(job)
+                    session.flush()
+                    ticket = ReplayTicketRecord(
+                        ticket_id=ticket_id,
+                        batch_id=batch.batch_id,
+                        item_id=item_id,
+                        job_id=job_id,
+                        replay_run_id=replay_run_id,
+                        attempt_number=attempt,
+                        fencing_value=fencing_value,
+                        state=ReplayTicketState.ISSUED.value,
+                        grant_digest=admitted.grant_digest,
+                        source_root_digest=batch.source_root_digest,
+                        compilation_digest=admitted.compilation_digest,
+                        executor_profile=None,
+                        claim_principal=None,
+                        lease_token_hash=None,
+                        result_digest=None,
+                        abandon_reason=None,
+                        issued_at=now,
+                        expires_at=now + _REPLAY_TICKET_TTL,
+                        claimed_at=None,
+                        lease_expires_at=None,
+                        finalized_at=None,
+                        abandoned_at=None,
+                        updated_at=now,
+                    )
+                    session.add(ticket)
+                    session.flush()
+                    self._event(
+                        session,
+                        replay_run,
+                        "run.submitted",
+                        actor,
+                        {
+                            "campaignName": request.campaign_name,
+                            "jobId": job.job_id,
+                            "jobKind": _INTERNAL_REPLAY_KIND,
+                            "replayBatchId": batch.batch_id,
+                            "replayItemId": item.item_id,
+                            "replayTicketId": ticket.ticket_id,
+                        },
+                    )
+                    self._replay_event(
+                        session,
+                        batch,
+                        "replay.ticket.issued",
+                        actor,
+                        {
+                            "attempt": attempt,
+                            "fencingValue": fencing_value,
+                            "compilationDigest": item.compilation_digest,
+                            "expiresAt": ticket.expires_at.isoformat(),
+                        },
+                        item=item,
+                        ticket=ticket,
+                        job=job,
+                        run_id=replay_run.run_id,
+                    )
+                return self._replay_batch_view(batch)
+        except IntegrityError:
+            with self.repository.transaction() as session:
+                existing = session.scalar(
+                    select(ReplayBatchRecord).where(
+                        ReplayBatchRecord.idempotency_key == request.idempotency_key
+                    )
+                )
+                if existing is None:
+                    raise
+                return self._existing_replay_batch(
+                    session,
+                    existing,
+                    request=request,
+                    actor=actor,
+                )
+
+    def get_replay_batch(self, batch_id: str) -> ReplayBatchView:
+        with self.repository.transaction() as session:
+            return self._replay_batch_view(self._replay_batch(session, batch_id))
+
+    def get_replay_item(self, item_id: str) -> ReplayItemView:
+        with self.repository.transaction() as session:
+            return self._replay_item_view(self._replay_item(session, item_id))
+
+    def get_replay_ticket(self, ticket_id: str) -> ReplayTicketView:
+        with self.repository.transaction() as session:
+            return self._replay_ticket_view(self._replay_ticket(session, ticket_id))
 
     def get_run(self, run_id: str) -> RunView:
         with self.repository.transaction() as session:
@@ -264,18 +545,23 @@ class ControlPlaneService:
         actor: str,
     ) -> CancelRunView:
         with self.repository.transaction() as session:
-            jobs_by_id = {
-                job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)
-            }
+            replay_item = session.scalar(
+                select(ReplayItemRecord).where(ReplayItemRecord.replay_run_id == run_id)
+            )
+            if replay_item is not None:
+                return self._cancel_replay_run(
+                    session,
+                    replay_item,
+                    request=request,
+                    actor=actor,
+                )
+            jobs_by_id = {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
             approvals = self._lock_revocable_approvals(session, run_id)
             # Resume locks its Approval before it inserts a continuation Job. Re-read Jobs after
             # acquiring Approval locks so a continuation created while cancellation was waiting
             # cannot escape the same transaction.
             jobs_by_id.update(
-                {
-                    job.job_id: job
-                    for job in self._lock_cancellable_jobs(session, run_id)
-                }
+                {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
             )
             run = self._run(session, run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
@@ -356,15 +642,28 @@ class ControlPlaneService:
             return [self._event_view(record) for record in records]
 
     def claim_job(self, request: ClaimJobRequest, *, actor: str) -> ClaimedJob | None:
+        requested_kinds = [
+            kind.value if isinstance(kind, JobKind) else str(kind) for kind in request.kinds
+        ]
+        if _INTERNAL_REPLAY_KIND in requested_kinds:
+            raise StateConflict("internal Replay Jobs require the trusted Replay claim service")
+        public_kinds = {kind.value for kind in JobKind}
+        if not requested_kinds or not set(requested_kinds).issubset(public_kinds):
+            raise StateConflict("generic claim accepts only public Job kinds")
         sweep_time = utc_now()
+        # Keep opportunistic cleanup outside the claim transaction. A sweep locks
+        # Job -> Replay graph -> Run; acquiring another queued Job afterwards would
+        # invert that global order and can deadlock concurrent PostgreSQL claimers.
         with self.repository.transaction() as session:
             self._expire_leases(session, now=sweep_time, actor=actor)
+        claim_time = utc_now()
+        with self.repository.transaction() as session:
             statement: Select[tuple[JobRecord]] = (
                 select(JobRecord)
                 .where(
                     JobRecord.state == JobState.QUEUED.value,
-                    JobRecord.available_at <= sweep_time,
-                    JobRecord.kind.in_(request.kinds),
+                    JobRecord.available_at <= claim_time,
+                    JobRecord.kind.in_(requested_kinds),
                 )
                 .order_by(JobRecord.priority.desc(), JobRecord.created_at, JobRecord.job_id)
                 .limit(1)
@@ -413,9 +712,333 @@ class ControlPlaneService:
             )
             return ClaimedJob(job=self._job_view(job), lease_token=lease_token)
 
+    def claim_replay_job(
+        self,
+        request: ReplayClaimRequest,
+        *,
+        actor: str,
+    ) -> ReplayClaimView | None:
+        """Burn exactly one issued Replay ticket while leasing its one-shot Job."""
+
+        self._require_replay_executor_profile(actor, request.executor_profile)
+        sweep_time = utc_now()
+        # The cleanup transaction must commit before claim starts. Besides avoiding
+        # SQLite reader-to-writer upgrade deadlocks, this keeps PostgreSQL claimers
+        # from returning to a Job lock after they already locked Replay dependants.
+        with self.repository.transaction() as session:
+            self._expire_leases(session, now=sweep_time, actor=actor)
+        with self.repository.transaction() as session:
+            lease_token = secrets.token_urlsafe(32)
+            lease_hash = token_digest(lease_token)
+            claim_started_at = utc_now()
+            claimable = (
+                JobRecord.kind == _INTERNAL_REPLAY_KIND,
+                JobRecord.state == JobState.QUEUED.value,
+                JobRecord.available_at <= claim_started_at,
+                JobRecord.attempts == 0,
+                JobRecord.max_attempts == 1,
+                JobRecord.lease_owner.is_(None),
+                JobRecord.lease_token_hash.is_(None),
+                JobRecord.lease_expires_at.is_(None),
+                JobRecord.heartbeat_at.is_(None),
+            )
+            job: JobRecord | None
+            if self.repository.dialect_name == "sqlite":
+                candidate = (
+                    select(JobRecord.job_id)
+                    .where(*claimable)
+                    .order_by(
+                        JobRecord.priority.desc(),
+                        JobRecord.created_at,
+                        JobRecord.job_id,
+                    )
+                    .limit(1)
+                    .scalar_subquery()
+                )
+                claimed_job_id = session.scalar(
+                    update(JobRecord)
+                    .where(JobRecord.job_id == candidate, *claimable)
+                    .values(
+                        state=JobState.LEASED.value,
+                        lease_owner=actor,
+                        lease_token_hash=lease_hash,
+                        lease_expires_at=claim_started_at
+                        + timedelta(seconds=request.lease_seconds),
+                        heartbeat_at=claim_started_at,
+                        attempts=1,
+                        updated_at=claim_started_at,
+                    )
+                    .returning(JobRecord.job_id)
+                )
+                if claimed_job_id is None:
+                    return None
+                job = self._job(session, claimed_job_id)
+            else:
+                statement: Select[tuple[JobRecord]] = (
+                    select(JobRecord)
+                    .where(*claimable)
+                    .order_by(
+                        JobRecord.priority.desc(),
+                        JobRecord.created_at,
+                        JobRecord.job_id,
+                    )
+                    .limit(1)
+                )
+                if self.repository.dialect_name == "postgresql":
+                    statement = statement.with_for_update(skip_locked=True)
+                else:
+                    statement = statement.with_for_update()
+                job = session.scalar(statement)
+            if job is None:
+                return None
+
+            ticket = self._replay_ticket_for_job(session, job.job_id, lock=True)
+            item = self._replay_item(session, ticket.item_id, lock=True)
+            batch = self._replay_batch(session, ticket.batch_id, lock=True)
+            run = self._run(session, job.run_id, lock=True)
+            self._verify_replay_binding(job, ticket, item, batch)
+            now = utc_now()
+
+            if (
+                run.state == RunState.CANCELLED.value
+                or batch.state == ReplayBatchState.CANCELLED.value
+                or item.state == ReplayItemState.CANCELLED.value
+            ):
+                self._abandon_replay_ticket(
+                    ticket,
+                    now=now,
+                    reason="replay authority was cancelled before claim",
+                )
+                self._cancel_job(job, now=now)
+                item.state = ReplayItemState.CANCELLED.value
+                item.updated_at = now
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.ticket.abandoned",
+                    actor,
+                    {"reason": ticket.abandon_reason},
+                    item=item,
+                    ticket=ticket,
+                    job=job,
+                    run_id=run.run_id,
+                )
+                return None
+
+            self._require_run_state(run, RunState.QUEUED)
+            if batch.state != ReplayBatchState.RUNNING.value:
+                raise StateConflict(f"Replay batch in {batch.state} state cannot be claimed")
+            if item.state != ReplayItemState.QUEUED.value:
+                raise StateConflict(f"Replay item in {item.state} state cannot be claimed")
+            if ticket.state != ReplayTicketState.ISSUED.value:
+                raise StateConflict(f"Replay ticket is already {ticket.state}")
+            expected_attempts = 1 if self.repository.dialect_name == "sqlite" else 0
+            if job.attempts != expected_attempts or job.max_attempts != 1:
+                raise StateConflict("internal Replay Job attempt authority is inconsistent")
+            if _aware(ticket.expires_at) <= now:
+                self._terminate_replay_attempt(
+                    session,
+                    job=job,
+                    ticket=ticket,
+                    item=item,
+                    batch=batch,
+                    run=run,
+                    actor=actor,
+                    now=now,
+                    reason="Replay ticket expired before claim",
+                    retryable=True,
+                    event_type="replay.ticket.expired-before-claim",
+                )
+                return None
+
+            # expires_at is the unclaimed issuance deadline. Once the ticket is
+            # atomically burned, the claimed authority is governed by its lease.
+            lease_expires_at = now + timedelta(seconds=request.lease_seconds)
+            job.state = JobState.LEASED.value
+            job.lease_owner = actor
+            job.lease_token_hash = lease_hash
+            job.lease_expires_at = lease_expires_at
+            job.heartbeat_at = now
+            job.attempts = 1
+            job.updated_at = now
+            claimed_ticket_id = session.scalar(
+                update(ReplayTicketRecord)
+                .where(
+                    ReplayTicketRecord.ticket_id == ticket.ticket_id,
+                    ReplayTicketRecord.state == ReplayTicketState.ISSUED.value,
+                    ReplayTicketRecord.claim_principal.is_(None),
+                    ReplayTicketRecord.executor_profile.is_(None),
+                    ReplayTicketRecord.lease_token_hash.is_(None),
+                    ReplayTicketRecord.claimed_at.is_(None),
+                    ReplayTicketRecord.lease_expires_at.is_(None),
+                )
+                .values(
+                    state=ReplayTicketState.CLAIMED.value,
+                    executor_profile=request.executor_profile,
+                    claim_principal=actor,
+                    lease_token_hash=lease_hash,
+                    claimed_at=now,
+                    lease_expires_at=lease_expires_at,
+                    updated_at=now,
+                )
+                .returning(ReplayTicketRecord.ticket_id)
+            )
+            if claimed_ticket_id != ticket.ticket_id:
+                raise StateConflict("Replay ticket claim authority changed concurrently")
+            session.refresh(ticket)
+            item.state = ReplayItemState.RUNNING.value
+            item.updated_at = now
+            run.state = RunState.RUNNING.value
+            run.updated_at = now
+            self._event(
+                session,
+                run,
+                "job.claimed",
+                actor,
+                {
+                    "jobId": job.job_id,
+                    "workerId": actor,
+                    "attempt": job.attempts,
+                    "leaseExpiresAt": lease_expires_at.isoformat(),
+                    "replayTicketId": ticket.ticket_id,
+                    "fencingValue": ticket.fencing_value,
+                },
+            )
+            self._replay_event(
+                session,
+                batch,
+                "replay.ticket.claimed",
+                actor,
+                {
+                    "attempt": ticket.attempt_number,
+                    "fencingValue": ticket.fencing_value,
+                    "executorProfile": request.executor_profile,
+                    "leaseExpiresAt": lease_expires_at.isoformat(),
+                },
+                item=item,
+                ticket=ticket,
+                job=job,
+                run_id=run.run_id,
+            )
+            return self._replay_claim_view(
+                job=job,
+                batch=batch,
+                item=item,
+                ticket=ticket,
+                lease_token=lease_token,
+            )
+
+    def heartbeat_replay_job(
+        self,
+        job_id: str,
+        request: ReplayLeaseRequest,
+        *,
+        actor: str,
+    ) -> ReplayClaimView:
+        """Extend only the exact principal/token/ticket/fence Replay lease."""
+
+        self._require_replay_executor_profile(actor, request.executor_profile)
+        expired = False
+        result: ReplayClaimView | None = None
+        with self.repository.transaction() as session:
+            job = self._job(session, job_id, lock=True)
+            if job.kind != _INTERNAL_REPLAY_KIND:
+                raise StateConflict("Job is not an internal Replay Job")
+            ticket = self._replay_ticket_for_job(session, job.job_id, lock=True)
+            item = self._replay_item(session, ticket.item_id, lock=True)
+            batch = self._replay_batch(session, ticket.batch_id, lock=True)
+            run = self._run(session, job.run_id, lock=True)
+            self._verify_replay_binding(job, ticket, item, batch)
+            if (
+                run.state == RunState.CANCELLED.value
+                or batch.state == ReplayBatchState.CANCELLED.value
+                or item.state == ReplayItemState.CANCELLED.value
+            ):
+                raise RunCancelled("run has been cancelled")
+            now = utc_now()
+            self._require_replay_lease_identity(
+                job,
+                ticket,
+                request=request,
+                actor=actor,
+            )
+            lease_deadline = min(
+                _aware(job.lease_expires_at) if job.lease_expires_at else now,
+                _aware(ticket.lease_expires_at) if ticket.lease_expires_at else now,
+            )
+            if lease_deadline <= now:
+                self._terminate_replay_attempt(
+                    session,
+                    job=job,
+                    ticket=ticket,
+                    item=item,
+                    batch=batch,
+                    run=run,
+                    actor=actor,
+                    now=now,
+                    reason="Replay lease expired",
+                    retryable=True,
+                    event_type="replay.ticket.lease-expired",
+                )
+                expired = True
+            else:
+                self._require_run_state(run, RunState.RUNNING)
+                if batch.state != ReplayBatchState.RUNNING.value:
+                    raise LeaseRejected("Replay batch is not running")
+                if item.state != ReplayItemState.RUNNING.value:
+                    raise LeaseRejected("Replay item is not running")
+                if ticket.state != ReplayTicketState.CLAIMED.value:
+                    raise LeaseRejected("Replay ticket is not claimed")
+                lease_expires_at = now + timedelta(seconds=request.lease_seconds)
+                job.heartbeat_at = now
+                job.lease_expires_at = lease_expires_at
+                job.updated_at = now
+                ticket.lease_expires_at = lease_expires_at
+                ticket.updated_at = now
+                self._event(
+                    session,
+                    run,
+                    "job.heartbeat",
+                    actor,
+                    {
+                        "jobId": job.job_id,
+                        "leaseExpiresAt": lease_expires_at.isoformat(),
+                        "replayTicketId": ticket.ticket_id,
+                        "fencingValue": ticket.fencing_value,
+                    },
+                )
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.ticket.heartbeat",
+                    actor,
+                    {
+                        "fencingValue": ticket.fencing_value,
+                        "leaseExpiresAt": lease_expires_at.isoformat(),
+                    },
+                    item=item,
+                    ticket=ticket,
+                    job=job,
+                    run_id=run.run_id,
+                )
+                result = self._replay_claim_view(
+                    job=job,
+                    batch=batch,
+                    item=item,
+                    ticket=ticket,
+                    lease_token=request.lease_token,
+                )
+        if expired:
+            raise LeaseRejected("Replay job lease has expired")
+        if result is None:
+            raise RuntimeError("Replay heartbeat did not produce a result")
+        return result
+
     def heartbeat(self, job_id: str, request: LeaseRequest, *, actor: str) -> JobView:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
+            if job.kind == _INTERNAL_REPLAY_KIND:
+                raise StateConflict("internal Replay Job requires the Replay heartbeat service")
             run = self._run(session, job.run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
                 # Keep this message deliberately generic. The operator's cancellation
@@ -439,6 +1062,8 @@ class ControlPlaneService:
     def complete_job(self, job_id: str, request: CompleteJobRequest, *, actor: str) -> JobView:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
+            if job.kind == _INTERNAL_REPLAY_KIND:
+                raise StateConflict("internal Replay Job requires typed server-side finalization")
             run = self._run(session, job.run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
                 raise RunCancelled("run has been cancelled")
@@ -462,6 +1087,8 @@ class ControlPlaneService:
     def fail_job(self, job_id: str, request: FailJobRequest, *, actor: str) -> JobView:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
+            if job.kind == _INTERNAL_REPLAY_KIND:
+                raise StateConflict("internal Replay Job cannot use generic failure/requeue")
             run = self._run(session, job.run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
                 raise RunCancelled("run has been cancelled")
@@ -506,6 +1133,8 @@ class ControlPlaneService:
     ) -> CheckpointCreationView:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
+            if job.kind == _INTERNAL_REPLAY_KIND:
+                raise StateConflict("internal Replay Job cannot create approval checkpoints")
             run = self._run(session, job.run_id, lock=True)
             if run.state == RunState.CANCELLED.value:
                 raise RunCancelled("run has been cancelled")
@@ -614,9 +1243,7 @@ class ControlPlaneService:
         view: ApprovalView | None = None
         with self.repository.transaction() as session:
             approval_reference = self._approval(session, approval_id)
-            checkpoint = self._checkpoint(
-                session, approval_reference.checkpoint_id, lock=True
-            )
+            checkpoint = self._checkpoint(session, approval_reference.checkpoint_id, lock=True)
             approval = self._approval(session, approval_id, lock=True)
             if (
                 approval.checkpoint_id != checkpoint.checkpoint_id
@@ -640,9 +1267,7 @@ class ControlPlaneService:
                 expired = True
             else:
                 approval.state = (
-                    ApprovalState.APPROVED.value
-                    if request.approve
-                    else ApprovalState.DENIED.value
+                    ApprovalState.APPROVED.value if request.approve else ApprovalState.DENIED.value
                 )
                 approval.decided_by = actor
                 approval.decided_at = now
@@ -695,10 +1320,14 @@ class ControlPlaneService:
                 raise StateConflict("approval does not authorize this checkpoint")
             run = self._run(session, checkpoint.run_id, lock=True)
             self._verify_checkpoint(checkpoint)
-            self._require_run_state(run, RunState.AWAITING_APPROVAL)
-            self._require_current_checkpoint(run, checkpoint.checkpoint_id)
+            # A claimed checkpoint is an immutable, single-use authority boundary.
+            # Report that terminal fact before inspecting the Run's post-resume state;
+            # otherwise a legitimate duplicate resume is misclassified as a generic
+            # lifecycle conflict after the first claimant moves the Run back to queued.
             if checkpoint.claimed_at is not None:
                 raise StateConflict("checkpoint has already been claimed")
+            self._require_run_state(run, RunState.AWAITING_APPROVAL)
+            self._require_current_checkpoint(run, checkpoint.checkpoint_id)
             if approval.state != ApprovalState.APPROVED.value:
                 raise StateConflict("checkpoint requires an active approved decision")
             now = utc_now()
@@ -787,16 +1416,138 @@ class ControlPlaneService:
             return self._expire_leases(session, now=utc_now(), actor=actor)
 
     def _expire_leases(self, session: Session, *, now: datetime, actor: str) -> int:
-        statement = select(JobRecord).where(
-            JobRecord.state == JobState.LEASED.value,
-            JobRecord.lease_expires_at <= now,
+        statement = (
+            select(JobRecord)
+            .where(
+                JobRecord.state == JobState.LEASED.value,
+                JobRecord.lease_expires_at <= now,
+            )
+            .order_by(JobRecord.job_id)
         )
         if self.repository.dialect_name == "postgresql":
             statement = statement.with_for_update(skip_locked=True)
-        jobs = session.scalars(statement).all()
+        jobs = list(session.scalars(statement).all())
+
+        # Do not lazily walk each Replay graph. Concurrent SKIP LOCKED sweepers can
+        # partition sibling Jobs from multiple batches; per-Job traversal would then
+        # let each transaction hold one batch while waiting for the other. Pre-lock
+        # every selected graph table-by-table in the canonical global order instead:
+        # Job (above) -> ticket -> item -> batch -> Run.
+        replay_jobs = [job for job in jobs if job.kind == _INTERNAL_REPLAY_KIND]
+        tickets_by_job_id: dict[str, ReplayTicketRecord] = {}
+        items_by_id: dict[str, ReplayItemRecord] = {}
+        batches_by_id: dict[str, ReplayBatchRecord] = {}
+        if replay_jobs:
+            replay_job_ids = sorted(job.job_id for job in replay_jobs)
+            tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord)
+                    .where(ReplayTicketRecord.job_id.in_(replay_job_ids))
+                    .order_by(ReplayTicketRecord.ticket_id)
+                    .with_for_update()
+                ).all()
+            )
+            tickets_by_job_id = {ticket.job_id: ticket for ticket in tickets}
+            missing_ticket_jobs = set(replay_job_ids).difference(tickets_by_job_id)
+            if missing_ticket_jobs:
+                raise StateConflict("internal Replay Job exists without its ticket")
+
+            item_ids = sorted({ticket.item_id for ticket in tickets})
+            items = list(
+                session.scalars(
+                    select(ReplayItemRecord)
+                    .where(ReplayItemRecord.item_id.in_(item_ids))
+                    .order_by(ReplayItemRecord.item_id)
+                    .with_for_update()
+                ).all()
+            )
+            items_by_id = {item.item_id: item for item in items}
+            if set(item_ids).difference(items_by_id):
+                raise StateConflict("Replay ticket exists without its item")
+
+            batch_ids = sorted({ticket.batch_id for ticket in tickets})
+            batches = list(
+                session.scalars(
+                    select(ReplayBatchRecord)
+                    .where(ReplayBatchRecord.batch_id.in_(batch_ids))
+                    .order_by(ReplayBatchRecord.batch_id)
+                    .with_for_update()
+                ).all()
+            )
+            batches_by_id = {batch.batch_id: batch for batch in batches}
+            if set(batch_ids).difference(batches_by_id):
+                raise StateConflict("Replay item exists without its batch")
+
+        run_ids = sorted({job.run_id for job in jobs})
+        runs = (
+            list(
+                session.scalars(
+                    select(RunRecord)
+                    .where(RunRecord.run_id.in_(run_ids))
+                    .order_by(RunRecord.run_id)
+                    .with_for_update()
+                ).all()
+            )
+            if run_ids
+            else []
+        )
+        runs_by_id = {run.run_id: run for run in runs}
+        if set(run_ids).difference(runs_by_id):
+            raise StateConflict("leased Job exists without its Run")
+
         requeued_or_dead_lettered = 0
         for job in jobs:
-            run = self._run(session, job.run_id, lock=True)
+            run = runs_by_id[job.run_id]
+            if job.kind == _INTERNAL_REPLAY_KIND:
+                ticket = tickets_by_job_id[job.job_id]
+                item = items_by_id[ticket.item_id]
+                batch = batches_by_id[ticket.batch_id]
+                self._verify_replay_binding(job, ticket, item, batch)
+                transition_time = utc_now()
+                if (
+                    run.state == RunState.CANCELLED.value
+                    or batch.state == ReplayBatchState.CANCELLED.value
+                ):
+                    self._abandon_replay_ticket(
+                        ticket,
+                        now=transition_time,
+                        reason="cancelled Replay lease was reaped",
+                    )
+                    self._cancel_job(job, now=transition_time)
+                    item.state = ReplayItemState.CANCELLED.value
+                    item.updated_at = transition_time
+                    self._replay_event(
+                        session,
+                        batch,
+                        "replay.ticket.abandoned",
+                        actor,
+                        {"reason": ticket.abandon_reason},
+                        item=item,
+                        ticket=ticket,
+                        job=job,
+                        run_id=run.run_id,
+                    )
+                    continue
+                self._require_run_state(run, RunState.RUNNING)
+                if ticket.state != ReplayTicketState.CLAIMED.value:
+                    raise StateConflict("leased Replay Job does not own a claimed ticket")
+                if item.state != ReplayItemState.RUNNING.value:
+                    raise StateConflict("leased Replay Job does not own a running item")
+                self._terminate_replay_attempt(
+                    session,
+                    job=job,
+                    ticket=ticket,
+                    item=item,
+                    batch=batch,
+                    run=run,
+                    actor=actor,
+                    now=transition_time,
+                    reason="Replay lease expired",
+                    retryable=True,
+                    event_type="replay.ticket.lease-expired",
+                )
+                requeued_or_dead_lettered += 1
+                continue
             transition_time = utc_now()
             if run.state == RunState.CANCELLED.value:
                 self._cancel_job(job, now=transition_time)
@@ -834,6 +1585,173 @@ class ControlPlaneService:
             )
         return requeued_or_dead_lettered
 
+    def _cancel_replay_run(
+        self,
+        session: Session,
+        replay_item_hint: ReplayItemRecord,
+        *,
+        request: CancelRunRequest,
+        actor: str,
+    ) -> CancelRunView:
+        """Cancel one Replay item under the Job -> ticket -> item -> batch -> Run order."""
+
+        jobs = self._lock_cancellable_jobs(session, replay_item_hint.replay_run_id)
+        tickets = list(
+            session.scalars(
+                select(ReplayTicketRecord)
+                .where(ReplayTicketRecord.item_id == replay_item_hint.item_id)
+                .order_by(ReplayTicketRecord.attempt_number, ReplayTicketRecord.ticket_id)
+                .with_for_update()
+            ).all()
+        )
+        items = list(
+            session.scalars(
+                select(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == replay_item_hint.batch_id)
+                .order_by(ReplayItemRecord.ordinal, ReplayItemRecord.item_id)
+                .with_for_update()
+            ).all()
+        )
+        batch = self._replay_batch(session, replay_item_hint.batch_id, lock=True)
+        requested_run = self._run(session, replay_item_hint.replay_run_id, lock=True)
+        jobs_by_id = {job.job_id: job for job in jobs}
+        items_by_id = {item.item_id: item for item in items}
+        current_item = items_by_id.get(replay_item_hint.item_id)
+        if current_item is None:
+            raise StateConflict("Replay item disappeared during cancellation")
+        if (
+            current_item.batch_id != batch.batch_id
+            or current_item.replay_run_id != requested_run.run_id
+        ):
+            raise StateConflict("Replay item cancellation authority changed concurrently")
+        if current_item.state == ReplayItemState.CANCELLED.value:
+            return CancelRunView(
+                run=self._run_view(requested_run),
+                applied=False,
+                cancelled_job_ids=[],
+                revoked_approval_ids=[],
+            )
+
+        retry_authority_cancel = (
+            current_item.state == ReplayItemState.RETRY_PENDING.value
+            and requested_run.state == RunState.FAILED.value
+        )
+        if requested_run.state == RunState.CANCELLED.value:
+            raise StateConflict("cancelled Replay Run still owns active item authority")
+        if requested_run.state not in _CANCELLABLE_RUN_STATES and not retry_authority_cancel:
+            raise StateConflict(f"run in {requested_run.state} state cannot be cancelled")
+        if current_item.state in _TERMINAL_REPLAY_ITEM_STATES:
+            raise StateConflict(f"Replay item in {current_item.state} state cannot be cancelled")
+        if batch.state in {
+            ReplayBatchState.COMPLETED.value,
+            ReplayBatchState.FAILED.value,
+            ReplayBatchState.CANCELLED.value,
+        }:
+            raise StateConflict(f"Replay batch in {batch.state} state cannot be cancelled")
+
+        now = utc_now()
+        cancelled_job_ids: list[str] = []
+        for job in jobs:
+            if job.kind != _INTERNAL_REPLAY_KIND:
+                raise StateConflict("Replay batch owns a non-Replay active Job")
+            previous_lease_owner = job.lease_owner
+            self._cancel_job(job, now=now)
+            cancelled_job_ids.append(job.job_id)
+            if job.run_id != requested_run.run_id:
+                raise StateConflict("Replay Job belongs to an unexpected Run")
+            self._event(
+                session,
+                requested_run,
+                "job.cancelled",
+                actor,
+                {
+                    "jobId": job.job_id,
+                    "previousLeaseOwner": previous_lease_owner,
+                    "reason": request.reason,
+                    "replayBatchId": batch.batch_id,
+                },
+            )
+
+        for ticket in tickets:
+            item = items_by_id.get(ticket.item_id)
+            if item is None:
+                raise StateConflict("Replay ticket exists without its item")
+            if ticket.state in _ACTIVE_REPLAY_TICKET_STATES:
+                self._abandon_replay_ticket(
+                    ticket,
+                    now=now,
+                    reason="Replay item cancelled by operator",
+                )
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.ticket.abandoned",
+                    actor,
+                    {"reason": request.reason},
+                    item=item,
+                    ticket=ticket,
+                    job=jobs_by_id.get(ticket.job_id),
+                    run_id=ticket.replay_run_id,
+                )
+
+        current_item.state = ReplayItemState.CANCELLED.value
+        current_item.updated_at = now
+        batch.updated_at = now
+        batch.cas_version += 1
+        if batch.cancellation_reason is None:
+            batch.cancellation_reason = request.reason
+            batch.cancelled_at = now
+        terminal_batch_state = self._refresh_terminal_replay_batch_state(
+            batch,
+            items,
+            now=now,
+        )
+        batch_cancelled = terminal_batch_state == ReplayBatchState.CANCELLED.value
+
+        if retry_authority_cancel:
+            # The expired one-shot attempt is immutable terminal history. Cancelling
+            # retry authority fences future attempts without rewriting its failed Run.
+            self._event(
+                session,
+                requested_run,
+                "run.replay-retry-authority-cancelled",
+                actor,
+                {
+                    "reason": request.reason,
+                    "replayBatchId": batch.batch_id,
+                    "replayItemId": current_item.item_id,
+                },
+            )
+        else:
+            self._cancel_run_record(
+                session,
+                requested_run,
+                actor=actor,
+                now=now,
+                reason=request.reason,
+                cause="replay-item-cancelled",
+                extra={"replayBatchId": batch.batch_id, "replayItemId": current_item.item_id},
+            )
+        self._replay_event(
+            session,
+            batch,
+            "replay.batch.cancelled" if batch_cancelled else "replay.item.cancelled",
+            actor,
+            {
+                "reason": request.reason,
+                "cancelledJobIds": cancelled_job_ids,
+                "batchCancelled": batch_cancelled,
+            },
+            item=current_item,
+            run_id=requested_run.run_id,
+        )
+        return CancelRunView(
+            run=self._run_view(requested_run),
+            applied=True,
+            cancelled_job_ids=cancelled_job_ids,
+            revoked_approval_ids=[],
+        )
+
     def _lock_cancellable_jobs(self, session: Session, run_id: str) -> list[JobRecord]:
         statement = (
             select(JobRecord)
@@ -846,9 +1764,7 @@ class ControlPlaneService:
         )
         return list(session.scalars(statement).all())
 
-    def _lock_revocable_approvals(
-        self, session: Session, run_id: str
-    ) -> list[ApprovalRecord]:
+    def _lock_revocable_approvals(self, session: Session, run_id: str) -> list[ApprovalRecord]:
         statement = (
             select(ApprovalRecord)
             .where(
@@ -955,6 +1871,214 @@ class ControlPlaneService:
         if job.lease_expires_at is None or _aware(job.lease_expires_at) <= now:
             raise LeaseRejected("job lease has expired")
 
+    @staticmethod
+    def _verify_replay_binding(
+        job: JobRecord,
+        ticket: ReplayTicketRecord,
+        item: ReplayItemRecord,
+        batch: ReplayBatchRecord,
+    ) -> ReplayJobPayload:
+        try:
+            payload = ReplayJobPayload.model_validate(job.payload)
+        except ValueError as exc:
+            raise StateConflict("internal Replay Job payload is not canonical") from exc
+        source = ControlPlaneService._artifact_ref(batch)
+        if not (
+            job.kind == _INTERNAL_REPLAY_KIND
+            and job.max_attempts == 1
+            and job.job_id == ticket.job_id
+            and job.run_id == ticket.replay_run_id
+            and item.item_id == ticket.item_id
+            and item.batch_id == ticket.batch_id == batch.batch_id
+            and item.source_run_id == batch.source_run_id
+            and item.replay_run_id == ticket.replay_run_id
+            and item.grant_digest == ticket.grant_digest
+            and item.compilation_digest == ticket.compilation_digest
+            and batch.source_root_digest == ticket.source_root_digest
+            and item.attempts == ticket.attempt_number
+            and payload.batch_id == batch.batch_id
+            and payload.item_id == item.item_id
+            and payload.ticket_id == ticket.ticket_id
+            and payload.replay_run_id == ticket.replay_run_id
+            and payload.source == source
+            and payload.mode.value == batch.mode
+            and payload.purpose.value == batch.purpose
+            and payload.policy_version == batch.policy_version
+            and payload.candidate_id == item.candidate_id
+            and payload.candidate_digest == item.candidate_digest
+            and payload.contract_digest == item.contract_digest
+            and payload.compilation_digest == item.compilation_digest
+            and payload.grant_digest == item.grant_digest
+            and payload.attempt == ticket.attempt_number
+            and payload.fencing_value == ticket.fencing_value
+        ):
+            raise StateConflict("internal Replay Job authority binding is inconsistent")
+        return payload
+
+    def _require_replay_executor_profile(self, actor: str, executor_profile: str) -> None:
+        allowed = self._replay_executor_profiles.get(actor, frozenset())
+        if executor_profile not in allowed:
+            raise StateConflict(
+                "authenticated Worker principal is not registered for this Replay executor"
+            )
+
+    @staticmethod
+    def _require_replay_lease_identity(
+        job: JobRecord,
+        ticket: ReplayTicketRecord,
+        *,
+        request: ReplayLeaseRequest,
+        actor: str,
+    ) -> None:
+        if (
+            request.ticket_id != ticket.ticket_id
+            or request.fencing_value != ticket.fencing_value
+            or request.executor_profile != ticket.executor_profile
+            or actor != ticket.claim_principal
+            or actor != job.lease_owner
+        ):
+            raise LeaseRejected("Replay lease identity or fencing value does not match")
+        if (
+            job.state != JobState.LEASED.value
+            or ticket.state != ReplayTicketState.CLAIMED.value
+            or job.lease_token_hash is None
+            or ticket.lease_token_hash is None
+        ):
+            raise LeaseRejected("Replay job is not actively leased")
+        supplied_digest = token_digest(request.lease_token)
+        if not (
+            hmac.compare_digest(job.lease_token_hash, supplied_digest)
+            and hmac.compare_digest(ticket.lease_token_hash, supplied_digest)
+            and hmac.compare_digest(job.lease_token_hash, ticket.lease_token_hash)
+        ):
+            raise LeaseRejected("Replay lease token is invalid")
+        if (
+            job.lease_expires_at is None
+            or ticket.lease_expires_at is None
+            or _aware(job.lease_expires_at) != _aware(ticket.lease_expires_at)
+        ):
+            raise LeaseRejected("Replay Job and ticket lease deadlines do not match")
+
+    @staticmethod
+    def _abandon_replay_ticket(
+        ticket: ReplayTicketRecord,
+        *,
+        now: datetime,
+        reason: str,
+    ) -> None:
+        if ticket.state not in _ACTIVE_REPLAY_TICKET_STATES:
+            raise StateConflict(f"Replay ticket in {ticket.state} state cannot be abandoned")
+        bounded_reason = reason.strip()[:2_000]
+        if not bounded_reason:
+            raise ValueError("Replay ticket abandonment reason must not be blank")
+        ticket.state = ReplayTicketState.ABANDONED.value
+        ticket.abandoned_at = now
+        ticket.abandon_reason = bounded_reason
+        ticket.updated_at = now
+
+    @staticmethod
+    def _refresh_terminal_replay_batch_state(
+        batch: ReplayBatchRecord,
+        items: list[ReplayItemRecord],
+        *,
+        now: datetime,
+    ) -> str | None:
+        """Resolve a terminal batch solely from its final item-state set.
+
+        Cancellation has precedence over failure so the same terminal item set
+        always produces the same aggregate regardless of transition order.
+        """
+
+        item_states = {item.state for item in items}
+        if not item_states or any(
+            state not in _TERMINAL_REPLAY_ITEM_STATES for state in item_states
+        ):
+            return None
+        if ReplayItemState.CANCELLED.value in item_states:
+            resolved = ReplayBatchState.CANCELLED.value
+            if batch.cancellation_reason is None:
+                batch.cancellation_reason = "one or more Replay items were cancelled"
+                batch.cancelled_at = now
+        elif ReplayItemState.FAILED.value in item_states:
+            resolved = ReplayBatchState.FAILED.value
+        else:
+            resolved = ReplayBatchState.COMPLETED.value
+        batch.state = resolved
+        batch.updated_at = now
+        return resolved
+
+    def _terminate_replay_attempt(
+        self,
+        session: Session,
+        *,
+        job: JobRecord,
+        ticket: ReplayTicketRecord,
+        item: ReplayItemRecord,
+        batch: ReplayBatchRecord,
+        run: RunRecord,
+        actor: str,
+        now: datetime,
+        reason: str,
+        retryable: bool,
+        event_type: str,
+    ) -> None:
+        self._abandon_replay_ticket(ticket, now=now, reason=reason)
+        job.state = JobState.FAILED.value
+        job.error = reason[:2_000]
+        job.result = None
+        job.lease_owner = None
+        job.lease_token_hash = None
+        job.lease_expires_at = None
+        job.heartbeat_at = None
+        job.updated_at = now
+        retry_pending = retryable and item.attempts < item.max_attempts
+        item.state = (
+            ReplayItemState.RETRY_PENDING.value if retry_pending else ReplayItemState.FAILED.value
+        )
+        item.updated_at = now
+        run.state = RunState.FAILED.value
+        run.updated_at = now
+        batch.updated_at = now
+        batch.cas_version += 1
+        batch_items = list(
+            session.scalars(
+                select(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == batch.batch_id)
+                .order_by(ReplayItemRecord.ordinal, ReplayItemRecord.item_id)
+            ).all()
+        )
+        self._refresh_terminal_replay_batch_state(batch, batch_items, now=now)
+        self._event(
+            session,
+            run,
+            "job.replay-attempt-abandoned",
+            actor,
+            {
+                "jobId": job.job_id,
+                "replayTicketId": ticket.ticket_id,
+                "attempt": ticket.attempt_number,
+                "fencingValue": ticket.fencing_value,
+                "retryPending": retry_pending,
+                "reason": reason,
+            },
+        )
+        self._replay_event(
+            session,
+            batch,
+            event_type,
+            actor,
+            {
+                "reason": reason,
+                "attempt": ticket.attempt_number,
+                "fencingValue": ticket.fencing_value,
+                "retryPending": retry_pending,
+            },
+            item=item,
+            ticket=ticket,
+            job=job,
+            run_id=run.run_id,
+        )
+
     def _verify_checkpoint(self, checkpoint: CheckpointRecord) -> None:
         self.signer.verify(
             checkpoint_id=checkpoint.checkpoint_id,
@@ -992,6 +2116,61 @@ class ControlPlaneService:
             raise StateConflict("idempotent run exists without its initial job")
         return SubmissionView(run=self._run_view(run), job=self._job_view(job), created=False)
 
+    def _existing_replay_batch(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+        *,
+        request: CreateReplayBatchRequest,
+        actor: str,
+    ) -> ReplayBatchView:
+        items = list(
+            session.scalars(
+                select(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == batch.batch_id)
+                .order_by(ReplayItemRecord.ordinal)
+            ).all()
+        )
+        batch_matches = (
+            batch.campaign_name == request.campaign_name
+            and batch.created_by == actor
+            and self._artifact_ref(batch) == request.source
+            and batch.mode == request.mode.value
+            and batch.purpose == request.purpose.value
+            and batch.policy_version == request.policy_version
+        )
+        requested_items = [
+            (
+                ordinal,
+                item.candidate_id,
+                item.candidate_digest,
+                item.contract_digest,
+                item.compilation_digest,
+                item.grant_digest,
+                item.required_attempts,
+                item.max_attempts,
+            )
+            for ordinal, item in enumerate(request.items)
+        ]
+        stored_items = [
+            (
+                item.ordinal,
+                item.candidate_id,
+                item.candidate_digest,
+                item.contract_digest,
+                item.compilation_digest,
+                item.grant_digest,
+                item.required_attempts,
+                item.max_attempts,
+            )
+            for item in items
+        ]
+        if not batch_matches or stored_items != requested_items:
+            raise StateConflict(
+                "Replay batch idempotency key was already used for different authority input"
+            )
+        return self._replay_batch_view(batch)
+
     @staticmethod
     def _run(session: Session, run_id: str, *, lock: bool = False) -> RunRecord:
         statement = select(RunRecord).where(RunRecord.run_id == run_id)
@@ -1011,6 +2190,50 @@ class ControlPlaneService:
         if job is None:
             raise ResourceNotFound("job not found")
         return job
+
+    @staticmethod
+    def _replay_batch(session: Session, batch_id: str, *, lock: bool = False) -> ReplayBatchRecord:
+        statement = select(ReplayBatchRecord).where(ReplayBatchRecord.batch_id == batch_id)
+        if lock:
+            statement = statement.with_for_update()
+        batch = session.scalar(statement)
+        if batch is None:
+            raise ResourceNotFound("Replay batch not found")
+        return batch
+
+    @staticmethod
+    def _replay_item(session: Session, item_id: str, *, lock: bool = False) -> ReplayItemRecord:
+        statement = select(ReplayItemRecord).where(ReplayItemRecord.item_id == item_id)
+        if lock:
+            statement = statement.with_for_update()
+        item = session.scalar(statement)
+        if item is None:
+            raise ResourceNotFound("Replay item not found")
+        return item
+
+    @staticmethod
+    def _replay_ticket(
+        session: Session, ticket_id: str, *, lock: bool = False
+    ) -> ReplayTicketRecord:
+        statement = select(ReplayTicketRecord).where(ReplayTicketRecord.ticket_id == ticket_id)
+        if lock:
+            statement = statement.with_for_update()
+        ticket = session.scalar(statement)
+        if ticket is None:
+            raise ResourceNotFound("Replay ticket not found")
+        return ticket
+
+    @staticmethod
+    def _replay_ticket_for_job(
+        session: Session, job_id: str, *, lock: bool = False
+    ) -> ReplayTicketRecord:
+        statement = select(ReplayTicketRecord).where(ReplayTicketRecord.job_id == job_id)
+        if lock:
+            statement = statement.with_for_update()
+        ticket = session.scalar(statement)
+        if ticket is None:
+            raise StateConflict("internal Replay Job exists without its ticket")
+        return ticket
 
     @staticmethod
     def _checkpoint(
@@ -1046,6 +2269,50 @@ class ControlPlaneService:
             event_id=f"event_{uuid4().hex}",
             run_id=run.run_id,
             sequence=self.repository.next_event_sequence(session, run.run_id),
+            event_type=event_type,
+            actor=actor,
+            payload=payload,
+            occurred_at=utc_now(),
+        )
+        session.add(event)
+        session.flush()
+        return event
+
+    def _replay_event(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+        event_type: str,
+        actor: str,
+        payload: dict[str, Any],
+        *,
+        item: ReplayItemRecord | None = None,
+        ticket: ReplayTicketRecord | None = None,
+        job: JobRecord | None = None,
+        run_id: str | None = None,
+    ) -> ReplayEventRecord:
+        if ticket is not None and (item is None or job is None or run_id is None):
+            raise StateConflict("Replay ticket events require exact item, Job, and Run context")
+        if item is not None and item.batch_id != batch.batch_id:
+            raise StateConflict("Replay event item belongs to another batch")
+        if ticket is not None:
+            if item is None or job is None or run_id is None:
+                raise StateConflict("Replay ticket events require exact item, Job, and Run context")
+            if (
+                ticket.batch_id != batch.batch_id
+                or ticket.item_id != item.item_id
+                or ticket.job_id != job.job_id
+                or ticket.replay_run_id != run_id
+            ):
+                raise StateConflict("Replay event authority binding is inconsistent")
+        event = ReplayEventRecord(
+            event_id=f"replay-event_{uuid4().hex}",
+            batch_id=batch.batch_id,
+            item_id=item.item_id if item else None,
+            ticket_id=ticket.ticket_id if ticket else None,
+            job_id=job.job_id if job else None,
+            run_id=run_id,
+            sequence=self.repository.next_replay_event_sequence(session, batch.batch_id),
             event_type=event_type,
             actor=actor,
             payload=payload,
@@ -1097,6 +2364,90 @@ class ControlPlaneService:
             error=record.error,
             created_at=_aware(record.created_at),
             updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _artifact_ref(record: ReplayBatchRecord) -> ArtifactRef:
+        return ArtifactRef(
+            artifact_id=record.source_artifact_id,
+            repository_version=record.source_repository_version,
+            media_type=record.source_media_type,
+            schema_kind=record.source_schema_kind,
+            byte_length=record.source_byte_length,
+            content_digest=record.source_content_digest,
+            run_id=record.source_run_id,
+            integrity_root_digest=record.source_root_digest,
+            created_by=record.source_created_by,
+        )
+
+    @staticmethod
+    def _replay_batch_view(record: ReplayBatchRecord) -> ReplayBatchView:
+        return ReplayBatchView(
+            batch_id=record.batch_id,
+            campaign_name=record.campaign_name,
+            source=ControlPlaneService._artifact_ref(record),
+            mode=CampaignMode(record.mode),
+            purpose=ReplayPurpose(record.purpose),
+            policy_version=record.policy_version,
+            state=ReplayBatchState(record.state),
+            cas_version=record.cas_version,
+            created_by=record.created_by,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _replay_item_view(record: ReplayItemRecord) -> ReplayItemView:
+        return ReplayItemView(
+            item_id=record.item_id,
+            batch_id=record.batch_id,
+            replay_run_id=record.replay_run_id,
+            state=ReplayItemState(record.state),
+            candidate_id=record.candidate_id,
+            candidate_digest=record.candidate_digest,
+            contract_digest=record.contract_digest,
+            compilation_digest=record.compilation_digest,
+            grant_digest=record.grant_digest,
+            required_attempts=record.required_attempts,
+            max_attempts=record.max_attempts,
+            attempts=record.attempts,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _replay_ticket_view(record: ReplayTicketRecord) -> ReplayTicketView:
+        return ReplayTicketView(
+            ticket_id=record.ticket_id,
+            batch_id=record.batch_id,
+            item_id=record.item_id,
+            job_id=record.job_id,
+            replay_run_id=record.replay_run_id,
+            state=ReplayTicketState(record.state),
+            attempt=record.attempt_number,
+            fencing_value=record.fencing_value,
+            executor_profile=record.executor_profile,
+            claimed_by=record.claim_principal,
+            lease_expires_at=(_aware(record.lease_expires_at) if record.lease_expires_at else None),
+            created_at=_aware(record.issued_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _replay_claim_view(
+        *,
+        job: JobRecord,
+        batch: ReplayBatchRecord,
+        item: ReplayItemRecord,
+        ticket: ReplayTicketRecord,
+        lease_token: str,
+    ) -> ReplayClaimView:
+        return ReplayClaimView(
+            job=ControlPlaneService._job_view(job),
+            batch=ControlPlaneService._replay_batch_view(batch),
+            item=ControlPlaneService._replay_item_view(item),
+            ticket=ControlPlaneService._replay_ticket_view(ticket),
+            lease_token=lease_token,
         )
 
     @staticmethod

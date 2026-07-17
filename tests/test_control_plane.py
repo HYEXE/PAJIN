@@ -179,6 +179,7 @@ def test_authenticated_submit_approval_resume_and_completion(tmp_path: Path) -> 
             json={"approval_id": approval_id},
         )
         assert replay.status_code == 409
+        assert "already been claimed" in replay.json()["detail"]
 
         continuation = _claim(client, worker_id="worker-2")
         assert continuation["job"]["job_id"] == continuation_job_id

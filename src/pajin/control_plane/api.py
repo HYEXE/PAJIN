@@ -146,6 +146,10 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         if resolved.initialize_schema:
             repository.initialize()
+        else:
+            # Deployment-managed migrations may disable DDL at process startup, but
+            # they must never disable the Control Plane's schema compatibility fence.
+            repository.schema_version()
         app.state.repository = repository
         app.state.control_plane = service
         try:
