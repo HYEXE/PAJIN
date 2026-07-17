@@ -2,10 +2,11 @@
 
 - Status: Accepted
 - Date: 2026-07-15
-- Amended: 2026-07-16 — M6-05 baseline-bound negative KISA retest 경계 추가
+- Amended: 2026-07-16 — M6-05 negative KISA retest와 M6-07A 명시적 Local KISA orchestration 경계 추가
 - Implementation: In progress; restricted replay, the receipt-reloading common confirmation/retest
   gates, append-only versioned validation projections, exact KISA fresh-session integration, and
-  baseline-bound negative KISA retest are implemented, while durable ticket verification and
+  baseline-bound negative KISA retest, durable Local SQLite ticket verification, and explicit
+  single-process Local KISA orchestration are implemented, while Control Plane orchestration and
   additional Modes remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
@@ -218,6 +219,18 @@ index, and Markdown artifacts in a new seal instead of rewriting the flat pre-re
 KISA assessment and replay index consume that projection and expose confirmation basis and receipt
 lineage.
 
+M6-07A applies the same exact allowlist and common Gate to the ordinary Local runner only when the
+operator supplies `pajin run ... --kisa-replay`. The Local source Run first persists its capability,
+budget and request-rate snapshots and completed state, then seals before the coordinator reads it.
+Source execution and replay share the same live Campaign budget, request-rate ledger and cancellation
+context. Tickets use the stable `<output>/local-replay/replay-tickets.sqlite3` authority, and batch
+coverage is verified from canonical receipts before the Gate runs. A missing Candidate or replay
+record does not trigger the Gate or create confirmation. The flat `findings.json` remains the sealed
+pre-replay snapshot; only the append-only `validation/v1alpha1` projection may gain a
+reproduction-backed Confirmed Finding. This path is deliberately one process and one writer. The
+default Local command has no implicit replay, generic replay predicate, distributed lock, lease, or
+PostgreSQL authority.
+
 M6-05의 `kisa-retest` 경로는 sealed versioned Confirmed baseline을 다시 검증하고 각 Finding의
 Candidate, source Decision, remediation action과 모든 authority-bearing identity에 결박된 별도
 Restricted Replay를 실행한다. normal parent retest의 정상 기능 결과는 negative proof로
@@ -228,9 +241,13 @@ hard fail한다. remediation plan과 event는 versioned projection과 기존 sea
 않고 baseline에 append하며, retest는 그 뒤 확정된 current root를 receipt에 결박한다. 결박 후
 baseline이 달라지면 Gate는 결과를 만들지 않는다.
 
-Durable ticket verification across process restarts, Local/Control Plane replay orchestration, and
-additional Mode integrations remain follow-up work. A CPU-bound production Oracle must still use a
-separately bounded execution boundary instead of blocking the cooperative async runtime.
+Durable Local SQLite ticket verification across process restarts and explicit Local KISA
+orchestration are implemented. Control Plane replay orchestration and additional Mode integrations
+remain follow-up work. Control Plane work must start with ADR 0029 for sealed Artifact handoff,
+lease fencing, PostgreSQL batch/item/ticket/event state, source-root CAS, exact Gate finalization,
+and durable budget/request-rate state; a local absolute Run path or arbitrary Job result is not an
+authority handoff. A CPU-bound production Oracle must still use a separately bounded execution
+boundary instead of blocking the cooperative async runtime.
 
 Migration proceeds in this order:
 
@@ -256,8 +273,16 @@ Migration proceeds in this order:
    confirmation;
 8. **Implemented for M6-05 KISA retest:** accept only sealed reproduction-backed baselines, separate
    normal parent regression from baseline-bound attack replay, reload verified negative receipts,
-   and require an all-repetition trusted `contradicts` verdict before `fixed`; and
-9. add eligible Mode contracts incrementally without introducing a generic replay predicate.
+   and require an all-repetition trusted `contradicts` verdict before `fixed`;
+9. **Implemented for M6-06 Local durability:** persist KISA positive/negative replay tickets and
+   transitions in stable SQLite authorities and verify finalization after process restart through a
+   read-only loader;
+10. **Implemented for M6-07A explicit Local KISA orchestration:** seal a complete Local source,
+    share live budget/rate/cancellation state, run exact allowlisted Candidate replays through the
+    SQLite authority, verify batch coverage, and invoke the common Gate only with canonical replay
+    receipts; and
+11. add Control Plane orchestration after ADR 0029 and eligible Mode contracts incrementally without
+    introducing a generic replay predicate.
 
 Existing sealed Runs are immutable and must not be rewritten. A historical `confirmed` Decision
 without a ReplayOutcome is interpreted under legacy semantics and cannot be promoted by
@@ -271,6 +296,9 @@ reinterpretation; it must be reproduced in a new Run.
   compiled, candidate-bound Grant.
 - Confirmed output remains fail-closed and is emitted only when the common gate consumes verified
   receipts; additional Modes require their own explicit replay integrations.
+- Ordinary Local execution remains backward compatible: replay authority is created only for an
+  explicit KISA opt-in, and the implemented Local sequencing cannot be treated as a distributed
+  Control Plane protocol.
 - `fixed`도 fail-closed이며 baseline-bound Retest Gate가 verified canonical negative receipt를
   소비할 때만 생성된다. baseline의 과거 confirmation은 append-only retest 관계와 분리된다.
 - 정상 기능 regression과 취약점 상태를 분리해 원 취약점이 수정됐더라도 기능 회귀가 있는
@@ -328,12 +356,15 @@ unsupported ReplayOutcomes. Versioned-artifact tests cover fail-closed legacy se
 paths. `tests/test_kisa_replay.py` additionally covers the explicit
 three-scenario opt-in, fresh and unique sessions, raw-transcript recomputation, multi-turn request
 rate accounting, mutable record rejection, sealed source-state binding, receipt reloading, immutable
-source artifacts, and reproduction-backed KISA projection. `tests/test_kisa_retest.py` and
+source artifacts, and reproduction-backed KISA projection. `tests/test_local_replay.py` covers the
+explicit single-process Local source→SQLite replay→Gate path, shared source state, immutable flat
+Finding snapshot, versioned projection, no-Candidate behavior, semantic omission, and bounded
+repetitions. `tests/test_kisa_retest.py` and
 `tests/test_kisa_retest_cli.py` cover the M6-05 sealed baseline admission, exact retest binding,
 negative/supporting/mixed/terminal disposition matrix, canonical receipt reloading, forged negative
 signal rejection, parent regression separation, immutable baseline, and CLI Exit Gate. The
-remaining requirements apply to durable/offline ticket verification, Local and Control Plane replay
-orchestration, and additional explicitly opted-in Mode contracts.
+remaining requirements apply to Control Plane replay orchestration, portable/off-host verification,
+and additional explicitly opted-in Mode contracts.
 
 ## References
 
@@ -345,3 +376,4 @@ orchestration, and additional explicitly opted-in Mode contracts.
 - [ADR 0024: Cooperative execution cancellation](0024-cooperative-execution-cancellation.md)
 - [ADR 0025: Candidate validation ledger and replay boundary](0025-candidate-validation-ledger-and-replay-boundary.md)
 - [ADR 0026: Trusted KISA candidate admission](0026-trusted-kisa-candidate-admission.md)
+- [ADR 0028: Durable Local replay ticket ledger](0028-durable-local-replay-ticket-ledger.md)

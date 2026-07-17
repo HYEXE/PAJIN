@@ -23,6 +23,8 @@ from pajin.domain.orchestration import RunStatus
 from pajin.domain.validation import FindingDisposition, FindingValidationSet
 from pajin.modes.ai_redteam import (
     KISACandidateProducer,
+    KISALocalAgentRuntime,
+    KISALocalReplayOrchestrator,
     KISAModePack,
     KISAPlannerRuntime,
     KISAReplayBatchOutcome,
@@ -65,7 +67,7 @@ from pajin.replay.sqlite_tickets import (
     SQLiteReplayExecutionAuthority,
     SQLiteReplayTicketFinalizationVerifier,
 )
-from pajin.runtime.control import BudgetController, KillSwitch
+from pajin.runtime.control import BudgetController, ExecutionCancellationContext, KillSwitch
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import RunIntegrityError, verify_run_integrity
 from pajin.runtime.worker import (
@@ -462,11 +464,25 @@ def validate_campaign(
 
 @app.command("run")
 def run_campaign(
+    ctx: typer.Context,
     manifest: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
     output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
     worker: Annotated[str, typer.Option("--worker")] = "simulated",
+    kisa_replay: Annotated[bool, typer.Option("--kisa-replay")] = False,
+    repetitions: Annotated[int, typer.Option("--repetitions", min=2, max=20)] = 2,
 ) -> None:
-    """Run the deterministic vertical slice with a selected worker backend."""
+    """Run locally, optionally opting in to exact KISA replay confirmation."""
+
+    repetitions_source = ctx.get_parameter_source("repetitions")
+    if (
+        not kisa_replay
+        and repetitions_source is not None
+        and repetitions_source.name == "COMMANDLINE"
+    ):
+        console.print(
+            "[bold red]Invalid replay options:[/bold red] --repetitions requires --kisa-replay"
+        )
+        raise typer.Exit(code=2)
 
     try:
         campaign = load_manifest(manifest)
@@ -474,12 +490,94 @@ def run_campaign(
         console.print(f"[bold red]Invalid campaign:[/bold red] {exc}")
         raise typer.Exit(code=2) from exc
 
-    registry = _tool_registry()
+    planner: KISAPlannerRuntime | None = None
+    if kisa_replay:
+        try:
+            if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
+                raise ValueError("Local KISA replay requires mode: ai-redteam")
+            planner = KISAPlannerRuntime(thresholds=EvaluationThresholds(repetitions=repetitions))
+            preflight_plan = asyncio.run(planner.plan(campaign))
+            required_calls = len(preflight_plan.steps) + required_kisa_replay_calls(
+                preflight_plan,
+                repetitions=repetitions,
+            )
+            if required_calls > campaign.spec.budgets.max_tool_calls:
+                raise ValueError(
+                    "maxToolCalls must reserve the Local KISA source plan and every "
+                    f"replay attempt (requires at least {required_calls})"
+                )
+        except (KeyError, ValidationError, ValueError) as exc:
+            console.print(f"[bold red]Cannot start Local KISA replay:[/bold red] {exc}")
+            raise typer.Exit(code=2) from exc
+
     try:
         backend = _worker_backend(worker)
     except ValueError as exc:
         console.print(f"[bold red]Invalid worker:[/bold red] {exc}")
         raise typer.Exit(code=2) from exc
+
+    registry = _tool_registry()
+    if kisa_replay:
+        assert planner is not None
+        policy = PolicyEngine()
+        budget = BudgetController(campaign.spec.budgets)
+        rate_limits = RequestRateLimitLedger()
+        cancellation = ExecutionCancellationContext()
+        try:
+            orchestrator = KISALocalReplayOrchestrator(
+                agents=KISALocalAgentRuntime(
+                    planner=planner,
+                    validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+                ),
+                tools=registry,
+                policy=policy,
+                worker=backend,
+                output_root=output,
+                repetitions=repetitions,
+                ticket_authority_factory=lambda: SQLiteReplayExecutionAuthority(
+                    output / "local-replay" / "replay-tickets.sqlite3"
+                ),
+            )
+            local_replay = asyncio.run(
+                orchestrator.run(
+                    campaign,
+                    cancellation=cancellation,
+                    budget=budget,
+                    rate_limits=rate_limits,
+                )
+            )
+        except (
+            KeyError,
+            RunIntegrityError,
+            RuntimeError,
+            ValidationError,
+            ValueError,
+            OSError,
+            sqlite3.Error,
+        ) as exc:
+            console.print(f"[bold red]Local KISA replay failed:[/bold red] {exc}")
+            raise typer.Exit(code=1) from exc
+
+        outcome = local_replay.outcome
+        failed_tools = sum(not result.success for result in outcome.tool_results)
+        replay_execution_failed = any(
+            record.execution_status != "succeeded" for record in local_replay.batch.records
+        )
+        if replay_execution_failed:
+            console.print(
+                "[bold red]Local KISA replay failed:[/bold red] "
+                "one or more replay records did not succeed"
+            )
+            raise typer.Exit(code=1)
+        console.print(f"[bold green]Campaign completed:[/bold green] {outcome.run_id}")
+        console.print(f"Failed tool calls: {failed_tools}")
+        console.print(f"Confirmed findings: {len(outcome.findings)}")
+        console.print(f"Replay records: {len(local_replay.batch.records)}")
+        console.print(f"Final report: {outcome.report_path.resolve()}")
+        if failed_tools:
+            raise typer.Exit(code=1)
+        return
+
     runner = LocalCampaignRunner(
         agents=DeterministicAgentRuntime(),
         tools=registry,

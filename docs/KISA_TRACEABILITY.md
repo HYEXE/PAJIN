@@ -13,7 +13,10 @@
 > reproduction-backed baseline에 결박된 negative ReplayOutcome과 별도 정상 기능 회귀를
 > hardened `kisa-retest` 경로에 연결했다. M6-06은 로컬 KISA positive/negative ticket을 stable
 > SQLite 원장에 영속화하고 프로세스 재시작 뒤 read-only verifier와 CLI로 receipt 결박을 다시
-> 검증하는 경계를 추가했다.
+> 검증하는 경계를 추가했다. M6-07A는 일반 Local Campaign에도 명시적
+> `pajin run ... --kisa-replay --repetitions 2` opt-in을 추가해 exact M03·M06·A04 Candidate를
+> 같은 SQLite replay와 공통 Gate에 연결했다. flag가 없는 기본 Local 실행은 자동 replay를
+> 수행하지 않는다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -29,6 +32,9 @@ flowchart LR
     P --> X["Specialists<br/>Tool Gateway·Docker Worker"]
     X --> CP["Trusted Candidate Producer<br/>구현"]
     CP --> V["Semantic Validator<br/>증거 심사·구현"]
+    S -. "explicit Local opt-in" .-> LO
+    LO["Explicit Local KISA Orchestrator<br/>단일 process·writer"] -. "opt-in sequencing" .-> P
+    LO -. "sealed source → replay → Gate" .-> CG
     V --> RC["Versioned Replay Contracts<br/>스키마 구현"]
     RC --> RG["Deterministic Compiler + Replay Grant<br/>구현"]
     RG --> TL["SQLite Ticket Ledger<br/>원자 상태 전이·event journal"]
@@ -65,7 +71,7 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약과 로컬 재시작 후 receipt 검증 구현; 조직 영향 분석 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration과 재시작 후 receipt 검증 구현; Control Plane·조직 영향 분석 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -140,6 +146,18 @@ docker compose -f containers/compose.ai-lab.yaml up --build --detach
 docker compose -f containers/compose.ai-lab.yaml down
 ```
 
+같은 exact KISA Chat 계약은 일반 Local runner에서도 명시적으로 선택할 수 있다.
+
+```powershell
+.venv\Scripts\pajin run examples\kisa-ai-chat-lab.yaml --worker docker `
+  --kisa-replay --repetitions 2
+```
+
+`--kisa-replay`가 없으면 `pajin run`은 기존 Local 원 실행만 수행하고 replay ticket이나 공통
+Confirmed Gate를 자동으로 시작하지 않는다. opt-in은 AI Red Team Campaign의 exact M03·M06·A04
+`ai.chat-probe` allowlist에만 적용한다. Candidate 부재, Validator semantic support 누락 또는
+미등록 Scenario를 구조적으로 비슷하다는 이유로 replay하지 않는다.
+
 이 Campaign은 M03·M06·A04에 대해 원 실행 6개 Task와 Candidate별 2회 fresh-session replay를
 기대한다. 봉인된 원 Run 뒤에는 trusted Candidate 중 `independent-reproduction-missing` 상태인
 항목만 별도 replay Run에서 실행한다. 반복마다 원 실행 및 다른 반복과 구별되는 session ID를
@@ -163,6 +181,14 @@ root, replay Run과 Campaign·Tool·Scenario issuance context digest를 결박�
 
 명령은 누락된 ledger를 생성하거나 ticket 상태를 변경하지 않는다. 미완료 ticket이나
 compilation·source/replay 계보·digest·seal 불일치는 fail closed다.
+
+명시적 Local 경로의 stable ledger는 `<output>/local-replay/replay-tickets.sqlite3`다. Local
+coordinator는 원 Run을 먼저 완결·봉인하고, 같은 live Campaign budget·request-rate ledger·취소
+문맥으로 Candidate replay를 실행한 뒤 batch coverage와 canonical receipt를 다시 확인해 공통
+Gate를 적용한다. verified replay가 없으면 Gate를 적용하지 않는다. flat `findings.json`은
+pre-replay snapshot으로 보존되고 reproduction-backed Confirmed는 append-only
+`validation/v1alpha1`에만 기록된다. 이 순서는 단일 프로세스·단일 writer 전제이며 분산 lock이나
+Control Plane lease를 제공하지 않는다.
 
 ## 7. 완화 및 재검증 폐루프
 
@@ -246,7 +272,8 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Materialization·Attempt·
   Oracle·Outcome 계약, Replay Compiler·전용 Grant·별도 replay Run 저장과 exact M03·M06·A04
   `ai.chat-probe` fresh-session driver/live Oracle은 구현됐다. 결과는 봉인 영수증을 다시 읽어
-  canonical record와 일치할 때만 공통 Gate와 `kisa-replay-index.json`이 소비한다. Gate는 원
+  canonical record와 일치할 때만 공통 Gate가 소비하며, `kisa-run`은 같은 verified record를
+  `kisa-replay-index.json`에도 기록한다. Gate는 원
   artifact를 변경하지 않고 versioned Decision·Finding·report와 receipt lineage를 새 seal로
   추가한다. 같은 receipt 경계는 reproduction-backed baseline의 negative KISA retest에도
   적용되며, 일반 retest Run의 정상 기능 결과와 공격 replay 증명을 분리한다.
@@ -254,6 +281,10 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   후 read-only verifier에 연결됐다. 기존 인메모리 authority는 단위 테스트와 API 호환 경계로
   유지된다. SQLite DB와 OS account/ACL이 로컬 trust anchor이므로, 이 원장은 PostgreSQL
   Control Plane replay authority나 외부 감사자가 독립 검증할 portable 서명 proof가 아니다.
+- M6-07A의 명시적 Local KISA coordinator는 exact M03·M06·A04 allowlist와 한 프로세스·한
+  writer에 한정된다. M6-07B Control Plane replay는 아직 구현되지 않았으며, ADR 0029에서 sealed
+  Artifact handoff, lease fencing, PostgreSQL batch/item/ticket/event, source-root CAS와 durable
+  budget/request-rate 상태를 먼저 결정해야 한다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

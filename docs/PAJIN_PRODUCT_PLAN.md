@@ -79,20 +79,24 @@ Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·li
 Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
 `validation/v1alpha1` 투영, 기준 Candidate 결박형 negative KISA retest Gate는 구현되었다.
 M6-06의 stable SQLite 원장과 재시작 후 read-only verifier는 로컬 KISA positive/negative
-replay ticket을 영속화한다. Control Plane replay-ticket orchestration, portable/off-host 서명
-proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속 과제다.
+replay ticket을 영속화한다. M6-07A는 일반 Local 실행에 명시적으로 opt-in하는 exact KISA
+Candidate→SQLite replay→공통 Gate 경로를 추가했다. 기본 Local 실행은 자동 replay를 하지
+않는다. Control Plane replay-ticket orchestration은 M6-07B로 분리하며 ADR 0029의 artifact
+handoff, lease fencing, PostgreSQL ticket/batch/item과 durable budget/rate 설계가 선행돼야 한다.
+Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
+과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
-| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·Restricted Reproducer, 로컬 KISA SQLite ticket 원장 및 receipt 재로딩 공통 Gate 구현; KISA 이외 replay orchestration은 후속 |
+| 공통 엔진 | 진행 중 | Supervisor, Planner, 동적 Specialist, Semantic Validator, Reporter와 작업 그래프 실행; Replay 계약·Compiler·단일 사용 ticket·Restricted Reproducer, 로컬 KISA SQLite ticket 원장, Multi-Agent와 명시적 Local exact KISA orchestration 및 receipt 재로딩 공통 Gate 구현; KISA 이외 replay orchestration은 후속 |
 | 정책·권한 | 완료 | Scope, Capability 감쇠, 계보별 호출 예산, 위험 등급, 승인, Kill Switch |
 | 실행 격리 | MVP 완료 | Docker Worker, 기본 egress 차단, allowlist proxy, 등록 MCP와 고정 Tool |
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; replay orchestration은 ADR 0029 선행이 필요한 M6-07B |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1106,7 +1110,8 @@ PAJIN/
 stateless Restricted Reproducer, exact KISA fresh-session 실행·live transcript Oracle·runner
 coordinator, receipt 재로딩 공통 Gate와 지속성 Control Plane의 초기 조각까지 포함한다. 지원
 KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는 Finding 확정 기준을
-충족하며, replay가 연결되지 않은 Local·Control Plane·다른 Mode 경로는 계속 fail closed다.
+충족한다. 일반 Local 경로도 명시적 `--kisa-replay`일 때만 exact KISA 계약에 연결되며, 기본
+Local 실행과 Control Plane·다른 Mode 경로는 계속 자동 replay 없이 fail closed다.
 지원 시나리오의 폭과 운영 배포 수준은 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
@@ -1128,8 +1133,9 @@ runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only dis
 구현됐다. M6-05는 같은 receipt 경계를 KISA hardened retest에 연결해 baseline-bound negative
 증명과 정상 기능 회귀를 분리했다. KISA 외 실행 경로는 ReplayOutcome을 생성하지 않으므로
 Confirmed를 내지 않는다. M6-06은 로컬 KISA positive/negative 경로의 SQLite durable ticket과
-재시작 후 read-only 검증을 구현했으며, Control Plane replay와 portable/off-host proof는 별도
-완료 기준으로 남아 있다.
+재시작 후 read-only 검증을 구현했다. M6-07A는 `pajin run ... --kisa-replay --repetitions 2`로
+명시적으로 선택한 Local AI Red Team Campaign을 Candidate→SQLite replay→공통 Gate에
+연결했다. Control Plane replay와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 hardened KISA retest Exit Gate
 
@@ -1183,6 +1189,41 @@ M6-06은 다음 로컬 KISA 수직 범위가 충족된 상태다.
 - SQLite DB와 OS account/ACL이 로컬 trust anchor다. 공개키 서명 기반 portable/off-host proof와
   PostgreSQL Control Plane replay-ticket lifecycle은 M6-06의 완료 주장에 포함하지 않는다.
 
+### 20.6 M6-07 Local·Control Plane replay orchestration Exit Gate
+
+M6-07은 실행 권한과 내구성 경계가 다른 두 범위로 분리한다.
+
+**M6-07A Local KISA orchestration**은 다음 단일 프로세스 수직 범위가 충족된 상태다.
+
+- `pajin run <campaign> --kisa-replay --repetitions 2`처럼 명시적으로 opt-in한 AI Red Team
+  Campaign만 Candidate→Replay→Gate 흐름을 시작한다. flag가 없는 기본 `pajin run`은 replay
+  authority나 ticket 원장을 만들지 않고 기존 Local 실행 의미를 유지한다.
+- Local 원 Run은 replay 전에 `run.json`, `capabilities.json`, `budget.json`, `rate-limits.json`과
+  Validation snapshot을 완결하고 봉인한다. 원 실행과 replay는 같은 live Campaign 예산,
+  request-rate ledger와 취소 문맥을 사용한다.
+- 자동 replay 대상은 trusted KISA Producer가 admit한 exact M03·M06·A04
+  `ai.chat-probe` 계약의 명시적 allowlist뿐이다. Tool metadata나 구조가 비슷하다는 이유로 다른
+  Scenario·Mode를 자동 실행하는 generic predicate는 두지 않는다.
+- replay ticket은 `<output>/local-replay/replay-tickets.sqlite3`의 stable SQLite authority에
+  기록하고, 각 Candidate는 별도 replay Run과 canonical receipt를 가진다. Gate 진입 전에 batch가
+  eligible Candidate 전부를 exact receipt로 덮는지 다시 검증한다.
+- verified replay 결과가 있을 때만 공통 Gate를 적용한다. Candidate가 없거나 계약·semantic
+  support가 빠진 경우에는 자동 확인을 만들지 않으며, 원 flat `findings.json`은 계속 immutable
+  pre-replay snapshot이다. reproduction-backed Confirmed 결과는 append-only
+  `validation/v1alpha1` 투영에만 추가한다.
+- 이 경로는 한 호스트의 한 프로세스·한 writer를 전제로 한다. cross-process Gate lock, lease
+  recovery, distributed Worker 또는 portable attestation을 제공한다고 주장하지 않는다.
+
+**M6-07B Control Plane replay orchestration**은 미완료다. 기존 Campaign Job의 임의 result와
+로컬 절대 경로를 replay authority로 재해석하지 않는다. 구현 전에 ADR 0029가 최소한 다음을
+결정해야 한다.
+
+- sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
+- Worker lease·retry와 충돌하지 않는 fencing, claim/finalize 및 crash 정책;
+- PostgreSQL replay batch·item·ticket·event 상태와 단일 사용 불변식;
+- source-root CAS와 공통 Gate finalization의 정확한 한 번 적용 경계; 그리고
+- 프로세스 재시작과 여러 Worker에서도 유지되는 durable budget/request-rate 상태.
+
 ---
 
 ## 21. 단계별 로드맵
@@ -1191,7 +1232,7 @@ M6-06은 다음 로컬 KISA 수직 범위가 충족된 상태다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 권한 감쇠, 예산·취소·승인은 구현; Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인은 구현; Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1230,7 +1271,10 @@ M6-06은 다음 로컬 KISA 수직 범위가 충족된 상태다.
   결박된 KISA negative ReplayOutcome, hardened retest Gate와 별도 정상 기능 regression
 - 로컬 KISA positive/negative replay의 stable SQLite ticket 원장, 원자적 상태 전이·event journal,
   프로세스 재시작 뒤 read-only finalization verifier와 `pajin replay-verify`
-- 남은 범위: PostgreSQL Control Plane replay ticket, portable/off-host 서명 proof, KISA 외
+- 명시적 `pajin run --kisa-replay` Local KISA Candidate→SQLite replay→공통 Gate orchestration;
+  기본 Local 실행은 자동 replay를 하지 않으며 단일 프로세스·단일 writer 범위
+- 남은 범위: ADR 0029 이후 PostgreSQL Control Plane replay batch/item/ticket·artifact handoff·
+  lease fencing·durable budget/rate, portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 

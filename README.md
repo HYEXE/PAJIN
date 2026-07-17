@@ -17,7 +17,7 @@ The implementation baseline as of 2026-07-16 is:
 | Area | Current scope |
 | --- | --- |
 | Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
@@ -37,9 +37,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > Secret Lease requests, applies the Campaign deadline and cancellation through an async Mode
 > Oracle, and returns a twice-sealed receipt with a verified disk loader. Exact KISA
 > `ai.chat-probe` contracts now use a trusted fresh-session materializer and a raw-transcript Mode
-> Oracle. After a completed source Run is sealed, `kisa-run` coordinates Candidate-bound replay in
-> distinct replay Runs, with one new session per attempt and the same shared Campaign budget and rate
-> limits. Worker-authored `vulnerable` and `matched` fields are not trusted. Other session-bearing
+> Oracle. After a completed source Run is sealed, `kisa-run` and the explicitly opted-in Local
+> `pajin run ... --kisa-replay` path coordinate Candidate-bound replay in distinct replay Runs, with
+> one new session per attempt and the same shared Campaign budget and rate limits. The ordinary
+> `pajin run` path never enables replay implicitly. Worker-authored `vulnerable` and `matched` fields
+> are not trusted. Other session-bearing
 > contracts still fail closed without a registered trusted materializer. The M6 common gate now
 > reopens every KISA replay Run, verifies both seals and ticket finalization, applies the shared
 > reason matrix, and appends `validation/v1alpha1/` without rewriting the sealed source snapshot.
@@ -108,6 +110,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   The ledger uses atomic single-use state transitions and a read-only verifier, but it is trusted as
   a local database under the host OS account/ACL boundary. It is not a portable signed proof, an
   off-host attestation, or the PostgreSQL Control Plane replay authority.
+- The explicit Local KISA coordinator is limited to one process and one writer, and only the exact
+  M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
+  predicate or a distributed lock. Control Plane replay requires a separate ADR 0029 covering
+  artifact handoff, lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -400,6 +406,18 @@ independent repetitions:
 .venv\Scripts\pajin kisa-run examples\kisa-ai-redteam.yaml --worker docker --repetitions 2
 ```
 
+For the exact KISA AI Chat contracts, the ordinary Local runner can opt into the same
+Candidate-to-replay-to-Gate boundary explicitly:
+
+```powershell
+.venv\Scripts\pajin run examples\kisa-ai-chat-lab.yaml --worker docker --kisa-replay --repetitions 2
+```
+
+Without `--kisa-replay`, `pajin run` remains the normal Local execution path and does not create
+replay tickets or invoke the confirmation Gate. The opt-in path is limited to AI Red Team Campaigns
+and the exact M03, M06, and A04 allowlist; unsupported or missing contracts stay unconfirmed rather
+than being selected by a generic predicate.
+
 The Mode Pack maps the 19 threat classes in the KISA AI Security Red Teaming Guide to a typed
 catalog, selects target-compatible scenarios, executes each scenario through separate Specialist
 agents, and deduplicates Candidate and legacy validation findings after same-Run evidence checks.
@@ -460,9 +478,18 @@ snapshot.
 Run, 최종 artifact digest 및 receipt seal root는 실행 프로세스가 종료된 뒤 새 read-only
 verifier로 다시 확인할 수 있다.
 
+명시적 Local `pajin run --kisa-replay` 경로는 이와 분리된
+`<output>/local-replay/replay-tickets.sqlite3`를 사용한다. 원 Run, Candidate, SQLite ticket과
+별도 replay Run을 같은 프로세스의 단일 writer가 순서대로 만든 뒤 공통 Gate가 canonical
+receipt를 다시 읽는다. Gate는 flat `findings.json`을 변경하지 않고
+`validation/v1alpha1/` 투영만 reproduction-backed Confirmed로 확장한다.
+
 ```powershell
 .venv\Scripts\pajin replay-verify <replay-run-directory> `
   --ledger <output>\replay\replay-tickets.sqlite3
+
+.venv\Scripts\pajin replay-verify <local-replay-run-directory> `
+  --ledger <output>\local-replay\replay-tickets.sqlite3
 ```
 
 `replay-verify`는 ledger를 생성하거나 ticket 상태를 변경하지 않는다. 파일 누락, ticket 미완료,
@@ -942,9 +969,11 @@ The Restricted Reproducer uses a distinct replay Run. Its `replay/`
 directory stores the Validation Packet, Mode contract, non-executable intent, compiled spec,
 dedicated grant, attempts, Oracle result, aggregate outcome, and verification receipt. The first
 integrity seal binds the outcome and complete artifact set; the receipt records that verified root,
-and a second seal binds the receipt. `kisa-run` now coordinates this boundary for exact M03, M06,
-and A04 Candidates after sealing the source Run. `kisa-run` then passes those replay Run paths to
-the common gate, which reloads canonical receipts instead of trusting mutable in-memory records.
+and a second seal binds the receipt. `kisa-run` and the explicit Local `run --kisa-replay` path
+coordinate this boundary for exact M03, M06, and A04 Candidates after sealing the source Run. They
+then pass those replay Run paths to the common gate, which reloads canonical receipts instead of
+trusting mutable in-memory records. The Local path is one-process/one-writer orchestration; it does
+not provide Control Plane leases, cross-process Gate locking, or PostgreSQL replay authority.
 
 `kisa-retest`도 같은 receipt loader와 Restricted Reproducer 경계를 사용하지만 확인 목적은
 분리한다. parent retest Run의 정상 기능 결과를 negative 증명으로 재해석하지 않고,

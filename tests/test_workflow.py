@@ -22,7 +22,11 @@ from pajin.domain.validation import (
     ValidationReasonCode,
 )
 from pajin.policy.engine import PolicyEngine
-from pajin.runtime.control import CancellationKind, ExecutionCancellationContext
+from pajin.runtime.control import (
+    BudgetController,
+    CancellationKind,
+    ExecutionCancellationContext,
+)
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import verify_run_integrity
 from pajin.runtime.worker import (
@@ -31,6 +35,7 @@ from pajin.runtime.worker import (
     WorkerResult,
 )
 from pajin.tools.base import ToolRegistry
+from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.mock import MockAgentProbe
 from pajin.workflow.local import LocalCampaignRunner
 
@@ -50,6 +55,25 @@ class UnknownToolRuntime(DeterministicAgentRuntime):
                     ),
                 )
             ],
+        )
+
+
+class UntrustedPlanIdentityRuntime(DeterministicAgentRuntime):
+    async def plan(self, campaign: CampaignManifest) -> AgentPlan:
+        plan = await super().plan(campaign)
+        return plan.model_copy(
+            update={
+                "steps": [
+                    step.model_copy(
+                        update={
+                            "request": step.request.model_copy(
+                                update={"agent_id": "agent:untrusted-plan-subject"}
+                            )
+                        }
+                    )
+                    for step in plan.steps
+                ]
+            }
         )
 
 
@@ -389,6 +413,113 @@ def test_local_vertical_slice_keeps_semantic_only_finding_out_of_confirmed_repor
     assert (outcome.run_path / "candidate-findings.json").is_file()
     assert (outcome.run_path / "validation-decisions.json").is_file()
     assert (outcome.run_path / "validation-index.json").is_file()
+
+
+def test_local_runner_seals_shared_budget_and_rate_limit_state(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    budget = BudgetController(sample_campaign.spec.budgets)
+    rate_limits = RequestRateLimitLedger()
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign, budget=budget, rate_limits=rate_limits))
+
+    sealed_budget = json.loads((outcome.run_path / "budget.json").read_text(encoding="utf-8"))
+    current_budget = budget.snapshot()
+    exact_fields = set(current_budget) - {"elapsedSeconds"}
+    assert {key: sealed_budget[key] for key in exact_fields} == {
+        key: current_budget[key] for key in exact_fields
+    }
+    assert current_budget["elapsedSeconds"] >= sealed_budget["elapsedSeconds"]
+    assert sealed_budget["toolCalls"] == 1
+    assert (
+        json.loads((outcome.run_path / "rate-limits.json").read_text(encoding="utf-8"))
+        == rate_limits.snapshot()
+    )
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_local_runner_binds_untrusted_plan_identity_to_capability_subject(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runtime = UntrustedPlanIdentityRuntime()
+    runner = LocalCampaignRunner(
+        agents=runtime,
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    plan = json.loads((outcome.run_path / "plan.json").read_text(encoding="utf-8"))
+    capabilities = json.loads((outcome.run_path / "capabilities.json").read_text(encoding="utf-8"))
+    assert plan["steps"][0]["request"]["agent_id"] == runtime.agent_id
+    assert capabilities[0]["grant"]["subject"] == runtime.agent_id
+    assert capabilities[0]["remaining_calls"] == sample_campaign.spec.budgets.max_tool_calls - 1
+    assert outcome.tool_results[0].success
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_local_runner_seals_completed_run_summary(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    summary = json.loads((outcome.run_path / "run.json").read_text(encoding="utf-8"))
+    assert summary["runId"] == outcome.run_id
+    assert summary["status"] == "completed"
+    assert summary["report"] == "report.md"
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_local_runner_rejects_shared_budget_for_different_campaign_contract(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+    mismatched = BudgetController(
+        sample_campaign.spec.budgets.model_copy(
+            update={"max_tool_calls": sample_campaign.spec.budgets.max_tool_calls + 1}
+        )
+    )
+
+    with pytest.raises(ValueError, match="shared budget"):
+        asyncio.run(runner.run(sample_campaign, budget=mismatched))
+
+    assert not (tmp_path / sample_campaign.metadata.name).exists()
 
 
 def test_local_runner_produces_candidates_before_validator_without_claim_event_data(

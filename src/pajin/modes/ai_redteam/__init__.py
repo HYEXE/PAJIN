@@ -2,6 +2,11 @@
 
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
+from pajin.modes.ai_redteam.local import (
+    KISALocalAgentRuntime,
+    KISALocalReplayOrchestrator,
+    KISALocalReplayOutcome,
+)
 from pajin.modes.ai_redteam.replay import (
     KISAAIChatNegativeRetestOracle,
     KISAAIChatReplayOracle,
@@ -33,6 +38,9 @@ __all__ = [
     "KISAAIChatReplayOracle",
     "KISAAIChatSessionMaterializer",
     "KISACandidateProducer",
+    "KISALocalAgentRuntime",
+    "KISALocalReplayOrchestrator",
+    "KISALocalReplayOutcome",
     "KISAModePack",
     "KISAPlannerRuntime",
     "KISARemediationPlanOutcome",

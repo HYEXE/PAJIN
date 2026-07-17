@@ -11,18 +11,18 @@ from pajin.agents.base import AgentRuntime, CandidateProducerRuntime
 from pajin.domain.models import (
     AgentPlan,
     CampaignManifest,
-    CapabilityGrant,
     Finding,
     ToolResult,
 )
 from pajin.domain.validation import FindingValidationSet, ValidationReasonCode
+from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
 from pajin.reporting.markdown import render_markdown_report
-from pajin.runtime.control import ExecutionCancellationContext
+from pajin.runtime.control import BudgetController, ExecutionCancellationContext
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
-from pajin.tools.gateway import ToolGateway
+from pajin.tools.gateway import RequestRateLimitLedger, ToolGateway
 from pajin.workflow.cancellation import (
     await_with_cancellation,
     ensure_cancellation_context,
@@ -68,7 +68,13 @@ class LocalCampaignRunner:
         campaign: CampaignManifest,
         *,
         cancellation: ExecutionCancellationContext | None = None,
+        budget: BudgetController | None = None,
+        rate_limits: RequestRateLimitLedger | None = None,
     ) -> RunOutcome:
+        if budget is not None and budget.budgets != campaign.spec.budgets:
+            raise ValueError("shared budget does not match the Campaign budget contract")
+        budget = budget or BudgetController(campaign.spec.budgets)
+        rate_limits = rate_limits or RequestRateLimitLedger()
         store = RunStore.create(self._output_root, campaign.metadata.name)
         if cancellation is not None:
             cancellation.bind_run(
@@ -78,7 +84,7 @@ class LocalCampaignRunner:
             )
         try:
             return await await_with_cancellation(
-                self._execute(campaign, store),
+                self._execute(campaign, store, budget, rate_limits),
                 cancellation,
             )
         except asyncio.CancelledError:
@@ -106,22 +112,25 @@ class LocalCampaignRunner:
             store.seal()
             raise
 
-    async def _execute(self, campaign: CampaignManifest, store: RunStore) -> RunOutcome:
+    async def _execute(
+        self,
+        campaign: CampaignManifest,
+        store: RunStore,
+        budget: BudgetController,
+        rate_limits: RequestRateLimitLedger,
+    ) -> RunOutcome:
         store.append_event(
             "campaign.started",
             {"campaign": campaign.metadata.name, "mode": campaign.spec.mode.value},
         )
         store.write_json("campaign.json", campaign.model_dump(mode="json", by_alias=True))
 
-        grant = CapabilityGrant(
+        ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
+        grant = ledger.issue_root(
+            campaign,
             subject=self._agents.agent_id,
-            campaign=campaign.metadata.name,
             tools=self._tools.tool_ids(),
             targets={target.endpoint for target in campaign.spec.targets},
-            max_risk_tier=campaign.spec.rules_of_engagement.max_tool_risk_tier,
-            max_calls=campaign.spec.budgets.max_tool_calls,
-            expires_at=campaign.spec.authorization.expires_at,
-            delegable=True,
         )
         store.append_event(
             "capability.issued",
@@ -130,6 +139,20 @@ class LocalCampaignRunner:
 
         proposed_plan = await self._agents.plan(campaign)
         plan = AgentPlan.model_validate(proposed_plan.model_dump())
+        plan = plan.model_copy(
+            update={
+                "steps": [
+                    step.model_copy(
+                        update={
+                            "request": step.request.model_copy(
+                                update={"agent_id": self._agents.agent_id}
+                            )
+                        }
+                    )
+                    for step in plan.steps
+                ]
+            }
+        )
         store.write_json("plan.json", plan.model_dump(mode="json"))
         store.append_event("agent.plan.created", {"steps": len(plan.steps)})
 
@@ -138,10 +161,14 @@ class LocalCampaignRunner:
             tools=self._tools,
             worker=self._worker,
             store=store,
+            rate_limits=rate_limits,
         )
         results: list[ToolResult] = []
-        used_calls = 0
         for step in plan.steps:
+            budget.check_tool_call()
+            if not ledger.can_consume(grant.grant_id):
+                raise CapabilityError("local capability has no remaining authorized call")
+            used_calls = grant.max_calls - ledger.record(grant.grant_id).remaining_calls
             outcome = await gateway.execute(
                 campaign,
                 grant,
@@ -149,7 +176,8 @@ class LocalCampaignRunner:
                 used_calls=used_calls,
             )
             if outcome.executed:
-                used_calls += 1
+                ledger.consume(grant.grant_id)
+                budget.record_tool_call()
             results.append(outcome.result)
 
         admitted_candidates = []
@@ -248,6 +276,17 @@ class LocalCampaignRunner:
         )
         report_relative_path = store.write_text("report.md", report)
         store.append_event("campaign.completed", {"report": report_relative_path})
+        store.write_json("capabilities.json", ledger.snapshot())
+        store.write_json("budget.json", budget.snapshot())
+        store.write_json("rate-limits.json", rate_limits.snapshot())
+        store.write_json(
+            "run.json",
+            {
+                "runId": store.run_id,
+                "status": "completed",
+                "report": report_relative_path,
+            },
+        )
         store.seal()
         return RunOutcome(
             run_id=store.run_id,
