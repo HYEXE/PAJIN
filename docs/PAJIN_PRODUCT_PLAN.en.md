@@ -117,8 +117,15 @@ request-rate state. A canonical
 permit binds the source/original request, Tool/version/target/method, ordinal, one Tool-call unit, and trusted request
 units. Ticket/ordinal uniqueness and the persisted permit digest/request ID return the same row for an exact
 response-loss duplicate; only the first issuance moves reserved budget/rate units to consumed and appends an event.
-Issued units remain consumed when execution is uncertain. A public Replay API, HTTP transport, executor/redeem
-enforcement, new-identity retry, typed finalization/Gate, and negative Control Plane retest remain incomplete.
+Issued units remain consumed when execution is uncertain. M6-07B-2E adds the strict JSON
+`PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array allowlist, dedicated WORKER-role Replay
+claim/heartbeat/Tool-permit endpoints, and matching async client methods. An unset allowlist is empty and fail
+closed; for example, `{"worker-service":["kisa-exact-v1"]}` enables one exact profile. Claim and heartbeat return
+an envelope containing the server-validated canonical `ReplayCompilation` and recheck its compilation,
+Candidate, contract, Grant, and Run bindings. A permit remains non-bearer proof of units already consumed at
+issuance; there is no separate redeem mutation. A public Replay admission/read API, the actual executor and
+pre-dispatch permit-use enforcement, an exact Campaign execution-context bundle, new-identity retry, typed
+finalization/Gate, and negative Control Plane retest remain incomplete.
 Portable/off-host signed proof, materializers and Oracles for other Modes, and structured collaboration memory are
 follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 has been implemented through the
@@ -132,7 +139,7 @@ first vertical slice of the Control Plane.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; ADR-0029 Replay authority state, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA derivation, M6-07B-2C schema-v5 durable reservation plus internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus internal service issuance are implemented, while a public Replay API/HTTP transport, executor/redeem, retry, typed finalization/Gate, and negative Control Plane retest remain incomplete |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; ADR-0029 Replay authority state, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA derivation, M6-07B-2C schema-v5 durable reservation plus internal first-attempt Job/ticket issuance, M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus internal service issuance, and M6-07B-2E fail-closed dedicated Worker HTTP transport, async client, and canonical-compilation claim envelope are implemented, while a public Replay admission/read API, actual executor/pre-dispatch permit use, Campaign execution-context bundle, retry, typed finalization/Gate, and negative Control Plane retest remain incomplete |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -1195,7 +1202,10 @@ planned/pending non-dispatchable derivation proof. M6-07B-2C re-verifies the sou
 schema-v5 durable budget/sealed-rate reservation, fresh Replay Run/Grant compilation append, and exact
 reservation-bound internal first-attempt Job/ticket issuance for the whole batch in one transaction. M6-07B-2D
 idempotently adds the schema-v6 append-only per-call permit ledger/internal service issuance and atomically moves
-issued units from reserved to consumed. Public Replay API/HTTP transport, executor/redeem, new-identity retry,
+issued units from reserved to consumed. M6-07B-2E connects fail-closed subject-to-profile configuration,
+WORKER-only claim/heartbeat/permit endpoints, an async client, and the canonical `ReplayCompilation` claim
+envelope. A public Replay admission/read API, actual executor/pre-dispatch permit use, exact Campaign
+execution-context bundle, new-identity retry,
 end-to-end Control Plane Replay, typed finalization/Gate, negative Control Plane
 retest, and portable/off-host proof remain separate completion criteria.
 
@@ -1309,9 +1319,13 @@ rate-reservation expiry. The unique `(ticket, ordinal)` plus persisted permit di
 for an exact response-loss duplicate without consuming counters or appending an event twice. The first issuance atomically moves reserved
 budget/rate units to consumed and appends the event. An issued permit remains consumed when execution is uncertain;
 cancel/abandon releases only the definitely unissued remainder. Stale, wrong, cancelled, expired, finalized,
-ordinal-gap, and over-limit requests fail closed. This implementation is limited to the internal service ledger and
-issuance. A public Replay/admission API, HTTP transport, executor/redeem enforcement, new-identity retry, typed
-finalization/Gate, and negative Control Plane retest remain outstanding, so full completion cannot be
+ordinal-gap, and over-limit requests fail closed. M6-07B-2D is limited to the internal service ledger and
+issuance. M6-07B-2E adds the strict JSON subject-to-profile allowlist, WORKER-only Replay
+claim/heartbeat/Tool-permit endpoints and async client, and returns the server-validated canonical
+`ReplayCompilation` in the claim/heartbeat envelope. Permit issuance is already durable consumption, so no
+separate redeem mutation is added for this non-bearer permit. A public Replay admission/read API, the actual
+executor and pre-dispatch permit-use enforcement, exact Campaign execution-context bundle, new-identity retry,
+typed finalization/Gate, and negative Control Plane retest remain outstanding, so full completion cannot be
 claimed. The Accepted ADR defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
@@ -1328,7 +1342,7 @@ claimed. The Accepted ADR defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, the Control Plane Replay authority-state slice, M6-07B-2A managed Artifacts, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance, and M6-07B-2D internal one-use per-call permit ledger/issuance are implemented; public API/HTTP transport, executor/redeem, remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, the Control Plane Replay authority-state slice, M6-07B-2A managed Artifacts, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance, M6-07B-2D internal one-use per-call permit ledger/issuance, and M6-07B-2E internal Worker HTTP transport are implemented; public admission/read API, executor/pre-dispatch permit use, remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, Worker daemon, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1391,7 +1405,13 @@ claimed. The Accepted ADR defines at least the following.
   Tool/target/method/unit binding, unique
   ticket/ordinal plus permit digest/request ID response-loss idempotency, atomic reserved→consumed transition and
   event append, burn after uncertain execution, and stale/mismatch/cancel/expire/finalize/gap/limit fail-closed checks
-- Remaining ADR-0029 scope: a public Replay API, HTTP transport, executor/redeem enforcement, new-identity retry
+- M6-07B-2E internal Worker HTTP transport: strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`
+  subject-to-profile-array allowlist (unset means empty/fail closed), dedicated WORKER-only
+  claim/heartbeat/Tool-permit endpoints, matching async client, and a claim/heartbeat envelope that contains the
+  server-validated canonical `ReplayCompilation` and rechecks exact digests and identities; the real executor is
+  absent, so compose does not enable it by default
+- Remaining ADR-0029 scope: a public Replay admission/read API, actual executor and pre-dispatch permit-use
+  enforcement, exact Campaign execution-context bundle, new-identity retry
   issuance, typed finalization/Gate, negative Control Plane retest, portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
@@ -1470,8 +1490,10 @@ The execution boundary and technical structure are recorded across ADR-0001 thro
 Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice,
 M6-07B-2A managed Artifact admission, M6-07B-2B server-derived exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation plus fresh-authority-bound internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6
-append-only one-use per-call permit ledger/internal service issuance are implemented. M6-07B remains incomplete
-pending a public Replay API/HTTP transport, executor/redeem enforcement, new-identity retry issuance, typed
+append-only one-use per-call permit ledger/internal service issuance, and M6-07B-2E fail-closed internal Worker HTTP
+transport with a canonical-compilation claim envelope are implemented. M6-07B remains incomplete pending a public
+Replay admission/read API, actual executor/pre-dispatch permit-use enforcement, exact Campaign execution-context
+bundle, new-identity retry issuance, typed
 finalization/Gate wiring, and negative Control
 Plane retest. The following items need additional decisions before further Phase 3-4 work proceeds.
 

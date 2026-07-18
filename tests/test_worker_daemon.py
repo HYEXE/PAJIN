@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,7 @@ import httpx
 import pytest
 
 from pajin.control_plane.client import (
+    ControlPlaneAuthenticationError,
     ControlPlaneClient,
     ControlPlaneLeaseLost,
     ControlPlaneProtocolError,
@@ -34,6 +36,10 @@ from pajin.control_plane.models import (
     JobState,
     JobView,
     LeaseRequest,
+    ReplayClaimRequest,
+    ReplayLeaseRequest,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
 )
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig, WorkerDaemonStatus
 from pajin.domain.manifest import load_manifest
@@ -72,6 +78,42 @@ def _job(
         error=None,
         created_at=now,
         updated_at=now,
+    )
+
+
+def _replay_tool_permit() -> ReplayToolPermitView:
+    issued_at = datetime.now(UTC)
+    return ReplayToolPermitView(
+        permit_id=f"replay-permit_{'8' * 32}",
+        permit_digest="c" * 64,
+        replay_request_id=f"tool_replay_{'9' * 32}",
+        job_id=f"job_{'4' * 32}",
+        batch_id=f"replay-batch_{'1' * 32}",
+        item_id=f"replay-item_{'2' * 32}",
+        ticket_id=f"replay-ticket_{'3' * 32}",
+        compilation_id=f"replay-compilation_{'5' * 32}",
+        budget_reservation_id=f"budget-reservation_{'6' * 32}",
+        rate_reservation_id=f"rate-reservation_{'7' * 32}",
+        replay_run_id="run_replay_transport",
+        attempt=1,
+        fencing_value=7,
+        call_ordinal=1,
+        issued_to="worker-service",
+        executor_profile="kisa-exact-v1",
+        source_root_digest="a" * 64,
+        compilation_digest="e" * 64,
+        grant_digest="f" * 64,
+        original_request_id="tool_original_request",
+        tool_id="ai.chat-probe",
+        tool_version="1.0.0",
+        target_id="target-ai-chat",
+        target="http://127.0.0.1:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        tool_call_units=1,
+        request_units=3,
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(seconds=15),
     )
 
 
@@ -707,4 +749,130 @@ async def test_async_client_rejects_malformed_success_response() -> None:
                     lease_token="l" * 43,
                     lease_seconds=30,
                 ),
+            )
+
+
+@pytest.mark.asyncio
+async def test_async_client_uses_dedicated_typed_replay_transport() -> None:
+    permit = _replay_tool_permit()
+    seen: list[tuple[str, dict[str, object], str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert isinstance(body, dict)
+        seen.append((request.url.path, body, request.headers["Authorization"]))
+        if request.url.path.endswith("/claim"):
+            return httpx.Response(204)
+        if request.url.path.endswith("/heartbeat"):
+            return httpx.Response(
+                409,
+                json={
+                    "detail": "Replay job lease has expired",
+                    "code": ControlPlaneConflictCode.LEASE_LOST.value,
+                },
+            )
+        return httpx.Response(200, json=permit.model_dump(mode="json"))
+
+    token = "worker-client-token-00000000000000000001"
+    job_id = f"job_{'4' * 32}"
+    ticket_id = f"replay-ticket_{'3' * 32}"
+    lease_token = "lease-token-that-is-at-least-32-characters"
+    claim = ReplayClaimRequest(
+        executor_profile="kisa-exact-v1",
+        lease_seconds=30,
+    )
+    lease = ReplayLeaseRequest(
+        executor_profile="kisa-exact-v1",
+        lease_token=lease_token,
+        lease_seconds=30,
+        ticket_id=ticket_id,
+        fencing_value=7,
+    )
+    permit_request = ReplayToolPermitRequest(
+        executor_profile="kisa-exact-v1",
+        lease_token=lease_token,
+        ticket_id=ticket_id,
+        fencing_value=7,
+        call_ordinal=1,
+    )
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token=token,
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        assert await client.claim_replay(claim) is None
+        with pytest.raises(ControlPlaneLeaseLost, match="expired"):
+            await client.heartbeat_replay(job_id, lease)
+        issued = await client.issue_replay_tool_permit(job_id, permit_request)
+
+    assert issued == permit
+    assert seen == [
+        (
+            "/v1/worker/replay/jobs/claim",
+            claim.model_dump(mode="json"),
+            f"Bearer {token}",
+        ),
+        (
+            f"/v1/worker/replay/jobs/{job_id}/heartbeat",
+            lease.model_dump(mode="json"),
+            f"Bearer {token}",
+        ),
+        (
+            f"/v1/worker/replay/jobs/{job_id}/tool-permits",
+            permit_request.model_dump(mode="json"),
+            f"Bearer {token}",
+        ),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_async_client_rejects_replay_permit_response_with_bearer_material() -> None:
+    permit = _replay_tool_permit().model_dump(mode="json")
+    permit["lease_token"] = "must-not-be-returned"
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=permit)
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token="worker-client-token-00000000000000000001",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ControlPlaneProtocolError, match="invalid ReplayToolPermitView"):
+            await client.issue_replay_tool_permit(
+                f"job_{'4' * 32}",
+                ReplayToolPermitRequest(
+                    executor_profile="kisa-exact-v1",
+                    lease_token="lease-token-that-is-at-least-32-characters",
+                    ticket_id=f"replay-ticket_{'3' * 32}",
+                    fencing_value=7,
+                    call_ordinal=1,
+                ),
+            )
+
+
+@pytest.mark.asyncio
+async def test_async_client_treats_replay_executor_rejection_as_fatal_authz() -> None:
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={
+                "detail": (
+                    "authenticated Worker principal is not registered for this Replay executor"
+                )
+            },
+        )
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token="worker-client-token-00000000000000000001",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        with pytest.raises(ControlPlaneAuthenticationError):
+            await client.claim_replay(
+                ReplayClaimRequest(
+                    executor_profile="unregistered-profile",
+                    lease_seconds=30,
+                )
             )

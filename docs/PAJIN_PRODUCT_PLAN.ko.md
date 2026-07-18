@@ -115,8 +115,15 @@ rolling request-rate state를 다시 검증한다. canonical permit은 source/or
 ordinal, Tool-call unit 하나와 trusted request unit에 결박된다. 고유 ticket/ordinal 및 저장된 permit
 digest/request ID 덕분에 exact response-loss duplicate는 같은 row를 돌려주고 최초 발급만 reserved
 budget/rate를 consumed로 옮기며 event를 append한다. 실행이 불확실해도 발급분은 consumed로 남는다.
-public Replay API, HTTP transport, executor/redeem 집행, 새 identity retry, typed
-finalization/Gate와 negative Control Plane retest가 남아 있어 M6-07B 전체는 미완료다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
+M6-07B-2E는 strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist와
+Replay claim·heartbeat·Tool-permit 발급 전용 WORKER-role endpoint, 대응 async client를 추가했다.
+설정이 없으면 allowlist는 비어 fail closed하며, 예시는
+`{"worker-service":["kisa-exact-v1"]}`이다. claim/heartbeat envelope는 서버가 검증한 canonical
+`ReplayCompilation`을 포함하고 exact compilation·Candidate·contract·Grant·Run binding을 다시
+검사한다. permit은 발급 시 이미 unit을 소비한 non-bearer proof이며 별도 redeem mutation은 없다.
+public Replay admission/read API, 실제 executor와 pre-dispatch permit-use 집행, exact Campaign
+execution-context bundle, 새 identity retry, typed finalization/Gate와 negative Control Plane retest가 남아
+있어 M6-07B 전체는 미완료다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
@@ -129,7 +136,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생, M6-07B-2C schema-v5 durable reservation·내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장·내부 서비스 발급은 구현했으며 public Replay API·HTTP transport, executor/redeem, 재시도, typed finalization/Gate와 negative Control Plane retest는 미완료 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생, M6-07B-2C schema-v5 durable reservation·내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장·내부 서비스 발급, M6-07B-2E fail-closed 전용 Worker HTTP transport·async client·canonical compilation claim envelope는 구현했으며 public Replay admission/read API, 실제 executor/pre-dispatch permit use, Campaign execution-context bundle, 재시도, typed finalization/Gate와 negative Control Plane retest는 미완료 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1196,7 +1203,9 @@ proof로 파생·저장한다. M6-07B-2C는 managed source를 재검증하고 sc
 reservation, fresh Replay Run/Grant compilation append, exact reservation-bound 내부 첫 시도 Job/ticket
 발행을 batch 단위 한 transaction에서 멱등 처리한다. M6-07B-2D는 schema-v6 append-only per-call permit
 ledger와 내부 서비스 발급을 멱등 처리하고, 발급 unit을 reserved에서 consumed로 원자적으로 옮긴다.
-public Replay API·HTTP transport, executor/redeem, 새 identity retry와 end-to-end Control Plane Replay,
+M6-07B-2E는 fail-closed subject→profile 설정, WORKER-only claim/heartbeat/permit endpoint, async client와
+canonical `ReplayCompilation` claim envelope를 연결한다. public Replay admission/read API, 실제
+executor/pre-dispatch permit use, exact Campaign execution-context bundle, 새 identity retry와 end-to-end Control Plane Replay,
 typed finalization/Gate, negative Control Plane
 retest와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
 
@@ -1314,9 +1323,13 @@ reservation expiry에는 제한되지 않는다. 고유 `(ticket, ordinal)`과 �
 정확한 response-loss duplicate는 counter/event 중복 없이 같은 row를 반환한다. 최초 발급은 reserved budget/rate unit을
 consumed로 원자적으로 옮기고 event를 append한다. 실행이 불확실해도 발급된 permit은 consumed로 남고
 cancel/abandon은 확실히 미발급된 잔여분만 release한다. stale/wrong/cancelled/expired/finalized,
-ordinal-gap과 over-limit 요청은 fail closed한다. 이 구현은 내부 서비스 원장/발급에 한정된다. public
-Replay/admission API, HTTP transport, executor/redeem 집행, 새 identity retry, typed
-finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
+ordinal-gap과 over-limit 요청은 fail closed한다. M6-07B-2D 구현은 내부 서비스 원장/발급에 한정된다.
+M6-07B-2E는 strict JSON subject→profile allowlist, WORKER-only Replay claim/heartbeat/Tool-permit
+endpoint와 async client를 추가하고 claim/heartbeat에 서버 검증 canonical `ReplayCompilation`을 싣는다.
+permit 발급이 곧 durable consumption이므로 non-bearer permit에 별도 redeem mutation은 추가하지 않는다.
+public Replay admission/read API, 실제 executor와 pre-dispatch permit-use 집행, exact Campaign
+execution-context bundle, 새 identity retry, typed finalization/Gate와 negative Control Plane retest가 남아
+있어 전체 완료를 주장할 수 없다.
 승인된 ADR은 최소한 다음을 정의한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
@@ -1333,7 +1346,7 @@ finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완�
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance와 M6-07B-2D 내부 일회성 호출별 permit ledger/issuance는 구현; public API·HTTP transport, executor/redeem 등 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance, M6-07B-2D 내부 일회성 호출별 permit ledger/issuance와 M6-07B-2E 내부 Worker HTTP transport는 구현; public admission/read API, executor/pre-dispatch permit use 등 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1397,7 +1410,12 @@ finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완�
   request, exact active authority/counter 검증과 rolling-window rate 재수용, canonical Tool/target/method/unit 결박, 고유
   ticket/ordinal과 permit digest/request ID를 통한 response-loss 멱등성, reserved→consumed 원자 전이와
   event append, 불확실한 실행에도 발급분 burn, stale/mismatch/cancel/expire/finalize/gap/limit fail-closed
-- 남은 ADR-0029 범위: public Replay API, HTTP transport, executor/redeem 집행, 새 identity retry 발행,
+- M6-07B-2E 내부 Worker HTTP transport: strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`
+  subject→profile-array allowlist(unset은 empty/fail-closed), WORKER-only 전용 claim·heartbeat·Tool-permit
+  endpoint, 대응 async client, 서버 검증 canonical `ReplayCompilation`을 포함하고 exact digest/identity를
+  다시 확인하는 claim/heartbeat envelope; 실제 executor가 없으므로 compose 기본 활성화 안 함
+- 남은 ADR-0029 범위: public Replay admission/read API, actual executor와 pre-dispatch permit-use 집행,
+  exact Campaign execution-context bundle, 새 identity retry 발행,
   typed finalization/Gate, negative Control Plane retest,
   portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
@@ -1476,8 +1494,10 @@ finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완�
 M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각, M6-07B-2A
 managed Artifact admission, M6-07B-2B 서버 파생 exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation 및 fresh authority-bound 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6
-append-only 일회성 호출별 permit 원장과 내부 서비스 발급은 구현됐다. 다만 public Replay API·HTTP
-transport, executor/redeem 집행, 새 identity retry 발행, typed finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B
+append-only 일회성 호출별 permit 원장과 내부 서비스 발급, M6-07B-2E fail-closed 내부 Worker HTTP
+transport와 canonical compilation claim envelope는 구현됐다. 다만 public Replay admission/read API,
+actual executor/pre-dispatch permit-use 집행, exact Campaign execution-context bundle, 새 identity retry 발행,
+typed finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B
 전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책

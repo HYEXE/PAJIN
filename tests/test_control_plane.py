@@ -12,7 +12,13 @@ from sqlalchemy.exc import DatabaseError
 
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.database import CheckpointRecord, EventRecord, JobRecord
-from pajin.control_plane.models import Principal, PrincipalRole
+from pajin.control_plane.models import (
+    Principal,
+    PrincipalRole,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
+)
+from pajin.control_plane.service import LeaseRejected
 
 OPERATOR_TOKEN = "operator-token-that-is-long-and-distinct"
 APPROVER_TOKEN = "approver-token-that-is-long-and-distinct"
@@ -43,6 +49,52 @@ def _settings(path: Path) -> ControlPlaneSettings:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+def _set_required_control_plane_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", OPERATOR_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", APPROVER_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv(
+        "PAJIN_CP_CHECKPOINT_KEY",
+        "test-checkpoint-signing-key-32-bytes-minimum",
+    )
+
+
+def _replay_tool_permit_view() -> ReplayToolPermitView:
+    issued_at = datetime.now(UTC)
+    return ReplayToolPermitView(
+        permit_id=f"replay-permit_{'8' * 32}",
+        permit_digest="c" * 64,
+        replay_request_id=f"tool_replay_{'9' * 32}",
+        job_id=f"job_{'4' * 32}",
+        batch_id=f"replay-batch_{'1' * 32}",
+        item_id=f"replay-item_{'2' * 32}",
+        ticket_id=f"replay-ticket_{'3' * 32}",
+        compilation_id=f"replay-compilation_{'5' * 32}",
+        budget_reservation_id=f"budget-reservation_{'6' * 32}",
+        rate_reservation_id=f"rate-reservation_{'7' * 32}",
+        replay_run_id="run_replay_transport",
+        attempt=1,
+        fencing_value=7,
+        call_ordinal=1,
+        issued_to="worker-service",
+        executor_profile="kisa-exact-v1",
+        source_root_digest="a" * 64,
+        compilation_digest="e" * 64,
+        grant_digest="f" * 64,
+        original_request_id="tool_original_request",
+        tool_id="ai.chat-probe",
+        tool_version="1.0.0",
+        target_id="target-ai-chat",
+        target="http://127.0.0.1:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        tool_call_units=1,
+        request_units=3,
+        issued_at=issued_at,
+        expires_at=issued_at + timedelta(seconds=15),
+    )
 
 
 def _submit(client: TestClient, suffix: str = "main") -> tuple[str, str]:
@@ -369,3 +421,181 @@ def test_worker_claim_uses_bounded_long_poll(tmp_path: Path) -> None:
 
     assert response.status_code == 204
     assert 0.9 <= elapsed < 2
+
+
+def test_replay_executor_profile_environment_is_explicit_and_subject_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_required_control_plane_environment(monkeypatch)
+    monkeypatch.setenv("PAJIN_CP_WORKER_SUBJECT", "worker-service")
+    monkeypatch.setenv(
+        "PAJIN_CP_REPLAY_EXECUTOR_PROFILES",
+        '{"worker-service":["kisa-exact-v1","kisa-exact-v2"]}',
+    )
+
+    settings = ControlPlaneSettings.from_env()
+
+    assert settings.replay_executor_profiles == {
+        "worker-service": frozenset({"kisa-exact-v1", "kisa-exact-v2"})
+    }
+
+
+@pytest.mark.parametrize(
+    "raw_allowlist",
+    [
+        "",
+        "[]",
+        '{"unknown-worker":["kisa-exact-v1"]}',
+        '{"worker-service":[]}',
+        '{"worker-service":"kisa-exact-v1"}',
+        '{"worker-service":["invalid profile"]}',
+        '{"worker-service":["kisa-exact-v1","kisa-exact-v1"]}',
+        ('{"worker-service":["kisa-exact-v1"],"worker-service":["kisa-exact-v2"]}'),
+    ],
+)
+def test_replay_executor_profile_environment_rejects_ambiguous_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    raw_allowlist: str,
+) -> None:
+    _set_required_control_plane_environment(monkeypatch)
+    monkeypatch.setenv("PAJIN_CP_WORKER_SUBJECT", "worker-service")
+    monkeypatch.setenv("PAJIN_CP_REPLAY_EXECUTOR_PROFILES", raw_allowlist)
+
+    with pytest.raises(RuntimeError, match="PAJIN_CP_REPLAY_EXECUTOR_PROFILES"):
+        ControlPlaneSettings.from_env()
+
+
+def test_programmatic_replay_executor_profiles_reject_non_worker_subject(
+    tmp_path: Path,
+) -> None:
+    with pytest.raises(ValueError, match="authenticated Worker principal"):
+        replace(
+            _settings(tmp_path / "invalid-replay-profile-subject.db"),
+            replay_executor_profiles={"alice-operator": frozenset({"kisa-exact-v1"})},
+        )
+
+
+def test_replay_worker_routes_are_role_protected_typed_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    empty_app = create_app(_settings(tmp_path / "replay-route-fail-closed.db"))
+    claim_body = {"executor_profile": "kisa-exact-v1", "lease_seconds": 30}
+    with TestClient(empty_app) as client:
+        rejected = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(WORKER_TOKEN),
+            json=claim_body,
+        )
+    assert rejected.status_code == 403
+    assert rejected.json() == {
+        "detail": "authenticated Worker principal is not registered for this Replay executor"
+    }
+
+    settings = replace(
+        _settings(tmp_path / "replay-routes.db"),
+        replay_executor_profiles={"worker-service": frozenset({"kisa-exact-v1"})},
+    )
+    app = create_app(settings)
+    job_id = f"job_{'4' * 32}"
+    ticket_id = f"replay-ticket_{'3' * 32}"
+    lease_token = "lease-token-that-is-at-least-32-characters"
+    permit_body = {
+        "executor_profile": "kisa-exact-v1",
+        "lease_token": lease_token,
+        "ticket_id": ticket_id,
+        "fencing_value": 7,
+        "call_ordinal": 1,
+    }
+    seen: dict[str, object] = {}
+
+    with TestClient(app) as client:
+        missing_auth = client.post(
+            "/v1/worker/replay/jobs/claim",
+            json=claim_body,
+        )
+        wrong_role = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(OPERATOR_TOKEN),
+            json=claim_body,
+        )
+        empty_claim = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(WORKER_TOKEN),
+            json=claim_body,
+        )
+
+        def issue_permit(
+            selected_job_id: str,
+            request: ReplayToolPermitRequest,
+            *,
+            actor: str,
+        ) -> ReplayToolPermitView:
+            seen.update(job_id=selected_job_id, request=request, actor=actor)
+            return _replay_tool_permit_view()
+
+        monkeypatch.setattr(
+            app.state.control_plane,
+            "issue_replay_tool_permit",
+            issue_permit,
+        )
+        issued = client.post(
+            f"/v1/worker/replay/jobs/{job_id}/tool-permits",
+            headers=_auth(WORKER_TOKEN),
+            json=permit_body,
+        )
+        injected = client.post(
+            f"/v1/worker/replay/jobs/{job_id}/tool-permits",
+            headers=_auth(WORKER_TOKEN),
+            json={**permit_body, "target": "https://attacker.invalid"},
+        )
+
+        def reject_heartbeat(*_args: object, **_kwargs: object) -> None:
+            raise LeaseRejected("Replay job lease has expired")
+
+        monkeypatch.setattr(
+            app.state.control_plane,
+            "heartbeat_replay_job",
+            reject_heartbeat,
+        )
+        heartbeat = client.post(
+            f"/v1/worker/replay/jobs/{job_id}/heartbeat",
+            headers=_auth(WORKER_TOKEN),
+            json={
+                "executor_profile": "kisa-exact-v1",
+                "lease_token": lease_token,
+                "lease_seconds": 30,
+                "ticket_id": ticket_id,
+                "fencing_value": 7,
+            },
+        )
+        openapi = client.get("/openapi.json").json()
+
+    assert missing_auth.status_code == 401
+    assert wrong_role.status_code == 403
+    assert empty_claim.status_code == 204
+    assert issued.status_code == 200, issued.text
+    assert seen == {
+        "job_id": job_id,
+        "request": ReplayToolPermitRequest.model_validate(permit_body),
+        "actor": "worker-service",
+    }
+    assert lease_token not in issued.text
+    assert issued.headers["cache-control"] == "no-store, max-age=0"
+    assert issued.headers["pragma"] == "no-cache"
+    assert injected.status_code == 422
+    assert heartbeat.status_code == 409
+    assert heartbeat.json() == {
+        "detail": "Replay job lease has expired",
+        "code": "lease_lost",
+    }
+
+    replay_paths = (
+        "/v1/worker/replay/jobs/claim",
+        "/v1/worker/replay/jobs/{job_id}/heartbeat",
+        "/v1/worker/replay/jobs/{job_id}/tool-permits",
+    )
+    paths = openapi["paths"]
+    assert all(path in paths for path in replay_paths)
+    assert all("409" in paths[path]["post"]["responses"] for path in replay_paths)
+    assert all(not path.startswith("/v1/replay") for path in paths)

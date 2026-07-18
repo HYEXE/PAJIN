@@ -19,6 +19,11 @@ from pajin.control_plane.models import (
     FailJobRequest,
     JobView,
     LeaseRequest,
+    ReplayClaimRequest,
+    ReplayExecutionClaimView,
+    ReplayLeaseRequest,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
 )
 
 
@@ -100,6 +105,43 @@ class ControlPlaneClient:
             json=request.model_dump(mode="json"),
         )
         return self._validated(response, JobView)
+
+    async def claim_replay(
+        self,
+        request: ReplayClaimRequest,
+    ) -> ReplayExecutionClaimView | None:
+        response = await self._request(
+            "POST",
+            "/v1/worker/replay/jobs/claim",
+            json=request.model_dump(mode="json"),
+        )
+        if response.status_code == 204:
+            return None
+        return self._validated(response, ReplayExecutionClaimView)
+
+    async def heartbeat_replay(
+        self,
+        job_id: str,
+        request: ReplayLeaseRequest,
+    ) -> ReplayExecutionClaimView:
+        response = await self._request(
+            "POST",
+            f"/v1/worker/replay/jobs/{job_id}/heartbeat",
+            json=request.model_dump(mode="json"),
+        )
+        return self._validated(response, ReplayExecutionClaimView)
+
+    async def issue_replay_tool_permit(
+        self,
+        job_id: str,
+        request: ReplayToolPermitRequest,
+    ) -> ReplayToolPermitView:
+        response = await self._request(
+            "POST",
+            f"/v1/worker/replay/jobs/{job_id}/tool-permits",
+            json=request.model_dump(mode="json"),
+        )
+        return self._validated(response, ReplayToolPermitView)
 
     async def complete(self, job_id: str, request: CompleteJobRequest) -> JobView:
         response = await self._request(

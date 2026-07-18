@@ -44,8 +44,16 @@ the attached PDF.
 > performs rolling-window rate re-admission, then issues a one-use permit bound to the canonical
 > Tool, target, method, and trusted unit cost. Ticket/ordinal uniqueness and the persisted permit digest/request ID make a response-loss
 > duplicate return the same row; only the first issuance consumes the reserved units and appends an event.
-> An issued permit stays consumed when execution is uncertain. Public Replay/admission API, HTTP
-> transport, executor/redeem enforcement, new-identity retry issuance, typed finalization/Gate wiring,
+> An issued permit stays consumed when execution is uncertain. M6-07B-2E adds fail-closed internal
+> Worker HTTP transport. The strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array
+> allowlist is empty and fails closed when unset; for example,
+> `{"worker-service":["kisa-exact-v1"]}` grants that one profile to that one subject. Dedicated
+> WORKER-role claim, heartbeat, and Tool-permit endpoints plus an async client expose the existing
+> authority, while claim/heartbeat envelopes contain the server-validated canonical
+> `ReplayCompilation`. A permit remains a non-bearer proof already consumed on issuance; there is no
+> separate redeem mutation. Compose does not enable an executor by default because no actual executor
+> exists. A public Replay admission/read API, actual executor/pre-dispatch permit-use enforcement,
+> the exact Campaign execution-context bundle, new-identity retry issuance, typed finalization/Gate wiring,
 > and negative Control Plane retest remain follow-up work; M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
@@ -101,7 +109,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | Implemented |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation, durable first-attempt issuance, and internal per-call permit issuance, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/issued ticket, append-only per-call permit ledger, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, Control Plane exact M03/M06/A04 derivation, internal first-attempt issuance, and one-use per-call permit ledger/issuance implemented; public Replay API/HTTP transport, executor/redeem, retry, finalization/Gate, and organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation, durable first-attempt issuance, internal per-call permit issuance, and Worker HTTP transport/client, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/issued ticket, append-only per-call permit ledger, server-validated claim compilation envelope, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, Control Plane exact M03/M06/A04 derivation, internal first-attempt issuance, one-use per-call permit ledger/issuance, and fail-closed WORKER-only HTTP transport/client implemented; public Replay admission/read API, actual executor/pre-dispatch permit use, Campaign execution-context bundle, retry, finalization/Gate, and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | Local DB/OS trust boundary implemented; portable signed proof remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` report generation | `kisa-report.md`, `kisa-results.json` | Implemented |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -333,7 +341,8 @@ KISA threats remain `not assessed`.
 - The explicit Local KISA coordinator in M6-07A is limited to the exact M03, M06, and A04 allowlist
   and one process with one writer. M6-07B remains incomplete, but its first authority-state slice,
   M6-07B-2A managed Artifact foundation, M6-07B-2B trusted derivation, M6-07B-2C durable issuance,
-  and M6-07B-2D internal per-call permit ledger/issuance slices are implemented.
+  M6-07B-2D internal per-call permit ledger/issuance, and M6-07B-2E fail-closed internal Worker HTTP
+  transport slices are implemented.
   Batch input is only the exact opaque Artifact locator and idempotency key. The Control Plane
   re-verifies the managed sealed AI Red Team source, derives eligible exact M03/M06/A04 confirmation
   Candidates and contracts, compiles them, and persists canonical `ReplayCompilation` and Grant as
@@ -364,9 +373,17 @@ KISA threats remain `not assessed`.
   response-loss duplicate without double consumption or events. The first issuance atomically moves the
   budget/rate units from reserved to consumed and appends an event. Issued permits remain consumed
   when execution is uncertain; cancel/abandon releases only the definitely unissued remainder.
-  Stale, wrong, cancelled, expired, finalized, ordinal-gap, and over-limit requests fail closed. A
-  public Replay API, HTTP transport, executor/redeem enforcement, new-identity retry, typed
-  finalization/Gate, and negative Control Plane retest remain outstanding.
+  Stale, wrong, cancelled, expired, finalized, ordinal-gap, and over-limit requests fail closed.
+  M6-07B-2E's strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array allowlist is
+  empty and fail closed when unset. For example, `{"worker-service":["kisa-exact-v1"]}` grants that
+  one profile to that one subject. Dedicated WORKER-role claim, heartbeat, and Tool-permit endpoints
+  and async client methods expose this existing service authority. Claim and heartbeat return a
+  `ReplayExecutionClaimView` with the canonical `ReplayCompilation` after the server revalidates its
+  exact digest and identity bindings. A permit is a non-bearer proof whose reserved units were
+  already consumed at issuance, with no separate redeem mutation. Compose does not enable an executor
+  by default because no actual executor exists. A public Replay admission/read API, actual executor
+  pre-dispatch permit-use enforcement, the exact Campaign execution-context bundle, new-identity retry,
+  typed finalization/Gate, and negative Control Plane retest remain outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific

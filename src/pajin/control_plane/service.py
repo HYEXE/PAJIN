@@ -77,7 +77,7 @@ from pajin.control_plane.models import (
     ReplayBatchState,
     ReplayBatchView,
     ReplayClaimRequest,
-    ReplayClaimView,
+    ReplayExecutionClaimView,
     ReplayItemState,
     ReplayItemView,
     ReplayJobPayload,
@@ -111,6 +111,10 @@ class ResourceNotFound(ControlPlaneError):
 
 class StateConflict(ControlPlaneError):
     pass
+
+
+class ReplayExecutorRejected(StateConflict):
+    """Authenticated principal is not authorized for the selected Replay executor."""
 
 
 class RunCancelled(StateConflict):
@@ -1413,7 +1417,7 @@ class ControlPlaneService:
         request: ReplayClaimRequest,
         *,
         actor: str,
-    ) -> ReplayClaimView | None:
+    ) -> ReplayExecutionClaimView | None:
         """Burn exactly one issued Replay ticket while leasing its one-shot Job."""
 
         self._require_replay_executor_profile(actor, request.executor_profile)
@@ -1492,7 +1496,7 @@ class ControlPlaneService:
             item = self._replay_item(session, ticket.item_id, lock=True)
             batch = self._replay_batch(session, ticket.batch_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
-            self._verify_replay_binding(session, job, ticket, item, batch)
+            authority = self._verify_replay_binding(session, job, ticket, item, batch)
             now = utc_now()
 
             if (
@@ -1622,6 +1626,7 @@ class ControlPlaneService:
                 batch=batch,
                 item=item,
                 ticket=ticket,
+                compilation=authority.compilation,
                 lease_token=lease_token,
             )
 
@@ -1631,12 +1636,12 @@ class ControlPlaneService:
         request: ReplayLeaseRequest,
         *,
         actor: str,
-    ) -> ReplayClaimView:
+    ) -> ReplayExecutionClaimView:
         """Extend only the exact principal/token/ticket/fence Replay lease."""
 
         self._require_replay_executor_profile(actor, request.executor_profile)
         expired = False
-        result: ReplayClaimView | None = None
+        result: ReplayExecutionClaimView | None = None
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
             if job.kind != _INTERNAL_REPLAY_KIND:
@@ -1645,7 +1650,7 @@ class ControlPlaneService:
             item = self._replay_item(session, ticket.item_id, lock=True)
             batch = self._replay_batch(session, ticket.batch_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
-            self._verify_replay_binding(session, job, ticket, item, batch)
+            authority = self._verify_replay_binding(session, job, ticket, item, batch)
             if (
                 run.state == RunState.CANCELLED.value
                 or batch.state == ReplayBatchState.CANCELLED.value
@@ -1723,6 +1728,7 @@ class ControlPlaneService:
                     batch=batch,
                     item=item,
                     ticket=ticket,
+                    compilation=authority.compilation,
                     lease_token=request.lease_token,
                 )
         if expired:
@@ -3088,7 +3094,7 @@ class ControlPlaneService:
     def _require_replay_executor_profile(self, actor: str, executor_profile: str) -> None:
         allowed = self._replay_executor_profiles.get(actor, frozenset())
         if executor_profile not in allowed:
-            raise StateConflict(
+            raise ReplayExecutorRejected(
                 "authenticated Worker principal is not registered for this Replay executor"
             )
 
@@ -4696,13 +4702,15 @@ class ControlPlaneService:
         batch: ReplayBatchRecord,
         item: ReplayItemRecord,
         ticket: ReplayTicketRecord,
+        compilation: ReplayCompilation,
         lease_token: str,
-    ) -> ReplayClaimView:
-        return ReplayClaimView(
+    ) -> ReplayExecutionClaimView:
+        return ReplayExecutionClaimView(
             job=ControlPlaneService._job_view(job),
             batch=ControlPlaneService._replay_batch_view(batch),
             item=ControlPlaneService._replay_item_view(item),
             ticket=ControlPlaneService._replay_ticket_view(ticket),
+            compilation=compilation,
             lease_token=lease_token,
         )
 

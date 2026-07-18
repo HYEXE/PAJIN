@@ -57,6 +57,7 @@ from pajin.control_plane.models import (
     ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayClaimRequest,
+    ReplayExecutionClaimView,
     ReplayItemState,
     ReplayJobPayload,
     ReplayLeaseRequest,
@@ -80,6 +81,7 @@ from pajin.tools.ai import AIChatProbeTool
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
+OTHER_WORKER_TOKEN = "other-replay-worker-token-that-is-long-and-distinct"
 EXECUTOR_PROFILE = "kisa-exact-v1"
 REGISTERED_REPLAY_ACTORS = frozenset(
     {
@@ -432,7 +434,7 @@ def test_artifact_admission_and_batch_fail_closed_without_managed_repository(
 
 
 @pytest.mark.parametrize("job_kind", ["replay", InternalJobKind.REPLAY.value])
-def test_public_api_rejects_replay_submission_and_exposes_no_replay_route(
+def test_public_api_rejects_replay_submission_and_exposes_only_internal_worker_routes(
     tmp_path: Path,
     job_kind: str,
 ) -> None:
@@ -459,12 +461,165 @@ def test_public_api_rejects_replay_submission_and_exposes_no_replay_route(
             },
         )
         assert generic_claim.status_code == 422
-        assert all("replay" not in path for path in app.openapi()["paths"])
+        paths = app.openapi()["paths"]
+        assert all(not path.startswith("/v1/replay") for path in paths)
+        assert set(path for path in paths if path.startswith("/v1/worker/replay/")) == {
+            "/v1/worker/replay/jobs/claim",
+            "/v1/worker/replay/jobs/{job_id}/heartbeat",
+            "/v1/worker/replay/jobs/{job_id}/tool-permits",
+        }
 
         with app.state.repository.transaction() as session:
             assert session.scalar(select(func.count()).select_from(RunRecord)) == 0
             assert session.scalar(select(func.count()).select_from(JobRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 0
+
+
+def test_internal_replay_http_transport_is_worker_only_exact_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "internal-replay-transport.db"
+    staging_root, artifact_root = _artifact_roots(database_path)
+    base = _settings(database_path)
+    settings = replace(
+        base,
+        credentials={
+            **base.credentials,
+            OTHER_WORKER_TOKEN: Principal(
+                subject="other-replay-worker",
+                roles=frozenset({PrincipalRole.WORKER}),
+            ),
+        },
+        replay_executor_profiles={
+            "replay-worker": frozenset({EXECUTOR_PROFILE}),
+            "other-replay-worker": frozenset({EXECUTOR_PROFILE}),
+        },
+        artifact_staging_root=staging_root,
+        artifact_repository_root=artifact_root,
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        repository = app.state.repository
+        service = app.state.control_plane
+        _create_batch(repository, service, "internal-replay-transport")
+
+        missing_auth = client.post(
+            "/v1/worker/replay/jobs/claim",
+            json={"executor_profile": EXECUTOR_PROFILE, "lease_seconds": 30},
+        )
+        assert missing_auth.status_code == 401
+        wrong_role = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(OPERATOR_TOKEN),
+            json={"executor_profile": EXECUTOR_PROFILE, "lease_seconds": 30},
+        )
+        assert wrong_role.status_code == 403
+        injected_identity = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(WORKER_TOKEN),
+            json={
+                "executor_profile": EXECUTOR_PROFILE,
+                "lease_seconds": 30,
+                "worker_id": "body-controlled-worker",
+            },
+        )
+        assert injected_identity.status_code == 422
+        unregistered_profile = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(WORKER_TOKEN),
+            json={"executor_profile": "unregistered-profile", "lease_seconds": 30},
+        )
+        assert unregistered_profile.status_code == 403
+
+        claimed_response = client.post(
+            "/v1/worker/replay/jobs/claim",
+            headers=_auth(WORKER_TOKEN),
+            json={"executor_profile": EXECUTOR_PROFILE, "lease_seconds": 30},
+        )
+        assert claimed_response.status_code == 200, claimed_response.text
+        assert claimed_response.headers["cache-control"] == "no-store, max-age=0"
+        claimed = ReplayExecutionClaimView.model_validate(claimed_response.json())
+        assert claimed.job.lease_owner == "replay-worker"
+        assert (
+            sha256(canonical_replay_compilation_bytes(claimed.compilation)).hexdigest()
+            == claimed.item.compilation_digest
+        )
+
+        lease_request = ReplayLeaseRequest(
+            executor_profile=EXECUTOR_PROFILE,
+            lease_token=claimed.lease_token,
+            lease_seconds=45,
+            ticket_id=claimed.ticket.ticket_id,
+            fencing_value=claimed.ticket.fencing_value,
+        )
+        wrong_principal = client.post(
+            f"/v1/worker/replay/jobs/{claimed.job.job_id}/heartbeat",
+            headers=_auth(OTHER_WORKER_TOKEN),
+            json=lease_request.model_dump(mode="json"),
+        )
+        assert wrong_principal.status_code == 409
+        assert wrong_principal.json()["code"] == "lease_lost"
+        heartbeat = client.post(
+            f"/v1/worker/replay/jobs/{claimed.job.job_id}/heartbeat",
+            headers=_auth(WORKER_TOKEN),
+            json=lease_request.model_dump(mode="json"),
+        )
+        assert heartbeat.status_code == 200, heartbeat.text
+        refreshed = ReplayExecutionClaimView.model_validate(heartbeat.json())
+
+        permit_request = ReplayToolPermitRequest(
+            executor_profile=EXECUTOR_PROFILE,
+            lease_token=refreshed.lease_token,
+            ticket_id=refreshed.ticket.ticket_id,
+            fencing_value=refreshed.ticket.fencing_value,
+            call_ordinal=1,
+        )
+        injected_call = client.post(
+            f"/v1/worker/replay/jobs/{refreshed.job.job_id}/tool-permits",
+            headers=_auth(WORKER_TOKEN),
+            json={
+                **permit_request.model_dump(mode="json"),
+                "target": "https://attacker.invalid/injected",
+                "tool_id": "attacker-controlled-tool",
+                "request_units": 0,
+            },
+        )
+        assert injected_call.status_code == 422
+        wrong_permit_principal = client.post(
+            f"/v1/worker/replay/jobs/{refreshed.job.job_id}/tool-permits",
+            headers=_auth(OTHER_WORKER_TOKEN),
+            json=permit_request.model_dump(mode="json"),
+        )
+        assert wrong_permit_principal.status_code == 409
+        assert wrong_permit_principal.json()["code"] == "lease_lost"
+
+        first = client.post(
+            f"/v1/worker/replay/jobs/{refreshed.job.job_id}/tool-permits",
+            headers=_auth(WORKER_TOKEN),
+            json=permit_request.model_dump(mode="json"),
+        )
+        duplicate = client.post(
+            f"/v1/worker/replay/jobs/{refreshed.job.job_id}/tool-permits",
+            headers=_auth(WORKER_TOKEN),
+            json=permit_request.model_dump(mode="json"),
+        )
+        assert first.status_code == duplicate.status_code == 200
+        assert first.json() == duplicate.json()
+        permit_body = first.json()
+        assert not {"lease_token", "lease_token_hash", "arguments", "redeem_token"}.intersection(
+            permit_body
+        )
+
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 1
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(ReplayEventRecord.event_type == "replay.tool-permit.issued")
+                )
+                == 1
+            )
 
 
 @pytest.mark.parametrize("kind", [InternalJobKind.REPLAY.value, "future-unregistered-kind"])
@@ -1513,6 +1668,13 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
         assert claimed.ticket.fencing_value == 1
         assert claimed.ticket.job_id == claimed.job.job_id
         assert claimed.ticket.replay_run_id == claimed.job.run_id
+        assert (
+            sha256(canonical_replay_compilation_bytes(claimed.compilation)).hexdigest()
+            == claimed.item.compilation_digest
+        )
+        assert claimed.compilation.spec.binding.replay_run_id == claimed.job.run_id
+        assert claimed.compilation.spec.binding.candidate_id == claimed.item.candidate_id
+        assert replay_context_digest(claimed.compilation.grant) == claimed.item.grant_digest
         source_payload = claimed.job.payload["source"]
         assert source_payload["producer_run_id"] == claimed.batch.source.producer_run_id
         assert source_payload["run_id"] == claimed.batch.source.run_id
@@ -1557,6 +1719,24 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
             )
             is None
         )
+    finally:
+        repository.close()
+
+
+def test_replay_execution_claim_rejects_compilation_from_another_ticket(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "claim-compilation-swap.db")
+    try:
+        _create_batch(repository, service, "claim-compilation-swap-a")
+        _create_batch(repository, service, "claim-compilation-swap-b")
+        first = _claim(service, actor="authenticated-worker-a")
+        second = _claim(service, actor="authenticated-worker-b")
+
+        swapped = first.model_dump(mode="python")
+        swapped["compilation"] = second.compilation.model_dump(mode="python")
+        with pytest.raises(ValueError, match="compilation authority binding"):
+            ReplayExecutionClaimView.model_validate(swapped)
     finally:
         repository.close()
 

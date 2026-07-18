@@ -4,7 +4,7 @@
 
 - 상태: 승인됨
 - 날짜: 2026-07-17
-- 구현 최신화: 2026-07-18 (M6-07B-2D 내부 호출별 permit 원장/발급)
+- 구현 최신화: 2026-07-18 (M6-07B-2E fail-closed 내부 Worker HTTP transport)
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -65,9 +65,16 @@ reservation expiry에는 제한되지 않는다. 고유 `(ticket, ordinal)`과 �
 exact response-loss duplicate는 counter를 다시 소비하거나 event를 두 번 append하지 않고 같은 row를 반환한다. 최초 발급은
 reserved budget/rate unit을 consumed로 원자적으로 옮기고 audit event를 append한다. 실행이 불확실해도
 발급분은 consumed로 남고 cancel/abandon은 확실히 미발급된 잔여분만 release한다.
-stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다. public
-Replay/admission API, HTTP transport/internal endpoint 연결, Replay executor와 permit redeem/use 집행, 새
-identity retry, typed server-side artifact finalization과 result digest 검증, Gate와 negative Control Plane
+stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다. M6-07B-2E는 strict
+JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist와 전용 WORKER-role HTTP
+endpoint/async client를 추가했다. allowlist는 설정이 없으면 빈 목록으로 fail closed하며,
+`{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. claim,
+heartbeat, Tool-permit 발급은 internal Worker transport로만 노출되고, claim/heartbeat envelope은
+서버가 exact digest·identity binding을 다시 검증한 canonical `ReplayCompilation`을 포함한다.
+permit은 발급 시 이미 소비된 non-bearer proof이며 별도 redeem mutation은 없다. 실제
+executor가 없으므로 compose에서 기본 활성화하지 않는다. public Replay admission/read API,
+실제 Replay executor/pre-dispatch permit-use 집행, exact Campaign execution-context bundle, 새 identity
+retry, typed server-side artifact finalization과 result digest 검증, Gate와 negative Control Plane
 retest는 남아 있다. 이 실행 경계가 완료되기 전에는 Control Plane이 완전한 영속형 Replay
 오케스트레이션을 제공한다고 주장할 수 없다.
 
@@ -121,9 +128,11 @@ M6-07B-2C는 schema-v5 durable budget/sealed-rate reservation과 내부 멱등 �
 batch의 exact reservation-bound Job/ticket 집합을 원자적으로 만든다. 일반 Job completion/failure
 경로는 Replay Job에 계속 사용할 수 없다. M6-07B-2D는 schema-v6 append-only 호출별 permit 원장과
 내부 서비스 발급을 추가하고 exact active authority 재검증, canonical operation 결박,
-ticket/ordinal 멱등성, reserved→consumed 전이와 burn-on-uncertainty를 구현했다. public Replay API,
-HTTP transport/internal endpoint, executor/redeem, retry, typed finalization, Gate와 negative Control Plane
-retest는 의도적으로 완료된 기반 밖에 남아 있다.
+ticket/ordinal 멱등성, reserved→consumed 전이와 burn-on-uncertainty를 구현했다. M6-07B-2E는
+fail-closed subject/profile allowlist, WORKER-only claim·heartbeat·Tool-permit HTTP endpoint, async client와
+서버 검증 canonical compilation claim envelope를 추가했다. public Replay admission/read API, 실제
+executor/pre-dispatch permit-use, Campaign execution-context bundle, retry, typed finalization, Gate와 negative
+Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -319,8 +328,17 @@ digest/request ID는 concurrent request 및 response-loss duplicate가 같은 pe
 최초 발급 transaction만 budget/rate reserved unit을 consumed로 옮기고 감사 event를 append한다. 이미
 발급된 permit은 실행 여부가 불명확하더라도 자동 환불하지 않고 소비된 것으로 본다. abandon/cancel
 뒤에는 새 permit을 발급하지 않으며, 명확히 미발급인 reservation만 감사 event와 함께 해제할 수 있다.
-새 attempt는 남은 durable budget과 rate window를 다시 통과해야 한다. 실제 Tool call 전 HTTP/internal
-endpoint 호출, Worker executor와 permit redeem/use 집행은 아직 구현되지 않았다.
+새 attempt는 남은 durable budget과 rate window를 다시 통과해야 한다. M6-07B-2E는
+`POST /v1/worker/replay/jobs/claim`,
+`POST /v1/worker/replay/jobs/{job_id}/heartbeat`,
+`POST /v1/worker/replay/jobs/{job_id}/tool-permits`를 WORKER role에만 열고 대응 async client
+method를 제공한다. `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`는 strict JSON subject→profile-array
+allowlist이며 미설정 시 빈 목록으로 fail closed한다. claim/heartbeat의
+`ReplayExecutionClaimView`는 canonical `ReplayCompilation`을 포함하고 서버가 compilation,
+Candidate, contract, Grant, Campaign, Mode, Candidate Run, Replay Run의 exact binding을 다시
+검증한다. permit은 발급 시 소비가 완료된 non-bearer proof이므로 별도 redeem
+mutation을 추가하지 않는다. 실제 Worker executor의 Tool call 직전 permit-use 집행은 아직
+구현되지 않았다.
 
 ### Worker 실행/봉인과 권한 최종화 단계 분리
 
@@ -422,10 +440,11 @@ CAS로 결과를 commit한다.
 - Worker host compromise가 만든 외부 side effect의 rollback 또는 destination-level exactly-once;
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
-현재 구현된 M6-07B-2D 조각은 내부 서비스 원장/발급에서 끝난다. public Replay/admission API,
-HTTP transport와 internal endpoint 연결, Worker executor, permit redemption/use enforcement, 새 identity
-retry issuance, typed artifact finalization, Gate와 negative Control Plane retest는 이 ADR의 후속 exit
-criteria다.
+현재 구현된 M6-07B-2E 조각은 fail-closed 내부 Worker HTTP transport와 async client에서
+끝난다. public Replay admission/read API, 실제 Worker executor와 pre-dispatch permit-use enforcement,
+exact Campaign execution-context bundle, 새 identity retry issuance, typed artifact finalization, Gate와 negative
+Control Plane retest는 이 ADR의 후속 exit criteria다. permit은 bearer credential이 아니므로
+별도 redeem mutation을 exit criterion으로 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -448,10 +467,12 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## 승인 및 검증
 
-M6-07B-2D 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
-compilation, 원자적 내부 issuance와 issuance 멱등성, schema-v6 호출별 permit 원장/내부 서비스 발급은
-아래 항목 중 해당 server-side 부분을 충족한다. public transport, executor/redeem, retry, finalization,
-Gate와 negative retest 항목은 M6-07B 전체의 exit criteria로 유지한다.
+M6-07B-2E 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
+compilation, 원자적 내부 issuance와 issuance 멱등성, schema-v6 호출별 permit 원장/내부 서비스 발급,
+fail-closed WORKER-only HTTP transport/async client와 server-validated compilation claim envelope는 아래
+항목 중 해당 server-side 부분을 충족한다. public admission/read API, 실제 executor/pre-dispatch
+permit use, Campaign execution-context bundle, retry, finalization, Gate와 negative retest 항목은 M6-07B
+전체의 exit criteria로 유지한다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 

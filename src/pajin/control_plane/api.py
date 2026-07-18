@@ -1,10 +1,12 @@
 """Authenticated FastAPI surface for the PAJIN Control Plane."""
 
 import asyncio
+import json
 import os
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import partial
 from pathlib import Path
 from typing import Annotated, Any
@@ -34,6 +36,11 @@ from pajin.control_plane.models import (
     LeaseRequest,
     Principal,
     PrincipalRole,
+    ReplayClaimRequest,
+    ReplayExecutionClaimView,
+    ReplayLeaseRequest,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
     ResumeCheckpointRequest,
     ResumeView,
     RunListView,
@@ -52,6 +59,7 @@ from pajin.control_plane.service import (
     ControlPlaneError,
     ControlPlaneService,
     LeaseRejected,
+    ReplayExecutorRejected,
     ResourceNotFound,
     RunCancelled,
     StateConflict,
@@ -67,6 +75,76 @@ _WORKER_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
     }
 }
 
+_REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
+_REPLAY_EXECUTOR_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+_MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
+
+
+def _validated_replay_executor_profiles(
+    value: object,
+    *,
+    credentials: dict[str, Principal],
+) -> dict[str, frozenset[str]]:
+    if not isinstance(value, dict):
+        raise ValueError("Replay executor profiles must be a subject-to-profile mapping")
+
+    worker_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.WORKER in principal.roles
+    }
+    normalized: dict[str, frozenset[str]] = {}
+    for subject, raw_profiles in value.items():
+        if not isinstance(subject, str) or subject not in worker_subjects:
+            raise ValueError(
+                "Replay executor profile subjects must name an authenticated Worker principal"
+            )
+        if not isinstance(raw_profiles, (list, tuple, set, frozenset)) or isinstance(
+            raw_profiles, (str, bytes)
+        ):
+            raise ValueError("Replay executor profile entries must be arrays of profile names")
+        profiles = list(raw_profiles)
+        if not profiles or len(profiles) > _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT:
+            raise ValueError("Replay executor profile arrays must contain between 1 and 20 entries")
+        if any(
+            not isinstance(profile, str)
+            or _REPLAY_EXECUTOR_PROFILE_PATTERN.fullmatch(profile) is None
+            for profile in profiles
+        ):
+            raise ValueError("Replay executor profile names are invalid")
+        if len(profiles) != len(set(profiles)):
+            raise ValueError("Replay executor profile arrays must not contain duplicates")
+        normalized[subject] = frozenset(profiles)
+    return normalized
+
+
+def _parse_replay_executor_profiles(
+    raw: str | None,
+    *,
+    credentials: dict[str, Principal],
+) -> dict[str, frozenset[str]]:
+    if raw is None:
+        return {}
+    if not raw.strip():
+        raise RuntimeError(f"{_REPLAY_EXECUTOR_PROFILES_ENV} must not be empty")
+
+    def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        parsed: dict[str, object] = {}
+        for key, value in pairs:
+            if key in parsed:
+                raise ValueError("duplicate JSON object key")
+            parsed[key] = value
+        return parsed
+
+    try:
+        decoded = json.loads(raw, object_pairs_hook=reject_duplicate_keys)
+        return _validated_replay_executor_profiles(decoded, credentials=credentials)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{_REPLAY_EXECUTOR_PROFILES_ENV} must be a strict JSON "
+            "subject-to-profile-array allowlist"
+        ) from exc
+
 
 @dataclass(frozen=True)
 class ControlPlaneSettings:
@@ -78,6 +156,14 @@ class ControlPlaneSettings:
     database_echo: bool = False
     artifact_staging_root: Path | None = None
     artifact_repository_root: Path | None = None
+    replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        normalized = _validated_replay_executor_profiles(
+            self.replay_executor_profiles,
+            credentials=self.credentials,
+        )
+        object.__setattr__(self, "replay_executor_profiles", normalized)
 
     @classmethod
     def from_env(cls) -> "ControlPlaneSettings":
@@ -125,6 +211,10 @@ class ControlPlaneSettings:
                 roles=frozenset({PrincipalRole.WORKER}),
             ),
         }
+        replay_executor_profiles = _parse_replay_executor_profiles(
+            os.environ.get(_REPLAY_EXECUTOR_PROFILES_ENV),
+            credentials=credentials,
+        )
         return cls(
             database_url=os.environ.get(
                 "PAJIN_CP_DATABASE_URL", "sqlite:///./.pajin/control-plane.db"
@@ -144,6 +234,7 @@ class ControlPlaneSettings:
                 if artifact_repository_root is not None
                 else None
             ),
+            replay_executor_profiles=replay_executor_profiles,
         )
 
 
@@ -175,6 +266,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     service = ControlPlaneService(
         repository,
         signer,
+        replay_executor_profiles=resolved.replay_executor_profiles,
         artifact_repository=artifact_repository,
     )
     authenticator = TokenAuthenticator(resolved.credentials)
@@ -251,6 +343,13 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     @app.exception_handler(ResourceNotFound)
     async def not_found_handler(_request: object, exc: ResourceNotFound) -> JSONResponse:
         return JSONResponse(status_code=404, content={"detail": str(exc)})
+
+    @app.exception_handler(ReplayExecutorRejected)
+    async def replay_executor_rejected_handler(
+        _request: object,
+        exc: ReplayExecutorRejected,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
 
     @app.exception_handler(StateConflict)
     @app.exception_handler(LeaseRejected)
@@ -426,6 +525,45 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
                 response.status_code = status.HTTP_204_NO_CONTENT
                 return None
             await asyncio.sleep(min(0.25, remaining))
+
+    @app.post(
+        "/v1/worker/replay/jobs/claim",
+        response_model=ReplayExecutionClaimView | None,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    def claim_replay_job(
+        request: ReplayClaimRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.WORKER))],
+        response: Response,
+    ) -> ReplayExecutionClaimView | None:
+        claimed = service.claim_replay_job(request, actor=principal.subject)
+        if claimed is None:
+            response.status_code = status.HTTP_204_NO_CONTENT
+        return claimed
+
+    @app.post(
+        "/v1/worker/replay/jobs/{job_id}/heartbeat",
+        response_model=ReplayExecutionClaimView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    def heartbeat_replay_job(
+        job_id: str,
+        request: ReplayLeaseRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.WORKER))],
+    ) -> ReplayExecutionClaimView:
+        return service.heartbeat_replay_job(job_id, request, actor=principal.subject)
+
+    @app.post(
+        "/v1/worker/replay/jobs/{job_id}/tool-permits",
+        response_model=ReplayToolPermitView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    def issue_replay_tool_permit(
+        job_id: str,
+        request: ReplayToolPermitRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.WORKER))],
+    ) -> ReplayToolPermitView:
+        return service.issue_replay_tool_permit(job_id, request, actor=principal.subject)
 
     @app.post(
         "/v1/worker/jobs/{job_id}/heartbeat",

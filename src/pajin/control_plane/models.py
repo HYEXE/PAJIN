@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from datetime import datetime, timedelta
 from enum import StrEnum
+from hashlib import sha256
 from typing import Any
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from pajin.domain.models import CampaignMode, StrictModel, ToolRiskTier
-from pajin.domain.replay import ReplayPurpose
+from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 
 
 class RunState(StrEnum):
@@ -539,6 +541,35 @@ class ReplayClaimView(StrictModel):
             or payload.fencing_value != self.ticket.fencing_value
         ):
             raise ValueError("Replay claim Job payload authority binding is inconsistent")
+        return self
+
+
+class ReplayExecutionClaimView(ReplayClaimView):
+    """Worker claim envelope containing the exact server-validated compilation."""
+
+    compilation: ReplayCompilation
+
+    @model_validator(mode="after")
+    def require_compilation_authority_binding(self) -> ReplayExecutionClaimView:
+        compilation = self.compilation
+        candidate = compilation.validation_packet.candidate
+        binding = compilation.spec.binding
+        compilation_digest = sha256(canonical_replay_compilation_bytes(compilation)).hexdigest()
+        grant_digest = replay_context_digest(compilation.grant)
+        if (
+            candidate.candidate_id != self.item.candidate_id
+            or replay_context_digest(candidate) != self.item.candidate_digest
+            or replay_context_digest(compilation.contract) != self.item.contract_digest
+            or compilation_digest != self.item.compilation_digest
+            or grant_digest != self.item.grant_digest
+            or binding.candidate_id != self.item.candidate_id
+            or binding.candidate_run_id != self.batch.source.run_id
+            or binding.replay_run_id != self.item.replay_run_id
+            or binding.campaign != self.batch.campaign_name
+            or binding.mode is not self.batch.mode
+            or binding.purpose is not self.batch.purpose
+        ):
+            raise ValueError("Replay execution compilation authority binding is inconsistent")
         return self
 
 

@@ -4,7 +4,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2D internal per-call permit ledger/issuance)
+- Implementation update: 2026-07-18 (M6-07B-2E fail-closed internal Worker HTTP transport)
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -72,9 +72,17 @@ Job/ticket lease and compiled-spec/Grant deadlines, not rate-reservation expiry.
 counters or appending an event twice. The first issuance atomically moves reserved budget/rate units to
 consumed and appends the audit event. Issued units remain consumed when execution is uncertain;
 cancel/abandon releases only the definitely unissued remainder. Stale, wrong, cancelled, expired,
-finalized, ordinal-gap, and over-limit requests fail closed. Public Replay/admission API, HTTP
-transport/internal endpoint wiring, the Replay executor and permit redeem/use enforcement,
-new-identity retry, typed server-side artifact finalization and result-digest verification, the Gate,
+finalized, ordinal-gap, and over-limit requests fail closed. M6-07B-2E adds the strict JSON
+`PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array allowlist and dedicated WORKER-role HTTP
+endpoints plus async client methods. The allowlist is empty and fail closed when unset; for example,
+`{"worker-service":["kisa-exact-v1"]}` grants that one profile to that one subject. Claim, heartbeat,
+and Tool-permit issuance are exposed only through the internal Worker transport, and claim/heartbeat
+envelopes contain the canonical `ReplayCompilation` after the server revalidates its exact digest and
+identity bindings. A permit remains a non-bearer proof already consumed on issuance; there is no
+separate redeem mutation. Compose does not enable an executor by default because no actual executor
+exists. A public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use
+enforcement, the exact Campaign execution-context bundle, new-identity retry, typed server-side
+artifact finalization and result-digest verification, the Gate,
 and negative Control Plane retest remain outstanding. Until those execution boundaries are complete,
 the Control Plane cannot claim full durable Replay orchestration.
 
@@ -132,9 +140,11 @@ Run/Grant compilation authority, and creates the exact reservation-bound Job/tic
 entire batch atomically. Generic Job completion and failure paths remain unavailable to Replay Jobs.
 M6-07B-2D adds the schema-v6 append-only per-call permit ledger and internal service issuance with
 exact active-authority rechecks, canonical-operation binding, ticket/ordinal idempotency, the
-reserved-to-consumed transition, and burn on uncertainty. A public Replay API, HTTP
-transport/internal endpoint, executor/redeem, retry, typed finalization, Gate, and negative Control
-Plane retest remain intentionally outside the completed foundations.
+reserved-to-consumed transition, and burn on uncertainty. M6-07B-2E adds the fail-closed
+subject/profile allowlist, WORKER-only claim, heartbeat, and Tool-permit HTTP endpoints, async client,
+and server-validated canonical compilation claim envelope. A public Replay admission/read API, an
+actual executor with pre-dispatch permit use, the Campaign execution-context bundle, retry, typed
+finalization, Gate, and negative Control Plane retest remain intentionally outside the completed foundations.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -347,8 +357,16 @@ Only the first issuance transaction moves budget/rate units from reserved to con
 audit event. An issued permit is considered consumed and is not automatically refunded even when
 execution is uncertain. No new permit is issued after abandonment or cancellation; only clearly
 unissued reservations may be released with an audit event. A new attempt must pass the remaining
-durable budget and rate window again. The pre-call HTTP/internal endpoint, Worker executor, and permit
-redeem/use enforcement are not implemented yet.
+durable budget and rate window again. M6-07B-2E exposes
+`POST /v1/worker/replay/jobs/claim`,
+`POST /v1/worker/replay/jobs/{job_id}/heartbeat`, and
+`POST /v1/worker/replay/jobs/{job_id}/tool-permits` only to the WORKER role, with matching async
+client methods. `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` is a strict JSON subject-to-profile-array allowlist
+that is empty and fail closed when unset. Claim and heartbeat return a `ReplayExecutionClaimView`
+containing the canonical `ReplayCompilation`, after the server revalidates the exact compilation,
+Candidate, contract, Grant, Campaign, Mode, Candidate Run, and Replay Run bindings. The permit remains
+a non-bearer proof already consumed at issuance, so no separate redeem mutation is added. Actual
+pre-dispatch permit-use enforcement by a Worker executor is not implemented yet.
 
 ### Separating Worker execute/seal from authority finalize phases
 
@@ -458,10 +476,12 @@ The following are outside the first vertical slice of this ADR:
 - a cancellation-acknowledgement protocol through which the Control Plane proves physical fleet
   quiescence.
 
-The currently implemented M6-07B-2D slice ends at the internal service ledger/issuance boundary. A
-public Replay/admission API, HTTP transport and internal endpoint wiring, Worker executor, permit
-redemption/use enforcement, new-identity retry issuance, typed artifact finalization, the Gate, and
-negative Control Plane retest remain follow-up exit criteria for this ADR.
+The currently implemented M6-07B-2E slice ends at the fail-closed internal Worker HTTP transport and
+async client boundary. A public Replay admission/read API, an actual Worker executor with
+pre-dispatch permit-use enforcement, the exact Campaign execution-context bundle, new-identity retry
+issuance, typed artifact finalization, the Gate, and negative Control Plane retest remain follow-up
+exit criteria for this ADR. Because a permit is not a bearer credential, a separate redeem mutation
+is not added as an exit criterion.
 
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
@@ -485,11 +505,13 @@ cross-service authentication.
 
 ## Acceptance and validation
 
-As of the M6-07B-2D update, source admission/derivation, schema-v5 reservation authority, fresh
-first-attempt compilation, atomic internal issuance and issuance idempotency, and the schema-v6
-per-call permit ledger/internal service issuance cover the corresponding server-side subset below.
-Public transport, executor/redeem, retry, finalization, Gate, and negative-retest bullets continue to
-be exit criteria for full M6-07B.
+As of the M6-07B-2E update, source admission/derivation, schema-v5 reservation authority, fresh
+first-attempt compilation, atomic internal issuance and issuance idempotency, the schema-v6 per-call
+permit ledger/internal service issuance, the fail-closed WORKER-only HTTP transport/async client, and
+the server-validated compilation claim envelope cover the corresponding server-side subset below.
+Public admission/read API, actual executor/pre-dispatch permit use, the Campaign execution-context
+bundle, retry, finalization, Gate, and negative-retest bullets continue to be exit criteria for full
+M6-07B.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
