@@ -749,7 +749,7 @@ def test_postgres_v2_to_v5_migration_preserves_core_rows_and_history(
         assert preserved_run.input == {"preserve": True}
         assert preserved_job is not None
         assert preserved_job.result == {"status": "completed"}
-        assert versions == [1, 2, 3, 4, 5, 6]
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
     finally:
         repository.close()
 
@@ -831,7 +831,7 @@ def test_postgres_v3_to_v5_migration_preserves_core_artifact_rows_and_history(
         assert preserved_artifact is not None
         assert preserved_artifact.producer_run_id == run_id
         assert preserved_artifact.root_digest == "d" * 64
-        assert versions == [1, 2, 3, 4, 5, 6]
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
     finally:
         repository.close()
 
@@ -927,7 +927,7 @@ def test_postgres_v4_to_v5_preserves_planned_compilation_authority(
         assert [compilation.canonical_compilation for compilation in after_compilations] == [
             bytes(compilation["canonical_compilation"]) for compilation in before_compilations
         ]
-        assert versions == [1, 2, 3, 4, 5, 6]
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
     finally:
         repository.close()
 

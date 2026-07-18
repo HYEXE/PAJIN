@@ -26,6 +26,7 @@ from pajin.control_plane.database import (
     ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
+    ReplayExecutionContextRecord,
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
@@ -58,6 +59,7 @@ from pajin.control_plane.models import (
     ReplayBatchState,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
+    ReplayExecutionContext,
     ReplayItemState,
     ReplayJobPayload,
     ReplayLeaseRequest,
@@ -65,6 +67,9 @@ from pajin.control_plane.models import (
     ReplayToolPermitRequest,
     RunState,
     SubmitRunRequest,
+    canonical_replay_execution_context_bytes,
+    replay_execution_component_digest,
+    replay_execution_context_digest,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import (
@@ -121,14 +126,20 @@ def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _service(path: Path) -> tuple[ControlPlaneRepository, ControlPlaneService]:
+def _service(
+    path: Path,
+    *,
+    replay_executor_profiles: dict[str, frozenset[str]] | None = None,
+) -> tuple[ControlPlaneRepository, ControlPlaneService]:
     repository = ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
     repository.initialize()
     signer = CheckpointSigner(
         active_key_id="replay-v1",
         keys={"replay-v1": b"replay-test-signing-key-at-least-32-bytes"},
     )
-    profiles = {actor: frozenset({EXECUTOR_PROFILE}) for actor in REGISTERED_REPLAY_ACTORS}
+    profiles = replay_executor_profiles
+    if profiles is None:
+        profiles = {actor: frozenset({EXECUTOR_PROFILE}) for actor in REGISTERED_REPLAY_ACTORS}
     staging_root, artifact_root = _artifact_roots(path)
     return repository, ControlPlaneService(
         repository,
@@ -734,6 +745,9 @@ def test_batch_creation_is_atomic_idempotent_and_stops_before_ticket_issuance(
             assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 0
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
             assert (
@@ -820,6 +834,11 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
                 ReplayCompilationRecord,
                 issued.tickets[0].compilation_id,
             )
+            execution_context_record = session.scalar(
+                select(ReplayExecutionContextRecord).where(
+                    ReplayExecutionContextRecord.compilation_id == issued.tickets[0].compilation_id
+                )
+            )
             preserved_proof = session.get(ReplayCompilationRecord, planned_compilation_id)
             planned_run = session.get(RunRecord, planned_run_id)
             fresh_run = session.get(RunRecord, issued.items[0].replay_run_id)
@@ -834,6 +853,7 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
                     ticket,
                     job,
                     fresh_compilation,
+                    execution_context_record,
                     preserved_proof,
                     planned_run,
                     fresh_run,
@@ -847,6 +867,7 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
             assert ticket is not None
             assert job is not None
             assert fresh_compilation is not None
+            assert execution_context_record is not None
             assert preserved_proof is not None
             assert planned_run is not None
             assert fresh_run is not None
@@ -865,11 +886,53 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
                 item.compilation_digest
             )
             trusted = ReplayCompilation.model_validate_json(fresh_compilation.canonical_compilation)
+            trusted_context = ReplayExecutionContext.model_validate_json(
+                execution_context_record.canonical_context
+            )
             assert canonical_replay_compilation_bytes(trusted) == (
                 fresh_compilation.canonical_compilation
             )
             assert trusted.spec.binding.replay_run_id == item.replay_run_id
             assert replay_context_digest(trusted.grant) == item.grant_digest
+            assert canonical_replay_execution_context_bytes(trusted_context) == (
+                execution_context_record.canonical_context
+            )
+            assert execution_context_record.byte_length == len(
+                execution_context_record.canonical_context
+            )
+            assert replay_execution_context_digest(trusted_context) == (
+                execution_context_record.context_digest
+            )
+            assert sha256(execution_context_record.canonical_context).hexdigest() == (
+                execution_context_record.context_digest
+            )
+            assert trusted_context.context_id == execution_context_record.context_id
+            assert execution_context_record.compilation_id == fresh_compilation.compilation_id
+            assert execution_context_record.item_id == item.item_id
+            assert execution_context_record.batch_id == item.batch_id
+            assert execution_context_record.replay_run_id == fresh_compilation.replay_run_id
+            assert execution_context_record.compilation_digest == item.compilation_digest
+            assert execution_context_record.grant_digest == item.grant_digest
+            assert trusted_context.compilation_id == fresh_compilation.compilation_id
+            assert trusted_context.item_id == item.item_id
+            assert trusted_context.batch_id == item.batch_id
+            assert trusted_context.replay_run_id == fresh_compilation.replay_run_id
+            assert trusted_context.source == source
+            assert trusted_context.source_root_digest == source.integrity_root_digest
+            assert trusted_context.policy_version == issued.batch.policy_version
+            assert trusted_context.required_executor_profile == EXECUTOR_PROFILE
+            assert trusted_context.secret_policy == "forbidden"
+            assert trusted_context.secret_lease_ids == ()
+            assert trusted_context.output_staging_id == execution_context_record.output_staging_id
+            assert trusted_context.campaign_digest == replay_execution_component_digest(
+                trusted_context.campaign
+            )
+            assert trusted_context.scenario_digest == replay_execution_component_digest(
+                trusted_context.scenario
+            )
+            assert trusted_context.tool_spec_digest == replay_execution_component_digest(
+                trusted_context.tool_spec
+            )
             assert planned_run.state == RunState.QUEUED.value
             assert "replayPlan" in planned_run.input and "replay" not in planned_run.input
             assert fresh_run.state == RunState.QUEUED.value
@@ -878,6 +941,8 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
             assert job.kind == InternalJobKind.REPLAY.value
             assert job.state == JobState.QUEUED.value
             assert payload.compilation_id == ticket.compilation_id
+            assert payload.execution_context_id == execution_context_record.context_id
+            assert payload.execution_context_digest == execution_context_record.context_digest
             assert payload.budget_reservation_id == ticket.budget_reservation_id
             assert payload.rate_reservation_id == ticket.rate_reservation_id
             assert payload.replay_run_id == fresh_compilation.replay_run_id
@@ -919,6 +984,9 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
             assert ticket.compilation_id == fresh_compilation.compilation_id
 
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 1
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 1
             assert (
@@ -959,6 +1027,9 @@ def test_replay_issuance_exact_retry_is_idempotent_without_double_reservation(
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == (
                 len(first.items) * 2
             )
+            assert session.scalar(
+                select(func.count()).select_from(ReplayExecutionContextRecord)
+            ) == len(first.items)
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == len(
                 first.items
             )
@@ -996,6 +1067,9 @@ def test_two_sqlite_issuers_converge_on_one_replay_authority_graph(tmp_path: Pat
         assert results[0] == results[1]
         with repository_a.transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 1
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
             assert (
                 session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
@@ -1102,6 +1176,9 @@ def test_replay_issuance_rolls_back_all_fresh_authority_after_late_failure(
                     **context,
                 )
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 1
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
             assert (
                 session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
@@ -1128,6 +1205,9 @@ def test_replay_issuance_rolls_back_all_fresh_authority_after_late_failure(
             assert item.state == ReplayItemState.PENDING.value
             assert item.attempts == 0
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 0
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
             assert (
@@ -1568,6 +1648,9 @@ def test_batch_creation_rolls_back_every_derived_row_after_late_failure(
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 0
+            )
             assert session.scalar(select(func.count()).select_from(RunRecord)) == 2
             reached_late_failure = True
             raise RuntimeError("simulated failure after Replay compilation persistence")
@@ -1594,6 +1677,9 @@ def test_batch_creation_rolls_back_every_derived_row_after_late_failure(
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayExecutionContextRecord)) == 0
+            )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayEventRecord)) == 0
             assert (
@@ -1675,6 +1761,24 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
         assert claimed.compilation.spec.binding.replay_run_id == claimed.job.run_id
         assert claimed.compilation.spec.binding.candidate_id == claimed.item.candidate_id
         assert replay_context_digest(claimed.compilation.grant) == claimed.item.grant_digest
+        assert replay_execution_context_digest(claimed.execution_context) == (
+            claimed.execution_context_digest
+        )
+        assert claimed.execution_context.compilation_id == claimed.ticket.compilation_id
+        assert claimed.execution_context.batch_id == claimed.batch.batch_id
+        assert claimed.execution_context.item_id == claimed.item.item_id
+        assert claimed.execution_context.replay_run_id == claimed.job.run_id
+        assert claimed.execution_context.source == claimed.batch.source
+        assert claimed.execution_context.source_root_digest == (
+            claimed.batch.source.integrity_root_digest
+        )
+        assert claimed.execution_context.required_executor_profile == EXECUTOR_PROFILE
+        assert claimed.execution_context.tool_spec.tool_id == (
+            claimed.compilation.spec.binding.tool_id
+        )
+        assert claimed.execution_context.scenario.scenario_id == (
+            claimed.compilation.spec.binding.scenario_id
+        )
         source_payload = claimed.job.payload["source"]
         assert source_payload["producer_run_id"] == claimed.batch.source.producer_run_id
         assert source_payload["run_id"] == claimed.batch.source.run_id
@@ -1693,6 +1797,11 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
             assert ticket.fencing_value == claimed.ticket.fencing_value
             assert ticket.attempt_number == claimed.ticket.attempt
             compilation = session.get(ReplayCompilationRecord, ticket.compilation_id)
+            execution_context_record = session.scalar(
+                select(ReplayExecutionContextRecord).where(
+                    ReplayExecutionContextRecord.compilation_id == ticket.compilation_id
+                )
+            )
             budget_reservation = session.get(
                 ReplayBudgetReservationRecord,
                 ticket.budget_reservation_id,
@@ -1702,10 +1811,16 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
                 ticket.rate_reservation_id,
             )
             assert compilation is not None
+            assert execution_context_record is not None
             assert budget_reservation is not None
             assert rate_reservation is not None
             payload = ReplayJobPayload.model_validate(job.payload)
             assert payload.compilation_id == ticket.compilation_id
+            assert payload.execution_context_id == execution_context_record.context_id
+            assert payload.execution_context_digest == execution_context_record.context_digest
+            assert execution_context_record.context_id == claimed.execution_context.context_id
+            assert execution_context_record.context_digest == claimed.execution_context_digest
+            assert execution_context_record.required_executor_profile == ticket.executor_profile
             assert payload.budget_reservation_id == ticket.budget_reservation_id
             assert payload.rate_reservation_id == ticket.rate_reservation_id
             assert compilation.replay_run_id == ticket.replay_run_id
@@ -1735,8 +1850,89 @@ def test_replay_execution_claim_rejects_compilation_from_another_ticket(
 
         swapped = first.model_dump(mode="python")
         swapped["compilation"] = second.compilation.model_dump(mode="python")
-        with pytest.raises(ValueError, match="compilation authority binding"):
+        with pytest.raises(ValueError, match="execution context authority binding"):
             ReplayExecutionClaimView.model_validate(swapped)
+    finally:
+        repository.close()
+
+
+def test_replay_execution_claim_rejects_context_from_another_compilation(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "claim-context-swap.db")
+    try:
+        _create_batch(repository, service, "claim-context-swap-a")
+        _create_batch(repository, service, "claim-context-swap-b")
+        first = _claim(service, actor="authenticated-worker-a")
+        second = _claim(service, actor="authenticated-worker-b")
+
+        swapped = first.model_dump(mode="python")
+        swapped["execution_context"] = second.execution_context.model_dump(mode="python")
+        swapped["execution_context_digest"] = second.execution_context_digest
+        swapped_payload = dict(swapped["job"]["payload"])
+        swapped_payload["execution_context_id"] = second.execution_context.context_id
+        swapped_payload["execution_context_digest"] = second.execution_context_digest
+        swapped["job"]["payload"] = swapped_payload
+        with pytest.raises(ValueError, match="execution context authority binding"):
+            ReplayExecutionClaimView.model_validate(swapped)
+    finally:
+        repository.close()
+
+
+def test_replay_claim_rejects_allowed_but_wrong_required_profile_without_state_change(
+    tmp_path: Path,
+) -> None:
+    alternate_profile = "kisa-exact-alternate-v1"
+    repository, service = _service(
+        tmp_path / "claim-wrong-required-profile.db",
+        replay_executor_profiles={
+            "authenticated-worker-a": frozenset({EXECUTOR_PROFILE, alternate_profile})
+        },
+    )
+    try:
+        _create_batch(repository, service, "claim-wrong-required-profile")
+        with repository.transaction() as session:
+            job = session.scalar(
+                select(JobRecord).where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            )
+            ticket = session.scalar(select(ReplayTicketRecord))
+            item = session.scalar(select(ReplayItemRecord))
+            context = session.scalar(select(ReplayExecutionContextRecord))
+            assert job is not None and ticket is not None and item is not None
+            assert context is not None
+            assert context.required_executor_profile == EXECUTOR_PROFILE
+            identities = (job.job_id, ticket.ticket_id, item.item_id)
+
+        with pytest.raises(StateConflict, match="different registered executor profile"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=alternate_profile),
+                actor="authenticated-worker-a",
+            )
+
+        with repository.transaction() as session:
+            job = session.get(JobRecord, identities[0])
+            ticket = session.get(ReplayTicketRecord, identities[1])
+            item = session.get(ReplayItemRecord, identities[2])
+            assert job is not None and ticket is not None and item is not None
+            assert job.state == JobState.QUEUED.value
+            assert job.attempts == 0
+            assert job.lease_owner is None
+            assert job.lease_token_hash is None
+            assert ticket.state == ReplayTicketState.ISSUED.value
+            assert ticket.executor_profile is None
+            assert ticket.claim_principal is None
+            assert ticket.lease_token_hash is None
+            assert item.state == ReplayItemState.QUEUED.value
+            assert item.attempts == 1
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(ReplayEventRecord.event_type == "replay.ticket.claimed")
+                )
+                == 0
+            )
     finally:
         repository.close()
 
@@ -1793,6 +1989,8 @@ def test_replay_claim_rejects_unregistered_actor_profile_without_state_change(
     [
         "extra-run-path",
         "compilation-id",
+        "execution-context-id",
+        "execution-context-digest",
         "budget-reservation-id",
         "rate-reservation-id",
         "compilation-digest",
@@ -1818,6 +2016,10 @@ def test_replay_claim_rejects_tampered_job_payload_without_burning_ticket(
                 payload["run_path"] = "/tmp/worker-controlled"
             elif tamper == "compilation-id":
                 payload["compilation_id"] = f"replay-compilation_{'0' * 32}"
+            elif tamper == "execution-context-id":
+                payload["execution_context_id"] = f"replay-context_{'0' * 32}"
+            elif tamper == "execution-context-digest":
+                payload["execution_context_digest"] = "0" * 64
             elif tamper == "budget-reservation-id":
                 payload["budget_reservation_id"] = f"budget-reservation_{'0' * 32}"
             elif tamper == "rate-reservation-id":
@@ -1922,6 +2124,11 @@ def test_replay_tool_permit_is_canonical_and_idempotent_across_restart(
         with repository.transaction() as session:
             permit = session.scalar(select(ReplayToolPermitRecord))
             compilation = session.get(ReplayCompilationRecord, first.compilation_id)
+            execution_context_record = session.scalar(
+                select(ReplayExecutionContextRecord).where(
+                    ReplayExecutionContextRecord.compilation_id == first.compilation_id
+                )
+            )
             budget_account = session.scalar(select(ReplayBudgetAccountRecord))
             budget = session.get(
                 ReplayBudgetReservationRecord,
@@ -1930,17 +2137,44 @@ def test_replay_tool_permit_is_canonical_and_idempotent_across_restart(
             rate = session.get(ReplayRateReservationRecord, first.rate_reservation_id)
             assert permit is not None
             assert compilation is not None
+            assert execution_context_record is not None
             assert budget_account is not None
             assert budget is not None
             assert rate is not None
             trusted = ReplayCompilation.model_validate_json(compilation.canonical_compilation)
+            trusted_context = ReplayExecutionContext.model_validate_json(
+                execution_context_record.canonical_context
+            )
             assert first.permit_digest == permit.permit_digest
+            assert first.compilation_id == trusted_context.compilation_id
+            assert first.compilation_id == claimed.execution_context.compilation_id
+            assert execution_context_record.context_id == claimed.execution_context.context_id
+            assert execution_context_record.context_digest == claimed.execution_context_digest
+            assert replay_execution_context_digest(trusted_context) == (
+                execution_context_record.context_digest
+            )
+            payload = ReplayJobPayload.model_validate(claimed.job.payload)
+            assert payload.execution_context_id == execution_context_record.context_id
+            assert payload.execution_context_digest == execution_context_record.context_digest
+            assert first.compilation_digest == execution_context_record.compilation_digest
+            assert first.grant_digest == execution_context_record.grant_digest
+            assert first.replay_run_id == trusted_context.replay_run_id
+            assert first.source_root_digest == trusted_context.source_root_digest
             assert first.original_request_id == trusted.original_request.request_id
             assert first.tool_id == trusted.original_request.tool_id
             assert first.tool_version == trusted.spec.binding.tool_version
+            assert first.tool_id == trusted_context.tool_spec.tool_id
+            assert first.tool_version == trusted_context.tool_spec.version
             assert first.target_id == trusted.spec.binding.target_id
             assert first.target == trusted.original_request.target
+            context_target = next(
+                target
+                for target in trusted_context.campaign.spec.targets
+                if target.id == first.target_id
+            )
+            assert first.target == context_target.endpoint
             assert first.method == trusted.original_request.method
+            assert first.method == trusted_context.scenario.method.upper()
             assert first.compiled_argument_digest == trusted.spec.argument_digest
             assert first.request_units == AIChatProbeTool().network_request_cost(
                 trusted.original_request
@@ -1963,6 +2197,48 @@ def test_replay_tool_permit_is_canonical_and_idempotent_across_restart(
     finally:
         if restarted_repository is not None:
             restarted_repository.close()
+        repository.close()
+
+
+def test_replay_tool_permit_rejects_context_payload_swap_without_consumption(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-context-swap.db")
+    try:
+        _create_batch(repository, service, "tool-permit-context-swap-a")
+        _create_batch(repository, service, "tool-permit-context-swap-b")
+        first = _claim(service, actor="authenticated-worker-a")
+        second = _claim(service, actor="authenticated-worker-b")
+
+        with repository.transaction() as session:
+            job = session.get(JobRecord, first.job.job_id)
+            assert job is not None
+            payload = dict(job.payload)
+            payload["execution_context_id"] = second.execution_context.context_id
+            payload["execution_context_digest"] = second.execution_context_digest
+            job.payload = payload
+
+        with pytest.raises(StateConflict, match=r"Replay|payload|binding"):
+            service.issue_replay_tool_permit(
+                first.job.job_id,
+                _permit_request(first, 1),
+                actor="authenticated-worker-a",
+            )
+
+        with repository.transaction() as session:
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                first.ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                first.ticket.rate_reservation_id,
+            )
+            assert budget is not None and rate is not None
+            assert budget.consumed_calls == 0
+            assert rate.consumed_request_units == 0
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+    finally:
         repository.close()
 
 

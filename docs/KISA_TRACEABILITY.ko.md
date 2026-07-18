@@ -45,10 +45,16 @@
 > `{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. WORKER-role 전용
 > claim·heartbeat·Tool-permit endpoint와 async client를 제공하고, claim/heartbeat envelope에 서버가
 > 검증한 canonical `ReplayCompilation`을 포함한다. permit은 발급 시 이미 소비된 non-bearer proof이며
-> 별도 redeem mutation은 없다. 실제 executor가 없으므로 compose에서 기본 활성화하지 않는다. public
-> Replay admission/read API, 실제 executor/pre-dispatch permit-use 집행, exact Campaign execution-context
-> bundle, 새 identity retry 발행, typed finalization/Gate와 negative Control Plane retest가
-> 후속이며 M6-07B 전체는 미완료다.
+> 별도 redeem mutation은 없다. M6-07B-2F는 schema v7 append-only
+> `cp_replay_execution_contexts`를 추가한다. 발급 시 fresh compilation마다 exact Campaign, exact
+> KISA Scenario, canonical `AIChatProbeTool.spec`, 각 component digest와 전체 context digest를 저장한다.
+> context는 `kisa-exact-v1`을 고정하고 Secret Lease를 금지하며 opaque output-staging slot만
+> 할당한다. payload, claim/heartbeat, profile 검사와 permit 발급은 같은 authority를 전이적으로 다시
+> 검증한다. v6→v7 migration은 non-dispatchable 상태만 context table이 빈 채로 전진시키고, 과거
+> context byte를 backfill할 수 없는 dispatchable Replay authority가 있으면 fail closed한다. Compose는 전용 Replay executor daemon을
+> 활성화하지 않는다. public Replay admission/read API, 실제 executor/pre-dispatch permit-use 집행,
+> Worker execute/seal, output import와 typed finalization, 새 identity retry 발행, Gate와 negative Control
+> Plane retest가 후속이며 M6-07B 전체는 미완료다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -103,7 +109,7 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·durable 첫 시도 발행·내부 호출별 permit 발급·Worker HTTP transport/client, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/issued ticket, append-only per-call permit ledger, server-validated claim compilation envelope, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration, 재시작 후 receipt 검증, Control Plane exact M03·M06·A04 파생, 내부 첫 시도 발행, 일회성 호출별 permit 원장/발급, fail-closed WORKER-only HTTP transport/client 구현; public Replay admission/read API, 실제 executor/pre-dispatch permit-use, Campaign execution-context bundle, retry, finalization/Gate와 조직 영향 분석은 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·durable 첫 시도 발행·내부 호출별 permit 발급·Worker HTTP transport/client·exact execution-context 권위, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/issued ticket, append-only per-call permit ledger, 서버 검증 compilation/context claim envelope, schema-v7 append-only execution context와 component digest, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration, 재시작 후 receipt 검증, Control Plane exact M03·M06·A04 파생, 내부 첫 시도 발행, 일회성 호출별 permit 원장/발급, fail-closed WORKER-only HTTP transport/client, M6-07B-2F exact context 권위 구현; public Replay admission/read API, 실제 executor/pre-dispatch permit-use, execute/seal, output import/typed finalization, retry, Gate와 조직 영향 분석은 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -352,10 +358,16 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   claim·heartbeat·Tool-permit endpoint와 async client가 이 기존 서비스 authority를 노출하고,
   claim/heartbeat의 `ReplayExecutionClaimView`는 서버가 exact digest·identity binding을 다시 검증한
   canonical `ReplayCompilation`을 포함한다. permit은 발급 시 reserved unit을 이미 소비한
-  non-bearer proof이며 별도 redeem mutation은 없다. 실제 executor가 없으므로 compose에서
-  기본 활성화하지 않는다. public Replay admission/read API, 실제 executor의 pre-dispatch
-  permit-use 집행, exact Campaign execution-context bundle, 새 identity retry, typed finalization/Gate와
-  negative Control Plane retest는 남아 있다.
+  non-bearer proof이며 별도 redeem mutation은 없다. M6-07B-2F는 forward 경로를 v7까지 확장하고
+  append-only `cp_replay_execution_contexts`를 추가한다. 발급 시 각 fresh compilation은 exact
+  Campaign/KISA Scenario/`AIChatProbeTool.spec` canonical byte, 독립 component digest, 고정
+  `kisa-exact-v1`, secret 금지와 opaque output-staging slot에 one-to-one으로 결박된다. Job payload,
+  claim/heartbeat, profile 선택과 permit 발급은 context identity/digest를 전이적으로 모두 다시
+  검증한다. v6→v7 migration은 가짜 context row 없이 non-dispatchable 상태만 받아들이며 ticket,
+  permit, Job, reservation 또는 진행된 item이 있으면 fail closed한다. public Replay admission/read API, 실제
+  executor의 pre-dispatch permit-use 집행, Worker execute/seal, output import/typed finalization, 새
+  identity retry, Gate와 negative Control Plane retest는 남아 있고 Compose에는 Replay executor
+  daemon이 없다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

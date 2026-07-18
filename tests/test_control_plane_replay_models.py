@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+from kisa_control_plane_support import build_kisa_control_plane_source
 from pydantic import BaseModel, ValidationError
 
+from pajin.control_plane.kisa_derivation import derive_kisa_confirmation_batch
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
     ArtifactLocator,
@@ -20,6 +23,8 @@ from pajin.control_plane.models import (
     ReplayBatchView,
     ReplayClaimRequest,
     ReplayClaimView,
+    ReplayExecutionClaimView,
+    ReplayExecutionContext,
     ReplayItemState,
     ReplayItemView,
     ReplayJobPayload,
@@ -28,11 +33,15 @@ from pajin.control_plane.models import (
     ReplayTicketView,
     ReplayToolPermitRequest,
     ReplayToolPermitView,
+    replay_execution_component_digest,
+    replay_execution_context_digest,
 )
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayPurpose
+from pajin.tools.ai import AIChatProbeTool
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
+EXECUTION_NOW = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
 
 
 def _artifact(**updates: object) -> ArtifactRef:
@@ -76,6 +85,8 @@ def _claim_view_payload() -> dict[str, object]:
     ticket_id = f"replay-ticket_{'3' * 32}"
     job_id = f"job_{'4' * 32}"
     compilation_id = f"replay-compilation_{'5' * 32}"
+    execution_context_id = f"replay-context_{'8' * 32}"
+    execution_context_digest = "8" * 64
     budget_reservation_id = f"budget-reservation_{'6' * 32}"
     rate_reservation_id = f"rate-reservation_{'7' * 32}"
     replay_run_id = "run_20260717T120000Z_cafebabe"
@@ -136,6 +147,8 @@ def _claim_view_payload() -> dict[str, object]:
             "item_id": item_id,
             "ticket_id": ticket_id,
             "compilation_id": compilation_id,
+            "execution_context_id": execution_context_id,
+            "execution_context_digest": execution_context_digest,
             "budget_reservation_id": budget_reservation_id,
             "rate_reservation_id": rate_reservation_id,
             "replay_run_id": replay_run_id,
@@ -170,6 +183,109 @@ def _claim_view_payload() -> dict[str, object]:
         "ticket": ticket,
         "lease_token": "lease-token-that-is-at-least-32-characters",
     }
+
+
+def _execution_claim_view_payload(root: Path) -> dict[str, object]:
+    source = build_kisa_control_plane_source(root / "source", scenario_count=1)
+    derived = derive_kisa_confirmation_batch(
+        source_root=source.path,
+        artifact_ref=source.artifact_ref,
+        replay_run_id_factory=lambda: f"run_{'8' * 32}",
+        clock=lambda: EXECUTION_NOW,
+    )
+    admitted = derived.items[0]
+    payload = _claim_view_payload()
+    batch = payload["batch"]
+    item = payload["item"]
+    ticket = payload["ticket"]
+    job = payload["job"]
+    assert isinstance(batch, ReplayBatchView)
+    assert isinstance(item, ReplayItemView)
+    assert isinstance(ticket, ReplayTicketView)
+    assert isinstance(job, JobView)
+
+    batch = batch.model_copy(
+        update={
+            "campaign_name": derived.campaign_name,
+            "source": derived.artifact_ref,
+            "mode": derived.mode,
+            "purpose": derived.purpose,
+            "policy_version": derived.policy_version,
+        }
+    )
+    item = item.model_copy(
+        update={
+            "replay_run_id": admitted.replay_run_id,
+            "candidate_id": admitted.candidate_id,
+            "candidate_digest": admitted.candidate_digest,
+            "contract_digest": admitted.contract_digest,
+            "compilation_digest": admitted.compilation_digest,
+            "grant_digest": admitted.grant_digest,
+            "required_attempts": admitted.required_attempts,
+            "max_attempts": admitted.max_attempts,
+        }
+    )
+    ticket = ticket.model_copy(update={"replay_run_id": admitted.replay_run_id})
+    execution_context = ReplayExecutionContext(
+        context_id=f"replay-context_{'8' * 32}",
+        batch_id=batch.batch_id,
+        item_id=item.item_id,
+        compilation_id=ticket.compilation_id,
+        replay_run_id=admitted.replay_run_id,
+        source=derived.artifact_ref,
+        source_root_digest=derived.source_root_digest,
+        campaign=derived.campaign,
+        campaign_digest=replay_execution_component_digest(derived.campaign),
+        scenario=admitted.scenario,
+        scenario_digest=replay_execution_component_digest(admitted.scenario),
+        tool_spec=AIChatProbeTool.spec,
+        tool_spec_digest=replay_execution_component_digest(AIChatProbeTool.spec),
+        policy_version=derived.policy_version,
+        required_executor_profile="kisa-exact-v1",
+        secret_policy="forbidden",
+        secret_lease_ids=(),
+        output_staging_id=f"stage_{'9' * 32}",
+        created_at=EXECUTION_NOW,
+    )
+    context_digest = replay_execution_context_digest(execution_context)
+    job_payload = {
+        **job.payload,
+        "execution_context_id": execution_context.context_id,
+        "execution_context_digest": context_digest,
+        "replay_run_id": admitted.replay_run_id,
+        "source": derived.artifact_ref.model_dump(mode="json"),
+        "mode": derived.mode.value,
+        "purpose": derived.purpose.value,
+        "policy_version": derived.policy_version,
+        "candidate_id": admitted.candidate_id,
+        "candidate_digest": admitted.candidate_digest,
+        "contract_digest": admitted.contract_digest,
+        "compilation_digest": admitted.compilation_digest,
+        "grant_digest": admitted.grant_digest,
+    }
+    job = job.model_copy(
+        update={
+            "run_id": admitted.replay_run_id,
+            "payload": job_payload,
+        }
+    )
+    return {
+        "job": job,
+        "batch": batch,
+        "item": item,
+        "ticket": ticket,
+        "lease_token": payload["lease_token"],
+        "compilation": admitted.compilation,
+        "execution_context": execution_context,
+        "execution_context_digest": context_digest,
+    }
+
+
+@pytest.fixture(scope="module")
+def execution_claim_payload(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> dict[str, object]:
+    return _execution_claim_view_payload(tmp_path_factory.mktemp("execution-claim"))
 
 
 def _permit_request(**updates: object) -> ReplayToolPermitRequest:
@@ -568,6 +684,8 @@ def test_replay_claim_view_binds_job_batch_item_ticket_attempt_and_fence() -> No
     assert claim.job.lease_expires_at == claim.ticket.lease_expires_at
     assert claim.job.attempts == claim.job.max_attempts == 1
     assert claim.job.payload["compilation_id"] == claim.ticket.compilation_id
+    assert claim.job.payload["execution_context_id"].startswith("replay-context_")
+    assert len(claim.job.payload["execution_context_digest"]) == 64
     assert claim.job.payload["budget_reservation_id"] == claim.ticket.budget_reservation_id
     assert claim.job.payload["rate_reservation_id"] == claim.ticket.rate_reservation_id
 
@@ -578,6 +696,106 @@ def test_replay_claim_view_binds_job_batch_item_ticket_attempt_and_fence() -> No
     wrong_job = claim.job.model_copy(update={"kind": JobKind.CAMPAIGN.value})
     with pytest.raises(ValidationError, match="internal Replay Job"):
         ReplayClaimView.model_validate({**payload, "job": wrong_job})
+
+
+def test_replay_execution_claim_binds_exact_compilation_and_context(
+    execution_claim_payload: dict[str, object],
+) -> None:
+    claim = ReplayExecutionClaimView.model_validate(execution_claim_payload)
+
+    assert claim.execution_context.context_id == claim.job.payload["execution_context_id"]
+    assert claim.execution_context_digest == replay_execution_context_digest(
+        claim.execution_context
+    )
+    assert claim.execution_context.campaign.metadata.name == claim.batch.campaign_name
+    assert (
+        claim.execution_context.scenario.scenario_id == claim.compilation.spec.binding.scenario_id
+    )
+    assert claim.execution_context.tool_spec.tool_id == claim.compilation.spec.binding.tool_id
+    assert claim.execution_context.required_executor_profile == claim.ticket.executor_profile
+
+
+@pytest.mark.parametrize("field_name", ["execution_context_id", "execution_context_digest"])
+def test_replay_job_payload_requires_execution_context_authority(
+    field_name: str,
+) -> None:
+    job = _claim_view_payload()["job"]
+    assert isinstance(job, JobView)
+    missing = dict(job.payload)
+    missing.pop(field_name)
+
+    with pytest.raises(ValidationError):
+        ReplayJobPayload.model_validate(missing)
+    with pytest.raises(ValidationError):
+        ReplayJobPayload.model_validate(
+            {
+                **job.payload,
+                field_name: (
+                    f"replay-context_{'A' * 32}"
+                    if field_name == "execution_context_id"
+                    else "A" * 64
+                ),
+            }
+        )
+
+
+def test_replay_execution_claim_rejects_context_tamper(
+    execution_claim_payload: dict[str, object],
+) -> None:
+    context = execution_claim_payload["execution_context"]
+    job = execution_claim_payload["job"]
+    assert isinstance(context, ReplayExecutionContext)
+    assert isinstance(job, JobView)
+    forged_context = context.model_copy(update={"policy_version": "forged-policy-v1"})
+    forged_digest = replay_execution_context_digest(forged_context)
+    forged_job = job.model_copy(
+        update={
+            "payload": {
+                **job.payload,
+                "execution_context_digest": forged_digest,
+            }
+        }
+    )
+
+    with pytest.raises(ValidationError, match="execution context authority binding"):
+        ReplayExecutionClaimView.model_validate(
+            {
+                **execution_claim_payload,
+                "job": forged_job,
+                "execution_context": forged_context,
+                "execution_context_digest": forged_digest,
+            }
+        )
+
+
+def test_replay_execution_claim_rejects_context_digest_tamper(
+    execution_claim_payload: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError, match="execution context authority binding"):
+        ReplayExecutionClaimView.model_validate(
+            {
+                **execution_claim_payload,
+                "execution_context_digest": "0" * 64,
+            }
+        )
+
+
+def test_replay_execution_claim_rejects_context_id_tamper(
+    execution_claim_payload: dict[str, object],
+) -> None:
+    job = execution_claim_payload["job"]
+    assert isinstance(job, JobView)
+    forged_job = job.model_copy(
+        update={
+            "payload": {
+                **job.payload,
+                "execution_context_id": f"replay-context_{'0' * 32}",
+            }
+        }
+    )
+
+    with pytest.raises(ValidationError, match="execution context authority binding"):
+        ReplayExecutionClaimView.model_validate({**execution_claim_payload, "job": forged_job})
 
 
 @pytest.mark.parametrize(

@@ -51,10 +51,18 @@ the attached PDF.
 > WORKER-role claim, heartbeat, and Tool-permit endpoints plus an async client expose the existing
 > authority, while claim/heartbeat envelopes contain the server-validated canonical
 > `ReplayCompilation`. A permit remains a non-bearer proof already consumed on issuance; there is no
-> separate redeem mutation. Compose does not enable an executor by default because no actual executor
-> exists. A public Replay admission/read API, actual executor/pre-dispatch permit-use enforcement,
-> the exact Campaign execution-context bundle, new-identity retry issuance, typed finalization/Gate wiring,
-> and negative Control Plane retest remain follow-up work; M6-07B is not complete.
+> separate redeem mutation. M6-07B-2F adds schema-v7 append-only
+> `cp_replay_execution_contexts`. Issuance stores one canonical context per fresh compilation with
+> the exact Campaign, exact KISA Scenario, canonical `AIChatProbeTool.spec`, their component digests,
+> and the complete context digest. The context fixes `kisa-exact-v1`, forbids Secret Leases, and
+> assigns an opaque output-staging slot. Payload, claim/heartbeat, profile checks, and permit
+> issuance revalidate the same authority transitively. The v6→v7 migration advances only
+> non-dispatchable state with an empty context table and fails closed if any dispatchable Replay
+> authority exists whose historical context bytes cannot be backfilled. Compose
+> does not enable a dedicated Replay executor daemon. A public Replay admission/read API, actual
+> executor/pre-dispatch permit-use enforcement, Worker execute/seal, output import and typed
+> finalization, new-identity retry issuance, Gate wiring, and negative Control Plane retest remain
+> follow-up work; M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
 omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
@@ -109,7 +117,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | Implemented |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation, durable first-attempt issuance, internal per-call permit issuance, and Worker HTTP transport/client, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/issued ticket, append-only per-call permit ledger, server-validated claim compilation envelope, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, Control Plane exact M03/M06/A04 derivation, internal first-attempt issuance, one-use per-call permit ledger/issuance, and fail-closed WORKER-only HTTP transport/client implemented; public Replay admission/read API, actual executor/pre-dispatch permit use, Campaign execution-context bundle, retry, finalization/Gate, and organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation, durable first-attempt issuance, internal per-call permit issuance, Worker HTTP transport/client, and exact execution-context authority, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/issued ticket, append-only per-call permit ledger, server-validated compilation/context claim envelope, schema-v7 append-only execution context and component digests, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, Control Plane exact M03/M06/A04 derivation, internal first-attempt issuance, one-use per-call permit ledger/issuance, fail-closed WORKER-only HTTP transport/client, and M6-07B-2F exact context authority implemented; public Replay admission/read API, actual executor/pre-dispatch permit use, execute/seal, output import/typed finalization, retry, Gate, and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | Local DB/OS trust boundary implemented; portable signed proof remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` report generation | `kisa-report.md`, `kisa-results.json` | Implemented |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -381,9 +389,17 @@ KISA threats remain `not assessed`.
   `ReplayExecutionClaimView` with the canonical `ReplayCompilation` after the server revalidates its
   exact digest and identity bindings. A permit is a non-bearer proof whose reserved units were
   already consumed at issuance, with no separate redeem mutation. Compose does not enable an executor
-  by default because no actual executor exists. A public Replay admission/read API, actual executor
-  pre-dispatch permit-use enforcement, the exact Campaign execution-context bundle, new-identity retry,
-  typed finalization/Gate, and negative Control Plane retest remain outstanding.
+  by default because no actual executor exists. M6-07B-2F extends the forward path through v7 with
+  append-only `cp_replay_execution_contexts`. Issuance binds each fresh compilation one-to-one to
+  canonical exact Campaign/KISA Scenario/`AIChatProbeTool.spec` bytes, independent component
+  digests, fixed `kisa-exact-v1`, forbidden secrets, and an opaque output-staging slot. Job payload,
+  claim/heartbeat, profile selection, and permit issuance all recheck the context identity/digest
+  transitively. The v6→v7 migration accepts only non-dispatchable state with no fabricated context
+  row and fails closed rather than inventing context for tickets, permits, Jobs, reservations, or
+  advanced items. A public Replay
+  admission/read API, actual executor pre-dispatch permit-use enforcement, Worker execute/seal,
+  output import/typed finalization, new-identity retry, Gate, and negative Control Plane retest
+  remain outstanding; Compose still has no Replay executor daemon.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific

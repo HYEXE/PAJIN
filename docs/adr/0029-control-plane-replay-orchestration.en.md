@@ -4,7 +4,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2E fail-closed internal Worker HTTP transport)
+- Implementation update: 2026-07-18 (M6-07B-2F exact KISA execution-context authority)
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -79,12 +79,22 @@ endpoints plus async client methods. The allowlist is empty and fail closed when
 and Tool-permit issuance are exposed only through the internal Worker transport, and claim/heartbeat
 envelopes contain the canonical `ReplayCompilation` after the server revalidates its exact digest and
 identity bindings. A permit remains a non-bearer proof already consumed on issuance; there is no
-separate redeem mutation. Compose does not enable an executor by default because no actual executor
-exists. A public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use
-enforcement, the exact Campaign execution-context bundle, new-identity retry, typed server-side
-artifact finalization and result-digest verification, the Gate,
-and negative Control Plane retest remain outstanding. Until those execution boundaries are complete,
-the Control Plane cannot claim full durable Replay orchestration.
+separate redeem mutation. M6-07B-2F adds schema v7 and append-only
+`cp_replay_execution_contexts`. First-attempt issuance now stores exactly one canonical context for
+each fresh compilation. It contains the exact typed Campaign, exact KISA Scenario, canonical
+`AIChatProbeTool.spec`, their component digests and the complete context digest, the source and policy
+identities, fixed `kisa-exact-v1` executor profile, forbidden-secret policy with no Secret Lease IDs,
+and an opaque output-staging slot. The strict Job payload repeats the context ID and digest;
+claim/heartbeat returns the context after exact graph verification, profile admission verifies its
+fixed profile, and Tool-permit issuance transitively rechecks the same compilation/context authority.
+The staging slot is an identity only, not a path, store, upload authorization, or result claim. The
+v6→v7 migration fails closed when any dispatchable v6 Replay authority exists because the exact
+issuance-time bytes cannot be reconstructed; a database containing only non-dispatchable planned
+proof may advance with an empty context table. Compose still does not enable an executor daemon by
+default. A public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use
+enforcement, the Worker execute/seal phase, output import and typed server-side finalization,
+new-identity retry, the Gate, and negative Control Plane retest remain outstanding. Until those
+execution boundaries are complete, the Control Plane cannot claim full durable Replay orchestration.
 
 ## Context
 
@@ -142,9 +152,15 @@ M6-07B-2D adds the schema-v6 append-only per-call permit ledger and internal ser
 exact active-authority rechecks, canonical-operation binding, ticket/ordinal idempotency, the
 reserved-to-consumed transition, and burn on uncertainty. M6-07B-2E adds the fail-closed
 subject/profile allowlist, WORKER-only claim, heartbeat, and Tool-permit HTTP endpoints, async client,
-and server-validated canonical compilation claim envelope. A public Replay admission/read API, an
-actual executor with pre-dispatch permit use, the Campaign execution-context bundle, retry, typed
-finalization, Gate, and negative Control Plane retest remain intentionally outside the completed foundations.
+and server-validated canonical compilation claim envelope. M6-07B-2F adds schema-v7 append-only
+execution contexts that bind every fresh issuance compilation to the exact typed Campaign, KISA
+Scenario, canonical ToolSpec, component and context digests, fixed executor profile, forbidden
+secrets, and opaque output-staging identity. The Job payload, claim envelope, profile admission, and
+permit issuance now preserve or transitively revalidate that authority graph. The v6→v7 migration
+refuses dispatchable legacy authority rather than inventing missing issuance-time bytes. A public
+Replay admission/read API, an actual executor with pre-dispatch permit use, Worker execute/seal,
+output import and typed finalization, retry, Gate, and negative Control Plane retest remain
+intentionally outside the completed foundations; Compose has no active Replay executor daemon.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -261,8 +277,10 @@ A Replay Job is an internal kind that is not exposed through the Operator submis
 Job from a validated `cp_replay_item`, fresh compilation, active reservations, and ticket. The exact
 Replay executor must also be explicitly installed in the Worker startup registry. The Job payload contains only opaque
 batch/item/ticket/artifact references and server-generated `compilation_id`,
-`budget_reservation_id`, and `rate_reservation_id` authority. It contains no executable path,
-arbitrary URL, callable, or Worker-selected Grant.
+`execution_context_id`, `execution_context_digest`, `budget_reservation_id`, and
+`rate_reservation_id` authority. It contains no executable path, arbitrary URL, callable, or
+Worker-selected Grant. The context's `output_staging_id` is likewise an opaque identity and does not
+authorize a filesystem location, storage operation, upload, import, or finalization.
 
 The normal Control Plane queue retains at-least-once delivery, but Replay binds it to tickets as
 follows:
@@ -367,6 +385,44 @@ containing the canonical `ReplayCompilation`, after the server revalidates the e
 Candidate, contract, Grant, Campaign, Mode, Candidate Run, and Replay Run bindings. The permit remains
 a non-bearer proof already consumed at issuance, so no separate redeem mutation is added. Actual
 pre-dispatch permit-use enforcement by a Worker executor is not implemented yet.
+
+### Exact KISA execution-context authority
+
+M6-07B-2F makes the issuance-time executor inputs durable without turning the Worker into an
+authority source. Schema v7 adds append-only `cp_replay_execution_contexts`; its row is bound
+one-to-one to the fresh `cp_replay_compilations` row through compilation, item, batch, Replay Run,
+compilation-digest, and Grant-digest foreign-key identity. The canonical context bytes and digest,
+required executor profile, and output-staging identity are immutable, and the context digest and
+staging identity are unique.
+
+The server creates the context in the same first-attempt issuance transaction as the fresh
+compilation, reservations, one-shot Job, and ticket. It contains the server-derived typed
+`CampaignManifest`, exact `KISAScenarioDefinition`, canonical `AIChatProbeTool.spec`, their separate
+canonical component digests, and the full-context digest. Source Artifact identity/root, policy
+version, batch/item/compilation/Replay Run identities, fixed `kisa-exact-v1` profile,
+`secret_policy="forbidden"`, empty Secret Lease IDs, and a generated opaque `output_staging_id` are
+part of the same canonical bytes. A Worker cannot supply or broaden any of these values.
+
+The strict Replay Job payload repeats the `execution_context_id` and `execution_context_digest`.
+Claim and heartbeat return the typed context only after the server verifies its canonical bytes,
+digest, row metadata, compilation, payload, Campaign, Scenario, ToolSpec, policy, source, and Replay
+Run bindings. Executor-profile admission requires the context's fixed profile, and permit issuance
+calls the shared active-authority verifier, so a context or payload substitution also prevents a
+permit. The permit row need not duplicate the context identity: its exact ticket/compilation graph
+transitively binds it to the one-to-one context.
+
+The opaque output-staging slot deliberately stops before storage. It names the slot that a later
+execute/seal and output-import design must authorize; it is not a path, mutable storage handle,
+ArtifactRef, upload capability, imported artifact, or finalization evidence. Secrets are likewise
+not deferred: this exact KISA profile forbids them and accepts no Secret Lease ID.
+
+The v6→v7 migration cannot safely backfill execution contexts from old rows because the exact
+issuance-time Campaign, Scenario, ToolSpec, and staging identity were never persisted as this
+authority. Migration therefore locks writers and fails closed if any dispatchable v6 Replay state
+exists, including issued or claimed tickets, permits, internal Replay Jobs, active authority
+accounts/reservations, or batches/items beyond planned/pending proof. Only non-dispatchable planned
+proof may migrate, and it receives no fabricated context row. This migration rule preserves the
+meaning of every schema-v7 context instead of guessing compatibility.
 
 ### Separating Worker execute/seal from authority finalize phases
 
@@ -476,12 +532,13 @@ The following are outside the first vertical slice of this ADR:
 - a cancellation-acknowledgement protocol through which the Control Plane proves physical fleet
   quiescence.
 
-The currently implemented M6-07B-2E slice ends at the fail-closed internal Worker HTTP transport and
-async client boundary. A public Replay admission/read API, an actual Worker executor with
-pre-dispatch permit-use enforcement, the exact Campaign execution-context bundle, new-identity retry
-issuance, typed artifact finalization, the Gate, and negative Control Plane retest remain follow-up
-exit criteria for this ADR. Because a permit is not a bearer credential, a separate redeem mutation
-is not added as an exit criterion.
+The currently implemented M6-07B-2F slice ends at the schema-v7 exact execution-context authority
+and its payload/claim/profile/permit bindings. A public Replay admission/read API, an actual Worker
+executor with pre-dispatch permit-use enforcement, the Worker execute/seal phase, output import and
+typed artifact finalization, new-identity retry issuance, the Gate, and negative Control Plane retest
+remain follow-up exit criteria for this ADR. The opaque staging slot does not implement any of those
+boundaries, and Compose still has no active Replay executor daemon. Because a permit is not a bearer
+credential, a separate redeem mutation is not added as an exit criterion.
 
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
@@ -505,19 +562,22 @@ cross-service authentication.
 
 ## Acceptance and validation
 
-As of the M6-07B-2E update, source admission/derivation, schema-v5 reservation authority, fresh
+As of the M6-07B-2F update, source admission/derivation, schema-v5 reservation authority, fresh
 first-attempt compilation, atomic internal issuance and issuance idempotency, the schema-v6 per-call
 permit ledger/internal service issuance, the fail-closed WORKER-only HTTP transport/async client, and
-the server-validated compilation claim envelope cover the corresponding server-side subset below.
-Public admission/read API, actual executor/pre-dispatch permit use, the Campaign execution-context
-bundle, retry, finalization, Gate, and negative-retest bullets continue to be exit criteria for full
-M6-07B.
+the server-validated compilation claim envelope, plus schema-v7 exact execution-context authority and
+its transitive bindings cover the corresponding server-side subset below. Public admission/read API,
+actual executor/pre-dispatch permit use, Worker execute/seal, output import/typed finalization, retry,
+Gate, and negative-retest bullets continue to be exit criteria for full M6-07B. Compose has no active
+Replay executor daemon.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
 - a forward migration upgrades both an empty PostgreSQL database and the immediately preceding
   supported version to the new Replay schema, and the server fails closed on an unknown, partial,
-  or constraint/trigger-corrupted schema;
+  or constraint/trigger-corrupted schema; specifically, v6→v7 refuses any dispatchable v6 authority
+  rather than backfilling guessed context bytes, while non-dispatchable planned proof advances with
+  no fabricated context row;
 - public submission rejects injection of the internal Replay kind, a raw path/URL, Candidate,
   contract, Capability, or Worker verdict; only server-side sealed-source derivation creates exact
   KISA planned/pending non-dispatchable compilation proof; internal issuance re-verifies the source,
@@ -527,6 +587,13 @@ Implementation of this ADR is complete when automated tests prove at least that:
   `rate_reservation_id`; a response-loss retry reconstructs the same exact authority set only while
   the current active exact authority graph remains ticket/Job `issued`/`queued` or
   `claimed`/`running`, and a terminal or changed graph must fail closed;
+- first-attempt issuance appends exactly one schema-v7 `cp_replay_execution_contexts` row for every
+  fresh compilation and canonically binds the exact typed Campaign, KISA Scenario,
+  `AIChatProbeTool.spec`, their component digests, the full context digest, source/policy identities,
+  fixed `kisa-exact-v1` profile, forbidden secrets with no Secret Lease IDs, and an opaque unique
+  output-staging identity; Job payload, claim/heartbeat, profile admission, and permit issuance reject
+  any context, digest, component, or transitive authority substitution, while the staging identity
+  alone cannot authorize storage, execution, import, or finalization;
 - strict permit input accepts only the executor profile, lease token, ticket ID, fencing value, and
   1-based ordinal and rejects target/Tool/method/argument/unit injection; the server derives the exact
   active authority and canonical operation, performs rolling-window rate re-admission from current

@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2E fail-closed internal Worker HTTP transport)
+- Implementation update: 2026-07-18 (M6-07B-2F exact KISA execution-context authority)
 - Scope: M6-07B Control Plane 수직 조각
 - Extends: [ADR 0011](0011-durable-control-plane.md), [ADR 0012](0012-lease-aware-worker-daemon.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.md)
@@ -70,12 +70,22 @@ endpoint/async client를 추가했다. allowlist는 설정이 없으면 빈 목�
 `{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. claim,
 heartbeat, Tool-permit 발급은 internal Worker transport로만 노출되고, claim/heartbeat envelope은
 서버가 exact digest·identity binding을 다시 검증한 canonical `ReplayCompilation`을 포함한다.
-permit은 발급 시 이미 소비된 non-bearer proof이며 별도 redeem mutation은 없다. 실제
-executor가 없으므로 compose에서 기본 활성화하지 않는다. public Replay admission/read API,
-실제 Replay executor/pre-dispatch permit-use 집행, exact Campaign execution-context bundle, 새 identity
-retry, typed server-side artifact finalization과 result-digest 검증, Gate와 negative Control Plane
-retest는 남아 있다. 이 실행 경계가 완료되기 전에는 Control Plane이 완전한 durable Replay
-orchestration을 제공한다고 주장할 수 없다.
+permit은 발급 시 이미 소비된 non-bearer proof이며 별도 redeem mutation은 없다.
+M6-07B-2F는 schema v7 append-only `cp_replay_execution_contexts`를 추가한다. 첫 시도 발급은 fresh
+compilation마다 canonical context 하나를 저장한다. 이 context는 exact typed Campaign, exact KISA
+Scenario, canonical `AIChatProbeTool.spec`, 각 component digest와 전체 context digest, source/policy
+identity, 고정 `kisa-exact-v1` executor profile, Secret Lease ID가 없는 secret 금지 정책과 opaque
+output-staging slot을 포함한다. strict Job payload는 context ID/digest를 반복하고 claim/heartbeat는
+exact graph 검증 뒤 context를 반환한다. profile admission은 고정 profile을 검증하며 Tool-permit
+발급은 같은 compilation/context 권위를 전이적으로 다시 검증한다. staging slot은 identity일 뿐
+path, store, upload 권한 또는 result claim이 아니다. v6→v7 migration은 exact issuance-time bytes를
+재구성할 수 없으므로 dispatch 가능한 v6 Replay authority가 하나라도 있으면 fail closed한다.
+non-dispatchable planned proof만 있는 database는 context table을 비운 채 전진할 수 있다. 실제
+executor daemon은 Compose에서 계속 기본 활성화하지 않는다. public Replay admission/read API,
+실제 Replay executor/pre-dispatch permit-use 집행, Worker execute/seal, output import와 typed
+server-side finalization, 새 identity retry, Gate와 negative Control Plane retest는 남아 있다. 이
+실행 경계가 완료되기 전에는 Control Plane이 완전한 durable Replay orchestration을 제공한다고
+주장할 수 없다.
 
 ## Context
 
@@ -129,9 +139,15 @@ batch의 exact reservation-bound Job/ticket 집합을 원자적으로 만든다.
 내부 서비스 발급을 추가하고 exact active authority 재검증, canonical operation 결박,
 ticket/ordinal 멱등성, reserved→consumed 전이와 burn-on-uncertainty를 구현했다. M6-07B-2E는
 fail-closed subject/profile allowlist, WORKER-only claim·heartbeat·Tool-permit HTTP endpoint, async client와
-서버 검증 canonical compilation claim envelope를 추가했다. public Replay admission/read API, 실제
-executor/pre-dispatch permit-use, Campaign execution-context bundle, retry, typed finalization, Gate와 negative
-Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있다.
+서버 검증 canonical compilation claim envelope를 추가했다. M6-07B-2F는 schema-v7 append-only
+execution context를 추가해 fresh issuance compilation마다 exact typed Campaign, KISA Scenario,
+canonical ToolSpec, component/context digest, 고정 executor profile, secret 금지와 opaque
+output-staging identity를 결박한다. Job payload, claim envelope, profile admission과 permit issuance는
+이 authority graph를 보존하거나 전이적으로 재검증한다. v6→v7 migration은 누락된 issuance-time
+bytes를 만들어 내지 않고 dispatch 가능한 legacy authority를 거부한다. public Replay
+admission/read API, 실제 executor/pre-dispatch permit-use, Worker execute/seal, output import와 typed
+finalization, retry, Gate와 negative Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있고,
+Compose에는 활성 Replay executor daemon이 없다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -242,8 +258,10 @@ Replay Job은 Operator 제출 API에 노출하지 않는 internal kind다. Publi
 `replay`를 선택할 수 없고, Control Plane의 trusted batch service만 검증된 `cp_replay_item`과
 fresh compilation, active reservation, ticket에서 Job을 생성한다. Worker startup registry에도 exact
 Replay executor가 명시적으로 설치되어야 한다. Job payload는 opaque batch/item/ticket/artifact
-reference와 서버 생성 `compilation_id`, `budget_reservation_id`, `rate_reservation_id` 권위만 포함하며
-executable path, 임의 URL, callable 또는 Worker 선택 Grant를 포함하지 않는다.
+reference와 서버 생성 `compilation_id`, `execution_context_id`, `execution_context_digest`,
+`budget_reservation_id`, `rate_reservation_id` 권위만 포함하며 executable path, 임의 URL, callable
+또는 Worker 선택 Grant를 포함하지 않는다. context의 `output_staging_id`도 opaque identity이며
+filesystem 위치, storage operation, upload, import 또는 finalization을 허가하지 않는다.
 
 일반 Control Plane queue는 at-least-once 전달을 유지하지만 Replay에서는 다음과 같이 ticket과
 결합한다.
@@ -338,6 +356,43 @@ Candidate, contract, Grant, Campaign, Mode, Candidate Run, Replay Run의 exact b
 검증한다. permit은 발급 시 소비가 완료된 non-bearer proof이므로 별도 redeem
 mutation을 추가하지 않는다. 실제 Worker executor의 Tool call 직전 permit-use 집행은 아직
 구현되지 않았다.
+
+### Exact KISA execution-context authority
+
+M6-07B-2F는 Worker를 authority source로 만들지 않으면서 issuance-time executor input을 durable하게
+만든다. schema v7 append-only `cp_replay_execution_contexts` row는 compilation, item, batch, Replay
+Run, compilation digest와 Grant digest FK identity를 통해 fresh `cp_replay_compilations` row 하나에
+one-to-one으로 결박된다. canonical context bytes/digest, required executor profile과 output-staging
+identity는 불변이며 context digest와 staging identity도 고유하다.
+
+서버는 fresh compilation, reservation, one-shot Job, ticket과 같은 첫 시도 issuance transaction에서
+context를 생성한다. context는 서버가 파생한 typed `CampaignManifest`, exact
+`KISAScenarioDefinition`, canonical `AIChatProbeTool.spec`, 각각의 canonical component digest와 전체
+context digest를 포함한다. source Artifact identity/root, policy version,
+batch/item/compilation/Replay Run identity, 고정 `kisa-exact-v1` profile,
+`secret_policy="forbidden"`, 빈 Secret Lease ID와 생성된 opaque `output_staging_id`도 같은 canonical
+bytes에 포함된다. Worker는 이 값을 제출하거나 넓힐 수 없다.
+
+strict Replay Job payload는 `execution_context_id`와 `execution_context_digest`를 반복한다. claim과
+heartbeat는 canonical bytes, digest, row metadata, compilation, payload, Campaign, Scenario,
+ToolSpec, policy, source와 Replay Run binding을 서버가 검증한 뒤에만 typed context를 반환한다.
+executor-profile admission은 context의 고정 profile을 요구하고 permit issuance는 공통 active
+authority verifier를 호출하므로 context/payload 치환은 permit도 차단한다. permit row가 context
+identity를 반복할 필요는 없다. exact ticket/compilation graph가 one-to-one context에 전이적으로
+결박하기 때문이다.
+
+opaque output-staging slot은 의도적으로 storage 경계 전에 멈춘다. 후속 execute/seal과 output-import
+설계가 허가할 slot의 이름일 뿐 path, mutable storage handle, ArtifactRef, upload capability,
+imported artifact 또는 finalization evidence가 아니다. secret도 후속으로 미루지 않는다. 이 exact
+KISA profile은 secret을 금지하고 Secret Lease ID를 받지 않는다.
+
+v6→v7 migration은 이전 row에 이 authority 형태의 exact issuance-time Campaign, Scenario,
+ToolSpec과 staging identity가 저장되지 않았으므로 execution context를 안전하게 backfill할 수 없다.
+따라서 migration은 writer를 lock하고 issued/claimed ticket, permit, 내부 Replay Job, active authority
+account/reservation 또는 planned/pending proof를 넘어선 batch/item 등 dispatch 가능한 v6 Replay
+state가 하나라도 있으면 fail closed한다. non-dispatchable planned proof만 migration할 수 있고 가짜
+context row를 만들지 않는다. 이 규칙은 호환성을 추측하지 않고 모든 schema-v7 context의 의미를
+보존한다.
 
 ### Worker execute/seal과 authority finalize의 phase 분리
 
@@ -439,11 +494,13 @@ CAS로 결과를 commit한다.
 - Worker host compromise가 만든 외부 side effect의 rollback 또는 destination-level exactly-once;
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
-현재 구현된 M6-07B-2E 조각은 fail-closed 내부 Worker HTTP transport와 async client에서
-끝난다. public Replay admission/read API, 실제 Worker executor와 pre-dispatch permit-use enforcement,
-exact Campaign execution-context bundle, 새 identity retry issuance, typed artifact finalization, Gate와 negative
-Control Plane retest는 이 ADR의 후속 exit criteria다. permit은 bearer credential이 아니므로
-별도 redeem mutation을 exit criterion으로 추가하지 않는다.
+현재 구현된 M6-07B-2F 조각은 schema-v7 exact execution-context authority와 그
+payload/claim/profile/permit binding에서 끝난다. public Replay admission/read API, 실제 Worker
+executor와 pre-dispatch permit-use enforcement, Worker execute/seal, output import와 typed artifact
+finalization, 새 identity retry issuance, Gate와 negative Control Plane retest는 이 ADR의 후속 exit
+criteria다. opaque staging slot은 이 경계 중 어느 것도 구현하지 않으며 Compose에는 활성 Replay
+executor daemon이 없다. permit은 bearer credential이 아니므로 별도 redeem mutation을 exit
+criterion으로 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -466,17 +523,20 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## Acceptance and validation
 
-M6-07B-2E 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
+M6-07B-2F 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
 compilation, 원자적 내부 issuance와 issuance 멱등성, schema-v6 호출별 permit 원장/내부 서비스 발급,
-fail-closed WORKER-only HTTP transport/async client와 server-validated compilation claim envelope는 아래
-항목 중 해당 server-side 부분을 충족한다. public admission/read API, 실제 executor/pre-dispatch
-permit use, Campaign execution-context bundle, retry, finalization, Gate와 negative retest 항목은 M6-07B
-전체의 exit criteria로 유지한다.
+fail-closed WORKER-only HTTP transport/async client, server-validated compilation claim envelope와
+schema-v7 exact execution-context authority 및 그 transitive binding은 아래 항목 중 해당 server-side
+부분을 충족한다. public admission/read API, 실제 executor/pre-dispatch permit use, Worker
+execute/seal, output import/typed finalization, retry, Gate와 negative retest 항목은 M6-07B 전체의 exit
+criteria로 유지한다. Compose에는 활성 Replay executor daemon이 없다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
 - forward migration이 빈 PostgreSQL과 직전 지원 version을 새 Replay schema로 올리고, unknown,
-  partial 또는 constraint/trigger가 손상된 schema에서 서버가 fail closed한다;
+  partial 또는 constraint/trigger가 손상된 schema에서 서버가 fail closed한다. 특히 v6→v7은
+  dispatch 가능한 v6 authority를 거부해 추측한 context bytes를 backfill하지 않고,
+  non-dispatchable planned proof는 가짜 context row 없이 전진시킨다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
   verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
   non-dispatchable compilation proof를 만든다. 내부 issuance는 source를 재검증하고 만료된 planned
@@ -486,6 +546,13 @@ permit use, Campaign execution-context bundle, retry, finalization, Gate와 nega
   response-loss 재시도는 현재 active exact authority graph가 ticket/Job `issued`/`queued` 또는
   `claimed`/`running`일 때만 같은 exact authority 집합을 재구성하고, terminal 또는 변경된 graph는
   fail closed한다;
+- 첫 시도 issuance가 fresh compilation마다 schema-v7 `cp_replay_execution_contexts` row를 정확히
+  하나 append하고 exact typed Campaign, KISA Scenario, `AIChatProbeTool.spec`, 각 component digest,
+  전체 context digest, source/policy identity, 고정 `kisa-exact-v1` profile, Secret Lease ID가 없는
+  secret 금지와 opaque unique output-staging identity를 canonical하게 결박한다. Job payload,
+  claim/heartbeat, profile admission과 permit issuance는 context/digest/component/transitive authority
+  치환을 거부하고 staging identity만으로는 storage, execution, import 또는 finalization을 허가할 수
+  없다;
 - strict permit input은 executor profile, lease token, ticket ID, fencing value와 1-based ordinal만 받고
   target/Tool/method/argument/unit 주입을 거부한다. 서버가 exact active authority와 canonical operation을
   파생하고 current baseline/post-admission live reservation remainder/active permit/new cost로 rolling-window rate

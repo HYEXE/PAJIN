@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, 검증된 reproduction-backed confirmation projection, 강화 후 retest를 위한 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable 예약과 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema v6 append-only 일회성 호출별 permit 원장과 멱등 내부 서비스 발급, M6-07B-2E fail-closed Replay claim·heartbeat·Tool-permit 발급 전용 Worker HTTP transport |
-| 주요 공백 | public Replay admission/read API, pre-dispatch permit-use 집행과 exact Campaign execution-context bundle을 갖춘 실제 Replay executor, 새 identity 재시도, typed finalization/Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable 예약과 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema v6 append-only 일회성 호출별 permit 원장과 멱등 내부 서비스 발급, M6-07B-2E fail-closed 전용 Worker HTTP transport, M6-07B-2F schema v7 append-only exact Replay execution-context 권위 |
+| 주요 공백 | public Replay admission/read API, pre-dispatch permit-use 집행을 갖춘 실제 Replay executor, Worker execute/seal 분리, output import와 typed finalization, 새 identity 재시도, Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -168,11 +168,21 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   heartbeat는 정확한 서버 검증 canonical `ReplayCompilation`을 담은
   `ReplayExecutionClaimView`를 반환하고, envelope는 canonical compilation, Candidate, contract, Grant,
   Campaign, Mode, Candidate Run, Replay Run 결박을 다시 확인합니다. permit은 발급 시 durable unit을 이미
-  소비한 non-bearer proof이며 M6-07B-2E는 별도 redeem mutation을 추가하지 않습니다. 실제 Replay
-  executor가 아직 없으므로 Compose에서 기본 활성화하지 않습니다. public Replay
-  admission/read API, 실제 Replay executor와 pre-dispatch permit-use 집행, exact Campaign
-  execution-context bundle, 새 identity retry 발행, typed finalization, Gate 연결과 negative Control Plane
-  retest가 남아 있어 M6-07B 전체는 여전히 미완료입니다.
+  소비한 non-bearer proof이며 M6-07B-2E는 별도 redeem mutation을 추가하지 않습니다. M6-07B-2F는
+  발급 시 fresh compilation마다 append-only schema v7 `cp_replay_execution_contexts` row를 하나씩
+  만듭니다. canonical `ReplayExecutionContext`는 정확한 typed Campaign, exact KISA Scenario와
+  canonical `AIChatProbeTool.spec`를 결박하고 각 component와 전체 context의 digest를 저장합니다.
+  `required_executor_profile`은 `kisa-exact-v1`로 고정되고 Secret Lease는 금지되며, Worker path 대신
+  opaque한 `stage_<uuid>` output slot만 할당합니다. Job payload는 context ID/digest를 반복하고,
+  claim·heartbeat는 서버가 검증한 같은 context를 반환하며, profile 검사와 모든 permit 발급은
+  compilation/context/ticket의 전이적 결박을 다시 검증합니다. v6→v7 migration은
+  non-dispatchable v6 상태만 context table이 빈 채로 전진시키며, 정확한 과거 context byte를 backfill할 수
+  없으므로 ticket, permit, 내부 Replay Job, durable reservation 또는 진행된 batch/item 상태가 있으면
+  fail closed합니다. 이 context byte는 실행이나 output 저장 자체를 구현하지 않습니다. 실제 Replay
+  executor는 아직 없으며 Compose는 전용 Replay executor daemon을 활성화하지 않습니다. public Replay
+  admission/read API, 실제 executor와 pre-dispatch permit-use 집행, Worker execute/seal 분리, output
+  import와 typed finalization, 새 identity retry 발행, Gate 연결과 negative Control Plane retest가 남아
+  있어 M6-07B 전체는 여전히 미완료입니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 

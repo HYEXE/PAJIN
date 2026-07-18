@@ -20,8 +20,8 @@ The implementation baseline as of 2026-07-18 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, server-derived non-dispatchable planned/pending records for exact KISA M03, M06, and A04 confirmation compilations, M6-07B-2C schema-v5 durable reservation and internal first-attempt Job/ticket issuance, M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus idempotent internal service issuance, and M6-07B-2E fail-closed dedicated Worker HTTP transport for Replay claim, heartbeat, and Tool-permit issuance |
-| Primary gaps | Remaining Control Plane Replay orchestration, including a public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use enforcement and an exact Campaign execution-context bundle, new-identity retries, typed finalization/Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, server-derived non-dispatchable planned/pending records for exact KISA M03, M06, and A04 confirmation compilations, M6-07B-2C schema-v5 durable reservation and internal first-attempt Job/ticket issuance, M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus idempotent internal service issuance, M6-07B-2E fail-closed dedicated Worker HTTP transport, and M6-07B-2F schema-v7 append-only exact Replay execution-context authority |
+| Primary gaps | Remaining Control Plane Replay orchestration, including a public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use enforcement, the Worker execute/seal split, output import and typed finalization, new-identity retries, Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -170,11 +170,22 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   `ReplayExecutionClaimView` containing the exact server-validated canonical `ReplayCompilation`,
   and the envelope rechecks its canonical compilation, Candidate, contract, Grant, Campaign, Mode,
   Candidate Run, and Replay Run bindings. The permit remains a non-bearer proof whose issuance has
-  already consumed the durable units; M6-07B-2E adds no separate redeem mutation. Because no actual
-  Replay executor exists yet, Compose does not enable one by default. A public Replay
-  admission/read API, the actual Replay executor and pre-dispatch permit-use enforcement, the exact
-  Campaign execution-context bundle, new-identity retry issuance, typed finalization, Gate wiring,
-  and negative Control Plane retest remain outstanding, so full M6-07B remains incomplete.
+  already consumed the durable units; M6-07B-2E adds no separate redeem mutation. M6-07B-2F now
+  creates one append-only schema-v7 `cp_replay_execution_contexts` row for every fresh compilation
+  during issuance. Its canonical `ReplayExecutionContext` binds the exact typed Campaign, exact KISA
+  Scenario, and canonical `AIChatProbeTool.spec`, stores a digest for each component and the complete
+  context, fixes `required_executor_profile` to `kisa-exact-v1`, forbids Secret Leases, and allocates
+  only an opaque `stage_<uuid>` output slot rather than a Worker path. The Job payload repeats the
+  context ID/digest; claim and heartbeat return the same server-validated context; profile checks and
+  every permit issuance revalidate the transitive compilation/context/ticket binding. A v6→v7
+  migration advances only non-dispatchable v6 state with an empty context table and fails closed if
+  tickets, permits, internal Replay Jobs, durable reservations, or advanced batch/item state already
+  exist, because those exact historical context bytes cannot be backfilled. These context bytes do
+  not implement execution or output storage. No actual Replay executor exists yet, and Compose does
+  not enable a dedicated Replay executor daemon. A public Replay admission/read API, the actual
+  executor and pre-dispatch permit-use enforcement, the Worker execute/seal split, output import and
+  typed finalization, new-identity retry issuance, Gate wiring, and negative Control Plane retest
+  remain outstanding, so full M6-07B remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 

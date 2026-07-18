@@ -22,6 +22,8 @@ from pajin.control_plane.database import (
     _V4_MIGRATION_WRITE_LOCK_TABLES,
     _V5_METADATA,
     _V5_MIGRATION_WRITE_LOCK_TABLES,
+    _V6_METADATA,
+    _V6_MIGRATION_WRITE_LOCK_TABLES,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
@@ -29,10 +31,12 @@ from pajin.control_plane.database import (
     LEGACY_CONTROL_PLANE_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
     V5_CONTROL_PLANE_TABLES,
+    V6_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
@@ -42,6 +46,7 @@ from pajin.control_plane.database import (
     ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
+    ReplayExecutionContextRecord,
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
@@ -54,6 +59,7 @@ from pajin.control_plane.database import (
     _lock_v3_migration_writes,
     _lock_v4_migration_writes,
     _lock_v5_migration_writes,
+    _lock_v6_migration_writes,
     _postgres_append_only_trigger_is_valid,
     _postgres_check_signature,
 )
@@ -254,6 +260,51 @@ def _create_v5_schema(repository: ControlPlaneRepository) -> None:
         )
 
 
+def _create_v6_schema(repository: ControlPlaneRepository) -> None:
+    pending = set(V6_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V6_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in (
+            "cp_events",
+            "cp_artifacts",
+            "cp_replay_events",
+            "cp_replay_compilations",
+            "cp_replay_tool_permits",
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                connection.exec_driver_sql(
+                    f"""
+                    CREATE TRIGGER {table_name}_no_{operation.lower()}
+                    BEFORE {operation} ON {table_name}
+                    BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
+                    """
+                )
+        schema_version = _V6_METADATA.tables["cp_schema_version"]
+        now = datetime.now(UTC)
+        connection.execute(
+            schema_version.insert(),
+            [
+                {
+                    "version": version,
+                    "description": description,
+                    "applied_at": now,
+                }
+                for version, description in (
+                    (1, "legacy-control-plane-core"),
+                    (2, "replay-authority"),
+                    (3, "artifact-authority"),
+                    (4, "trusted-replay-compilation-authority"),
+                    (5, "durable-replay-permit-authority"),
+                    (6, "replay-tool-call-permit-authority"),
+                )
+            ],
+        )
+
+
 def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
     statements: list[str] = []
     connection = SimpleNamespace(
@@ -358,6 +409,48 @@ def test_postgres_v5_migration_locks_every_reservation_writer_atomically() -> No
         "cp_replay_budget_reservations",
         "cp_replay_rate_reservations",
         "cp_replay_compilations",
+        "cp_replay_events",
+        "cp_approvals",
+        "cp_checkpoints",
+        "cp_artifacts",
+        "cp_events",
+        "cp_schema_version",
+        "cp_runs",
+    )
+
+
+def test_postgres_v6_migration_locks_every_context_writer_atomically() -> None:
+    statements: list[str] = []
+    savepoint_actions: list[str] = []
+    savepoint = SimpleNamespace(
+        commit=lambda: savepoint_actions.append("commit"),
+        rollback=lambda: savepoint_actions.append("rollback"),
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+        begin_nested=lambda: savepoint,
+    )
+
+    _lock_v6_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE "
+        + ", ".join(_V6_MIGRATION_WRITE_LOCK_TABLES)
+        + " IN ACCESS EXCLUSIVE MODE NOWAIT"
+    ]
+    assert savepoint_actions == ["commit"]
+    assert _V6_MIGRATION_WRITE_LOCK_TABLES == (
+        "cp_jobs",
+        "cp_replay_tickets",
+        "cp_replay_items",
+        "cp_replay_batches",
+        "cp_replay_budget_accounts",
+        "cp_replay_rate_accounts",
+        "cp_replay_budget_reservations",
+        "cp_replay_rate_reservations",
+        "cp_replay_compilations",
+        "cp_replay_tool_permits",
         "cp_replay_events",
         "cp_approvals",
         "cp_checkpoints",
@@ -780,6 +873,27 @@ def _permit_values(ticket_values: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _execution_context_values(ticket_values: dict[str, object]) -> dict[str, object]:
+    canonical_context = (
+        b'{"kind":"ReplayExecutionContext","schemaVersion":"pajin.dev/replay/v1alpha1"}'
+    )
+    return {
+        "context_id": f"replay-context_{'5' * 32}",
+        "compilation_id": ticket_values["compilation_id"],
+        "item_id": ticket_values["item_id"],
+        "batch_id": ticket_values["batch_id"],
+        "replay_run_id": ticket_values["replay_run_id"],
+        "compilation_digest": ticket_values["compilation_digest"],
+        "grant_digest": ticket_values["grant_digest"],
+        "context_digest": "6" * 64,
+        "canonical_context": canonical_context,
+        "byte_length": len(canonical_context),
+        "required_executor_profile": "kisa-exact-v1",
+        "output_staging_id": f"stage_{'7' * 32}",
+        "created_at": datetime.now(UTC),
+    }
+
+
 def _v2_batch_values(run_id: str, batch_id: str) -> dict[str, object]:
     now = datetime.now(UTC)
     return {
@@ -828,6 +942,7 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             ARTIFACT_AUTHORITY_SCHEMA_VERSION,
             REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
             DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
+            REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
             CURRENT_SCHEMA_VERSION,
         ]
 
@@ -1037,7 +1152,7 @@ def test_v4_planned_replay_proof_migrates_forward_without_losing_authority_rows(
         repository.close()
 
 
-def test_v5_active_ticket_migrates_to_empty_append_only_permit_ledger(
+def test_v5_active_ticket_refuses_execution_context_migration_without_data_loss(
     tmp_path: Path,
 ) -> None:
     repository = _repository(tmp_path / "v5-active-ticket.db")
@@ -1046,13 +1161,28 @@ def test_v5_active_ticket_migrates_to_empty_append_only_permit_ledger(
         ticket_values = _seed_v5_issuance_prerequisites(repository)
         _activate_v5_ticket_graph(repository, ticket_values)
 
-        repository.initialize()
+        with pytest.raises(
+            SchemaInitializationError,
+            match=(
+                r"schema v6 contains dispatchable Replay authority without exact execution "
+                r"context and cannot be trusted or backfilled .*tickets=1"
+            ),
+        ):
+            repository.initialize()
 
-        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        table_names = set(inspect(repository.engine).get_table_names())
+        assert "cp_replay_tool_permits" not in table_names
+        assert "cp_replay_execution_contexts" not in table_names
         with repository.transaction() as session:
             ticket = session.get(ReplayTicketRecord, ticket_values["ticket_id"])
-            permit_count = session.scalar(
-                select(text("count(*)")).select_from(ReplayToolPermitRecord)
+            job = session.get(JobRecord, ticket_values["job_id"])
+            budget_reservation = session.get(
+                ReplayBudgetReservationRecord,
+                ticket_values["budget_reservation_id"],
+            )
+            rate_reservation = session.get(
+                ReplayRateReservationRecord,
+                ticket_values["rate_reservation_id"],
             )
             versions = list(
                 session.scalars(
@@ -1061,13 +1191,160 @@ def test_v5_active_ticket_migrates_to_empty_append_only_permit_ledger(
             )
         assert ticket is not None
         assert ticket.state == "issued"
-        assert permit_count == 0
-        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
-        ticket_indexes = {
-            index["name"] for index in inspect(repository.engine).get_indexes("cp_replay_tickets")
-        }
-        assert "ux_cp_replay_tickets_tool_permit_authority" in ticket_indexes
+        assert job is not None and job.state == "queued"
+        assert budget_reservation is not None and budget_reservation.state == "active"
+        assert rate_reservation is not None and rate_reservation.state == "active"
+        assert versions == [1, 2, 3, 4, 5]
+    finally:
+        repository.close()
+
+
+def test_v6_planned_replay_proof_migrates_to_empty_execution_context_ledger(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v6-planned-proof.db")
+    try:
+        _create_v6_schema(repository)
+        _, _, replay_run_id = _seed_replay_item_authority(repository)
+        canonical = b'{"kind":"ReplayCompilation","preserve":"v6-proof"}'
+        compilation_id = f"replay-compilation_{'6' * 32}"
+        with repository.transaction() as session:
+            session.add(
+                _compilation(
+                    compilation_id=compilation_id,
+                    replay_run_id=replay_run_id,
+                    canonical_compilation=canonical,
+                )
+            )
+
         repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == CURRENT_CONTROL_PLANE_TABLES
+        with repository.transaction() as session:
+            batch = session.get(ReplayBatchRecord, "batch_migration")
+            item = session.get(ReplayItemRecord, "item_migration")
+            compilation = session.get(ReplayCompilationRecord, compilation_id)
+            context_count = session.scalar(
+                select(text("count(*)")).select_from(ReplayExecutionContextRecord)
+            )
+            versions = list(
+                session.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert batch is not None and batch.state == "planned"
+        assert item is not None and item.state == "pending" and item.attempts == 0
+        assert compilation is not None
+        assert compilation.replay_run_id == replay_run_id
+        assert compilation.canonical_compilation == canonical
+        assert context_count == 0
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+
+        repository.initialize()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("unsafe_authority", "expected_diagnostic"),
+    [
+        ("internal-replay-job", r"internal-replay Jobs=1"),
+        ("public-replay-run-job", r"Replay Run Jobs=1"),
+        ("non-planned-batch", r"non-planned batches=1"),
+        ("advanced-item", r"advanced items=1"),
+        ("active-ticket-graph", r"tickets=1"),
+        ("claimed-permit-graph", r"permits=1"),
+    ],
+)
+def test_v6_dispatch_authority_refuses_context_migration_without_data_loss(
+    tmp_path: Path,
+    unsafe_authority: str,
+    expected_diagnostic: str,
+) -> None:
+    repository = _repository(tmp_path / f"v6-unsafe-{unsafe_authority}.db")
+    try:
+        _create_v6_schema(repository)
+        if unsafe_authority in {"active-ticket-graph", "claimed-permit-graph"}:
+            ticket_values = _seed_v5_issuance_prerequisites(repository)
+            _activate_v5_ticket_graph(repository, ticket_values)
+            if unsafe_authority == "claimed-permit-graph":
+                _claim_v6_ticket_graph(repository, ticket_values)
+                with repository.transaction() as session:
+                    session.add(ReplayToolPermitRecord(**_permit_values(ticket_values)))
+        else:
+            _, _, replay_run_id = _seed_replay_item_authority(repository)
+            with repository.transaction() as session:
+                session.add(_compilation(replay_run_id=replay_run_id))
+                if unsafe_authority in {
+                    "internal-replay-job",
+                    "public-replay-run-job",
+                }:
+                    job = _job(replay_run_id, f"job_{'e' * 32}")
+                    if unsafe_authority == "internal-replay-job":
+                        job.kind = "internal-replay"
+                        job.state = "queued"
+                        job.attempts = 0
+                        job.result = None
+                    session.add(job)
+                elif unsafe_authority == "non-planned-batch":
+                    batch = session.get(ReplayBatchRecord, "batch_migration")
+                    assert batch is not None
+                    batch.state = "running"
+                else:
+                    item = session.get(ReplayItemRecord, "item_migration")
+                    assert item is not None
+                    item.state = "queued"
+                    item.attempts = 1
+
+        with repository.engine.connect() as connection:
+            before_rows = {
+                table_name: sorted(
+                    [
+                        dict(row)
+                        for row in connection.execute(
+                            _V6_METADATA.tables[table_name].select()
+                        ).mappings()
+                    ],
+                    key=repr,
+                )
+                for table_name in V6_CONTROL_PLANE_TABLES
+            }
+
+        with pytest.raises(
+            SchemaInitializationError,
+            match=(
+                r"schema v6 contains dispatchable Replay authority without exact execution "
+                r"context and cannot be trusted or backfilled .*" + expected_diagnostic
+            ),
+        ):
+            repository.initialize()
+
+        assert "cp_replay_execution_contexts" not in inspect(repository.engine).get_table_names()
+        with repository.engine.connect() as connection:
+            after_rows = {
+                table_name: sorted(
+                    [
+                        dict(row)
+                        for row in connection.execute(
+                            _V6_METADATA.tables[table_name].select()
+                        ).mappings()
+                    ],
+                    key=repr,
+                )
+                for table_name in V6_CONTROL_PLANE_TABLES
+            }
+            versions = list(
+                connection.scalars(
+                    select(_V6_METADATA.tables["cp_schema_version"].c.version).order_by(
+                        _V6_METADATA.tables["cp_schema_version"].c.version
+                    )
+                ).all()
+            )
+        assert after_rows == before_rows
+        assert versions == [1, 2, 3, 4, 5, 6]
     finally:
         repository.close()
 
@@ -1657,7 +1934,12 @@ def test_missing_required_column_is_rejected_without_automatic_repair(tmp_path: 
 
 @pytest.mark.parametrize(
     "table_name",
-    ["cp_artifacts", "cp_replay_compilations", "cp_replay_events"],
+    [
+        "cp_artifacts",
+        "cp_replay_compilations",
+        "cp_replay_execution_contexts",
+        "cp_replay_events",
+    ],
 )
 def test_missing_append_only_trigger_is_rejected_without_repair(
     tmp_path: Path,
@@ -1923,6 +2205,7 @@ def _valid_postgres_trigger_row(table_name: str) -> SimpleNamespace:
         "cp_artifacts": "artifact",
         "cp_events": "event",
         "cp_replay_compilations": "replay_compilation",
+        "cp_replay_execution_contexts": "replay_execution_context",
         "cp_replay_events": "replay_event",
         "cp_replay_tool_permits": "replay_tool_permit",
     }[table_name]
@@ -1953,6 +2236,7 @@ def test_postgres_append_only_trigger_accepts_exact_managed_definition() -> None
         "cp_artifacts",
         "cp_events",
         "cp_replay_compilations",
+        "cp_replay_execution_contexts",
         "cp_replay_events",
         "cp_replay_tool_permits",
     ):
@@ -2399,6 +2683,161 @@ def test_v5_permit_checks_reject_impossible_usage_and_lifecycle(
             updates = {"expires_at": record.reserved_at}
         for field, value in updates.items():
             setattr(record, field, value)
+    repository.close()
+
+
+def test_v7_execution_context_has_exact_compilation_authority_and_is_append_only(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v7-execution-context-authority.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    context_values = _execution_context_values(ticket_values)
+    with repository.transaction() as session:
+        session.add(ReplayExecutionContextRecord(**context_values))
+
+    with repository.transaction() as session:
+        context = session.get(ReplayExecutionContextRecord, context_values["context_id"])
+        assert context is not None
+        assert context.compilation_id == ticket_values["compilation_id"]
+        assert context.item_id == ticket_values["item_id"]
+        assert context.batch_id == ticket_values["batch_id"]
+        assert context.replay_run_id == ticket_values["replay_run_id"]
+        assert context.compilation_digest == ticket_values["compilation_digest"]
+        assert context.grant_digest == ticket_values["grant_digest"]
+        assert context.canonical_context == context_values["canonical_context"]
+        assert context.byte_length == len(context.canonical_context)
+        assert context.required_executor_profile == "kisa-exact-v1"
+
+    foreign_keys = {
+        constraint["name"]: (
+            tuple(constraint.get("constrained_columns") or ()),
+            constraint.get("referred_table"),
+            tuple(constraint.get("referred_columns") or ()),
+        )
+        for constraint in inspect(repository.engine).get_foreign_keys(
+            "cp_replay_execution_contexts"
+        )
+    }
+    assert foreign_keys["fk_cp_replay_execution_contexts_compilation_authority"] == (
+        (
+            "compilation_id",
+            "item_id",
+            "batch_id",
+            "replay_run_id",
+            "compilation_digest",
+            "grant_digest",
+        ),
+        "cp_replay_compilations",
+        (
+            "compilation_id",
+            "item_id",
+            "batch_id",
+            "replay_run_id",
+            "compilation_digest",
+            "grant_digest",
+        ),
+    )
+    unique_constraints = {
+        constraint["name"]: tuple(constraint.get("column_names") or ())
+        for constraint in inspect(repository.engine).get_unique_constraints(
+            "cp_replay_execution_contexts"
+        )
+    }
+    assert unique_constraints == {
+        "uq_cp_replay_execution_contexts_compilation": ("compilation_id",),
+        "uq_cp_replay_execution_contexts_digest": ("context_digest",),
+        "uq_cp_replay_execution_contexts_output_staging_id": ("output_staging_id",),
+    }
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        context = session.get(ReplayExecutionContextRecord, context_values["context_id"])
+        assert context is not None
+        context.required_executor_profile = "different-profile"
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        context = session.get(ReplayExecutionContextRecord, context_values["context_id"])
+        assert context is not None
+        session.delete(context)
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    "duplicate_authority",
+    ["compilation_id", "context_digest", "output_staging_id"],
+)
+def test_v7_execution_context_rejects_duplicate_authority(
+    tmp_path: Path,
+    duplicate_authority: str,
+) -> None:
+    repository = _repository(tmp_path / f"v7-context-duplicate-{duplicate_authority}.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    context_values = _execution_context_values(ticket_values)
+    with repository.transaction() as session:
+        session.add(ReplayExecutionContextRecord(**context_values))
+
+    duplicate = {
+        **context_values,
+        "context_id": f"replay-context_{'8' * 32}",
+        "compilation_id": f"replay-compilation_{'6' * 32}",
+        "replay_run_id": f"run_{'4' * 32}",
+        "compilation_digest": "f" * 64,
+        "grant_digest": "1" * 64,
+        "context_digest": "9" * 64,
+        "output_staging_id": f"stage_{'a' * 32}",
+    }
+    if duplicate_authority == "compilation_id":
+        duplicate.update(
+            compilation_id=context_values["compilation_id"],
+            replay_run_id=context_values["replay_run_id"],
+            compilation_digest=context_values["compilation_digest"],
+            grant_digest=context_values["grant_digest"],
+        )
+    else:
+        duplicate[duplicate_authority] = context_values[duplicate_authority]
+
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        session.add(ReplayExecutionContextRecord(**duplicate))
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("context_id", f"replay-context_{'A' * 32}"),
+        ("context_digest", "A" * 64),
+        ("canonical_context", b""),
+        ("byte_length", 0),
+        ("required_executor_profile", "kisa/exact/v1"),
+        ("required_executor_profile", ".kisa-exact-v1"),
+        ("output_staging_id", f"stage_{'A' * 32}"),
+        ("compilation_id", f"replay-compilation_{'e' * 32}"),
+        ("item_id", "item_other"),
+        ("batch_id", "batch_other"),
+        ("replay_run_id", f"run_{'4' * 32}"),
+        ("compilation_digest", "f" * 64),
+        ("grant_digest", "1" * 64),
+    ],
+)
+def test_v7_execution_context_rejects_invalid_or_mismatched_authority(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository = _repository(tmp_path / f"v7-context-invalid-{field}.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    context_values = _execution_context_values(ticket_values)
+    context_values[field] = value
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        session.add(ReplayExecutionContextRecord(**context_values))
     repository.close()
 
 

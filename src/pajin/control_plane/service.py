@@ -35,6 +35,7 @@ from pajin.control_plane.database import (
     ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
+    ReplayExecutionContextRecord,
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
@@ -50,6 +51,7 @@ from pajin.control_plane.kisa_derivation import (
     derive_kisa_confirmation_batch,
 )
 from pajin.control_plane.models import (
+    KISA_EXACT_REPLAY_EXECUTOR_PROFILE,
     AdmitSourceArtifactRequest,
     ApprovalIntent,
     ApprovalState,
@@ -78,6 +80,7 @@ from pajin.control_plane.models import (
     ReplayBatchView,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
+    ReplayExecutionContext,
     ReplayItemState,
     ReplayItemView,
     ReplayJobPayload,
@@ -93,6 +96,9 @@ from pajin.control_plane.models import (
     RunView,
     SubmissionView,
     SubmitRunRequest,
+    canonical_replay_execution_context_bytes,
+    replay_execution_component_digest,
+    replay_execution_context_digest,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.domain.models import CampaignMode, ToolRiskTier
@@ -195,6 +201,8 @@ class _ReplayBindingAuthority:
     payload: ReplayJobPayload
     compilation_record: ReplayCompilationRecord
     compilation: ReplayCompilation
+    execution_context_record: ReplayExecutionContextRecord
+    execution_context: ReplayExecutionContext
     budget_account: ReplayBudgetAccountRecord
     rate_account: ReplayRateAccountRecord
     budget_reservation: ReplayBudgetReservationRecord
@@ -899,6 +907,8 @@ class ControlPlaneService:
             issued_tickets: list[ReplayTicketRecord] = []
             for item, admitted, trusted in zip(items, derived.items, trusted_fresh, strict=True):
                 compilation_id = f"replay-compilation_{uuid4().hex}"
+                execution_context_id = f"replay-context_{uuid4().hex}"
+                output_staging_id = f"stage_{uuid4().hex}"
                 budget_reservation_id = f"budget-reservation_{uuid4().hex}"
                 rate_reservation_id = f"rate-reservation_{uuid4().hex}"
                 ticket_id = f"replay-ticket_{uuid4().hex}"
@@ -914,11 +924,38 @@ class ControlPlaneService:
                 if ticket_expires_at <= now:
                     raise StateConflict("fresh Replay issuance authority expired before commit")
 
+                execution_context = ReplayExecutionContext(
+                    context_id=execution_context_id,
+                    batch_id=batch.batch_id,
+                    item_id=item.item_id,
+                    compilation_id=compilation_id,
+                    replay_run_id=admitted.replay_run_id,
+                    source=source,
+                    source_root_digest=derived.source_root_digest,
+                    campaign=derived.campaign,
+                    campaign_digest=replay_execution_component_digest(derived.campaign),
+                    scenario=admitted.scenario,
+                    scenario_digest=replay_execution_component_digest(admitted.scenario),
+                    tool_spec=AIChatProbeTool.spec,
+                    tool_spec_digest=replay_execution_component_digest(AIChatProbeTool.spec),
+                    policy_version=derived.policy_version,
+                    required_executor_profile=KISA_EXACT_REPLAY_EXECUTOR_PROFILE,
+                    secret_policy="forbidden",
+                    secret_lease_ids=(),
+                    output_staging_id=output_staging_id,
+                    created_at=now,
+                )
+                canonical_execution_context = canonical_replay_execution_context_bytes(
+                    execution_context
+                )
+                execution_context_digest = replay_execution_context_digest(execution_context)
                 payload = ReplayJobPayload(
                     batch_id=batch.batch_id,
                     item_id=item.item_id,
                     ticket_id=ticket_id,
                     compilation_id=compilation_id,
+                    execution_context_id=execution_context.context_id,
+                    execution_context_digest=execution_context_digest,
                     budget_reservation_id=budget_reservation_id,
                     rate_reservation_id=rate_reservation_id,
                     replay_run_id=admitted.replay_run_id,
@@ -961,6 +998,23 @@ class ControlPlaneService:
                     created_at=now,
                 )
                 session.add(compilation)
+                session.flush()
+                execution_context_record = ReplayExecutionContextRecord(
+                    context_id=execution_context.context_id,
+                    compilation_id=compilation.compilation_id,
+                    item_id=item.item_id,
+                    batch_id=batch.batch_id,
+                    replay_run_id=replay_run.run_id,
+                    compilation_digest=admitted.compilation_digest,
+                    grant_digest=admitted.grant_digest,
+                    context_digest=execution_context_digest,
+                    canonical_context=canonical_execution_context,
+                    byte_length=len(canonical_execution_context),
+                    required_executor_profile=execution_context.required_executor_profile,
+                    output_staging_id=execution_context.output_staging_id,
+                    created_at=now,
+                )
+                session.add(execution_context_record)
                 session.flush()
                 budget_reservation = ReplayBudgetReservationRecord(
                     budget_reservation_id=budget_reservation_id,
@@ -1081,6 +1135,22 @@ class ControlPlaneService:
                         "contractDigest": item.contract_digest,
                         "compilationDigest": item.compilation_digest,
                         "grantDigest": item.grant_digest,
+                    },
+                    item=item,
+                    run_id=replay_run.run_id,
+                )
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.execution-context.derived",
+                    actor,
+                    {
+                        "attempt": attempt,
+                        "compilationId": compilation.compilation_id,
+                        "executionContextId": execution_context.context_id,
+                        "executionContextDigest": execution_context_digest,
+                        "requiredExecutorProfile": (execution_context.required_executor_profile),
+                        "outputStagingId": execution_context.output_staging_id,
                     },
                     item=item,
                     run_id=replay_run.run_id,
@@ -1497,6 +1567,10 @@ class ControlPlaneService:
             batch = self._replay_batch(session, ticket.batch_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
             authority = self._verify_replay_binding(session, job, ticket, item, batch)
+            if request.executor_profile != authority.execution_context.required_executor_profile:
+                raise ReplayExecutorRejected(
+                    "Replay Job requires a different registered executor profile"
+                )
             now = utc_now()
 
             if (
@@ -1627,6 +1701,8 @@ class ControlPlaneService:
                 item=item,
                 ticket=ticket,
                 compilation=authority.compilation,
+                execution_context=authority.execution_context,
+                execution_context_digest=authority.execution_context_record.context_digest,
                 lease_token=lease_token,
             )
 
@@ -1729,6 +1805,8 @@ class ControlPlaneService:
                     item=item,
                     ticket=ticket,
                     compilation=authority.compilation,
+                    execution_context=authority.execution_context,
+                    execution_context_digest=(authority.execution_context_record.context_digest),
                     lease_token=request.lease_token,
                 )
         if expired:
@@ -2878,6 +2956,11 @@ class ControlPlaneService:
         except ValueError as exc:
             raise StateConflict("internal Replay Job payload is not canonical") from exc
         compilation = session.get(ReplayCompilationRecord, ticket.compilation_id)
+        execution_context_record = session.scalar(
+            select(ReplayExecutionContextRecord).where(
+                ReplayExecutionContextRecord.compilation_id == ticket.compilation_id
+            )
+        )
         budget_account_id = session.scalar(
             select(ReplayBudgetReservationRecord.budget_account_id).where(
                 ReplayBudgetReservationRecord.budget_reservation_id == ticket.budget_reservation_id
@@ -2888,7 +2971,12 @@ class ControlPlaneService:
                 ReplayRateReservationRecord.rate_reservation_id == ticket.rate_reservation_id
             )
         )
-        if compilation is None or budget_account_id is None or rate_account_id is None:
+        if (
+            compilation is None
+            or execution_context_record is None
+            or budget_account_id is None
+            or rate_account_id is None
+        ):
             raise StateConflict("internal Replay Job authority reservation is incomplete")
         budget_account = session.scalar(
             select(ReplayBudgetAccountRecord)
@@ -2954,6 +3042,7 @@ class ControlPlaneService:
             rate_reservations=rate_reservations,
         )
         trusted = self._trusted_replay_compilation(compilation)
+        execution_context = self._trusted_replay_execution_context(execution_context_record)
         permits = list(
             session.scalars(
                 select(ReplayToolPermitRecord)
@@ -3014,6 +3103,48 @@ class ControlPlaneService:
             and compilation.contract_digest == item.contract_digest
             and compilation.compilation_digest == ticket.compilation_digest
             and compilation.grant_digest == ticket.grant_digest
+            and execution_context_record.compilation_id == compilation.compilation_id
+            and execution_context_record.item_id == item.item_id
+            and execution_context_record.batch_id == batch.batch_id
+            and execution_context_record.replay_run_id == ticket.replay_run_id
+            and execution_context_record.compilation_digest == ticket.compilation_digest
+            and execution_context_record.grant_digest == ticket.grant_digest
+            and execution_context.context_id == execution_context_record.context_id
+            and execution_context.batch_id == batch.batch_id
+            and execution_context.item_id == item.item_id
+            and execution_context.compilation_id == compilation.compilation_id
+            and execution_context.replay_run_id == ticket.replay_run_id
+            and execution_context.source == source
+            and execution_context.source_root_digest == batch.source_root_digest
+            and execution_context.policy_version == batch.policy_version
+            and execution_context.required_executor_profile == KISA_EXACT_REPLAY_EXECUTOR_PROFILE
+            and execution_context.required_executor_profile
+            == execution_context_record.required_executor_profile
+            and execution_context.output_staging_id == execution_context_record.output_staging_id
+            and _aware(execution_context.created_at) == _aware(compilation.created_at)
+            and execution_context.campaign.metadata.name == batch.campaign_name
+            and execution_context.campaign.spec.mode.value == batch.mode
+            and any(
+                target.id == trusted.spec.binding.target_id
+                and target.endpoint == trusted.spec.binding.target
+                and target.type in execution_context.scenario.target_types
+                for target in execution_context.campaign.spec.targets
+            )
+            and trusted.spec.binding.threat_class in execution_context.campaign.spec.threat_classes
+            and execution_context.scenario.scenario_id == trusted.spec.binding.scenario_id
+            and execution_context.scenario.threat_classes == {trusted.spec.binding.threat_class}
+            and execution_context.scenario.tool_id == trusted.spec.binding.tool_id
+            and execution_context.scenario.method.upper() == trusted.spec.method
+            and execution_context.tool_spec == AIChatProbeTool.spec
+            and execution_context.tool_spec.tool_id == trusted.spec.binding.tool_id
+            and execution_context.tool_spec.version == trusted.spec.binding.tool_version
+            and execution_context.tool_spec.risk_tier == trusted.spec.risk_tier
+            and not execution_context.secret_lease_ids
+            and not trusted.spec.secret_lease_ids
+            and (
+                ticket.executor_profile is None
+                or ticket.executor_profile == execution_context.required_executor_profile
+            )
             and budget_reservation.budget_reservation_id == ticket.budget_reservation_id
             and budget_reservation.budget_account_id == budget_account.budget_account_id
             and budget_reservation.batch_id == ticket.batch_id
@@ -3056,6 +3187,8 @@ class ControlPlaneService:
             and payload.item_id == item.item_id
             and payload.ticket_id == ticket.ticket_id
             and payload.compilation_id == ticket.compilation_id
+            and payload.execution_context_id == execution_context.context_id
+            and payload.execution_context_digest == execution_context_record.context_digest
             and payload.budget_reservation_id == ticket.budget_reservation_id
             and payload.rate_reservation_id == ticket.rate_reservation_id
             and payload.replay_run_id == ticket.replay_run_id
@@ -3082,6 +3215,8 @@ class ControlPlaneService:
             payload=payload,
             compilation_record=compilation,
             compilation=trusted,
+            execution_context_record=execution_context_record,
+            execution_context=execution_context,
             budget_account=budget_account,
             rate_account=rate_account,
             budget_reservation=budget_reservation,
@@ -3802,6 +3937,8 @@ class ControlPlaneService:
             derived.artifact_ref != source
             or derived.candidate_run_id != source.run_id
             or derived.source_root_digest != source.integrity_root_digest
+            or derived.campaign.metadata.name != derived.campaign_name
+            or derived.campaign.spec.mode is not derived.mode
             or derived.campaign_name != batch.campaign_name
             or derived.mode.value != batch.mode
             or derived.purpose.value != batch.purpose
@@ -3817,6 +3954,7 @@ class ControlPlaneService:
         if len({admitted.replay_run_id for admitted in derived.items}) != len(derived.items):
             raise StateConflict("fresh Replay derivation reused a Run identity")
         for ordinal, (item, admitted) in enumerate(zip(items, derived.items, strict=True)):
+            binding = admitted.compilation.spec.binding
             if not (
                 item.ordinal == ordinal
                 and item.state == ReplayItemState.PENDING.value
@@ -3828,6 +3966,13 @@ class ControlPlaneService:
                 and item.max_attempts == admitted.max_attempts
                 and item.replay_run_id != admitted.replay_run_id
                 and admitted.required_request_units > 0
+                and binding.scenario_id == admitted.scenario.scenario_id
+                and binding.threat_class in admitted.scenario.threat_classes
+                and admitted.scenario.tool_id == binding.tool_id
+                and admitted.scenario.method.upper() == admitted.compilation.spec.method
+                and binding.tool_id == AIChatProbeTool.spec.tool_id
+                and binding.tool_version == AIChatProbeTool.spec.version
+                and admitted.compilation.spec.risk_tier == AIChatProbeTool.spec.risk_tier
             ):
                 raise StateConflict("fresh Replay derivation changed the planned item set")
 
@@ -3851,6 +3996,31 @@ class ControlPlaneService:
             and trusted.spec.binding.replay_run_id == record.replay_run_id
         ):
             raise StateConflict("stored Replay compilation authority is inconsistent")
+        return trusted
+
+    @staticmethod
+    def _trusted_replay_execution_context(
+        record: ReplayExecutionContextRecord,
+    ) -> ReplayExecutionContext:
+        try:
+            trusted = ReplayExecutionContext.model_validate_json(record.canonical_context)
+        except ValueError as exc:
+            raise StateConflict("stored Replay execution context is invalid") from exc
+        canonical = canonical_replay_execution_context_bytes(trusted)
+        if not (
+            canonical == record.canonical_context
+            and len(canonical) == record.byte_length
+            and replay_execution_context_digest(trusted) == record.context_digest
+            and trusted.context_id == record.context_id
+            and trusted.compilation_id == record.compilation_id
+            and trusted.item_id == record.item_id
+            and trusted.batch_id == record.batch_id
+            and trusted.replay_run_id == record.replay_run_id
+            and trusted.required_executor_profile == record.required_executor_profile
+            and trusted.output_staging_id == record.output_staging_id
+            and _aware(trusted.created_at) == _aware(record.created_at)
+        ):
+            raise StateConflict("stored Replay execution context authority is inconsistent")
         return trusted
 
     @classmethod
@@ -4703,6 +4873,8 @@ class ControlPlaneService:
         item: ReplayItemRecord,
         ticket: ReplayTicketRecord,
         compilation: ReplayCompilation,
+        execution_context: ReplayExecutionContext,
+        execution_context_digest: str,
         lease_token: str,
     ) -> ReplayExecutionClaimView:
         return ReplayExecutionClaimView(
@@ -4711,6 +4883,8 @@ class ControlPlaneService:
             item=ControlPlaneService._replay_item_view(item),
             ticket=ControlPlaneService._replay_ticket_view(ticket),
             compilation=compilation,
+            execution_context=execution_context,
+            execution_context_digest=execution_context_digest,
             lease_token=lease_token,
         )
 

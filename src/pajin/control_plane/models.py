@@ -2,17 +2,22 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
-from datetime import datetime, timedelta
-from enum import StrEnum
+from datetime import UTC, datetime, time, timedelta
+from enum import Enum, StrEnum
 from hashlib import sha256
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
-from pajin.domain.models import CampaignMode, StrictModel, ToolRiskTier
+from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
+from pajin.tools.base import ToolSpec
+
+KISA_EXACT_REPLAY_EXECUTOR_PROFILE: Literal["kisa-exact-v1"] = "kisa-exact-v1"
 
 
 class RunState(StrEnum):
@@ -169,6 +174,140 @@ class ArtifactRef(StrictModel):
     created_by: str = Field(min_length=1, max_length=200)
 
 
+class ReplayExecutionContext(StrictModel):
+    """Exact, server-owned inputs released to the dedicated KISA replay executor."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    context_id: str = Field(pattern=r"^replay-context_[0-9a-f]{32}$")
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
+    compilation_id: str = Field(pattern=r"^replay-compilation_[0-9a-f]{32}$")
+    replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    source: ArtifactRef
+    source_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    campaign: CampaignManifest
+    campaign_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scenario: KISAScenarioDefinition
+    scenario_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    tool_spec: ToolSpec
+    tool_spec_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    policy_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    required_executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
+    secret_policy: Literal["forbidden"] = "forbidden"
+    secret_lease_ids: tuple[str, ...] = Field(default=(), max_length=0)
+    output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
+    created_at: datetime
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("Replay execution context created_at must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def require_exact_trusted_inputs(self) -> ReplayExecutionContext:
+        campaign_digest = replay_execution_component_digest(self.campaign)
+        scenario_digest = replay_execution_component_digest(self.scenario)
+        tool_spec_digest = replay_execution_component_digest(self.tool_spec)
+        if self.source_root_digest != self.source.integrity_root_digest:
+            raise ValueError("Replay execution source digest must match its ArtifactRef")
+        if campaign_digest != self.campaign_digest:
+            raise ValueError("Replay execution Campaign digest does not match the Campaign")
+        if scenario_digest != self.scenario_digest:
+            raise ValueError("Replay execution Scenario digest does not match the Scenario")
+        if tool_spec_digest != self.tool_spec_digest:
+            raise ValueError("Replay execution ToolSpec digest does not match the ToolSpec")
+        if self.campaign.spec.mode is not CampaignMode.AI_REDTEAM:
+            raise ValueError("KISA replay execution requires an AI Red Team Campaign")
+        if self.scenario.tool_id != self.tool_spec.tool_id:
+            raise ValueError("Replay execution Scenario and ToolSpec IDs must match")
+        if self.tool_spec.risk_tier > ToolRiskTier.T2:
+            raise ValueError("KISA replay execution is restricted to T0-T2 ToolSpecs")
+        if self.tool_spec.risk_tier > self.campaign.spec.rules_of_engagement.max_tool_risk_tier:
+            raise ValueError("Replay execution ToolSpec exceeds the Campaign risk ceiling")
+        allowed_methods = self.campaign.spec.rules_of_engagement.allowed_methods
+        if self.scenario.method.upper() not in allowed_methods:
+            raise ValueError("Replay execution Scenario method is not allowed by the Campaign")
+        return self
+
+
+def canonical_replay_execution_context_bytes(context: ReplayExecutionContext) -> bytes:
+    """Serialize one typed execution context with deterministic set ordering."""
+
+    trusted = ReplayExecutionContext.model_validate(
+        context.model_dump(mode="python", by_alias=True)
+    )
+    payload = _canonical_replay_execution_context_value(trusted)
+    if not isinstance(payload, dict):  # pragma: no cover - the model is a mapping
+        raise TypeError("canonical Replay execution context must be a JSON object")
+    return json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode()
+
+
+def replay_execution_context_digest(context: ReplayExecutionContext) -> str:
+    """Fingerprint the exact canonical bytes persisted for one execution context."""
+
+    return sha256(canonical_replay_execution_context_bytes(context)).hexdigest()
+
+
+def replay_execution_component_digest(value: object) -> str:
+    """Deterministically fingerprint one typed Campaign, Scenario, or Tool component."""
+
+    payload = _canonical_replay_execution_context_value(value)
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode()
+    return sha256(canonical).hexdigest()
+
+
+def _canonical_replay_execution_context_value(value: object) -> object:
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        return _canonical_replay_execution_context_value(model_dump(mode="python", by_alias=True))
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_replay_execution_context_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (set, frozenset)):
+        items = [_canonical_replay_execution_context_value(item) for item in value]
+        return sorted(
+            items,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ),
+        )
+    if isinstance(value, (list, tuple)):
+        return [_canonical_replay_execution_context_value(item) for item in value]
+    if isinstance(value, Enum):
+        return _canonical_replay_execution_context_value(value.value)
+    if isinstance(value, datetime):
+        normalized = (
+            value.astimezone(UTC) if value.tzinfo is not None else value.replace(tzinfo=UTC)
+        )
+        return normalized.isoformat()
+    if isinstance(value, time):
+        return value.isoformat()
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    raise TypeError(f"unsupported Replay execution context type: {type(value).__name__}")
+
+
 class AdmitSourceArtifactRequest(StrictModel):
     """Internal-only request to admit one producer-owned sealed Run snapshot."""
 
@@ -188,6 +327,8 @@ class ReplayJobPayload(StrictModel):
     item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
     ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
     compilation_id: str = Field(pattern=r"^replay-compilation_[0-9a-f]{32}$")
+    execution_context_id: str = Field(pattern=r"^replay-context_[0-9a-f]{32}$")
+    execution_context_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     budget_reservation_id: str = Field(pattern=r"^budget-reservation_[0-9a-f]{32}$")
     rate_reservation_id: str = Field(pattern=r"^rate-reservation_[0-9a-f]{32}$")
     replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
@@ -545,17 +686,25 @@ class ReplayClaimView(StrictModel):
 
 
 class ReplayExecutionClaimView(ReplayClaimView):
-    """Worker claim envelope containing the exact server-validated compilation."""
+    """Worker claim envelope containing exact compilation and execution context."""
 
     compilation: ReplayCompilation
+    execution_context: ReplayExecutionContext
+    execution_context_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
 
     @model_validator(mode="after")
     def require_compilation_authority_binding(self) -> ReplayExecutionClaimView:
         compilation = self.compilation
         candidate = compilation.validation_packet.candidate
         binding = compilation.spec.binding
+        context = self.execution_context
+        context_digest = replay_execution_context_digest(context)
         compilation_digest = sha256(canonical_replay_compilation_bytes(compilation)).hexdigest()
         grant_digest = replay_context_digest(compilation.grant)
+        payload = ReplayJobPayload.model_validate(self.job.payload)
+        matching_targets = [
+            target for target in context.campaign.spec.targets if target.id == binding.target_id
+        ]
         if (
             candidate.candidate_id != self.item.candidate_id
             or replay_context_digest(candidate) != self.item.candidate_digest
@@ -568,8 +717,37 @@ class ReplayExecutionClaimView(ReplayClaimView):
             or binding.campaign != self.batch.campaign_name
             or binding.mode is not self.batch.mode
             or binding.purpose is not self.batch.purpose
+            or context_digest != self.execution_context_digest
+            or payload.execution_context_id != context.context_id
+            or payload.execution_context_digest != context_digest
+            or context.batch_id != self.batch.batch_id
+            or context.item_id != self.item.item_id
+            or context.compilation_id != self.ticket.compilation_id
+            or context.replay_run_id != self.item.replay_run_id
+            or context.source != self.batch.source
+            or context.source_root_digest != self.batch.source.integrity_root_digest
+            or context.policy_version != self.batch.policy_version
+            or context.required_executor_profile != self.ticket.executor_profile
+            or context.campaign.metadata.name != binding.campaign
+            or context.campaign.spec.mode is not binding.mode
+            or len(matching_targets) != 1
+            or matching_targets[0].endpoint != binding.target
+            or matching_targets[0].type not in context.scenario.target_types
+            or binding.threat_class not in context.campaign.spec.threat_classes
+            or context.scenario.scenario_id != binding.scenario_id
+            or context.scenario.threat_classes != {binding.threat_class}
+            or context.scenario.tool_id != binding.tool_id
+            or context.scenario.method.upper() != compilation.spec.method
+            or context.tool_spec.tool_id != binding.tool_id
+            or context.tool_spec.version != binding.tool_version
+            or context.tool_spec.risk_tier != compilation.spec.risk_tier
+            or bool(compilation.spec.secret_lease_ids)
+            or bool(context.secret_lease_ids)
+            or context.created_at < compilation.spec.compiled_at
+            or context.created_at >= compilation.spec.expires_at
+            or context.created_at >= compilation.grant.expires_at
         ):
-            raise ValueError("Replay execution compilation authority binding is inconsistent")
+            raise ValueError("Replay execution context authority binding is inconsistent")
         return self
 
 

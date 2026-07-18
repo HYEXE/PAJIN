@@ -42,7 +42,9 @@ REPLAY_AUTHORITY_SCHEMA_VERSION = 2
 ARTIFACT_AUTHORITY_SCHEMA_VERSION = 3
 REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION = 4
 DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION = 5
-CURRENT_SCHEMA_VERSION = 6
+REPLAY_TOOL_PERMIT_SCHEMA_VERSION = 6
+REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION
 
 LEGACY_CONTROL_PLANE_TABLES = frozenset(
     {"cp_runs", "cp_jobs", "cp_checkpoints", "cp_approvals", "cp_events"}
@@ -76,8 +78,12 @@ V5_CONTROL_PLANE_TABLES = frozenset(
     {*V4_CONTROL_PLANE_TABLES, *REPLAY_RESERVATION_AUTHORITY_TABLES}
 )
 REPLAY_TOOL_PERMIT_AUTHORITY_TABLES = frozenset({"cp_replay_tool_permits"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V6_CONTROL_PLANE_TABLES = frozenset(
     {*V5_CONTROL_PLANE_TABLES, *REPLAY_TOOL_PERMIT_AUTHORITY_TABLES}
+)
+REPLAY_EXECUTION_CONTEXT_AUTHORITY_TABLES = frozenset({"cp_replay_execution_contexts"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V6_CONTROL_PLANE_TABLES, *REPLAY_EXECUTION_CONTEXT_AUTHORITY_TABLES}
 )
 
 
@@ -1662,6 +1668,110 @@ class ReplayToolPermitRecord(Base):
     )
 
 
+def _build_v6_metadata() -> MetaData:
+    """Freeze the exact schema-v6 metadata before execution context is attached."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V6_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V6_METADATA = _build_v6_metadata()
+
+
+class ReplayExecutionContextRecord(Base):
+    """Append-only Worker execution context bound one-to-one to a compilation."""
+
+    __tablename__ = "cp_replay_execution_contexts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "compilation_id",
+                "item_id",
+                "batch_id",
+                "replay_run_id",
+                "compilation_digest",
+                "grant_digest",
+            ],
+            [
+                "cp_replay_compilations.compilation_id",
+                "cp_replay_compilations.item_id",
+                "cp_replay_compilations.batch_id",
+                "cp_replay_compilations.replay_run_id",
+                "cp_replay_compilations.compilation_digest",
+                "cp_replay_compilations.grant_digest",
+            ],
+            name="fk_cp_replay_execution_contexts_compilation_authority",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(context_id) = 47 "
+            "AND substr(context_id, 1, 15) = 'replay-context_' AND "
+            + _lower_hex_check("substr(context_id, 16, 32)", 32),
+            name="ck_cp_replay_execution_contexts_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("context_digest", 64),
+            name="ck_cp_replay_execution_contexts_digest",
+        ),
+        CheckConstraint(
+            "byte_length > 0 AND byte_length <= 2147483647 "
+            "AND length(canonical_context) = byte_length",
+            name="ck_cp_replay_execution_contexts_canonical_bytes",
+        ),
+        CheckConstraint(
+            "length(required_executor_profile) > 0 "
+            "AND length(required_executor_profile) <= 200 AND "
+            + _allowed_characters_check(
+                "required_executor_profile",
+                _ASCII_ALPHANUMERIC + "._:-",
+            )
+            + " AND "
+            + _allowed_characters_check(
+                "substr(required_executor_profile, 1, 1)",
+                _ASCII_ALPHANUMERIC,
+            ),
+            name="ck_cp_replay_execution_contexts_executor_profile",
+        ),
+        CheckConstraint(
+            "length(output_staging_id) = 38 "
+            "AND substr(output_staging_id, 1, 6) = 'stage_' AND "
+            + _lower_hex_check("substr(output_staging_id, 7, 32)", 32),
+            name="ck_cp_replay_execution_contexts_output_staging_id",
+        ),
+        UniqueConstraint(
+            "compilation_id",
+            name="uq_cp_replay_execution_contexts_compilation",
+        ),
+        UniqueConstraint(
+            "context_digest",
+            name="uq_cp_replay_execution_contexts_digest",
+        ),
+        UniqueConstraint(
+            "output_staging_id",
+            name="uq_cp_replay_execution_contexts_output_staging_id",
+        ),
+        Index("ix_cp_replay_execution_contexts_batch", "batch_id", "created_at"),
+        Index("ix_cp_replay_execution_contexts_item", "item_id", "created_at"),
+    )
+
+    context_id: Mapped[str] = mapped_column(String(47), primary_key=True)
+    compilation_id: Mapped[str] = mapped_column(String(51), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    replay_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    compilation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    context_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_context: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    required_executor_profile: Mapped[str] = mapped_column(String(200), nullable=False)
+    output_staging_id: Mapped[str] = mapped_column(String(38), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ControlPlaneRepository:
     """Own the database engine and expose short, explicit transaction scopes."""
 
@@ -1746,7 +1856,8 @@ _MIGRATIONS = {
     ARTIFACT_AUTHORITY_SCHEMA_VERSION: "artifact-authority",
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION: "trusted-replay-compilation-authority",
     DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION: "durable-replay-permit-authority",
-    CURRENT_SCHEMA_VERSION: "replay-tool-call-permit-authority",
+    REPLAY_TOOL_PERMIT_SCHEMA_VERSION: "replay-tool-call-permit-authority",
+    CURRENT_SCHEMA_VERSION: "replay-execution-context-authority",
 }
 
 
@@ -1788,6 +1899,11 @@ def _initialize_schema(connection: Connection) -> None:
         _migrate_v5_schema(connection)
         _validate_current_schema(connection)
         return
+    if cp_tables == V6_CONTROL_PLANE_TABLES:
+        _validate_v6_schema(connection)
+        _migrate_v6_schema(connection)
+        _validate_current_schema(connection)
+        return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
         _validate_current_schema(connection)
         return
@@ -1816,6 +1932,7 @@ def _create_empty_schema(connection: Connection) -> None:
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1832,6 +1949,7 @@ def _migrate_legacy_schema(connection: Connection) -> None:
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1853,6 +1971,7 @@ def _migrate_v2_schema(connection: Connection) -> None:
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1898,6 +2017,7 @@ def _migrate_v3_schema(connection: Connection) -> None:
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1940,6 +2060,8 @@ def _migrate_v4_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
     _create_replay_tool_permit_authority(connection)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
+    _create_replay_execution_context_authority(connection)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1991,7 +2113,85 @@ def _migrate_v5_schema(connection: Connection) -> None:
     _lock_v5_migration_writes(connection)
     _assert_v5_replay_authority_has_no_unproven_consumption(connection)
     _create_replay_tool_permit_authority(connection)
+    _assert_v6_replay_authority_is_non_dispatchable(connection)
+    _record_migration(connection, REPLAY_TOOL_PERMIT_SCHEMA_VERSION)
+    _create_replay_execution_context_authority(connection)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _migrate_v6_schema(connection: Connection) -> None:
+    """Add an empty context authority without inventing historical context bytes."""
+
+    _lock_v6_migration_writes(connection)
+    _assert_v6_replay_authority_is_non_dispatchable(connection)
+    _create_replay_execution_context_authority(connection)
+    _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _assert_v6_replay_authority_is_non_dispatchable(connection: Connection) -> None:
+    """Reject v6 execution state whose exact Worker context cannot be backfilled."""
+
+    tickets = int(connection.scalar(text("SELECT count(*) FROM cp_replay_tickets")) or 0)
+    permits = int(connection.scalar(text("SELECT count(*) FROM cp_replay_tool_permits")) or 0)
+    internal_replay_jobs = int(
+        connection.scalar(text("SELECT count(*) FROM cp_jobs WHERE kind = 'internal-replay'")) or 0
+    )
+    replay_run_jobs = int(
+        connection.scalar(
+            text(
+                "SELECT count(*) FROM cp_jobs AS jobs "
+                "JOIN cp_replay_items AS items ON jobs.run_id = items.replay_run_id"
+            )
+        )
+        or 0
+    )
+    budget_accounts = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_budget_accounts")) or 0
+    )
+    rate_accounts = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_rate_accounts")) or 0
+    )
+    budget_reservations = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_budget_reservations")) or 0
+    )
+    rate_reservations = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_rate_reservations")) or 0
+    )
+    non_planned_batches = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_batches WHERE state <> 'planned'"))
+        or 0
+    )
+    advanced_items = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_items WHERE state <> 'pending' OR attempts <> 0")
+        )
+        or 0
+    )
+    if any(
+        (
+            tickets,
+            permits,
+            internal_replay_jobs,
+            replay_run_jobs,
+            budget_accounts,
+            rate_accounts,
+            budget_reservations,
+            rate_reservations,
+            non_planned_batches,
+            advanced_items,
+        )
+    ):
+        raise SchemaInitializationError(
+            "schema v6 contains dispatchable Replay authority without exact execution "
+            "context and cannot be trusted or backfilled "
+            f"(tickets={tickets}, permits={permits}, "
+            f"internal-replay Jobs={internal_replay_jobs}, "
+            f"Replay Run Jobs={replay_run_jobs}, "
+            f"budget accounts={budget_accounts}, rate accounts={rate_accounts}, "
+            f"budget reservations={budget_reservations}, "
+            f"rate reservations={rate_reservations}, "
+            f"non-planned batches={non_planned_batches}, advanced items={advanced_items})"
+        )
 
 
 def _assert_v5_replay_authority_has_no_unproven_consumption(connection: Connection) -> None:
@@ -2098,6 +2298,25 @@ _V5_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_replay_budget_reservations",
     "cp_replay_rate_reservations",
     "cp_replay_compilations",
+    "cp_replay_events",
+    "cp_approvals",
+    "cp_checkpoints",
+    "cp_artifacts",
+    "cp_events",
+    "cp_schema_version",
+    "cp_runs",
+)
+_V6_MIGRATION_WRITE_LOCK_TABLES = (
+    "cp_jobs",
+    "cp_replay_tickets",
+    "cp_replay_items",
+    "cp_replay_batches",
+    "cp_replay_budget_accounts",
+    "cp_replay_rate_accounts",
+    "cp_replay_budget_reservations",
+    "cp_replay_rate_reservations",
+    "cp_replay_compilations",
+    "cp_replay_tool_permits",
     "cp_replay_events",
     "cp_approvals",
     "cp_checkpoints",
@@ -2230,6 +2449,41 @@ def _lock_v5_migration_writes(connection: Connection) -> None:
     )
 
 
+def _lock_v6_migration_writes(connection: Connection) -> None:
+    """Atomically exclude every v6 writer before proving non-dispatchability."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        tables = ", ".join(_V6_MIGRATION_WRITE_LOCK_TABLES)
+        statement = f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE NOWAIT"
+        deadline = time.monotonic() + _V4_MIGRATION_LOCK_TIMEOUT_SECONDS
+        while True:
+            savepoint = connection.begin_nested()
+            try:
+                connection.exec_driver_sql(statement)
+            except DBAPIError as error:
+                savepoint.rollback()
+                sqlstate = getattr(error.orig, "sqlstate", None) or getattr(
+                    error.orig, "pgcode", None
+                )
+                if sqlstate != "55P03":
+                    raise
+                if time.monotonic() >= deadline:
+                    raise SchemaInitializationError(
+                        "schema v6 migration could not exclude active writers; "
+                        "retry initialization after current transactions finish"
+                    ) from error
+                time.sleep(_V4_MIGRATION_LOCK_RETRY_SECONDS)
+            else:
+                savepoint.commit()
+                return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
+
+
 def _create_current_replay_authority(connection: Connection) -> None:
     """Create current Replay tables in an explicit cross-dialect FK order."""
 
@@ -2241,6 +2495,7 @@ def _create_current_replay_authority(connection: Connection) -> None:
     _create_tables(connection, frozenset({ReplayEventRecord.__tablename__}))
     _install_append_only_trigger(connection, "cp_replay_events")
     _create_replay_tool_permit_authority(connection)
+    _create_replay_execution_context_authority(connection)
 
 
 def _create_replay_permit_and_ticket_tables(connection: Connection) -> None:
@@ -2262,6 +2517,13 @@ def _create_replay_tool_permit_authority(connection: Connection) -> None:
     _install_v6_ticket_permit_binding_index(connection)
     _create_tables(connection, REPLAY_TOOL_PERMIT_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, ReplayToolPermitRecord.__tablename__)
+
+
+def _create_replay_execution_context_authority(connection: Connection) -> None:
+    """Create append-only exact Worker context after its compilation parent."""
+
+    _create_tables(connection, REPLAY_EXECUTION_CONTEXT_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, ReplayExecutionContextRecord.__tablename__)
 
 
 def _create_tables(connection: Connection, table_names: frozenset[str]) -> None:
@@ -2429,6 +2691,33 @@ def _validate_v5_schema(connection: Connection) -> None:
     if actual != expected or any(row.applied_at is None for row in rows):
         raise SchemaInitializationError(
             f"unknown or incomplete schema v5 migration history: {actual!r}"
+        )
+
+
+def _validate_v6_schema(connection: Connection) -> None:
+    _validate_tables(connection, V6_CONTROL_PLANE_TABLES, metadata=_V6_METADATA)
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in (
+            LEGACY_SCHEMA_VERSION,
+            REPLAY_AUTHORITY_SCHEMA_VERSION,
+            ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
+            DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
+            REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v6 migration history: {actual!r}"
         )
 
 
@@ -3040,6 +3329,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_events": "event",
     "cp_artifacts": "artifact",
     "cp_replay_compilations": "replay_compilation",
+    "cp_replay_execution_contexts": "replay_execution_context",
     "cp_replay_events": "replay_event",
     "cp_replay_tool_permits": "replay_tool_permit",
 }

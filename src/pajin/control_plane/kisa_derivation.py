@@ -34,6 +34,7 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import CandidateFinding, ValidationDecision
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
+from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.modes.ai_redteam.replay import (
     build_kisa_replay_compilation_inputs,
     derive_kisa_source_replay_context,
@@ -127,6 +128,7 @@ class DerivedKISAReplayItem:
     replay_run_id: str
     candidate: CandidateFinding
     decision: ValidationDecision
+    scenario: KISAScenarioDefinition
     contract: ModeReplayContract
     compilation: ReplayCompilation
     canonical_compilation: bytes
@@ -144,6 +146,7 @@ class DerivedKISAReplayBatch:
     """Canonical planned batch; it carries no ticket or execution permission."""
 
     artifact_ref: ArtifactRef
+    campaign: CampaignManifest
     campaign_name: str
     candidate_run_id: str
     source_root_digest: str
@@ -335,6 +338,7 @@ def derive_kisa_confirmation_batch(
                 replay_run_id=replay_run_id,
                 candidate=candidate,
                 decision=decision,
+                scenario=source.scenario,
                 contract=contract,
                 compilation=compilation,
                 canonical_compilation=canonical_compilation,
@@ -351,6 +355,7 @@ def derive_kisa_confirmation_batch(
         raise ValueError("sealed KISA source changed during replay derivation")
     return DerivedKISAReplayBatch(
         artifact_ref=artifact_ref,
+        campaign=campaign,
         campaign_name=campaign.metadata.name,
         candidate_run_id=verification.run_id,
         source_root_digest=verification.root_digest,
