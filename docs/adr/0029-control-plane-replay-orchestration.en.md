@@ -16,10 +16,18 @@ for M6-07B. The first authority-state slice now includes a versioned Replay aggr
 repository-managed v1-to-v2 migration with strict startup validation, an internal-only strict Job
 payload, and atomic batch creation, burn-on-claim, heartbeat, lease-expiry, and cancellation state
 transitions. This does not complete M6-07B. The Artifact repository and server-owned source
-admission, new-identity retry issuance, durable budget/rate permits, Replay executor wiring, typed
-server-side artifact finalization and result-digest verification, the Gate, and live PostgreSQL
-migration/locking acceptance remain outstanding. Until those boundaries are complete, the Control
-Plane cannot claim to provide full durable Replay orchestration.
+admission are now implemented as the bounded M6-07B-2A foundation: an owner-controlled staging and
+managed filesystem repository, immutable `cp_artifacts` metadata, schema v3, and exact opaque
+`(artifact_id, repository_version)` resolution with content and seal re-verification. Admission
+preserves the producer Control Plane Run ID separately from the sealed Run ID. The forward migration
+path is v1→v2→v3; v2→v3 fails closed if legacy Replay data exists rather than synthesizing an
+Artifact binding. This internal service path opens no public Replay or admission API. Exact KISA
+item/contract/compilation derivation, new-identity retry issuance, durable pre-ticket budget/rate
+permits, Replay executor wiring, typed server-side artifact finalization and result-digest
+verification, and the Gate remain outstanding. Live PostgreSQL schema-v3 acceptance is complete on
+a clean temporary database for migration and locking, `cp_artifacts` append-only enforcement, and
+the exact composite Artifact foreign key. Until the remaining execution boundaries are complete,
+the Control Plane cannot claim full durable Replay orchestration.
 
 ## Context
 
@@ -56,13 +64,19 @@ At the time this decision was written, the implementation had the following conc
   [`SQLiteReplayExecutionAuthority`](../../src/pajin/replay/sqlite_tickets.py) is the reference
   point for local restart verification. Neither replaces a distributed queue and artifact handoff.
 
-The first implementation slice after acceptance closes part of that baseline without weakening the
+The first implementation slice after acceptance closed part of that baseline without weakening the
 decision: public Job kinds remain `campaign` and `tool-loop`, while a separately typed internal
 Replay payload is persisted with batch/item/ticket/event authority state and burn-on-claim fencing.
 Repository startup now performs a versioned v1-to-v2 migration or rejects incompatible schema
-state. Generic Job completion and failure paths remain unavailable to Replay Jobs. The remaining
-Artifact, retry issuance, permit, executor, typed finalization, Gate, and live PostgreSQL acceptance
-work listed in the status note is intentionally still outside the completed slice.
+state. M6-07B-2A then added the private managed repository and immutable Artifact metadata. Its
+trusted admission service accepts only a strict staging identity for a completed producer Job,
+imports and verifies the sealed source outside database locks, rechecks producer state, and records
+the canonical metadata and internal storage key. Replay-batch consumers use only the exact opaque
+Artifact locator, which the service resolves and re-verifies before batch creation. Generic Job
+completion and failure paths remain unavailable to Replay Jobs. KISA derivation, retry issuance,
+durable permits, executor, typed finalization, and Gate remain intentionally outside the completed
+foundations. Live PostgreSQL v3 migration/locking, `cp_artifacts` append-only, and exact composite-FK
+acceptance are part of the verified foundation.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -90,14 +104,16 @@ M6-07B adopts the following boundaries.
 
 The Control Plane exchanges only versioned `ArtifactRef` values, never raw paths. The minimum
 contract contains an opaque `artifact_id`, repository version, media/schema kind, byte length,
-content digest, Run ID, integrity-root digest, and creation identity. The storage key is internal
-to the repository; neither an Operator nor a Worker may choose an arbitrary path, URL, symlink, or
-object key.
+content digest, producer Control Plane Run ID, sealed Run ID, integrity-root digest, and creation
+identity. The storage key is internal to the repository; neither an Operator nor a Worker may
+choose an arbitrary path, URL, symlink, or object key.
 
-The first single-host implementation may use an owner-controlled filesystem repository. The API
-takes an artifact from a staging directory, checks its canonical path and size bound, computes its
-content digest, and registers it as an immutable object. The bytes of an `ArtifactRef` cannot
-change after registration; new bytes produce a new version and reference. Both source and replay
+The first single-host implementation may use an owner-controlled filesystem repository. A trusted
+Control Plane service imports an artifact from a staging directory, checks its canonical path and
+size bound, computes its content digest, and registers it as an immutable object. The bytes of an
+`ArtifactRef` cannot change after registration; new bytes produce a new immutable identity and
+reference. The current filesystem repository emits repository version 1 for each such identity.
+Both source and replay
 output pass through the same import rules. A Worker's absolute `runPath` is not part of the Control
 Plane contract.
 

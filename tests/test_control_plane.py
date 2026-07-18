@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from time import monotonic
@@ -95,6 +96,56 @@ def _checkpoint(
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_artifact_repository_environment_requires_both_roots(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", OPERATOR_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", APPROVER_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv(
+        "PAJIN_CP_CHECKPOINT_KEY",
+        "test-checkpoint-signing-key-32-bytes-minimum",
+    )
+    monkeypatch.setenv("PAJIN_CP_ARTIFACT_STAGING_ROOT", "/tmp/pajin-staging")
+
+    with pytest.raises(RuntimeError, match="must be configured together"):
+        ControlPlaneSettings.from_env()
+
+
+def test_artifact_repository_environment_loads_private_roots(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", OPERATOR_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", APPROVER_TOKEN)
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", WORKER_TOKEN)
+    monkeypatch.setenv(
+        "PAJIN_CP_CHECKPOINT_KEY",
+        "test-checkpoint-signing-key-32-bytes-minimum",
+    )
+    staging_root = tmp_path / "staging"
+    repository_root = tmp_path / "repository"
+    monkeypatch.setenv("PAJIN_CP_ARTIFACT_STAGING_ROOT", str(staging_root))
+    monkeypatch.setenv("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT", str(repository_root))
+
+    settings = ControlPlaneSettings.from_env()
+
+    assert settings.artifact_staging_root == staging_root
+    assert settings.artifact_repository_root == repository_root
+
+
+def test_create_app_rejects_partial_artifact_repository_configuration(
+    tmp_path: Path,
+) -> None:
+    settings = replace(
+        _settings(tmp_path / "control-plane.db"),
+        artifact_staging_root=tmp_path / "staging",
+    )
+
+    with pytest.raises(RuntimeError, match="must be configured together"):
+        create_app(settings)
 
 
 def test_authenticated_submit_approval_resume_and_completion(tmp_path: Path) -> None:

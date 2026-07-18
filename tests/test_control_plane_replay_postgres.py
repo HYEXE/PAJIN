@@ -1,30 +1,45 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections import Counter
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
-from threading import Barrier
+from pathlib import Path
+from threading import Barrier, Thread
+from threading import Event as ThreadEvent
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text, update
+from sqlalchemy import create_engine, inspect, select, text, update
+from sqlalchemy import event as sqlalchemy_event
+from sqlalchemy.engine import make_url
+from sqlalchemy.exc import DatabaseError, IntegrityError
 
+from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import (
+    _V2_METADATA,
     CURRENT_SCHEMA_VERSION,
+    V2_CONTROL_PLANE_TABLES,
+    ArtifactRecord,
     ControlPlaneRepository,
     JobRecord,
+    ReplayBatchRecord,
     ReplayEventRecord,
     ReplayItemRecord,
     ReplayTicketRecord,
     RunRecord,
     SchemaInitializationError,
+    SchemaVersionRecord,
+    _install_append_only_trigger,
     _validate_append_only_trigger,
     _validate_current_schema,
 )
 from pajin.control_plane.models import (
-    ArtifactRef,
+    AdmitSourceArtifactRequest,
+    ArtifactLocator,
     CreateReplayBatchRequest,
     InternalJobKind,
     JobState,
@@ -39,6 +54,7 @@ from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import ControlPlaneService
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayPurpose
+from pajin.runtime.store import RunStore
 
 POSTGRES_URL = os.environ.get("PAJIN_TEST_POSTGRES_URL")
 EXECUTOR_PROFILE = "kisa-exact-v1"
@@ -48,11 +64,35 @@ pytestmark = pytest.mark.skipif(
     POSTGRES_URL is None,
     reason="set PAJIN_TEST_POSTGRES_URL to an isolated PAJIN PostgreSQL test database",
 )
+_POSTGRES_ARTIFACT_ROOT = Path(tempfile.gettempdir()) / f"pajin-pg-artifacts-{os.getpid()}"
 
 
-def _service() -> tuple[ControlPlaneRepository, ControlPlaneService]:
+@pytest.fixture
+def isolated_postgres_schema_url() -> Iterator[str]:
+    """Yield a PostgreSQL URL pinned to one disposable, UUID-named schema."""
+
     assert POSTGRES_URL is not None
-    repository = ControlPlaneRepository(POSTGRES_URL)
+    schema_name = f"pajin_artifact_v3_{uuid4().hex}"
+    admin_engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    with admin_engine.begin() as connection:
+        connection.exec_driver_sql(f'CREATE SCHEMA "{schema_name}"')
+
+    scoped_url = make_url(POSTGRES_URL).update_query_dict(
+        {"options": f"-csearch_path={schema_name}"}
+    )
+    try:
+        yield scoped_url.render_as_string(hide_password=False)
+    finally:
+        with admin_engine.begin() as connection:
+            connection.exec_driver_sql(f'DROP SCHEMA "{schema_name}" CASCADE')
+        admin_engine.dispose()
+
+
+def _service(
+    database_url: str | None = None,
+) -> tuple[ControlPlaneRepository, ControlPlaneService]:
+    assert POSTGRES_URL is not None
+    repository = ControlPlaneRepository(database_url or POSTGRES_URL)
     repository.initialize()
     signer = CheckpointSigner(
         active_key_id="postgres-replay-v1",
@@ -65,7 +105,107 @@ def _service() -> tuple[ControlPlaneRepository, ControlPlaneService]:
             WORKER_A: frozenset({EXECUTOR_PROFILE}),
             WORKER_B: frozenset({EXECUTOR_PROFILE}),
         },
+        artifact_repository=ManagedArtifactRepository(
+            staging_root=_POSTGRES_ARTIFACT_ROOT / "staging",
+            repository_root=_POSTGRES_ARTIFACT_ROOT / "repository",
+        ),
     )
+
+
+def _create_postgres_v2_schema(repository: ControlPlaneRepository) -> None:
+    """Create the exact managed v2 schema in the repository's current schema."""
+
+    pending = set(V2_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V2_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        _install_append_only_trigger(connection, "cp_events")
+        _install_append_only_trigger(connection, "cp_replay_events")
+        now = datetime.now(UTC)
+        connection.execute(
+            _V2_METADATA.tables["cp_schema_version"].insert(),
+            [
+                {
+                    "version": 1,
+                    "description": "legacy-control-plane-core",
+                    "applied_at": now,
+                },
+                {
+                    "version": 2,
+                    "description": "replay-authority",
+                    "applied_at": now,
+                },
+            ],
+        )
+
+
+def _v2_run_values(suffix: str) -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "run_id": f"run_{suffix}",
+        "campaign_name": "postgres-v2-migration",
+        "state": "completed",
+        "input": {"preserve": True},
+        "submission_key": f"postgres-v2-run-{suffix}",
+        "current_checkpoint_id": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _v2_job_values(suffix: str) -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "job_id": f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}",
+        "run_id": f"run_{suffix}",
+        "kind": "campaign",
+        "state": "succeeded",
+        "payload": {"preserve": True},
+        "priority": 0,
+        "attempts": 1,
+        "max_attempts": 1,
+        "idempotency_key": f"postgres-v2-job-{suffix}",
+        "available_at": now,
+        "lease_owner": None,
+        "lease_token_hash": None,
+        "lease_expires_at": None,
+        "heartbeat_at": None,
+        "result": {"status": "completed"},
+        "error": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+
+
+def _v2_batch_values(suffix: str, batch_id: str) -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "batch_id": batch_id,
+        "source_run_id": f"run_{suffix}",
+        "idempotency_key": f"postgres-v2-batch-{suffix}",
+        "campaign_name": "postgres-v2-migration",
+        "created_by": "postgres-v2-test",
+        "source_artifact_id": "legacy-unverified-artifact",
+        "source_repository_version": 1,
+        "source_content_digest": "a" * 64,
+        "source_root_digest": "b" * 64,
+        "source_media_type": "application/vnd.pajin.run+json",
+        "source_schema_kind": "pajin.run.v1",
+        "source_byte_length": 512,
+        "source_created_by": "postgres-v2-test",
+        "mode": "ai-redteam",
+        "purpose": "confirmation",
+        "policy_version": "policy-v1",
+        "state": "planned",
+        "cas_version": 1,
+        "cancellation_reason": None,
+        "created_at": now,
+        "updated_at": now,
+        "cancelled_at": None,
+    }
 
 
 def _seed_batch(
@@ -77,36 +217,68 @@ def _seed_batch(
     required_attempts: int = 2,
     max_attempts: int = 3,
 ) -> str:
-    source_run_id = f"run_source_{suffix}"
+    source_run_id = f"run_{suffix}"
+    producer_job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
+    sealed_run_id = f"run_sealed_{suffix[:32]}"
+    stage_id = f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}"
+    stage_path = _POSTGRES_ARTIFACT_ROOT / "staging" / stage_id
+    (stage_path / "evidence").mkdir(parents=True)
+    store = RunStore(run_id=sealed_run_id, path=stage_path)
+    store.append_event("campaign.completed", {"campaign": "postgres-replay"})
+    store.write_text("report.md", f"sealed postgres source {suffix}")
+    store.seal()
     now = datetime.now(UTC)
     with repository.transaction() as session:
+        source_run = RunRecord(
+            run_id=source_run_id,
+            campaign_name="postgres-replay",
+            state=RunState.COMPLETED.value,
+            input={"sealedSource": True, "suffix": suffix},
+            submission_key=f"postgres-replay-source-{suffix}",
+            current_checkpoint_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(source_run)
+        session.flush()
         session.add(
-            RunRecord(
+            JobRecord(
+                job_id=producer_job_id,
                 run_id=source_run_id,
-                campaign_name="postgres-replay",
-                state=RunState.COMPLETED.value,
-                input={"sealedSource": True, "suffix": suffix},
-                submission_key=f"postgres-replay-source-{suffix}",
-                current_checkpoint_id=None,
+                kind="campaign",
+                state=JobState.SUCCEEDED.value,
+                payload={"input": {}},
+                priority=0,
+                attempts=1,
+                max_attempts=3,
+                idempotency_key=f"postgres-source-job-{suffix}",
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result={"engineRunId": sealed_run_id},
+                error=None,
                 created_at=now,
                 updated_at=now,
             )
         )
-    source = ArtifactRef(
-        artifact_id=f"artifact_{suffix}",
-        repository_version=1,
-        media_type="application/vnd.pajin.run+tar",
-        schema_kind="pajin.run.v1",
-        byte_length=4_096,
-        content_digest=sha256(f"content:{suffix}".encode()).hexdigest(),
-        run_id=source_run_id,
-        integrity_root_digest=sha256(f"root:{suffix}".encode()).hexdigest(),
-        created_by="postgres-replay-admission",
+    source = service.admit_source_artifact(
+        AdmitSourceArtifactRequest(
+            staging_id=stage_id,
+            producer_run_id=source_run_id,
+            producer_job_id=producer_job_id,
+            idempotency_key=f"postgres-artifact-admission-{suffix}",
+        ),
+        actor="postgres-replay-admission",
     )
     created = service.create_replay_batch(
         CreateReplayBatchRequest(
             campaign_name="postgres-replay",
-            source=source,
+            source=ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            ),
             mode=CampaignMode.AI_REDTEAM,
             purpose=ReplayPurpose.CONFIRMATION,
             policy_version="policy-v1",
@@ -114,18 +286,12 @@ def _seed_batch(
             items=[
                 ReplayBatchItemInput(
                     candidate_id=f"candidate-{suffix}-{ordinal}",
-                    candidate_digest=sha256(
-                        f"candidate:{suffix}:{ordinal}".encode()
-                    ).hexdigest(),
-                    contract_digest=sha256(
-                        f"contract:{suffix}:{ordinal}".encode()
-                    ).hexdigest(),
+                    candidate_digest=sha256(f"candidate:{suffix}:{ordinal}".encode()).hexdigest(),
+                    contract_digest=sha256(f"contract:{suffix}:{ordinal}".encode()).hexdigest(),
                     compilation_digest=sha256(
                         f"compilation:{suffix}:{ordinal}".encode()
                     ).hexdigest(),
-                    grant_digest=sha256(
-                        f"grant:{suffix}:{ordinal}".encode()
-                    ).hexdigest(),
+                    grant_digest=sha256(f"grant:{suffix}:{ordinal}".encode()).hexdigest(),
                     required_attempts=required_attempts,
                     max_attempts=max_attempts,
                 )
@@ -135,6 +301,307 @@ def _seed_batch(
         actor="postgres-replay-admission",
     )
     return created.batch_id
+
+
+def test_postgres_artifact_authority_is_append_only_and_batch_binding_is_exact(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository, service = _service(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    invalid_batch_id = f"batch_invalid_{suffix}"
+    try:
+        batch_id = _seed_batch(repository, service, suffix)
+        with repository.transaction() as session:
+            artifact = session.scalar(select(ArtifactRecord))
+            assert artifact is not None
+            artifact_key = (artifact.artifact_id, artifact.repository_version)
+
+        with (
+            pytest.raises(DatabaseError, match="cp_artifacts is append-only"),
+            repository.engine.begin() as connection,
+        ):
+            connection.execute(
+                update(ArtifactRecord)
+                .where(
+                    ArtifactRecord.artifact_id == artifact_key[0],
+                    ArtifactRecord.repository_version == artifact_key[1],
+                )
+                .values(root_digest="0" * 64)
+            )
+
+        with (
+            pytest.raises(DatabaseError, match="cp_artifacts is append-only"),
+            repository.engine.begin() as connection,
+        ):
+            connection.execute(
+                ArtifactRecord.__table__.delete().where(
+                    ArtifactRecord.artifact_id == artifact_key[0],
+                    ArtifactRecord.repository_version == artifact_key[1],
+                )
+            )
+
+        with repository.engine.connect() as connection:
+            original = (
+                connection.execute(
+                    select(ReplayBatchRecord.__table__).where(
+                        ReplayBatchRecord.batch_id == batch_id
+                    )
+                )
+                .mappings()
+                .one()
+            )
+        substituted = dict(original)
+        substituted["batch_id"] = invalid_batch_id
+        substituted["idempotency_key"] = f"postgres-invalid-binding-{suffix}"
+        substituted["source_root_digest"] = (
+            "0" * 64 if original["source_root_digest"] != "0" * 64 else "1" * 64
+        )
+        with pytest.raises(IntegrityError), repository.engine.begin() as connection:
+            connection.execute(ReplayBatchRecord.__table__.insert().values(**substituted))
+
+        with repository.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    select(ArtifactRecord.artifact_id).where(
+                        ArtifactRecord.artifact_id == artifact_key[0],
+                        ArtifactRecord.repository_version == artifact_key[1],
+                    )
+                )
+                == artifact_key[0]
+            )
+            assert (
+                connection.scalar(
+                    select(ReplayBatchRecord.batch_id).where(
+                        ReplayBatchRecord.batch_id == invalid_batch_id
+                    )
+                )
+                is None
+            )
+    finally:
+        repository.close()
+
+
+def test_postgres_reinitialize_rejects_stale_artifact_check_drift(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    try:
+        repository.initialize()
+        repository.initialize()
+
+        with repository.engine.begin() as connection:
+            connection.execute(
+                text("ALTER TABLE cp_artifacts DROP CONSTRAINT ck_cp_artifacts_sealed_run_id")
+            )
+            connection.execute(
+                text(
+                    "ALTER TABLE cp_artifacts ADD CONSTRAINT "
+                    "ck_cp_artifacts_sealed_run_id "
+                    "CHECK (length(sealed_run_id) > 0 AND length(sealed_run_id) <= 64)"
+                )
+            )
+
+        with pytest.raises(
+            SchemaInitializationError,
+            match=(
+                "cp_artifacts check constraint ck_cp_artifacts_sealed_run_id "
+                "does not match managed schema"
+            ),
+        ):
+            repository.initialize()
+    finally:
+        repository.close()
+
+
+def test_postgres_v2_to_v3_migration_preserves_core_rows_and_history(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    run_id = f"run_{suffix}"
+    job_id = str(_v2_job_values(suffix)["job_id"])
+    try:
+        _create_postgres_v2_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"].insert().values(**_v2_run_values(suffix))
+            )
+            connection.execute(
+                _V2_METADATA.tables["cp_jobs"].insert().values(**_v2_job_values(suffix))
+            )
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert "cp_artifacts" in inspect(repository.engine).get_table_names()
+        assert "source_artifact_run_id" in {
+            column["name"] for column in inspect(repository.engine).get_columns("cp_replay_batches")
+        }
+        with repository.transaction() as session:
+            preserved_run = session.get(RunRecord, run_id)
+            preserved_job = session.get(JobRecord, job_id)
+            versions = list(
+                session.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert preserved_run is not None
+        assert preserved_run.input == {"preserve": True}
+        assert preserved_job is not None
+        assert preserved_job.result == {"status": "completed"}
+        assert versions == [1, 2, 3]
+    finally:
+        repository.close()
+
+
+def test_postgres_nonempty_v2_replay_authority_refuses_migration_without_data_loss(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    batch_id = f"batch_v2_{suffix}"
+    try:
+        _create_postgres_v2_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"].insert().values(**_v2_run_values(suffix))
+            )
+            connection.execute(
+                _V2_METADATA.tables["cp_replay_batches"]
+                .insert()
+                .values(**_v2_batch_values(suffix, batch_id))
+            )
+
+        with pytest.raises(
+            SchemaInitializationError,
+            match="cannot be trusted or backfilled",
+        ):
+            repository.initialize()
+
+        assert "cp_artifacts" not in inspect(repository.engine).get_table_names()
+        with repository.engine.connect() as connection:
+            preserved = (
+                connection.execute(
+                    select(_V2_METADATA.tables["cp_replay_batches"]).where(
+                        _V2_METADATA.tables["cp_replay_batches"].c.batch_id == batch_id
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            versions = list(
+                connection.scalars(
+                    select(_V2_METADATA.tables["cp_schema_version"].c.version).order_by(
+                        _V2_METADATA.tables["cp_schema_version"].c.version
+                    )
+                ).all()
+            )
+        assert preserved["source_artifact_id"] == "legacy-unverified-artifact"
+        assert preserved["source_root_digest"] == "b" * 64
+        assert versions == [1, 2]
+    finally:
+        repository.close()
+
+
+def test_postgres_v2_migration_lock_excludes_late_legacy_writer(
+    isolated_postgres_schema_url: str,
+) -> None:
+    migration_repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    writer_repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    migration_locked = ThreadEvent()
+    release_migration = ThreadEvent()
+    writer_started = ThreadEvent()
+    writer_finished = ThreadEvent()
+    migration_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+    migration_thread: Thread | None = None
+    writer_thread: Thread | None = None
+    listener_installed = False
+
+    def pause_after_migration_lock(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        normalized = " ".join(statement.split())
+        if not normalized.startswith("LOCK TABLE cp_jobs, cp_replay_batches"):
+            return
+        migration_locked.set()
+        if not release_migration.wait(timeout=10):
+            raise RuntimeError("timed out waiting to release PostgreSQL v2 migration")
+
+    def migrate() -> None:
+        try:
+            migration_repository.initialize()
+        except BaseException as error:
+            migration_errors.append(error)
+
+    def legacy_write() -> None:
+        try:
+            with writer_repository.engine.begin() as connection:
+                connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+                writer_started.set()
+                connection.execute(
+                    _V2_METADATA.tables["cp_replay_batches"]
+                    .insert()
+                    .values(**_v2_batch_values(suffix, f"batch_late_{suffix}"))
+                )
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            writer_finished.set()
+
+    try:
+        _create_postgres_v2_schema(migration_repository)
+        with migration_repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"].insert().values(**_v2_run_values(suffix))
+            )
+
+        sqlalchemy_event.listen(
+            migration_repository.engine,
+            "after_cursor_execute",
+            pause_after_migration_lock,
+        )
+        listener_installed = True
+        migration_thread = Thread(target=migrate, daemon=True)
+        migration_thread.start()
+        assert migration_locked.wait(timeout=10)
+
+        writer_thread = Thread(target=legacy_write, daemon=True)
+        writer_thread.start()
+        assert writer_started.wait(timeout=10)
+        assert not writer_finished.wait(timeout=0.25)
+
+        release_migration.set()
+        migration_thread.join(timeout=15)
+        writer_thread.join(timeout=15)
+        assert not migration_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert migration_errors == []
+        assert len(writer_errors) == 1
+        assert isinstance(writer_errors[0], DatabaseError)
+        assert migration_repository.schema_version() == CURRENT_SCHEMA_VERSION
+        with migration_repository.engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM cp_replay_batches")) == 0
+    finally:
+        release_migration.set()
+        if migration_thread is not None:
+            migration_thread.join(timeout=10)
+        if writer_thread is not None:
+            writer_thread.join(timeout=10)
+        if listener_installed:
+            sqlalchemy_event.remove(
+                migration_repository.engine,
+                "after_cursor_execute",
+                pause_after_migration_lock,
+            )
+        writer_repository.close()
+        migration_repository.close()
 
 
 def test_postgres_replay_claim_has_exactly_one_winner_and_atomic_ticket_binding() -> None:
@@ -380,8 +847,7 @@ def test_postgres_schema_fence_rejects_append_only_trigger_catalog_drift() -> No
                 _validate_append_only_trigger(connection, "cp_replay_events")
                 connection.execute(
                     text(
-                        "ALTER TABLE cp_replay_events DISABLE TRIGGER "
-                        "cp_replay_events_append_only"
+                        "ALTER TABLE cp_replay_events DISABLE TRIGGER cp_replay_events_append_only"
                     )
                 )
                 with pytest.raises(SchemaInitializationError, match="append-only trigger"):
@@ -393,10 +859,7 @@ def test_postgres_schema_fence_rejects_append_only_trigger_catalog_drift() -> No
             transaction = connection.begin()
             try:
                 connection.execute(
-                    text(
-                        "DROP TRIGGER cp_replay_events_append_only "
-                        "ON cp_replay_events"
-                    )
+                    text("DROP TRIGGER cp_replay_events_append_only ON cp_replay_events")
                 )
                 connection.execute(
                     text(
@@ -454,9 +917,7 @@ def test_postgres_schema_fence_rejects_unmanaged_user_trigger_inventory(
                         "pajin_cp_reject_replay_event_mutation()"
                     )
                 )
-                with pytest.raises(
-                    SchemaInitializationError, match="user trigger inventory"
-                ):
+                with pytest.raises(SchemaInitializationError, match="user trigger inventory"):
                     _validate_current_schema(connection)
             finally:
                 transaction.rollback()
@@ -475,14 +936,9 @@ def test_postgres_schema_fence_rejects_unmanaged_rewrite_rule_inventory(
             transaction = connection.begin()
             try:
                 connection.execute(
-                    text(
-                        f"CREATE RULE {rule_name} AS ON INSERT TO {table_name} "
-                        "DO INSTEAD NOTHING"
-                    )
+                    text(f"CREATE RULE {rule_name} AS ON INSERT TO {table_name} DO INSTEAD NOTHING")
                 )
-                with pytest.raises(
-                    SchemaInitializationError, match="rewrite rule inventory"
-                ):
+                with pytest.raises(SchemaInitializationError, match="rewrite rule inventory"):
                     _validate_current_schema(connection)
             finally:
                 transaction.rollback()
@@ -497,14 +953,9 @@ def test_postgres_schema_fence_rejects_managed_table_inheritance_edges() -> None
             transaction = connection.begin()
             try:
                 connection.execute(
-                    text(
-                        "CREATE TABLE pajin_test_audit_shadow () "
-                        "INHERITS (cp_events)"
-                    )
+                    text("CREATE TABLE pajin_test_audit_shadow () INHERITS (cp_events)")
                 )
-                with pytest.raises(
-                    SchemaInitializationError, match="inheritance inventory"
-                ):
+                with pytest.raises(SchemaInitializationError, match="inheritance inventory"):
                     _validate_current_schema(connection)
             finally:
                 transaction.rollback()
@@ -522,9 +973,7 @@ def test_postgres_schema_fence_rejects_unlogged_managed_audit_tables(
             transaction = connection.begin()
             try:
                 connection.execute(text(f"ALTER TABLE {table_name} SET UNLOGGED"))
-                with pytest.raises(
-                    SchemaInitializationError, match="relation persistence"
-                ):
+                with pytest.raises(SchemaInitializationError, match="relation persistence"):
                     _validate_current_schema(connection)
             finally:
                 transaction.rollback()

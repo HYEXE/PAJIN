@@ -20,8 +20,8 @@ The implementation baseline as of 2026-07-17 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, and a same-origin Web Console preview |
-| Primary gaps | Control Plane replay-ticket orchestration, non-KISA Local replay orchestration, session materializers and Mode Oracles, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, and an owner-controlled managed filesystem Artifact repository with immutable `cp_artifacts` metadata |
+| Primary gaps | Remaining Control Plane Replay orchestration, including trusted KISA item/contract/compilation derivation, durable pre-ticket budget/rate reservation, new-identity retries, executor/finalization/Gate wiring; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -113,11 +113,20 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - The explicit Local KISA coordinator is limited to one process and one writer, and only the exact
   M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
   predicate or a distributed lock. Accepted ADR 0029 governs Control Plane replay artifact handoff,
-  lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state. Its first
-  authority-state slice implements the versioned aggregate schema, repository-managed v1-to-v2
-  migration, strict internal payload, and burn-on-claim lifecycle. M6-07B remains incomplete pending
-  Artifact admission, retry issuance, durable permits, executor/finalization/Gate wiring, and live
-  PostgreSQL migration and locking acceptance.
+  lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state. The implemented
+  M6-07B-2A foundation now includes the versioned Replay aggregate and burn-on-claim lifecycle, an
+  owner-controlled managed filesystem repository, immutable `cp_artifacts` metadata, and
+  server-owned admission of completed sealed sources. Producer Control Plane Run identity remains
+  distinct from the sealed Run identity. Consumers provide only the exact opaque
+  `(artifact_id, repository_version)` locator, and the server resolves it and re-verifies content
+  and seals. Schema v3 supports the forward v1→v2→v3 path; v2→v3 fails closed when legacy Replay
+  data exists instead of inventing Artifact bindings. This slice exposes no public Replay or
+  admission API and does not yet derive KISA items, contracts, or compilations. Durable pre-ticket
+  budget/rate reservation, new-identity retry issuance, and executor/finalization/Gate wiring remain
+  outstanding. Live PostgreSQL acceptance for schema v3 is complete on a clean temporary database,
+  covering forward migration and locking, `cp_artifacts` append-only enforcement, and the exact
+  composite Artifact foreign key. Those database checks do not complete the remaining Replay
+  execution path, so full M6-07B remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -690,8 +699,18 @@ $env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
 $env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
 $env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+$env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
+$env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
 ```
+
+The Artifact roots are optional, but they must be configured together or both omitted. Keep both
+directories private to the Control Plane service account and outside any Worker- or user-controlled
+tree. Staging is an explicit handoff boundary; repository object paths remain server-owned and are
+never accepted from an Artifact consumer. If the pair is omitted, managed Artifact admission and
+Replay-batch source resolution remain unavailable and fail closed. Current durable admission also
+requires a POSIX filesystem/runtime with directory `fsync` support; unsupported environments fail
+closed.
 
 SQLite is a local compatibility store, not a production multi-Worker queue. Run the PostgreSQL lab
 on loopback instead:

@@ -2,25 +2,35 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Event as ThreadEvent
+from threading import Thread
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import inspect, select, text, update
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.database import (
+    _V2_METADATA,
+    _V2_MIGRATION_WRITE_LOCK_TABLES,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
+    REPLAY_AUTHORITY_SCHEMA_VERSION,
+    V2_CONTROL_PLANE_TABLES,
+    ArtifactRecord,
     Base,
     ControlPlaneRepository,
+    JobRecord,
     ReplayBatchRecord,
     ReplayEventRecord,
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
+    _lock_v2_migration_writes,
     _postgres_append_only_trigger_is_valid,
     _postgres_check_signature,
 )
@@ -50,6 +60,87 @@ def _create_legacy_schema(repository: ControlPlaneRepository) -> None:
             )
 
 
+def _create_v2_schema(repository: ControlPlaneRepository) -> None:
+    pending = set(V2_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V2_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in ("cp_events", "cp_replay_events"):
+            for operation in ("UPDATE", "DELETE"):
+                connection.exec_driver_sql(
+                    f"""
+                    CREATE TRIGGER {table_name}_no_{operation.lower()}
+                    BEFORE {operation} ON {table_name}
+                    BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
+                    """
+                )
+        schema_version = _V2_METADATA.tables["cp_schema_version"]
+        now = datetime.now(UTC)
+        connection.execute(
+            schema_version.insert(),
+            [
+                {
+                    "version": 1,
+                    "description": "legacy-control-plane-core",
+                    "applied_at": now,
+                },
+                {
+                    "version": 2,
+                    "description": "replay-authority",
+                    "applied_at": now,
+                },
+            ],
+        )
+
+
+def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
+    statements: list[str] = []
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+    )
+
+    _lock_v2_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE " + ", ".join(_V2_MIGRATION_WRITE_LOCK_TABLES) + " IN ACCESS EXCLUSIVE MODE"
+    ]
+    assert _V2_MIGRATION_WRITE_LOCK_TABLES == (
+        "cp_jobs",
+        "cp_replay_batches",
+        "cp_replay_items",
+        "cp_replay_tickets",
+        "cp_replay_events",
+    )
+
+
+def test_sqlite_initialization_begins_with_immediate_write_reservation(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "sqlite-immediate.db")
+    statements: list[str] = []
+
+    def capture_statement(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        statements.append(" ".join(statement.split()))
+
+    sqlalchemy_event.listen(repository.engine, "before_cursor_execute", capture_statement)
+    try:
+        repository.initialize()
+        assert statements[0] == "BEGIN IMMEDIATE"
+    finally:
+        repository.close()
+
+
 def _run(run_id: str) -> RunRecord:
     now = datetime.now(UTC)
     return RunRecord(
@@ -64,6 +155,51 @@ def _run(run_id: str) -> RunRecord:
     )
 
 
+def _job(run_id: str, job_id: str) -> JobRecord:
+    now = datetime.now(UTC)
+    return JobRecord(
+        job_id=job_id,
+        run_id=run_id,
+        kind="campaign",
+        state="succeeded",
+        payload={"preserve": True},
+        priority=0,
+        attempts=1,
+        max_attempts=1,
+        idempotency_key=f"idempotency-{job_id}",
+        available_at=now,
+        lease_owner=None,
+        lease_token_hash=None,
+        lease_expires_at=None,
+        heartbeat_at=None,
+        result={"status": "completed"},
+        error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _artifact(run_id: str, job_id: str) -> ArtifactRecord:
+    return ArtifactRecord(
+        artifact_id=f"artifact_{'1' * 32}",
+        repository_version=1,
+        producer_run_id=run_id,
+        producer_job_id=job_id,
+        producer_attempt=1,
+        sealed_run_id="sealed-migration-run",
+        media_type="application/vnd.pajin.run+json",
+        schema_kind="pajin.run.v1",
+        byte_length=512,
+        content_digest="a" * 64,
+        root_digest="b" * 64,
+        created_by="migration-test-operator",
+        storage_key="objects/artifact-migration-v1",
+        idempotency_key="artifact-admission-migration-v1",
+        admission_digest="c" * 64,
+        created_at=datetime.now(UTC),
+    )
+
+
 def _batch(run_id: str, batch_id: str = "batch_migration") -> ReplayBatchRecord:
     now = datetime.now(UTC)
     return ReplayBatchRecord(
@@ -72,10 +208,11 @@ def _batch(run_id: str, batch_id: str = "batch_migration") -> ReplayBatchRecord:
         idempotency_key=f"idempotency-{batch_id}",
         campaign_name="migration-test",
         created_by="migration-test-operator",
-        source_artifact_id="artifact_source",
+        source_artifact_id=f"artifact_{'1' * 32}",
         source_repository_version=1,
         source_content_digest="a" * 64,
         source_root_digest="b" * 64,
+        source_artifact_run_id="sealed-migration-run",
         source_media_type="application/vnd.pajin.run+json",
         source_schema_kind="pajin.run.v1",
         source_byte_length=512,
@@ -92,6 +229,34 @@ def _batch(run_id: str, batch_id: str = "batch_migration") -> ReplayBatchRecord:
     )
 
 
+def _v2_batch_values(run_id: str, batch_id: str) -> dict[str, object]:
+    now = datetime.now(UTC)
+    return {
+        "batch_id": batch_id,
+        "source_run_id": run_id,
+        "idempotency_key": f"idempotency-{batch_id}",
+        "campaign_name": "migration-test",
+        "created_by": "migration-test-operator",
+        "source_artifact_id": "unverified-artifact",
+        "source_repository_version": 1,
+        "source_content_digest": "a" * 64,
+        "source_root_digest": "b" * 64,
+        "source_media_type": "application/vnd.pajin.run+json",
+        "source_schema_kind": "pajin.run.v1",
+        "source_byte_length": 512,
+        "source_created_by": "migration-test-operator",
+        "mode": "ai-redteam",
+        "purpose": "confirmation",
+        "policy_version": "policy-v1",
+        "state": "planned",
+        "cas_version": 1,
+        "cancellation_reason": None,
+        "created_at": now,
+        "updated_at": now,
+        "cancelled_at": None,
+    }
+
+
 def test_empty_database_migrates_to_current_schema_and_restart_validates(
     tmp_path: Path,
 ) -> None:
@@ -106,11 +271,15 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             versions = session.scalars(
                 select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
             ).all()
-        assert versions == [1, CURRENT_SCHEMA_VERSION]
+        assert versions == [
+            1,
+            REPLAY_AUTHORITY_SCHEMA_VERSION,
+            CURRENT_SCHEMA_VERSION,
+        ]
 
         repository.initialize()
         with repository.transaction() as session:
-            assert session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord)) == 2
+            assert session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord)) == 3
     finally:
         repository.close()
 
@@ -153,6 +322,260 @@ def test_exact_legacy_database_migrates_forward_without_losing_rows(tmp_path: Pa
         repository.close()
 
 
+def test_empty_v2_database_migrates_forward_without_losing_core_rows(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v2-empty.db")
+    try:
+        _create_v2_schema(repository)
+        with repository.transaction() as session:
+            session.add(_run("run_v2_preserved"))
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        with repository.transaction() as session:
+            assert session.get(RunRecord, "run_v2_preserved") is not None
+            versions = session.scalars(
+                select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+            ).all()
+        assert versions == [1, 2, 3]
+        columns = {
+            column["name"] for column in inspect(repository.engine).get_columns("cp_replay_batches")
+        }
+        assert "source_artifact_run_id" in columns
+        assert "cp_artifacts" in inspect(repository.engine).get_table_names()
+    finally:
+        repository.close()
+
+
+def test_sqlite_v2_migration_excludes_legacy_writer_from_count_through_replacement(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v2-writer-race.db"
+    migration_repository = _repository(path)
+    writer_repository = _repository(path)
+    migration_reached_count = ThreadEvent()
+    release_migration = ThreadEvent()
+    writer_attempted = ThreadEvent()
+    writer_finished = ThreadEvent()
+    migration_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+    migration_thread: Thread | None = None
+    writer_thread: Thread | None = None
+    listener_installed = False
+
+    def pause_at_authority_count(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        normalized = " ".join(statement.split())
+        if normalized != "SELECT count(*) FROM cp_replay_batches":
+            return
+        migration_reached_count.set()
+        if not release_migration.wait(timeout=5):
+            raise RuntimeError("timed out waiting to release v2 migration")
+
+    def migrate() -> None:
+        try:
+            migration_repository.initialize()
+        except BaseException as error:
+            migration_errors.append(error)
+
+    def legacy_write() -> None:
+        writer_attempted.set()
+        try:
+            with writer_repository.engine.begin() as connection:
+                connection.execute(
+                    _V2_METADATA.tables["cp_replay_batches"]
+                    .insert()
+                    .values(**_v2_batch_values("run_v2_race", "batch_v2_race"))
+                )
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            writer_finished.set()
+
+    try:
+        _create_v2_schema(migration_repository)
+        now = datetime.now(UTC)
+        with migration_repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"]
+                .insert()
+                .values(
+                    run_id="run_v2_race",
+                    campaign_name="migration-test",
+                    state="completed",
+                    input={"legacy": True},
+                    submission_key="submission-v2-race",
+                    current_checkpoint_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        sqlalchemy_event.listen(
+            migration_repository.engine,
+            "before_cursor_execute",
+            pause_at_authority_count,
+        )
+        listener_installed = True
+        migration_thread = Thread(target=migrate, daemon=True)
+        migration_thread.start()
+        assert migration_reached_count.wait(timeout=5)
+
+        writer_thread = Thread(target=legacy_write, daemon=True)
+        writer_thread.start()
+        assert writer_attempted.wait(timeout=5)
+        assert not writer_finished.wait(timeout=0.2)
+
+        release_migration.set()
+        migration_thread.join(timeout=5)
+        writer_thread.join(timeout=5)
+        assert not migration_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert migration_errors == []
+        assert len(writer_errors) == 1
+        assert isinstance(writer_errors[0], DatabaseError)
+        assert migration_repository.schema_version() == CURRENT_SCHEMA_VERSION
+        with migration_repository.engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM cp_replay_batches")) == 0
+    finally:
+        release_migration.set()
+        if migration_thread is not None:
+            migration_thread.join(timeout=5)
+        if writer_thread is not None:
+            writer_thread.join(timeout=5)
+        if listener_installed:
+            sqlalchemy_event.remove(
+                migration_repository.engine,
+                "before_cursor_execute",
+                pause_at_authority_count,
+            )
+        writer_repository.close()
+        migration_repository.close()
+
+
+def test_v2_replay_rows_are_rejected_without_trusting_or_backfilling(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v2-replay-data.db")
+    try:
+        _create_v2_schema(repository)
+        now = datetime.now(UTC)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"]
+                .insert()
+                .values(
+                    run_id="run_v2_replay",
+                    campaign_name="migration-test",
+                    state="completed",
+                    input={"legacy": True},
+                    submission_key="submission-v2-replay",
+                    current_checkpoint_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                _V2_METADATA.tables["cp_replay_batches"]
+                .insert()
+                .values(
+                    batch_id="batch_v2_unverified",
+                    source_run_id="run_v2_replay",
+                    idempotency_key="idempotency-v2-unverified",
+                    campaign_name="migration-test",
+                    created_by="migration-test-operator",
+                    source_artifact_id="unverified-artifact",
+                    source_repository_version=1,
+                    source_content_digest="a" * 64,
+                    source_root_digest="b" * 64,
+                    source_media_type="application/vnd.pajin.run+json",
+                    source_schema_kind="pajin.run.v1",
+                    source_byte_length=512,
+                    source_created_by="migration-test-operator",
+                    mode="ai-redteam",
+                    purpose="confirmation",
+                    policy_version="policy-v1",
+                    state="planned",
+                    cas_version=1,
+                    cancellation_reason=None,
+                    created_at=now,
+                    updated_at=now,
+                    cancelled_at=None,
+                )
+            )
+
+        with pytest.raises(SchemaInitializationError, match="cannot be trusted or backfilled"):
+            repository.initialize()
+
+        assert "cp_artifacts" not in inspect(repository.engine).get_table_names()
+        with repository.engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM cp_replay_batches")) == 1
+    finally:
+        repository.close()
+
+
+def test_v2_internal_replay_job_is_rejected_even_without_aggregate_rows(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v2-internal-job.db")
+    try:
+        _create_v2_schema(repository)
+        now = datetime.now(UTC)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V2_METADATA.tables["cp_runs"]
+                .insert()
+                .values(
+                    run_id="run_v2_internal",
+                    campaign_name="migration-test",
+                    state="queued",
+                    input={},
+                    submission_key="submission-v2-internal",
+                    current_checkpoint_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            connection.execute(
+                _V2_METADATA.tables["cp_jobs"]
+                .insert()
+                .values(
+                    job_id="job_v2_internal",
+                    run_id="run_v2_internal",
+                    kind="internal-replay",
+                    state="queued",
+                    payload={},
+                    priority=0,
+                    attempts=0,
+                    max_attempts=1,
+                    idempotency_key="idempotency-v2-internal",
+                    available_at=now,
+                    lease_owner=None,
+                    lease_token_hash=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    result=None,
+                    error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
+            repository.initialize()
+        assert "cp_artifacts" not in inspect(repository.engine).get_table_names()
+    finally:
+        repository.close()
+
+
 @pytest.mark.parametrize("partial", [True, False])
 def test_partial_or_unknown_control_plane_schema_is_rejected(
     tmp_path: Path,
@@ -188,9 +611,12 @@ def test_unknown_migration_version_is_rejected_without_repair(tmp_path: Path) ->
         with pytest.raises(SchemaInitializationError, match="migration history"):
             restarted.initialize()
         with restarted.engine.connect() as connection:
-            assert connection.scalar(
-                select(SchemaVersionRecord.version).where(SchemaVersionRecord.version == 99)
-            ) == 99
+            assert (
+                connection.scalar(
+                    select(SchemaVersionRecord.version).where(SchemaVersionRecord.version == 99)
+                )
+                == 99
+            )
     finally:
         restarted.close()
 
@@ -200,29 +626,30 @@ def test_missing_required_column_is_rejected_without_automatic_repair(tmp_path: 
     repository = _repository(path)
     repository.initialize()
     with repository.engine.begin() as connection:
-        connection.exec_driver_sql(
-            "ALTER TABLE cp_replay_batches DROP COLUMN source_created_by"
-        )
+        connection.exec_driver_sql("ALTER TABLE cp_replay_batches DROP COLUMN campaign_name")
     repository.close()
 
     restarted = _repository(path)
     try:
         with pytest.raises(SchemaInitializationError, match="columns do not match"):
             restarted.initialize()
-        assert "source_created_by" not in {
-            column["name"]
-            for column in inspect(restarted.engine).get_columns("cp_replay_batches")
+        assert "campaign_name" not in {
+            column["name"] for column in inspect(restarted.engine).get_columns("cp_replay_batches")
         }
     finally:
         restarted.close()
 
 
-def test_missing_append_only_trigger_is_rejected_without_repair(tmp_path: Path) -> None:
-    path = tmp_path / "missing-trigger.db"
+@pytest.mark.parametrize("table_name", ["cp_artifacts", "cp_replay_events"])
+def test_missing_append_only_trigger_is_rejected_without_repair(
+    tmp_path: Path,
+    table_name: str,
+) -> None:
+    path = tmp_path / f"missing-trigger-{table_name}.db"
     repository = _repository(path)
     repository.initialize()
     with repository.engine.begin() as connection:
-        connection.exec_driver_sql("DROP TRIGGER cp_replay_events_no_delete")
+        connection.exec_driver_sql(f"DROP TRIGGER {table_name}_no_delete")
     repository.close()
 
     restarted = _repository(path)
@@ -232,9 +659,9 @@ def test_missing_append_only_trigger_is_rejected_without_repair(tmp_path: Path) 
         with restarted.engine.connect() as connection:
             trigger = connection.scalar(
                 text(
-                    "SELECT name FROM sqlite_master WHERE type = 'trigger' "
-                    "AND name = 'cp_replay_events_no_delete'"
-                )
+                    "SELECT name FROM sqlite_master WHERE type = 'trigger' AND name = :trigger_name"
+                ),
+                {"trigger_name": f"{table_name}_no_delete"},
             )
         assert trigger is None
     finally:
@@ -282,8 +709,7 @@ def test_unmanaged_user_trigger_is_rejected_without_automatic_repair(
     repository.initialize()
     with repository.engine.begin() as connection:
         connection.exec_driver_sql(
-            f"CREATE TRIGGER {trigger_name} BEFORE {operation} ON {table_name} "
-            "BEGIN SELECT 1; END"
+            f"CREATE TRIGGER {trigger_name} BEFORE {operation} ON {table_name} BEGIN SELECT 1; END"
         )
     repository.close()
 
@@ -292,13 +718,16 @@ def test_unmanaged_user_trigger_is_rejected_without_automatic_repair(
         with pytest.raises(SchemaInitializationError, match="user trigger inventory"):
             restarted.initialize()
         with restarted.engine.connect() as connection:
-            assert connection.scalar(
-                text(
-                    "SELECT name FROM sqlite_master "
-                    "WHERE type = 'trigger' AND name = :trigger_name"
-                ),
-                {"trigger_name": trigger_name},
-            ) == trigger_name
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND name = :trigger_name"
+                    ),
+                    {"trigger_name": trigger_name},
+                )
+                == trigger_name
+            )
     finally:
         restarted.close()
 
@@ -307,9 +736,7 @@ def test_missing_named_check_constraint_is_rejected(tmp_path: Path) -> None:
     path = tmp_path / "missing-constraint.db"
     repository = _repository(path)
     repository.initialize()
-    constraint = (
-        "CONSTRAINT ck_cp_replay_batches_cas_version CHECK (cas_version > 0), "
-    )
+    constraint = "CONSTRAINT ck_cp_replay_batches_cas_version CHECK (cas_version > 0), "
     with repository.engine.begin() as connection:
         definition = connection.scalar(
             text("SELECT sql FROM sqlite_master WHERE name = 'cp_replay_batches'")
@@ -385,9 +812,10 @@ def test_postgres_check_signature_accepts_repository_checks_and_pg_rendering() -
         for constraint in table.constraints:
             sqltext = getattr(constraint, "sqltext", None)
             if sqltext is not None:
-                assert _postgres_check_signature(
-                    str(sqltext), str(sqltext), table
-                ), (table.name, constraint.name)
+                assert _postgres_check_signature(str(sqltext), str(sqltext), table), (
+                    table.name,
+                    constraint.name,
+                )
 
     table = Base.metadata.tables["cp_replay_batches"]
     expected = "state IN ('planned', 'running', 'gating', 'completed', 'failed', 'cancelled')"
@@ -438,10 +866,8 @@ def test_postgres_check_signature_accepts_repository_checks_and_pg_rendering() -
             "cp_replay_items",
         ),
         (
-            "state NOT IN ('planned', 'running', 'gating', 'completed', 'failed', "
-            "'cancelled')",
-            "state IN ('planned', 'running', 'gating', 'completed', 'failed', "
-            "'cancelled')",
+            "state NOT IN ('planned', 'running', 'gating', 'completed', 'failed', 'cancelled')",
+            "state IN ('planned', 'running', 'gating', 'completed', 'failed', 'cancelled')",
             "cp_replay_batches",
         ),
         (
@@ -459,6 +885,11 @@ def test_postgres_check_signature_accepts_repository_checks_and_pg_rendering() -
             "state <> 'cancelled'",
             "cp_replay_batches",
         ),
+        (
+            "length(media_type) = length(replace(media_type, '/', '')) + 2",
+            "length(media_type) = length(replace(media_type, '/', '')) + 1",
+            "cp_artifacts",
+        ),
     ],
 )
 def test_postgres_check_signature_rejects_semantic_or_structural_drift(
@@ -466,13 +897,15 @@ def test_postgres_check_signature_rejects_semantic_or_structural_drift(
     expected: str,
     table_name: str,
 ) -> None:
-    assert not _postgres_check_signature(
-        actual, expected, Base.metadata.tables[table_name]
-    )
+    assert not _postgres_check_signature(actual, expected, Base.metadata.tables[table_name])
 
 
 def _valid_postgres_trigger_row(table_name: str) -> SimpleNamespace:
-    suffix = "event" if table_name == "cp_events" else "replay_event"
+    suffix = {
+        "cp_artifacts": "artifact",
+        "cp_events": "event",
+        "cp_replay_events": "replay_event",
+    }[table_name]
     return SimpleNamespace(
         trigger_enabled="O",
         trigger_type=27,
@@ -491,14 +924,12 @@ def _valid_postgres_trigger_row(table_name: str) -> SimpleNamespace:
         volatility="v",
         parallel_mode="u",
         no_function_config=True,
-        function_source=(
-            f"BEGIN RAISE EXCEPTION '{table_name} is append-only'; END;"
-        ),
+        function_source=(f"BEGIN RAISE EXCEPTION '{table_name} is append-only'; END;"),
     )
 
 
 def test_postgres_append_only_trigger_accepts_exact_managed_definition() -> None:
-    for table_name in ("cp_events", "cp_replay_events"):
+    for table_name in ("cp_artifacts", "cp_events", "cp_replay_events"):
         assert _postgres_append_only_trigger_is_valid(
             _valid_postgres_trigger_row(table_name), table_name
         )
@@ -533,10 +964,16 @@ def test_replay_events_are_append_only_and_replay_checks_are_enforced(tmp_path: 
     repository = _repository(tmp_path / "authority-constraints.db")
     repository.initialize()
     now = datetime.now(UTC)
+    run_id = f"run_{'1' * 32}"
+    job_id = f"job_{'2' * 32}"
     with repository.transaction() as session:
-        session.add(_run("run_replay_constraints"))
+        session.add(_run(run_id))
         session.flush()
-        session.add(_batch("run_replay_constraints"))
+        session.add(_job(run_id, job_id))
+        session.flush()
+        session.add(_artifact(run_id, job_id))
+        session.flush()
+        session.add(_batch(run_id))
         session.flush()
         session.add(
             ReplayEventRecord(
@@ -545,7 +982,7 @@ def test_replay_events_are_append_only_and_replay_checks_are_enforced(tmp_path: 
                 item_id=None,
                 ticket_id=None,
                 job_id=None,
-                run_id="run_replay_constraints",
+                run_id=run_id,
                 sequence=1,
                 event_type="replay.batch.planned",
                 actor="migration-test-operator",
@@ -563,9 +1000,87 @@ def test_replay_events_are_append_only_and_replay_checks_are_enforced(tmp_path: 
         event.event_type = "replay.event.tampered"
 
     with pytest.raises(IntegrityError), repository.transaction() as session:
-        invalid = _batch("run_replay_constraints", "batch_invalid_state")
+        invalid = _batch(run_id, "batch_invalid_state")
         invalid.state = "unknown"
         invalid.idempotency_key = "idempotency-invalid-state"
         invalid.created_at = now + timedelta(seconds=1)
         session.add(invalid)
+    repository.close()
+
+
+def test_artifacts_are_append_only_and_batch_requires_exact_authority_binding(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "artifact-authority.db")
+    repository.initialize()
+    run_id = f"run_{'3' * 32}"
+    job_id = f"job_{'4' * 32}"
+    with repository.transaction() as session:
+        session.add(_run(run_id))
+        session.flush()
+        session.add(_job(run_id, job_id))
+        session.flush()
+        session.add(_artifact(run_id, job_id))
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        artifact = session.get(ArtifactRecord, (f"artifact_{'1' * 32}", 1))
+        assert artifact is not None
+        artifact.root_digest = "d" * 64
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        artifact = session.get(ArtifactRecord, (f"artifact_{'1' * 32}", 1))
+        assert artifact is not None
+        session.delete(artifact)
+
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        batch = _batch(run_id, "batch_wrong_artifact_binding")
+        batch.idempotency_key = "idempotency-wrong-artifact-binding"
+        batch.source_root_digest = "e" * 64
+        session.add(batch)
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("artifact_id", f"artifact_{'A' * 32}"),
+        ("content_digest", "G" * 64),
+        ("root_digest", "0" * 63 + "z"),
+        ("admission_digest", "F" * 64),
+        ("producer_attempt", 2_147_483_648),
+        ("byte_length", 2_147_483_648),
+        ("sealed_run_id", "_sealed-run"),
+        ("sealed_run_id", "sealed/run"),
+        ("schema_kind", ".pajin.run.v1"),
+        ("schema_kind", "pajin/run/v1"),
+        ("media_type", ".application/json"),
+        ("media_type", "application/.json"),
+        ("media_type", "application/json/extra"),
+        ("media_type", "application_json"),
+    ],
+)
+def test_artifact_strict_checks_reject_invalid_authority_metadata(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository = _repository(tmp_path / f"artifact-invalid-{field}.db")
+    repository.initialize()
+    run_id = f"run_{'5' * 32}"
+    job_id = f"job_{'6' * 32}"
+    with repository.transaction() as session:
+        session.add(_run(run_id))
+        session.flush()
+        session.add(_job(run_id, job_id))
+        session.flush()
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        artifact = _artifact(run_id, job_id)
+        setattr(artifact, field, value)
+        session.add(artifact)
     repository.close()

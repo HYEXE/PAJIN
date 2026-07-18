@@ -6,6 +6,8 @@ import pytest
 from pydantic import BaseModel, ValidationError
 
 from pajin.control_plane.models import (
+    AdmitSourceArtifactRequest,
+    ArtifactLocator,
     ArtifactRef,
     ClaimJobRequest,
     CreateReplayBatchRequest,
@@ -39,12 +41,22 @@ def _artifact(**updates: object) -> ArtifactRef:
         "schema_kind": "pajin.run.v1",
         "byte_length": 4_096,
         "content_digest": "b" * 64,
+        "producer_run_id": f"run_{'d' * 32}",
         "run_id": "run_20260717T120000Z_deadbeef",
         "integrity_root_digest": "c" * 64,
         "created_by": "alice-operator",
     }
     values.update(updates)
     return ArtifactRef.model_validate(values)
+
+
+def _locator(**updates: object) -> ArtifactLocator:
+    values: dict[str, object] = {
+        "artifact_id": f"artifact_{'a' * 32}",
+        "repository_version": 1,
+    }
+    values.update(updates)
+    return ArtifactLocator.model_validate(values)
 
 
 def _item(**updates: object) -> ReplayBatchItemInput:
@@ -64,7 +76,7 @@ def _item(**updates: object) -> ReplayBatchItemInput:
 def _batch_request(**updates: object) -> CreateReplayBatchRequest:
     values: dict[str, object] = {
         "campaign_name": "kisa-replay",
-        "source": _artifact(),
+        "source": _locator(),
         "mode": CampaignMode.AI_REDTEAM,
         "purpose": ReplayPurpose.CONFIRMATION,
         "policy_version": "policy-v1",
@@ -246,6 +258,29 @@ def test_artifact_ref_is_strict_immutable_repository_metadata() -> None:
         _artifact(content_digest="A" * 64)
     with pytest.raises(ValidationError):
         ArtifactRef.model_validate({**artifact.model_dump(), "path": "/tmp/untrusted"})
+
+
+def test_artifact_admission_and_replay_batch_accept_only_opaque_exact_locators() -> None:
+    request = AdmitSourceArtifactRequest(
+        staging_id=f"stage_{'1' * 32}",
+        producer_run_id=f"run_{'2' * 32}",
+        producer_job_id=f"job_{'3' * 32}",
+        idempotency_key="artifact-admission-one",
+    )
+    assert request.staging_id == f"stage_{'1' * 32}"
+
+    batch = _batch_request()
+    assert batch.source == _locator()
+    assert set(batch.source.model_dump()) == {"artifact_id", "repository_version"}
+
+    with pytest.raises(ValidationError):
+        AdmitSourceArtifactRequest.model_validate(
+            {**request.model_dump(), "staging_id": "/tmp/untrusted"}
+        )
+    with pytest.raises(ValidationError):
+        CreateReplayBatchRequest.model_validate(
+            {**batch.model_dump(), "source": _artifact().model_dump()}
+        )
 
 
 @pytest.mark.parametrize("invalid_value", ["1", True])

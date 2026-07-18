@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, 검증된 reproduction-backed confirmation projection, 강화 후 retest를 위한 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview |
-| 주요 공백 | Control Plane replay-ticket 오케스트레이션, KISA 외 Local replay 오케스트레이션, session materializer와 Mode Oracle, 이식 가능하거나 off-host인 replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository와 immutable `cp_artifacts` metadata |
+| 주요 공백 | 신뢰된 KISA item/contract/compilation 파생, ticket 발행 전 durable budget/rate 예약, 새 identity 재시도, executor/finalization/Gate 연결을 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -115,11 +115,19 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 - 명시적 Local KISA coordinator는 한 process와 한 writer로 제한되며, 정확한 M03, M06, A04
   `ai.chat-probe` 계약만 allowlist에 포함됩니다. generic structural replay predicate나
   distributed lock이 아닙니다. 승인된 ADR 0029는 Control Plane replay의 artifact handoff, lease
-  fencing, PostgreSQL ticket/batch/item state, durable budget/rate state를 규정합니다. 첫 권위 상태
-  조각은 버전형 집합체 스키마, 저장소 관리형 v1→v2 마이그레이션, 엄격한 내부 payload와
-  burn-on-claim 수명주기를 구현합니다. Artifact 입장, 재시도 발행, 영속형 permit,
-  executor/finalization/Gate 연결과 실제 PostgreSQL 마이그레이션·잠금 인수 검증이 남아 있어
-  M6-07B 전체는 아직 미완료입니다.
+  fencing, PostgreSQL ticket/batch/item state, durable budget/rate state를 규정합니다. 구현된
+  M6-07B-2A 기반은 버전형 Replay 집합체와 burn-on-claim 수명주기, 소유자가 통제하는 managed
+  filesystem repository, immutable `cp_artifacts` metadata, 완료·봉인된 source의 server-owned
+  admission을 포함합니다. producer Control Plane Run ID와 sealed Run ID는 별도로 보존합니다.
+  consumer는 opaque한 정확한 `(artifact_id, repository_version)` locator만 제공하며, 서버가 이를
+  resolve해 content와 seal을 다시 검증합니다. schema v3는 forward v1→v2→v3 경로를 지원하고,
+  legacy Replay data가 있는 v2→v3에서는 가짜 Artifact binding을 만들지 않고 fail closed합니다.
+  이 조각은 public Replay/admission API를 노출하지 않으며 KISA item·contract·compilation을 아직
+  파생하지 않습니다. ticket 발행 전 durable budget/rate 예약, 새 identity retry 발행과
+  executor/finalization/Gate 연결은 남아 있습니다. schema v3의 live PostgreSQL acceptance는
+  깨끗한 임시 database에서 완료됐고 forward migration·locking, `cp_artifacts` append-only 강제,
+  exact composite Artifact foreign key를 검증했습니다. 이 database 검증만으로 남은 Replay 실행
+  경로가 완성되는 것은 아니므로 M6-07B 전체는 여전히 미완료입니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 
@@ -688,8 +696,17 @@ $env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
 $env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
 $env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+$env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
+$env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
 ```
+
+Artifact root 두 개는 선택 사항이지만 둘을 함께 설정하거나 둘 다 생략해야 합니다. 두 directory는
+Control Plane service account만 접근할 수 있게 하고 Worker 또는 사용자가 통제하는 tree 밖에
+두십시오. staging은 명시적인 handoff 경계이며 repository object path는 서버가 소유하므로 Artifact
+consumer에게서 입력받지 않습니다. 두 값을 생략하면 managed Artifact admission과 Replay-batch
+source resolution은 사용할 수 없으며 fail closed합니다. 현재 durable admission은 directory
+`fsync`를 지원하는 POSIX filesystem/runtime도 필요하며, 미지원 환경에서는 fail closed합니다.
 
 SQLite는 로컬 compatibility store이며 production multi-Worker queue가 아닙니다. 대신 loopback에서
 PostgreSQL lab을 실행합니다.

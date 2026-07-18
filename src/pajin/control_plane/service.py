@@ -3,18 +3,28 @@
 from __future__ import annotations
 
 import hmac
+import json
 import secrets
 from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from typing import Any
 from uuid import uuid4
 
+from pydantic import ValidationError
 from sqlalchemy import Select, and_, func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
+from pajin.control_plane.artifacts import (
+    ArtifactNotFound,
+    ArtifactRepositoryError,
+    ManagedArtifactRepository,
+    ManagedArtifactSnapshot,
+)
 from pajin.control_plane.database import (
     ApprovalRecord,
+    ArtifactRecord,
     CheckpointRecord,
     ControlPlaneRepository,
     EventRecord,
@@ -27,9 +37,11 @@ from pajin.control_plane.database import (
     utc_now,
 )
 from pajin.control_plane.models import (
+    AdmitSourceArtifactRequest,
     ApprovalIntent,
     ApprovalState,
     ApprovalView,
+    ArtifactLocator,
     ArtifactRef,
     AuditEventView,
     CancelRunRequest,
@@ -102,6 +114,8 @@ _CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.valu
 _REVOCABLE_APPROVAL_STATES = frozenset({ApprovalState.PENDING.value, ApprovalState.APPROVED.value})
 _INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
 _REPLAY_TICKET_TTL = timedelta(minutes=5)
+_SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
+_SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
     {ReplayTicketState.ISSUED.value, ReplayTicketState.CLAIMED.value}
 )
@@ -127,6 +141,7 @@ class ControlPlaneService:
         signer: CheckpointSigner,
         *,
         replay_executor_profiles: Mapping[str, frozenset[str]] | None = None,
+        artifact_repository: ManagedArtifactRepository | None = None,
     ) -> None:
         self.repository = repository
         self.signer = signer
@@ -134,6 +149,7 @@ class ControlPlaneService:
             subject: frozenset(profiles)
             for subject, profiles in (replay_executor_profiles or {}).items()
         }
+        self._artifact_repository = artifact_repository
 
     def submit_run(self, request: SubmitRunRequest, *, actor: str) -> SubmissionView:
         try:
@@ -201,16 +217,263 @@ class ControlPlaneService:
                     raise
                 return self._existing_submission(session, existing)
 
+    def admit_source_artifact(
+        self,
+        request: AdmitSourceArtifactRequest,
+        *,
+        actor: str,
+    ) -> ArtifactRef:
+        """Import one completed public Campaign Job's sealed Run into managed storage."""
+
+        artifact_repository = self._require_artifact_repository()
+        if not isinstance(actor, str) or not 1 <= len(actor) <= 200:
+            raise StateConflict("Artifact admission actor is invalid")
+        admission_digest = self._artifact_admission_digest(request, actor=actor)
+        existing_ref: ArtifactRef | None = None
+        existing_storage_key: str | None = None
+        producer_attempt: int | None = None
+        expected_sealed_run_id: str | None = None
+
+        # This is an optimistic eligibility read only. Copying and integrity verification can
+        # be slow, so no database row lock may span the managed repository import.
+        with self.repository.transaction() as session:
+            existing = self._artifact_by_idempotency_key(
+                session,
+                request.idempotency_key,
+            )
+            if existing is not None:
+                existing_ref = self._existing_artifact_admission(
+                    existing,
+                    request=request,
+                    actor=actor,
+                    admission_digest=admission_digest,
+                )
+                existing_storage_key = existing.storage_key
+            else:
+                producer_job = self._job(session, request.producer_job_id)
+                producer_run = self._run(session, request.producer_run_id)
+                expected_sealed_run_id = self._require_artifact_producer(
+                    producer_run,
+                    producer_job,
+                    request=request,
+                )
+                producer_attempt = producer_job.attempts
+
+        if existing_ref is not None:
+            assert existing_storage_key is not None
+            snapshot = self._resolve_managed_artifact(
+                artifact_repository,
+                existing_ref,
+                expected_storage_key=existing_storage_key,
+            )
+            with self.repository.transaction() as session:
+                current = self._artifact_by_idempotency_key(
+                    session,
+                    request.idempotency_key,
+                    lock=True,
+                )
+                if current is None:
+                    raise StateConflict("admitted Artifact metadata disappeared")
+                current_ref = self._existing_artifact_admission(
+                    current,
+                    request=request,
+                    actor=actor,
+                    admission_digest=admission_digest,
+                )
+                self._require_artifact_snapshot(
+                    current,
+                    snapshot.ref,
+                    storage_key=snapshot.storage_key,
+                )
+                return current_ref
+
+        assert producer_attempt is not None
+        assert expected_sealed_run_id is not None
+        try:
+            snapshot = artifact_repository.import_run(
+                staging_id=request.staging_id,
+                producer_run_id=request.producer_run_id,
+                media_type=_SOURCE_ARTIFACT_MEDIA_TYPE,
+                schema_kind=_SOURCE_ARTIFACT_SCHEMA_KIND,
+                created_by=actor,
+            )
+        except ArtifactNotFound as exc:
+            raise ResourceNotFound("staged source Artifact not found") from exc
+        except ArtifactRepositoryError as exc:
+            raise StateConflict("staged source Artifact failed managed admission") from exc
+
+        source_ref = snapshot.ref
+        if (
+            source_ref.producer_run_id != request.producer_run_id
+            or source_ref.run_id != expected_sealed_run_id
+            or source_ref.media_type != _SOURCE_ARTIFACT_MEDIA_TYPE
+            or source_ref.schema_kind != _SOURCE_ARTIFACT_SCHEMA_KIND
+            or source_ref.created_by != actor
+        ):
+            raise StateConflict("managed source Artifact metadata is not admission-bound")
+
+        try:
+            with self.repository.transaction() as session:
+                existing = self._artifact_by_idempotency_key(
+                    session,
+                    request.idempotency_key,
+                    lock=True,
+                )
+                if existing is not None:
+                    existing_ref = self._existing_artifact_admission(
+                        existing,
+                        request=request,
+                        actor=actor,
+                        admission_digest=admission_digest,
+                    )
+                    self._require_artifact_snapshot(
+                        existing,
+                        source_ref,
+                        storage_key=snapshot.storage_key,
+                    )
+                    return existing_ref
+
+                # Match the global Job -> Run lock order used by claim/completion. State and
+                # attempts must still equal the eligibility snapshot taken before import.
+                producer_job = self._job(session, request.producer_job_id, lock=True)
+                producer_run = self._run(session, request.producer_run_id, lock=True)
+                final_sealed_run_id = self._require_artifact_producer(
+                    producer_run,
+                    producer_job,
+                    request=request,
+                )
+                if producer_job.attempts != producer_attempt:
+                    raise StateConflict("producer Job attempt changed during Artifact admission")
+                if source_ref.run_id != final_sealed_run_id:
+                    raise StateConflict("sealed Artifact Run does not match producer Job result")
+
+                now = utc_now()
+                artifact = ArtifactRecord(
+                    artifact_id=source_ref.artifact_id,
+                    repository_version=source_ref.repository_version,
+                    producer_run_id=request.producer_run_id,
+                    producer_job_id=request.producer_job_id,
+                    producer_attempt=producer_attempt,
+                    sealed_run_id=source_ref.run_id,
+                    media_type=source_ref.media_type,
+                    schema_kind=source_ref.schema_kind,
+                    byte_length=source_ref.byte_length,
+                    content_digest=source_ref.content_digest,
+                    root_digest=source_ref.integrity_root_digest,
+                    created_by=actor,
+                    storage_key=snapshot.storage_key,
+                    idempotency_key=request.idempotency_key,
+                    admission_digest=admission_digest,
+                    created_at=now,
+                )
+                session.add(artifact)
+                session.flush()
+                self._event(
+                    session,
+                    producer_run,
+                    "artifact.source-admitted",
+                    actor,
+                    {
+                        "artifactId": source_ref.artifact_id,
+                        "repositoryVersion": source_ref.repository_version,
+                        "producerJobId": request.producer_job_id,
+                        "producerAttempt": producer_attempt,
+                        "sealedRunId": source_ref.run_id,
+                        "contentDigest": source_ref.content_digest,
+                        "integrityRootDigest": source_ref.integrity_root_digest,
+                    },
+                )
+                return source_ref
+        except IntegrityError as exc:
+            with self.repository.transaction() as session:
+                existing = self._artifact_by_idempotency_key(
+                    session,
+                    request.idempotency_key,
+                )
+                if existing is None:
+                    raise StateConflict(
+                        "managed Artifact identity conflicts with existing authority"
+                    ) from exc
+                existing_ref = self._existing_artifact_admission(
+                    existing,
+                    request=request,
+                    actor=actor,
+                    admission_digest=admission_digest,
+                )
+                self._require_artifact_snapshot(
+                    existing,
+                    source_ref,
+                    storage_key=snapshot.storage_key,
+                )
+                return existing_ref
+
     def create_replay_batch(
         self,
         request: CreateReplayBatchRequest,
         *,
         actor: str,
     ) -> ReplayBatchView:
-        """Create server-owned Replay authority without exposing a public Job kind."""
+        """Resolve a managed source for trusted, internal-only compiled item input.
+
+        ``request.items`` remains caller-authored scaffolding for this vertical slice. It is
+        deliberately not exposed as production admission until server-side derivation lands.
+        """
+
+        artifact_repository = self._require_artifact_repository()
+        with self.repository.transaction() as session:
+            existing = session.scalar(
+                select(ReplayBatchRecord).where(
+                    ReplayBatchRecord.idempotency_key == request.idempotency_key
+                )
+            )
+            if existing is not None:
+                source = self._artifact_ref(existing)
+                self._existing_replay_batch(
+                    session,
+                    existing,
+                    request=request,
+                    source=source,
+                    actor=actor,
+                )
+                stored_locator = ArtifactLocator(
+                    artifact_id=source.artifact_id,
+                    repository_version=source.repository_version,
+                )
+                artifact = self._artifact(session, stored_locator)
+            else:
+                artifact = self._artifact(session, request.source)
+                source = self._artifact_record_ref(artifact)
+            storage_key = artifact.storage_key
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            source,
+            expected_storage_key=storage_key,
+        )
+        return self._create_replay_batch_from_source(
+            request,
+            source=source,
+            verified_storage_key=snapshot.storage_key,
+            actor=actor,
+        )
+
+    def _create_replay_batch_from_source(
+        self,
+        request: CreateReplayBatchRequest,
+        *,
+        source: ArtifactRef,
+        verified_storage_key: str,
+        actor: str,
+    ) -> ReplayBatchView:
+        """Atomically bind one already reverified managed source to Replay authority."""
 
         try:
             with self.repository.transaction() as session:
+                artifact = self._artifact(session, request.source, lock=True)
+                self._require_artifact_snapshot(
+                    artifact,
+                    source,
+                    storage_key=verified_storage_key,
+                )
                 existing = session.scalar(
                     select(ReplayBatchRecord).where(
                         ReplayBatchRecord.idempotency_key == request.idempotency_key
@@ -221,10 +484,11 @@ class ControlPlaneService:
                         session,
                         existing,
                         request=request,
+                        source=source,
                         actor=actor,
                     )
 
-                source_run = self._run(session, request.source.run_id, lock=True)
+                source_run = self._run(session, source.producer_run_id, lock=True)
                 self._require_run_state(source_run, RunState.COMPLETED)
                 if source_run.campaign_name != request.campaign_name:
                     raise StateConflict(
@@ -240,18 +504,19 @@ class ControlPlaneService:
                 now = utc_now()
                 batch = ReplayBatchRecord(
                     batch_id=f"replay-batch_{uuid4().hex}",
-                    source_run_id=request.source.run_id,
+                    source_run_id=source.producer_run_id,
                     idempotency_key=request.idempotency_key,
                     campaign_name=request.campaign_name,
                     created_by=actor,
-                    source_artifact_id=request.source.artifact_id,
-                    source_repository_version=request.source.repository_version,
-                    source_content_digest=request.source.content_digest,
-                    source_root_digest=request.source.integrity_root_digest,
-                    source_media_type=request.source.media_type,
-                    source_schema_kind=request.source.schema_kind,
-                    source_byte_length=request.source.byte_length,
-                    source_created_by=request.source.created_by,
+                    source_artifact_id=source.artifact_id,
+                    source_repository_version=source.repository_version,
+                    source_content_digest=source.content_digest,
+                    source_root_digest=source.integrity_root_digest,
+                    source_artifact_run_id=source.run_id,
+                    source_media_type=source.media_type,
+                    source_schema_kind=source.schema_kind,
+                    source_byte_length=source.byte_length,
+                    source_created_by=source.created_by,
                     mode=request.mode.value,
                     purpose=request.purpose.value,
                     policy_version=request.policy_version,
@@ -270,9 +535,9 @@ class ControlPlaneService:
                     "replay.batch.created",
                     actor,
                     {
-                        "sourceArtifactId": request.source.artifact_id,
-                        "sourceRepositoryVersion": request.source.repository_version,
-                        "sourceRootDigest": request.source.integrity_root_digest,
+                        "sourceArtifactId": source.artifact_id,
+                        "sourceRepositoryVersion": source.repository_version,
+                        "sourceRootDigest": source.integrity_root_digest,
                         "itemCount": len(request.items),
                     },
                     run_id=source_run.run_id,
@@ -290,7 +555,7 @@ class ControlPlaneService:
                         item_id=item_id,
                         ticket_id=ticket_id,
                         replay_run_id=replay_run_id,
-                        source=request.source,
+                        source=source,
                         mode=request.mode,
                         purpose=request.purpose,
                         policy_version=request.policy_version,
@@ -427,6 +692,7 @@ class ControlPlaneService:
                     session,
                     existing,
                     request=request,
+                    source=source,
                     actor=actor,
                 )
 
@@ -2108,6 +2374,127 @@ class ControlPlaneService:
             and _aware(approval.expires_at) == intent.expires_at
         )
 
+    def _require_artifact_repository(self) -> ManagedArtifactRepository:
+        if self._artifact_repository is None:
+            raise StateConflict("managed Artifact repository is not configured")
+        return self._artifact_repository
+
+    @staticmethod
+    def _artifact_admission_digest(
+        request: AdmitSourceArtifactRequest,
+        *,
+        actor: str,
+    ) -> str:
+        material = json.dumps(
+            {
+                "actor": actor,
+                "domain": "pajin.control-plane.artifact-admission/v1",
+                "producerJobId": request.producer_job_id,
+                "producerRunId": request.producer_run_id,
+                "mediaType": _SOURCE_ARTIFACT_MEDIA_TYPE,
+                "schemaKind": _SOURCE_ARTIFACT_SCHEMA_KIND,
+                "stagingId": request.staging_id,
+            },
+            ensure_ascii=True,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return sha256(material).hexdigest()
+
+    @staticmethod
+    def _require_artifact_producer(
+        run: RunRecord,
+        job: JobRecord,
+        *,
+        request: AdmitSourceArtifactRequest,
+    ) -> str:
+        if run.run_id != request.producer_run_id:
+            raise StateConflict("Artifact producer Run binding is inconsistent")
+        if run.state != RunState.COMPLETED.value:
+            raise StateConflict("source Artifact producer Run must be completed")
+        if job.job_id != request.producer_job_id or job.run_id != run.run_id:
+            raise StateConflict("source Artifact producer Job does not belong to its Run")
+        if job.kind != JobKind.CAMPAIGN.value:
+            raise StateConflict("source Artifact requires a public Campaign Job")
+        if job.state != JobState.SUCCEEDED.value:
+            raise StateConflict("source Artifact producer Job must have succeeded")
+        if not 1 <= job.attempts <= 2_147_483_647:
+            raise StateConflict("source Artifact producer Job attempt is outside authority bounds")
+        engine_run_id = (
+            job.result.get("engineRunId") if isinstance(job.result, dict) else None
+        )
+        if not isinstance(engine_run_id, str) or not engine_run_id:
+            raise StateConflict("source Artifact producer Job has no sealed engine Run ID")
+        return engine_run_id
+
+    @staticmethod
+    def _artifact_record_ref(record: ArtifactRecord) -> ArtifactRef:
+        try:
+            return ArtifactRef(
+                artifact_id=record.artifact_id,
+                repository_version=record.repository_version,
+                producer_run_id=record.producer_run_id,
+                media_type=record.media_type,
+                schema_kind=record.schema_kind,
+                byte_length=record.byte_length,
+                content_digest=record.content_digest,
+                run_id=record.sealed_run_id,
+                integrity_root_digest=record.root_digest,
+                created_by=record.created_by,
+            )
+        except ValidationError as exc:
+            raise StateConflict("managed Artifact metadata is invalid") from exc
+
+    @staticmethod
+    def _require_artifact_snapshot(
+        record: ArtifactRecord,
+        ref: ArtifactRef,
+        *,
+        storage_key: str,
+    ) -> None:
+        if (
+            ControlPlaneService._artifact_record_ref(record) != ref
+            or record.storage_key != storage_key
+        ):
+            raise StateConflict("managed Artifact metadata changed during verification")
+
+    @staticmethod
+    def _resolve_managed_artifact(
+        repository: ManagedArtifactRepository,
+        ref: ArtifactRef,
+        *,
+        expected_storage_key: str,
+    ) -> ManagedArtifactSnapshot:
+        try:
+            snapshot = repository.resolve(ref)
+        except ArtifactNotFound as exc:
+            raise ResourceNotFound("managed source Artifact not found") from exc
+        except ArtifactRepositoryError as exc:
+            raise StateConflict("managed source Artifact failed reverification") from exc
+        if snapshot.ref != ref or snapshot.storage_key != expected_storage_key:
+            raise StateConflict("managed source Artifact resolution was substituted")
+        return snapshot
+
+    @staticmethod
+    def _existing_artifact_admission(
+        record: ArtifactRecord,
+        *,
+        request: AdmitSourceArtifactRequest,
+        actor: str,
+        admission_digest: str,
+    ) -> ArtifactRef:
+        if (
+            record.admission_digest != admission_digest
+            or record.idempotency_key != request.idempotency_key
+            or record.producer_run_id != request.producer_run_id
+            or record.producer_job_id != request.producer_job_id
+            or record.created_by != actor
+        ):
+            raise StateConflict(
+                "Artifact admission idempotency key was already used for different input"
+            )
+        return ControlPlaneService._artifact_record_ref(record)
+
     def _existing_submission(self, session: Session, run: RunRecord) -> SubmissionView:
         job = session.scalar(
             select(JobRecord).where(JobRecord.idempotency_key == f"submission:{run.submission_key}")
@@ -2122,6 +2509,7 @@ class ControlPlaneService:
         batch: ReplayBatchRecord,
         *,
         request: CreateReplayBatchRequest,
+        source: ArtifactRef,
         actor: str,
     ) -> ReplayBatchView:
         items = list(
@@ -2134,7 +2522,9 @@ class ControlPlaneService:
         batch_matches = (
             batch.campaign_name == request.campaign_name
             and batch.created_by == actor
-            and self._artifact_ref(batch) == request.source
+            and request.source.artifact_id == source.artifact_id
+            and request.source.repository_version == source.repository_version
+            and self._artifact_ref(batch) == source
             and batch.mode == request.mode.value
             and batch.purpose == request.purpose.value
             and batch.policy_version == request.policy_version
@@ -2180,6 +2570,38 @@ class ControlPlaneService:
         if run is None:
             raise ResourceNotFound("run not found")
         return run
+
+    @staticmethod
+    def _artifact(
+        session: Session,
+        locator: ArtifactLocator,
+        *,
+        lock: bool = False,
+    ) -> ArtifactRecord:
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.artifact_id == locator.artifact_id,
+            ArtifactRecord.repository_version == locator.repository_version,
+        )
+        if lock:
+            statement = statement.with_for_update()
+        artifact = session.scalar(statement)
+        if artifact is None:
+            raise ResourceNotFound("managed source Artifact not found")
+        return artifact
+
+    @staticmethod
+    def _artifact_by_idempotency_key(
+        session: Session,
+        idempotency_key: str,
+        *,
+        lock: bool = False,
+    ) -> ArtifactRecord | None:
+        statement = select(ArtifactRecord).where(
+            ArtifactRecord.idempotency_key == idempotency_key
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return session.scalar(statement)
 
     @staticmethod
     def _job(session: Session, job_id: str, *, lock: bool = False) -> JobRecord:
@@ -2368,17 +2790,21 @@ class ControlPlaneService:
 
     @staticmethod
     def _artifact_ref(record: ReplayBatchRecord) -> ArtifactRef:
-        return ArtifactRef(
-            artifact_id=record.source_artifact_id,
-            repository_version=record.source_repository_version,
-            media_type=record.source_media_type,
-            schema_kind=record.source_schema_kind,
-            byte_length=record.source_byte_length,
-            content_digest=record.source_content_digest,
-            run_id=record.source_run_id,
-            integrity_root_digest=record.source_root_digest,
-            created_by=record.source_created_by,
-        )
+        try:
+            return ArtifactRef(
+                artifact_id=record.source_artifact_id,
+                repository_version=record.source_repository_version,
+                producer_run_id=record.source_run_id,
+                media_type=record.source_media_type,
+                schema_kind=record.source_schema_kind,
+                byte_length=record.source_byte_length,
+                content_digest=record.source_content_digest,
+                run_id=record.source_artifact_run_id,
+                integrity_root_digest=record.source_root_digest,
+                created_by=record.source_created_by,
+            )
+        except ValidationError as exc:
+            raise StateConflict("Replay batch Artifact metadata is invalid") from exc
 
     @staticmethod
     def _replay_batch_view(record: ReplayBatchRecord) -> ReplayBatchView:

@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from functools import partial
+from pathlib import Path
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
@@ -13,6 +14,7 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import text
 
+from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.models import (
     ApprovalView,
@@ -74,6 +76,8 @@ class ControlPlaneSettings:
     active_checkpoint_key_id: str = "v1"
     initialize_schema: bool = True
     database_echo: bool = False
+    artifact_staging_root: Path | None = None
+    artifact_repository_root: Path | None = None
 
     @classmethod
     def from_env(cls) -> "ControlPlaneSettings":
@@ -81,6 +85,8 @@ class ControlPlaneSettings:
         approver_token = os.environ.get("PAJIN_CP_APPROVER_TOKEN")
         worker_token = os.environ.get("PAJIN_CP_WORKER_TOKEN")
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
+        artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
+        artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
         missing = [
             name
             for name, value in (
@@ -99,6 +105,11 @@ class ControlPlaneSettings:
         assert checkpoint_key is not None
         if len({operator_token, approver_token, worker_token}) != 3:
             raise RuntimeError("Control Plane role credentials must be distinct")
+        if (artifact_staging_root is None) != (artifact_repository_root is None):
+            raise RuntimeError(
+                "PAJIN_CP_ARTIFACT_STAGING_ROOT and "
+                "PAJIN_CP_ARTIFACT_REPOSITORY_ROOT must be configured together"
+            )
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         credentials = {
             operator_token: Principal(
@@ -125,11 +136,25 @@ class ControlPlaneSettings:
             in {"1", "true", "yes"},
             database_echo=os.environ.get("PAJIN_CP_DATABASE_ECHO", "false").lower()
             in {"1", "true", "yes"},
+            artifact_staging_root=(
+                Path(artifact_staging_root) if artifact_staging_root is not None else None
+            ),
+            artifact_repository_root=(
+                Path(artifact_repository_root)
+                if artifact_repository_root is not None
+                else None
+            ),
         )
 
 
 def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
     resolved = settings or ControlPlaneSettings.from_env()
+    if (resolved.artifact_staging_root is None) != (
+        resolved.artifact_repository_root is None
+    ):
+        raise RuntimeError(
+            "artifact_staging_root and artifact_repository_root must be configured together"
+        )
     repository = ControlPlaneRepository(
         resolved.database_url,
         echo=resolved.database_echo,
@@ -138,7 +163,20 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         active_key_id=resolved.active_checkpoint_key_id,
         keys=resolved.checkpoint_keys,
     )
-    service = ControlPlaneService(repository, signer)
+    artifact_repository = None
+    if (
+        resolved.artifact_staging_root is not None
+        and resolved.artifact_repository_root is not None
+    ):
+        artifact_repository = ManagedArtifactRepository(
+            staging_root=resolved.artifact_staging_root,
+            repository_root=resolved.artifact_repository_root,
+        )
+    service = ControlPlaneService(
+        repository,
+        signer,
+        artifact_repository=artifact_repository,
+    )
     authenticator = TokenAuthenticator(resolved.credentials)
     bearer = HTTPBearer(auto_error=False)
 
@@ -151,6 +189,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
             # they must never disable the Control Plane's schema compatibility fence.
             repository.schema_version()
         app.state.repository = repository
+        app.state.artifact_repository = artifact_repository
         app.state.control_plane = service
         try:
             yield

@@ -18,7 +18,12 @@
 > 검증하는 경계를 추가했다. M6-07A는 일반 Local Campaign에도 명시적
 > `pajin run ... --kisa-replay --repetitions 2` opt-in을 추가해 exact M03·M06·A04 Candidate를
 > 같은 SQLite replay와 공통 Gate에 연결했다. flag가 없는 기본 Local 실행은 자동 replay를
-> 수행하지 않는다.
+> 수행하지 않는다. M6-07B-2A는 Control Plane sealed-source 기반만 추가한다. 소유자 통제 managed
+> filesystem Artifact repository, immutable `cp_artifacts` metadata, schema v3와 producer Control
+> Plane/sealed Run identity를 따로 보존하는 server-owned admission을 구현했다. consumer는 exact
+> opaque `(artifact_id, repository_version)` locator만 사용하고 resolution은 content와 seal을 다시
+> 검증한다. public Replay/admission API는 열지 않으며 KISA item·contract·compilation은 아직
+> 파생하지 않는다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -73,7 +78,7 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration과 재시작 후 receipt 검증 구현; Control Plane·조직 영향 분석 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration과 재시작 후 receipt 검증 구현; Control Plane managed sealed-source 기반은 구현했으며 KISA 파생·실행·Gate와 조직 영향 분석은 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -284,9 +289,16 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   유지된다. SQLite DB와 OS account/ACL이 로컬 trust anchor이므로, 이 원장은 PostgreSQL
   Control Plane replay authority나 외부 감사자가 독립 검증할 portable 서명 proof가 아니다.
 - M6-07A의 명시적 Local KISA coordinator는 exact M03·M06·A04 allowlist와 한 프로세스·한
-  writer에 한정된다. M6-07B Control Plane replay는 아직 구현되지 않았으며, ADR 0029에서 sealed
-  Artifact handoff, lease fencing, PostgreSQL batch/item/ticket/event, source-root CAS와 durable
-  budget/request-rate 상태를 먼저 결정해야 한다.
+  writer에 한정된다. M6-07B 전체는 미완료지만 첫 authority-state 조각과 M6-07B-2A 기반은
+  구현됐다. 후자는 소유자 통제 staging과 managed filesystem repository, immutable
+  `cp_artifacts`, server-owned 완료·봉인 source admission을 사용한다. producer Control Plane과
+  sealed Run identity는 별도로 유지하고, consumer가 exact opaque locator만 제공하면 서버가
+  content와 seal을 다시 검증한다. schema v3는 forward v1→v2→v3 migration을 지원하되 legacy
+  Replay data가 있는 v2→v3에서는 가짜 Artifact binding을 만들지 않고 거부한다. live PostgreSQL
+  schema-v3 acceptance는 깨끗한 임시 database에서 migration/locking, `cp_artifacts` append-only
+  강제와 exact composite Artifact foreign key를 검증해 완료했다. 신뢰된 KISA
+  item/contract/compilation 파생, ticket 발행 전 durable budget/request-rate 예약, 새 identity retry와
+  executor/finalization/Gate는 남아 있으며 public Replay/admission API를 제공한다고 주장하지 않는다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는
@@ -300,4 +312,5 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
 Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.ko.md),
 [ADR 0026](adr/0026-trusted-kisa-candidate-admission.ko.md),
 [ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.ko.md),
-[ADR 0028](adr/0028-durable-local-replay-ticket-ledger.ko.md)을 따른다.
+[ADR 0028](adr/0028-durable-local-replay-ticket-ledger.ko.md),
+[ADR 0029](adr/0029-control-plane-replay-orchestration.ko.md)을 따른다.

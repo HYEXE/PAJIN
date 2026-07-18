@@ -15,10 +15,18 @@
 조각에는 이제 버전이 지정된 Replay 집합체 스키마, 엄격한 시작 검증을 포함한 저장소 관리형
 v1→v2 마이그레이션, 내부 전용 엄격한 Job payload, 원자적 batch 생성, burn-on-claim,
 heartbeat, lease 만료 및 취소 상태 전이가 포함된다. 이것이 M6-07B 전체 완료를 뜻하지는 않는다.
-Artifact 저장소와 서버 소유 소스 입장, 새 identity를 사용하는 재시도 발행, 영속형 budget/rate
-permit, Replay executor 연결, 타입이 지정된 서버 측 artifact 확정과 결과 digest 검증, Gate,
-실제 PostgreSQL 마이그레이션·잠금 인수 검증은 남아 있다. 이 경계가 모두 완료되기 전에는
-Control Plane이 완전한 영속형 Replay 오케스트레이션을 제공한다고 주장할 수 없다.
+Artifact 저장소와 서버 소유 소스 입장은 제한된 M6-07B-2A 기반으로 구현됐다. 이 기반은 소유자
+통제 staging과 managed filesystem repository, immutable `cp_artifacts` metadata, schema v3,
+exact opaque `(artifact_id, repository_version)` resolution 및 content/seal 재검증을 포함한다.
+입장은 producer Control Plane Run ID와 sealed Run ID를 따로 보존한다. forward migration은
+v1→v2→v3이며, legacy Replay data가 있는 v2→v3는 가짜 Artifact binding을 만들지 않고 fail
+closed한다. 이 내부 서비스 경로는 public Replay/admission API를 열지 않는다. exact KISA
+item/contract/compilation 파생, 새 identity 재시도 발행, ticket 발행 전 영속형 budget/rate permit,
+Replay executor 연결, 타입이 지정된 서버 측 artifact 확정과 결과 digest 검증 및 Gate는 남아
+있다. 실제 PostgreSQL schema-v3 인수 검증은 깨끗한 임시 database에서 migration/locking,
+`cp_artifacts` append-only 강제와 exact composite Artifact foreign key를 검증해 완료했다. 나머지
+실행 경계가 완료되기 전에는 Control Plane이 완전한 영속형 Replay 오케스트레이션을 제공한다고
+주장할 수 없다.
 
 ## 맥락
 
@@ -57,9 +65,14 @@ PostgreSQL, Worker daemon과 artifact storage 사이에 process 및 실패 경�
 kind는 `campaign`과 `tool-loop`로 유지하고, 별도로 typed된 internal Replay payload를
 batch/item/ticket/event authority state와 burn-on-claim fencing에 결박해 영속화한다. Repository
 startup은 이제 versioned v1→v2 migration을 수행하거나 호환되지 않는 schema state를 거부한다.
-일반 Job completion/failure 경로는 Replay Job에 계속 사용할 수 없다. 상태 참고에 열거한 Artifact,
-retry 발행, permit, executor, typed finalization, Gate와 실제 PostgreSQL acceptance 작업은 의도적으로
-완료된 조각 밖에 남아 있다.
+M6-07B-2A는 이어서 private managed repository와 immutable Artifact metadata를 추가했다. trusted
+admission service는 완료된 producer Job의 strict staging identity만 받아 database lock 밖에서
+sealed source를 import·검증한 뒤 producer state를 다시 확인하고 canonical metadata와 internal
+storage key를 기록한다. Replay batch consumer는 exact opaque Artifact locator만 사용하며 service는
+batch 생성 전에 이를 resolve하고 다시 검증한다. 일반 Job completion/failure 경로는 Replay Job에
+계속 사용할 수 없다. KISA 파생, retry 발행, durable permit, executor, typed finalization, Gate와
+같은 실행 경계는 의도적으로 완료된 기반 밖에 남아 있다. 실제 PostgreSQL v3 migration/locking,
+`cp_artifacts` append-only와 exact composite-FK acceptance는 검증된 기반에 포함된다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -86,14 +99,15 @@ M6-07B는 아래 경계를 채택한다.
 ### 서버 소유 소스 입장과 불변 `ArtifactRef`
 
 Control Plane은 raw path 대신 versioned `ArtifactRef`만 교환한다. 최소 계약은 opaque
-`artifact_id`, repository version, media/schema kind, byte length, content digest, Run ID,
-integrity root digest와 creation identity를 포함한다. storage key는 repository 내부 값이며
-Operator나 Worker가 임의 path, URL, symlink 또는 object key를 선택할 수 없다.
+`artifact_id`, repository version, media/schema kind, byte length, content digest, producer Control
+Plane Run ID, sealed Run ID, integrity root digest와 creation identity를 포함한다. storage key는
+repository 내부 값이며 Operator나 Worker가 임의 path, URL, symlink 또는 object key를 선택할 수 없다.
 
-첫 단일 호스트 구현은 owner-controlled filesystem repository를 사용할 수 있다. API가 staging
-directory에서 artifact를 가져와 canonical path와 size bound를 검사하고, content digest를
-계산한 뒤 immutable object로 등록한다. 등록 후에는 같은 `ArtifactRef`의 bytes를 바꿀 수 없고,
-새 bytes는 새 version과 새 reference를 만든다. source와 replay output 모두 같은 import 규칙을
+첫 단일 호스트 구현은 owner-controlled filesystem repository를 사용할 수 있다. trusted Control
+Plane service가 staging directory에서 artifact를 가져와 canonical path와 size bound를 검사하고,
+content digest를 계산한 뒤 immutable object로 등록한다. 등록 후에는 같은 `ArtifactRef`의 bytes를
+바꿀 수 없고, 새 bytes는 새 immutable identity와 reference를 만든다. 현재 filesystem repository는
+각 identity에 repository version 1을 발급한다. source와 replay output 모두 같은 import 규칙을
 통과한다. Worker의 절대 `runPath`는 Control Plane 계약에 들어가지 않는다.
 
 Replay batch를 만들 때 서버는 다음 순서로 source를 admission한다.

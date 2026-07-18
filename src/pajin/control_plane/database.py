@@ -13,12 +13,15 @@ from typing import Any
 from sqlalchemy import (
     JSON,
     CheckConstraint,
+    Column,
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
+    MetaData,
     String,
+    Table,
     Text,
     UniqueConstraint,
     create_engine,
@@ -32,7 +35,8 @@ from sqlalchemy.engine import Connection
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 LEGACY_SCHEMA_VERSION = 1
-CURRENT_SCHEMA_VERSION = 2
+REPLAY_AUTHORITY_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 3
 
 LEGACY_CONTROL_PLANE_TABLES = frozenset(
     {"cp_runs", "cp_jobs", "cp_checkpoints", "cp_approvals", "cp_events"}
@@ -45,9 +49,32 @@ REPLAY_AUTHORITY_TABLES = frozenset(
         "cp_replay_events",
     }
 )
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V2_CONTROL_PLANE_TABLES = frozenset(
     {*LEGACY_CONTROL_PLANE_TABLES, "cp_schema_version", *REPLAY_AUTHORITY_TABLES}
 )
+ARTIFACT_AUTHORITY_TABLES = frozenset({"cp_artifacts"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset({*V2_CONTROL_PLANE_TABLES, *ARTIFACT_AUTHORITY_TABLES})
+
+
+def _lower_hex_check(value: str, length: int) -> str:
+    """Return one portable CHECK expression for fixed-length lowercase hex."""
+
+    stripped = value
+    for character in "0123456789abcdef":
+        stripped = f"replace({stripped}, '{character}', '')"
+    return f"length({value}) = {length} AND length({stripped}) = 0"
+
+
+_ASCII_ALPHANUMERIC = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
+
+
+def _allowed_characters_check(value: str, allowed: str) -> str:
+    """Return a portable CHECK that rejects every character outside ``allowed``."""
+
+    stripped = value
+    for character in allowed:
+        stripped = f"replace({stripped}, '{character}', '')"
+    return f"length({stripped}) = 0"
 
 
 class SchemaInitializationError(RuntimeError):
@@ -177,13 +204,145 @@ class SchemaVersionRecord(Base):
     """Applied forward-only Control Plane schema migration."""
 
     __tablename__ = "cp_schema_version"
-    __table_args__ = (
-        CheckConstraint("version > 0", name="ck_cp_schema_version_positive"),
-    )
+    __table_args__ = (CheckConstraint("version > 0", name="ck_cp_schema_version_positive"),)
 
     version: Mapped[int] = mapped_column(Integer, primary_key=True)
     description: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     applied_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ArtifactRecord(Base):
+    """Immutable metadata for one repository-owned, verified Artifact version."""
+
+    __tablename__ = "cp_artifacts"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["producer_job_id", "producer_run_id"],
+            ["cp_jobs.job_id", "cp_jobs.run_id"],
+            name="fk_cp_artifacts_producer_job_run",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(artifact_id) = 41 AND "
+            "substr(artifact_id, 1, 9) = 'artifact_' AND "
+            + _lower_hex_check("substr(artifact_id, 10, 32)", 32),
+            name="ck_cp_artifacts_artifact_id",
+        ),
+        CheckConstraint(
+            "repository_version > 0 AND repository_version <= 2147483647",
+            name="ck_cp_artifacts_repository_version",
+        ),
+        CheckConstraint(
+            "length(producer_run_id) = 36 AND "
+            "substr(producer_run_id, 1, 4) = 'run_' AND "
+            + _lower_hex_check("substr(producer_run_id, 5, 32)", 32),
+            name="ck_cp_artifacts_producer_run_id",
+        ),
+        CheckConstraint(
+            "length(producer_job_id) = 36 AND "
+            "substr(producer_job_id, 1, 4) = 'job_' AND "
+            + _lower_hex_check("substr(producer_job_id, 5, 32)", 32),
+            name="ck_cp_artifacts_producer_job_id",
+        ),
+        CheckConstraint(
+            "producer_attempt > 0 AND producer_attempt <= 2147483647",
+            name="ck_cp_artifacts_producer_attempt",
+        ),
+        CheckConstraint(
+            "length(sealed_run_id) > 0 AND length(sealed_run_id) <= 64 AND "
+            + _allowed_characters_check("substr(sealed_run_id, 1, 1)", _ASCII_ALPHANUMERIC)
+            + " AND "
+            + _allowed_characters_check("sealed_run_id", _ASCII_ALPHANUMERIC + "._:-"),
+            name="ck_cp_artifacts_sealed_run_id",
+        ),
+        CheckConstraint(
+            "length(media_type) >= 3 AND length(media_type) <= 200 AND "
+            + _allowed_characters_check("substr(media_type, 1, 1)", _ASCII_ALPHANUMERIC)
+            + " AND "
+            + _allowed_characters_check("media_type", _ASCII_ALPHANUMERIC + ".+-/")
+            + " AND length(media_type) = length(replace(media_type, '/', '')) + 1 "
+            "AND substr(media_type, length(media_type), 1) <> '/' "
+            "AND length(replace(media_type, '/.', '')) = length(media_type) "
+            "AND length(replace(media_type, '/+', '')) = length(media_type) "
+            "AND length(replace(media_type, '/-', '')) = length(media_type)",
+            name="ck_cp_artifacts_media_type",
+        ),
+        CheckConstraint(
+            "length(schema_kind) > 0 AND length(schema_kind) <= 200 AND "
+            + _allowed_characters_check("substr(schema_kind, 1, 1)", _ASCII_ALPHANUMERIC)
+            + " AND "
+            + _allowed_characters_check("schema_kind", _ASCII_ALPHANUMERIC + "._:-"),
+            name="ck_cp_artifacts_schema_kind",
+        ),
+        CheckConstraint(
+            "byte_length > 0 AND byte_length <= 2147483647",
+            name="ck_cp_artifacts_byte_length",
+        ),
+        CheckConstraint(
+            _lower_hex_check("content_digest", 64),
+            name="ck_cp_artifacts_content_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_check("root_digest", 64),
+            name="ck_cp_artifacts_root_digest",
+        ),
+        CheckConstraint(
+            "length(created_by) > 0 AND length(created_by) <= 200",
+            name="ck_cp_artifacts_created_by",
+        ),
+        CheckConstraint(
+            "length(storage_key) > 0 AND length(storage_key) <= 500",
+            name="ck_cp_artifacts_storage_key",
+        ),
+        CheckConstraint(
+            "length(idempotency_key) >= 8 AND length(idempotency_key) <= 200",
+            name="ck_cp_artifacts_idempotency_key",
+        ),
+        CheckConstraint(
+            _lower_hex_check("admission_digest", 64),
+            name="ck_cp_artifacts_admission_digest",
+        ),
+        UniqueConstraint("storage_key", name="uq_cp_artifacts_storage_key"),
+        UniqueConstraint("idempotency_key", name="uq_cp_artifacts_idempotency_key"),
+        UniqueConstraint(
+            "artifact_id",
+            "repository_version",
+            "content_digest",
+            "root_digest",
+            "media_type",
+            "schema_kind",
+            "byte_length",
+            "sealed_run_id",
+            "producer_run_id",
+            "created_by",
+            name="uq_cp_artifacts_authority_binding",
+        ),
+        Index(
+            "ix_cp_artifacts_producer_run",
+            "producer_run_id",
+            "producer_attempt",
+        ),
+        Index("ix_cp_artifacts_sealed_run", "sealed_run_id"),
+    )
+
+    artifact_id: Mapped[str] = mapped_column(String(41), primary_key=True)
+    repository_version: Mapped[int] = mapped_column(Integer, primary_key=True)
+    producer_run_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_runs.run_id", ondelete="RESTRICT"), nullable=False
+    )
+    producer_job_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    producer_attempt: Mapped[int] = mapped_column(Integer, nullable=False)
+    sealed_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(200), nullable=False)
+    schema_kind: Mapped[str] = mapped_column(String(200), nullable=False)
+    byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    storage_key: Mapped[str] = mapped_column(String(500), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    admission_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
 class ReplayBatchRecord(Base):
@@ -191,6 +350,34 @@ class ReplayBatchRecord(Base):
 
     __tablename__ = "cp_replay_batches"
     __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "source_artifact_id",
+                "source_repository_version",
+                "source_content_digest",
+                "source_root_digest",
+                "source_media_type",
+                "source_schema_kind",
+                "source_byte_length",
+                "source_artifact_run_id",
+                "source_run_id",
+                "source_created_by",
+            ],
+            [
+                "cp_artifacts.artifact_id",
+                "cp_artifacts.repository_version",
+                "cp_artifacts.content_digest",
+                "cp_artifacts.root_digest",
+                "cp_artifacts.media_type",
+                "cp_artifacts.schema_kind",
+                "cp_artifacts.byte_length",
+                "cp_artifacts.sealed_run_id",
+                "cp_artifacts.producer_run_id",
+                "cp_artifacts.created_by",
+            ],
+            name="fk_cp_replay_batches_source_artifact_authority",
+            ondelete="RESTRICT",
+        ),
         CheckConstraint(
             "state IN ('planned', 'running', 'gating', 'completed', 'failed', 'cancelled')",
             name="ck_cp_replay_batches_state",
@@ -215,9 +402,7 @@ class ReplayBatchRecord(Base):
             "length(source_root_digest) = 64",
             name="ck_cp_replay_batches_root_digest",
         ),
-        CheckConstraint(
-            "source_byte_length > 0", name="ck_cp_replay_batches_source_byte_length"
-        ),
+        CheckConstraint("source_byte_length > 0", name="ck_cp_replay_batches_source_byte_length"),
         CheckConstraint("cas_version > 0", name="ck_cp_replay_batches_cas_version"),
         CheckConstraint(
             "(cancelled_at IS NULL AND cancellation_reason IS NULL) OR "
@@ -228,12 +413,8 @@ class ReplayBatchRecord(Base):
             "state <> 'cancelled' OR cancelled_at IS NOT NULL",
             name="ck_cp_replay_batches_cancelled_timestamp",
         ),
-        UniqueConstraint(
-            "batch_id", "source_run_id", name="uq_cp_replay_batches_batch_source_run"
-        ),
-        UniqueConstraint(
-            "batch_id", "source_root_digest", name="uq_cp_replay_batches_batch_root"
-        ),
+        UniqueConstraint("batch_id", "source_run_id", name="uq_cp_replay_batches_batch_source_run"),
+        UniqueConstraint("batch_id", "source_root_digest", name="uq_cp_replay_batches_batch_root"),
         Index("ix_cp_replay_batches_run_state", "source_run_id", "state"),
     )
 
@@ -244,10 +425,11 @@ class ReplayBatchRecord(Base):
     idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False, unique=True)
     campaign_name: Mapped[str] = mapped_column(String(128), nullable=False)
     created_by: Mapped[str] = mapped_column(String(200), nullable=False)
-    source_artifact_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_artifact_id: Mapped[str] = mapped_column(String(41), nullable=False)
     source_repository_version: Mapped[int] = mapped_column(Integer, nullable=False)
     source_content_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     source_root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_artifact_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
     source_media_type: Mapped[str] = mapped_column(String(200), nullable=False)
     source_schema_kind: Mapped[str] = mapped_column(String(200), nullable=False)
     source_byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -292,12 +474,8 @@ class ReplayItemRecord(Base):
             "length(compilation_digest) = 64",
             name="ck_cp_replay_items_compilation_digest",
         ),
-        CheckConstraint(
-            "length(grant_digest) = 64", name="ck_cp_replay_items_grant_digest"
-        ),
-        CheckConstraint(
-            "required_attempts > 0", name="ck_cp_replay_items_required_attempts"
-        ),
+        CheckConstraint("length(grant_digest) = 64", name="ck_cp_replay_items_grant_digest"),
+        CheckConstraint("required_attempts > 0", name="ck_cp_replay_items_required_attempts"),
         CheckConstraint("max_attempts > 0", name="ck_cp_replay_items_max_attempts"),
         CheckConstraint(
             "required_attempts <= max_attempts",
@@ -317,9 +495,7 @@ class ReplayItemRecord(Base):
         ),
         UniqueConstraint("batch_id", "ordinal", name="uq_cp_replay_items_batch_ordinal"),
         UniqueConstraint("replay_run_id", name="uq_cp_replay_items_replay_run"),
-        UniqueConstraint(
-            "batch_id", "candidate_id", name="uq_cp_replay_items_batch_candidate"
-        ),
+        UniqueConstraint("batch_id", "candidate_id", name="uq_cp_replay_items_batch_candidate"),
         UniqueConstraint(
             "batch_id",
             "compilation_digest",
@@ -390,9 +566,7 @@ class ReplayTicketRecord(Base):
         ),
         CheckConstraint("attempt_number > 0", name="ck_cp_replay_tickets_attempt"),
         CheckConstraint("fencing_value > 0", name="ck_cp_replay_tickets_fence"),
-        CheckConstraint(
-            "length(grant_digest) = 64", name="ck_cp_replay_tickets_grant_digest"
-        ),
+        CheckConstraint("length(grant_digest) = 64", name="ck_cp_replay_tickets_grant_digest"),
         CheckConstraint(
             "length(source_root_digest) = 64",
             name="ck_cp_replay_tickets_source_root_digest",
@@ -428,12 +602,8 @@ class ReplayTicketRecord(Base):
         ),
         UniqueConstraint("job_id", name="uq_cp_replay_tickets_job"),
         UniqueConstraint("replay_run_id", name="uq_cp_replay_tickets_replay_run"),
-        UniqueConstraint(
-            "item_id", "attempt_number", name="uq_cp_replay_tickets_item_attempt"
-        ),
-        UniqueConstraint(
-            "item_id", "fencing_value", name="uq_cp_replay_tickets_item_fence"
-        ),
+        UniqueConstraint("item_id", "attempt_number", name="uq_cp_replay_tickets_item_attempt"),
+        UniqueConstraint("item_id", "fencing_value", name="uq_cp_replay_tickets_item_fence"),
         UniqueConstraint(
             "ticket_id",
             "item_id",
@@ -512,17 +682,103 @@ class ReplayEventRecord(Base):
     )
     item_id: Mapped[str | None] = mapped_column(String(80))
     ticket_id: Mapped[str | None] = mapped_column(String(80))
-    job_id: Mapped[str | None] = mapped_column(
-        ForeignKey("cp_jobs.job_id", ondelete="RESTRICT")
-    )
-    run_id: Mapped[str | None] = mapped_column(
-        ForeignKey("cp_runs.run_id", ondelete="RESTRICT")
-    )
+    job_id: Mapped[str | None] = mapped_column(ForeignKey("cp_jobs.job_id", ondelete="RESTRICT"))
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("cp_runs.run_id", ondelete="RESTRICT"))
     sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     event_type: Mapped[str] = mapped_column(String(150), nullable=False)
     actor: Mapped[str] = mapped_column(String(200), nullable=False)
     payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+def _build_v2_metadata() -> MetaData:
+    """Build the exact schema-v2 metadata used only for safe forward migration."""
+
+    metadata = MetaData()
+    copied = {*LEGACY_CONTROL_PLANE_TABLES, SchemaVersionRecord.__tablename__}
+    for table in Base.metadata.sorted_tables:
+        if table.name in copied:
+            table.to_metadata(metadata)
+
+    Table(
+        "cp_replay_batches",
+        metadata,
+        Column("batch_id", String(80), primary_key=True),
+        Column(
+            "source_run_id",
+            String(64),
+            ForeignKey("cp_runs.run_id", ondelete="RESTRICT"),
+            nullable=False,
+        ),
+        Column("idempotency_key", String(200), nullable=False, unique=True),
+        Column("campaign_name", String(128), nullable=False),
+        Column("created_by", String(200), nullable=False),
+        Column("source_artifact_id", String(200), nullable=False),
+        Column("source_repository_version", Integer, nullable=False),
+        Column("source_content_digest", String(64), nullable=False),
+        Column("source_root_digest", String(64), nullable=False),
+        Column("source_media_type", String(200), nullable=False),
+        Column("source_schema_kind", String(200), nullable=False),
+        Column("source_byte_length", Integer, nullable=False),
+        Column("source_created_by", String(200), nullable=False),
+        Column("mode", String(80), nullable=False),
+        Column("purpose", String(80), nullable=False),
+        Column("policy_version", String(100), nullable=False),
+        Column("state", String(32), nullable=False),
+        Column("cas_version", Integer, nullable=False),
+        Column("cancellation_reason", Text),
+        Column("created_at", DateTime(timezone=True), nullable=False),
+        Column("updated_at", DateTime(timezone=True), nullable=False),
+        Column("cancelled_at", DateTime(timezone=True)),
+        CheckConstraint(
+            "state IN ('planned', 'running', 'gating', 'completed', 'failed', 'cancelled')",
+            name="ck_cp_replay_batches_state",
+        ),
+        CheckConstraint(
+            "mode IN ('ai-redteam', 'bug-bounty', 'ctf')",
+            name="ck_cp_replay_batches_mode",
+        ),
+        CheckConstraint(
+            "purpose IN ('confirmation', 'remediation-retest')",
+            name="ck_cp_replay_batches_purpose",
+        ),
+        CheckConstraint(
+            "source_repository_version > 0",
+            name="ck_cp_replay_batches_repository_version",
+        ),
+        CheckConstraint(
+            "length(source_content_digest) = 64",
+            name="ck_cp_replay_batches_content_digest",
+        ),
+        CheckConstraint(
+            "length(source_root_digest) = 64",
+            name="ck_cp_replay_batches_root_digest",
+        ),
+        CheckConstraint(
+            "source_byte_length > 0",
+            name="ck_cp_replay_batches_source_byte_length",
+        ),
+        CheckConstraint("cas_version > 0", name="ck_cp_replay_batches_cas_version"),
+        CheckConstraint(
+            "(cancelled_at IS NULL AND cancellation_reason IS NULL) OR "
+            "(cancelled_at IS NOT NULL AND cancellation_reason IS NOT NULL)",
+            name="ck_cp_replay_batches_cancellation_fields",
+        ),
+        CheckConstraint(
+            "state <> 'cancelled' OR cancelled_at IS NOT NULL",
+            name="ck_cp_replay_batches_cancelled_timestamp",
+        ),
+        UniqueConstraint("batch_id", "source_run_id", name="uq_cp_replay_batches_batch_source_run"),
+        UniqueConstraint("batch_id", "source_root_digest", name="uq_cp_replay_batches_batch_root"),
+        Index("ix_cp_replay_batches_run_state", "source_run_id", "state"),
+    )
+    for table in Base.metadata.sorted_tables:
+        if table.name in REPLAY_AUTHORITY_TABLES - {"cp_replay_batches"}:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V2_METADATA = _build_v2_metadata()
 
 
 class ControlPlaneRepository:
@@ -558,11 +814,19 @@ class ControlPlaneRepository:
     def initialize(self) -> None:
         """Initialize or migrate a recognized schema, failing closed on any drift."""
 
+        if self.dialect_name == "sqlite":
+            with self.engine.connect() as connection:
+                connection.exec_driver_sql("BEGIN IMMEDIATE")
+                try:
+                    _initialize_schema(connection)
+                except BaseException:
+                    connection.rollback()
+                    raise
+                connection.commit()
+            return
         with self.engine.begin() as connection:
             if self.dialect_name == "postgresql":
-                connection.exec_driver_sql(
-                    "SELECT pg_advisory_xact_lock(742018311564702185)"
-                )
+                connection.exec_driver_sql("SELECT pg_advisory_xact_lock(742018311564702185)")
             _initialize_schema(connection)
 
     def close(self) -> None:
@@ -597,16 +861,15 @@ class ControlPlaneRepository:
 
 _MIGRATIONS = {
     LEGACY_SCHEMA_VERSION: "legacy-control-plane-core",
-    CURRENT_SCHEMA_VERSION: "replay-authority",
+    REPLAY_AUTHORITY_SCHEMA_VERSION: "replay-authority",
+    CURRENT_SCHEMA_VERSION: "artifact-authority",
 }
 
 
 def _initialize_schema(connection: Connection) -> None:
     inspector = inspect(connection)
     cp_tables = {
-        table_name
-        for table_name in inspector.get_table_names()
-        if table_name.startswith("cp_")
+        table_name for table_name in inspector.get_table_names() if table_name.startswith("cp_")
     }
     if not cp_tables:
         _create_empty_schema(connection)
@@ -619,6 +882,11 @@ def _initialize_schema(connection: Connection) -> None:
             allow_missing_v2_job_index=True,
         )
         _migrate_legacy_schema(connection)
+        _validate_current_schema(connection)
+        return
+    if cp_tables == V2_CONTROL_PLANE_TABLES:
+        _validate_v2_schema(connection)
+        _migrate_v2_schema(connection)
         _validate_current_schema(connection)
         return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
@@ -642,6 +910,9 @@ def _create_empty_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, "cp_events")
     Base.metadata.tables[SchemaVersionRecord.__tablename__].create(connection, checkfirst=False)
     _record_migration(connection, LEGACY_SCHEMA_VERSION)
+    _record_migration(connection, REPLAY_AUTHORITY_SCHEMA_VERSION)
+    _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_artifacts")
     _create_tables(connection, REPLAY_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
@@ -651,9 +922,72 @@ def _migrate_legacy_schema(connection: Connection) -> None:
     Base.metadata.tables[SchemaVersionRecord.__tablename__].create(connection, checkfirst=False)
     _record_migration(connection, LEGACY_SCHEMA_VERSION)
     _install_v2_job_binding_index(connection)
+    _record_migration(connection, REPLAY_AUTHORITY_SCHEMA_VERSION)
+    _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_artifacts")
     _create_tables(connection, REPLAY_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _migrate_v2_schema(connection: Connection) -> None:
+    _lock_v2_migration_writes(connection)
+    nonempty_replay_tables = [
+        table_name
+        for table_name in sorted(REPLAY_AUTHORITY_TABLES)
+        if connection.scalar(text(f"SELECT count(*) FROM {table_name}"))
+    ]
+    internal_replay_jobs = int(
+        connection.scalar(text("SELECT count(*) FROM cp_jobs WHERE kind = 'internal-replay'")) or 0
+    )
+    if nonempty_replay_tables or internal_replay_jobs:
+        details: list[str] = []
+        if nonempty_replay_tables:
+            details.append(f"nonempty Replay tables: {', '.join(nonempty_replay_tables)}")
+        if internal_replay_jobs:
+            details.append(f"internal-replay Jobs: {internal_replay_jobs}")
+        raise SchemaInitializationError(
+            "schema v2 contains unverified Replay authority and cannot be trusted or "
+            "backfilled (" + "; ".join(details) + ")"
+        )
+
+    _remove_append_only_trigger_support(connection, "cp_replay_events")
+    for table_name in (
+        "cp_replay_events",
+        "cp_replay_tickets",
+        "cp_replay_items",
+        "cp_replay_batches",
+    ):
+        connection.exec_driver_sql(f"DROP TABLE {table_name}")
+    _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_artifacts")
+    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+_V2_MIGRATION_WRITE_LOCK_TABLES = (
+    "cp_jobs",
+    "cp_replay_batches",
+    "cp_replay_items",
+    "cp_replay_tickets",
+    "cp_replay_events",
+)
+
+
+def _lock_v2_migration_writes(connection: Connection) -> None:
+    """Exclude legacy writers from the v2 authority check through replacement."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        tables = ", ".join(_V2_MIGRATION_WRITE_LOCK_TABLES)
+        connection.exec_driver_sql(f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE")
+        return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
 
 
 def _create_tables(connection: Connection, table_names: frozenset[str]) -> None:
@@ -694,9 +1028,7 @@ def _record_migration(connection: Connection, version: int) -> None:
 def _validate_current_schema(connection: Connection) -> None:
     inspector = inspect(connection)
     cp_tables = {
-        table_name
-        for table_name in inspector.get_table_names()
-        if table_name.startswith("cp_")
+        table_name for table_name in inspector.get_table_names() if table_name.startswith("cp_")
     }
     if cp_tables != CURRENT_CONTROL_PLANE_TABLES:
         unknown = sorted(cp_tables - CURRENT_CONTROL_PLANE_TABLES)
@@ -721,15 +1053,37 @@ def _validate_current_schema(connection: Connection) -> None:
         )
 
 
+def _validate_v2_schema(connection: Connection) -> None:
+    _validate_tables(connection, V2_CONTROL_PLANE_TABLES, metadata=_V2_METADATA)
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in (LEGACY_SCHEMA_VERSION, REPLAY_AUTHORITY_SCHEMA_VERSION)
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v2 migration history: {actual!r}"
+        )
+
+
 def _validate_tables(
     connection: Connection,
     table_names: frozenset[str],
     *,
     allow_missing_v2_job_index: bool = False,
+    metadata: MetaData | None = None,
 ) -> None:
     inspector = inspect(connection)
+    managed_metadata = metadata or Base.metadata
     for table_name in sorted(table_names):
-        expected = Base.metadata.tables[table_name]
+        expected = managed_metadata.tables[table_name]
         actual_columns = {column["name"]: column for column in inspector.get_columns(table_name)}
         expected_columns = {column.name: column for column in expected.columns}
         if set(actual_columns) != set(expected_columns):
@@ -750,8 +1104,7 @@ def _validate_tables(
             if (
                 connection.dialect.name == "postgresql"
                 and isinstance(column.type, DateTime)
-                and bool(getattr(actual["type"], "timezone", False))
-                != bool(column.type.timezone)
+                and bool(getattr(actual["type"], "timezone", False)) != bool(column.type.timezone)
             ):
                 raise SchemaInitializationError(
                     f"{table_name}.{name} timezone does not match managed schema"
@@ -816,8 +1169,7 @@ def _validate_unique_constraints(inspector: Any, table_name: str, expected: Any)
             f"{table_name} has a unique constraint with unmanaged options"
         )
     actual_sets = Counter(
-        tuple(constraint.get("column_names") or ())
-        for constraint in inspected_constraints
+        tuple(constraint.get("column_names") or ()) for constraint in inspected_constraints
     )
     if expected_sets != actual_sets:
         raise SchemaInitializationError(
@@ -857,9 +1209,7 @@ def _validate_foreign_keys(inspector: Any, table_name: str, expected: Any) -> No
         for constraint in inspector.get_foreign_keys(table_name)
     )
     if expected_fks != actual_fks:
-        raise SchemaInitializationError(
-            f"{table_name} foreign keys do not match managed schema"
-        )
+        raise SchemaInitializationError(f"{table_name} foreign keys do not match managed schema")
 
 
 def _validate_check_constraints(
@@ -882,16 +1232,13 @@ def _validate_check_constraints(
             f"{table_name} has a check constraint with unmanaged options"
         )
     if any(constraint.get("name") is None for constraint in inspected_constraints):
-        raise SchemaInitializationError(
-            f"{table_name} has an unmanaged unnamed check constraint"
-        )
+        raise SchemaInitializationError(f"{table_name} has an unmanaged unnamed check constraint")
     actual_constraints = {
         str(constraint["name"]): str(constraint.get("sqltext") or "")
         for constraint in inspected_constraints
     }
-    if (
-        len(actual_constraints) != len(inspected_constraints)
-        or set(expected_constraints) != set(actual_constraints)
+    if len(actual_constraints) != len(inspected_constraints) or set(expected_constraints) != set(
+        actual_constraints
     ):
         raise SchemaInitializationError(
             f"{table_name} check constraint set does not match managed schema "
@@ -910,9 +1257,7 @@ def _validate_check_constraints(
             )
 
 
-def _validate_postgres_constraint_flags(
-    connection: Connection, table_name: str
-) -> None:
+def _validate_postgres_constraint_flags(connection: Connection, table_name: str) -> None:
     """Reject constraint states omitted by SQLAlchemy's PostgreSQL inspector."""
 
     rows = connection.execute(
@@ -943,14 +1288,11 @@ def _validate_postgres_constraint_flags(
     ]
     if invalid:
         raise SchemaInitializationError(
-            f"{table_name} has constraints with unmanaged catalog flags: "
-            f"{sorted(invalid)!r}"
+            f"{table_name} has constraints with unmanaged catalog flags: {sorted(invalid)!r}"
         )
 
 
-def _validate_postgres_relation_catalog(
-    connection: Connection, table_name: str
-) -> None:
+def _validate_postgres_relation_catalog(connection: Connection, table_name: str) -> None:
     """Validate PostgreSQL relation properties and semantic hook inventory."""
 
     relation_rows = connection.execute(
@@ -975,9 +1317,7 @@ def _validate_postgres_relation_catalog(
         )
     relation = relation_rows[0]
     if str(relation.relation_kind) != "r":
-        raise SchemaInitializationError(
-            f"{table_name} relation kind does not match managed schema"
-        )
+        raise SchemaInitializationError(f"{table_name} relation kind does not match managed schema")
     if str(relation.relation_persistence) != "p":
         raise SchemaInitializationError(
             f"{table_name} relation persistence does not match managed schema"
@@ -1035,17 +1375,11 @@ def _postgres_check_signature(actual_sql: str, expected_sql: str, table: Any) ->
 
     allowed_columns = frozenset(column.name.lower() for column in table.columns)
     textual_columns = frozenset(
-        column.name.lower()
-        for column in table.columns
-        if isinstance(column.type, (String, Text))
+        column.name.lower() for column in table.columns if isinstance(column.type, (String, Text))
     )
     try:
-        actual = _PostgresCheckParser(
-            actual_sql, allowed_columns, textual_columns
-        ).parse()
-        expected = _PostgresCheckParser(
-            expected_sql, allowed_columns, textual_columns
-        ).parse()
+        actual = _PostgresCheckParser(actual_sql, allowed_columns, textual_columns).parse()
+        expected = _PostgresCheckParser(expected_sql, allowed_columns, textual_columns).parse()
     except ValueError:
         return False
     return actual == expected
@@ -1055,7 +1389,8 @@ _CHECK_TOKEN_RE = re.compile(
     r"\s*(?:"
     r"(?P<string>'(?:''|[^'])*')|"
     r'(?P<quoted>"(?:""|[^"])*")|'
-    r"(?P<number>-?\d+)|"
+    r"(?P<number>\d+)|"
+    r"(?P<arithmetic>[+-])|"
     r"(?P<cast>::)|"
     r"(?P<operator><>|!=|>=|<=|=|>|<)|"
     r"(?P<punct>[(),\[\]])|"
@@ -1152,6 +1487,13 @@ class _PostgresCheckParser:
         return ("compare", operator, left, right)
 
     def _parse_operand(self) -> tuple[Any, ...]:
+        value = self._parse_primary()
+        while (token := self._peek()) is not None and token[0] == "arithmetic":
+            operator = self._expect_kind("arithmetic")
+            value = ("arithmetic", operator, value, self._parse_primary())
+        return value
+
+    def _parse_primary(self) -> tuple[Any, ...]:
         if self._accept_punct("("):
             value = self._parse_operand()
             self._expect_punct(")")
@@ -1171,20 +1513,25 @@ class _PostgresCheckParser:
             else:
                 self._position += 1
                 if self._accept_punct("("):
-                    if token_value != "length":
+                    if token_value == "length":
+                        arguments = [self._parse_operand()]
+                    elif token_value in {"replace", "substr"}:
+                        arguments = [self._parse_operand()]
+                        self._expect_punct(",")
+                        arguments.append(self._parse_operand())
+                        self._expect_punct(",")
+                        arguments.append(self._parse_operand())
+                    else:
                         raise ValueError("unsupported CHECK function")
-                    argument = self._parse_operand()
                     self._expect_punct(")")
-                    value = ("function", token_value, argument)
+                    value = ("function", token_value, *arguments)
                 else:
                     if token_value not in self._allowed_columns:
                         raise ValueError("CHECK references an unmanaged identifier")
                     value = ("column", token_value)
         return self._consume_text_casts(value, array=False)
 
-    def _parse_parenthesized_values(
-        self, *, array: bool
-    ) -> tuple[tuple[Any, ...], ...]:
+    def _parse_parenthesized_values(self, *, array: bool) -> tuple[tuple[Any, ...], ...]:
         self._expect_punct("(")
         nested = self._accept_punct("(")
         if array:
@@ -1216,13 +1563,12 @@ class _PostgresCheckParser:
                 depth -= 1
                 if depth == 0:
                     following = (
-                        self._tokens[position + 1]
-                        if position + 1 < len(self._tokens)
-                        else None
+                        self._tokens[position + 1] if position + 1 < len(self._tokens) else None
                     )
                     return following is not None and (
-                        following[0] in {"operator", "cast"}
-                        or following in {
+                        following[0] in {"operator", "cast", "arithmetic"}
+                        or following
+                        in {
                             ("word", "is"),
                             ("word", "in"),
                             ("word", "not"),
@@ -1230,9 +1576,7 @@ class _PostgresCheckParser:
                     )
         raise ValueError("unbalanced PostgreSQL CHECK parentheses")
 
-    def _consume_text_casts(
-        self, value: tuple[Any, ...], *, array: bool
-    ) -> tuple[Any, ...]:
+    def _consume_text_casts(self, value: tuple[Any, ...], *, array: bool) -> tuple[Any, ...]:
         while self._peek() == ("cast", "::"):
             self._position += 1
             cast_name = self._expect_kind("word")
@@ -1248,6 +1592,7 @@ class _PostgresCheckParser:
             if not array and not (
                 value[0] == "string"
                 or (value[0] == "column" and value[1] in self._textual_columns)
+                or (value[0] == "function" and value[1] in {"replace", "substr"})
             ):
                 raise ValueError("text cast is not a PostgreSQL rendering cast")
         return value
@@ -1297,9 +1642,7 @@ def _validate_indexes(
         for index in expected.indexes
     }
     if allow_missing_v2_job_index and table_name == "cp_jobs":
-        expected_indexes = {
-            index for index in expected_indexes if index[0] != "ux_cp_jobs_job_run"
-        }
+        expected_indexes = {index for index in expected_indexes if index[0] != "ux_cp_jobs_job_run"}
     inspected_indexes = [
         index
         for index in inspector.get_indexes(table_name)
@@ -1332,11 +1675,18 @@ def _validate_indexes(
         )
 
 
+_APPEND_ONLY_TABLE_SUFFIXES = {
+    "cp_events": "event",
+    "cp_artifacts": "artifact",
+    "cp_replay_events": "replay_event",
+}
+
+
 def _install_append_only_trigger(connection: Connection, table_name: str) -> None:
-    if table_name not in {"cp_events", "cp_replay_events"}:
+    if table_name not in _APPEND_ONLY_TABLE_SUFFIXES:
         raise ValueError(f"unsupported append-only table: {table_name}")
     if connection.dialect.name == "postgresql":
-        suffix = "event" if table_name == "cp_events" else "replay_event"
+        suffix = _APPEND_ONLY_TABLE_SUFFIXES[table_name]
         function_name = f"pajin_cp_reject_{suffix}_mutation"
         trigger_name = f"{table_name}_append_only"
         connection.exec_driver_sql(
@@ -1372,12 +1722,26 @@ def _install_append_only_trigger(connection: Connection, table_name: str) -> Non
         )
 
 
-def _validate_trigger_inventory(
-    connection: Connection, table_names: frozenset[str]
-) -> None:
-    append_only_tables = {"cp_events", "cp_replay_events"}
+def _remove_append_only_trigger_support(connection: Connection, table_name: str) -> None:
+    if table_name not in _APPEND_ONLY_TABLE_SUFFIXES:
+        raise ValueError(f"unsupported append-only table: {table_name}")
+    if connection.dialect.name == "sqlite":
+        for operation in ("UPDATE", "DELETE"):
+            connection.exec_driver_sql(f"DROP TRIGGER {table_name}_no_{operation.lower()}")
+        return
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql(f"DROP TRIGGER {table_name}_append_only ON {table_name}")
+        suffix = _APPEND_ONLY_TABLE_SUFFIXES[table_name]
+        connection.exec_driver_sql(f"DROP FUNCTION pajin_cp_reject_{suffix}_mutation()")
+        return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
+
+
+def _validate_trigger_inventory(connection: Connection, table_names: frozenset[str]) -> None:
     for table_name in sorted(table_names):
-        if table_name in append_only_tables:
+        if table_name in _APPEND_ONLY_TABLE_SUFFIXES:
             _validate_append_only_trigger(connection, table_name)
         else:
             _validate_no_user_triggers(connection, table_name)
@@ -1387,8 +1751,7 @@ def _validate_no_user_triggers(connection: Connection, table_name: str) -> None:
     if connection.dialect.name == "sqlite":
         names = connection.scalars(
             text(
-                "SELECT name FROM sqlite_master "
-                "WHERE type = 'trigger' AND tbl_name = :table_name"
+                "SELECT name FROM sqlite_master WHERE type = 'trigger' AND tbl_name = :table_name"
             ),
             {"table_name": table_name},
         ).all()
@@ -1435,9 +1798,7 @@ def _validate_append_only_trigger(connection: Connection, table_name: str) -> No
                 BEFORE {operation} ON {table_name}
                 BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
             """
-            if _normalize_trigger_sql(definition) != _normalize_trigger_sql(
-                expected_definition
-            ):
+            if _normalize_trigger_sql(definition) != _normalize_trigger_sql(expected_definition):
                 raise SchemaInitializationError(
                     f"{table_name} append-only {operation.lower()} trigger is missing or invalid"
                 )
@@ -1503,7 +1864,9 @@ def _validate_append_only_trigger(connection: Connection, table_name: str) -> No
 
 
 def _postgres_append_only_trigger_is_valid(row: Any, table_name: str) -> bool:
-    suffix = "event" if table_name == "cp_events" else "replay_event"
+    suffix = _APPEND_ONLY_TABLE_SUFFIXES.get(table_name)
+    if suffix is None:
+        return False
     expected_function_source = f"""
         BEGIN
           RAISE EXCEPTION '{table_name} is append-only';

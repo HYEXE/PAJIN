@@ -11,8 +11,11 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, update
 
 from pajin.control_plane.api import ControlPlaneSettings, create_app
+from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import (
+    ArtifactRecord,
     ControlPlaneRepository,
+    EventRecord,
     JobRecord,
     ReplayBatchRecord,
     ReplayEventRecord,
@@ -21,7 +24,9 @@ from pajin.control_plane.database import (
     RunRecord,
 )
 from pajin.control_plane.models import (
+    AdmitSourceArtifactRequest,
     ApprovalIntent,
+    ArtifactLocator,
     ArtifactRef,
     CancelRunRequest,
     ClaimJobRequest,
@@ -47,11 +52,13 @@ from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import (
     ControlPlaneService,
     LeaseRejected,
+    ResourceNotFound,
     RunCancelled,
     StateConflict,
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayPurpose
+from pajin.runtime.store import RunStore
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
@@ -102,43 +109,88 @@ def _service(path: Path) -> tuple[ControlPlaneRepository, ControlPlaneService]:
         keys={"replay-v1": b"replay-test-signing-key-at-least-32-bytes"},
     )
     profiles = {actor: frozenset({EXECUTOR_PROFILE}) for actor in REGISTERED_REPLAY_ACTORS}
+    staging_root, artifact_root = _artifact_roots(path)
     return repository, ControlPlaneService(
         repository,
         signer,
         replay_executor_profiles=profiles,
+        artifact_repository=ManagedArtifactRepository(
+            staging_root=staging_root,
+            repository_root=artifact_root,
+        ),
+    )
+
+
+def _artifact_roots(database_path: Path) -> tuple[Path, Path]:
+    stem = database_path.name.replace(".", "-")
+    return (
+        database_path.parent / f"{stem}-artifact-staging",
+        database_path.parent / f"{stem}-artifact-repository",
     )
 
 
 def _seed_completed_source(
     repository: ControlPlaneRepository,
+    service: ControlPlaneService,
     suffix: str,
 ) -> ArtifactRef:
     identity = sha256(suffix.encode()).hexdigest()
-    run_id = f"run_source_{identity[:24]}"
+    run_id = f"run_{identity[:32]}"
+    job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
+    sealed_run_id = f"run_sealed_{identity[:24]}"
+    stage_id = f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}"
+    database_path = Path(str(repository.engine.url.database))
+    staging_root, _ = _artifact_roots(database_path)
+    stage_path = staging_root / stage_id
+    (stage_path / "evidence").mkdir(parents=True)
+    store = RunStore(run_id=sealed_run_id, path=stage_path)
+    store.append_event("campaign.completed", {"campaign": "kisa-replay"})
+    store.write_text("report.md", f"sealed source {suffix}")
+    store.seal()
     now = datetime.now(UTC)
     with repository.transaction() as session:
+        run = RunRecord(
+            run_id=run_id,
+            campaign_name="kisa-replay",
+            state=RunState.COMPLETED.value,
+            input={"sealedSource": True},
+            submission_key=f"sealed-source-{identity}",
+            current_checkpoint_id=None,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(run)
+        session.flush()
         session.add(
-            RunRecord(
+            JobRecord(
+                job_id=job_id,
                 run_id=run_id,
-                campaign_name="kisa-replay",
-                state=RunState.COMPLETED.value,
-                input={"sealedSource": True},
-                submission_key=f"sealed-source-{identity}",
-                current_checkpoint_id=None,
+                kind="campaign",
+                state=JobState.SUCCEEDED.value,
+                payload={"input": {}},
+                priority=0,
+                attempts=1,
+                max_attempts=3,
+                idempotency_key=f"sealed-source-job-{identity}",
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result={"engineRunId": sealed_run_id, "runPath": "/ignored/untrusted"},
+                error=None,
                 created_at=now,
                 updated_at=now,
             )
         )
-    return ArtifactRef(
-        artifact_id=f"artifact_{identity[:32]}",
-        repository_version=1,
-        media_type="application/vnd.pajin.run+tar",
-        schema_kind="pajin.run.v1",
-        byte_length=4_096,
-        content_digest=sha256(f"content:{suffix}".encode()).hexdigest(),
-        run_id=run_id,
-        integrity_root_digest=sha256(f"root:{suffix}".encode()).hexdigest(),
-        created_by="trusted-source-admission",
+    return service.admit_source_artifact(
+        AdmitSourceArtifactRequest(
+            staging_id=stage_id,
+            producer_run_id=run_id,
+            producer_job_id=job_id,
+            idempotency_key=f"artifact-admission-{suffix}",
+        ),
+        actor="trusted-source-admission",
     )
 
 
@@ -153,7 +205,10 @@ def _batch_request(
     item_suffixes = [suffix] if item_count == 1 else [f"{suffix}-{i}" for i in range(item_count)]
     return CreateReplayBatchRequest(
         campaign_name="kisa-replay",
-        source=source,
+        source=ArtifactLocator(
+            artifact_id=source.artifact_id,
+            repository_version=source.repository_version,
+        ),
         mode=CampaignMode.AI_REDTEAM,
         purpose=ReplayPurpose.CONFIRMATION,
         policy_version="policy-v1",
@@ -183,7 +238,7 @@ def _create_batch(
     item_count: int = 1,
 ) -> CreateReplayBatchRequest:
     request = _batch_request(
-        _seed_completed_source(repository, suffix),
+        _seed_completed_source(repository, service, suffix),
         suffix,
         required_attempts=required_attempts,
         max_attempts=max_attempts,
@@ -220,6 +275,108 @@ def _force_replay_lease_expired(
             .where(ReplayTicketRecord.ticket_id == ticket_id)
             .values(lease_expires_at=expired_at)
         )
+
+
+def test_source_artifact_admission_is_managed_exact_and_idempotent(tmp_path: Path) -> None:
+    repository, service = _service(tmp_path / "artifact-admission.db")
+    suffix = "artifact-admission"
+    identity = sha256(suffix.encode()).hexdigest()
+    request = AdmitSourceArtifactRequest(
+        staging_id=f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}",
+        producer_run_id=f"run_{identity[:32]}",
+        producer_job_id=f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}",
+        idempotency_key=f"artifact-admission-{suffix}",
+    )
+    try:
+        admitted = _seed_completed_source(repository, service, suffix)
+        repeated = service.admit_source_artifact(
+            request,
+            actor="trusted-source-admission",
+        )
+
+        assert repeated == admitted
+        assert admitted.producer_run_id == request.producer_run_id
+        assert admitted.run_id != admitted.producer_run_id
+        with repository.transaction() as session:
+            artifact = session.scalar(select(ArtifactRecord))
+            events = list(
+                session.scalars(
+                    select(EventRecord).where(
+                        EventRecord.event_type == "artifact.source-admitted"
+                    )
+                ).all()
+            )
+            assert artifact is not None
+            assert artifact.producer_job_id == request.producer_job_id
+            assert artifact.producer_attempt == 1
+            assert artifact.sealed_run_id == admitted.run_id
+            assert len(events) == 1
+            exposed = f"{admitted.model_dump(mode='json')} {events[0].payload}"
+            assert request.staging_id not in exposed
+            assert artifact.storage_key not in exposed
+
+        drifted = request.model_copy(update={"staging_id": f"stage_{'f' * 32}"})
+        with pytest.raises(StateConflict, match="idempotency"):
+            service.admit_source_artifact(
+                drifted,
+                actor="trusted-source-admission",
+            )
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(EventRecord)
+                    .where(EventRecord.event_type == "artifact.source-admitted")
+                )
+                == 1
+            )
+    finally:
+        repository.close()
+
+
+def test_artifact_admission_and_batch_fail_closed_without_managed_repository(
+    tmp_path: Path,
+) -> None:
+    repository = ControlPlaneRepository(f"sqlite:///{(tmp_path / 'missing-repo.db').as_posix()}")
+    repository.initialize()
+    signer = CheckpointSigner(
+        active_key_id="replay-v1",
+        keys={"replay-v1": b"replay-test-signing-key-at-least-32-bytes"},
+    )
+    service = ControlPlaneService(repository, signer)
+    try:
+        with pytest.raises(StateConflict, match="repository is not configured"):
+            service.admit_source_artifact(
+                AdmitSourceArtifactRequest(
+                    staging_id=f"stage_{'1' * 32}",
+                    producer_run_id=f"run_{'2' * 32}",
+                    producer_job_id=f"job_{'3' * 32}",
+                    idempotency_key="missing-artifact-repository",
+                ),
+                actor="trusted-source-admission",
+            )
+        with pytest.raises(StateConflict, match="repository is not configured"):
+            service.create_replay_batch(
+                _batch_request(
+                    ArtifactRef(
+                        artifact_id=f"artifact_{'4' * 32}",
+                        repository_version=1,
+                        producer_run_id=f"run_{'2' * 32}",
+                        media_type="application/vnd.pajin.run+directory",
+                        schema_kind="pajin.run.sealed.v1",
+                        byte_length=1,
+                        content_digest="5" * 64,
+                        run_id="sealed-run",
+                        integrity_root_digest="6" * 64,
+                        created_by="trusted-source-admission",
+                    ),
+                    "missing-repository",
+                ),
+                actor="trusted-replay-admission",
+            )
+    finally:
+        repository.close()
 
 
 @pytest.mark.parametrize("job_kind", ["replay", InternalJobKind.REPLAY.value])
@@ -301,7 +458,7 @@ def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
 ) -> None:
     repository, service = _service(tmp_path / "batch.db")
     try:
-        source = _seed_completed_source(repository, "batch")
+        source = _seed_completed_source(repository, service, "batch")
         request = _batch_request(source, "batch", required_attempts=2, max_attempts=4)
 
         created = service.create_replay_batch(request, actor="trusted-replay-admission")
@@ -328,7 +485,8 @@ def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
             replay_run = session.get(RunRecord, ticket.replay_run_id)
             assert job is not None and replay_run is not None
 
-            assert batch.source_run_id == source.run_id
+            assert batch.source_run_id == source.producer_run_id
+            assert batch.source_artifact_run_id == source.run_id
             assert batch.source_artifact_id == source.artifact_id
             assert batch.source_content_digest == source.content_digest
             assert batch.source_root_digest == source.integrity_root_digest
@@ -347,12 +505,35 @@ def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
             assert replay_run.state == RunState.QUEUED.value
 
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
 
         drifted = request.model_copy(update={"policy_version": "policy-v2"})
         with pytest.raises(StateConflict, match="idempot"):
             service.create_replay_batch(drifted, actor="trusted-replay-admission")
+
+        unknown_locator = ArtifactLocator(
+            artifact_id=f"artifact_{'f' * 32}",
+            repository_version=1,
+        )
+        with pytest.raises(StateConflict, match="idempot"):
+            service.create_replay_batch(
+                request.model_copy(update={"source": unknown_locator}),
+                actor="trusted-replay-admission",
+            )
+        with pytest.raises(ResourceNotFound, match="Artifact"):
+            service.create_replay_batch(
+                request.model_copy(
+                    update={
+                        "source": unknown_locator,
+                        "idempotency_key": "replay-batch-unknown-locator",
+                    }
+                ),
+                actor="trusted-replay-admission",
+            )
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
     finally:
         repository.close()
 
@@ -376,6 +557,11 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
         assert claimed.ticket.fencing_value == 1
         assert claimed.ticket.job_id == claimed.job.job_id
         assert claimed.ticket.replay_run_id == claimed.job.run_id
+        source_payload = claimed.job.payload["source"]
+        assert source_payload["producer_run_id"] == claimed.batch.source.producer_run_id
+        assert source_payload["run_id"] == claimed.batch.source.run_id
+        assert source_payload["producer_run_id"] != source_payload["run_id"]
+        assert not {"storage_key", "staging_id", "path"}.intersection(source_payload)
 
         with repository.transaction() as session:
             job = session.get(JobRecord, claimed.job.job_id)

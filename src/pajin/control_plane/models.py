@@ -137,6 +137,15 @@ class ClaimJobRequest(StrictModel):
     wait_seconds: int = Field(default=0, ge=0, le=20)
 
 
+class ArtifactLocator(StrictModel):
+    """Opaque exact-version lookup key for one managed source artifact."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    artifact_id: str = Field(pattern=r"^artifact_[0-9a-f]{32}$")
+    repository_version: int = Field(strict=True, ge=1, le=2_147_483_647)
+
+
 class ArtifactRef(StrictModel):
     """Immutable repository identity for a sealed Run artifact."""
 
@@ -152,9 +161,22 @@ class ArtifactRef(StrictModel):
     schema_kind: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     byte_length: int = Field(strict=True, ge=1, le=2_147_483_647)
     content_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    producer_run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     integrity_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     created_by: str = Field(min_length=1, max_length=200)
+
+
+class AdmitSourceArtifactRequest(StrictModel):
+    """Internal-only request to admit one producer-owned sealed Run snapshot."""
+
+    staging_id: str = Field(
+        strict=True,
+        pattern=r"^stage_[0-9a-f]{32}$",
+    )
+    producer_run_id: str = Field(pattern=r"^run_[0-9a-f]{32}$")
+    producer_job_id: str = Field(pattern=r"^job_[0-9a-f]{32}$")
+    idempotency_key: str = Field(min_length=8, max_length=200)
 
 
 class ReplayJobPayload(StrictModel):
@@ -199,7 +221,7 @@ class CreateReplayBatchRequest(StrictModel):
     """Internal-only request produced after sealed-source admission and compilation."""
 
     campaign_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    source: ArtifactRef
+    source: ArtifactLocator
     mode: CampaignMode
     purpose: ReplayPurpose
     policy_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
