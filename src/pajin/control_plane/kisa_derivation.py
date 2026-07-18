@@ -134,6 +134,7 @@ class DerivedKISAReplayItem:
     contract_digest: str
     compilation_digest: str
     grant_digest: str
+    required_request_units: int
     required_attempts: int = KISA_CONFIRMATION_REQUIRED_ATTEMPTS
     max_attempts: int = KISA_CONFIRMATION_MAX_ATTEMPTS
 
@@ -155,6 +156,10 @@ class DerivedKISAReplayBatch:
     required_tool_calls: int
     budget_digest: str
     rate_limits_digest: str
+    rate_ledger_id: str
+    observed_campaign_request_units: int
+    max_requests_per_minute: int | None
+    required_request_units: int
     items: tuple[DerivedKISAReplayItem, ...]
 
 
@@ -270,6 +275,7 @@ def derive_kisa_confirmation_batch(
     compiled_at = _utc(clock())
     replay_run_ids: set[str] = set()
     items: list[DerivedKISAReplayItem] = []
+    probe_tool = AIChatProbeTool()
     for candidate, decision in eligible:
         source = derive_kisa_source_replay_context(
             source_root=root,
@@ -319,6 +325,9 @@ def derive_kisa_confirmation_batch(
             compiled_at=compiled_at,
         )
         canonical_compilation = canonical_replay_compilation_bytes(compilation)
+        required_request_units = (
+            probe_tool.network_request_cost(compilation.original_request) * contract.repetitions
+        )
         items.append(
             DerivedKISAReplayItem(
                 candidate_id=candidate.candidate_id,
@@ -333,6 +342,7 @@ def derive_kisa_confirmation_batch(
                 contract_digest=replay_context_digest(contract),
                 compilation_digest=sha256(canonical_compilation).hexdigest(),
                 grant_digest=replay_context_digest(compilation.grant),
+                required_request_units=required_request_units,
             )
         )
 
@@ -353,6 +363,13 @@ def derive_kisa_confirmation_batch(
         required_tool_calls=required_calls,
         budget_digest=replay_context_digest(budget),
         rate_limits_digest=replay_context_digest(rate_limits),
+        rate_ledger_id=rate_limits.ledger_id,
+        observed_campaign_request_units=rate_limits.reservation_counts.get(
+            campaign.metadata.name,
+            0,
+        ),
+        max_requests_per_minute=campaign.spec.rules_of_engagement.max_requests_per_minute,
+        required_request_units=sum(item.required_request_units for item in items),
         items=tuple(items),
     )
 

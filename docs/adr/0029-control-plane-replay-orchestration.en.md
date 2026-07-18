@@ -4,7 +4,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2B trusted derivation)
+- Implementation update: 2026-07-18 (M6-07B-2C durable issuance)
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -32,16 +32,33 @@ are not authority inputs. Schema v4 extends the forward path to v1→v2→v3→v
 non-dispatchable compilation derivation records. `compilation_id` is the row identity; `item_id` is
 non-unique, the Candidate/contract fields form the plan-identity foreign key, and every row owns its
 Replay Run identity, compilation digest, and Grant digest. This permits append-only attempt/version
-rows for one item. The future issuance row must be referenced directly by its ticket; redesigning
-the existing `cp_replay_tickets` foreign key is the next slice. This internal service path opens no
-public Replay or admission API, deliberately creates no Job or ticket, and dispatches no execution
-because durable budget/request-rate permits must precede
-issuance. The planned Grant lasts at most five minutes and may expire while pending, so it MUST NOT
-be reused as later execution authority. The permit/issuance transaction must recompile with a fresh
-Replay Run identity and Grant, or bind an otherwise fresh and valid compilation, and append its row.
-Ticket issuance, new-identity retry, Replay executor wiring, typed server-side artifact finalization and result-digest
-verification, the Gate, and negative Control Plane retest remain outstanding. Until those execution
-boundaries are complete, the Control Plane cannot claim full durable Replay orchestration.
+rows for one item. The planned Grant lasts at most five minutes and may expire while pending, so it
+MUST NOT be reused as later execution authority. M6-07B-2C durable issuance was implemented on
+2026-07-18. Schema v5 adds `cp_replay_budget_accounts`, `cp_replay_budget_reservations`,
+`cp_replay_rate_accounts`, and `cp_replay_rate_reservations`, plus exact compilation and reservation
+foreign keys on `cp_replay_tickets`. The budget account binds the sealed source Run/root, Campaign,
+budget digest, baseline/max counts, mutable reserved/consumed/released counters, and CAS. The rate
+account conservatively binds the sealed ledger ID/digest and observed units, the managed Artifact
+admission time as `observed_at`, a nullable per-minute limit, a fixed 60-second window, and CAS;
+each first-attempt rate reservation expires after that window. The internal idempotent
+`ControlPlaneService.issue_replay_batch(batch_id, actor=...)` path
+re-resolves and re-verifies the managed source before locking authority. It reserves the whole
+batch's first-attempt Tool-call and request-unit requirements, recompiles every pending item with a
+fresh Replay Run identity and Grant, appends the canonical compilation, and creates its active
+budget/rate reservations, one-shot internal Job, and `issued` ticket in one transaction. The strict
+payload and ticket bind the exact `compilation_id`, `budget_reservation_id`, `rate_reservation_id`,
+attempt, Replay Run, compilation digest, and Grant digest. The batch becomes `running` and its items
+become `queued`. Only a response-loss retry against the current active exact authority graph
+reconstructs that issuance: the ticket/Job pair must still be `issued`/`queued` immediately after
+issuance or `claimed`/`running` after claim; a terminal or otherwise changed graph must fail closed. The transaction
+records `run.submitted`, item-level `replay.compilation.derived` and `replay.ticket.issued`, and the
+final `replay.batch.issued` event. The initial planned
+row remains non-dispatchable and is never promoted or reused. There is still no public Replay or
+admission API, and these reservations are not actual per-call Tool permits. Per-call permit
+consumption, new-identity retry, Replay executor wiring, typed server-side artifact finalization and
+result-digest verification, the Gate, and negative Control Plane retest remain outstanding. Until
+those execution boundaries are complete, the Control Plane cannot claim full durable Replay
+orchestration.
 
 ## Context
 
@@ -90,11 +107,13 @@ Artifact locator, which the service resolves and re-verifies before batch creati
 made the remaining command input idempotency-only and added trusted source rereading, exact
 M03/M06/A04 confirmation Candidate and contract derivation, canonical compilation, and append-only
 planned/pending non-dispatchable PostgreSQL derivation records. The stored compilation and Grant
-prove what was derived; they do not authorize dispatch and may not be reused at issuance. No Job or
-ticket is issued in this slice. Generic Job
-completion and failure paths remain unavailable to Replay Jobs. Durable permits and issuance,
-retry, executor, typed finalization, Gate, and negative Control Plane retest remain intentionally
-outside the completed foundations.
+prove what was derived; they do not authorize dispatch and may not be reused at issuance.
+M6-07B-2C then added schema-v5 durable budget/sealed-rate reservation and the internal idempotent
+first-attempt issuance transaction. The service re-verifies the source, appends fresh Replay
+Run/Grant compilation authority, and creates the exact reservation-bound Job/ticket set for the
+entire batch atomically. Generic Job completion and failure paths remain unavailable to Replay Jobs.
+A public Replay API, actual per-call permits, retry, executor, typed finalization, Gate, and negative
+Control Plane retest remain intentionally outside the completed foundations.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -145,13 +164,17 @@ When creating a Replay batch, the server admits the source in this order:
    the Replay Compiler; and
 4. the server stores the original source root, canonical Candidate/contract identity, and initial
    Replay compilation/Capability as a `compilation_id`-keyed, non-dispatchable derivation record and
-   proof. That row owns its Replay Run ID, compilation digest, and Grant digest.
+   proof. That row owns its Replay Run ID, compilation digest, and Grant digest; and
+5. the separate internal issuance call resolves and re-verifies the managed source again, binds the
+   sealed budget/rate snapshots to durable accounts, reserves the complete first attempt, and
+   appends fresh Replay Run/Grant compilation authority before atomically creating its Jobs and
+   tickets.
 
 A Worker-submitted Candidate, contract, comparison rule, Capability Grant, target, Tool arguments,
 source root, or eligibility flag is not an authority input. The planned record's five-minute Grant
-can expire before issuance and is never Worker execution authority. A Worker claim envelope may
-carry only the fresh compilation and short-lived, non-delegable Capability that the server binds in
-the permit/issuance transaction after durable reservation.
+can expire before issuance and is never Worker execution authority. A Worker claim envelope carries
+only the fresh compilation and short-lived, non-delegable Capability that the server bound during
+the implemented durable issuance transaction.
 
 ### PostgreSQL Replay aggregate and forward migration
 
@@ -162,13 +185,17 @@ The new schema has at least the following aggregates.
 | `cp_replay_batches` | Source snapshot and entire Gate lifecycle | Bound to one immutable source `ArtifactRef`/root, Mode, purpose, policy version, and CAS version |
 | `cp_replay_items` | Progress and plan identity for each eligible Candidate | Candidate/contract plan identity and required repetition count are unique within the batch; one item may have multiple compilation rows |
 | `cp_replay_compilations` | Non-dispatchable derivation/attempt record | `compilation_id` is the PK; non-unique `item_id` plus Candidate/contract fields bind the plan identity, while each append-only row owns the Replay Run ID, canonical bytes, compilation digest, and Grant digest |
-| `cp_replay_tickets` | Authority for one execution attempt | Ultimately bound to the exact compilation row, item attempt, Job, source root, claim principal/fence, and finalization; direct `compilation_id`/digest foreign keys remain next-slice work |
+| `cp_replay_budget_accounts` | Source-Campaign Tool-call authority | Binds source Run/root, Campaign, sealed budget digest and baseline/max counts; reserved/consumed/released counters advance under CAS |
+| `cp_replay_budget_reservations` | Tool-call authority for one item attempt | Binds account, batch/item/attempt and compilation; active/partially-consumed/consumed/released lifecycle never exceeds its total calls |
+| `cp_replay_rate_accounts` | Conservative sealed request-rate authority | Binds source Run/root, Campaign, sealed ledger ID/digest and observed units, managed Artifact admission time as `observed_at`, nullable per-minute cap, 60-second window, and CAS |
+| `cp_replay_rate_reservations` | Request-unit authority for one item attempt | Binds account, batch/item/attempt and compilation; has an exact 60-second expiry and the same bounded lifecycle |
+| `cp_replay_tickets` | Authority for one execution attempt | Bound by exact foreign keys to the compilation and both reservations, plus item attempt, Job, Replay Run, source root, claim principal/fence, and finalization |
 | `cp_replay_events` | Replay authority audit history | Appended in the state-transition transaction and never updated or deleted |
 
-Separate tables may store Artifact metadata, durable budget reservations, and rate-limit
-buckets/permits. The database enforces every authority-bearing foreign key and uniqueness/check
-constraint. A Replay event and corresponding `cp_events` summary, when needed, are written in the
-same transaction.
+Artifact metadata remains separate in `cp_artifacts`. Compilation and event rows are append-only;
+accounts and reservations are deliberately mutable only through their bounded accounting lifecycle.
+The database enforces every authority-bearing foreign key and uniqueness/check constraint. A Replay
+event and corresponding `cp_events` summary, when needed, are written in the same transaction.
 
 The state machines distinguish at least the following meanings:
 
@@ -200,10 +227,11 @@ adapter, but it does not replace verification of PostgreSQL row locks, constrain
 
 A Replay Job is an internal kind that is not exposed through the Operator submission API. Public
 `SubmitRunRequest` cannot select `replay`; only the trusted Control Plane batch service creates a
-Job from a validated `cp_replay_item` and ticket. The exact Replay executor must also be explicitly
-installed in the Worker startup registry. The Job payload contains only opaque
-batch/item/ticket/artifact references and a server-generated compilation identity. It contains no
-executable path, arbitrary URL, callable, or Worker-selected Grant.
+Job from a validated `cp_replay_item`, fresh compilation, active reservations, and ticket. The exact
+Replay executor must also be explicitly installed in the Worker startup registry. The Job payload contains only opaque
+batch/item/ticket/artifact references and server-generated `compilation_id`,
+`budget_reservation_id`, and `rate_reservation_id` authority. It contains no executable path,
+arbitrary URL, callable, or Worker-selected Grant.
 
 The normal Control Plane queue retains at-least-once delivery, but Replay binds it to tickets as
 follows:
@@ -251,21 +279,34 @@ server-unissued contract/Capability or stale attempt as a PAJIN result.
 
 ### Durable budget reservation and request-rate authority
 
-Replay batch admission calculates the worst-case Tool calls across every eligible item and
-repetition and atomically reserves the Campaign budget in PostgreSQL before creating the first
-Job. A reservation is bound to its batch/item/ticket and cannot exceed the same Campaign limit
-shared by other Local or Control Plane executions. Worker-reported `usedCalls` or a local snapshot
-is not a basis for settlement.
+The implemented internal issuance service calculates the exact first-attempt Tool calls and network
+request units across every eligible item and repetition before creating any Job. Under PostgreSQL
+locks it bootstraps or checks one budget account for the source Campaign, binds the sealed source
+Run/root, Campaign, budget digest, baseline use, and maximum, and reserves the entire batch without
+letting baseline + reserved + consumed exceed that maximum. Worker-reported `usedCalls` is not a
+basis for settlement.
 
-The reservation and issuance transaction does not promote the initial planned derivation record into
-execution authority. It recompiles with a fresh Replay Run identity and fresh Grant, or otherwise
-binds a fresh and still-valid compilation, appends a new `cp_replay_compilations` row for the same
-item, and atomically associates the ticket with that row's `compilation_id` and digests plus the
-durable reservation and Job. An expired or previously persisted planned Grant fails closed. Adding
-those direct ticket foreign keys is part of the next slice, not schema-v4 derivation admission.
+The rate account similarly binds the sealed `ledger_id`, rate snapshot digest and observed Campaign
+request units, the managed Artifact admission time as `observed_at`, nullable
+`max_requests_per_minute`, and a fixed 60-second window. The service conservatively counts the
+sealed observation for 60 seconds from that admission time, locks all
+unexpired reservations, and fails closed if adding the full first attempt would exceed the cap.
+Each item receives a 60-second active request-unit reservation. An absent per-minute cap does not
+remove the exact source/account/reservation binding.
 
-Before every actual Tool call, the Worker's trusted Replay runtime calls an internal permit
-endpoint. The server rechecks the active principal/lease/ticket fence, issues a one-use permit for
+The same transaction does not promote the initial planned derivation record into execution
+authority. It recompiles each item with a fresh Replay Run identity and fresh Grant, appends a new
+`cp_replay_compilations` row, and creates one active budget reservation, active rate reservation,
+one-shot Job, and `issued` ticket. Schema-v5 foreign keys bind the ticket to the exact compilation
+and both reservations; the strict Job payload repeats the same `compilation_id`,
+`budget_reservation_id`, and `rate_reservation_id`. Only a response-loss retry whose current active
+exact authority graph remains ticket/Job `issued`/`queued` immediately after issuance or
+`claimed`/`running` after claim reconstructs the already persisted exact item/ticket set. Expired,
+terminal, binding-drifted, or otherwise changed graphs must fail closed.
+
+The following per-call boundary is not implemented yet. Before every actual Tool call, the Worker's
+trusted Replay runtime calls an internal permit endpoint. The server rechecks the active
+principal/lease/ticket fence, issues a one-use permit for
 the canonical target/Tool/call ordinal while consuming reserved budget, and updates a durable
 rate-limit bucket or append-only entry. The permit cannot be reused for another ticket, target,
 Tool, or ordinal. Even when multiple Workers request permits concurrently, database locks and
@@ -396,9 +437,14 @@ cross-service authentication.
   and rate-limit operations become new responsibilities.
 - Conservative budget/permit consumption may reduce available budget after an ambiguous crash.
   This loss takes priority over increasing duplicate-execution risk through automatic refunds.
-- Local M6-07A remains a lightweight single-host path and does not pretend that M6-07B is implemented.
+- Local M6-07A remains a lightweight single-host path and does not imply that the still-incomplete
+  M6-07B executor/finalization/Gate path exists.
 
 ## Acceptance and validation
+
+As of the M6-07B-2C update, source admission/derivation, schema-v5 reservation authority, fresh
+first-attempt compilation, atomic internal issuance, and issuance idempotency cover only the
+corresponding subset below. The remaining bullets continue to be exit criteria for full M6-07B.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
@@ -407,10 +453,13 @@ Implementation of this ADR is complete when automated tests prove at least that:
   or constraint/trigger-corrupted schema;
 - public submission rejects injection of the internal Replay kind, a raw path/URL, Candidate,
   contract, Capability, or Worker verdict; only server-side sealed-source derivation creates exact
-  KISA planned/pending non-dispatchable compilation proof, and it creates no Job or ticket before a
-  durable permit; issuance never reuses an expired planned Grant, appends a new compilation row for
-  the same item, and atomically binds the ticket to that row's `compilation_id`, Replay Run identity,
-  compilation digest, and Grant digest;
+  KISA planned/pending non-dispatchable compilation proof; internal issuance re-verifies the source,
+  never reuses an expired planned Grant, appends a fresh compilation row for the same item, reserves
+  budget/rate authority, and atomically binds each first-attempt Job/ticket to that row's
+  `compilation_id`, Replay Run identity, compilation/Grant digests, `budget_reservation_id`, and
+  `rate_reservation_id`; a response-loss retry reconstructs the same exact authority set only while
+  the current active exact authority graph remains ticket/Job `issued`/`queued` or
+  `claimed`/`running`, and a terminal or changed graph must fail closed;
 - substitution of the content, Run ID, seal root, artifact set, or repository version in source or
   replay `ArtifactRef`, as well as symlink/path traversal, is rejected by server-side verification;
 - when two Workers concurrently claim the same queued Replay Job/ticket, exactly one succeeds and

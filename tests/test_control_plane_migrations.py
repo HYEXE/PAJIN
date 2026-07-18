@@ -18,26 +18,36 @@ from pajin.control_plane.database import (
     _V2_MIGRATION_WRITE_LOCK_TABLES,
     _V3_METADATA,
     _V3_MIGRATION_WRITE_LOCK_TABLES,
+    _V4_METADATA,
+    _V4_MIGRATION_WRITE_LOCK_TABLES,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
+    V4_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
     JobRecord,
     ReplayBatchRecord,
+    ReplayBudgetAccountRecord,
+    ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
+    ReplayRateAccountRecord,
+    ReplayRateReservationRecord,
+    ReplayTicketRecord,
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
     _lock_v2_migration_writes,
     _lock_v3_migration_writes,
+    _lock_v4_migration_writes,
     _postgres_append_only_trigger_is_valid,
     _postgres_check_signature,
 )
@@ -144,6 +154,57 @@ def _create_v3_schema(repository: ControlPlaneRepository) -> None:
         )
 
 
+def _create_v4_schema(repository: ControlPlaneRepository) -> None:
+    pending = set(V4_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V4_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in (
+            "cp_events",
+            "cp_artifacts",
+            "cp_replay_events",
+            "cp_replay_compilations",
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                connection.exec_driver_sql(
+                    f"""
+                    CREATE TRIGGER {table_name}_no_{operation.lower()}
+                    BEFORE {operation} ON {table_name}
+                    BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
+                    """
+                )
+        schema_version = _V4_METADATA.tables["cp_schema_version"]
+        now = datetime.now(UTC)
+        connection.execute(
+            schema_version.insert(),
+            [
+                {
+                    "version": 1,
+                    "description": "legacy-control-plane-core",
+                    "applied_at": now,
+                },
+                {
+                    "version": 2,
+                    "description": "replay-authority",
+                    "applied_at": now,
+                },
+                {
+                    "version": 3,
+                    "description": "artifact-authority",
+                    "applied_at": now,
+                },
+                {
+                    "version": 4,
+                    "description": "trusted-replay-compilation-authority",
+                    "applied_at": now,
+                },
+            ],
+        )
+
+
 def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
     statements: list[str] = []
     connection = SimpleNamespace(
@@ -178,6 +239,43 @@ def test_postgres_v3_migration_locks_all_legacy_write_surfaces_in_fixed_order() 
         "LOCK TABLE " + ", ".join(_V3_MIGRATION_WRITE_LOCK_TABLES) + " IN ACCESS EXCLUSIVE MODE"
     ]
     assert _V3_MIGRATION_WRITE_LOCK_TABLES == _V2_MIGRATION_WRITE_LOCK_TABLES
+
+
+def test_postgres_v4_migration_locks_all_authority_surfaces_in_fixed_order() -> None:
+    statements: list[str] = []
+    savepoint_actions: list[str] = []
+    savepoint = SimpleNamespace(
+        commit=lambda: savepoint_actions.append("commit"),
+        rollback=lambda: savepoint_actions.append("rollback"),
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+        begin_nested=lambda: savepoint,
+    )
+
+    _lock_v4_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE "
+        + ", ".join(_V4_MIGRATION_WRITE_LOCK_TABLES)
+        + " IN ACCESS EXCLUSIVE MODE NOWAIT"
+    ]
+    assert savepoint_actions == ["commit"]
+    assert _V4_MIGRATION_WRITE_LOCK_TABLES == (
+        "cp_artifacts",
+        "cp_runs",
+        "cp_jobs",
+        "cp_replay_tickets",
+        "cp_replay_items",
+        "cp_replay_batches",
+        "cp_replay_compilations",
+        "cp_replay_events",
+        "cp_approvals",
+        "cp_checkpoints",
+        "cp_events",
+        "cp_schema_version",
+    )
 
 
 def test_sqlite_initialization_begins_with_immediate_write_reservation(
@@ -370,6 +468,154 @@ def _seed_replay_item_authority(
     return source_run_id, source_job_id, replay_run_id
 
 
+def _seed_v5_issuance_prerequisites(
+    repository: ControlPlaneRepository,
+) -> dict[str, object]:
+    source_run_id, _, planned_replay_run_id = _seed_replay_item_authority(repository)
+    fresh_replay_run_id = f"run_{'5' * 32}"
+    compilation_id = f"replay-compilation_{'7' * 32}"
+    budget_account_id = f"replay-budget-account_{'8' * 32}"
+    rate_account_id = f"replay-rate-account_{'9' * 32}"
+    budget_reservation_id = f"budget-reservation_{'a' * 32}"
+    rate_reservation_id = f"rate-reservation_{'b' * 32}"
+    replay_job_id = f"job_{'c' * 32}"
+    now = datetime.now(UTC)
+    with repository.transaction() as session:
+        session.add(_compilation(replay_run_id=planned_replay_run_id))
+        session.add(_run(fresh_replay_run_id))
+        session.flush()
+        session.add(
+            _compilation(
+                compilation_id=compilation_id,
+                replay_run_id=fresh_replay_run_id,
+                compilation_digest="2" * 64,
+                grant_digest="3" * 64,
+                canonical_compilation=b'{"kind":"ReplayCompilation","fresh":true}',
+            )
+        )
+        session.add(
+            ReplayBudgetAccountRecord(
+                budget_account_id=budget_account_id,
+                source_run_id=source_run_id,
+                source_root_digest="b" * 64,
+                campaign_name="migration-test",
+                budget_digest="4" * 64,
+                max_tool_calls=10,
+                baseline_used_calls=2,
+                reserved_calls=2,
+                consumed_calls=0,
+                released_calls=0,
+                cas_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.add(
+            ReplayRateAccountRecord(
+                rate_account_id=rate_account_id,
+                source_run_id=source_run_id,
+                source_root_digest="b" * 64,
+                campaign_name="migration-test",
+                rate_limits_digest="5" * 64,
+                ledger_id=f"rate-ledger_{'6' * 32}",
+                max_requests_per_minute=10,
+                observed_request_units=2,
+                observed_at=now - timedelta(minutes=1),
+                window_seconds=60,
+                cas_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.flush()
+        session.add(
+            ReplayBudgetReservationRecord(
+                budget_reservation_id=budget_reservation_id,
+                budget_account_id=budget_account_id,
+                item_id="item_migration",
+                batch_id="batch_migration",
+                compilation_id=compilation_id,
+                attempt_number=1,
+                total_calls=2,
+                consumed_calls=0,
+                released_calls=0,
+                state="active",
+                created_at=now,
+                updated_at=now,
+                released_at=None,
+            )
+        )
+        session.add(
+            ReplayRateReservationRecord(
+                rate_reservation_id=rate_reservation_id,
+                rate_account_id=rate_account_id,
+                item_id="item_migration",
+                batch_id="batch_migration",
+                compilation_id=compilation_id,
+                attempt_number=1,
+                total_request_units=2,
+                consumed_request_units=0,
+                released_request_units=0,
+                state="active",
+                reserved_at=now,
+                expires_at=now + timedelta(minutes=1),
+                updated_at=now,
+                released_at=None,
+            )
+        )
+        session.add(
+            JobRecord(
+                job_id=replay_job_id,
+                run_id=fresh_replay_run_id,
+                kind="internal-replay",
+                state="queued",
+                payload={"authority": "v5"},
+                priority=0,
+                attempts=0,
+                max_attempts=1,
+                idempotency_key="v5-replay-ticket-authority",
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+
+    return {
+        "ticket_id": f"replay-ticket_{'d' * 32}",
+        "batch_id": "batch_migration",
+        "item_id": "item_migration",
+        "job_id": replay_job_id,
+        "replay_run_id": fresh_replay_run_id,
+        "attempt_number": 1,
+        "fencing_value": 1,
+        "state": "issued",
+        "grant_digest": "3" * 64,
+        "source_root_digest": "b" * 64,
+        "compilation_digest": "2" * 64,
+        "compilation_id": compilation_id,
+        "budget_reservation_id": budget_reservation_id,
+        "rate_reservation_id": rate_reservation_id,
+        "executor_profile": None,
+        "claim_principal": None,
+        "lease_token_hash": None,
+        "result_digest": None,
+        "abandon_reason": None,
+        "issued_at": now,
+        "expires_at": now + timedelta(minutes=1),
+        "claimed_at": None,
+        "lease_expires_at": None,
+        "finalized_at": None,
+        "abandoned_at": None,
+        "updated_at": now,
+    }
+
+
 def _v2_batch_values(run_id: str, batch_id: str) -> dict[str, object]:
     now = datetime.now(UTC)
     return {
@@ -416,12 +662,16 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             1,
             REPLAY_AUTHORITY_SCHEMA_VERSION,
             ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
             CURRENT_SCHEMA_VERSION,
         ]
 
         repository.initialize()
         with repository.transaction() as session:
-            assert session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord)) == 4
+            assert (
+                session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord))
+                == CURRENT_SCHEMA_VERSION
+            )
     finally:
         repository.close()
 
@@ -508,7 +758,7 @@ def test_empty_v2_database_migrates_forward_without_losing_core_rows(
             versions = session.scalars(
                 select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
             ).all()
-        assert versions == [1, 2, 3, 4]
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
         columns = {
             column["name"] for column in inspect(repository.engine).get_columns("cp_replay_batches")
         }
@@ -542,13 +792,250 @@ def test_empty_v3_database_migrates_forward_without_losing_core_or_artifact_rows
             versions = session.scalars(
                 select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
             ).all()
-        assert versions == [1, 2, 3, 4]
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
         assert "cp_replay_compilations" in inspect(repository.engine).get_table_names()
         item_unique_names = {
             constraint["name"]
             for constraint in inspect(repository.engine).get_unique_constraints("cp_replay_items")
         }
         assert "uq_cp_replay_items_compilation_plan" in item_unique_names
+    finally:
+        repository.close()
+
+
+def test_v4_planned_replay_proof_migrates_forward_without_losing_authority_rows(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v4-planned-proof.db")
+    try:
+        _create_v4_schema(repository)
+        source_run_id, _, replay_run_id = _seed_replay_item_authority(repository)
+        canonical = b'{"kind":"ReplayCompilation","schemaVersion":"pajin.dev/replay/v1alpha1"}'
+        now = datetime.now(UTC)
+        with repository.transaction() as session:
+            session.add(
+                _compilation(
+                    replay_run_id=replay_run_id,
+                    canonical_compilation=canonical,
+                )
+            )
+            session.add(
+                ReplayEventRecord(
+                    event_id="event_v4_planned_proof",
+                    batch_id="batch_migration",
+                    item_id="item_migration",
+                    ticket_id=None,
+                    job_id=None,
+                    run_id=replay_run_id,
+                    sequence=1,
+                    event_type="replay.compilation.derived",
+                    actor="migration-test-operator",
+                    payload={"preserve": True},
+                    occurred_at=now,
+                )
+            )
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == CURRENT_CONTROL_PLANE_TABLES
+        with repository.transaction() as session:
+            batch = session.get(ReplayBatchRecord, "batch_migration")
+            item = session.get(ReplayItemRecord, "item_migration")
+            compilation = session.get(
+                ReplayCompilationRecord,
+                f"replay-compilation_{'6' * 32}",
+            )
+            replay_event = session.get(ReplayEventRecord, "event_v4_planned_proof")
+            versions = list(
+                session.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert batch is not None
+        assert batch.source_run_id == source_run_id
+        assert batch.state == "planned"
+        assert item is not None
+        assert item.state == "pending"
+        assert item.attempts == 0
+        assert compilation is not None
+        assert compilation.replay_run_id == replay_run_id
+        assert compilation.canonical_compilation == canonical
+        assert replay_event is not None
+        assert replay_event.payload == {"preserve": True}
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+
+        repository.initialize()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "unsafe_authority",
+    [
+        "ticket",
+        "internal-replay-job",
+        "public-replay-run-job",
+        "running-batch",
+        "queued-item",
+        "attempted-item",
+    ],
+)
+def test_v4_dispatch_or_attempt_authority_refuses_migration_without_data_loss(
+    tmp_path: Path,
+    unsafe_authority: str,
+) -> None:
+    repository = _repository(tmp_path / f"v4-unsafe-{unsafe_authority}.db")
+    replay_job_id = f"job_{'7' * 32}"
+    replay_ticket_id = f"replay-ticket_{'8' * 32}"
+    try:
+        _create_v4_schema(repository)
+        _, _, replay_run_id = _seed_replay_item_authority(repository)
+        with repository.transaction() as session:
+            session.add(_compilation(replay_run_id=replay_run_id))
+
+        now = datetime.now(UTC)
+        with repository.engine.begin() as connection:
+            if unsafe_authority in {
+                "ticket",
+                "internal-replay-job",
+                "public-replay-run-job",
+            }:
+                connection.execute(
+                    _V4_METADATA.tables["cp_jobs"]
+                    .insert()
+                    .values(
+                        job_id=replay_job_id,
+                        run_id=replay_run_id,
+                        kind=(
+                            "campaign"
+                            if unsafe_authority == "public-replay-run-job"
+                            else "internal-replay"
+                        ),
+                        state="queued",
+                        payload={"legacy": True},
+                        priority=0,
+                        attempts=0,
+                        max_attempts=1,
+                        idempotency_key=f"v4-unsafe-{unsafe_authority}",
+                        available_at=now,
+                        lease_owner=None,
+                        lease_token_hash=None,
+                        lease_expires_at=None,
+                        heartbeat_at=None,
+                        result=None,
+                        error=None,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            if unsafe_authority == "ticket":
+                connection.execute(
+                    _V4_METADATA.tables["cp_replay_tickets"]
+                    .insert()
+                    .values(
+                        ticket_id=replay_ticket_id,
+                        batch_id="batch_migration",
+                        item_id="item_migration",
+                        job_id=replay_job_id,
+                        replay_run_id=replay_run_id,
+                        attempt_number=1,
+                        fencing_value=1,
+                        state="issued",
+                        grant_digest="1" * 64,
+                        source_root_digest="b" * 64,
+                        compilation_digest="f" * 64,
+                        executor_profile=None,
+                        claim_principal=None,
+                        lease_token_hash=None,
+                        result_digest=None,
+                        abandon_reason=None,
+                        issued_at=now,
+                        expires_at=now + timedelta(minutes=5),
+                        claimed_at=None,
+                        lease_expires_at=None,
+                        finalized_at=None,
+                        abandoned_at=None,
+                        updated_at=now,
+                    )
+                )
+            elif unsafe_authority == "running-batch":
+                connection.execute(
+                    _V4_METADATA.tables["cp_replay_batches"]
+                    .update()
+                    .where(_V4_METADATA.tables["cp_replay_batches"].c.batch_id == "batch_migration")
+                    .values(state="running")
+                )
+            elif unsafe_authority == "queued-item":
+                connection.execute(
+                    _V4_METADATA.tables["cp_replay_items"]
+                    .update()
+                    .where(_V4_METADATA.tables["cp_replay_items"].c.item_id == "item_migration")
+                    .values(state="queued")
+                )
+            elif unsafe_authority == "attempted-item":
+                connection.execute(
+                    _V4_METADATA.tables["cp_replay_items"]
+                    .update()
+                    .where(_V4_METADATA.tables["cp_replay_items"].c.item_id == "item_migration")
+                    .values(attempts=1)
+                )
+
+        error_pattern = (
+            r"Replay Run Jobs=1" if unsafe_authority == "public-replay-run-job" else r"schema v4"
+        )
+        with pytest.raises(SchemaInitializationError, match=error_pattern):
+            repository.initialize()
+
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V4_CONTROL_PLANE_TABLES
+        with repository.engine.connect() as connection:
+            versions = list(
+                connection.scalars(
+                    select(_V4_METADATA.tables["cp_schema_version"].c.version).order_by(
+                        _V4_METADATA.tables["cp_schema_version"].c.version
+                    )
+                ).all()
+            )
+            assert versions == [1, 2, 3, 4]
+            assert (
+                connection.scalar(
+                    select(text("count(*)")).select_from(
+                        _V4_METADATA.tables["cp_replay_compilations"]
+                    )
+                )
+                == 1
+            )
+            if unsafe_authority == "ticket":
+                assert (
+                    connection.scalar(
+                        select(text("count(*)")).select_from(
+                            _V4_METADATA.tables["cp_replay_tickets"]
+                        )
+                    )
+                    == 1
+                )
+            if unsafe_authority in {"ticket", "internal-replay-job"}:
+                assert (
+                    connection.scalar(
+                        select(text("count(*)"))
+                        .select_from(_V4_METADATA.tables["cp_jobs"])
+                        .where(_V4_METADATA.tables["cp_jobs"].c.kind == "internal-replay")
+                    )
+                    == 1
+                )
+            if unsafe_authority == "public-replay-run-job":
+                assert (
+                    connection.scalar(
+                        select(text("count(*)"))
+                        .select_from(_V4_METADATA.tables["cp_jobs"])
+                        .where(_V4_METADATA.tables["cp_jobs"].c.job_id == replay_job_id)
+                    )
+                    == 1
+                )
     finally:
         repository.close()
 
@@ -1500,6 +1987,207 @@ def test_replay_compilation_strict_checks_reject_invalid_canonical_authority(
         setattr(compilation, field, value)
         session.add(compilation)
     repository.close()
+
+
+def test_v5_ticket_has_exact_compilation_budget_and_rate_reservation_foreign_keys(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v5-ticket-authority.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    with repository.transaction() as session:
+        session.add(ReplayTicketRecord(**ticket_values))
+
+    with repository.transaction() as session:
+        ticket = session.get(ReplayTicketRecord, ticket_values["ticket_id"])
+        assert ticket is not None
+        assert ticket.compilation_id == ticket_values["compilation_id"]
+        assert ticket.budget_reservation_id == ticket_values["budget_reservation_id"]
+        assert ticket.rate_reservation_id == ticket_values["rate_reservation_id"]
+
+    foreign_keys = {
+        constraint["name"]: (
+            tuple(constraint.get("constrained_columns") or ()),
+            constraint.get("referred_table"),
+            tuple(constraint.get("referred_columns") or ()),
+        )
+        for constraint in inspect(repository.engine).get_foreign_keys("cp_replay_tickets")
+    }
+    assert foreign_keys["fk_cp_replay_tickets_compilation_authority"] == (
+        (
+            "compilation_id",
+            "item_id",
+            "batch_id",
+            "replay_run_id",
+            "compilation_digest",
+            "grant_digest",
+        ),
+        "cp_replay_compilations",
+        (
+            "compilation_id",
+            "item_id",
+            "batch_id",
+            "replay_run_id",
+            "compilation_digest",
+            "grant_digest",
+        ),
+    )
+    assert foreign_keys["fk_cp_replay_tickets_budget_reservation"][0] == (
+        "budget_reservation_id",
+        "item_id",
+        "batch_id",
+        "attempt_number",
+        "compilation_id",
+    )
+    assert foreign_keys["fk_cp_replay_tickets_budget_reservation"][1] == (
+        "cp_replay_budget_reservations"
+    )
+    assert foreign_keys["fk_cp_replay_tickets_rate_reservation"][0] == (
+        "rate_reservation_id",
+        "item_id",
+        "batch_id",
+        "attempt_number",
+        "compilation_id",
+    )
+    assert foreign_keys["fk_cp_replay_tickets_rate_reservation"][1] == (
+        "cp_replay_rate_reservations"
+    )
+    ticket_uniques = {
+        constraint["name"]: tuple(constraint.get("column_names") or ())
+        for constraint in inspect(repository.engine).get_unique_constraints("cp_replay_tickets")
+    }
+    assert ticket_uniques["uq_cp_replay_tickets_compilation"] == ("compilation_id",)
+    assert ticket_uniques["uq_cp_replay_tickets_budget_reservation"] == ("budget_reservation_id",)
+    assert ticket_uniques["uq_cp_replay_tickets_rate_reservation"] == ("rate_reservation_id",)
+    for table_name, expected_unique in (
+        ("cp_replay_budget_reservations", "uq_cp_replay_budget_reservations_item_attempt"),
+        ("cp_replay_rate_reservations", "uq_cp_replay_rate_reservations_item_attempt"),
+    ):
+        unique_names = {
+            constraint["name"]
+            for constraint in inspect(repository.engine).get_unique_constraints(table_name)
+        }
+        assert expected_unique in unique_names
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("compilation_id", f"replay-compilation_{'6' * 32}"),
+        ("budget_reservation_id", f"budget-reservation_{'e' * 32}"),
+        ("rate_reservation_id", f"rate-reservation_{'e' * 32}"),
+        ("replay_run_id", f"run_{'4' * 32}"),
+        ("attempt_number", 2),
+        ("compilation_digest", "f" * 64),
+        ("grant_digest", "1" * 64),
+    ],
+)
+def test_v5_ticket_rejects_mismatched_compilation_or_reservation_authority(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository = _repository(tmp_path / f"v5-ticket-mismatch-{field}.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    ticket_values[field] = value
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        session.add(ReplayTicketRecord(**ticket_values))
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("record_name", "updates"),
+    [
+        ("budget-account", {"reserved_calls": 9}),
+        ("budget-reservation", {"state": "consumed"}),
+        ("budget-reservation", {"released_calls": 3}),
+        ("rate-account", {"max_requests_per_minute": 0}),
+        ("rate-reservation", {"state": "released"}),
+        ("rate-reservation", {"expires_at": None}),
+    ],
+)
+def test_v5_permit_checks_reject_impossible_usage_and_lifecycle(
+    tmp_path: Path,
+    record_name: str,
+    updates: dict[str, object],
+) -> None:
+    repository = _repository(tmp_path / f"v5-permit-check-{record_name}-{'-'.join(updates)}.db")
+    repository.initialize()
+    ticket_values = _seed_v5_issuance_prerequisites(repository)
+    identities = {
+        "budget-account": (
+            ReplayBudgetAccountRecord,
+            f"replay-budget-account_{'8' * 32}",
+        ),
+        "budget-reservation": (
+            ReplayBudgetReservationRecord,
+            ticket_values["budget_reservation_id"],
+        ),
+        "rate-account": (
+            ReplayRateAccountRecord,
+            f"replay-rate-account_{'9' * 32}",
+        ),
+        "rate-reservation": (
+            ReplayRateReservationRecord,
+            ticket_values["rate_reservation_id"],
+        ),
+    }
+    record_type, record_id = identities[record_name]
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        record = session.get(record_type, record_id)
+        assert record is not None
+        if record_name == "rate-reservation" and "expires_at" in updates:
+            updates = {"expires_at": record.reserved_at}
+        for field, value in updates.items():
+            setattr(record, field, value)
+    repository.close()
+
+
+def test_partial_v5_permit_schema_is_rejected_without_repair(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "partial-v5-permit.db")
+    try:
+        _create_v4_schema(repository)
+        with repository.engine.begin() as connection:
+            ReplayBudgetAccountRecord.__table__.create(connection)
+
+        with pytest.raises(SchemaInitializationError, match="partial or unknown"):
+            repository.initialize()
+
+        table_names = set(inspect(repository.engine).get_table_names())
+        assert "cp_replay_budget_accounts" in table_names
+        assert "cp_replay_budget_reservations" not in table_names
+        with repository.engine.connect() as connection:
+            assert list(
+                connection.scalars(
+                    select(_V4_METADATA.tables["cp_schema_version"].c.version).order_by(
+                        _V4_METADATA.tables["cp_schema_version"].c.version
+                    )
+                ).all()
+            ) == [1, 2, 3, 4]
+    finally:
+        repository.close()
+
+
+def test_corrupt_v5_permit_index_is_rejected_without_repair(tmp_path: Path) -> None:
+    path = tmp_path / "corrupt-v5-permit-index.db"
+    repository = _repository(path)
+    repository.initialize()
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql("DROP INDEX ix_cp_replay_budget_reservations_account_state")
+    repository.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="indexes do not match"):
+            restarted.initialize()
+        assert "ix_cp_replay_budget_reservations_account_state" not in {
+            index["name"]
+            for index in inspect(restarted.engine).get_indexes("cp_replay_budget_reservations")
+        }
+    finally:
+        restarted.close()
 
 
 @pytest.mark.parametrize(

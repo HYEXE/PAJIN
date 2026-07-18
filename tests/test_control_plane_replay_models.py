@@ -15,6 +15,7 @@ from pajin.control_plane.models import (
     JobKind,
     JobState,
     JobView,
+    ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayBatchView,
     ReplayClaimRequest,
@@ -72,6 +73,9 @@ def _claim_view_payload() -> dict[str, object]:
     item_id = f"replay-item_{'2' * 32}"
     ticket_id = f"replay-ticket_{'3' * 32}"
     job_id = f"job_{'4' * 32}"
+    compilation_id = f"replay-compilation_{'5' * 32}"
+    budget_reservation_id = f"budget-reservation_{'6' * 32}"
+    rate_reservation_id = f"rate-reservation_{'7' * 32}"
     replay_run_id = "run_20260717T120000Z_cafebabe"
     batch = ReplayBatchView(
         batch_id=batch_id,
@@ -107,6 +111,9 @@ def _claim_view_payload() -> dict[str, object]:
         batch_id=batch_id,
         item_id=item_id,
         job_id=job_id,
+        compilation_id=compilation_id,
+        budget_reservation_id=budget_reservation_id,
+        rate_reservation_id=rate_reservation_id,
         replay_run_id=replay_run_id,
         state=ReplayTicketState.CLAIMED,
         attempt=1,
@@ -126,6 +133,9 @@ def _claim_view_payload() -> dict[str, object]:
             "batch_id": batch_id,
             "item_id": item_id,
             "ticket_id": ticket_id,
+            "compilation_id": compilation_id,
+            "budget_reservation_id": budget_reservation_id,
+            "rate_reservation_id": rate_reservation_id,
             "replay_run_id": replay_run_id,
             "source": batch.source.model_dump(mode="json"),
             "mode": batch.mode.value,
@@ -368,6 +378,9 @@ def test_replay_claim_view_binds_job_batch_item_ticket_attempt_and_fence() -> No
     assert claim.job.lease_owner == claim.ticket.claimed_by
     assert claim.job.lease_expires_at == claim.ticket.lease_expires_at
     assert claim.job.attempts == claim.job.max_attempts == 1
+    assert claim.job.payload["compilation_id"] == claim.ticket.compilation_id
+    assert claim.job.payload["budget_reservation_id"] == claim.ticket.budget_reservation_id
+    assert claim.job.payload["rate_reservation_id"] == claim.ticket.rate_reservation_id
 
     wrong_ticket = claim.ticket.model_copy(update={"item_id": f"replay-item_{'9' * 32}"})
     with pytest.raises(ValidationError, match="ticket and item IDs must match"):
@@ -376,6 +389,96 @@ def test_replay_claim_view_binds_job_batch_item_ticket_attempt_and_fence() -> No
     wrong_job = claim.job.model_copy(update={"kind": JobKind.CAMPAIGN.value})
     with pytest.raises(ValidationError, match="internal Replay Job"):
         ReplayClaimView.model_validate({**payload, "job": wrong_job})
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("compilation_id", f"replay-compilation_{'A' * 32}"),
+        ("budget_reservation_id", f"budget-reservation_{'B' * 32}"),
+        ("rate_reservation_id", f"rate-reservation_{'C' * 32}"),
+    ],
+)
+def test_replay_ticket_and_job_payload_require_exact_issuance_authority_ids(
+    field_name: str,
+    invalid_value: str,
+) -> None:
+    payload = _claim_view_payload()
+    job = payload["job"]
+    ticket = payload["ticket"]
+    assert isinstance(job, JobView)
+    assert isinstance(ticket, ReplayTicketView)
+
+    missing_ticket_values = ticket.model_dump()
+    missing_ticket_values.pop(field_name)
+    with pytest.raises(ValidationError):
+        ReplayTicketView.model_validate(missing_ticket_values)
+    with pytest.raises(ValidationError):
+        ReplayTicketView.model_validate({**ticket.model_dump(), field_name: invalid_value})
+
+    missing_payload_values = dict(job.payload)
+    missing_payload_values.pop(field_name)
+    with pytest.raises(ValidationError):
+        ReplayJobPayload.model_validate(missing_payload_values)
+    with pytest.raises(ValidationError):
+        ReplayJobPayload.model_validate({**job.payload, field_name: invalid_value})
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["compilation_id", "budget_reservation_id", "rate_reservation_id"],
+)
+def test_replay_claim_view_binds_job_payload_to_ticket_issuance_authority(
+    field_name: str,
+) -> None:
+    payload = _claim_view_payload()
+    job = payload["job"]
+    assert isinstance(job, JobView)
+    forged_payload = {
+        **job.payload,
+        field_name: {
+            "compilation_id": f"replay-compilation_{'8' * 32}",
+            "budget_reservation_id": f"budget-reservation_{'8' * 32}",
+            "rate_reservation_id": f"rate-reservation_{'8' * 32}",
+        }[field_name],
+    }
+
+    with pytest.raises(ValidationError, match="payload authority binding is inconsistent"):
+        ReplayClaimView.model_validate(
+            {**payload, "job": job.model_copy(update={"payload": forged_payload})}
+        )
+
+
+def test_replay_batch_issuance_view_binds_the_exact_item_ticket_set() -> None:
+    payload = _claim_view_payload()
+    batch = payload["batch"]
+    item = payload["item"]
+    ticket = payload["ticket"]
+    assert isinstance(batch, ReplayBatchView)
+    assert isinstance(item, ReplayItemView)
+    assert isinstance(ticket, ReplayTicketView)
+
+    issuance = ReplayBatchIssuanceView(batch=batch, items=[item], tickets=[ticket])
+    assert issuance.items[0].item_id == issuance.tickets[0].item_id
+
+    with pytest.raises(ValidationError, match="cover the exact item set"):
+        ReplayBatchIssuanceView(
+            batch=batch,
+            items=[item],
+            tickets=[ticket.model_copy(update={"item_id": f"replay-item_{'8' * 32}"})],
+        )
+    with pytest.raises(ValidationError, match="Replay Run IDs must match"):
+        ReplayBatchIssuanceView(
+            batch=batch,
+            items=[item],
+            tickets=[ticket.model_copy(update={"replay_run_id": "run_other"})],
+        )
+    with pytest.raises(ValidationError, match="attempt must match"):
+        ReplayBatchIssuanceView(
+            batch=batch,
+            items=[item],
+            tickets=[ticket.model_copy(update={"attempt": 2})],
+        )
 
 
 @pytest.mark.parametrize(
@@ -479,6 +582,9 @@ def test_replay_claim_view_accepts_new_job_for_later_ticket_attempt() -> None:
     later_attempt = 2
     later_job_id = f"job_{'5' * 32}"
     later_ticket_id = f"replay-ticket_{'6' * 32}"
+    later_compilation_id = f"replay-compilation_{'7' * 32}"
+    later_budget_reservation_id = f"budget-reservation_{'8' * 32}"
+    later_rate_reservation_id = f"rate-reservation_{'9' * 32}"
     later_run_id = "run_20260717T120100Z_feedface"
     claim = ReplayClaimView.model_validate(
         {
@@ -490,6 +596,9 @@ def test_replay_claim_view_accepts_new_job_for_later_ticket_attempt() -> None:
                     "payload": {
                         **job.payload,
                         "ticket_id": later_ticket_id,
+                        "compilation_id": later_compilation_id,
+                        "budget_reservation_id": later_budget_reservation_id,
+                        "rate_reservation_id": later_rate_reservation_id,
                         "replay_run_id": later_run_id,
                         "attempt": later_attempt,
                     },
@@ -502,6 +611,9 @@ def test_replay_claim_view_accepts_new_job_for_later_ticket_attempt() -> None:
                 update={
                     "ticket_id": later_ticket_id,
                     "job_id": later_job_id,
+                    "compilation_id": later_compilation_id,
+                    "budget_reservation_id": later_budget_reservation_id,
+                    "rate_reservation_id": later_rate_reservation_id,
                     "replay_run_id": later_run_id,
                     "attempt": later_attempt,
                 }

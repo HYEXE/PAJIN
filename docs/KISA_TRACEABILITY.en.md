@@ -29,15 +29,18 @@ the attached PDF.
 > Plane rereads the managed sealed AI Red Team source, derives the eligible exact M03, M06, and A04
 > confirmation Candidate and contract, runs the trusted Replay Compiler, and stores the canonical
 > `ReplayCompilation` and `ReplayCapabilityGrant` as an append-only planned/pending,
-> non-dispatchable PostgreSQL derivation record and proof. It exposes no public Replay/admission API,
-> issues no Job or ticket, and dispatches no execution before the still pending durable
-> budget/request-rate permit. The stored five-minute Grant may expire while pending and MUST NOT be
-> reused as later execution authority. Permit/issuance must recompile with a fresh Replay Run
-> identity and Grant, or bind an otherwise fresh and valid compilation, by appending a new row in the
-> issuance transaction. Each row owns a `compilation_id`, Replay Run identity, compilation digest,
-> and Grant digest; `item_id` is non-unique and the Candidate/contract plan-identity foreign key
-> permits multiple attempt/version rows for one item. Future tickets must directly reference the
-> selected row and digests; redesigning the existing ticket foreign key is the next slice.
+> non-dispatchable PostgreSQL derivation record and proof. M6-07B-2C durable issuance is also
+> implemented as of 2026-07-18. The internal, idempotent
+> `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` service re-resolves and re-verifies
+> the managed source, uses schema-v5 durable budget and conservative sealed-rate accounts and
+> reservations, and reserves the entire first attempt. It recompiles every pending item with a fresh
+> Replay Run identity and five-minute Grant, appends a new canonical compilation, and atomically
+> creates one internal Job and `issued` ticket bound to the exact `compilation_id`,
+> `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run, compilation digest, and Grant
+> digest. The initial planned row remains non-dispatchable and is never reused. This path still has no
+> public Replay/admission API, and reservations are not actual per-call permits. Per-call permit
+> consumption, new-identity retry issuance, executor/finalization/Gate wiring, and negative Control
+> Plane retest remain follow-up work; M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
 omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
@@ -92,7 +95,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | Implemented |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned/pending non-dispatchable canonical compilation record, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, and Control Plane exact M03/M06/A04 derivation implemented; Control Plane permit/ticket/execution/Gate and organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and durable first-attempt issuance, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job and issued ticket, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative replay contracts, explicit Local orchestration, post-restart receipt verification, Control Plane exact M03/M06/A04 derivation, and internal first-attempt issuance implemented; public Replay API, per-call permit, retry, execution/finalization/Gate, and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | Local DB/OS trust boundary implemented; portable signed proof remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` report generation | `kisa-report.md`, `kisa-results.json` | Implemented |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -323,20 +326,24 @@ KISA threats remain `not assessed`.
   proof that an external auditor can verify independently.
 - The explicit Local KISA coordinator in M6-07A is limited to the exact M03, M06, and A04 allowlist
   and one process with one writer. M6-07B remains incomplete, but its first authority-state slice,
-  M6-07B-2A managed Artifact foundation, and M6-07B-2B trusted derivation slice are implemented.
+  M6-07B-2A managed Artifact foundation, M6-07B-2B trusted derivation, and M6-07B-2C durable issuance
+  slices are implemented.
   Batch input is only the exact opaque Artifact locator and idempotency key. The Control Plane
   re-verifies the managed sealed AI Red Team source, derives eligible exact M03/M06/A04 confirmation
   Candidates and contracts, compiles them, and persists canonical `ReplayCompilation` and Grant as
   non-dispatchable derivation records in append-only PostgreSQL storage with batch `planned` and item
-  `pending` state. Schema
-  v4 extends the forward v1→v2→v3→v4 path. Caller-authored Candidate, contract, digest, policy,
-  target, and arguments are not trusted inputs. This slice creates no Job or ticket because durable
-  budget/request-rate permits must precede issuance. The stored Grant may expire and is not reusable;
-  issuance must append a freshly compiled Replay Run identity and Grant (or an otherwise fresh valid
-  compilation) and bind its `compilation_id` and digests directly to the ticket in its transaction.
-  The ticket foreign-key redesign remains pending. Permit/ticket issuance, new-identity retry,
-  executor/finalization/Gate, and negative Control Plane retest remain outstanding; no public
-  Replay/admission API is claimed.
+  `pending` state. Schema v5 extends the forward v1→v2→v3→v4→v5 path with durable budget accounts and
+  reservations, conservative sealed-rate accounts and reservations, and exact ticket foreign keys.
+  Caller-authored Candidate, contract, digest, policy, target, and arguments are not trusted inputs.
+  The internal idempotent issuance service re-verifies the managed source and, in one transaction,
+  reserves every first-attempt call/unit, appends fresh Replay Run/Grant compilation authority, and
+  creates the exact internal Job/ticket set. Each payload/ticket binds `compilation_id`,
+  `budget_reservation_id`, and `rate_reservation_id`. Only a response-loss retry against the current
+  active exact authority graph reconstructs that issuance: the ticket/Job pair must still be
+  `issued`/`queued` immediately after issuance or `claimed`/`running` after claim; a terminal or
+  otherwise changed graph must fail closed.
+  The initial planned Grant is not reused. A public Replay API, actual per-call permits, new-identity
+  retry, executor/finalization/Gate, and negative Control Plane retest remain outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific

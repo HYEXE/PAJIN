@@ -26,15 +26,16 @@
 > managed sealed AI Red Team source를 다시 읽어 eligible exact M03·M06·A04 confirmation Candidate와
 > contract를 파생하고 trusted Replay Compiler를 실행한 뒤 canonical `ReplayCompilation`과
 > `ReplayCapabilityGrant`를 append-only planned/pending, non-dispatchable PostgreSQL derivation
-> record이자 proof로 저장한다. public
-> Replay/admission API는 열지 않으며 아직 남은 durable budget/request-rate permit보다 먼저 Job이나
-> ticket을 발행하거나 실행을 dispatch하지 않는다. 저장된 5분 Grant는 pending 중 만료될 수 있으므로
-> 이후 실행 권한으로 절대 재사용하면 안 된다. permit/issuance는 발행 transaction 안에서 새 Replay
-> Run identity와 Grant로 다시 compile하거나 별도의 fresh하고 유효한 compilation을 결박해 발행
-> transaction에서 새 row를 append해야 한다. 각 row는 `compilation_id`, Replay Run identity,
-> compilation digest와 Grant digest를 소유한다. `item_id`는 고유하지 않고 Candidate/contract plan
-> identity FK에 결박되므로 item 하나에 여러 attempt/version row를 둘 수 있다. 미래 ticket은 선택한
-> row와 digest를 직접 참조해야 하며 기존 ticket FK 재설계는 다음 조각이다.
+> record이자 proof로 저장한다. 2026-07-18에는 M6-07B-2C durable issuance도 구현했다. 내부 멱등
+> `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` 서비스는 managed source를 다시
+> resolve·재검증하고 schema v5 durable budget account/reservation과 보수적인 sealed-rate
+> account/reservation을 사용해 첫 시도 전체를 예약한다. pending item마다 fresh Replay Run identity와
+> 5분 Grant로 다시 compile해 새 canonical compilation을 append하고, 정확한 `compilation_id`,
+> `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run, compilation digest, Grant
+> digest에 결박된 내부 Job과 `issued` ticket을 하나씩 원자적으로 만든다. 최초 planned row는
+> non-dispatchable 상태로 남고 재사용하지 않는다. 여전히 public Replay/admission API는 없고 예약은
+> 실제 호출별 permit이 아니다. 호출별 permit 소비, 새 identity retry 발행,
+> executor/finalization/Gate와 negative Control Plane retest가 후속이며 M6-07B 전체는 미완료다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -89,7 +90,7 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned/pending non-dispatchable canonical compilation record, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration, 재시작 후 receipt 검증과 Control Plane exact M03·M06·A04 파생 구현; Control Plane permit/ticket/실행/Gate와 조직 영향 분석은 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생과 durable 첫 시도 발행, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job과 issued ticket, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration, 재시작 후 receipt 검증, Control Plane exact M03·M06·A04 파생과 내부 첫 시도 발행 구현; public Replay API, 호출별 permit, retry, 실행/finalization/Gate와 조직 영향 분석은 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -301,19 +302,22 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   Control Plane replay authority나 외부 감사자가 독립 검증할 portable 서명 proof가 아니다.
 - M6-07A의 명시적 Local KISA coordinator는 exact M03·M06·A04 allowlist와 한 프로세스·한
   writer에 한정된다. M6-07B 전체는 미완료지만 첫 authority-state 조각, M6-07B-2A managed Artifact
-  기반과 M6-07B-2B trusted derivation 조각은 구현됐다. batch input은 exact opaque Artifact locator와
+  기반, M6-07B-2B trusted derivation과 M6-07B-2C durable issuance 조각은 구현됐다. batch input은
+  exact opaque Artifact locator와
   idempotency key뿐이다. Control Plane은 managed sealed AI Red Team source를 다시 검증하고 eligible
   exact M03·M06·A04 confirmation Candidate와 contract를 파생·컴파일해 canonical
   `ReplayCompilation`과 Grant를 batch `planned`, item `pending` 상태의 append-only,
-  non-dispatchable PostgreSQL derivation record로 저장한다. schema v4는 forward v1→v2→v3→v4 경로를
-  확장한다. caller가 작성한
-  Candidate, contract, digest, policy, target, arguments는 신뢰 입력이 아니다. durable
-  budget/request-rate permit이 발행보다 먼저여야 하므로 이 조각은 Job이나 ticket을 만들지 않는다.
-  저장된 Grant는 만료될 수 있어 재사용할 수 없으며, issuance transaction은 새 Replay Run identity와
-  Grant로 다시 compile하거나 별도의 fresh하고 유효한 compilation을 결박해 새 row를 append하고,
-  ticket을 그 `compilation_id`와 digest에 직접 결박해야 한다. ticket FK 재설계는 아직 남아 있다.
-  permit/ticket 발행, 새 identity retry, executor/finalization/Gate와 negative Control Plane retest는
-  남아 있으며 public Replay/admission API를 제공한다고 주장하지 않는다.
+  non-dispatchable PostgreSQL derivation record로 저장한다. schema v5는 forward v1→v2→v3→v4→v5
+  경로에 durable budget account/reservation, 보수적인 sealed-rate account/reservation과 exact ticket
+  FK를 추가한다. caller가 작성한 Candidate, contract, digest, policy, target, arguments는 신뢰 입력이
+  아니다. 내부 멱등 issuance 서비스는 managed source를 재검증하고 한 transaction에서 모든 첫 시도
+  call/unit을 예약하며, fresh Replay Run/Grant compilation 권위를 append하고 정확한 내부 Job/ticket
+  집합을 만든다. 각 payload/ticket은 `compilation_id`, `budget_reservation_id`,
+  `rate_reservation_id`에 결박된다. 응답 유실(response-loss) 재시도는 현재 active exact authority
+  graph가 발급 직후 ticket/Job `issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만 같은
+  issuance를 재구성하며, terminal이거나 그 밖에 변경된 graph는 fail closed한다. 최초 planned Grant는
+  재사용하지 않는다. public Replay API, 실제 호출별 permit, 새 identity retry,
+  executor/finalization/Gate와 negative Control Plane retest는 남아 있다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

@@ -185,6 +185,9 @@ class ReplayJobPayload(StrictModel):
     batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
     item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
     ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    compilation_id: str = Field(pattern=r"^replay-compilation_[0-9a-f]{32}$")
+    budget_reservation_id: str = Field(pattern=r"^budget-reservation_[0-9a-f]{32}$")
+    rate_reservation_id: str = Field(pattern=r"^rate-reservation_[0-9a-f]{32}$")
     replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     source: ArtifactRef
     mode: CampaignMode
@@ -372,6 +375,9 @@ class ReplayTicketView(StrictModel):
     batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
     item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
     job_id: str = Field(pattern=r"^job_[0-9a-f]{32}$")
+    compilation_id: str = Field(pattern=r"^replay-compilation_[0-9a-f]{32}$")
+    budget_reservation_id: str = Field(pattern=r"^budget-reservation_[0-9a-f]{32}$")
+    rate_reservation_id: str = Field(pattern=r"^rate-reservation_[0-9a-f]{32}$")
     replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     state: ReplayTicketState
     attempt: int = Field(strict=True, ge=1, le=100)
@@ -389,6 +395,44 @@ class ReplayTicketView(StrictModel):
         claim_fields = (self.executor_profile, self.claimed_by, self.lease_expires_at)
         if self.state is ReplayTicketState.CLAIMED and any(value is None for value in claim_fields):
             raise ValueError("claimed Replay ticket requires principal, profile, and lease expiry")
+        return self
+
+
+class ReplayBatchIssuanceView(StrictModel):
+    """One idempotent view of the Jobs/tickets issued for a Replay batch."""
+
+    batch: ReplayBatchView
+    items: list[ReplayItemView] = Field(min_length=1, max_length=1_000)
+    tickets: list[ReplayTicketView] = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_exact_item_ticket_binding(self) -> ReplayBatchIssuanceView:
+        if len(self.items) != len(self.tickets):
+            raise ValueError("Replay issuance requires exactly one ticket per item")
+
+        items_by_id = {item.item_id: item for item in self.items}
+        tickets_by_item_id = {ticket.item_id: ticket for ticket in self.tickets}
+        if len(items_by_id) != len(self.items):
+            raise ValueError("Replay issuance item IDs must be unique")
+        if len(tickets_by_item_id) != len(self.tickets):
+            raise ValueError("Replay issuance ticket item IDs must be unique")
+        if set(items_by_id) != set(tickets_by_item_id):
+            raise ValueError("Replay issuance tickets must cover the exact item set")
+        if len({ticket.ticket_id for ticket in self.tickets}) != len(self.tickets):
+            raise ValueError("Replay issuance ticket IDs must be unique")
+        if len({ticket.job_id for ticket in self.tickets}) != len(self.tickets):
+            raise ValueError("Replay issuance Job IDs must be unique")
+        if len({ticket.compilation_id for ticket in self.tickets}) != len(self.tickets):
+            raise ValueError("Replay issuance compilation IDs must be unique")
+
+        for item_id, item in items_by_id.items():
+            ticket = tickets_by_item_id[item_id]
+            if item.batch_id != self.batch.batch_id or ticket.batch_id != self.batch.batch_id:
+                raise ValueError("Replay issuance item and ticket batch IDs must match")
+            if ticket.replay_run_id != item.replay_run_id:
+                raise ValueError("Replay issuance ticket and item Replay Run IDs must match")
+            if ticket.attempt != item.attempts:
+                raise ValueError("Replay issuance ticket attempt must match the item attempt count")
         return self
 
 
@@ -467,6 +511,9 @@ class ReplayClaimView(StrictModel):
             payload.batch_id != self.batch.batch_id
             or payload.item_id != self.item.item_id
             or payload.ticket_id != self.ticket.ticket_id
+            or payload.compilation_id != self.ticket.compilation_id
+            or payload.budget_reservation_id != self.ticket.budget_reservation_id
+            or payload.rate_reservation_id != self.ticket.rate_reservation_id
             or payload.replay_run_id != self.job.run_id
             or payload.replay_run_id != self.item.replay_run_id
             or payload.source != self.batch.source

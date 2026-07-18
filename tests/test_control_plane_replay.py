@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from threading import Barrier
-from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
 from kisa_control_plane_support import build_kisa_control_plane_source
 from sqlalchemy import func, select, update
 
+import pajin.control_plane.service as control_plane_service_module
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import (
@@ -21,9 +22,13 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayBudgetAccountRecord,
+    ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
+    ReplayRateAccountRecord,
+    ReplayRateReservationRecord,
     ReplayTicketRecord,
     RunRecord,
 )
@@ -48,6 +53,7 @@ from pajin.control_plane.models import (
     LeaseRequest,
     Principal,
     PrincipalRole,
+    ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayClaimRequest,
     ReplayItemState,
@@ -67,7 +73,8 @@ from pajin.control_plane.service import (
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
-from pajin.replay.tickets import replay_context_digest
+from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
+from pajin.tools.ai import AIChatProbeTool
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
@@ -221,22 +228,16 @@ def _batch_request(
     )
 
 
-def _activate_planned_batch_for_state_machine_tests(
+def _issue_planned_batch_for_state_machine_tests(
     repository: ControlPlaneRepository,
     service: ControlPlaneService,
     request: CreateReplayBatchRequest,
     *,
     required_attempts: int,
     max_attempts: int,
-) -> None:
-    """Issue legacy execution rows only inside tests of the downstream state machine.
+) -> ReplayBatchIssuanceView:
+    """Use production issuance, then tune only state-machine policy counts for tests."""
 
-    Production intentionally stops at PLANNED/PENDING until the durable permit slice
-    exists. These direct rows keep claim, fencing, cancellation, and reaper regression
-    coverage without reintroducing an authority bypass in the service.
-    """
-
-    now = datetime.now(UTC)
     with repository.transaction() as session:
         batch = session.scalar(
             select(ReplayBatchRecord).where(
@@ -245,138 +246,26 @@ def _activate_planned_batch_for_state_machine_tests(
         )
         assert batch is not None
         assert batch.state == ReplayBatchState.PLANNED.value
-        source = service._artifact_ref(batch)
-        items = list(
-            session.scalars(
-                select(ReplayItemRecord)
-                .where(ReplayItemRecord.batch_id == batch.batch_id)
-                .order_by(ReplayItemRecord.ordinal)
-            ).all()
-        )
-        assert items
-        batch.state = ReplayBatchState.RUNNING.value
-        batch.cas_version += 1
-        batch.updated_at = now
-        for item in items:
-            replay_run = session.get(RunRecord, item.replay_run_id)
-            compilation = session.scalar(
-                select(ReplayCompilationRecord)
-                .where(ReplayCompilationRecord.item_id == item.item_id)
-                .order_by(
-                    ReplayCompilationRecord.created_at,
-                    ReplayCompilationRecord.compilation_id,
+        batch_id = batch.batch_id
+
+    issued = service.issue_replay_batch(
+        batch_id,
+        actor="trusted-replay-admission",
+    )
+    if (
+        required_attempts != KISA_CONFIRMATION_REQUIRED_ATTEMPTS
+        or max_attempts != KISA_CONFIRMATION_MAX_ATTEMPTS
+    ):
+        with repository.transaction() as session:
+            session.execute(
+                update(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == batch_id)
+                .values(
+                    required_attempts=required_attempts,
+                    max_attempts=max_attempts,
                 )
-                .limit(1)
             )
-            assert replay_run is not None and compilation is not None
-            assert compilation.compilation_digest == item.compilation_digest
-            ticket_id = f"replay-ticket_{uuid4().hex}"
-            job_id = f"job_{uuid4().hex}"
-            attempt = 1
-            fencing_value = 1
-            payload = ReplayJobPayload(
-                batch_id=batch.batch_id,
-                item_id=item.item_id,
-                ticket_id=ticket_id,
-                replay_run_id=replay_run.run_id,
-                source=source,
-                mode=CampaignMode(batch.mode),
-                purpose=ReplayPurpose(batch.purpose),
-                policy_version=batch.policy_version,
-                candidate_id=item.candidate_id,
-                candidate_digest=item.candidate_digest,
-                contract_digest=item.contract_digest,
-                compilation_digest=item.compilation_digest,
-                grant_digest=item.grant_digest,
-                attempt=attempt,
-                fencing_value=fencing_value,
-            )
-            replay_run.input = {"replay": payload.model_dump(mode="json")}
-            replay_run.updated_at = now
-            item.state = ReplayItemState.QUEUED.value
-            item.required_attempts = required_attempts
-            item.max_attempts = max_attempts
-            item.attempts = attempt
-            item.updated_at = now
-            job = JobRecord(
-                job_id=job_id,
-                run_id=replay_run.run_id,
-                kind=InternalJobKind.REPLAY.value,
-                state=JobState.QUEUED.value,
-                payload=payload.model_dump(mode="json"),
-                priority=0,
-                attempts=0,
-                max_attempts=1,
-                idempotency_key=f"replay:{item.item_id}:{attempt}",
-                available_at=now,
-                lease_owner=None,
-                lease_token_hash=None,
-                lease_expires_at=None,
-                heartbeat_at=None,
-                result=None,
-                error=None,
-                created_at=now,
-                updated_at=now,
-            )
-            session.add(job)
-            session.flush()
-            ticket = ReplayTicketRecord(
-                ticket_id=ticket_id,
-                batch_id=batch.batch_id,
-                item_id=item.item_id,
-                job_id=job.job_id,
-                replay_run_id=replay_run.run_id,
-                attempt_number=attempt,
-                fencing_value=fencing_value,
-                state=ReplayTicketState.ISSUED.value,
-                grant_digest=item.grant_digest,
-                source_root_digest=batch.source_root_digest,
-                compilation_digest=item.compilation_digest,
-                executor_profile=None,
-                claim_principal=None,
-                lease_token_hash=None,
-                result_digest=None,
-                abandon_reason=None,
-                issued_at=now,
-                expires_at=now + timedelta(minutes=5),
-                claimed_at=None,
-                lease_expires_at=None,
-                finalized_at=None,
-                abandoned_at=None,
-                updated_at=now,
-            )
-            session.add(ticket)
-            session.flush()
-            service._event(
-                session,
-                replay_run,
-                "run.submitted",
-                "trusted-replay-test-activation",
-                {
-                    "campaignName": batch.campaign_name,
-                    "jobId": job.job_id,
-                    "jobKind": InternalJobKind.REPLAY.value,
-                    "replayBatchId": batch.batch_id,
-                    "replayItemId": item.item_id,
-                    "replayTicketId": ticket.ticket_id,
-                },
-            )
-            service._replay_event(
-                session,
-                batch,
-                "replay.ticket.issued",
-                "trusted-replay-test-activation",
-                {
-                    "attempt": attempt,
-                    "fencingValue": fencing_value,
-                    "compilationDigest": item.compilation_digest,
-                    "expiresAt": ticket.expires_at.isoformat(),
-                },
-                item=item,
-                ticket=ticket,
-                job=job,
-                run_id=replay_run.run_id,
-            )
+    return issued
 
 
 def _create_batch(
@@ -393,7 +282,7 @@ def _create_batch(
         suffix,
     )
     service.create_replay_batch(request, actor="trusted-replay-admission")
-    _activate_planned_batch_for_state_machine_tests(
+    _issue_planned_batch_for_state_machine_tests(
         repository,
         service,
         request,
@@ -679,6 +568,14 @@ def test_batch_creation_is_atomic_idempotent_and_stops_before_ticket_issuance(
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 0
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 0
+            )
             assert (
                 session.scalar(
                     select(func.count())
@@ -712,6 +609,775 @@ def test_batch_creation_is_atomic_idempotent_and_stops_before_ticket_issuance(
             )
         with repository.transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservations(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "issuance.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance")
+        request = _batch_request(source, "issuance")
+        planned = service.create_replay_batch(request, actor="trusted-replay-admission")
+        with repository.transaction() as session:
+            planned_item = session.scalar(
+                select(ReplayItemRecord).where(ReplayItemRecord.batch_id == planned.batch_id)
+            )
+            planned_compilation = session.scalar(
+                select(ReplayCompilationRecord).where(
+                    ReplayCompilationRecord.batch_id == planned.batch_id
+                )
+            )
+            assert planned_item is not None and planned_compilation is not None
+            planned_run_id = planned_item.replay_run_id
+            planned_compilation_id = planned_compilation.compilation_id
+            planned_canonical = bytes(planned_compilation.canonical_compilation)
+
+        issued = service.issue_replay_batch(
+            planned.batch_id,
+            actor="trusted-replay-admission",
+        )
+
+        assert issued.batch.state is ReplayBatchState.RUNNING
+        assert len(issued.items) == len(issued.tickets) == 1
+        assert issued.items[0].state is ReplayItemState.QUEUED
+        assert issued.items[0].attempts == issued.tickets[0].attempt == 1
+        assert issued.items[0].replay_run_id != planned_run_id
+        with repository.transaction() as session:
+            item = session.get(ReplayItemRecord, issued.items[0].item_id)
+            ticket = session.get(ReplayTicketRecord, issued.tickets[0].ticket_id)
+            job = session.get(JobRecord, issued.tickets[0].job_id)
+            fresh_compilation = session.get(
+                ReplayCompilationRecord,
+                issued.tickets[0].compilation_id,
+            )
+            preserved_proof = session.get(ReplayCompilationRecord, planned_compilation_id)
+            planned_run = session.get(RunRecord, planned_run_id)
+            fresh_run = session.get(RunRecord, issued.items[0].replay_run_id)
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget_reservation = session.scalar(select(ReplayBudgetReservationRecord))
+            rate_account = session.scalar(select(ReplayRateAccountRecord))
+            rate_reservation = session.scalar(select(ReplayRateReservationRecord))
+            assert all(
+                record is not None
+                for record in (
+                    item,
+                    ticket,
+                    job,
+                    fresh_compilation,
+                    preserved_proof,
+                    planned_run,
+                    fresh_run,
+                    budget_account,
+                    budget_reservation,
+                    rate_account,
+                    rate_reservation,
+                )
+            )
+            assert item is not None
+            assert ticket is not None
+            assert job is not None
+            assert fresh_compilation is not None
+            assert preserved_proof is not None
+            assert planned_run is not None
+            assert fresh_run is not None
+            assert budget_account is not None
+            assert budget_reservation is not None
+            assert rate_account is not None
+            assert rate_reservation is not None
+
+            assert preserved_proof.canonical_compilation == planned_canonical
+            assert preserved_proof.replay_run_id == planned_run_id
+            assert fresh_compilation.compilation_id != preserved_proof.compilation_id
+            assert fresh_compilation.replay_run_id == item.replay_run_id == ticket.replay_run_id
+            assert fresh_compilation.compilation_digest == item.compilation_digest
+            assert fresh_compilation.grant_digest == item.grant_digest
+            assert sha256(fresh_compilation.canonical_compilation).hexdigest() == (
+                item.compilation_digest
+            )
+            trusted = ReplayCompilation.model_validate_json(fresh_compilation.canonical_compilation)
+            assert canonical_replay_compilation_bytes(trusted) == (
+                fresh_compilation.canonical_compilation
+            )
+            assert trusted.spec.binding.replay_run_id == item.replay_run_id
+            assert replay_context_digest(trusted.grant) == item.grant_digest
+            assert planned_run.state == RunState.QUEUED.value
+            assert "replayPlan" in planned_run.input and "replay" not in planned_run.input
+            assert fresh_run.state == RunState.QUEUED.value
+
+            payload = ReplayJobPayload.model_validate(job.payload)
+            assert job.kind == InternalJobKind.REPLAY.value
+            assert job.state == JobState.QUEUED.value
+            assert payload.compilation_id == ticket.compilation_id
+            assert payload.budget_reservation_id == ticket.budget_reservation_id
+            assert payload.rate_reservation_id == ticket.rate_reservation_id
+            assert payload.replay_run_id == fresh_compilation.replay_run_id
+            assert payload.compilation_digest == fresh_compilation.compilation_digest
+            assert payload.grant_digest == fresh_compilation.grant_digest
+            assert fresh_run.input == {"replay": payload.model_dump(mode="json")}
+
+            assert budget_reservation.budget_reservation_id == ticket.budget_reservation_id
+            assert budget_reservation.compilation_id == ticket.compilation_id
+            assert budget_reservation.attempt_number == ticket.attempt_number == 1
+            assert budget_reservation.total_calls == trusted.spec.max_calls
+            assert budget_reservation.consumed_calls == budget_reservation.released_calls == 0
+            assert budget_reservation.state == "active"
+            assert budget_account.source_run_id == source.producer_run_id
+            assert budget_account.reserved_calls == budget_reservation.total_calls
+            assert budget_account.consumed_calls == 0
+            assert (
+                budget_account.baseline_used_calls
+                + budget_account.reserved_calls
+                + budget_account.consumed_calls
+                <= budget_account.max_tool_calls
+            )
+
+            expected_rate_units = (
+                AIChatProbeTool().network_request_cost(trusted.original_request)
+                * trusted.spec.repetitions
+            )
+            assert rate_reservation.rate_reservation_id == ticket.rate_reservation_id
+            assert rate_reservation.compilation_id == ticket.compilation_id
+            assert rate_reservation.attempt_number == ticket.attempt_number == 1
+            assert rate_reservation.total_request_units == expected_rate_units
+            assert (
+                rate_reservation.consumed_request_units
+                == rate_reservation.released_request_units
+                == 0
+            )
+            assert rate_reservation.state == "active"
+            assert rate_account.source_run_id == source.producer_run_id
+            assert ticket.compilation_id == fresh_compilation.compilation_id
+
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 1
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_exact_retry_is_idempotent_without_double_reservation(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-idempotent.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance-idempotent")
+        planned = service.create_replay_batch(
+            _batch_request(source, "issuance-idempotent"),
+            actor="trusted-replay-admission",
+        )
+
+        first = service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+        repeated = service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        assert repeated == first
+        with repository.transaction() as session:
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget_reservations = list(session.scalars(select(ReplayBudgetReservationRecord)))
+            rate_reservations = list(session.scalars(select(ReplayRateReservationRecord)))
+            assert budget_account is not None
+            assert len(budget_reservations) == len(rate_reservations) == len(first.items)
+            assert budget_account.reserved_calls == sum(
+                reservation.total_calls for reservation in budget_reservations
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == (
+                len(first.items) * 2
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == len(
+                first.items
+            )
+            assert session.scalar(
+                select(func.count())
+                .select_from(JobRecord)
+                .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            ) == len(first.items)
+    finally:
+        repository.close()
+
+
+def test_two_sqlite_issuers_converge_on_one_replay_authority_graph(tmp_path: Path) -> None:
+    database_path = tmp_path / "issuance-race.db"
+    repository_a, service_a = _service(database_path)
+    repository_b, service_b = _service(database_path)
+    try:
+        source = _seed_completed_source(repository_a, service_a, "issuance-race")
+        planned = service_a.create_replay_batch(
+            _batch_request(source, "issuance-race"),
+            actor="trusted-replay-admission",
+        )
+        barrier = Barrier(2)
+
+        def issue(service: ControlPlaneService) -> ReplayBatchIssuanceView:
+            barrier.wait()
+            return service.issue_replay_batch(
+                planned.batch_id,
+                actor="trusted-replay-admission",
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(issue, (service_a, service_b)))
+
+        assert results[0] == results[1]
+        with repository_a.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
+            )
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 1
+            )
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                == 1
+            )
+    finally:
+        repository_b.close()
+        repository_a.close()
+
+
+@pytest.mark.parametrize("limit", ["budget", "rate"])
+def test_replay_issuance_fails_closed_when_aggregate_reservation_is_insufficient(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    limit: str,
+) -> None:
+    repository, service = _service(tmp_path / f"issuance-insufficient-{limit}.db")
+    try:
+        source = _seed_completed_source(repository, service, f"issuance-insufficient-{limit}")
+        planned = service.create_replay_batch(
+            _batch_request(source, f"issuance-insufficient-{limit}"),
+            actor="trusted-replay-admission",
+        )
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_insufficient(**kwargs):
+            derived = real_derive(**kwargs)
+            if limit == "budget":
+                return replace(
+                    derived,
+                    max_tool_calls=(derived.used_tool_calls + derived.required_tool_calls - 1),
+                )
+            return replace(
+                derived,
+                max_requests_per_minute=(
+                    derived.observed_campaign_request_units + derived.required_request_units - 1
+                ),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_insufficient,
+        )
+        with pytest.raises(StateConflict, match=r"budget|rate|reservation|eligible"):
+            service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        with repository.transaction() as session:
+            batch = session.get(ReplayBatchRecord, planned.batch_id)
+            item = session.scalar(
+                select(ReplayItemRecord).where(ReplayItemRecord.batch_id == planned.batch_id)
+            )
+            assert batch is not None and item is not None
+            assert batch.state == ReplayBatchState.PLANNED.value
+            assert item.state == ReplayItemState.PENDING.value
+            assert item.attempts == 0
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 0
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 0
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_rolls_back_all_fresh_authority_after_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-rollback.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance-rollback")
+        planned = service.create_replay_batch(
+            _batch_request(source, "issuance-rollback"),
+            actor="trusted-replay-admission",
+        )
+        original_event = service._replay_event
+        reached_late_failure = False
+
+        def fail_after_ticket(session, batch, event_type, actor, payload, **context):
+            nonlocal reached_late_failure
+            if event_type != "replay.ticket.issued":
+                return original_event(
+                    session,
+                    batch,
+                    event_type,
+                    actor,
+                    payload,
+                    **context,
+                )
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
+            )
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 1
+            )
+            reached_late_failure = True
+            raise RuntimeError("simulated failure after durable Replay issuance")
+
+        monkeypatch.setattr(service, "_replay_event", fail_after_ticket)
+        with pytest.raises(RuntimeError, match="after durable Replay issuance"):
+            service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        assert reached_late_failure
+        with repository.transaction() as session:
+            batch = session.get(ReplayBatchRecord, planned.batch_id)
+            item = session.scalar(
+                select(ReplayItemRecord).where(ReplayItemRecord.batch_id == planned.batch_id)
+            )
+            assert batch is not None and item is not None
+            assert batch.state == ReplayBatchState.PLANNED.value
+            assert batch.cas_version == 1
+            assert item.state == ReplayItemState.PENDING.value
+            assert item.attempts == 0
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 0
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayRateReservationRecord)) == 0
+            )
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                == 0
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_rejects_cancelled_or_drifted_planned_authority(
+    tmp_path: Path,
+) -> None:
+    for condition in ("cancelled", "drifted"):
+        repository, service = _service(tmp_path / f"issuance-{condition}.db")
+        try:
+            source = _seed_completed_source(repository, service, f"issuance-{condition}")
+            planned = service.create_replay_batch(
+                _batch_request(source, f"issuance-{condition}"),
+                actor="trusted-replay-admission",
+            )
+            with repository.transaction() as session:
+                item = session.scalar(
+                    select(ReplayItemRecord).where(ReplayItemRecord.batch_id == planned.batch_id)
+                )
+                assert item is not None
+                replay_run_id = item.replay_run_id
+                if condition == "drifted":
+                    item.grant_digest = "0" * 64
+            if condition == "cancelled":
+                service.cancel_run(
+                    replay_run_id,
+                    CancelRunRequest(reason="cancel planned Replay before issuance"),
+                    actor="replay-operator",
+                )
+
+            with pytest.raises(StateConflict, match=r"cancelled|planned|authority|binding"):
+                service.issue_replay_batch(
+                    planned.batch_id,
+                    actor="trusted-replay-admission",
+                )
+            with repository.transaction() as session:
+                assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+                assert (
+                    session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord))
+                    == 0
+                )
+                assert (
+                    session.scalar(select(func.count()).select_from(ReplayRateReservationRecord))
+                    == 0
+                )
+        finally:
+            repository.close()
+
+
+def test_replay_issuance_rejects_an_expired_fresh_grant_without_partial_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-expired-grant.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance-expired-grant")
+        planned = service.create_replay_batch(
+            _batch_request(source, "issuance-expired-grant"),
+            actor="trusted-replay-admission",
+        )
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_expired(**kwargs):
+            derived = real_derive(**kwargs)
+            compiled_at = datetime.now(UTC) - timedelta(minutes=10)
+            expires_at = compiled_at + timedelta(minutes=5)
+            expired_items = []
+            for item in derived.items:
+                grant = item.compilation.grant.model_copy(
+                    update={"issued_at": compiled_at, "expires_at": expires_at}
+                )
+                spec = item.compilation.spec.model_copy(
+                    update={"compiled_at": compiled_at, "expires_at": expires_at}
+                )
+                compilation = item.compilation.model_copy(update={"grant": grant, "spec": spec})
+                canonical = canonical_replay_compilation_bytes(compilation)
+                expired_items.append(
+                    replace(
+                        item,
+                        compilation=compilation,
+                        canonical_compilation=canonical,
+                        compilation_digest=sha256(canonical).hexdigest(),
+                        grant_digest=replay_context_digest(grant),
+                    )
+                )
+            return replace(
+                derived,
+                compiled_at=compiled_at,
+                items=tuple(expired_items),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_expired,
+        )
+        with pytest.raises(StateConflict, match=r"expired|Grant|compilation"):
+            service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_rejects_misreported_fresh_request_units(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-request-units.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance-request-units")
+        planned = service.create_replay_batch(
+            _batch_request(source, "issuance-request-units"),
+            actor="trusted-replay-admission",
+        )
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_underreported(**kwargs):
+            derived = real_derive(**kwargs)
+            original = derived.items[0]
+            assert original.required_request_units > 1
+            underreported = replace(
+                original,
+                required_request_units=original.required_request_units - 1,
+            )
+            return replace(
+                derived,
+                required_request_units=derived.required_request_units - 1,
+                items=(underreported, *derived.items[1:]),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_underreported,
+        )
+        with pytest.raises(StateConflict, match=r"compilation|authority|eligible"):
+            service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_rejects_a_future_fresh_grant_without_partial_rows(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-future-grant.db")
+    try:
+        source = _seed_completed_source(repository, service, "issuance-future-grant")
+        planned = service.create_replay_batch(
+            _batch_request(source, "issuance-future-grant"),
+            actor="trusted-replay-admission",
+        )
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_future(**kwargs):
+            derived = real_derive(**kwargs)
+            compiled_at = datetime.now(UTC) + timedelta(minutes=10)
+            expires_at = compiled_at + timedelta(minutes=5)
+            future_items = []
+            for item in derived.items:
+                grant = item.compilation.grant.model_copy(
+                    update={"issued_at": compiled_at, "expires_at": expires_at}
+                )
+                spec = item.compilation.spec.model_copy(
+                    update={"compiled_at": compiled_at, "expires_at": expires_at}
+                )
+                compilation = item.compilation.model_copy(update={"grant": grant, "spec": spec})
+                canonical = canonical_replay_compilation_bytes(compilation)
+                future_items.append(
+                    replace(
+                        item,
+                        compilation=compilation,
+                        canonical_compilation=canonical,
+                        compilation_digest=sha256(canonical).hexdigest(),
+                        grant_digest=replay_context_digest(grant),
+                    )
+                )
+            return replace(
+                derived,
+                compiled_at=compiled_at,
+                items=tuple(future_items),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_future,
+        )
+        with pytest.raises(StateConflict, match=r"compilation|authority|eligible"):
+            service.issue_replay_batch(planned.batch_id, actor="trusted-replay-admission")
+
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayBudgetAccountRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayRateAccountRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_expired_unclaimed_replay_ticket_is_swept_and_releases_capacity(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "expired-unclaimed-ticket.db")
+    try:
+        _create_batch(repository, service, "expired-unclaimed-ticket")
+        now = datetime.now(UTC)
+        expired_at = now - timedelta(minutes=1)
+        with repository.transaction() as session:
+            ticket = session.scalar(select(ReplayTicketRecord))
+            assert ticket is not None
+            ticket.issued_at = now - timedelta(minutes=2)
+            ticket.expires_at = expired_at
+            ticket_id = ticket.ticket_id
+
+        assert service.requeue_expired(actor="lease-reaper") == 1
+        assert service.requeue_expired(actor="lease-reaper") == 0
+
+        with repository.transaction() as session:
+            ticket = session.get(ReplayTicketRecord, ticket_id)
+            assert ticket is not None
+            job = session.get(JobRecord, ticket.job_id)
+            item = session.get(ReplayItemRecord, ticket.item_id)
+            batch = session.get(ReplayBatchRecord, ticket.batch_id)
+            run = session.get(RunRecord, ticket.replay_run_id)
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                ticket.rate_reservation_id,
+            )
+            account = session.scalar(select(ReplayBudgetAccountRecord))
+            assert all(
+                record is not None for record in (job, item, batch, run, budget, rate, account)
+            )
+            assert job is not None
+            assert item is not None
+            assert batch is not None
+            assert run is not None
+            assert budget is not None
+            assert rate is not None
+            assert account is not None
+            assert ticket.state == ReplayTicketState.ABANDONED.value
+            assert ticket.abandon_reason == "Replay ticket expired before claim"
+            assert job.state == JobState.FAILED.value
+            assert item.state == ReplayItemState.RETRY_PENDING.value
+            assert batch.state == ReplayBatchState.RUNNING.value
+            assert run.state == RunState.FAILED.value
+            assert budget.state == rate.state == "released"
+            assert budget.released_calls == budget.total_calls
+            assert rate.released_request_units == rate.total_request_units
+            assert account.reserved_calls == account.consumed_calls == 0
+            assert account.released_calls == budget.total_calls
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_fails_closed_on_budget_account_ledger_drift(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "budget-ledger-drift.db")
+    try:
+        source = _seed_completed_source(repository, service, "budget-ledger-drift")
+        first = service.create_replay_batch(
+            _batch_request(source, "budget-ledger-drift-first"),
+            actor="trusted-replay-admission",
+        )
+        second = service.create_replay_batch(
+            _batch_request(source, "budget-ledger-drift-second"),
+            actor="trusted-replay-admission",
+        )
+        service.issue_replay_batch(first.batch_id, actor="trusted-replay-admission")
+        with repository.transaction() as session:
+            account = session.scalar(select(ReplayBudgetAccountRecord))
+            assert account is not None and account.reserved_calls > 0
+            account.reserved_calls = 0
+
+        with pytest.raises(StateConflict, match=r"budget.*ledger|account counters"):
+            service.issue_replay_batch(second.batch_id, actor="trusted-replay-admission")
+
+        with repository.transaction() as session:
+            stored_second = session.get(ReplayBatchRecord, second.batch_id)
+            assert stored_second is not None
+            assert stored_second.state == ReplayBatchState.PLANNED.value
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+            assert (
+                session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_release_rejects_a_reservation_bound_to_another_source_account(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "reservation-account-drift.db")
+    try:
+        source_a = _seed_completed_source(repository, service, "reservation-account-drift-a")
+        source_b = _seed_completed_source(repository, service, "reservation-account-drift-b")
+        planned_a = service.create_replay_batch(
+            _batch_request(source_a, "reservation-account-drift-a"),
+            actor="trusted-replay-admission",
+        )
+        planned_b = service.create_replay_batch(
+            _batch_request(source_b, "reservation-account-drift-b"),
+            actor="trusted-replay-admission",
+        )
+        issued_a = service.issue_replay_batch(
+            planned_a.batch_id,
+            actor="trusted-replay-admission",
+        )
+        service.issue_replay_batch(
+            planned_b.batch_id,
+            actor="trusted-replay-admission",
+        )
+
+        with repository.transaction() as session:
+            ticket_a = session.get(ReplayTicketRecord, issued_a.tickets[0].ticket_id)
+            account_a = session.scalar(
+                select(ReplayBudgetAccountRecord).where(
+                    ReplayBudgetAccountRecord.source_run_id == source_a.producer_run_id
+                )
+            )
+            account_b = session.scalar(
+                select(ReplayBudgetAccountRecord).where(
+                    ReplayBudgetAccountRecord.source_run_id == source_b.producer_run_id
+                )
+            )
+            assert ticket_a is not None and account_a is not None and account_b is not None
+            reservation_a = session.get(
+                ReplayBudgetReservationRecord,
+                ticket_a.budget_reservation_id,
+            )
+            assert reservation_a is not None
+            moved_calls = reservation_a.total_calls
+            account_a.reserved_calls -= moved_calls
+            account_b.reserved_calls += moved_calls
+            reservation_a.budget_account_id = account_b.budget_account_id
+            counters_before = (
+                account_a.reserved_calls,
+                account_a.released_calls,
+                account_b.reserved_calls,
+                account_b.released_calls,
+            )
+
+        with pytest.raises(StateConflict, match=r"binding|source|account"):
+            service.cancel_run(
+                issued_a.items[0].replay_run_id,
+                CancelRunRequest(reason="reject drifted reservation account"),
+                actor="replay-operator",
+            )
+
+        with repository.transaction() as session:
+            ticket_a = session.get(ReplayTicketRecord, issued_a.tickets[0].ticket_id)
+            job_a = session.get(JobRecord, issued_a.tickets[0].job_id)
+            item_a = session.get(ReplayItemRecord, issued_a.items[0].item_id)
+            run_a = session.get(RunRecord, issued_a.items[0].replay_run_id)
+            account_a = session.scalar(
+                select(ReplayBudgetAccountRecord).where(
+                    ReplayBudgetAccountRecord.source_run_id == source_a.producer_run_id
+                )
+            )
+            account_b = session.scalar(
+                select(ReplayBudgetAccountRecord).where(
+                    ReplayBudgetAccountRecord.source_run_id == source_b.producer_run_id
+                )
+            )
+            assert all(
+                record is not None
+                for record in (ticket_a, job_a, item_a, run_a, account_a, account_b)
+            )
+            assert ticket_a is not None
+            assert job_a is not None
+            assert item_a is not None
+            assert run_a is not None
+            assert account_a is not None
+            assert account_b is not None
+            assert ticket_a.state == ReplayTicketState.ISSUED.value
+            assert job_a.state == JobState.QUEUED.value
+            assert item_a.state == ReplayItemState.QUEUED.value
+            assert run_a.state == RunState.QUEUED.value
+            assert (
+                account_a.reserved_calls,
+                account_a.released_calls,
+                account_b.reserved_calls,
+                account_b.released_calls,
+            ) == counters_before
     finally:
         repository.close()
 
@@ -852,6 +1518,25 @@ def test_claim_burns_ticket_and_binds_authenticated_actor_token_attempt_and_fenc
             assert ticket.claim_principal == "authenticated-worker-a"
             assert ticket.fencing_value == claimed.ticket.fencing_value
             assert ticket.attempt_number == claimed.ticket.attempt
+            compilation = session.get(ReplayCompilationRecord, ticket.compilation_id)
+            budget_reservation = session.get(
+                ReplayBudgetReservationRecord,
+                ticket.budget_reservation_id,
+            )
+            rate_reservation = session.get(
+                ReplayRateReservationRecord,
+                ticket.rate_reservation_id,
+            )
+            assert compilation is not None
+            assert budget_reservation is not None
+            assert rate_reservation is not None
+            payload = ReplayJobPayload.model_validate(job.payload)
+            assert payload.compilation_id == ticket.compilation_id
+            assert payload.budget_reservation_id == ticket.budget_reservation_id
+            assert payload.rate_reservation_id == ticket.rate_reservation_id
+            assert compilation.replay_run_id == ticket.replay_run_id
+            assert budget_reservation.compilation_id == ticket.compilation_id
+            assert rate_reservation.compilation_id == ticket.compilation_id
 
         assert (
             service.claim_replay_job(
@@ -911,7 +1596,17 @@ def test_replay_claim_rejects_unregistered_actor_profile_without_state_change(
         repository.close()
 
 
-@pytest.mark.parametrize("tamper", ["extra-run-path", "compilation-digest", "ticket-id"])
+@pytest.mark.parametrize(
+    "tamper",
+    [
+        "extra-run-path",
+        "compilation-id",
+        "budget-reservation-id",
+        "rate-reservation-id",
+        "compilation-digest",
+        "ticket-id",
+    ],
+)
 def test_replay_claim_rejects_tampered_job_payload_without_burning_ticket(
     tmp_path: Path,
     tamper: str,
@@ -929,6 +1624,12 @@ def test_replay_claim_rejects_tampered_job_payload_without_burning_ticket(
             payload = dict(job.payload)
             if tamper == "extra-run-path":
                 payload["run_path"] = "/tmp/worker-controlled"
+            elif tamper == "compilation-id":
+                payload["compilation_id"] = f"replay-compilation_{'0' * 32}"
+            elif tamper == "budget-reservation-id":
+                payload["budget_reservation_id"] = f"budget-reservation_{'0' * 32}"
+            elif tamper == "rate-reservation-id":
+                payload["rate_reservation_id"] = f"rate-reservation_{'0' * 32}"
             elif tamper == "compilation-digest":
                 payload["compilation_digest"] = "0" * 64
             else:
@@ -1109,12 +1810,23 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
         with repository.transaction() as session:
             ticket = session.scalar(select(ReplayTicketRecord))
             assert ticket is not None
+            rate_reservation = session.get(
+                ReplayRateReservationRecord,
+                ticket.rate_reservation_id,
+            )
+            assert rate_reservation is not None
+            rate_deadline = (
+                rate_reservation.expires_at
+                if rate_reservation.expires_at.tzinfo is not None
+                else rate_reservation.expires_at.replace(tzinfo=UTC)
+            )
+            issuance_deadline = rate_deadline - timedelta(seconds=1)
             session.execute(
                 update(ReplayTicketRecord)
                 .where(ReplayTicketRecord.ticket_id == ticket.ticket_id)
                 .values(
                     issued_at=now - timedelta(minutes=1),
-                    expires_at=now + timedelta(seconds=60),
+                    expires_at=issuance_deadline,
                 )
             )
         claimed = service.claim_replay_job(
@@ -1126,12 +1838,13 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
         with repository.transaction() as session:
             ticket = session.get(ReplayTicketRecord, claimed.ticket.ticket_id)
             assert ticket is not None
-            issuance_deadline = (
+            stored_issuance_deadline = (
                 ticket.expires_at
                 if ticket.expires_at.tzinfo is not None
                 else ticket.expires_at.replace(tzinfo=UTC)
             )
-        assert claimed.ticket.lease_expires_at > issuance_deadline
+        assert stored_issuance_deadline == issuance_deadline
+        assert claimed.ticket.lease_expires_at > stored_issuance_deadline
 
         refreshed = service.heartbeat_replay_job(
             claimed.job.job_id,
@@ -1146,7 +1859,7 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
         )
         assert refreshed.ticket.lease_expires_at is not None
         assert refreshed.ticket.lease_expires_at > claimed.ticket.lease_expires_at
-        assert refreshed.ticket.lease_expires_at > issuance_deadline
+        assert refreshed.ticket.lease_expires_at > stored_issuance_deadline
     finally:
         repository.close()
 
@@ -1245,7 +1958,7 @@ def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_f
             ticket_id=claimed.ticket.ticket_id,
             fencing_value=claimed.ticket.fencing_value,
         )
-        with pytest.raises(LeaseRejected):
+        with pytest.raises((LeaseRejected, StateConflict)):
             service.heartbeat_replay_job(
                 claimed.job.job_id,
                 stale,
@@ -1300,6 +2013,24 @@ def test_cancelling_single_replay_run_abandons_ticket_and_cancels_item_and_batch
         assert service.get_replay_batch(claimed.batch.batch_id).state is (
             ReplayBatchState.CANCELLED
         )
+        with repository.transaction() as session:
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget_reservation = session.get(
+                ReplayBudgetReservationRecord,
+                claimed.ticket.budget_reservation_id,
+            )
+            rate_reservation = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            assert budget_account is not None
+            assert budget_reservation is not None
+            assert rate_reservation is not None
+            assert budget_account.reserved_calls == 0
+            assert budget_reservation.state == "released"
+            assert budget_reservation.released_calls == budget_reservation.total_calls
+            assert rate_reservation.state == "released"
+            assert rate_reservation.released_request_units == rate_reservation.total_request_units
 
         stale = ReplayLeaseRequest(
             executor_profile=EXECUTOR_PROFILE,
@@ -1307,7 +2038,7 @@ def test_cancelling_single_replay_run_abandons_ticket_and_cancels_item_and_batch
             ticket_id=claimed.ticket.ticket_id,
             fencing_value=claimed.ticket.fencing_value,
         )
-        with pytest.raises((RunCancelled, LeaseRejected)):
+        with pytest.raises((RunCancelled, LeaseRejected, StateConflict)):
             service.heartbeat_replay_job(
                 claimed.job.job_id,
                 stale,

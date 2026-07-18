@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import Counter
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import (
     JSON,
@@ -33,12 +34,14 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sessionmaker
 
 LEGACY_SCHEMA_VERSION = 1
 REPLAY_AUTHORITY_SCHEMA_VERSION = 2
 ARTIFACT_AUTHORITY_SCHEMA_VERSION = 3
-CURRENT_SCHEMA_VERSION = 4
+REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 LEGACY_CONTROL_PLANE_TABLES = frozenset(
     {"cp_runs", "cp_jobs", "cp_checkpoints", "cp_approvals", "cp_events"}
@@ -57,8 +60,19 @@ V2_CONTROL_PLANE_TABLES = frozenset(
 ARTIFACT_AUTHORITY_TABLES = frozenset({"cp_artifacts"})
 V3_CONTROL_PLANE_TABLES = frozenset({*V2_CONTROL_PLANE_TABLES, *ARTIFACT_AUTHORITY_TABLES})
 REPLAY_COMPILATION_AUTHORITY_TABLES = frozenset({"cp_replay_compilations"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V4_CONTROL_PLANE_TABLES = frozenset(
     {*V3_CONTROL_PLANE_TABLES, *REPLAY_COMPILATION_AUTHORITY_TABLES}
+)
+REPLAY_PERMIT_AUTHORITY_TABLES = frozenset(
+    {
+        "cp_replay_budget_accounts",
+        "cp_replay_budget_reservations",
+        "cp_replay_rate_accounts",
+        "cp_replay_rate_reservations",
+    }
+)
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V4_CONTROL_PLANE_TABLES, *REPLAY_PERMIT_AUTHORITY_TABLES}
 )
 
 
@@ -648,6 +662,12 @@ class ReplayTicketRecord(Base):
     abandoned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
+    if TYPE_CHECKING:
+        # Added to the runtime mapping after the exact schema-v4 metadata is frozen.
+        compilation_id: Mapped[str]
+        budget_reservation_id: Mapped[str]
+        rate_reservation_id: Mapped[str]
+
 
 class ReplayEventRecord(Base):
     """Append-only audit event for a Replay authority state transition."""
@@ -908,6 +928,451 @@ class ReplayCompilationRecord(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
 
+def _build_v4_metadata() -> MetaData:
+    """Freeze the exact schema-v4 metadata before durable permits are attached."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V4_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V4_METADATA = _build_v4_metadata()
+
+
+_replay_compilation_table = cast(Table, ReplayCompilationRecord.__table__)
+_replay_compilation_table.append_constraint(
+    UniqueConstraint(
+        "compilation_id",
+        "item_id",
+        "batch_id",
+        "replay_run_id",
+        "compilation_digest",
+        "grant_digest",
+        name="uq_cp_replay_compilations_ticket_authority",
+    )
+)
+_replay_compilation_table.append_constraint(
+    UniqueConstraint(
+        "compilation_id",
+        "item_id",
+        "batch_id",
+        name="uq_cp_replay_compilations_reservation_authority",
+    )
+)
+
+_replay_ticket_table = cast(Table, ReplayTicketRecord.__table__)
+_legacy_ticket_item_authority = cast(
+    ForeignKeyConstraint,
+    next(
+        constraint
+        for constraint in _replay_ticket_table.constraints
+        if constraint.name == "fk_cp_replay_tickets_item_authority"
+    ),
+)
+_replay_ticket_table.constraints.remove(_legacy_ticket_item_authority)
+for _foreign_key in _legacy_ticket_item_authority.elements:
+    _foreign_key.parent.foreign_keys.discard(_foreign_key)
+    _replay_ticket_table.foreign_keys.discard(_foreign_key)
+ReplayTicketRecord.compilation_id = mapped_column(String(51), nullable=False)
+ReplayTicketRecord.budget_reservation_id = mapped_column(String(51), nullable=False)
+ReplayTicketRecord.rate_reservation_id = mapped_column(String(49), nullable=False)
+_replay_ticket_table.append_constraint(
+    ForeignKeyConstraint(
+        [
+            "compilation_id",
+            "item_id",
+            "batch_id",
+            "replay_run_id",
+            "compilation_digest",
+            "grant_digest",
+        ],
+        [
+            "cp_replay_compilations.compilation_id",
+            "cp_replay_compilations.item_id",
+            "cp_replay_compilations.batch_id",
+            "cp_replay_compilations.replay_run_id",
+            "cp_replay_compilations.compilation_digest",
+            "cp_replay_compilations.grant_digest",
+        ],
+        name="fk_cp_replay_tickets_compilation_authority",
+        ondelete="RESTRICT",
+    )
+)
+_replay_ticket_table.append_constraint(
+    UniqueConstraint(
+        "compilation_id",
+        name="uq_cp_replay_tickets_compilation",
+    )
+)
+
+
+class ReplayBudgetAccountRecord(Base):
+    """Mutable Campaign Tool-call counters serialized before Replay issuance."""
+
+    __tablename__ = "cp_replay_budget_accounts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(budget_account_id) = 54 AND "
+            "substr(budget_account_id, 1, 22) = 'replay-budget-account_' AND "
+            + _lower_hex_check("substr(budget_account_id, 23, 32)", 32),
+            name="ck_cp_replay_budget_accounts_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("source_root_digest", 64),
+            name="ck_cp_replay_budget_accounts_source_root",
+        ),
+        CheckConstraint(
+            _lower_hex_check("budget_digest", 64),
+            name="ck_cp_replay_budget_accounts_budget_digest",
+        ),
+        CheckConstraint(
+            "length(campaign_name) > 0 AND length(campaign_name) <= 128",
+            name="ck_cp_replay_budget_accounts_campaign",
+        ),
+        CheckConstraint(
+            "max_tool_calls > 0 AND max_tool_calls <= 1000000",
+            name="ck_cp_replay_budget_accounts_max_calls",
+        ),
+        CheckConstraint(
+            "baseline_used_calls >= 0 AND reserved_calls >= 0 AND consumed_calls >= 0 "
+            "AND released_calls >= 0 "
+            "AND baseline_used_calls + reserved_calls + consumed_calls <= max_tool_calls",
+            name="ck_cp_replay_budget_accounts_usage",
+        ),
+        CheckConstraint("cas_version > 0", name="ck_cp_replay_budget_accounts_cas"),
+        UniqueConstraint("source_run_id", name="uq_cp_replay_budget_accounts_source_run"),
+        UniqueConstraint(
+            "budget_account_id",
+            "source_run_id",
+            "source_root_digest",
+            name="uq_cp_replay_budget_accounts_authority",
+        ),
+    )
+
+    budget_account_id: Mapped[str] = mapped_column(String(54), primary_key=True)
+    source_run_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_runs.run_id", ondelete="RESTRICT"), nullable=False
+    )
+    source_root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    campaign_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    budget_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    max_tool_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    baseline_used_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    reserved_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    released_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    cas_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReplayRateAccountRecord(Base):
+    """Campaign rolling-window authority sealed from the source ledger snapshot."""
+
+    __tablename__ = "cp_replay_rate_accounts"
+    __table_args__ = (
+        CheckConstraint(
+            "length(rate_account_id) = 52 AND "
+            "substr(rate_account_id, 1, 20) = 'replay-rate-account_' AND "
+            + _lower_hex_check("substr(rate_account_id, 21, 32)", 32),
+            name="ck_cp_replay_rate_accounts_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("source_root_digest", 64),
+            name="ck_cp_replay_rate_accounts_source_root",
+        ),
+        CheckConstraint(
+            _lower_hex_check("rate_limits_digest", 64),
+            name="ck_cp_replay_rate_accounts_rate_digest",
+        ),
+        CheckConstraint(
+            "length(campaign_name) > 0 AND length(campaign_name) <= 128",
+            name="ck_cp_replay_rate_accounts_campaign",
+        ),
+        CheckConstraint(
+            "length(ledger_id) = 44 AND substr(ledger_id, 1, 12) = 'rate-ledger_' AND "
+            + _lower_hex_check("substr(ledger_id, 13, 32)", 32),
+            name="ck_cp_replay_rate_accounts_ledger",
+        ),
+        CheckConstraint(
+            "max_requests_per_minute IS NULL OR "
+            "(max_requests_per_minute > 0 AND max_requests_per_minute <= 60000)",
+            name="ck_cp_replay_rate_accounts_max_requests",
+        ),
+        CheckConstraint(
+            "observed_request_units >= 0 AND "
+            "(max_requests_per_minute IS NULL OR "
+            "observed_request_units <= max_requests_per_minute)",
+            name="ck_cp_replay_rate_accounts_observed_units",
+        ),
+        CheckConstraint("window_seconds = 60", name="ck_cp_replay_rate_accounts_window"),
+        CheckConstraint("cas_version > 0", name="ck_cp_replay_rate_accounts_cas"),
+        UniqueConstraint("source_run_id", name="uq_cp_replay_rate_accounts_source_run"),
+        UniqueConstraint(
+            "rate_account_id",
+            "source_run_id",
+            "source_root_digest",
+            name="uq_cp_replay_rate_accounts_authority",
+        ),
+    )
+
+    rate_account_id: Mapped[str] = mapped_column(String(52), primary_key=True)
+    source_run_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_runs.run_id", ondelete="RESTRICT"), nullable=False
+    )
+    source_root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    campaign_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    rate_limits_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    ledger_id: Mapped[str] = mapped_column(String(44), nullable=False)
+    max_requests_per_minute: Mapped[int | None] = mapped_column(Integer)
+    observed_request_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    window_seconds: Mapped[int] = mapped_column(Integer, nullable=False)
+    cas_version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class ReplayBudgetReservationRecord(Base):
+    """Mutable accounting lifecycle for one ticket's Tool-call reservation."""
+
+    __tablename__ = "cp_replay_budget_reservations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["item_id", "batch_id"],
+            ["cp_replay_items.item_id", "cp_replay_items.batch_id"],
+            name="fk_cp_replay_budget_reservations_item",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "compilation_id",
+                "item_id",
+                "batch_id",
+            ],
+            [
+                "cp_replay_compilations.compilation_id",
+                "cp_replay_compilations.item_id",
+                "cp_replay_compilations.batch_id",
+            ],
+            name="fk_cp_replay_budget_reservations_compilation",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(budget_reservation_id) = 51 AND "
+            "substr(budget_reservation_id, 1, 19) = 'budget-reservation_' AND "
+            + _lower_hex_check("substr(budget_reservation_id, 20, 32)", 32),
+            name="ck_cp_replay_budget_reservations_id",
+        ),
+        CheckConstraint("attempt_number > 0", name="ck_cp_replay_budget_reservations_attempt"),
+        CheckConstraint(
+            "state IN ('active', 'consumed', 'released')",
+            name="ck_cp_replay_budget_reservations_state",
+        ),
+        CheckConstraint(
+            "total_calls > 0 AND consumed_calls >= 0 AND released_calls >= 0 "
+            "AND consumed_calls + released_calls <= total_calls",
+            name="ck_cp_replay_budget_reservations_usage",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND released_at IS NULL "
+            "AND consumed_calls < total_calls AND released_calls = 0) "
+            "OR (state = 'consumed' AND released_at IS NULL "
+            "AND consumed_calls = total_calls AND released_calls = 0) "
+            "OR (state = 'released' AND released_at IS NOT NULL "
+            "AND consumed_calls + released_calls = total_calls)",
+            name="ck_cp_replay_budget_reservations_lifecycle",
+        ),
+        UniqueConstraint(
+            "item_id",
+            "attempt_number",
+            name="uq_cp_replay_budget_reservations_item_attempt",
+        ),
+        UniqueConstraint(
+            "compilation_id",
+            name="uq_cp_replay_budget_reservations_compilation",
+        ),
+        UniqueConstraint(
+            "budget_reservation_id",
+            "item_id",
+            "batch_id",
+            "attempt_number",
+            "compilation_id",
+            name="uq_cp_replay_budget_reservations_ticket_authority",
+        ),
+        Index("ix_cp_replay_budget_reservations_account_state", "budget_account_id", "state"),
+    )
+
+    budget_reservation_id: Mapped[str] = mapped_column(String(51), primary_key=True)
+    budget_account_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_replay_budget_accounts.budget_account_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    compilation_id: Mapped[str] = mapped_column(String(51), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    released_calls: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ReplayRateReservationRecord(Base):
+    """Mutable rolling-window request-unit reservation for one ticket attempt."""
+
+    __tablename__ = "cp_replay_rate_reservations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["item_id", "batch_id"],
+            ["cp_replay_items.item_id", "cp_replay_items.batch_id"],
+            name="fk_cp_replay_rate_reservations_item",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "compilation_id",
+                "item_id",
+                "batch_id",
+            ],
+            [
+                "cp_replay_compilations.compilation_id",
+                "cp_replay_compilations.item_id",
+                "cp_replay_compilations.batch_id",
+            ],
+            name="fk_cp_replay_rate_reservations_compilation",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(rate_reservation_id) = 49 AND "
+            "substr(rate_reservation_id, 1, 17) = 'rate-reservation_' AND "
+            + _lower_hex_check("substr(rate_reservation_id, 18, 32)", 32),
+            name="ck_cp_replay_rate_reservations_id",
+        ),
+        CheckConstraint("attempt_number > 0", name="ck_cp_replay_rate_reservations_attempt"),
+        CheckConstraint(
+            "state IN ('active', 'consumed', 'released')",
+            name="ck_cp_replay_rate_reservations_state",
+        ),
+        CheckConstraint(
+            "total_request_units > 0 AND consumed_request_units >= 0 "
+            "AND released_request_units >= 0 "
+            "AND consumed_request_units + released_request_units <= total_request_units",
+            name="ck_cp_replay_rate_reservations_usage",
+        ),
+        CheckConstraint(
+            "(state = 'active' AND released_at IS NULL "
+            "AND consumed_request_units < total_request_units "
+            "AND released_request_units = 0) "
+            "OR (state = 'consumed' AND released_at IS NULL "
+            "AND consumed_request_units = total_request_units "
+            "AND released_request_units = 0) "
+            "OR (state = 'released' AND released_at IS NOT NULL "
+            "AND consumed_request_units + released_request_units = total_request_units)",
+            name="ck_cp_replay_rate_reservations_lifecycle",
+        ),
+        CheckConstraint(
+            "expires_at > reserved_at",
+            name="ck_cp_replay_rate_reservations_expiry",
+        ),
+        UniqueConstraint(
+            "item_id",
+            "attempt_number",
+            name="uq_cp_replay_rate_reservations_item_attempt",
+        ),
+        UniqueConstraint(
+            "compilation_id",
+            name="uq_cp_replay_rate_reservations_compilation",
+        ),
+        UniqueConstraint(
+            "rate_reservation_id",
+            "item_id",
+            "batch_id",
+            "attempt_number",
+            "compilation_id",
+            name="uq_cp_replay_rate_reservations_ticket_authority",
+        ),
+        Index("ix_cp_replay_rate_reservations_account_window", "rate_account_id", "expires_at"),
+    )
+
+    rate_reservation_id: Mapped[str] = mapped_column(String(49), primary_key=True)
+    rate_account_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_replay_rate_accounts.rate_account_id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    compilation_id: Mapped[str] = mapped_column(String(51), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    total_request_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    consumed_request_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    released_request_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    reserved_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+_replay_ticket_table.append_constraint(
+    ForeignKeyConstraint(
+        [
+            "budget_reservation_id",
+            "item_id",
+            "batch_id",
+            "attempt_number",
+            "compilation_id",
+        ],
+        [
+            "cp_replay_budget_reservations.budget_reservation_id",
+            "cp_replay_budget_reservations.item_id",
+            "cp_replay_budget_reservations.batch_id",
+            "cp_replay_budget_reservations.attempt_number",
+            "cp_replay_budget_reservations.compilation_id",
+        ],
+        name="fk_cp_replay_tickets_budget_reservation",
+        ondelete="RESTRICT",
+    )
+)
+_replay_ticket_table.append_constraint(
+    ForeignKeyConstraint(
+        [
+            "rate_reservation_id",
+            "item_id",
+            "batch_id",
+            "attempt_number",
+            "compilation_id",
+        ],
+        [
+            "cp_replay_rate_reservations.rate_reservation_id",
+            "cp_replay_rate_reservations.item_id",
+            "cp_replay_rate_reservations.batch_id",
+            "cp_replay_rate_reservations.attempt_number",
+            "cp_replay_rate_reservations.compilation_id",
+        ],
+        name="fk_cp_replay_tickets_rate_reservation",
+        ondelete="RESTRICT",
+    )
+)
+_replay_ticket_table.append_constraint(
+    UniqueConstraint(
+        "budget_reservation_id",
+        name="uq_cp_replay_tickets_budget_reservation",
+    )
+)
+_replay_ticket_table.append_constraint(
+    UniqueConstraint(
+        "rate_reservation_id",
+        name="uq_cp_replay_tickets_rate_reservation",
+    )
+)
+
+
 class ControlPlaneRepository:
     """Own the database engine and expose short, explicit transaction scopes."""
 
@@ -990,7 +1455,8 @@ _MIGRATIONS = {
     LEGACY_SCHEMA_VERSION: "legacy-control-plane-core",
     REPLAY_AUTHORITY_SCHEMA_VERSION: "replay-authority",
     ARTIFACT_AUTHORITY_SCHEMA_VERSION: "artifact-authority",
-    CURRENT_SCHEMA_VERSION: "trusted-replay-compilation-authority",
+    REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION: "trusted-replay-compilation-authority",
+    CURRENT_SCHEMA_VERSION: "durable-replay-permit-authority",
 }
 
 
@@ -1022,6 +1488,11 @@ def _initialize_schema(connection: Connection) -> None:
         _migrate_v3_schema(connection)
         _validate_current_schema(connection)
         return
+    if cp_tables == V4_CONTROL_PLANE_TABLES:
+        _validate_v4_schema(connection)
+        _migrate_v4_schema(connection)
+        _validate_current_schema(connection)
+        return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
         _validate_current_schema(connection)
         return
@@ -1046,11 +1517,9 @@ def _create_empty_schema(connection: Connection) -> None:
     _record_migration(connection, REPLAY_AUTHORITY_SCHEMA_VERSION)
     _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_artifacts")
-    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
-    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_current_replay_authority(connection)
+    _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1063,11 +1532,9 @@ def _migrate_legacy_schema(connection: Connection) -> None:
     _record_migration(connection, REPLAY_AUTHORITY_SCHEMA_VERSION)
     _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_artifacts")
-    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
-    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_current_replay_authority(connection)
+    _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1085,11 +1552,9 @@ def _migrate_v2_schema(connection: Connection) -> None:
         connection.exec_driver_sql(f"DROP TABLE {table_name}")
     _create_tables(connection, ARTIFACT_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_artifacts")
-    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_events")
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
-    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_current_replay_authority(connection)
+    _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1132,11 +1597,91 @@ def _migrate_v3_schema(connection: Connection) -> None:
         "cp_replay_batches",
     ):
         connection.exec_driver_sql(f"DROP TABLE {table_name}")
-    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_events")
-    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
-    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_current_replay_authority(connection)
+    _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _migrate_v4_schema(connection: Connection) -> None:
+    """Preserve non-dispatchable proof rows while adding durable permit authority."""
+
+    _lock_v4_migration_writes(connection)
+    _assert_v4_replay_authority_is_non_dispatchable(connection)
+
+    compilation_table = _V4_METADATA.tables[ReplayCompilationRecord.__tablename__]
+    event_table = _V4_METADATA.tables[ReplayEventRecord.__tablename__]
+    compilation_rows = [
+        dict(row) for row in connection.execute(compilation_table.select()).mappings()
+    ]
+    event_rows = [dict(row) for row in connection.execute(event_table.select()).mappings()]
+
+    _remove_append_only_trigger_support(connection, "cp_replay_events")
+    _remove_append_only_trigger_support(connection, "cp_replay_compilations")
+    for table_name in (
+        "cp_replay_events",
+        "cp_replay_tickets",
+        "cp_replay_compilations",
+    ):
+        connection.exec_driver_sql(f"DROP TABLE {table_name}")
+
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    if compilation_rows:
+        connection.execute(
+            Base.metadata.tables[ReplayCompilationRecord.__tablename__].insert(),
+            compilation_rows,
+        )
+    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_replay_permit_and_ticket_tables(connection)
+    _create_tables(connection, frozenset({ReplayEventRecord.__tablename__}))
+    if event_rows:
+        connection.execute(
+            Base.metadata.tables[ReplayEventRecord.__tablename__].insert(),
+            event_rows,
+        )
+    _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _assert_v4_replay_authority_is_non_dispatchable(connection: Connection) -> None:
+    """Reject v4 data that cannot be assigned honest durable reservations."""
+
+    ticket_count = int(connection.scalar(text("SELECT count(*) FROM cp_replay_tickets")) or 0)
+    internal_replay_jobs = int(
+        connection.scalar(text("SELECT count(*) FROM cp_jobs WHERE kind = 'internal-replay'")) or 0
+    )
+    replay_run_jobs = int(
+        connection.scalar(
+            text(
+                "SELECT count(*) FROM cp_jobs AS jobs "
+                "JOIN cp_replay_items AS items ON jobs.run_id = items.replay_run_id"
+            )
+        )
+        or 0
+    )
+    non_planned_batches = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_batches WHERE state <> 'planned'"))
+        or 0
+    )
+    advanced_items = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_items WHERE state <> 'pending' OR attempts <> 0")
+        )
+        or 0
+    )
+    if (
+        ticket_count
+        or internal_replay_jobs
+        or replay_run_jobs
+        or non_planned_batches
+        or advanced_items
+    ):
+        raise SchemaInitializationError(
+            "schema v4 contains dispatchable Replay authority without durable permits and "
+            "cannot be trusted or backfilled "
+            f"(tickets={ticket_count}, internal-replay Jobs={internal_replay_jobs}, "
+            f"Replay Run Jobs={replay_run_jobs}, "
+            f"non-planned batches={non_planned_batches}, advanced items={advanced_items})"
+        )
 
 
 _LEGACY_MIGRATION_WRITE_LOCK_TABLES = ("cp_jobs",)
@@ -1148,6 +1693,22 @@ _V2_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_replay_events",
 )
 _V3_MIGRATION_WRITE_LOCK_TABLES = _V2_MIGRATION_WRITE_LOCK_TABLES
+_V4_MIGRATION_WRITE_LOCK_TABLES = (
+    "cp_artifacts",
+    "cp_runs",
+    "cp_jobs",
+    "cp_replay_tickets",
+    "cp_replay_items",
+    "cp_replay_batches",
+    "cp_replay_compilations",
+    "cp_replay_events",
+    "cp_approvals",
+    "cp_checkpoints",
+    "cp_events",
+    "cp_schema_version",
+)
+_V4_MIGRATION_LOCK_RETRY_SECONDS = 0.05
+_V4_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
 
 
 def _lock_legacy_migration_writes(connection: Connection) -> None:
@@ -1192,6 +1753,72 @@ def _lock_v3_migration_writes(connection: Connection) -> None:
     raise SchemaInitializationError(
         f"unsupported Control Plane database dialect: {connection.dialect.name}"
     )
+
+
+def _lock_v4_migration_writes(connection: Connection) -> None:
+    """Atomically exclude every v4 writer without waiting on a partial lock set."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        tables = ", ".join(_V4_MIGRATION_WRITE_LOCK_TABLES)
+        statement = f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE NOWAIT"
+        deadline = time.monotonic() + _V4_MIGRATION_LOCK_TIMEOUT_SECONDS
+        while True:
+            # v4 writers do not share one table order: planning starts Artifact -> Run,
+            # claim/cancel starts Job -> Run, and submission starts Run -> Job.  A blocking
+            # multi-table LOCK can therefore deadlock after acquiring only a prefix.  Keep
+            # each NOWAIT attempt inside a savepoint so every partial prefix is released
+            # before a live writer is given time to finish.  Committing the successful
+            # savepoint promotes the complete lock set to the outer migration transaction.
+            savepoint = connection.begin_nested()
+            try:
+                connection.exec_driver_sql(statement)
+            except DBAPIError as error:
+                savepoint.rollback()
+                sqlstate = getattr(error.orig, "sqlstate", None) or getattr(
+                    error.orig, "pgcode", None
+                )
+                if sqlstate != "55P03":
+                    raise
+                if time.monotonic() >= deadline:
+                    raise SchemaInitializationError(
+                        "schema v4 migration could not exclude active writers; "
+                        "retry initialization after current transactions finish"
+                    ) from error
+                time.sleep(_V4_MIGRATION_LOCK_RETRY_SECONDS)
+            else:
+                savepoint.commit()
+                return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
+
+
+def _create_current_replay_authority(connection: Connection) -> None:
+    """Create current Replay tables in an explicit cross-dialect FK order."""
+
+    _create_tables(connection, frozenset({ReplayBatchRecord.__tablename__}))
+    _create_tables(connection, frozenset({ReplayItemRecord.__tablename__}))
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _create_replay_permit_and_ticket_tables(connection)
+    _create_tables(connection, frozenset({ReplayEventRecord.__tablename__}))
+    _install_append_only_trigger(connection, "cp_replay_events")
+
+
+def _create_replay_permit_and_ticket_tables(connection: Connection) -> None:
+    """Create mutable permit ledgers before the ticket FKs that consume them."""
+
+    for table_name in (
+        ReplayBudgetAccountRecord.__tablename__,
+        ReplayRateAccountRecord.__tablename__,
+        ReplayBudgetReservationRecord.__tablename__,
+        ReplayRateReservationRecord.__tablename__,
+        ReplayTicketRecord.__tablename__,
+    ):
+        _create_tables(connection, frozenset({table_name}))
 
 
 def _create_tables(connection: Connection, table_names: frozenset[str]) -> None:
@@ -1298,6 +1925,31 @@ def _validate_v3_schema(connection: Connection) -> None:
     if actual != expected or any(row.applied_at is None for row in rows):
         raise SchemaInitializationError(
             f"unknown or incomplete schema v3 migration history: {actual!r}"
+        )
+
+
+def _validate_v4_schema(connection: Connection) -> None:
+    _validate_tables(connection, V4_CONTROL_PLANE_TABLES, metadata=_V4_METADATA)
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in (
+            LEGACY_SCHEMA_VERSION,
+            REPLAY_AUTHORITY_SCHEMA_VERSION,
+            ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v4 migration history: {actual!r}"
         )
 
 

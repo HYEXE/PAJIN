@@ -12,7 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from pydantic import ValidationError
-from sqlalchemy import Select, and_, func, select, update
+from sqlalchemy import Select, and_, func, or_, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -30,9 +30,13 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayBudgetAccountRecord,
+    ReplayBudgetReservationRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
+    ReplayRateAccountRecord,
+    ReplayRateReservationRecord,
     ReplayTicketRecord,
     RunRecord,
     utc_now,
@@ -40,6 +44,7 @@ from pajin.control_plane.database import (
 from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_POLICY_VERSION,
     DerivedKISAReplayBatch,
+    DerivedKISAReplayItem,
     derive_kisa_confirmation_batch,
 )
 from pajin.control_plane.models import (
@@ -66,6 +71,7 @@ from pajin.control_plane.models import (
     JobState,
     JobView,
     LeaseRequest,
+    ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayBatchView,
     ReplayClaimRequest,
@@ -86,7 +92,9 @@ from pajin.control_plane.models import (
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.domain.models import CampaignMode, ToolRiskTier
-from pajin.domain.replay import ReplayPurpose
+from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
+from pajin.tools.ai import AIChatProbeTool
 
 
 class ControlPlaneError(RuntimeError):
@@ -682,6 +690,388 @@ class ControlPlaneService:
                     actor=actor,
                 )
 
+    def issue_replay_batch(
+        self,
+        batch_id: str,
+        *,
+        actor: str,
+    ) -> ReplayBatchIssuanceView:
+        """Atomically reserve and issue every first attempt of one planned batch."""
+
+        artifact_repository = self._require_artifact_repository()
+        with self.repository.transaction() as session:
+            batch = self._replay_batch(session, batch_id)
+            if batch.state != ReplayBatchState.PLANNED.value:
+                return self._existing_replay_issuance(session, batch)
+            source = self._artifact_ref(batch)
+            locator = ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            )
+            artifact = self._artifact(session, locator)
+            self._require_artifact_snapshot(
+                artifact,
+                source,
+                storage_key=artifact.storage_key,
+            )
+            storage_key = artifact.storage_key
+
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            source,
+            expected_storage_key=storage_key,
+        )
+        try:
+            derived = derive_kisa_confirmation_batch(
+                source_root=snapshot.path,
+                artifact_ref=source,
+            )
+        except (OSError, ValueError) as exc:
+            raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            source,
+            expected_storage_key=storage_key,
+        )
+
+        with self.repository.transaction() as session:
+            if self.repository.dialect_name == "sqlite":
+                # BEGIN is deferred on SQLite. Make the first statement a conditional
+                # write so concurrent issuers serialize before either creates a stale
+                # read snapshot and attempts a reader-to-writer upgrade.
+                acquired_batch_id = session.scalar(
+                    update(ReplayBatchRecord)
+                    .where(
+                        ReplayBatchRecord.batch_id == batch_id,
+                        ReplayBatchRecord.state == ReplayBatchState.PLANNED.value,
+                    )
+                    .values(updated_at=ReplayBatchRecord.updated_at)
+                    .returning(ReplayBatchRecord.batch_id)
+                )
+                if acquired_batch_id is None:
+                    return self._existing_replay_issuance(
+                        session,
+                        self._replay_batch(session, batch_id),
+                    )
+            # The immutable Artifact row and source Run serialize account bootstrap.
+            # Existing rows follow item -> batch -> Run, then the shared capacity
+            # layer follows budget account -> rate account -> budget reservations
+            # -> rate reservations. Job/ticket rows do not exist before issuance.
+            artifact = self._artifact(session, locator, lock=True)
+            self._require_artifact_snapshot(
+                artifact,
+                source,
+                storage_key=snapshot.storage_key,
+            )
+            locked_items = list(
+                session.scalars(
+                    select(ReplayItemRecord)
+                    .where(ReplayItemRecord.batch_id == batch_id)
+                    .order_by(ReplayItemRecord.item_id)
+                    .with_for_update()
+                ).all()
+            )
+            items = sorted(
+                locked_items,
+                key=lambda item: (item.ordinal, item.item_id),
+            )
+            batch = self._replay_batch(session, batch_id, lock=True)
+            if batch.state != ReplayBatchState.PLANNED.value:
+                return self._existing_replay_issuance(
+                    session,
+                    batch,
+                    locked_items=items,
+                )
+            source_run = self._run(session, batch.source_run_id, lock=True)
+            self._require_run_state(source_run, RunState.COMPLETED)
+            self._require_fresh_issuance_derivation(
+                batch,
+                items,
+                derived=derived,
+                source=source,
+            )
+
+            planning_compilations = list(
+                session.scalars(
+                    select(ReplayCompilationRecord)
+                    .where(ReplayCompilationRecord.batch_id == batch.batch_id)
+                    .order_by(
+                        ReplayCompilationRecord.item_id,
+                        ReplayCompilationRecord.created_at,
+                        ReplayCompilationRecord.compilation_id,
+                    )
+                ).all()
+            )
+            if len(planning_compilations) != len(items):
+                raise StateConflict("planned Replay batch has an incomplete compilation proof")
+            planning_by_item = {
+                compilation.item_id: compilation for compilation in planning_compilations
+            }
+            if len(planning_by_item) != len(items):
+                raise StateConflict("planned Replay compilation proof is ambiguous")
+            for item in items:
+                planning = planning_by_item.get(item.item_id)
+                if planning is None or not (
+                    planning.batch_id == batch.batch_id
+                    and planning.replay_run_id == item.replay_run_id
+                    and planning.candidate_id == item.candidate_id
+                    and planning.candidate_digest == item.candidate_digest
+                    and planning.contract_digest == item.contract_digest
+                    and planning.compilation_digest == item.compilation_digest
+                    and planning.grant_digest == item.grant_digest
+                ):
+                    raise StateConflict(
+                        "planned Replay compilation pointer changed before issuance"
+                    )
+                self._trusted_replay_compilation(planning)
+
+            now = utc_now()
+            trusted_fresh = [
+                self._trusted_fresh_issuance_compilation(admitted, now=now)
+                for admitted in derived.items
+            ]
+            budget_account, rate_account = self._reserve_replay_capacity(
+                session,
+                batch=batch,
+                derived=derived,
+                observed_at=_aware(artifact.created_at),
+                now=now,
+            )
+
+            issued_tickets: list[ReplayTicketRecord] = []
+            for item, admitted, trusted in zip(items, derived.items, trusted_fresh, strict=True):
+                compilation_id = f"replay-compilation_{uuid4().hex}"
+                budget_reservation_id = f"budget-reservation_{uuid4().hex}"
+                rate_reservation_id = f"rate-reservation_{uuid4().hex}"
+                ticket_id = f"replay-ticket_{uuid4().hex}"
+                job_id = f"job_{uuid4().hex}"
+                attempt = 1
+                fencing_value = 1
+                rate_expires_at = now + timedelta(seconds=rate_account.window_seconds)
+                ticket_expires_at = min(
+                    _aware(trusted.spec.expires_at),
+                    _aware(trusted.grant.expires_at),
+                    rate_expires_at,
+                )
+                if ticket_expires_at <= now:
+                    raise StateConflict("fresh Replay issuance authority expired before commit")
+
+                payload = ReplayJobPayload(
+                    batch_id=batch.batch_id,
+                    item_id=item.item_id,
+                    ticket_id=ticket_id,
+                    compilation_id=compilation_id,
+                    budget_reservation_id=budget_reservation_id,
+                    rate_reservation_id=rate_reservation_id,
+                    replay_run_id=admitted.replay_run_id,
+                    source=source,
+                    mode=derived.mode,
+                    purpose=derived.purpose,
+                    policy_version=derived.policy_version,
+                    candidate_id=item.candidate_id,
+                    candidate_digest=item.candidate_digest,
+                    contract_digest=item.contract_digest,
+                    compilation_digest=admitted.compilation_digest,
+                    grant_digest=admitted.grant_digest,
+                    attempt=attempt,
+                    fencing_value=fencing_value,
+                )
+                replay_run = RunRecord(
+                    run_id=admitted.replay_run_id,
+                    campaign_name=batch.campaign_name,
+                    state=RunState.QUEUED.value,
+                    input={"replay": payload.model_dump(mode="json")},
+                    submission_key=f"replay-attempt:{item.item_id}:{attempt}",
+                    current_checkpoint_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(replay_run)
+                session.flush()
+                compilation = ReplayCompilationRecord(
+                    compilation_id=compilation_id,
+                    item_id=item.item_id,
+                    batch_id=batch.batch_id,
+                    candidate_id=item.candidate_id,
+                    replay_run_id=replay_run.run_id,
+                    candidate_digest=item.candidate_digest,
+                    contract_digest=item.contract_digest,
+                    compilation_digest=admitted.compilation_digest,
+                    grant_digest=admitted.grant_digest,
+                    canonical_compilation=admitted.canonical_compilation,
+                    byte_length=len(admitted.canonical_compilation),
+                    created_at=now,
+                )
+                session.add(compilation)
+                session.flush()
+                budget_reservation = ReplayBudgetReservationRecord(
+                    budget_reservation_id=budget_reservation_id,
+                    budget_account_id=budget_account.budget_account_id,
+                    batch_id=batch.batch_id,
+                    item_id=item.item_id,
+                    attempt_number=attempt,
+                    compilation_id=compilation.compilation_id,
+                    total_calls=admitted.contract.repetitions,
+                    consumed_calls=0,
+                    released_calls=0,
+                    state="active",
+                    created_at=now,
+                    updated_at=now,
+                    released_at=None,
+                )
+                rate_reservation = ReplayRateReservationRecord(
+                    rate_reservation_id=rate_reservation_id,
+                    rate_account_id=rate_account.rate_account_id,
+                    batch_id=batch.batch_id,
+                    item_id=item.item_id,
+                    attempt_number=attempt,
+                    compilation_id=compilation.compilation_id,
+                    total_request_units=admitted.required_request_units,
+                    consumed_request_units=0,
+                    released_request_units=0,
+                    state="active",
+                    reserved_at=now,
+                    expires_at=rate_expires_at,
+                    updated_at=now,
+                    released_at=None,
+                )
+                session.add_all([budget_reservation, rate_reservation])
+                session.flush()
+                job = JobRecord(
+                    job_id=job_id,
+                    run_id=replay_run.run_id,
+                    kind=InternalJobKind.REPLAY.value,
+                    state=JobState.QUEUED.value,
+                    payload=payload.model_dump(mode="json"),
+                    priority=0,
+                    attempts=0,
+                    max_attempts=1,
+                    idempotency_key=f"replay:{item.item_id}:{attempt}",
+                    available_at=now,
+                    lease_owner=None,
+                    lease_token_hash=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    result=None,
+                    error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+                session.add(job)
+                session.flush()
+                ticket = ReplayTicketRecord(
+                    ticket_id=ticket_id,
+                    batch_id=batch.batch_id,
+                    item_id=item.item_id,
+                    job_id=job.job_id,
+                    compilation_id=compilation.compilation_id,
+                    budget_reservation_id=budget_reservation.budget_reservation_id,
+                    rate_reservation_id=rate_reservation.rate_reservation_id,
+                    replay_run_id=replay_run.run_id,
+                    attempt_number=attempt,
+                    fencing_value=fencing_value,
+                    state=ReplayTicketState.ISSUED.value,
+                    grant_digest=admitted.grant_digest,
+                    source_root_digest=batch.source_root_digest,
+                    compilation_digest=admitted.compilation_digest,
+                    executor_profile=None,
+                    claim_principal=None,
+                    lease_token_hash=None,
+                    result_digest=None,
+                    abandon_reason=None,
+                    issued_at=now,
+                    expires_at=ticket_expires_at,
+                    claimed_at=None,
+                    lease_expires_at=None,
+                    finalized_at=None,
+                    abandoned_at=None,
+                    updated_at=now,
+                )
+                session.add(ticket)
+
+                item.replay_run_id = replay_run.run_id
+                item.compilation_digest = admitted.compilation_digest
+                item.grant_digest = admitted.grant_digest
+                item.state = ReplayItemState.QUEUED.value
+                item.attempts = attempt
+                item.updated_at = now
+                session.flush()
+                self._event(
+                    session,
+                    replay_run,
+                    "run.submitted",
+                    actor,
+                    {
+                        "campaignName": batch.campaign_name,
+                        "jobId": job.job_id,
+                        "jobKind": InternalJobKind.REPLAY.value,
+                        "replayBatchId": batch.batch_id,
+                        "replayItemId": item.item_id,
+                        "replayTicketId": ticket.ticket_id,
+                        "compilationId": compilation.compilation_id,
+                    },
+                )
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.compilation.derived",
+                    actor,
+                    {
+                        "attempt": attempt,
+                        "compilationId": compilation.compilation_id,
+                        "candidateDigest": item.candidate_digest,
+                        "contractDigest": item.contract_digest,
+                        "compilationDigest": item.compilation_digest,
+                        "grantDigest": item.grant_digest,
+                    },
+                    item=item,
+                    run_id=replay_run.run_id,
+                )
+                self._replay_event(
+                    session,
+                    batch,
+                    "replay.ticket.issued",
+                    actor,
+                    {
+                        "attempt": attempt,
+                        "fencingValue": fencing_value,
+                        "compilationId": compilation.compilation_id,
+                        "budgetReservationId": budget_reservation.budget_reservation_id,
+                        "rateReservationId": rate_reservation.rate_reservation_id,
+                        "compilationDigest": item.compilation_digest,
+                        "expiresAt": ticket.expires_at.isoformat(),
+                    },
+                    item=item,
+                    ticket=ticket,
+                    job=job,
+                    run_id=replay_run.run_id,
+                )
+                issued_tickets.append(ticket)
+
+            batch.state = ReplayBatchState.RUNNING.value
+            batch.cas_version += 1
+            batch.updated_at = now
+            self._replay_event(
+                session,
+                batch,
+                "replay.batch.issued",
+                actor,
+                {
+                    "itemCount": len(items),
+                    "attempt": 1,
+                    "budgetAccountId": budget_account.budget_account_id,
+                    "rateAccountId": rate_account.rate_account_id,
+                    "reservedToolCalls": derived.required_tool_calls,
+                    "reservedRequestUnits": derived.required_request_units,
+                },
+                run_id=batch.source_run_id,
+            )
+            return ReplayBatchIssuanceView(
+                batch=self._replay_batch_view(batch),
+                items=[self._replay_item_view(item) for item in items],
+                tickets=[self._replay_ticket_view(ticket) for ticket in issued_tickets],
+            )
+
     def get_replay_batch(self, batch_id: str) -> ReplayBatchView:
         with self.repository.transaction() as session:
             return self._replay_batch_view(self._replay_batch(session, batch_id))
@@ -1048,7 +1438,7 @@ class ControlPlaneService:
             item = self._replay_item(session, ticket.item_id, lock=True)
             batch = self._replay_batch(session, ticket.batch_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
-            self._verify_replay_binding(job, ticket, item, batch)
+            self._verify_replay_binding(session, job, ticket, item, batch)
             now = utc_now()
 
             if (
@@ -1061,6 +1451,7 @@ class ControlPlaneService:
                     now=now,
                     reason="replay authority was cancelled before claim",
                 )
+                self._release_replay_reservations(session, ticket, batch, now=now)
                 self._cancel_job(job, now=now)
                 item.state = ReplayItemState.CANCELLED.value
                 item.updated_at = now
@@ -1200,7 +1591,7 @@ class ControlPlaneService:
             item = self._replay_item(session, ticket.item_id, lock=True)
             batch = self._replay_batch(session, ticket.batch_id, lock=True)
             run = self._run(session, job.run_id, lock=True)
-            self._verify_replay_binding(job, ticket, item, batch)
+            self._verify_replay_binding(session, job, ticket, item, batch)
             if (
                 run.state == RunState.CANCELLED.value
                 or batch.state == ReplayBatchState.CANCELLED.value
@@ -1668,11 +2059,24 @@ class ControlPlaneService:
             return self._expire_leases(session, now=utc_now(), actor=actor)
 
     def _expire_leases(self, session: Session, *, now: datetime, actor: str) -> int:
+        expired_issued_replay_jobs = select(ReplayTicketRecord.job_id).where(
+            ReplayTicketRecord.state == ReplayTicketState.ISSUED.value,
+            ReplayTicketRecord.expires_at <= now,
+        )
         statement = (
             select(JobRecord)
             .where(
-                JobRecord.state == JobState.LEASED.value,
-                JobRecord.lease_expires_at <= now,
+                or_(
+                    and_(
+                        JobRecord.state == JobState.LEASED.value,
+                        JobRecord.lease_expires_at <= now,
+                    ),
+                    and_(
+                        JobRecord.kind == _INTERNAL_REPLAY_KIND,
+                        JobRecord.state == JobState.QUEUED.value,
+                        JobRecord.job_id.in_(expired_issued_replay_jobs),
+                    ),
+                )
             )
             .order_by(JobRecord.job_id)
         )
@@ -1684,7 +2088,8 @@ class ControlPlaneService:
         # partition sibling Jobs from multiple batches; per-Job traversal would then
         # let each transaction hold one batch while waiting for the other. Pre-lock
         # every selected graph table-by-table in the canonical global order instead:
-        # Job (above) -> ticket -> item -> batch -> Run.
+        # Job (above) -> ticket -> item -> batch -> Run -> budget account ->
+        # rate account -> budget reservations -> rate reservations.
         replay_jobs = [job for job in jobs if job.kind == _INTERNAL_REPLAY_KIND]
         tickets_by_job_id: dict[str, ReplayTicketRecord] = {}
         items_by_id: dict[str, ReplayItemRecord] = {}
@@ -1754,8 +2159,32 @@ class ControlPlaneService:
                 ticket = tickets_by_job_id[job.job_id]
                 item = items_by_id[ticket.item_id]
                 batch = batches_by_id[ticket.batch_id]
-                self._verify_replay_binding(job, ticket, item, batch)
+                self._verify_replay_binding(session, job, ticket, item, batch)
                 transition_time = utc_now()
+                if job.state == JobState.QUEUED.value:
+                    if not (
+                        run.state == RunState.QUEUED.value
+                        and batch.state == ReplayBatchState.RUNNING.value
+                        and item.state == ReplayItemState.QUEUED.value
+                        and ticket.state == ReplayTicketState.ISSUED.value
+                        and _aware(ticket.expires_at) <= now
+                    ):
+                        raise StateConflict("expired issued Replay authority graph is inconsistent")
+                    self._terminate_replay_attempt(
+                        session,
+                        job=job,
+                        ticket=ticket,
+                        item=item,
+                        batch=batch,
+                        run=run,
+                        actor=actor,
+                        now=transition_time,
+                        reason="Replay ticket expired before claim",
+                        retryable=True,
+                        event_type="replay.ticket.expired-before-claim",
+                    )
+                    requeued_or_dead_lettered += 1
+                    continue
                 if (
                     run.state == RunState.CANCELLED.value
                     or batch.state == ReplayBatchState.CANCELLED.value
@@ -1764,6 +2193,12 @@ class ControlPlaneService:
                         ticket,
                         now=transition_time,
                         reason="cancelled Replay lease was reaped",
+                    )
+                    self._release_replay_reservations(
+                        session,
+                        ticket,
+                        batch,
+                        now=transition_time,
                     )
                     self._cancel_job(job, now=transition_time)
                     item.state = ReplayItemState.CANCELLED.value
@@ -1845,14 +2280,14 @@ class ControlPlaneService:
         request: CancelRunRequest,
         actor: str,
     ) -> CancelRunView:
-        """Cancel one Replay item under the Job -> ticket -> item -> batch -> Run order."""
+        """Cancel under the canonical Replay graph then capacity-layer lock order."""
 
         jobs = self._lock_cancellable_jobs(session, replay_item_hint.replay_run_id)
         tickets = list(
             session.scalars(
                 select(ReplayTicketRecord)
                 .where(ReplayTicketRecord.item_id == replay_item_hint.item_id)
-                .order_by(ReplayTicketRecord.attempt_number, ReplayTicketRecord.ticket_id)
+                .order_by(ReplayTicketRecord.ticket_id)
                 .with_for_update()
             ).all()
         )
@@ -1860,7 +2295,7 @@ class ControlPlaneService:
             session.scalars(
                 select(ReplayItemRecord)
                 .where(ReplayItemRecord.batch_id == replay_item_hint.batch_id)
-                .order_by(ReplayItemRecord.ordinal, ReplayItemRecord.item_id)
+                .order_by(ReplayItemRecord.item_id)
                 .with_for_update()
             ).all()
         )
@@ -1934,6 +2369,7 @@ class ControlPlaneService:
                     now=now,
                     reason="Replay item cancelled by operator",
                 )
+                self._release_replay_reservations(session, ticket, batch, now=now)
                 self._replay_event(
                     session,
                     batch,
@@ -2123,8 +2559,9 @@ class ControlPlaneService:
         if job.lease_expires_at is None or _aware(job.lease_expires_at) <= now:
             raise LeaseRejected("job lease has expired")
 
-    @staticmethod
     def _verify_replay_binding(
+        self,
+        session: Session,
         job: JobRecord,
         ticket: ReplayTicketRecord,
         item: ReplayItemRecord,
@@ -2134,12 +2571,140 @@ class ControlPlaneService:
             payload = ReplayJobPayload.model_validate(job.payload)
         except ValueError as exc:
             raise StateConflict("internal Replay Job payload is not canonical") from exc
+        compilation = session.get(ReplayCompilationRecord, ticket.compilation_id)
+        budget_account_id = session.scalar(
+            select(ReplayBudgetReservationRecord.budget_account_id).where(
+                ReplayBudgetReservationRecord.budget_reservation_id == ticket.budget_reservation_id
+            )
+        )
+        rate_account_id = session.scalar(
+            select(ReplayRateReservationRecord.rate_account_id).where(
+                ReplayRateReservationRecord.rate_reservation_id == ticket.rate_reservation_id
+            )
+        )
+        if compilation is None or budget_account_id is None or rate_account_id is None:
+            raise StateConflict("internal Replay Job authority reservation is incomplete")
+        budget_account = session.scalar(
+            select(ReplayBudgetAccountRecord)
+            .where(ReplayBudgetAccountRecord.budget_account_id == budget_account_id)
+            .with_for_update()
+        )
+        rate_account = session.scalar(
+            select(ReplayRateAccountRecord)
+            .where(ReplayRateAccountRecord.rate_account_id == rate_account_id)
+            .with_for_update()
+        )
+        if budget_account is None or rate_account is None:
+            raise StateConflict("internal Replay Job authority account is missing")
+        budget_reservations = list(
+            session.scalars(
+                select(ReplayBudgetReservationRecord)
+                .where(
+                    ReplayBudgetReservationRecord.budget_account_id
+                    == budget_account.budget_account_id
+                )
+                .order_by(ReplayBudgetReservationRecord.budget_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        budget_reservation = next(
+            (
+                reservation
+                for reservation in budget_reservations
+                if reservation.budget_reservation_id == ticket.budget_reservation_id
+            ),
+            None,
+        )
+        rate_reservations = list(
+            session.scalars(
+                select(ReplayRateReservationRecord)
+                .where(ReplayRateReservationRecord.rate_account_id == rate_account.rate_account_id)
+                .order_by(ReplayRateReservationRecord.rate_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        rate_reservation = next(
+            (
+                reservation
+                for reservation in rate_reservations
+                if reservation.rate_reservation_id == ticket.rate_reservation_id
+            ),
+            None,
+        )
+        if budget_reservation is None or rate_reservation is None:
+            raise StateConflict("internal Replay Job reservation account binding changed")
+        self._require_exact_replay_budget_ledger(
+            budget_account,
+            budget_reservations,
+        )
+        if any(
+            not self._replay_rate_reservation_lifecycle_exact(reservation)
+            for reservation in rate_reservations
+        ):
+            raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        trusted = self._trusted_replay_compilation(compilation)
+        budget_lifecycle_exact = self._replay_budget_reservation_lifecycle_exact(budget_reservation)
+        rate_lifecycle_exact = self._replay_rate_reservation_lifecycle_exact(rate_reservation)
+        if ticket.state in _ACTIVE_REPLAY_TICKET_STATES:
+            ticket_reservation_lifecycle = (
+                budget_reservation.state == "active" and rate_reservation.state == "active"
+            )
+        elif ticket.state == ReplayTicketState.ABANDONED.value:
+            ticket_reservation_lifecycle = budget_reservation.state in {
+                "released",
+                "consumed",
+            } and rate_reservation.state in {"released", "consumed"}
+        elif ticket.state == ReplayTicketState.FINALIZED.value:
+            ticket_reservation_lifecycle = (
+                budget_reservation.state == "consumed" and rate_reservation.state == "consumed"
+            )
+        else:
+            ticket_reservation_lifecycle = False
         source = ControlPlaneService._artifact_ref(batch)
         if not (
             job.kind == _INTERNAL_REPLAY_KIND
             and job.max_attempts == 1
             and job.job_id == ticket.job_id
             and job.run_id == ticket.replay_run_id
+            and compilation.compilation_id == ticket.compilation_id
+            and compilation.item_id == ticket.item_id
+            and compilation.batch_id == ticket.batch_id
+            and compilation.replay_run_id == ticket.replay_run_id
+            and compilation.candidate_id == item.candidate_id
+            and compilation.candidate_digest == item.candidate_digest
+            and compilation.contract_digest == item.contract_digest
+            and compilation.compilation_digest == ticket.compilation_digest
+            and compilation.grant_digest == ticket.grant_digest
+            and budget_reservation.budget_reservation_id == ticket.budget_reservation_id
+            and budget_reservation.budget_account_id == budget_account.budget_account_id
+            and budget_reservation.batch_id == ticket.batch_id
+            and budget_reservation.item_id == ticket.item_id
+            and budget_reservation.attempt_number == ticket.attempt_number
+            and budget_reservation.compilation_id == ticket.compilation_id
+            and budget_lifecycle_exact
+            and budget_reservation.total_calls == trusted.contract.repetitions
+            and 0 <= budget_reservation.consumed_calls <= budget_reservation.total_calls
+            and rate_reservation.rate_reservation_id == ticket.rate_reservation_id
+            and rate_reservation.rate_account_id == rate_account.rate_account_id
+            and rate_reservation.batch_id == ticket.batch_id
+            and rate_reservation.item_id == ticket.item_id
+            and rate_reservation.attempt_number == ticket.attempt_number
+            and rate_reservation.compilation_id == ticket.compilation_id
+            and rate_lifecycle_exact
+            and ticket_reservation_lifecycle
+            and rate_reservation.total_request_units
+            == AIChatProbeTool().network_request_cost(trusted.original_request)
+            * trusted.contract.repetitions
+            and 0 <= rate_reservation.consumed_request_units <= rate_reservation.total_request_units
+            and _aware(ticket.expires_at) <= _aware(rate_reservation.expires_at)
+            and _aware(ticket.expires_at) <= _aware(trusted.spec.expires_at)
+            and _aware(ticket.expires_at) <= _aware(trusted.grant.expires_at)
+            and budget_account.source_run_id == batch.source_run_id
+            and budget_account.source_root_digest == batch.source_root_digest
+            and budget_account.campaign_name == batch.campaign_name
+            and rate_account.source_run_id == batch.source_run_id
+            and rate_account.source_root_digest == batch.source_root_digest
+            and rate_account.campaign_name == batch.campaign_name
             and item.item_id == ticket.item_id
             and item.batch_id == ticket.batch_id == batch.batch_id
             and item.source_run_id == batch.source_run_id
@@ -2151,6 +2716,9 @@ class ControlPlaneService:
             and payload.batch_id == batch.batch_id
             and payload.item_id == item.item_id
             and payload.ticket_id == ticket.ticket_id
+            and payload.compilation_id == ticket.compilation_id
+            and payload.budget_reservation_id == ticket.budget_reservation_id
+            and payload.rate_reservation_id == ticket.rate_reservation_id
             and payload.replay_run_id == ticket.replay_run_id
             and payload.source == source
             and payload.mode.value == batch.mode
@@ -2163,6 +2731,12 @@ class ControlPlaneService:
             and payload.grant_digest == item.grant_digest
             and payload.attempt == ticket.attempt_number
             and payload.fencing_value == ticket.fencing_value
+            and trusted.spec.binding.candidate_id == item.candidate_id
+            and trusted.spec.binding.candidate_run_id == batch.source_artifact_run_id
+            and trusted.spec.binding.replay_run_id == item.replay_run_id
+            and trusted.spec.binding.campaign == batch.campaign_name
+            and trusted.spec.binding.mode.value == batch.mode
+            and trusted.spec.binding.purpose.value == batch.purpose
         ):
             raise StateConflict("internal Replay Job authority binding is inconsistent")
         return payload
@@ -2228,6 +2802,151 @@ class ControlPlaneService:
         ticket.abandon_reason = bounded_reason
         ticket.updated_at = now
 
+    def _release_replay_reservations(
+        self,
+        session: Session,
+        ticket: ReplayTicketRecord,
+        batch: ReplayBatchRecord,
+        *,
+        now: datetime,
+    ) -> None:
+        """Release only the definitely unconsumed remainder of one exact attempt.
+
+        Account IDs are discovered without retaining ORM rows, then both accounts
+        are locked before any reservation. This preserves the same capacity-layer
+        order used by issuance and prevents account/reservation lock inversion.
+        """
+
+        budget_account_id = session.scalar(
+            select(ReplayBudgetReservationRecord.budget_account_id).where(
+                ReplayBudgetReservationRecord.budget_reservation_id == ticket.budget_reservation_id
+            )
+        )
+        rate_account_id = session.scalar(
+            select(ReplayRateReservationRecord.rate_account_id).where(
+                ReplayRateReservationRecord.rate_reservation_id == ticket.rate_reservation_id
+            )
+        )
+        if budget_account_id is None or rate_account_id is None:
+            raise StateConflict("Replay ticket reservation disappeared during release")
+        budget_account = session.scalar(
+            select(ReplayBudgetAccountRecord)
+            .where(ReplayBudgetAccountRecord.budget_account_id == budget_account_id)
+            .with_for_update()
+        )
+        rate_account = session.scalar(
+            select(ReplayRateAccountRecord)
+            .where(ReplayRateAccountRecord.rate_account_id == rate_account_id)
+            .with_for_update()
+        )
+        if budget_account is None or rate_account is None:
+            raise StateConflict("Replay reservation account disappeared during release")
+
+        budget_reservations = list(
+            session.scalars(
+                select(ReplayBudgetReservationRecord)
+                .where(
+                    ReplayBudgetReservationRecord.budget_account_id
+                    == budget_account.budget_account_id
+                )
+                .order_by(ReplayBudgetReservationRecord.budget_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        budget = next(
+            (
+                reservation
+                for reservation in budget_reservations
+                if reservation.budget_reservation_id == ticket.budget_reservation_id
+            ),
+            None,
+        )
+        rate_reservations = list(
+            session.scalars(
+                select(ReplayRateReservationRecord)
+                .where(ReplayRateReservationRecord.rate_account_id == rate_account.rate_account_id)
+                .order_by(ReplayRateReservationRecord.rate_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        rate = next(
+            (
+                reservation
+                for reservation in rate_reservations
+                if reservation.rate_reservation_id == ticket.rate_reservation_id
+            ),
+            None,
+        )
+        if budget is None or rate is None:
+            raise StateConflict("Replay ticket reservation account changed before release")
+        self._require_exact_replay_budget_ledger(
+            budget_account,
+            budget_reservations,
+        )
+        if any(
+            not self._replay_rate_reservation_lifecycle_exact(reservation)
+            for reservation in rate_reservations
+        ):
+            raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        if not (
+            ticket.batch_id == batch.batch_id
+            and ticket.source_root_digest == batch.source_root_digest
+            and budget.budget_account_id == budget_account.budget_account_id
+            and budget.batch_id == ticket.batch_id
+            and budget.item_id == ticket.item_id
+            and budget.attempt_number == ticket.attempt_number
+            and budget.compilation_id == ticket.compilation_id
+            and rate.rate_account_id == rate_account.rate_account_id
+            and rate.batch_id == ticket.batch_id
+            and rate.item_id == ticket.item_id
+            and rate.attempt_number == ticket.attempt_number
+            and rate.compilation_id == ticket.compilation_id
+            and budget_account.source_run_id == batch.source_run_id
+            and budget_account.source_root_digest == batch.source_root_digest
+            and budget_account.campaign_name == batch.campaign_name
+            and rate_account.source_run_id == batch.source_run_id
+            and rate_account.source_root_digest == batch.source_root_digest
+            and rate_account.campaign_name == batch.campaign_name
+        ):
+            raise StateConflict("Replay ticket reservation binding changed before release")
+
+        budget_remaining = budget.total_calls - budget.consumed_calls - budget.released_calls
+        if budget_remaining < 0 or budget_account.reserved_calls < budget_remaining:
+            raise StateConflict("Replay budget reservation counters are inconsistent")
+        if budget_remaining:
+            budget.released_calls += budget_remaining
+            budget.state = "released"
+            budget.released_at = now
+            budget.updated_at = now
+            budget_account.reserved_calls -= budget_remaining
+            budget_account.released_calls += budget_remaining
+            budget_account.cas_version += 1
+            budget_account.updated_at = now
+        elif budget.state == "active" and budget.consumed_calls == budget.total_calls:
+            budget.state = "consumed"
+            budget.updated_at = now
+
+        rate_remaining = (
+            rate.total_request_units - rate.consumed_request_units - rate.released_request_units
+        )
+        if rate_remaining < 0:
+            raise StateConflict("Replay rate reservation counters are inconsistent")
+        if rate_remaining:
+            rate.released_request_units += rate_remaining
+            rate.state = "released"
+            rate.released_at = now
+            rate.updated_at = now
+            rate_account.cas_version += 1
+            rate_account.updated_at = now
+        elif rate.state == "active" and rate.consumed_request_units == rate.total_request_units:
+            rate.state = "consumed"
+            rate.updated_at = now
+
+        self._require_exact_replay_budget_ledger(
+            budget_account,
+            budget_reservations,
+        )
+
     @staticmethod
     def _refresh_terminal_replay_batch_state(
         batch: ReplayBatchRecord,
@@ -2275,6 +2994,7 @@ class ControlPlaneService:
         event_type: str,
     ) -> None:
         self._abandon_replay_ticket(ticket, now=now, reason=reason)
+        self._release_replay_reservations(session, ticket, batch, now=now)
         job.state = JobState.FAILED.value
         job.error = reason[:2_000]
         job.result = None
@@ -2547,6 +3267,496 @@ class ControlPlaneService:
                 "Replay batch idempotency key was already used for different authority input"
             )
         return self._replay_batch_view(batch)
+
+    def _existing_replay_issuance(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+        *,
+        locked_items: list[ReplayItemRecord] | None = None,
+    ) -> ReplayBatchIssuanceView:
+        """Return only a complete, exact current issuance graph after response loss."""
+
+        batch_id = batch.batch_id
+        jobs_by_id: dict[str, JobRecord]
+        runs_by_id: dict[str, RunRecord]
+        if locked_items is None:
+            if self.repository.dialect_name == "sqlite":
+                # SQLite has no row-level FOR UPDATE. Acquire its writer lock before
+                # reconstruction so every following SELECT observes one lifecycle.
+                session.execute(
+                    update(ReplayBatchRecord)
+                    .where(ReplayBatchRecord.batch_id == batch_id)
+                    .values(updated_at=ReplayBatchRecord.updated_at)
+                )
+            discovered_job_ids = sorted(
+                session.scalars(
+                    select(ReplayTicketRecord.job_id).where(ReplayTicketRecord.batch_id == batch_id)
+                ).all()
+            )
+            if not discovered_job_ids:
+                raise StateConflict("issued Replay batch has no Job authority graph")
+            jobs = list(
+                session.scalars(
+                    select(JobRecord)
+                    .where(JobRecord.job_id.in_(discovered_job_ids))
+                    .order_by(JobRecord.job_id)
+                    .with_for_update()
+                ).all()
+            )
+            if [job.job_id for job in jobs] != discovered_job_ids:
+                raise StateConflict("issued Replay Job authority graph changed concurrently")
+            jobs_by_id = {job.job_id: job for job in jobs}
+            all_tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord)
+                    .where(ReplayTicketRecord.batch_id == batch_id)
+                    .order_by(ReplayTicketRecord.ticket_id)
+                    .with_for_update()
+                ).all()
+            )
+            if sorted(ticket.job_id for ticket in all_tickets) != discovered_job_ids:
+                raise StateConflict("issued Replay ticket authority graph changed concurrently")
+            locked_item_rows = list(
+                session.scalars(
+                    select(ReplayItemRecord)
+                    .where(ReplayItemRecord.batch_id == batch_id)
+                    .order_by(ReplayItemRecord.item_id)
+                    .with_for_update()
+                ).all()
+            )
+            items = sorted(
+                locked_item_rows,
+                key=lambda item: (item.ordinal, item.item_id),
+            )
+            batch = self._replay_batch(session, batch_id, lock=True)
+            session.refresh(batch)
+            run_ids = sorted({ticket.replay_run_id for ticket in all_tickets})
+            runs = list(
+                session.scalars(
+                    select(RunRecord)
+                    .where(RunRecord.run_id.in_(run_ids))
+                    .order_by(RunRecord.run_id)
+                    .with_for_update()
+                ).all()
+            )
+            if [run.run_id for run in runs] != run_ids:
+                raise StateConflict("issued Replay Run authority graph changed concurrently")
+            runs_by_id = {run.run_id: run for run in runs}
+        else:
+            # A concurrent issuer loser already owns every item and the batch. All
+            # lifecycle writers need an item lock before mutation, so committed
+            # Job/ticket/Run state cannot change until this transaction returns.
+            items = sorted(
+                locked_items,
+                key=lambda item: (item.ordinal, item.item_id),
+            )
+            all_tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord)
+                    .where(ReplayTicketRecord.batch_id == batch_id)
+                    .order_by(ReplayTicketRecord.ticket_id)
+                ).all()
+            )
+            job_ids = sorted({ticket.job_id for ticket in all_tickets})
+            jobs = list(
+                session.scalars(
+                    select(JobRecord)
+                    .where(JobRecord.job_id.in_(job_ids))
+                    .order_by(JobRecord.job_id)
+                ).all()
+            )
+            jobs_by_id = {job.job_id: job for job in jobs}
+            run_ids = sorted({ticket.replay_run_id for ticket in all_tickets})
+            runs = list(
+                session.scalars(
+                    select(RunRecord)
+                    .where(RunRecord.run_id.in_(run_ids))
+                    .order_by(RunRecord.run_id)
+                ).all()
+            )
+            runs_by_id = {run.run_id: run for run in runs}
+
+        if batch.state != ReplayBatchState.RUNNING.value:
+            raise StateConflict(f"Replay batch in {batch.state} state cannot be issued")
+        current_tickets: list[ReplayTicketRecord] = []
+        if not items or [item.ordinal for item in items] != list(range(len(items))):
+            raise StateConflict("issued Replay batch has an invalid item set")
+        for item in items:
+            matches = [
+                ticket
+                for ticket in all_tickets
+                if ticket.item_id == item.item_id and ticket.attempt_number == item.attempts
+            ]
+            active = [
+                ticket
+                for ticket in all_tickets
+                if ticket.item_id == item.item_id and ticket.state in _ACTIVE_REPLAY_TICKET_STATES
+            ]
+            if (
+                item.attempts != 1
+                or item.state not in {ReplayItemState.QUEUED.value, ReplayItemState.RUNNING.value}
+                or len(matches) != 1
+                or active != matches
+            ):
+                raise StateConflict("issued Replay batch has no exact current attempt graph")
+            ticket = matches[0]
+            job = jobs_by_id.get(ticket.job_id)
+            run = runs_by_id.get(ticket.replay_run_id)
+            if job is None or run is None:
+                raise StateConflict("issued Replay attempt graph is incomplete")
+            self._verify_replay_binding(session, job, ticket, item, batch)
+            if ticket.state == ReplayTicketState.ISSUED.value:
+                exact_state = (
+                    job.state == JobState.QUEUED.value
+                    and run.state == RunState.QUEUED.value
+                    and item.state == ReplayItemState.QUEUED.value
+                    and job.attempts == 0
+                    and job.lease_owner is None
+                    and job.lease_token_hash is None
+                )
+            elif ticket.state == ReplayTicketState.CLAIMED.value:
+                exact_state = (
+                    job.state == JobState.LEASED.value
+                    and run.state == RunState.RUNNING.value
+                    and item.state == ReplayItemState.RUNNING.value
+                    and job.attempts == 1
+                    and job.lease_owner == ticket.claim_principal
+                    and job.lease_token_hash == ticket.lease_token_hash
+                )
+            else:
+                exact_state = False
+            if not exact_state:
+                raise StateConflict("issued Replay attempt lifecycle is inconsistent")
+            current_tickets.append(ticket)
+        return ReplayBatchIssuanceView(
+            batch=self._replay_batch_view(batch),
+            items=[self._replay_item_view(item) for item in items],
+            tickets=[self._replay_ticket_view(ticket) for ticket in current_tickets],
+        )
+
+    @staticmethod
+    def _require_fresh_issuance_derivation(
+        batch: ReplayBatchRecord,
+        items: list[ReplayItemRecord],
+        *,
+        derived: DerivedKISAReplayBatch,
+        source: ArtifactRef,
+    ) -> None:
+        if (
+            derived.artifact_ref != source
+            or derived.candidate_run_id != source.run_id
+            or derived.source_root_digest != source.integrity_root_digest
+            or derived.campaign_name != batch.campaign_name
+            or derived.mode.value != batch.mode
+            or derived.purpose.value != batch.purpose
+            or derived.policy_version != batch.policy_version
+            or derived.required_tool_calls
+            != sum(admitted.contract.repetitions for admitted in derived.items)
+            or derived.required_request_units
+            != sum(admitted.required_request_units for admitted in derived.items)
+            or len(items) != len(derived.items)
+            or not items
+        ):
+            raise StateConflict("fresh Replay derivation does not match the planned batch")
+        if len({admitted.replay_run_id for admitted in derived.items}) != len(derived.items):
+            raise StateConflict("fresh Replay derivation reused a Run identity")
+        for ordinal, (item, admitted) in enumerate(zip(items, derived.items, strict=True)):
+            if not (
+                item.ordinal == ordinal
+                and item.state == ReplayItemState.PENDING.value
+                and item.attempts == 0
+                and item.candidate_id == admitted.candidate_id
+                and item.candidate_digest == admitted.candidate_digest
+                and item.contract_digest == admitted.contract_digest
+                and item.required_attempts == admitted.required_attempts
+                and item.max_attempts == admitted.max_attempts
+                and item.replay_run_id != admitted.replay_run_id
+                and admitted.required_request_units > 0
+            ):
+                raise StateConflict("fresh Replay derivation changed the planned item set")
+
+    @staticmethod
+    def _trusted_replay_compilation(record: ReplayCompilationRecord) -> ReplayCompilation:
+        try:
+            trusted = ReplayCompilation.model_validate_json(record.canonical_compilation)
+        except ValueError as exc:
+            raise StateConflict("stored Replay compilation is invalid") from exc
+        canonical = canonical_replay_compilation_bytes(trusted)
+        if not (
+            canonical == record.canonical_compilation
+            and len(canonical) == record.byte_length
+            and sha256(canonical).hexdigest() == record.compilation_digest
+            and replay_context_digest(trusted.validation_packet.candidate)
+            == record.candidate_digest
+            and replay_context_digest(trusted.contract) == record.contract_digest
+            and replay_context_digest(trusted.grant) == record.grant_digest
+            and trusted.validation_packet.candidate.candidate_id == record.candidate_id
+            and trusted.spec.binding.candidate_id == record.candidate_id
+            and trusted.spec.binding.replay_run_id == record.replay_run_id
+        ):
+            raise StateConflict("stored Replay compilation authority is inconsistent")
+        return trusted
+
+    @classmethod
+    def _trusted_fresh_issuance_compilation(
+        cls,
+        admitted: DerivedKISAReplayItem,
+        *,
+        now: datetime,
+    ) -> ReplayCompilation:
+        transient = ReplayCompilationRecord(
+            compilation_id=f"replay-compilation_{'0' * 32}",
+            item_id="fresh-validation",
+            batch_id="fresh-validation",
+            candidate_id=admitted.candidate_id,
+            replay_run_id=admitted.replay_run_id,
+            candidate_digest=admitted.candidate_digest,
+            contract_digest=admitted.contract_digest,
+            compilation_digest=admitted.compilation_digest,
+            grant_digest=admitted.grant_digest,
+            canonical_compilation=admitted.canonical_compilation,
+            byte_length=len(admitted.canonical_compilation),
+            created_at=now,
+        )
+        trusted = cls._trusted_replay_compilation(transient)
+        compiled_at = _aware(trusted.spec.compiled_at)
+        expires_at = _aware(trusted.spec.expires_at)
+        if not (
+            trusted == admitted.compilation
+            and compiled_at == _aware(trusted.grant.issued_at)
+            and expires_at == _aware(trusted.grant.expires_at)
+            and compiled_at == _aware(admitted.compilation.spec.compiled_at)
+            and compiled_at <= now
+            and expires_at > now
+            and expires_at <= compiled_at + _REPLAY_TICKET_TTL
+            and admitted.contract.repetitions == trusted.spec.repetitions
+            and admitted.contract.repetitions == trusted.grant.max_calls
+            and admitted.required_request_units
+            == AIChatProbeTool().network_request_cost(trusted.original_request)
+            * trusted.contract.repetitions
+        ):
+            raise StateConflict("fresh Replay compilation has no valid short-lived authority")
+        return trusted
+
+    def _reserve_replay_capacity(
+        self,
+        session: Session,
+        *,
+        batch: ReplayBatchRecord,
+        derived: DerivedKISAReplayBatch,
+        observed_at: datetime,
+        now: datetime,
+    ) -> tuple[ReplayBudgetAccountRecord, ReplayRateAccountRecord]:
+        """Lock accounts before reservations and reserve the complete first attempt.
+
+        Every writer follows the same capacity-layer order: budget account, rate
+        account, budget reservations, then rate reservations. The earlier Replay
+        graph is locked Job -> ticket -> item -> batch -> Run when those rows exist.
+        """
+
+        budget_account = session.scalar(
+            select(ReplayBudgetAccountRecord)
+            .where(ReplayBudgetAccountRecord.source_run_id == batch.source_run_id)
+            .with_for_update()
+        )
+        if budget_account is None:
+            budget_account = ReplayBudgetAccountRecord(
+                budget_account_id=f"replay-budget-account_{uuid4().hex}",
+                source_run_id=batch.source_run_id,
+                source_root_digest=batch.source_root_digest,
+                campaign_name=batch.campaign_name,
+                budget_digest=derived.budget_digest,
+                baseline_used_calls=derived.used_tool_calls,
+                max_tool_calls=derived.max_tool_calls,
+                reserved_calls=0,
+                consumed_calls=0,
+                released_calls=0,
+                cas_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(budget_account)
+            session.flush()
+        elif not (
+            budget_account.source_root_digest == batch.source_root_digest
+            and budget_account.campaign_name == batch.campaign_name
+            and budget_account.budget_digest == derived.budget_digest
+            and budget_account.baseline_used_calls == derived.used_tool_calls
+            and budget_account.max_tool_calls == derived.max_tool_calls
+        ):
+            raise StateConflict("durable Replay budget account differs from the sealed source")
+
+        rate_account = session.scalar(
+            select(ReplayRateAccountRecord)
+            .where(ReplayRateAccountRecord.source_run_id == batch.source_run_id)
+            .with_for_update()
+        )
+        if rate_account is None:
+            rate_account = ReplayRateAccountRecord(
+                rate_account_id=f"replay-rate-account_{uuid4().hex}",
+                source_run_id=batch.source_run_id,
+                source_root_digest=batch.source_root_digest,
+                campaign_name=batch.campaign_name,
+                rate_limits_digest=derived.rate_limits_digest,
+                ledger_id=derived.rate_ledger_id,
+                max_requests_per_minute=derived.max_requests_per_minute,
+                observed_request_units=derived.observed_campaign_request_units,
+                observed_at=observed_at,
+                window_seconds=60,
+                cas_version=1,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(rate_account)
+            session.flush()
+        elif not (
+            rate_account.source_root_digest == batch.source_root_digest
+            and rate_account.campaign_name == batch.campaign_name
+            and rate_account.rate_limits_digest == derived.rate_limits_digest
+            and rate_account.ledger_id == derived.rate_ledger_id
+            and rate_account.max_requests_per_minute == derived.max_requests_per_minute
+            and rate_account.observed_request_units == derived.observed_campaign_request_units
+            and _aware(rate_account.observed_at) == observed_at
+            and rate_account.window_seconds == 60
+        ):
+            raise StateConflict("durable Replay rate account differs from the sealed source")
+
+        budget_reservations = list(
+            session.scalars(
+                select(ReplayBudgetReservationRecord)
+                .where(
+                    ReplayBudgetReservationRecord.budget_account_id
+                    == budget_account.budget_account_id
+                )
+                .order_by(ReplayBudgetReservationRecord.budget_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        self._require_exact_replay_budget_ledger(
+            budget_account,
+            budget_reservations,
+        )
+        total_after_reservation = (
+            budget_account.baseline_used_calls
+            + budget_account.reserved_calls
+            + budget_account.consumed_calls
+            + derived.required_tool_calls
+        )
+        if total_after_reservation > budget_account.max_tool_calls:
+            raise StateConflict("durable Replay budget reservation exceeds Campaign capacity")
+
+        rate_reservations = list(
+            session.scalars(
+                select(ReplayRateReservationRecord)
+                .where(ReplayRateReservationRecord.rate_account_id == rate_account.rate_account_id)
+                .order_by(ReplayRateReservationRecord.rate_reservation_id)
+                .with_for_update()
+            ).all()
+        )
+        if any(
+            not self._replay_rate_reservation_lifecycle_exact(reservation)
+            for reservation in rate_reservations
+        ):
+            raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        if rate_account.max_requests_per_minute is not None:
+            baseline_units = (
+                rate_account.observed_request_units
+                if now
+                < _aware(rate_account.observed_at) + timedelta(seconds=rate_account.window_seconds)
+                else 0
+            )
+            reserved_units = sum(
+                reservation.total_request_units - reservation.released_request_units
+                for reservation in rate_reservations
+                if _aware(reservation.expires_at) > now
+            )
+            if (
+                baseline_units + reserved_units + derived.required_request_units
+                > rate_account.max_requests_per_minute
+            ):
+                raise StateConflict("durable Replay rate reservation exceeds Campaign capacity")
+
+        budget_account.reserved_calls += derived.required_tool_calls
+        budget_account.cas_version += 1
+        budget_account.updated_at = now
+        rate_account.cas_version += 1
+        rate_account.updated_at = now
+        return budget_account, rate_account
+
+    @classmethod
+    def _require_exact_replay_budget_ledger(
+        cls,
+        account: ReplayBudgetAccountRecord,
+        reservations: list[ReplayBudgetReservationRecord],
+    ) -> None:
+        if any(
+            not cls._replay_budget_reservation_lifecycle_exact(reservation)
+            for reservation in reservations
+        ):
+            raise StateConflict("durable Replay budget reservation ledger is inconsistent")
+        expected_reserved = sum(
+            reservation.total_calls - reservation.consumed_calls - reservation.released_calls
+            for reservation in reservations
+        )
+        expected_consumed = sum(reservation.consumed_calls for reservation in reservations)
+        expected_released = sum(reservation.released_calls for reservation in reservations)
+        if not (
+            account.reserved_calls == expected_reserved
+            and account.consumed_calls == expected_consumed
+            and account.released_calls == expected_released
+        ):
+            raise StateConflict("durable Replay budget account counters differ from its ledger")
+
+    @staticmethod
+    def _replay_budget_reservation_lifecycle_exact(
+        reservation: ReplayBudgetReservationRecord,
+    ) -> bool:
+        return (
+            (
+                reservation.state == "active"
+                and reservation.released_at is None
+                and reservation.released_calls == 0
+                and 0 <= reservation.consumed_calls < reservation.total_calls
+            )
+            or (
+                reservation.state == "consumed"
+                and reservation.released_at is None
+                and reservation.released_calls == 0
+                and reservation.consumed_calls == reservation.total_calls
+            )
+            or (
+                reservation.state == "released"
+                and reservation.released_at is not None
+                and reservation.consumed_calls + reservation.released_calls
+                == reservation.total_calls
+            )
+        )
+
+    @staticmethod
+    def _replay_rate_reservation_lifecycle_exact(
+        reservation: ReplayRateReservationRecord,
+    ) -> bool:
+        return (
+            (
+                reservation.state == "active"
+                and reservation.released_at is None
+                and reservation.released_request_units == 0
+                and 0 <= reservation.consumed_request_units < reservation.total_request_units
+            )
+            or (
+                reservation.state == "consumed"
+                and reservation.released_at is None
+                and reservation.released_request_units == 0
+                and reservation.consumed_request_units == reservation.total_request_units
+            )
+            or (
+                reservation.state == "released"
+                and reservation.released_at is not None
+                and reservation.consumed_request_units + reservation.released_request_units
+                == reservation.total_request_units
+            )
+        )
 
     @staticmethod
     def _run(session: Session, run_id: str, *, lock: bool = False) -> RunRecord:
@@ -2833,6 +4043,9 @@ class ControlPlaneService:
             batch_id=record.batch_id,
             item_id=record.item_id,
             job_id=record.job_id,
+            compilation_id=record.compilation_id,
+            budget_reservation_id=record.budget_reservation_id,
+            rate_reservation_id=record.rate_reservation_id,
             replay_run_id=record.replay_run_id,
             state=ReplayTicketState(record.state),
             attempt=record.attempt_number,

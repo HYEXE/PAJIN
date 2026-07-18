@@ -20,8 +20,8 @@ The implementation baseline as of 2026-07-18 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, and server-derived non-dispatchable planned/pending derivation records for exact KISA M03, M06, and A04 confirmation compilations |
-| Primary gaps | Remaining Control Plane Replay orchestration, including durable pre-ticket budget/rate reservation, Job/ticket issuance, new-identity retries, executor/finalization/Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, server-derived non-dispatchable planned/pending records for exact KISA M03, M06, and A04 confirmation compilations, and M6-07B-2C schema-v5 durable budget/sealed-rate reservations plus idempotent internal first-attempt Job/ticket issuance bound to fresh compilation authority |
+| Primary gaps | Remaining Control Plane Replay orchestration, including a public Replay API, actual per-call permits, new-identity retries, executor/finalization/Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -114,7 +114,7 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
   predicate or a distributed lock. Accepted ADR 0029 governs Control Plane replay artifact handoff,
   lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state. The implemented
-  M6-07B-2B foundation now includes the versioned Replay aggregate and burn-on-claim lifecycle, an
+  M6-07B-2B foundation includes the versioned Replay aggregate and burn-on-claim lifecycle, an
   owner-controlled managed filesystem repository, immutable `cp_artifacts` metadata, and
   server-owned admission of completed sealed sources. Producer Control Plane Run identity remains
   distinct from the sealed Run identity. Consumers provide only the exact opaque
@@ -129,16 +129,24 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   non-dispatchable compilation derivation records. Each append-only row has its own
   `compilation_id`, Replay Run identity, compilation digest, and Grant digest; its non-unique
   `item_id` and Candidate/contract plan-identity foreign key allow later attempt/version rows for
-  the same item. The permit/issuance slice must append the fresh row and make its ticket refer
-  directly to that `compilation_id` and digests; the existing ticket foreign-key redesign remains
-  next-slice work. This internal slice exposes no public Replay/admission API, deliberately creates
-  no Job or ticket, and dispatches no execution: durable budget/request-rate permits must
-  precede issuance. The persisted Grant lasts at most five minutes and may expire while pending, so
-  this derivation record MUST NOT be reused as later execution authority. The permit/issuance slice
-  must recompile with a fresh Replay Run identity and Grant, or bind an otherwise fresh and valid
-  compilation, by appending that row in the same issuance transaction. Ticket issuance, new-identity
-  retry, executor/finalization/Gate wiring, and negative Control Plane retest remain outstanding, so full
-  M6-07B remains incomplete.
+  the same item. M6-07B-2C durable issuance is also implemented as of 2026-07-18. The internal,
+  idempotent `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` path resolves and
+  re-verifies the managed source again, then uses schema v5 `cp_replay_budget_accounts`,
+  `cp_replay_budget_reservations`, `cp_replay_rate_accounts`, and
+  `cp_replay_rate_reservations` authority. It conservatively binds the sealed budget and request-rate
+  snapshot, reserves the complete first-attempt Tool-call/request-unit requirement, recompiles every
+  pending item with a fresh Replay Run identity and five-minute Grant, appends a new canonical
+  `ReplayCompilation`, and atomically creates exactly one internal Job and `issued` ticket per item.
+  The Job payload and ticket are bound by foreign keys and strict models to the exact
+  `compilation_id`, `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run, compilation
+  digest, and Grant digest. The original planned compilation remains a non-dispatchable proof and is
+  never promoted or reused. Only a response-loss retry against the current active exact authority
+  graph reconstructs that issuance: the ticket/Job pair must still be `issued`/`queued` immediately
+  after issuance, or `claimed`/`running` after claim. A terminal or otherwise changed graph must
+  fail closed. This slice still exposes no public Replay/admission API, and the
+  reservations are not actual per-call execution permits. Per-call permit consumption, new-identity
+  retry issuance, the Replay executor, typed finalization, Gate wiring, and negative Control Plane
+  retest remain outstanding, so full M6-07B remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 

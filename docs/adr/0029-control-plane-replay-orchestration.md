@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2B trusted derivation)
+- Implementation update: 2026-07-18 (M6-07B-2C durable issuance)
 - Scope: M6-07B Control Plane 수직 조각
 - Extends: [ADR 0011](0011-durable-control-plane.md), [ADR 0012](0012-lease-aware-worker-daemon.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.md)
@@ -28,15 +28,30 @@ item `pending` 상태의 append-only, non-dispatchable PostgreSQL derivation rec
 아니다. schema v4는 canonical, non-dispatchable compilation derivation record를 추가해 forward 경로를
 v1→v2→v3→v4로 확장한다. `compilation_id`가 row identity이고 `item_id`는 고유하지 않다.
 Candidate/contract field는 plan identity FK를 구성하며 각 row가 Replay Run identity, compilation
-digest와 Grant digest를 소유하므로 item 하나에 attempt/version row를 append할 수 있다. 미래 issuance
-row는 ticket이 직접 참조해야 하며 기존 `cp_replay_tickets` FK 재설계는 다음 조각이다. 이 내부
-service path는 public Replay/admission API를 열지 않고, durable budget/request-rate permit이 발행보다 먼저여야
-하므로 의도적으로 Job이나 ticket을 만들거나 실행을 dispatch하지 않는다. planned Grant는 최대 5분만
-유효하고 pending 중 만료될 수 있으므로 이후 실행 권한으로 절대 재사용하면 안 된다.
-permit/issuance transaction은 새 Replay Run identity와 Grant로 다시 compile하거나, 별도의 fresh하고
-유효한 compilation을 결박해 그 row를 append해야 한다. ticket 발행, 새 identity retry, Replay
-executor, typed server-side artifact finalization과 result-digest 검증, Gate와 negative Control Plane
-retest는 남아 있다. 이 실행 경계가 완료되기 전에는 Control Plane이 완전한 durable Replay
+digest와 Grant digest를 소유하므로 item 하나에 attempt/version row를 append할 수 있다. planned Grant는
+최대 5분만 유효하고 pending 중 만료될 수 있으므로 이후 실행 권한으로 절대 재사용하면 안 된다.
+M6-07B-2C durable issuance도 2026-07-18에 구현됐다. schema v5는
+`cp_replay_budget_accounts`, `cp_replay_budget_reservations`, `cp_replay_rate_accounts`,
+`cp_replay_rate_reservations`와 `cp_replay_tickets`의 exact compilation 및 reservation FK를 추가한다.
+budget account는 sealed source Run/root, Campaign, budget digest, baseline/max count,
+reserved/consumed/released counter와 CAS를 결박한다. rate account는 sealed ledger ID와 digest,
+observed unit, managed Artifact admission 시각을 `observed_at`으로, nullable per-minute limit, 고정
+60초 window와 CAS를 보수적으로 결박하고 각 첫 시도
+rate reservation은 그 window 뒤 만료된다. 내부 멱등
+`ControlPlaneService.issue_replay_batch(batch_id, actor=...)`는 authority lock 전에 managed source를
+다시 resolve·재검증한다. batch 첫 시도 전체의 Tool-call/request-unit을 예약하고 pending item마다 fresh
+Replay Run identity와 Grant로 다시 compile한 뒤 canonical compilation, active budget/rate
+reservation, one-shot 내부 Job과 `issued` ticket을 한 transaction에서 만든다. strict payload와 ticket은
+exact `compilation_id`, `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run,
+compilation digest와 Grant digest에 결박된다. batch는 `running`, item은 `queued`가 된다. 응답
+유실(response-loss) 재시도는 현재 active exact authority graph가 발급 직후 ticket/Job
+`issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만 같은 issuance를 재구성하며, terminal이거나
+그 밖에 변경된 graph는 fail closed한다. 같은 transaction은 `run.submitted`, item별
+`replay.compilation.derived`·`replay.ticket.issued`, 마지막 `replay.batch.issued` event를 기록한다.
+최초 planned row는 non-dispatchable로 남고 승격하거나
+재사용하지 않는다. public Replay/admission API와 실제 호출별 Tool permit은 아직 없다. 호출별 permit
+소비, 새 identity retry, Replay executor, typed server-side artifact finalization과 result-digest 검증,
+Gate와 negative Control Plane retest는 남아 있다. 이 실행 경계가 완료되기 전에는 Control Plane이 완전한 durable Replay
 orchestration을 제공한다고 주장할 수 없다.
 
 ## Context
@@ -84,10 +99,11 @@ batch 생성 전에 이를 resolve하고 다시 검증한다. M6-07B-2B는 나�
 한정하고 trusted source 재로딩, exact M03·M06·A04 confirmation Candidate/contract 파생, canonical
 compilation과 append-only planned/pending, non-dispatchable PostgreSQL derivation record를 추가했다.
 저장된 compilation과 Grant는 파생 결과를 증명할 뿐 dispatch 권한이 아니며 issuance 때 재사용할 수 없다.
-이 조각은 Job이나 ticket을
-발행하지 않는다. 일반 Job completion/failure 경로는 Replay Job에 계속 사용할 수 없다. durable
-permit과 발행, retry, executor, typed finalization, Gate와 negative Control Plane retest는 의도적으로
-완료된 기반 밖에 남아 있다.
+M6-07B-2C는 schema-v5 durable budget/sealed-rate reservation과 내부 멱등 첫 시도 발행 transaction을
+추가했다. service는 source를 재검증하고 fresh Replay Run/Grant compilation 권위를 append한 뒤 전체
+batch의 exact reservation-bound Job/ticket 집합을 원자적으로 만든다. 일반 Job completion/failure
+경로는 Replay Job에 계속 사용할 수 없다. public Replay API, 실제 호출별 permit, retry, executor,
+typed finalization, Gate와 negative Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -136,12 +152,14 @@ Replay batch를 만들 때 서버는 다음 순서로 source를 admission한다.
 4. 서버가 원 source root, canonical Candidate/contract identity와 최초 Replay compilation/Capability를
    `compilation_id` 기반 non-dispatchable derivation record이자 proof로 저장한다. 이 row가 Replay Run
    ID, compilation digest와 Grant digest를 소유한다.
+5. 별도 내부 issuance 호출이 managed source를 다시 resolve·재검증하고 sealed budget/rate snapshot을
+   durable account에 결박해 첫 시도 전체를 reserve한 뒤, fresh Replay Run/Grant compilation 권위를
+   append하고 Job/ticket을 원자적으로 만든다.
 
 Worker가 보낸 Candidate, contract, comparison rule, Capability Grant, target, Tool arguments,
 source root 또는 eligibility flag는 authority input이 아니다. planned record의 5분 Grant는 발행 전에
-만료될 수 있으며 Worker 실행 권한이 아니다. Worker claim envelope는 durable reservation 뒤
-permit/issuance transaction에서 서버가 결박한 fresh compilation과 짧은 수명의 non-delegable
-Capability만 전달할 수 있다.
+만료될 수 있으며 Worker 실행 권한이 아니다. Worker claim envelope는 구현된 durable issuance
+transaction에서 서버가 결박한 fresh compilation과 짧은 수명의 non-delegable Capability만 전달한다.
 
 ### PostgreSQL Replay aggregate와 forward migration
 
@@ -152,12 +170,17 @@ Capability만 전달할 수 있다.
 | `cp_replay_batches` | source snapshot과 전체 Gate lifecycle | 하나의 immutable source `ArtifactRef`/root, Mode, purpose, policy version 및 CAS version에 결박 |
 | `cp_replay_items` | eligible Candidate별 진행 및 plan identity | Candidate/contract plan identity와 요구 반복 수가 batch 안에서 유일하며 item 하나가 여러 compilation row를 가질 수 있음 |
 | `cp_replay_compilations` | non-dispatchable derivation/attempt record | `compilation_id`가 PK이고 non-unique `item_id`와 Candidate/contract field가 plan identity를 결박하며, 각 append-only row가 Replay Run ID, canonical bytes, compilation digest와 Grant digest를 소유 |
-| `cp_replay_tickets` | 한 번의 실행 attempt authority | 최종적으로 exact compilation row, item attempt, Job, source root, claim principal/fence와 finalization에 결박; direct `compilation_id`/digest FK는 다음 조각 |
+| `cp_replay_budget_accounts` | source Campaign Tool-call authority | source Run/root, Campaign, sealed budget digest와 baseline/max count를 결박하고 reserved/consumed/released counter를 CAS로 전이 |
+| `cp_replay_budget_reservations` | item attempt 하나의 Tool-call authority | account, batch/item/attempt와 compilation에 결박되고 total call을 넘지 않는 active/partially-consumed/consumed/released lifecycle |
+| `cp_replay_rate_accounts` | 보수적인 sealed request-rate authority | source Run/root, Campaign, sealed ledger ID/digest와 observed unit, managed Artifact admission 시각인 `observed_at`, nullable per-minute cap, 60초 window와 CAS를 결박 |
+| `cp_replay_rate_reservations` | item attempt 하나의 request-unit authority | account, batch/item/attempt와 compilation에 결박되고 exact 60초 expiry와 같은 bounded lifecycle을 가짐 |
+| `cp_replay_tickets` | 한 번의 실행 attempt authority | exact compilation과 두 reservation FK, item attempt, Job, Replay Run, source root, claim principal/fence와 finalization에 결박 |
 | `cp_replay_events` | Replay authority 감사 이력 | 상태 전이 transaction 안에서 append되고 update/delete 금지 |
 
-Artifact metadata, durable budget reservation과 rate-limit bucket/permit에는 별도 table을 둘 수
-있다. 모든 authority-bearing foreign key와 uniqueness/check constraint는 database에서 강제한다.
-Replay event와 필요 시 대응하는 `cp_events` summary는 같은 transaction에 기록한다.
+Artifact metadata는 `cp_artifacts`에 따로 둔다. compilation/event row만 append-only이며 account와
+reservation은 제한된 accounting lifecycle 안에서만 변경된다. 모든 authority-bearing foreign key와
+uniqueness/check constraint는 database에서 강제한다. Replay event와 필요 시 대응하는 `cp_events`
+summary는 같은 transaction에 기록한다.
 
 상태 기계는 최소한 다음 의미를 구분한다.
 
@@ -189,10 +212,10 @@ PostgreSQL row lock, constraint와 migration 검증을 대신하지 않는다.
 
 Replay Job은 Operator 제출 API에 노출하지 않는 internal kind다. Public `SubmitRunRequest`가
 `replay`를 선택할 수 없고, Control Plane의 trusted batch service만 검증된 `cp_replay_item`과
-ticket에서 Job을 생성한다. Worker startup registry에도 exact Replay executor가 명시적으로
-설치되어야 한다. Job payload는 opaque batch/item/ticket/artifact reference와 서버 생성
-compilation identity만 포함하며 executable path, 임의 URL, callable 또는 Worker 선택 Grant를
-포함하지 않는다.
+fresh compilation, active reservation, ticket에서 Job을 생성한다. Worker startup registry에도 exact
+Replay executor가 명시적으로 설치되어야 한다. Job payload는 opaque batch/item/ticket/artifact
+reference와 서버 생성 `compilation_id`, `budget_reservation_id`, `rate_reservation_id` 권위만 포함하며
+executable path, 임의 URL, callable 또는 Worker 선택 Grant를 포함하지 않는다.
 
 일반 Control Plane queue는 at-least-once 전달을 유지하지만 Replay에서는 다음과 같이 ticket과
 결합한다.
@@ -236,18 +259,29 @@ Worker credential 탈취나 Worker host compromise 자체는 별도 운영 위�
 
 ### Durable budget reservation과 request-rate authority
 
-Replay batch admission은 전체 eligible item과 반복 수의 worst-case Tool call을 계산하고, 첫 Job을
-만들기 전에 Campaign budget을 PostgreSQL에서 원자적으로 reserve한다. reservation은 batch/item/
-ticket에 결박하고 다른 Local/Control Plane 실행과 같은 Campaign 한도를 초과할 수 없다. Worker가
-보고한 `usedCalls`나 로컬 snapshot은 정산 근거가 아니다.
+구현된 내부 issuance service는 Job을 하나라도 만들기 전에 전체 eligible item과 반복 수의 정확한 첫
+시도 Tool call 및 network request unit을 계산한다. PostgreSQL lock 아래에서 source Campaign의 budget
+account를 만들거나 검증하고 sealed source Run/root, Campaign, budget digest, baseline use와 max를
+결박하며 baseline + reserved + consumed가 max를 넘지 않도록 batch 전체를 reserve한다. Worker가 보고한
+`usedCalls`는 정산 근거가 아니다.
 
-reservation과 issuance transaction은 최초 planned derivation record를 실행 권한으로 승격하지 않는다.
-새 Replay Run identity와 fresh Grant로 다시 compile하거나 별도의 fresh하고 아직 유효한 compilation을
-결박해 같은 item에 새 `cp_replay_compilations` row를 append하고, ticket을 그 row의 `compilation_id`와
-digest, durable reservation 및 Job에 원자적으로 연결한다. 만료됐거나 이전에 저장된 planned Grant는
-fail closed한다. 이 direct ticket FK 추가는 schema-v4 derivation admission이 아니라 다음 조각이다.
+rate account도 sealed `ledger_id`, rate snapshot digest와 observed Campaign request unit, managed
+Artifact admission 시각인 `observed_at`, nullable `max_requests_per_minute`, 고정 60초 window를 결박한다.
+service는 그 admission 시각부터 60초 동안 sealed observation unit을 보수적으로 계산하고 만료되지
+않은 reservation을 잠근 뒤 첫 시도 전체를 더하면 cap을 넘을 경우 fail closed한다. 각 item은 60초
+active request-unit reservation을 받는다.
+per-minute cap이 없어도 exact source/account/reservation 결박은 생략하지 않는다.
 
-각 실제 Tool call 전에 Worker의 trusted Replay runtime은 internal permit endpoint를 호출한다.
+같은 transaction은 최초 planned derivation record를 실행 권한으로 승격하지 않는다. 각 item을 fresh
+Replay Run identity와 Grant로 다시 compile해 새 `cp_replay_compilations` row, active budget/rate
+reservation, one-shot Job과 `issued` ticket을 만든다. schema-v5 FK는 ticket을 exact compilation과 두
+reservation에 결박하고 strict Job payload도 같은 `compilation_id`, `budget_reservation_id`,
+`rate_reservation_id`를 반복한다. 현재 active exact authority graph가 발급 직후 ticket/Job
+`issued`/`queued`이거나 claim 뒤 `claimed`/`running`인 response-loss 재시도에만 이미 저장된 exact
+item/ticket 집합을 재구성한다. 만료·terminal·binding drift 등 변경된 graph는 fail closed한다.
+
+다음 호출별 경계는 아직 구현되지 않았다. 각 실제 Tool call 전에 Worker의 trusted Replay runtime은
+internal permit endpoint를 호출한다.
 서버는 active principal/lease/ticket fence를 다시 확인하고, canonical target/Tool/call ordinal에
 대해 한 번만 쓸 수 있는 permit을 발급하면서 reserved budget을 consume하고 durable rate-limit
 bucket 또는 append-only entry를 갱신한다. permit은 다른 ticket, target, Tool 또는 ordinal에
@@ -368,9 +402,14 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
   rate-limit 운영이 새로운 책임이 된다.
 - budget/permit을 보수적으로 소비하므로 ambiguous crash 뒤 가용 예산이 줄 수 있다. 이 손실은
   자동 환불로 중복 실행 위험을 키우는 것보다 우선한다.
-- Local M6-07A는 가벼운 단일 호스트 경로로 남고, M6-07B 구현 여부를 가장하지 않는다.
+- Local M6-07A는 가벼운 단일 호스트 경로로 남고, 아직 미완료인 M6-07B
+  executor/finalization/Gate 경로가 있다고 가장하지 않는다.
 
 ## Acceptance and validation
+
+M6-07B-2C 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
+compilation, 원자적 내부 issuance와 issuance 멱등성은 아래 항목 중 해당 부분만 충족한다. 나머지는
+M6-07B 전체의 exit criteria로 유지한다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
@@ -378,10 +417,13 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
   partial 또는 constraint/trigger가 손상된 schema에서 서버가 fail closed한다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
   verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
-  non-dispatchable compilation proof를 만들고 durable permit 전에는 Job이나 ticket을 만들지 않는다.
-  issuance는 만료된 planned Grant를 재사용하지 않고 같은 item에 새 compilation row를 append하며,
-  ticket을 그 row의 `compilation_id`, Replay Run identity, compilation digest와 Grant digest에
-  transaction에서 원자적으로 결박한다;
+  non-dispatchable compilation proof를 만든다. 내부 issuance는 source를 재검증하고 만료된 planned
+  Grant를 재사용하지 않으며 같은 item에 fresh compilation row를 append하고 budget/rate authority를
+  예약한 뒤, 각 첫 시도 Job/ticket을 그 row의 `compilation_id`, Replay Run identity,
+  compilation/Grant digest, `budget_reservation_id`, `rate_reservation_id`에 원자적으로 결박한다.
+  response-loss 재시도는 현재 active exact authority graph가 ticket/Job `issued`/`queued` 또는
+  `claimed`/`running`일 때만 같은 exact authority 집합을 재구성하고, terminal 또는 변경된 graph는
+  fail closed한다;
 - source와 replay `ArtifactRef`의 content, Run ID, seal root, artifact set 또는 repository version
   치환과 symlink/path traversal이 server-side verification에서 거부된다;
 - 두 Worker가 같은 queued Replay Job/ticket을 동시에 claim해 정확히 하나만 성공하고 principal,

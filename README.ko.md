@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, 검증된 reproduction-backed confirmation projection, 강화 후 retest를 위한 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending derivation record |
-| 주요 공백 | ticket 발행 전 durable budget/rate 예약, Job/ticket 발행, 새 identity 재시도, executor/finalization/Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable budget/sealed-rate 예약과 fresh compilation 권위에 결박된 멱등 내부 첫 시도 Job/ticket 발행 |
+| 주요 공백 | public Replay API, 실제 호출별 permit, 새 identity 재시도, executor/finalization/Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -130,18 +130,23 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   derivation record를 추가해 forward v1→v2→v3→v4 경로를 지원합니다. 각 append-only row는 고유한
   `compilation_id`, Replay Run identity, compilation digest와 Grant digest를 소유합니다. `item_id`는
   고유하지 않고 Candidate/contract plan identity FK에 결박되므로 같은 item에 후속 attempt/version
-  row를 추가할 수 있습니다. permit/issuance 조각은 fresh row를 append하고 ticket이 그
-  `compilation_id`와 digest를 직접 참조하게 해야 하며, 기존 ticket FK 재설계는 다음 조각에 남아
-  있습니다. 이 내부 조각은 public
-  Replay/admission API를 노출하지
-  않으며 의도적으로 Job이나 ticket을 만들거나 실행을 dispatch하지 않습니다. durable
-  budget/request-rate permit이 발행보다 먼저여야 하기 때문입니다. 저장된 Grant는 최대 5분만 유효하고
-  pending 중 만료될 수 있으므로 이 derivation record를 이후 실행 권한으로 절대 재사용하면 안 됩니다.
-  후속 permit/issuance 조각은 같은 발행 transaction 안에서 새 Replay Run identity와 Grant로 다시
-  compile하거나 별도의 fresh하고 유효한 compilation을 결박해 그 row를 append해야 합니다. ticket
-  발행, 새 identity
-  retry, executor/finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B 전체는
-  여전히 미완료입니다.
+  row를 추가할 수 있습니다. 2026-07-18에는 M6-07B-2C durable issuance도 구현했습니다. 내부 멱등
+  `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` 경로는 managed source를 다시
+  resolve하고 재검증한 뒤 schema v5의 `cp_replay_budget_accounts`,
+  `cp_replay_budget_reservations`, `cp_replay_rate_accounts`, `cp_replay_rate_reservations` 권위를
+  사용합니다. sealed budget과 request-rate snapshot을 보수적으로 결박하고 첫 시도 전체의 Tool-call 및
+  request-unit 요구량을 예약한 다음, pending item마다 fresh Replay Run identity와 5분 Grant로 다시
+  compile해 새 canonical `ReplayCompilation`을 append하고 내부 Job과 `issued` ticket을 정확히 하나씩
+  원자적으로 만듭니다. Job payload와 ticket은 FK 및 strict model을 통해 정확한
+  `compilation_id`, `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run,
+  compilation digest, Grant digest에 결박됩니다. 최초 planned compilation은 non-dispatchable proof로
+  남으며 승격하거나 재사용하지 않습니다. 응답 유실(response-loss) 재시도는 현재 active exact
+  authority graph가 발급 직후 ticket/Job `issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만
+  같은 issuance를 재구성합니다. terminal이거나 그 밖에 변경된 graph는 fail closed됩니다. 이 조각도
+  public Replay/admission API를 노출하지 않으며, 예약은
+  실제 호출별 실행 permit이 아닙니다. 호출별 permit 소비, 새 identity retry 발행, Replay executor,
+  typed finalization, Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B 전체는 여전히
+  미완료입니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 
