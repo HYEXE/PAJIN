@@ -108,9 +108,15 @@ Grant로 다시 compile한다. 새 canonical compilation row, active budget/rate
 record는 non-dispatchable proof로 남고 재사용하지 않는다. 응답 유실(response-loss) 재시도는 현재
 active exact authority graph가 발급 직후 ticket/Job `issued`/`queued`이거나 claim 뒤
 `claimed`/`running`일 때만 같은 issuance를 재구성하며, terminal이거나 그 밖에 변경된 graph는 fail
-closed한다. public
-Replay API, 실제 호출별 permit, 새 identity retry, executor/finalization/Gate와 negative Control Plane
-retest가 남아 있어 M6-07B 전체는 미완료다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
+closed한다. 2026-07-18 구현된 M6-07B-2D는 schema v6 append-only `cp_replay_tool_permits` 원장과
+내부 서비스 전용 호출별 permit 발급을 추가했다. strict request는 executor profile, lease token, ticket ID,
+fencing value와 1-based call ordinal만 받으며, 서비스는 exact active authority graph, reservation counter와
+rolling request-rate state를 다시 검증한다. canonical permit은 source/original request, Tool/version/target/method,
+ordinal, Tool-call unit 하나와 trusted request unit에 결박된다. 고유 ticket/ordinal 및 저장된 permit
+digest/request ID 덕분에 exact response-loss duplicate는 같은 row를 돌려주고 최초 발급만 reserved
+budget/rate를 consumed로 옮기며 event를 append한다. 실행이 불확실해도 발급분은 consumed로 남는다.
+public Replay API, HTTP transport, executor/redeem 집행, 새 identity retry, typed
+finalization/Gate와 negative Control Plane retest가 남아 있어 M6-07B 전체는 미완료다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
@@ -123,7 +129,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생, M6-07B-2C schema-v5 durable reservation과 fresh authority-bound 내부 첫 시도 Job/ticket 발행은 구현했으며 public Replay API, 실제 호출별 permit, 재시도, executor/finalization/Gate와 negative Control Plane retest는 미완료 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생, M6-07B-2C schema-v5 durable reservation·내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장·내부 서비스 발급은 구현했으며 public Replay API·HTTP transport, executor/redeem, 재시도, typed finalization/Gate와 negative Control Plane retest는 미완료 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1188,8 +1194,10 @@ Confirmed를 내지 않는다. M6-06은 로컬 KISA positive/negative 경로의 
 M6-07B-2B는 exact KISA confirmation compilation을 planned/pending non-dispatchable derivation
 proof로 파생·저장한다. M6-07B-2C는 managed source를 재검증하고 schema-v5 durable budget/sealed-rate
 reservation, fresh Replay Run/Grant compilation append, exact reservation-bound 내부 첫 시도 Job/ticket
-발행을 batch 단위 한 transaction에서 멱등 처리한다. 실제 호출별 permit과 end-to-end Control Plane
-Replay, negative Control Plane
+발행을 batch 단위 한 transaction에서 멱등 처리한다. M6-07B-2D는 schema-v6 append-only per-call permit
+ledger와 내부 서비스 발급을 멱등 처리하고, 발급 unit을 reserved에서 consumed로 원자적으로 옮긴다.
+public Replay API·HTTP transport, executor/redeem, 새 identity retry와 end-to-end Control Plane Replay,
+typed finalization/Gate, negative Control Plane
 retest와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 강화된 KISA 재테스트 완료 기준
@@ -1291,8 +1299,24 @@ reservation과 exact ticket FK를 추가했다. 내부 `issue_replay_batch`는 m
 검증하고, 전체 batch 첫 시도의 call/unit을 보수적으로 reserve하고, 각 item에 fresh Replay Run/Grant
 compilation을 append한 뒤 exact `compilation_id`, `budget_reservation_id`, `rate_reservation_id`에
 결박된 내부 Job/ticket을 원자적으로 발행한다. 호출은 멱등이며 최초 planned Grant는 재사용하지 않는다.
-public Replay/admission API, 실제 호출별 permit, 새 identity retry, executor/finalization/Gate와 negative
-Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
+M6-07B-2D는 schema v6와 forward v1→v2→v3→v4→v5→v6 경로에 append-only
+`cp_replay_tool_permits`를 추가했다. strict `ReplayToolPermitRequest`는 executor profile, lease token,
+ticket ID, fencing value와 1-based call ordinal만 받는다. 내부 멱등
+`ControlPlaneService.issue_replay_tool_permit(job_id, request, actor=...)` 서비스는 인증 principal과 등록
+profile, exact Job/ticket lease token·fence, active Run/batch/item/ticket, canonical compilation/Grant, exact
+reservation counter와 rolling request-rate admission을 다시 검증한다. cap이 있으면 현재 sealed baseline,
+발급 후 아직 유효한 reservation의 미소비 unit, 각 60초 window에서 active인 permit unit과 새 trusted
+request 비용을 합산하고, cap이 없으면 rate 거부만 생략한 채 exact counter를 소비한다. permit은 exact
+ticket/compilation/reservation graph,
+source/original request, Tool/version/target/method, 1-based ordinal, Tool-call unit 하나와 trusted request
+unit에 결박된다. TTL은 최대 30초이며 Job/ticket lease와 compiled spec/Grant deadline에만 제한되고 rate
+reservation expiry에는 제한되지 않는다. 고유 `(ticket, ordinal)`과 저장된 permit digest/request ID로
+정확한 response-loss duplicate는 counter/event 중복 없이 같은 row를 반환한다. 최초 발급은 reserved budget/rate unit을
+consumed로 원자적으로 옮기고 event를 append한다. 실행이 불확실해도 발급된 permit은 consumed로 남고
+cancel/abandon은 확실히 미발급된 잔여분만 release한다. stale/wrong/cancelled/expired/finalized,
+ordinal-gap과 over-limit 요청은 fail closed한다. 이 구현은 내부 서비스 원장/발급에 한정된다. public
+Replay/admission API, HTTP transport, executor/redeem 집행, 새 identity retry, typed
+finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
 승인된 ADR은 최소한 다음을 정의한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
@@ -1309,7 +1333,7 @@ Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance는 구현; 실제 호출별 permit 등 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance와 M6-07B-2D 내부 일회성 호출별 permit ledger/issuance는 구현; public API·HTTP transport, executor/redeem 등 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1369,8 +1393,12 @@ Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
   `compilation_id`·`budget_reservation_id`·`rate_reservation_id` 결박 내부 Job/ticket의 원자적 발행,
   현재 active exact authority graph가 ticket/Job `issued`/`queued` 또는 `claimed`/`running`인 경우에만
   가능한 response-loss 재시도의 동일 issuance 재구성; terminal 또는 변경된 graph는 fail closed
-- 남은 ADR-0029 범위: public Replay API, 실제 호출별 permit, 새 identity retry 발행,
-  executor/finalization/Gate, negative Control Plane retest,
+- M6-07B-2D 내부 호출별 permit 원장/발급: schema v6 append-only `cp_replay_tool_permits`, 최소 strict
+  request, exact active authority/counter 검증과 rolling-window rate 재수용, canonical Tool/target/method/unit 결박, 고유
+  ticket/ordinal과 permit digest/request ID를 통한 response-loss 멱등성, reserved→consumed 원자 전이와
+  event append, 불확실한 실행에도 발급분 burn, stale/mismatch/cancel/expire/finalize/gap/limit fail-closed
+- 남은 ADR-0029 범위: public Replay API, HTTP transport, executor/redeem 집행, 새 identity retry 발행,
+  typed finalization/Gate, negative Control Plane retest,
   portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
@@ -1446,9 +1474,10 @@ Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
 
 실행 경계와 기술 구조는 모두 승인된 ADR-0001부터 ADR-0029까지에 기록돼 있다. ADR-0029는
 M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각, M6-07B-2A
-managed Artifact admission, M6-07B-2B 서버 파생 exact KISA planned proof와 M6-07B-2C schema-v5
-durable reservation 및 fresh authority-bound 내부 첫 시도 Job/ticket 발행은 구현됐다. 다만 public
-Replay API, 실제 호출별 permit, retry 발행, executor/finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B
+managed Artifact admission, M6-07B-2B 서버 파생 exact KISA planned proof, M6-07B-2C schema-v5
+durable reservation 및 fresh authority-bound 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6
+append-only 일회성 호출별 permit 원장과 내부 서비스 발급은 구현됐다. 다만 public Replay API·HTTP
+transport, executor/redeem 집행, 새 identity retry 발행, typed finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B
 전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책

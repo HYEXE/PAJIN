@@ -4,7 +4,7 @@
 
 - 상태: 승인됨
 - 날짜: 2026-07-17
-- 구현 최신화: 2026-07-18 (M6-07B-2C durable issuance)
+- 구현 최신화: 2026-07-18 (M6-07B-2D 내부 호출별 permit 원장/발급)
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -49,12 +49,27 @@ compilation digest와 Grant digest에 결박된다. batch는 `running`, item은 
 `issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만 같은 issuance를 재구성하며, terminal이거나
 그 밖에 변경된 graph는 fail closed한다. 같은 transaction은 `run.submitted`, item별
 `replay.compilation.derived`·`replay.ticket.issued`, 마지막 `replay.batch.issued` event를 기록한다.
-최초 planned row는 non-dispatchable로 남고 승격하거나
-재사용하지 않는다. public Replay/admission API와 실제 호출별 Tool permit은 아직 없다. 호출별 permit
-소비, 새 identity retry, Replay executor, typed server-side artifact finalization과 result digest 검증,
-Gate와 negative Control Plane retest는 남아 있다. 이 실행 경계가
-완료되기 전에는 Control Plane이 완전한 영속형 Replay 오케스트레이션을
-제공한다고 주장할 수 없다.
+최초 planned row는 non-dispatchable로 남고 승격하거나 재사용하지 않는다. M6-07B-2D 내부 서비스 전용
+호출별 permit 원장/발급도 2026-07-18에 구현됐다. schema v6는 forward 경로를
+v1→v2→v3→v4→v5→v6으로 확장하고 append-only `cp_replay_tool_permits`를 추가한다. strict
+`ReplayToolPermitRequest`는 executor profile, lease token, ticket ID, fencing value와 1-based call ordinal만
+받는다. 멱등 `ControlPlaneService.issue_replay_tool_permit(job_id, request, actor=...)`는 인증 principal과
+등록 profile, exact Job/ticket lease token·fence, active Run/batch/item/ticket, canonical compilation/Grant,
+exact reservation counter와 rolling request-rate admission을 다시 검증한다. cap이 있으면 현재 sealed
+baseline, 발급 후 아직 유효한 reservation의 미소비 unit, 각 60초 window에서 active인 permit unit과 새 trusted
+request 비용을 합산한다. cap이 없으면 rate 거부만 생략하고 exact reservation counter는 계속 소비한다.
+canonical permit은 exact ticket/compilation/reservation
+graph, source/original request, Tool/version/target/method, ordinal, Tool-call unit 하나와 trusted request
+unit에 결박된다. TTL은 최대 30초이고 Job/ticket lease 및 compiled spec/Grant deadline에 제한되며 rate
+reservation expiry에는 제한되지 않는다. 고유 `(ticket, ordinal)`과 저장된 permit digest/request ID로
+exact response-loss duplicate는 counter를 다시 소비하거나 event를 두 번 append하지 않고 같은 row를 반환한다. 최초 발급은
+reserved budget/rate unit을 consumed로 원자적으로 옮기고 audit event를 append한다. 실행이 불확실해도
+발급분은 consumed로 남고 cancel/abandon은 확실히 미발급된 잔여분만 release한다.
+stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다. public
+Replay/admission API, HTTP transport/internal endpoint 연결, Replay executor와 permit redeem/use 집행, 새
+identity retry, typed server-side artifact finalization과 result digest 검증, Gate와 negative Control Plane
+retest는 남아 있다. 이 실행 경계가 완료되기 전에는 Control Plane이 완전한 영속형 Replay
+오케스트레이션을 제공한다고 주장할 수 없다.
 
 ## 맥락
 
@@ -104,8 +119,11 @@ compilation과 append-only planned/pending, non-dispatchable PostgreSQL derivati
 M6-07B-2C는 schema-v5 durable budget/sealed-rate reservation과 내부 멱등 첫 시도 발행 transaction을
 추가했다. service는 source를 재검증하고 fresh Replay Run/Grant compilation 권위를 append한 뒤 전체
 batch의 exact reservation-bound Job/ticket 집합을 원자적으로 만든다. 일반 Job completion/failure
-경로는 Replay Job에 계속 사용할 수 없다. public Replay API, 실제 호출별 permit, retry, executor,
-typed finalization, Gate와 negative Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있다.
+경로는 Replay Job에 계속 사용할 수 없다. M6-07B-2D는 schema-v6 append-only 호출별 permit 원장과
+내부 서비스 발급을 추가하고 exact active authority 재검증, canonical operation 결박,
+ticket/ordinal 멱등성, reserved→consumed 전이와 burn-on-uncertainty를 구현했다. public Replay API,
+HTTP transport/internal endpoint, executor/redeem, retry, typed finalization, Gate와 negative Control Plane
+retest는 의도적으로 완료된 기반 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -282,17 +300,27 @@ reservation에 결박하고 strict Job payload도 같은 `compilation_id`, `budg
 `issued`/`queued`이거나 claim 뒤 `claimed`/`running`인 response-loss 재시도에만 이미 저장된 exact
 item/ticket 집합을 재구성한다. 만료·terminal·binding drift 등 변경된 graph는 fail closed한다.
 
-다음 호출별 경계는 아직 구현되지 않았다. 각 실제 Tool call 전에 Worker의 trusted Replay runtime은
-internal permit endpoint를 호출한다.
-서버는 active principal/lease/ticket fence를 다시 확인하고, canonical target/Tool/call ordinal에
-대해 한 번만 쓸 수 있는 permit을 발급하면서 reserved budget을 consume하고 durable rate-limit
-bucket 또는 append-only entry를 갱신한다. permit은 다른 ticket, target, Tool 또는 ordinal에
-재사용할 수 없다. 여러 Worker가 동시에 요청해도 database lock과 unique constraint가 budget과
-rate limit을 초과 발급하지 않아야 한다.
+M6-07B-2D는 이 호출별 경계의 서버 원장/발급 절반을 구현한다. strict request는 Worker가 작성한
+target, Tool, method, argument 또는 unit을 권위 입력으로 받지 않고 executor profile, lease token,
+ticket ID, fencing value와 1-based call ordinal만 받는다. 내부 멱등 서비스는 active
+principal/profile/lease/ticket fence, Run/batch/item/ticket lifecycle, canonical compilation/Grant, exact
+reservation counter와 rolling request-rate state를 다시 검증한다. cap이 있으면 현재 sealed baseline,
+60초 expiry가 아직 유효한 reservation의 미소비 잔여량, issuance window가 active인 permit과 새 trusted
+request 비용을 합산한다. 만료된 reservation 잔여량은 capacity에 포함하지 않지만 만료 자체가 발급을
+금지하지 않는다. cap이 없으면 rate 비교만 생략하고 exact counter는 계속 소비한다. 다음 ordinal만
+허용하며 compiled call count 또는 reservation limit을 넘으면 fail closed한다. schema-v6 append-only
+row는 exact ticket/compilation/reservation graph,
+source/original request, canonical target/Tool/version/method/compiled argument digest, ordinal, Tool-call unit
+하나와 trusted request unit을 결박한다. TTL은
+`min(now + 30초, lease deadline, compiled-spec expiry, Grant expiry)`이며 rate reservation expiry를 cap으로
+사용하지 않는다. `(ticket_id, call_ordinal)` unique constraint와 persisted permit
+digest/request ID는 concurrent request 및 response-loss duplicate가 같은 permit을 한 번만 발급하게 한다.
 
-이미 발급된 permit은 실행 여부가 불명확하더라도 자동 환불하지 않고 소비된 것으로 본다.
-abandon/cancel 뒤에는 새 permit을 발급하지 않으며, 명확히 미발급인 reservation만 감사 event와
-함께 해제할 수 있다. 새 attempt는 남은 durable budget과 rate window를 다시 통과해야 한다.
+최초 발급 transaction만 budget/rate reserved unit을 consumed로 옮기고 감사 event를 append한다. 이미
+발급된 permit은 실행 여부가 불명확하더라도 자동 환불하지 않고 소비된 것으로 본다. abandon/cancel
+뒤에는 새 permit을 발급하지 않으며, 명확히 미발급인 reservation만 감사 event와 함께 해제할 수 있다.
+새 attempt는 남은 durable budget과 rate window를 다시 통과해야 한다. 실제 Tool call 전 HTTP/internal
+endpoint 호출, Worker executor와 permit redeem/use 집행은 아직 구현되지 않았다.
 
 ### Worker 실행/봉인과 권한 최종화 단계 분리
 
@@ -354,19 +382,25 @@ ticket은 Gate coverage에 포함하지 않는다. 취소 시 이미 finalized�
 새 Gate publication은 중단한다. ADR 0027의 `inconclusive`, `needs-review`, `confirmed` 같은 validation
 disposition과 operational `abandoned`를 혼합하지 않는다.
 
-PostgreSQL mutation은 ADR 0023/0024의 dependent-to-Run 순서를 확장해 다음 순서를 지킨다.
+PostgreSQL mutation은 ADR 0023/0024의 dependent-to-Run 순서 뒤에 Replay accounting/permit authority를
+추가해 다음 순서를 지킨다.
 
 ```text
 cp_jobs (stable Job ID order)
   -> cp_replay_tickets (stable attempt/ticket order)
   -> cp_replay_items (stable item order)
   -> cp_replay_batches
-  -> budget reservations / rate-limit buckets (canonical key order)
   -> cp_runs
+  -> cp_replay_budget_accounts (canonical account order)
+  -> cp_replay_rate_accounts (canonical account/window order)
+  -> cp_replay_budget_reservations (stable reservation order)
+  -> cp_replay_rate_reservations (stable reservation order)
+  -> cp_replay_tool_permits (ticket, call ordinal order)
 ```
 
 한 경로에 앞 단계 row가 없으면 그 단계를 건너뛰되 역순으로 잠그지 않는다. cancellation은 active
-Job을 안정된 순서로 잠근 후 Replay dependent를 잠그고 Run을 마지막에 잠근다. issuance, claim,
+Job을 안정된 순서로 잠근 후 Replay dependent와 Run을 잠그며, 필요한 accounting row가 있으면 그 뒤에
+잠근다. issuance, claim,
 lease expiry, permit, finalization과 Gate publication도 같은 순서를 사용한다. Artifact hashing,
 seal 검증과 Oracle 실행은 database lock을 잡지 않은 상태에서 수행하고 immutable reference와
 CAS로 결과를 commit한다.
@@ -387,6 +421,11 @@ CAS로 결과를 commit한다.
 - portable 제3자 attestation, 공개키 receipt signature, transparency log와 key lifecycle;
 - Worker host compromise가 만든 외부 side effect의 rollback 또는 destination-level exactly-once;
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
+
+현재 구현된 M6-07B-2D 조각은 내부 서비스 원장/발급에서 끝난다. public Replay/admission API,
+HTTP transport와 internal endpoint 연결, Worker executor, permit redemption/use enforcement, 새 identity
+retry issuance, typed artifact finalization, Gate와 negative Control Plane retest는 이 ADR의 후속 exit
+criteria다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -409,9 +448,10 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## 승인 및 검증
 
-M6-07B-2C 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
-compilation, 원자적 내부 issuance와 issuance 멱등성은 아래 항목 중 해당 부분만 충족한다. 나머지는
-M6-07B 전체의 exit criteria로 유지한다.
+M6-07B-2D 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
+compilation, 원자적 내부 issuance와 issuance 멱등성, schema-v6 호출별 permit 원장/내부 서비스 발급은
+아래 항목 중 해당 server-side 부분을 충족한다. public transport, executor/redeem, retry, finalization,
+Gate와 negative retest 항목은 M6-07B 전체의 exit criteria로 유지한다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
@@ -426,6 +466,11 @@ M6-07B 전체의 exit criteria로 유지한다.
   response-loss 재시도는 현재 active exact authority graph가 ticket/Job `issued`/`queued` 또는
   `claimed`/`running`일 때만 같은 exact authority 집합을 재구성하고, terminal 또는 변경된 graph는
   fail closed한다;
+- strict permit input은 executor profile, lease token, ticket ID, fencing value와 1-based ordinal만 받고
+  target/Tool/method/argument/unit 주입을 거부한다. 서버가 exact active authority와 canonical operation을
+  파생하고 current baseline/post-admission live reservation remainder/active permit/new cost로 rolling-window rate
+  재수용을 수행하며, persisted permit digest/request ID를 포함한 exact response-loss duplicate만 같은 row를
+  counter/event 중복 없이 반환한다;
 - source와 replay `ArtifactRef`의 content, Run ID, seal root, artifact set 또는 repository version
   치환과 symlink/path traversal이 server-side verification에서 거부된다;
 - 두 Worker가 같은 queued Replay Job/ticket을 동시에 claim해 정확히 하나만 성공하고 principal,
@@ -434,8 +479,9 @@ M6-07B 전체의 exit criteria로 유지한다.
   되며, retry는 새 attempt/ticket/Replay Run/Job ID를 사용한다;
 - stale Worker가 heartbeat, permit, artifact import 완료와 finalization을 시도해도 거부되고 새
   attempt의 budget, rate state 또는 결과를 바꾸지 못한다;
-- 여러 Worker의 동시 permit 요청이 reserved Tool-call budget과 durable rate window를 초과하지
-  않고, duplicate ordinal은 한 번만 소비되며 abandoned/cancelled ticket은 새 permit을 받지 못한다;
+- 여러 Worker의 동시 permit 요청이 reserved Tool-call budget과 durable rate window를 초과하지 않고,
+  duplicate ordinal은 한 번만 소비되며 ordinal gap, over-limit, expired/finalized/abandoned/cancelled
+  ticket은 새 permit을 받지 못한다;
 - finalization commit 뒤 응답 유실을 모사한 exact retry는 같은 result를 반환하고, 다른
   ArtifactRef, root, Outcome 또는 `result_digest` retry는 거부된다;
 - finalization 이전 응답/connection loss와 lease expiry가 겹치면 이전 attempt는 Gate에 들어가지

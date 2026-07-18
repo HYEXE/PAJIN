@@ -41,7 +41,8 @@ LEGACY_SCHEMA_VERSION = 1
 REPLAY_AUTHORITY_SCHEMA_VERSION = 2
 ARTIFACT_AUTHORITY_SCHEMA_VERSION = 3
 REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION = 4
-CURRENT_SCHEMA_VERSION = 5
+DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION = 5
+CURRENT_SCHEMA_VERSION = 6
 
 LEGACY_CONTROL_PLANE_TABLES = frozenset(
     {"cp_runs", "cp_jobs", "cp_checkpoints", "cp_approvals", "cp_events"}
@@ -63,7 +64,7 @@ REPLAY_COMPILATION_AUTHORITY_TABLES = frozenset({"cp_replay_compilations"})
 V4_CONTROL_PLANE_TABLES = frozenset(
     {*V3_CONTROL_PLANE_TABLES, *REPLAY_COMPILATION_AUTHORITY_TABLES}
 )
-REPLAY_PERMIT_AUTHORITY_TABLES = frozenset(
+REPLAY_RESERVATION_AUTHORITY_TABLES = frozenset(
     {
         "cp_replay_budget_accounts",
         "cp_replay_budget_reservations",
@@ -71,8 +72,12 @@ REPLAY_PERMIT_AUTHORITY_TABLES = frozenset(
         "cp_replay_rate_reservations",
     }
 )
+V5_CONTROL_PLANE_TABLES = frozenset(
+    {*V4_CONTROL_PLANE_TABLES, *REPLAY_RESERVATION_AUTHORITY_TABLES}
+)
+REPLAY_TOOL_PERMIT_AUTHORITY_TABLES = frozenset({"cp_replay_tool_permits"})
 CURRENT_CONTROL_PLANE_TABLES = frozenset(
-    {*V4_CONTROL_PLANE_TABLES, *REPLAY_PERMIT_AUTHORITY_TABLES}
+    {*V5_CONTROL_PLANE_TABLES, *REPLAY_TOOL_PERMIT_AUTHORITY_TABLES}
 )
 
 
@@ -1373,6 +1378,290 @@ _replay_ticket_table.append_constraint(
 )
 
 
+def _build_v5_metadata() -> MetaData:
+    """Freeze the exact schema-v5 metadata before Tool-call permits are attached."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V5_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V5_METADATA = _build_v5_metadata()
+
+
+_REPLAY_TICKET_PERMIT_AUTHORITY_COLUMNS = (
+    "ticket_id",
+    "item_id",
+    "batch_id",
+    "job_id",
+    "replay_run_id",
+    "compilation_id",
+    "budget_reservation_id",
+    "rate_reservation_id",
+    "attempt_number",
+    "fencing_value",
+    "claim_principal",
+    "executor_profile",
+    "lease_token_hash",
+    "source_root_digest",
+    "compilation_digest",
+    "grant_digest",
+)
+_replay_ticket_permit_authority_index = Index(
+    "ux_cp_replay_tickets_tool_permit_authority",
+    *(
+        _replay_ticket_table.c[column_name]
+        for column_name in _REPLAY_TICKET_PERMIT_AUTHORITY_COLUMNS
+    ),
+    unique=True,
+)
+
+
+class ReplayToolPermitRecord(Base):
+    """Append-only proof that one exact Replay Tool call consumed its reservation."""
+
+    __tablename__ = "cp_replay_tool_permits"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "ticket_id",
+                "item_id",
+                "batch_id",
+                "job_id",
+                "replay_run_id",
+                "compilation_id",
+                "budget_reservation_id",
+                "rate_reservation_id",
+                "attempt_number",
+                "fencing_value",
+                "issued_to",
+                "executor_profile",
+                "lease_token_hash",
+                "source_root_digest",
+                "compilation_digest",
+                "grant_digest",
+            ],
+            [
+                "cp_replay_tickets.ticket_id",
+                "cp_replay_tickets.item_id",
+                "cp_replay_tickets.batch_id",
+                "cp_replay_tickets.job_id",
+                "cp_replay_tickets.replay_run_id",
+                "cp_replay_tickets.compilation_id",
+                "cp_replay_tickets.budget_reservation_id",
+                "cp_replay_tickets.rate_reservation_id",
+                "cp_replay_tickets.attempt_number",
+                "cp_replay_tickets.fencing_value",
+                "cp_replay_tickets.claim_principal",
+                "cp_replay_tickets.executor_profile",
+                "cp_replay_tickets.lease_token_hash",
+                "cp_replay_tickets.source_root_digest",
+                "cp_replay_tickets.compilation_digest",
+                "cp_replay_tickets.grant_digest",
+            ],
+            name="fk_cp_replay_tool_permits_ticket_binding",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "compilation_id",
+                "item_id",
+                "batch_id",
+                "replay_run_id",
+                "compilation_digest",
+                "grant_digest",
+            ],
+            [
+                "cp_replay_compilations.compilation_id",
+                "cp_replay_compilations.item_id",
+                "cp_replay_compilations.batch_id",
+                "cp_replay_compilations.replay_run_id",
+                "cp_replay_compilations.compilation_digest",
+                "cp_replay_compilations.grant_digest",
+            ],
+            name="fk_cp_replay_tool_permits_compilation_authority",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "budget_reservation_id",
+                "item_id",
+                "batch_id",
+                "attempt_number",
+                "compilation_id",
+            ],
+            [
+                "cp_replay_budget_reservations.budget_reservation_id",
+                "cp_replay_budget_reservations.item_id",
+                "cp_replay_budget_reservations.batch_id",
+                "cp_replay_budget_reservations.attempt_number",
+                "cp_replay_budget_reservations.compilation_id",
+            ],
+            name="fk_cp_replay_tool_permits_budget_reservation",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            [
+                "rate_reservation_id",
+                "item_id",
+                "batch_id",
+                "attempt_number",
+                "compilation_id",
+            ],
+            [
+                "cp_replay_rate_reservations.rate_reservation_id",
+                "cp_replay_rate_reservations.item_id",
+                "cp_replay_rate_reservations.batch_id",
+                "cp_replay_rate_reservations.attempt_number",
+                "cp_replay_rate_reservations.compilation_id",
+            ],
+            name="fk_cp_replay_tool_permits_rate_reservation",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["batch_id", "source_root_digest"],
+            ["cp_replay_batches.batch_id", "cp_replay_batches.source_root_digest"],
+            name="fk_cp_replay_tool_permits_batch_root",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(permit_id) = 46 AND substr(permit_id, 1, 14) = 'replay-permit_' AND "
+            + _lower_hex_check("substr(permit_id, 15, 32)", 32),
+            name="ck_cp_replay_tool_permits_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("permit_digest", 64),
+            name="ck_cp_replay_tool_permits_digest",
+        ),
+        CheckConstraint(
+            "length(replay_request_id) = 44 "
+            "AND substr(replay_request_id, 1, 12) = 'tool_replay_' AND "
+            + _lower_hex_check("substr(replay_request_id, 13, 32)", 32),
+            name="ck_cp_replay_tool_permits_request_id",
+        ),
+        CheckConstraint(
+            "attempt_number > 0 AND attempt_number <= 100",
+            name="ck_cp_replay_tool_permits_attempt",
+        ),
+        CheckConstraint("fencing_value > 0", name="ck_cp_replay_tool_permits_fence"),
+        CheckConstraint(
+            "call_ordinal > 0 AND call_ordinal <= 20",
+            name="ck_cp_replay_tool_permits_ordinal",
+        ),
+        CheckConstraint(
+            "length(issued_to) > 0 AND length(issued_to) <= 200 "
+            "AND length(executor_profile) > 0 AND length(executor_profile) <= 200",
+            name="ck_cp_replay_tool_permits_principal",
+        ),
+        CheckConstraint(
+            _lower_hex_check("lease_token_hash", 64),
+            name="ck_cp_replay_tool_permits_lease_hash",
+        ),
+        CheckConstraint(
+            _lower_hex_check("source_root_digest", 64),
+            name="ck_cp_replay_tool_permits_source_root",
+        ),
+        CheckConstraint(
+            _lower_hex_check("compilation_digest", 64),
+            name="ck_cp_replay_tool_permits_compilation_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_check("grant_digest", 64),
+            name="ck_cp_replay_tool_permits_grant_digest",
+        ),
+        CheckConstraint(
+            "length(original_request_id) > 0 AND length(original_request_id) <= 200",
+            name="ck_cp_replay_tool_permits_original_request",
+        ),
+        CheckConstraint(
+            "length(tool_id) > 0 AND length(tool_id) <= 200 "
+            "AND length(tool_version) > 0 AND length(tool_version) <= 100",
+            name="ck_cp_replay_tool_permits_tool",
+        ),
+        CheckConstraint(
+            "length(target_id) > 0 AND length(target_id) <= 200 "
+            "AND length(target) > 0 AND length(target) <= 2000",
+            name="ck_cp_replay_tool_permits_target",
+        ),
+        CheckConstraint(
+            "length(method) > 0 AND length(method) <= 20",
+            name="ck_cp_replay_tool_permits_method",
+        ),
+        CheckConstraint(
+            _lower_hex_check("compiled_argument_digest", 64),
+            name="ck_cp_replay_tool_permits_argument_digest",
+        ),
+        CheckConstraint(
+            "tool_call_units = 1 AND request_units > 0 AND request_units <= 100",
+            name="ck_cp_replay_tool_permits_units",
+        ),
+        CheckConstraint(
+            "expires_at > issued_at AND rate_window_expires_at > issued_at",
+            name="ck_cp_replay_tool_permits_expiry",
+        ),
+        UniqueConstraint("permit_digest", name="uq_cp_replay_tool_permits_digest"),
+        UniqueConstraint("replay_request_id", name="uq_cp_replay_tool_permits_request_id"),
+        UniqueConstraint(
+            "ticket_id",
+            "call_ordinal",
+            name="uq_cp_replay_tool_permits_ticket_ordinal",
+        ),
+        UniqueConstraint(
+            "permit_id",
+            "ticket_id",
+            "call_ordinal",
+            name="uq_cp_replay_tool_permits_binding",
+        ),
+        Index(
+            "ix_cp_replay_tool_permits_ticket_time",
+            "ticket_id",
+            "issued_at",
+        ),
+        Index(
+            "ix_cp_replay_tool_permits_rate_window",
+            "rate_reservation_id",
+            "rate_window_expires_at",
+        ),
+    )
+
+    permit_id: Mapped[str] = mapped_column(String(46), primary_key=True)
+    permit_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    replay_request_id: Mapped[str] = mapped_column(String(44), nullable=False)
+    job_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    ticket_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    compilation_id: Mapped[str] = mapped_column(String(51), nullable=False)
+    budget_reservation_id: Mapped[str] = mapped_column(String(51), nullable=False)
+    rate_reservation_id: Mapped[str] = mapped_column(String(49), nullable=False)
+    replay_run_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempt_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    fencing_value: Mapped[int] = mapped_column(Integer, nullable=False)
+    call_ordinal: Mapped[int] = mapped_column(Integer, nullable=False)
+    issued_to: Mapped[str] = mapped_column(String(200), nullable=False)
+    executor_profile: Mapped[str] = mapped_column(String(200), nullable=False)
+    lease_token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    compilation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    original_request_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    tool_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    tool_version: Mapped[str] = mapped_column(String(100), nullable=False)
+    target_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    target: Mapped[str] = mapped_column(String(2_000), nullable=False)
+    method: Mapped[str] = mapped_column(String(20), nullable=False)
+    compiled_argument_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    tool_call_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    request_units: Mapped[int] = mapped_column(Integer, nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    rate_window_expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False
+    )
+
+
 class ControlPlaneRepository:
     """Own the database engine and expose short, explicit transaction scopes."""
 
@@ -1456,7 +1745,8 @@ _MIGRATIONS = {
     REPLAY_AUTHORITY_SCHEMA_VERSION: "replay-authority",
     ARTIFACT_AUTHORITY_SCHEMA_VERSION: "artifact-authority",
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION: "trusted-replay-compilation-authority",
-    CURRENT_SCHEMA_VERSION: "durable-replay-permit-authority",
+    DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION: "durable-replay-permit-authority",
+    CURRENT_SCHEMA_VERSION: "replay-tool-call-permit-authority",
 }
 
 
@@ -1493,6 +1783,11 @@ def _initialize_schema(connection: Connection) -> None:
         _migrate_v4_schema(connection)
         _validate_current_schema(connection)
         return
+    if cp_tables == V5_CONTROL_PLANE_TABLES:
+        _validate_v5_schema(connection)
+        _migrate_v5_schema(connection)
+        _validate_current_schema(connection)
+        return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
         _validate_current_schema(connection)
         return
@@ -1520,6 +1815,7 @@ def _create_empty_schema(connection: Connection) -> None:
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
+    _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1535,6 +1831,7 @@ def _migrate_legacy_schema(connection: Connection) -> None:
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
+    _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1555,6 +1852,7 @@ def _migrate_v2_schema(connection: Connection) -> None:
     _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
+    _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1599,6 +1897,7 @@ def _migrate_v3_schema(connection: Connection) -> None:
         connection.exec_driver_sql(f"DROP TABLE {table_name}")
     _create_current_replay_authority(connection)
     _record_migration(connection, REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION)
+    _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1639,6 +1938,8 @@ def _migrate_v4_schema(connection: Connection) -> None:
             event_rows,
         )
     _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION)
+    _create_replay_tool_permit_authority(connection)
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
@@ -1684,6 +1985,86 @@ def _assert_v4_replay_authority_is_non_dispatchable(connection: Connection) -> N
         )
 
 
+def _migrate_v5_schema(connection: Connection) -> None:
+    """Add per-call authority without inventing missing historical permits."""
+
+    _lock_v5_migration_writes(connection)
+    _assert_v5_replay_authority_has_no_unproven_consumption(connection)
+    _create_replay_tool_permit_authority(connection)
+    _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+def _assert_v5_replay_authority_has_no_unproven_consumption(connection: Connection) -> None:
+    """Reject execution state that schema v5 could not attribute to permit rows."""
+
+    budget_account_consumption = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_budget_accounts WHERE consumed_calls <> 0")
+        )
+        or 0
+    )
+    budget_reservation_consumption = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_budget_reservations WHERE consumed_calls <> 0")
+        )
+        or 0
+    )
+    rate_reservation_consumption = int(
+        connection.scalar(
+            text(
+                "SELECT count(*) FROM cp_replay_rate_reservations WHERE consumed_request_units <> 0"
+            )
+        )
+        or 0
+    )
+    finalized_tickets = int(
+        connection.scalar(text("SELECT count(*) FROM cp_replay_tickets WHERE state = 'finalized'"))
+        or 0
+    )
+    succeeded_replay_jobs = int(
+        connection.scalar(
+            text(
+                "SELECT count(*) FROM cp_jobs "
+                "WHERE kind = 'internal-replay' AND state = 'succeeded'"
+            )
+        )
+        or 0
+    )
+    executed_items = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_items WHERE state IN ('verified', 'gated')")
+        )
+        or 0
+    )
+    completed_batches = int(
+        connection.scalar(
+            text("SELECT count(*) FROM cp_replay_batches WHERE state IN ('gating', 'completed')")
+        )
+        or 0
+    )
+    if any(
+        (
+            budget_account_consumption,
+            budget_reservation_consumption,
+            rate_reservation_consumption,
+            finalized_tickets,
+            succeeded_replay_jobs,
+            executed_items,
+            completed_batches,
+        )
+    ):
+        raise SchemaInitializationError(
+            "schema v5 contains Replay execution or consumption without per-call permit proof "
+            "and cannot be trusted or backfilled "
+            f"(budget accounts={budget_account_consumption}, "
+            f"budget reservations={budget_reservation_consumption}, "
+            f"rate reservations={rate_reservation_consumption}, "
+            f"finalized tickets={finalized_tickets}, "
+            f"succeeded Replay Jobs={succeeded_replay_jobs}, "
+            f"executed items={executed_items}, completed batches={completed_batches})"
+        )
+
+
 _LEGACY_MIGRATION_WRITE_LOCK_TABLES = ("cp_jobs",)
 _V2_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_jobs",
@@ -1706,6 +2087,24 @@ _V4_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_checkpoints",
     "cp_events",
     "cp_schema_version",
+)
+_V5_MIGRATION_WRITE_LOCK_TABLES = (
+    "cp_jobs",
+    "cp_replay_tickets",
+    "cp_replay_items",
+    "cp_replay_batches",
+    "cp_replay_budget_accounts",
+    "cp_replay_rate_accounts",
+    "cp_replay_budget_reservations",
+    "cp_replay_rate_reservations",
+    "cp_replay_compilations",
+    "cp_replay_events",
+    "cp_approvals",
+    "cp_checkpoints",
+    "cp_artifacts",
+    "cp_events",
+    "cp_schema_version",
+    "cp_runs",
 )
 _V4_MIGRATION_LOCK_RETRY_SECONDS = 0.05
 _V4_MIGRATION_LOCK_TIMEOUT_SECONDS = 5.0
@@ -1796,6 +2195,41 @@ def _lock_v4_migration_writes(connection: Connection) -> None:
     )
 
 
+def _lock_v5_migration_writes(connection: Connection) -> None:
+    """Atomically exclude every v5 writer before checking consumption history."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        tables = ", ".join(_V5_MIGRATION_WRITE_LOCK_TABLES)
+        statement = f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE NOWAIT"
+        deadline = time.monotonic() + _V4_MIGRATION_LOCK_TIMEOUT_SECONDS
+        while True:
+            savepoint = connection.begin_nested()
+            try:
+                connection.exec_driver_sql(statement)
+            except DBAPIError as error:
+                savepoint.rollback()
+                sqlstate = getattr(error.orig, "sqlstate", None) or getattr(
+                    error.orig, "pgcode", None
+                )
+                if sqlstate != "55P03":
+                    raise
+                if time.monotonic() >= deadline:
+                    raise SchemaInitializationError(
+                        "schema v5 migration could not exclude active writers; "
+                        "retry initialization after current transactions finish"
+                    ) from error
+                time.sleep(_V4_MIGRATION_LOCK_RETRY_SECONDS)
+            else:
+                savepoint.commit()
+                return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
+
+
 def _create_current_replay_authority(connection: Connection) -> None:
     """Create current Replay tables in an explicit cross-dialect FK order."""
 
@@ -1806,6 +2240,7 @@ def _create_current_replay_authority(connection: Connection) -> None:
     _create_replay_permit_and_ticket_tables(connection)
     _create_tables(connection, frozenset({ReplayEventRecord.__tablename__}))
     _install_append_only_trigger(connection, "cp_replay_events")
+    _create_replay_tool_permit_authority(connection)
 
 
 def _create_replay_permit_and_ticket_tables(connection: Connection) -> None:
@@ -1819,6 +2254,14 @@ def _create_replay_permit_and_ticket_tables(connection: Connection) -> None:
         ReplayTicketRecord.__tablename__,
     ):
         _create_tables(connection, frozenset({table_name}))
+
+
+def _create_replay_tool_permit_authority(connection: Connection) -> None:
+    """Create the append-only per-call consumption ledger after its exact parents."""
+
+    _install_v6_ticket_permit_binding_index(connection)
+    _create_tables(connection, REPLAY_TOOL_PERMIT_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, ReplayToolPermitRecord.__tablename__)
 
 
 def _create_tables(connection: Connection, table_names: frozenset[str]) -> None:
@@ -1843,6 +2286,16 @@ def _install_v2_job_binding_index(connection: Connection) -> None:
         if index.name == "ux_cp_jobs_job_run"
     )
     binding_index.create(connection, checkfirst=False)
+
+
+def _install_v6_ticket_permit_binding_index(connection: Connection) -> None:
+    """Install the exact claimed-ticket key referenced by append-only permits."""
+
+    index_name = str(_replay_ticket_permit_authority_index.name)
+    indexes = {index["name"] for index in inspect(connection).get_indexes("cp_replay_tickets")}
+    if index_name in indexes:
+        return
+    _replay_ticket_permit_authority_index.create(connection, checkfirst=False)
 
 
 def _record_migration(connection: Connection, version: int) -> None:
@@ -1950,6 +2403,32 @@ def _validate_v4_schema(connection: Connection) -> None:
     if actual != expected or any(row.applied_at is None for row in rows):
         raise SchemaInitializationError(
             f"unknown or incomplete schema v4 migration history: {actual!r}"
+        )
+
+
+def _validate_v5_schema(connection: Connection) -> None:
+    _validate_tables(connection, V5_CONTROL_PLANE_TABLES, metadata=_V5_METADATA)
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in (
+            LEGACY_SCHEMA_VERSION,
+            REPLAY_AUTHORITY_SCHEMA_VERSION,
+            ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
+            DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v5 migration history: {actual!r}"
         )
 
 
@@ -2562,6 +3041,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_artifacts": "artifact",
     "cp_replay_compilations": "replay_compilation",
     "cp_replay_events": "replay_event",
+    "cp_replay_tool_permits": "replay_tool_permit",
 }
 
 

@@ -6,6 +6,7 @@ import tempfile
 from collections import Counter
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -20,6 +21,7 @@ from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DatabaseError, IntegrityError
 
+import pajin.control_plane.service as control_plane_service_module
 from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import (
     _V2_METADATA,
@@ -43,6 +45,7 @@ from pajin.control_plane.database import (
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
+    ReplayToolPermitRecord,
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
@@ -61,6 +64,7 @@ from pajin.control_plane.models import (
     ReplayClaimRequest,
     ReplayItemState,
     ReplayTicketState,
+    ReplayToolPermitRequest,
     RunState,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
@@ -375,6 +379,16 @@ def _seed_batch(
         for item in items:
             item.max_attempts = max_attempts
     return created.batch_id
+
+
+def _permit_request(claimed, call_ordinal: int) -> ReplayToolPermitRequest:
+    return ReplayToolPermitRequest(
+        executor_profile=EXECUTOR_PROFILE,
+        lease_token=claimed.lease_token,
+        ticket_id=claimed.ticket.ticket_id,
+        fencing_value=claimed.ticket.fencing_value,
+        call_ordinal=call_ordinal,
+    )
 
 
 def _admit_kisa_source(
@@ -735,7 +749,7 @@ def test_postgres_v2_to_v5_migration_preserves_core_rows_and_history(
         assert preserved_run.input == {"preserve": True}
         assert preserved_job is not None
         assert preserved_job.result == {"status": "completed"}
-        assert versions == [1, 2, 3, 4, 5]
+        assert versions == [1, 2, 3, 4, 5, 6]
     finally:
         repository.close()
 
@@ -817,7 +831,7 @@ def test_postgres_v3_to_v5_migration_preserves_core_artifact_rows_and_history(
         assert preserved_artifact is not None
         assert preserved_artifact.producer_run_id == run_id
         assert preserved_artifact.root_digest == "d" * 64
-        assert versions == [1, 2, 3, 4, 5]
+        assert versions == [1, 2, 3, 4, 5, 6]
     finally:
         repository.close()
 
@@ -913,7 +927,7 @@ def test_postgres_v4_to_v5_preserves_planned_compilation_authority(
         assert [compilation.canonical_compilation for compilation in after_compilations] == [
             bytes(compilation["canonical_compilation"]) for compilation in before_compilations
         ]
-        assert versions == [1, 2, 3, 4, 5]
+        assert versions == [1, 2, 3, 4, 5, 6]
     finally:
         repository.close()
 
@@ -2236,6 +2250,310 @@ def test_postgres_replay_claim_has_exactly_one_winner_and_atomic_ticket_binding(
             assert ticket.attempt_number == item.attempts == 1
             assert ticket.fencing_value == 1
             assert item.state == ReplayItemState.RUNNING.value
+    finally:
+        repository_b.close()
+        repository_a.close()
+
+
+def test_postgres_duplicate_tool_permit_converges_to_one_durable_consumption(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository_a, service_a = _service(isolated_postgres_schema_url)
+    repository_b, service_b = _service(isolated_postgres_schema_url)
+    try:
+        _seed_batch(repository_a, service_a, uuid4().hex)
+        claimed = service_a.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor=WORKER_A,
+        )
+        assert claimed is not None
+        request = _permit_request(claimed, 1)
+        barrier = Barrier(2)
+
+        def issue(service: ControlPlaneService):
+            barrier.wait()
+            return service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                request,
+                actor=WORKER_A,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(issue, service_a)
+            second_future = pool.submit(issue, service_b)
+            first = first_future.result(timeout=30)
+            second = second_future.result(timeout=30)
+
+        assert second == first
+        with repository_a.transaction() as session:
+            permits = list(
+                session.scalars(
+                    select(ReplayToolPermitRecord).where(
+                        ReplayToolPermitRecord.ticket_id == claimed.ticket.ticket_id
+                    )
+                ).all()
+            )
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                claimed.ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            issued_event_count = session.scalar(
+                select(func.count())
+                .select_from(ReplayEventRecord)
+                .where(
+                    ReplayEventRecord.ticket_id == claimed.ticket.ticket_id,
+                    ReplayEventRecord.event_type == "replay.tool-permit.issued",
+                )
+            )
+
+            assert [permit.permit_id for permit in permits] == [first.permit_id]
+            assert budget is not None and rate is not None and budget_account is not None
+            assert budget.consumed_calls == 1
+            assert budget.released_calls == 0
+            assert budget_account.consumed_calls == 1
+            assert budget_account.reserved_calls == budget.total_calls - 1
+            assert rate.consumed_request_units == first.request_units
+            assert rate.released_request_units == 0
+            assert issued_event_count == 1
+    finally:
+        repository_b.close()
+        repository_a.close()
+
+
+def test_postgres_tool_permit_wins_cancel_race_without_refunding_consumed_units(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository_a, service_a = _service(isolated_postgres_schema_url)
+    repository_b, service_b = _service(isolated_postgres_schema_url)
+    permit_holds_job = ThreadEvent()
+    cancel_reached_job = ThreadEvent()
+    allow_permit_to_continue = ThreadEvent()
+    permit_listener_installed = False
+    cancel_listener_installed = False
+
+    def pause_after_permit_locks_job(
+        _connection,
+        _cursor,
+        statement: str,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        normalized = " ".join(statement.lower().split())
+        if "cp_jobs" in normalized and "for update" in normalized and not permit_holds_job.is_set():
+            permit_holds_job.set()
+            if not allow_permit_to_continue.wait(timeout=15):
+                raise RuntimeError("timed out while staging Replay permit/cancel serialization")
+
+    def observe_cancel_job_lock(
+        _connection,
+        _cursor,
+        statement: str,
+        _parameters,
+        _context,
+        _executemany,
+    ) -> None:
+        normalized = " ".join(statement.lower().split())
+        if "cp_jobs" in normalized and "for update" in normalized:
+            cancel_reached_job.set()
+
+    try:
+        _seed_batch(repository_a, service_a, uuid4().hex)
+        claimed = service_a.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor=WORKER_A,
+        )
+        assert claimed is not None
+        request = _permit_request(claimed, 1)
+
+        sqlalchemy_event.listen(
+            repository_a.engine,
+            "after_cursor_execute",
+            pause_after_permit_locks_job,
+        )
+        permit_listener_installed = True
+        sqlalchemy_event.listen(
+            repository_b.engine,
+            "before_cursor_execute",
+            observe_cancel_job_lock,
+        )
+        cancel_listener_installed = True
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            permit_future = pool.submit(
+                service_a.issue_replay_tool_permit,
+                claimed.job.job_id,
+                request,
+                actor=WORKER_A,
+            )
+            try:
+                assert permit_holds_job.wait(timeout=15)
+                cancel_future = pool.submit(
+                    service_b.cancel_run,
+                    claimed.item.replay_run_id,
+                    CancelRunRequest(reason="race cancellation against durable Tool permit"),
+                    actor="postgres-replay-operator",
+                )
+                assert cancel_reached_job.wait(timeout=15)
+            finally:
+                allow_permit_to_continue.set()
+            issued = permit_future.result(timeout=30)
+            cancelled = cancel_future.result(timeout=30)
+
+        assert cancelled.applied is True
+        with repository_a.transaction() as session:
+            permit = session.get(ReplayToolPermitRecord, issued.permit_id)
+            job = session.get(JobRecord, claimed.job.job_id)
+            ticket = session.get(ReplayTicketRecord, claimed.ticket.ticket_id)
+            item = session.get(ReplayItemRecord, claimed.item.item_id)
+            run = session.get(RunRecord, claimed.item.replay_run_id)
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                claimed.ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+
+            assert permit is not None
+            assert job is not None and ticket is not None and item is not None and run is not None
+            assert budget is not None and rate is not None and budget_account is not None
+            assert job.state == JobState.CANCELLED.value
+            assert ticket.state == ReplayTicketState.ABANDONED.value
+            assert item.state == ReplayItemState.CANCELLED.value
+            assert run.state == RunState.CANCELLED.value
+            assert budget.state == "released"
+            assert budget.consumed_calls == 1
+            assert budget.released_calls == budget.total_calls - 1
+            assert budget_account.reserved_calls == 0
+            assert budget_account.consumed_calls == 1
+            assert budget_account.released_calls == budget.released_calls
+            assert rate.state == "released"
+            assert rate.consumed_request_units == issued.request_units
+            assert rate.released_request_units == rate.total_request_units - issued.request_units
+    finally:
+        allow_permit_to_continue.set()
+        if permit_listener_installed:
+            sqlalchemy_event.remove(
+                repository_a.engine,
+                "after_cursor_execute",
+                pause_after_permit_locks_job,
+            )
+        if cancel_listener_installed:
+            sqlalchemy_event.remove(
+                repository_b.engine,
+                "before_cursor_execute",
+                observe_cancel_job_lock,
+            )
+        repository_b.close()
+        repository_a.close()
+
+
+def test_postgres_shared_accounts_concurrent_tool_permits_stay_within_capacity(
+    isolated_postgres_schema_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository_a, service_a = _service(isolated_postgres_schema_url)
+    repository_b, service_b = _service(isolated_postgres_schema_url)
+    try:
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_with_exact_rate_cap(**kwargs):
+            derived = real_derive(**kwargs)
+            return replace(
+                derived,
+                max_requests_per_minute=(
+                    derived.observed_campaign_request_units + derived.required_request_units
+                ),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_with_exact_rate_cap,
+        )
+        batch_id = _seed_batch(repository_a, service_a, uuid4().hex, item_count=2)
+        claimed_a = service_a.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor=WORKER_A,
+        )
+        claimed_b = service_b.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor=WORKER_B,
+        )
+        assert claimed_a is not None and claimed_b is not None
+        assert claimed_a.batch.batch_id == claimed_b.batch.batch_id == batch_id
+        assert claimed_a.ticket.ticket_id != claimed_b.ticket.ticket_id
+        barrier = Barrier(2)
+
+        def issue(service: ControlPlaneService, claimed, actor: str):
+            barrier.wait()
+            return service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 1),
+                actor=actor,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first_future = pool.submit(issue, service_a, claimed_a, WORKER_A)
+            second_future = pool.submit(issue, service_b, claimed_b, WORKER_B)
+            issued = [first_future.result(timeout=30), second_future.result(timeout=30)]
+
+        with repository_a.transaction() as session:
+            permits = list(session.scalars(select(ReplayToolPermitRecord)).all())
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            rate_account = session.scalar(select(ReplayRateAccountRecord))
+            budget_reservations = list(session.scalars(select(ReplayBudgetReservationRecord)).all())
+            rate_reservations = list(session.scalars(select(ReplayRateReservationRecord)).all())
+
+            assert {permit.permit_id for permit in permits} == {
+                permit.permit_id for permit in issued
+            }
+            assert budget_account is not None and rate_account is not None
+            assert len(budget_reservations) == len(rate_reservations) == len(permits) == 2
+            assert budget_account.reserved_calls == sum(
+                reservation.total_calls - reservation.consumed_calls - reservation.released_calls
+                for reservation in budget_reservations
+            )
+            assert budget_account.consumed_calls == sum(
+                reservation.consumed_calls for reservation in budget_reservations
+            )
+            assert budget_account.consumed_calls == 2
+            assert (
+                budget_account.baseline_used_calls
+                + budget_account.reserved_calls
+                + budget_account.consumed_calls
+                <= budget_account.max_tool_calls
+            )
+
+            now = datetime.now(UTC)
+            baseline_units = (
+                rate_account.observed_request_units
+                if now < rate_account.observed_at + timedelta(seconds=rate_account.window_seconds)
+                else 0
+            )
+            reserved_units = sum(
+                reservation.total_request_units
+                - reservation.consumed_request_units
+                - reservation.released_request_units
+                for reservation in rate_reservations
+                if reservation.expires_at > now
+            )
+            active_permit_units = sum(
+                permit.request_units for permit in permits if permit.rate_window_expires_at > now
+            )
+            assert rate_account.max_requests_per_minute is not None
+            assert (
+                baseline_units + reserved_units + active_permit_units
+                == rate_account.max_requests_per_minute
+            )
     finally:
         repository_b.close()
         repository_a.close()

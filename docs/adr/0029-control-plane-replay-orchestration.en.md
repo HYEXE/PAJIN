@@ -4,7 +4,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-18 (M6-07B-2C durable issuance)
+- Implementation update: 2026-07-18 (M6-07B-2D internal per-call permit ledger/issuance)
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -52,13 +52,31 @@ become `queued`. Only a response-loss retry against the current active exact aut
 reconstructs that issuance: the ticket/Job pair must still be `issued`/`queued` immediately after
 issuance or `claimed`/`running` after claim; a terminal or otherwise changed graph must fail closed. The transaction
 records `run.submitted`, item-level `replay.compilation.derived` and `replay.ticket.issued`, and the
-final `replay.batch.issued` event. The initial planned
-row remains non-dispatchable and is never promoted or reused. There is still no public Replay or
-admission API, and these reservations are not actual per-call Tool permits. Per-call permit
-consumption, new-identity retry, Replay executor wiring, typed server-side artifact finalization and
-result-digest verification, the Gate, and negative Control Plane retest remain outstanding. Until
-those execution boundaries are complete, the Control Plane cannot claim full durable Replay
-orchestration.
+final `replay.batch.issued` event. The initial planned row remains non-dispatchable and is never
+promoted or reused. M6-07B-2D internal service-only per-call permit ledger/issuance was also
+implemented on 2026-07-18. Schema v6 extends the forward
+path to v1→v2→v3→v4→v5→v6 and adds append-only `cp_replay_tool_permits`. Strict
+`ReplayToolPermitRequest` accepts only the executor profile, lease token, ticket ID, fencing value,
+and 1-based call ordinal. Idempotent
+`ControlPlaneService.issue_replay_tool_permit(job_id, request, actor=...)` rechecks the authenticated
+principal and registered profile, exact Job/ticket lease token and fence, active Run/batch/item/ticket,
+canonical compilation/Grant, exact reservation counters, and rolling request-rate admission. With a
+configured cap, admission counts the current sealed baseline, post-admission unconsumed units in still-live
+reservations, active permit units in their 60-second windows, and the new trusted request cost. With
+no cap, rate rejection is skipped but exact reservation counters are still consumed. The canonical
+permit binds the exact
+ticket/compilation/reservation graph, source/original request, Tool/version/target/method, ordinal, one
+Tool-call unit, and trusted request units. Permit TTL is at most 30 seconds and is capped by the
+Job/ticket lease and compiled-spec/Grant deadlines, not rate-reservation expiry. The unique
+`(ticket, ordinal)` plus persisted permit digest/request ID returns the same row for an exact response-loss duplicate without consuming
+counters or appending an event twice. The first issuance atomically moves reserved budget/rate units to
+consumed and appends the audit event. Issued units remain consumed when execution is uncertain;
+cancel/abandon releases only the definitely unissued remainder. Stale, wrong, cancelled, expired,
+finalized, ordinal-gap, and over-limit requests fail closed. Public Replay/admission API, HTTP
+transport/internal endpoint wiring, the Replay executor and permit redeem/use enforcement,
+new-identity retry, typed server-side artifact finalization and result-digest verification, the Gate,
+and negative Control Plane retest remain outstanding. Until those execution boundaries are complete,
+the Control Plane cannot claim full durable Replay orchestration.
 
 ## Context
 
@@ -112,8 +130,11 @@ M6-07B-2C then added schema-v5 durable budget/sealed-rate reservation and the in
 first-attempt issuance transaction. The service re-verifies the source, appends fresh Replay
 Run/Grant compilation authority, and creates the exact reservation-bound Job/ticket set for the
 entire batch atomically. Generic Job completion and failure paths remain unavailable to Replay Jobs.
-A public Replay API, actual per-call permits, retry, executor, typed finalization, Gate, and negative
-Control Plane retest remain intentionally outside the completed foundations.
+M6-07B-2D adds the schema-v6 append-only per-call permit ledger and internal service issuance with
+exact active-authority rechecks, canonical-operation binding, ticket/ordinal idempotency, the
+reserved-to-consumed transition, and burn on uncertainty. A public Replay API, HTTP
+transport/internal endpoint, executor/redeem, retry, typed finalization, Gate, and negative Control
+Plane retest remain intentionally outside the completed foundations.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -304,18 +325,30 @@ exact authority graph remains ticket/Job `issued`/`queued` immediately after iss
 `claimed`/`running` after claim reconstructs the already persisted exact item/ticket set. Expired,
 terminal, binding-drifted, or otherwise changed graphs must fail closed.
 
-The following per-call boundary is not implemented yet. Before every actual Tool call, the Worker's
-trusted Replay runtime calls an internal permit endpoint. The server rechecks the active
-principal/lease/ticket fence, issues a one-use permit for
-the canonical target/Tool/call ordinal while consuming reserved budget, and updates a durable
-rate-limit bucket or append-only entry. The permit cannot be reused for another ticket, target,
-Tool, or ordinal. Even when multiple Workers request permits concurrently, database locks and
-unique constraints must prevent issuance beyond the budget and rate limit.
+M6-07B-2D implements the server ledger/issuance half of this per-call boundary. Strict input does not
+accept a Worker-authored target, Tool, method, argument, or unit as authority; it accepts only the
+executor profile, lease token, ticket ID, fencing value, and 1-based call ordinal. The internal,
+idempotent service rechecks the active principal/profile/lease/ticket fence, Run/batch/item/ticket
+lifecycle, canonical compilation/Grant, exact reservation counters, and rolling request-rate state.
+For a configured cap, re-admission sums the current sealed baseline, the post-admission unconsumed remainder of
+reservations whose 60-second expiry is still live, permits whose issuance window is still active, and
+the new trusted request cost. An expired reservation contributes no remaining capacity but does not
+itself forbid issuance; with no cap, the rate comparison is skipped while exact counters are still
+consumed. Only the next ordinal is allowed; compiled-call-count and reservation limits fail closed.
+Each schema-v6 append-only row binds the
+exact ticket/compilation/reservation graph, source/original request, canonical
+target/Tool/version/method/compiled-argument digest, ordinal, one Tool-call unit, and trusted request
+units. Its TTL is `min(now + 30 seconds, lease deadline, compiled-spec expiry, Grant expiry)` and does
+not use rate-reservation expiry as a cap. The `(ticket_id, call_ordinal)` unique constraint and
+persisted permit digest/request ID ensure
+that concurrent requests and response-loss duplicates issue the same permit only once.
 
-An issued permit is considered consumed and is not automatically refunded even when execution is
-uncertain. No new permit is issued after abandonment or cancellation; only clearly unissued
-reservations may be released with an audit event. A new attempt must pass the remaining durable
-budget and rate window again.
+Only the first issuance transaction moves budget/rate units from reserved to consumed and appends an
+audit event. An issued permit is considered consumed and is not automatically refunded even when
+execution is uncertain. No new permit is issued after abandonment or cancellation; only clearly
+unissued reservations may be released with an audit event. A new attempt must pass the remaining
+durable budget and rate window again. The pre-call HTTP/internal endpoint, Worker executor, and permit
+redeem/use enforcement are not implemented yet.
 
 ### Separating Worker execute/seal from authority finalize phases
 
@@ -381,20 +414,25 @@ tickets are not included in Gate coverage. Cancellation preserves already finali
 events but stops new Gate publication. Operational `abandoned` is not mixed with validation
 dispositions such as ADR 0027 `inconclusive`, `needs-review`, or `confirmed`.
 
-PostgreSQL mutations extend the dependent-to-Run ordering from ADR 0023/0024 and observe the
-following order:
+PostgreSQL mutations extend the dependent-to-Run ordering from ADR 0023/0024 with Replay
+accounting/permit authority and observe the following order:
 
 ```text
 cp_jobs (stable Job ID order)
   -> cp_replay_tickets (stable attempt/ticket order)
   -> cp_replay_items (stable item order)
   -> cp_replay_batches
-  -> budget reservations / rate-limit buckets (canonical key order)
   -> cp_runs
+  -> cp_replay_budget_accounts (canonical account order)
+  -> cp_replay_rate_accounts (canonical account/window order)
+  -> cp_replay_budget_reservations (stable reservation order)
+  -> cp_replay_rate_reservations (stable reservation order)
+  -> cp_replay_tool_permits (ticket, call ordinal order)
 ```
 
 If a path has no row for an earlier stage, it skips that stage but never locks in reverse order.
-Cancellation locks active Jobs in stable order, then Replay dependents, and the Run last. Issuance,
+Cancellation locks active Jobs in stable order, then Replay dependents and the Run, followed by any
+required accounting rows. Issuance,
 claim, lease expiry, permits, finalization, and Gate publication use the same order. Artifact
 hashing, seal verification, and Oracle execution occur without database locks; immutable
 references and CAS commit the result.
@@ -420,6 +458,11 @@ The following are outside the first vertical slice of this ADR:
 - a cancellation-acknowledgement protocol through which the Control Plane proves physical fleet
   quiescence.
 
+The currently implemented M6-07B-2D slice ends at the internal service ledger/issuance boundary. A
+public Replay/admission API, HTTP transport and internal endpoint wiring, Worker executor, permit
+redemption/use enforcement, new-identity retry issuance, typed artifact finalization, the Gate, and
+negative Control Plane retest remain follow-up exit criteria for this ADR.
+
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
 cross-service authentication.
@@ -442,9 +485,11 @@ cross-service authentication.
 
 ## Acceptance and validation
 
-As of the M6-07B-2C update, source admission/derivation, schema-v5 reservation authority, fresh
-first-attempt compilation, atomic internal issuance, and issuance idempotency cover only the
-corresponding subset below. The remaining bullets continue to be exit criteria for full M6-07B.
+As of the M6-07B-2D update, source admission/derivation, schema-v5 reservation authority, fresh
+first-attempt compilation, atomic internal issuance and issuance idempotency, and the schema-v6
+per-call permit ledger/internal service issuance cover the corresponding server-side subset below.
+Public transport, executor/redeem, retry, finalization, Gate, and negative-retest bullets continue to
+be exit criteria for full M6-07B.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
@@ -460,6 +505,12 @@ Implementation of this ADR is complete when automated tests prove at least that:
   `rate_reservation_id`; a response-loss retry reconstructs the same exact authority set only while
   the current active exact authority graph remains ticket/Job `issued`/`queued` or
   `claimed`/`running`, and a terminal or changed graph must fail closed;
+- strict permit input accepts only the executor profile, lease token, ticket ID, fencing value, and
+  1-based ordinal and rejects target/Tool/method/argument/unit injection; the server derives the exact
+  active authority and canonical operation, performs rolling-window rate re-admission from current
+  baseline/post-admission live-reservation remainder/active permits/new cost, and only an exact
+  response-loss duplicate with the
+  persisted permit digest/request ID returns the same row without duplicate counters/events;
 - substitution of the content, Run ID, seal root, artifact set, or repository version in source or
   replay `ArtifactRef`, as well as symlink/path traversal, is rejected by server-side verification;
 - when two Workers concurrently claim the same queued Replay Job/ticket, exactly one succeeds and
@@ -469,8 +520,8 @@ Implementation of this ADR is complete when automated tests prove at least that:
 - a stale Worker attempting heartbeat, permit, artifact-import completion, or finalization is
   rejected and cannot alter the new attempt's budget, rate state, or result;
 - concurrent permit requests from multiple Workers do not exceed reserved Tool-call budgets or the
-  durable rate window, a duplicate ordinal is consumed only once, and an abandoned/cancelled ticket
-  receives no new permit;
+  durable rate window, a duplicate ordinal is consumed only once, and ordinal-gap, over-limit,
+  expired/finalized/abandoned/cancelled tickets receive no new permit;
 - an exact retry simulating response loss after the finalization commit returns the same result,
   while a retry with a different ArtifactRef, root, Outcome, or `result_digest` is rejected;
 - when response/connection loss before finalization overlaps lease expiry, the old attempt does not

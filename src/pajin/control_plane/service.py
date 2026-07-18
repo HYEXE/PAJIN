@@ -6,6 +6,7 @@ import hmac
 import json
 import secrets
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from typing import Any
@@ -38,6 +39,7 @@ from pajin.control_plane.database import (
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
+    ReplayToolPermitRecord,
     RunRecord,
     utc_now,
 )
@@ -82,6 +84,8 @@ from pajin.control_plane.models import (
     ReplayLeaseRequest,
     ReplayTicketState,
     ReplayTicketView,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
     ResumeView,
     RunListView,
     RunState,
@@ -128,6 +132,40 @@ _CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.valu
 _REVOCABLE_APPROVAL_STATES = frozenset({ApprovalState.PENDING.value, ApprovalState.APPROVED.value})
 _INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
 _REPLAY_TICKET_TTL = timedelta(minutes=5)
+_REPLAY_TOOL_PERMIT_TTL = timedelta(seconds=30)
+_REPLAY_TOOL_PERMIT_DIGEST_FIELDS = (
+    "permit_id",
+    "replay_request_id",
+    "job_id",
+    "batch_id",
+    "item_id",
+    "ticket_id",
+    "compilation_id",
+    "budget_reservation_id",
+    "rate_reservation_id",
+    "replay_run_id",
+    "attempt_number",
+    "fencing_value",
+    "call_ordinal",
+    "issued_to",
+    "executor_profile",
+    "lease_token_hash",
+    "source_root_digest",
+    "compilation_digest",
+    "grant_digest",
+    "original_request_id",
+    "tool_id",
+    "tool_version",
+    "target_id",
+    "target",
+    "method",
+    "compiled_argument_digest",
+    "tool_call_units",
+    "request_units",
+    "issued_at",
+    "expires_at",
+    "rate_window_expires_at",
+)
 _SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
 _SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
@@ -144,6 +182,22 @@ _TERMINAL_REPLAY_ITEM_STATES = frozenset(
 
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+@dataclass(slots=True)
+class _ReplayBindingAuthority:
+    """Locked, fully reconciled authority graph for one Replay attempt."""
+
+    payload: ReplayJobPayload
+    compilation_record: ReplayCompilationRecord
+    compilation: ReplayCompilation
+    budget_account: ReplayBudgetAccountRecord
+    rate_account: ReplayRateAccountRecord
+    budget_reservation: ReplayBudgetReservationRecord
+    rate_reservation: ReplayRateReservationRecord
+    budget_reservations: list[ReplayBudgetReservationRecord]
+    rate_reservations: list[ReplayRateReservationRecord]
+    permits: list[ReplayToolPermitRecord]
 
 
 class ControlPlaneService:
@@ -1677,6 +1731,243 @@ class ControlPlaneService:
             raise RuntimeError("Replay heartbeat did not produce a result")
         return result
 
+    def issue_replay_tool_permit(
+        self,
+        job_id: str,
+        request: ReplayToolPermitRequest,
+        *,
+        actor: str,
+    ) -> ReplayToolPermitView:
+        """Consume exactly one canonical call from an active Replay attempt.
+
+        The returned permit is an immutable audit handle, not a bearer secret. Its
+        existence means the budget and rolling request-rate authority were consumed,
+        even when the caller later cannot determine whether execution occurred.
+        """
+
+        self._require_replay_executor_profile(actor, request.executor_profile)
+        expired_reason: str | None = None
+        result: ReplayToolPermitView | None = None
+        with self.repository.transaction() as session:
+            job = self._job(session, job_id, lock=True)
+            if job.kind != _INTERNAL_REPLAY_KIND:
+                raise StateConflict("Job is not an internal Replay Job")
+            ticket = self._replay_ticket_for_job(session, job.job_id, lock=True)
+            item = self._replay_item(session, ticket.item_id, lock=True)
+            batch = self._replay_batch(session, ticket.batch_id, lock=True)
+            run = self._run(session, job.run_id, lock=True)
+            authority = self._verify_replay_binding(session, job, ticket, item, batch)
+            if (
+                run.state == RunState.CANCELLED.value
+                or batch.state == ReplayBatchState.CANCELLED.value
+                or item.state == ReplayItemState.CANCELLED.value
+            ):
+                raise RunCancelled("run has been cancelled")
+
+            now = utc_now()
+            self._require_replay_lease_identity(
+                job,
+                ticket,
+                request=request,
+                actor=actor,
+            )
+            lease_deadline = min(
+                _aware(job.lease_expires_at) if job.lease_expires_at else now,
+                _aware(ticket.lease_expires_at) if ticket.lease_expires_at else now,
+            )
+            compilation_deadline = min(
+                _aware(authority.compilation.spec.expires_at),
+                _aware(authority.compilation.grant.expires_at),
+            )
+            if lease_deadline <= now:
+                self._terminate_replay_attempt(
+                    session,
+                    job=job,
+                    ticket=ticket,
+                    item=item,
+                    batch=batch,
+                    run=run,
+                    actor=actor,
+                    now=now,
+                    reason="Replay lease expired before Tool permit issuance",
+                    retryable=True,
+                    event_type="replay.ticket.lease-expired",
+                )
+                expired_reason = "Replay job lease has expired"
+            elif compilation_deadline <= now:
+                self._terminate_replay_attempt(
+                    session,
+                    job=job,
+                    ticket=ticket,
+                    item=item,
+                    batch=batch,
+                    run=run,
+                    actor=actor,
+                    now=now,
+                    reason="Replay compilation authority expired before Tool permit issuance",
+                    retryable=True,
+                    event_type="replay.ticket.compilation-expired",
+                )
+                expired_reason = "Replay compilation authority has expired"
+            else:
+                self._require_run_state(run, RunState.RUNNING)
+                if batch.state != ReplayBatchState.RUNNING.value:
+                    raise LeaseRejected("Replay batch is not running")
+                if item.state != ReplayItemState.RUNNING.value:
+                    raise LeaseRejected("Replay item is not running")
+                if ticket.state != ReplayTicketState.CLAIMED.value:
+                    raise LeaseRejected("Replay ticket is not claimed")
+
+                existing = next(
+                    (
+                        permit
+                        for permit in authority.permits
+                        if permit.call_ordinal == request.call_ordinal
+                    ),
+                    None,
+                )
+                if existing is not None:
+                    result = self._replay_tool_permit_view(existing)
+                else:
+                    expected_ordinal = authority.budget_reservation.consumed_calls + 1
+                    repetitions = authority.compilation.spec.repetitions
+                    if request.call_ordinal != expected_ordinal:
+                        raise StateConflict(
+                            "Replay Tool permit ordinal must be the next unconsumed call"
+                        )
+                    if request.call_ordinal > repetitions:
+                        raise StateConflict("Replay Tool call budget is already exhausted")
+
+                    request_units = AIChatProbeTool().network_request_cost(
+                        authority.compilation.original_request
+                    )
+                    self._require_replay_permit_rate_capacity(
+                        session,
+                        authority=authority,
+                        request_units=request_units,
+                        now=now,
+                    )
+                    permit_expires_at = min(
+                        now + _REPLAY_TOOL_PERMIT_TTL,
+                        lease_deadline,
+                        compilation_deadline,
+                    )
+                    if permit_expires_at <= now:
+                        raise LeaseRejected("Replay Tool permit authority expired before issuance")
+
+                    permit_values: dict[str, Any] = {
+                        "permit_id": f"replay-permit_{uuid4().hex}",
+                        "replay_request_id": f"tool_replay_{uuid4().hex}",
+                        "job_id": job.job_id,
+                        "batch_id": batch.batch_id,
+                        "item_id": item.item_id,
+                        "ticket_id": ticket.ticket_id,
+                        "compilation_id": authority.compilation_record.compilation_id,
+                        "budget_reservation_id": (
+                            authority.budget_reservation.budget_reservation_id
+                        ),
+                        "rate_reservation_id": authority.rate_reservation.rate_reservation_id,
+                        "replay_run_id": ticket.replay_run_id,
+                        "attempt_number": ticket.attempt_number,
+                        "fencing_value": ticket.fencing_value,
+                        "call_ordinal": request.call_ordinal,
+                        "issued_to": actor,
+                        "executor_profile": request.executor_profile,
+                        "lease_token_hash": job.lease_token_hash,
+                        "source_root_digest": ticket.source_root_digest,
+                        "compilation_digest": ticket.compilation_digest,
+                        "grant_digest": ticket.grant_digest,
+                        "original_request_id": (
+                            authority.compilation.spec.binding.original_request_id
+                        ),
+                        "tool_id": authority.compilation.spec.binding.tool_id,
+                        "tool_version": authority.compilation.spec.binding.tool_version,
+                        "target_id": authority.compilation.spec.binding.target_id,
+                        "target": authority.compilation.spec.binding.target,
+                        "method": authority.compilation.spec.method,
+                        "compiled_argument_digest": (authority.compilation.spec.argument_digest),
+                        "tool_call_units": 1,
+                        "request_units": request_units,
+                        "issued_at": now,
+                        "expires_at": permit_expires_at,
+                        "rate_window_expires_at": now
+                        + timedelta(seconds=authority.rate_account.window_seconds),
+                    }
+                    permit_values["permit_digest"] = self._replay_tool_permit_digest(permit_values)
+                    permit = ReplayToolPermitRecord(**permit_values)
+                    session.add(permit)
+
+                    budget = authority.budget_reservation
+                    rate = authority.rate_reservation
+                    if (
+                        budget.state != "active"
+                        or budget.total_calls - budget.consumed_calls - budget.released_calls < 1
+                        or authority.budget_account.reserved_calls < 1
+                    ):
+                        raise StateConflict("Replay Tool-call budget reservation is exhausted")
+                    if (
+                        rate.state != "active"
+                        or rate.total_request_units
+                        - rate.consumed_request_units
+                        - rate.released_request_units
+                        < request_units
+                    ):
+                        raise StateConflict("Replay request-unit reservation is exhausted")
+
+                    budget.consumed_calls += 1
+                    budget.updated_at = now
+                    if budget.consumed_calls == budget.total_calls:
+                        budget.state = "consumed"
+                    authority.budget_account.reserved_calls -= 1
+                    authority.budget_account.consumed_calls += 1
+                    authority.budget_account.cas_version += 1
+                    authority.budget_account.updated_at = now
+
+                    rate.consumed_request_units += request_units
+                    rate.updated_at = now
+                    if rate.consumed_request_units == rate.total_request_units:
+                        rate.state = "consumed"
+                    authority.rate_account.cas_version += 1
+                    authority.rate_account.updated_at = now
+                    session.flush()
+                    self._require_exact_replay_budget_ledger(
+                        authority.budget_account,
+                        authority.budget_reservations,
+                    )
+                    self._require_exact_replay_account_permit_consumption(
+                        session,
+                        budget_reservations=authority.budget_reservations,
+                        rate_reservations=authority.rate_reservations,
+                    )
+                    self._replay_event(
+                        session,
+                        batch,
+                        "replay.tool-permit.issued",
+                        actor,
+                        {
+                            "permitId": permit.permit_id,
+                            "permitDigest": permit.permit_digest,
+                            "replayRequestId": permit.replay_request_id,
+                            "callOrdinal": permit.call_ordinal,
+                            "toolId": permit.tool_id,
+                            "targetId": permit.target_id,
+                            "toolCallUnits": permit.tool_call_units,
+                            "requestUnits": permit.request_units,
+                            "expiresAt": permit_expires_at.isoformat(),
+                            "rateWindowExpiresAt": permit.rate_window_expires_at.isoformat(),
+                        },
+                        item=item,
+                        ticket=ticket,
+                        job=job,
+                        run_id=run.run_id,
+                    )
+                    result = self._replay_tool_permit_view(permit)
+        if expired_reason is not None:
+            raise LeaseRejected(expired_reason)
+        if result is None:
+            raise RuntimeError("Replay Tool permit issuance did not produce a result")
+        return result
+
     def heartbeat(self, job_id: str, request: LeaseRequest, *, actor: str) -> JobView:
         with self.repository.transaction() as session:
             job = self._job(session, job_id, lock=True)
@@ -2336,6 +2627,15 @@ class ControlPlaneService:
         }:
             raise StateConflict(f"Replay batch in {batch.state} state cannot be cancelled")
 
+        for ticket in tickets:
+            if ticket.state not in _ACTIVE_REPLAY_TICKET_STATES:
+                continue
+            item = items_by_id.get(ticket.item_id)
+            job = jobs_by_id.get(ticket.job_id)
+            if item is None or job is None:
+                raise StateConflict("active Replay ticket authority graph is incomplete")
+            self._verify_replay_binding(session, job, ticket, item, batch)
+
         now = utc_now()
         cancelled_job_ids: list[str] = []
         for job in jobs:
@@ -2566,7 +2866,7 @@ class ControlPlaneService:
         ticket: ReplayTicketRecord,
         item: ReplayItemRecord,
         batch: ReplayBatchRecord,
-    ) -> ReplayJobPayload:
+    ) -> _ReplayBindingAuthority:
         try:
             payload = ReplayJobPayload.model_validate(job.payload)
         except ValueError as exc:
@@ -2642,13 +2942,44 @@ class ControlPlaneService:
             for reservation in rate_reservations
         ):
             raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        self._require_exact_replay_account_permit_consumption(
+            session,
+            budget_reservations=budget_reservations,
+            rate_reservations=rate_reservations,
+        )
         trusted = self._trusted_replay_compilation(compilation)
+        permits = list(
+            session.scalars(
+                select(ReplayToolPermitRecord)
+                .where(ReplayToolPermitRecord.ticket_id == ticket.ticket_id)
+                .order_by(ReplayToolPermitRecord.call_ordinal)
+            ).all()
+        )
+        self._require_exact_replay_permit_ledger(
+            permits,
+            job=job,
+            ticket=ticket,
+            item=item,
+            batch=batch,
+            compilation=compilation,
+            trusted=trusted,
+            budget_reservation=budget_reservation,
+            rate_reservation=rate_reservation,
+            rate_window_seconds=rate_account.window_seconds,
+        )
         budget_lifecycle_exact = self._replay_budget_reservation_lifecycle_exact(budget_reservation)
         rate_lifecycle_exact = self._replay_rate_reservation_lifecycle_exact(rate_reservation)
-        if ticket.state in _ACTIVE_REPLAY_TICKET_STATES:
+        if ticket.state == ReplayTicketState.ISSUED.value:
             ticket_reservation_lifecycle = (
-                budget_reservation.state == "active" and rate_reservation.state == "active"
+                budget_reservation.state == "active"
+                and rate_reservation.state == "active"
+                and not permits
             )
+        elif ticket.state == ReplayTicketState.CLAIMED.value:
+            all_consumed = len(permits) == trusted.spec.repetitions
+            ticket_reservation_lifecycle = budget_reservation.state == (
+                "consumed" if all_consumed else "active"
+            ) and rate_reservation.state == ("consumed" if all_consumed else "active")
         elif ticket.state == ReplayTicketState.ABANDONED.value:
             ticket_reservation_lifecycle = budget_reservation.state in {
                 "released",
@@ -2656,7 +2987,9 @@ class ControlPlaneService:
             } and rate_reservation.state in {"released", "consumed"}
         elif ticket.state == ReplayTicketState.FINALIZED.value:
             ticket_reservation_lifecycle = (
-                budget_reservation.state == "consumed" and rate_reservation.state == "consumed"
+                budget_reservation.state == "consumed"
+                and rate_reservation.state == "consumed"
+                and len(permits) == trusted.spec.repetitions
             )
         else:
             ticket_reservation_lifecycle = False
@@ -2739,7 +3072,18 @@ class ControlPlaneService:
             and trusted.spec.binding.purpose.value == batch.purpose
         ):
             raise StateConflict("internal Replay Job authority binding is inconsistent")
-        return payload
+        return _ReplayBindingAuthority(
+            payload=payload,
+            compilation_record=compilation,
+            compilation=trusted,
+            budget_account=budget_account,
+            rate_account=rate_account,
+            budget_reservation=budget_reservation,
+            rate_reservation=rate_reservation,
+            budget_reservations=budget_reservations,
+            rate_reservations=rate_reservations,
+            permits=permits,
+        )
 
     def _require_replay_executor_profile(self, actor: str, executor_profile: str) -> None:
         allowed = self._replay_executor_profiles.get(actor, frozenset())
@@ -2753,7 +3097,7 @@ class ControlPlaneService:
         job: JobRecord,
         ticket: ReplayTicketRecord,
         *,
-        request: ReplayLeaseRequest,
+        request: ReplayLeaseRequest | ReplayToolPermitRequest,
         actor: str,
     ) -> None:
         if (
@@ -2888,6 +3232,11 @@ class ControlPlaneService:
             for reservation in rate_reservations
         ):
             raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        self._require_exact_replay_account_permit_consumption(
+            session,
+            budget_reservations=budget_reservations,
+            rate_reservations=rate_reservations,
+        )
         if not (
             ticket.batch_id == batch.batch_id
             and ticket.source_root_digest == batch.source_root_digest
@@ -3539,6 +3888,153 @@ class ControlPlaneService:
             raise StateConflict("fresh Replay compilation has no valid short-lived authority")
         return trusted
 
+    @classmethod
+    def _require_exact_replay_permit_ledger(
+        cls,
+        permits: list[ReplayToolPermitRecord],
+        *,
+        job: JobRecord,
+        ticket: ReplayTicketRecord,
+        item: ReplayItemRecord,
+        batch: ReplayBatchRecord,
+        compilation: ReplayCompilationRecord,
+        trusted: ReplayCompilation,
+        budget_reservation: ReplayBudgetReservationRecord,
+        rate_reservation: ReplayRateReservationRecord,
+        rate_window_seconds: int,
+    ) -> None:
+        """Reconcile immutable permits with both mutable reservation counters."""
+
+        expected_request_units = AIChatProbeTool().network_request_cost(trusted.original_request)
+        expected_ordinals = list(range(1, len(permits) + 1))
+        if (
+            [permit.call_ordinal for permit in permits] != expected_ordinals
+            or len(permits) > trusted.spec.repetitions
+            or budget_reservation.consumed_calls != len(permits)
+            or rate_reservation.consumed_request_units != expected_request_units * len(permits)
+        ):
+            raise StateConflict("durable Replay Tool permit ledger counters are inconsistent")
+
+        for permit in permits:
+            issued_at = _aware(permit.issued_at)
+            expires_at = _aware(permit.expires_at)
+            rate_window_expires_at = _aware(permit.rate_window_expires_at)
+            if not (
+                permit.job_id == job.job_id
+                and permit.batch_id == batch.batch_id
+                and permit.item_id == item.item_id
+                and permit.ticket_id == ticket.ticket_id
+                and permit.compilation_id == compilation.compilation_id
+                and permit.budget_reservation_id == budget_reservation.budget_reservation_id
+                and permit.rate_reservation_id == rate_reservation.rate_reservation_id
+                and permit.replay_run_id == ticket.replay_run_id
+                and permit.attempt_number == ticket.attempt_number
+                and permit.fencing_value == ticket.fencing_value
+                and permit.issued_to == ticket.claim_principal
+                and permit.executor_profile == ticket.executor_profile
+                and permit.lease_token_hash == ticket.lease_token_hash
+                and permit.source_root_digest == ticket.source_root_digest
+                and permit.compilation_digest == ticket.compilation_digest
+                and permit.grant_digest == ticket.grant_digest
+                and permit.original_request_id == trusted.spec.binding.original_request_id
+                and permit.tool_id == trusted.spec.binding.tool_id
+                and permit.tool_version == trusted.spec.binding.tool_version
+                and permit.target_id == trusted.spec.binding.target_id
+                and permit.target == trusted.spec.binding.target
+                and permit.method == trusted.spec.method
+                and permit.compiled_argument_digest == trusted.spec.argument_digest
+                and permit.tool_call_units == 1
+                and permit.request_units == expected_request_units
+                and expires_at > issued_at
+                and expires_at <= issued_at + _REPLAY_TOOL_PERMIT_TTL
+                and expires_at <= _aware(trusted.spec.expires_at)
+                and expires_at <= _aware(trusted.grant.expires_at)
+                and rate_window_expires_at == issued_at + timedelta(seconds=rate_window_seconds)
+                and permit.permit_digest
+                == cls._replay_tool_permit_digest(cls._replay_tool_permit_values(permit))
+            ):
+                raise StateConflict("durable Replay Tool permit authority is inconsistent")
+
+    def _require_replay_permit_rate_capacity(
+        self,
+        session: Session,
+        *,
+        authority: _ReplayBindingAuthority,
+        request_units: int,
+        now: datetime,
+    ) -> None:
+        """Admit one call against reservations plus issued rolling-window entries."""
+
+        rate_account = authority.rate_account
+        if rate_account.max_requests_per_minute is None:
+            return
+        baseline_units = (
+            rate_account.observed_request_units
+            if now
+            < _aware(rate_account.observed_at) + timedelta(seconds=rate_account.window_seconds)
+            else 0
+        )
+        reserved_units_after = sum(
+            reservation.total_request_units
+            - reservation.consumed_request_units
+            - reservation.released_request_units
+            for reservation in authority.rate_reservations
+            if _aware(reservation.expires_at) > now
+        )
+        if _aware(authority.rate_reservation.expires_at) > now:
+            reserved_units_after -= request_units
+        if reserved_units_after < 0:
+            raise StateConflict("durable Replay rate reservation counters are inconsistent")
+
+        active_permit_units = int(
+            session.scalar(
+                select(func.coalesce(func.sum(ReplayToolPermitRecord.request_units), 0))
+                .join(
+                    ReplayRateReservationRecord,
+                    ReplayRateReservationRecord.rate_reservation_id
+                    == ReplayToolPermitRecord.rate_reservation_id,
+                )
+                .where(
+                    ReplayRateReservationRecord.rate_account_id == rate_account.rate_account_id,
+                    ReplayToolPermitRecord.rate_window_expires_at > now,
+                )
+            )
+            or 0
+        )
+        if (
+            baseline_units + reserved_units_after + active_permit_units + request_units
+            > rate_account.max_requests_per_minute
+        ):
+            raise StateConflict("durable Replay Tool permit exceeds Campaign request rate")
+
+    @staticmethod
+    def _replay_tool_permit_values(record: ReplayToolPermitRecord) -> dict[str, Any]:
+        return {
+            field_name: getattr(record, field_name)
+            for field_name in _REPLAY_TOOL_PERMIT_DIGEST_FIELDS
+        }
+
+    @staticmethod
+    def _replay_tool_permit_digest(values: Mapping[str, Any]) -> str:
+        canonical: dict[str, Any] = {}
+        for field_name in _REPLAY_TOOL_PERMIT_DIGEST_FIELDS:
+            value = values[field_name]
+            canonical[field_name] = (
+                _aware(value).isoformat() if isinstance(value, datetime) else value
+            )
+        document = {
+            "apiVersion": "pajin.dev/control-plane/v1alpha1",
+            "kind": "ReplayToolPermit",
+            "authority": canonical,
+        }
+        encoded = json.dumps(
+            document,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        return sha256(encoded).hexdigest()
+
     def _reserve_replay_capacity(
         self,
         session: Session,
@@ -3659,6 +4155,11 @@ class ControlPlaneService:
             for reservation in rate_reservations
         ):
             raise StateConflict("durable Replay rate reservation ledger is inconsistent")
+        self._require_exact_replay_account_permit_consumption(
+            session,
+            budget_reservations=budget_reservations,
+            rate_reservations=rate_reservations,
+        )
         if rate_account.max_requests_per_minute is not None:
             baseline_units = (
                 rate_account.observed_request_units
@@ -3667,12 +4168,32 @@ class ControlPlaneService:
                 else 0
             )
             reserved_units = sum(
-                reservation.total_request_units - reservation.released_request_units
+                reservation.total_request_units
+                - reservation.consumed_request_units
+                - reservation.released_request_units
                 for reservation in rate_reservations
                 if _aware(reservation.expires_at) > now
             )
+            active_permit_units = int(
+                session.scalar(
+                    select(func.coalesce(func.sum(ReplayToolPermitRecord.request_units), 0))
+                    .join(
+                        ReplayRateReservationRecord,
+                        ReplayRateReservationRecord.rate_reservation_id
+                        == ReplayToolPermitRecord.rate_reservation_id,
+                    )
+                    .where(
+                        ReplayRateReservationRecord.rate_account_id == rate_account.rate_account_id,
+                        ReplayToolPermitRecord.rate_window_expires_at > now,
+                    )
+                )
+                or 0
+            )
             if (
-                baseline_units + reserved_units + derived.required_request_units
+                baseline_units
+                + reserved_units
+                + active_permit_units
+                + derived.required_request_units
                 > rate_account.max_requests_per_minute
             ):
                 raise StateConflict("durable Replay rate reservation exceeds Campaign capacity")
@@ -3683,6 +4204,80 @@ class ControlPlaneService:
         rate_account.cas_version += 1
         rate_account.updated_at = now
         return budget_account, rate_account
+
+    @staticmethod
+    def _require_exact_replay_account_permit_consumption(
+        session: Session,
+        *,
+        budget_reservations: list[ReplayBudgetReservationRecord],
+        rate_reservations: list[ReplayRateReservationRecord],
+    ) -> None:
+        """Reject mutable counter drift from the append-only consumption proof."""
+
+        budget_by_authority = {
+            (
+                reservation.batch_id,
+                reservation.item_id,
+                reservation.attempt_number,
+                reservation.compilation_id,
+            ): reservation
+            for reservation in budget_reservations
+        }
+        rate_by_authority = {
+            (
+                reservation.batch_id,
+                reservation.item_id,
+                reservation.attempt_number,
+                reservation.compilation_id,
+            ): reservation
+            for reservation in rate_reservations
+        }
+        if set(budget_by_authority) != set(rate_by_authority):
+            raise StateConflict("durable Replay reservation account graphs do not match")
+
+        budget_ids = {reservation.budget_reservation_id for reservation in budget_reservations}
+        rate_ids = {reservation.rate_reservation_id for reservation in rate_reservations}
+        if not budget_ids and not rate_ids:
+            return
+        permits = list(
+            session.scalars(
+                select(ReplayToolPermitRecord).where(
+                    or_(
+                        ReplayToolPermitRecord.budget_reservation_id.in_(budget_ids),
+                        ReplayToolPermitRecord.rate_reservation_id.in_(rate_ids),
+                    )
+                )
+            ).all()
+        )
+        budget_consumed = {reservation_id: 0 for reservation_id in budget_ids}
+        rate_consumed = {reservation_id: 0 for reservation_id in rate_ids}
+        for permit in permits:
+            authority_key = (
+                permit.batch_id,
+                permit.item_id,
+                permit.attempt_number,
+                permit.compilation_id,
+            )
+            budget = budget_by_authority.get(authority_key)
+            rate = rate_by_authority.get(authority_key)
+            if (
+                budget is None
+                or rate is None
+                or permit.budget_reservation_id != budget.budget_reservation_id
+                or permit.rate_reservation_id != rate.rate_reservation_id
+            ):
+                raise StateConflict("durable Replay permit belongs to a different account graph")
+            budget_consumed[budget.budget_reservation_id] += permit.tool_call_units
+            rate_consumed[rate.rate_reservation_id] += permit.request_units
+
+        if any(
+            reservation.consumed_calls != budget_consumed[reservation.budget_reservation_id]
+            for reservation in budget_reservations
+        ) or any(
+            reservation.consumed_request_units != rate_consumed[reservation.rate_reservation_id]
+            for reservation in rate_reservations
+        ):
+            raise StateConflict("durable Replay reservation consumption lacks exact permit proof")
 
     @classmethod
     def _require_exact_replay_budget_ledger(
@@ -3705,6 +4300,8 @@ class ControlPlaneService:
             account.reserved_calls == expected_reserved
             and account.consumed_calls == expected_consumed
             and account.released_calls == expected_released
+            and account.baseline_used_calls + account.reserved_calls + account.consumed_calls
+            <= account.max_tool_calls
         ):
             raise StateConflict("durable Replay budget account counters differ from its ledger")
 
@@ -4055,6 +4652,41 @@ class ControlPlaneService:
             lease_expires_at=(_aware(record.lease_expires_at) if record.lease_expires_at else None),
             created_at=_aware(record.issued_at),
             updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def _replay_tool_permit_view(record: ReplayToolPermitRecord) -> ReplayToolPermitView:
+        return ReplayToolPermitView(
+            permit_id=record.permit_id,
+            permit_digest=record.permit_digest,
+            replay_request_id=record.replay_request_id,
+            job_id=record.job_id,
+            batch_id=record.batch_id,
+            item_id=record.item_id,
+            ticket_id=record.ticket_id,
+            compilation_id=record.compilation_id,
+            budget_reservation_id=record.budget_reservation_id,
+            rate_reservation_id=record.rate_reservation_id,
+            replay_run_id=record.replay_run_id,
+            attempt=record.attempt_number,
+            fencing_value=record.fencing_value,
+            call_ordinal=record.call_ordinal,
+            issued_to=record.issued_to,
+            executor_profile=record.executor_profile,
+            source_root_digest=record.source_root_digest,
+            compilation_digest=record.compilation_digest,
+            grant_digest=record.grant_digest,
+            original_request_id=record.original_request_id,
+            tool_id=record.tool_id,
+            tool_version=record.tool_version,
+            target_id=record.target_id,
+            target=record.target,
+            method=record.method,
+            compiled_argument_digest=record.compiled_argument_digest,
+            tool_call_units=record.tool_call_units,
+            request_units=record.request_units,
+            issued_at=_aware(record.issued_at),
+            expires_at=_aware(record.expires_at),
         )
 
     @staticmethod

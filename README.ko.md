@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, 검증된 reproduction-backed confirmation projection, 강화 후 retest를 위한 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable budget/sealed-rate 예약과 fresh compilation 권위에 결박된 멱등 내부 첫 시도 Job/ticket 발행 |
-| 주요 공백 | public Replay API, 실제 호출별 permit, 새 identity 재시도, executor/finalization/Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable 예약과 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema v6 append-only 일회성 호출별 permit 원장과 멱등 내부 서비스 발급 |
+| 주요 공백 | public Replay API, HTTP transport, executor와 permit redeem/use 집행, 새 identity 재시도, typed finalization/Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -142,11 +142,28 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   compilation digest, Grant digest에 결박됩니다. 최초 planned compilation은 non-dispatchable proof로
   남으며 승격하거나 재사용하지 않습니다. 응답 유실(response-loss) 재시도는 현재 active exact
   authority graph가 발급 직후 ticket/Job `issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만
-  같은 issuance를 재구성합니다. terminal이거나 그 밖에 변경된 graph는 fail closed됩니다. 이 조각도
-  public Replay/admission API를 노출하지 않으며, 예약은
-  실제 호출별 실행 permit이 아닙니다. 호출별 permit 소비, 새 identity retry 발행, Replay executor,
-  typed finalization, Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B 전체는 여전히
-  미완료입니다.
+  같은 issuance를 재구성합니다. terminal이거나 그 밖에 변경된 graph는 fail closed됩니다.
+  2026-07-18에는 M6-07B-2D 내부 서비스 전용 호출별 permit 원장과 발급도 구현했습니다. schema v6는
+  append-only `cp_replay_tool_permits`를 추가해 forward v1→v2→v3→v4→v5→v6 경로를 지원합니다. strict
+  `ReplayToolPermitRequest`는 executor profile, lease token, ticket ID, fencing value와 1부터 시작하는
+  call ordinal만 받습니다. 멱등
+  `ControlPlaneService.issue_replay_tool_permit(job_id, request, actor=...)` 서비스는 인증 principal과 등록된
+  executor profile, 정확한 Job/ticket lease token과 fence, active Run·batch·item·ticket 상태, canonical
+  compilation과 Grant, exact reservation counter 및 rolling request-rate admission을 다시 검증합니다. cap이
+  있으면 현재 sealed baseline, 발급 후 아직 유효한 reservation의 미소비 unit, 각 60초 window에서 active인 permit
+  unit과 새 trusted request 비용을 합산합니다. cap이 없으면 rate 거부만 생략하고 exact reservation
+  counter는 계속 소비합니다. canonical permit은 그 authority graph, source와 original request, Tool과
+  version, target, method, 1-based ordinal, Tool-call unit 하나와 신뢰된 request-unit 비용에 결박됩니다.
+  TTL은 최대 30초이며 lease, compiled spec 또는 Grant deadline을 넘지 않습니다. rate reservation 만료는
+  permit TTL cap이 아닙니다. 고유 ticket/ordinal key와 저장된 permit digest 및 request
+  ID 덕분에 정확한 응답 유실 중복 호출은 counter를 다시 소비하거나 event를 두 번 append하지 않고 같은
+  row를 돌려줍니다. 최초 발급은 예약된 budget/rate unit을 consumed로 원자적으로 옮기고 audit event를
+  append합니다. 실행 여부가 불확실해도 발급된 permit은 consumed로 남고, 취소·포기는 확실히 미발급된
+  잔여분만 release합니다. stale, mismatch, cancelled, expired, finalized, ordinal gap, over-limit 요청은
+  fail closed됩니다. 이 조각은 public Replay/admission API나 HTTP transport를 제공하지 않고 permit을
+  실행하거나 redeem하지도 않습니다. public API와 transport 연결, executor/redeem 집행, 새 identity
+  retry 발행, typed finalization, Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B 전체는
+  여전히 미완료입니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 

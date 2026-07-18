@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from typing import Any
 
@@ -224,6 +224,16 @@ class ReplayLeaseRequest(StrictModel):
     lease_seconds: int = Field(default=30, strict=True, ge=5, le=300)
     ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
     fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+
+
+class ReplayToolPermitRequest(StrictModel):
+    """Exact lease identity plus one 1-based canonical Tool-call ordinal."""
+
+    executor_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    lease_token: str = Field(min_length=32, max_length=300)
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    call_ordinal: int = Field(strict=True, ge=1, le=20)
 
 
 class LeaseRequest(StrictModel):
@@ -529,6 +539,58 @@ class ReplayClaimView(StrictModel):
             or payload.fencing_value != self.ticket.fencing_value
         ):
             raise ValueError("Replay claim Job payload authority binding is inconsistent")
+        return self
+
+
+class ReplayToolPermitView(StrictModel):
+    """Immutable, non-bearer proof of one durably consumed Replay Tool call."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    permit_id: str = Field(pattern=r"^replay-permit_[0-9a-f]{32}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    replay_request_id: str = Field(pattern=r"^tool_replay_[0-9a-f]{32}$")
+    job_id: str = Field(pattern=r"^job_[0-9a-f]{32}$")
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    compilation_id: str = Field(pattern=r"^replay-compilation_[0-9a-f]{32}$")
+    budget_reservation_id: str = Field(pattern=r"^budget-reservation_[0-9a-f]{32}$")
+    rate_reservation_id: str = Field(pattern=r"^rate-reservation_[0-9a-f]{32}$")
+    replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    attempt: int = Field(strict=True, ge=1, le=100)
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    call_ordinal: int = Field(strict=True, ge=1, le=20)
+    issued_to: str = Field(min_length=1, max_length=200)
+    executor_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    source_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    grant_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    original_request_id: str = Field(min_length=1, max_length=200)
+    tool_id: str = Field(min_length=1, max_length=200)
+    tool_version: str = Field(min_length=1, max_length=100)
+    target_id: str = Field(min_length=1, max_length=200)
+    target: str = Field(min_length=1, max_length=2_000)
+    method: str = Field(min_length=1, max_length=20)
+    compiled_argument_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    tool_call_units: int = Field(default=1, strict=True, ge=1, le=1)
+    request_units: int = Field(strict=True, ge=1, le=100)
+    issued_at: datetime
+    expires_at: datetime
+
+    @field_validator("method")
+    @classmethod
+    def normalize_method(cls, value: str) -> str:
+        return value.upper()
+
+    @model_validator(mode="after")
+    def require_short_aware_lifetime(self) -> ReplayToolPermitView:
+        if self.issued_at.tzinfo is None or self.expires_at.tzinfo is None:
+            raise ValueError("Replay Tool permit timestamps must be timezone-aware")
+        if self.expires_at <= self.issued_at:
+            raise ValueError("Replay Tool permit must expire after issuance")
+        if self.expires_at > self.issued_at + timedelta(seconds=30):
+            raise ValueError("Replay Tool permit exceeds the 30-second TTL ceiling")
         return self
 
 

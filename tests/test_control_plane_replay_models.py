@@ -26,6 +26,8 @@ from pajin.control_plane.models import (
     ReplayLeaseRequest,
     ReplayTicketState,
     ReplayTicketView,
+    ReplayToolPermitRequest,
+    ReplayToolPermitView,
 )
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayPurpose
@@ -170,6 +172,55 @@ def _claim_view_payload() -> dict[str, object]:
     }
 
 
+def _permit_request(**updates: object) -> ReplayToolPermitRequest:
+    values: dict[str, object] = {
+        "executor_profile": "kisa-exact-v1",
+        "lease_token": "lease-token-that-is-at-least-32-characters",
+        "ticket_id": f"replay-ticket_{'3' * 32}",
+        "fencing_value": 7,
+        "call_ordinal": 1,
+    }
+    values.update(updates)
+    return ReplayToolPermitRequest.model_validate(values)
+
+
+def _permit_view(**updates: object) -> ReplayToolPermitView:
+    values: dict[str, object] = {
+        "permit_id": f"replay-permit_{'8' * 32}",
+        "permit_digest": "c" * 64,
+        "replay_request_id": f"tool_replay_{'9' * 32}",
+        "job_id": f"job_{'4' * 32}",
+        "batch_id": f"replay-batch_{'1' * 32}",
+        "item_id": f"replay-item_{'2' * 32}",
+        "ticket_id": f"replay-ticket_{'3' * 32}",
+        "compilation_id": f"replay-compilation_{'5' * 32}",
+        "budget_reservation_id": f"budget-reservation_{'6' * 32}",
+        "rate_reservation_id": f"rate-reservation_{'7' * 32}",
+        "replay_run_id": "run_20260717T120000Z_cafebabe",
+        "attempt": 1,
+        "fencing_value": 7,
+        "call_ordinal": 1,
+        "issued_to": "worker-service",
+        "executor_profile": "kisa-exact-v1",
+        "source_root_digest": "a" * 64,
+        "compilation_digest": "e" * 64,
+        "grant_digest": "f" * 64,
+        "original_request_id": "tool_original_request",
+        "tool_id": "ai.chat-probe",
+        "tool_version": "1.0.0",
+        "target_id": "target-ai-chat",
+        "target": "http://127.0.0.1:8080/v1/chat",
+        "method": "post",
+        "compiled_argument_digest": "b" * 64,
+        "tool_call_units": 1,
+        "request_units": 3,
+        "issued_at": NOW,
+        "expires_at": NOW + timedelta(seconds=15),
+    }
+    values.update(updates)
+    return ReplayToolPermitView.model_validate(values)
+
+
 def _authority_integer_cases() -> list[tuple[type[BaseModel], dict[str, object], tuple[str, ...]]]:
     claim_payload = _claim_view_payload()
     job = claim_payload["job"]
@@ -188,6 +239,8 @@ def _authority_integer_cases() -> list[tuple[type[BaseModel], dict[str, object],
         ticket_id=ticket.ticket_id,
         fencing_value=ticket.fencing_value,
     )
+    permit_request = _permit_request()
+    permit_view = _permit_view()
     return [
         (
             ArtifactRef,
@@ -209,6 +262,11 @@ def _authority_integer_cases() -> list[tuple[type[BaseModel], dict[str, object],
             lease.model_dump(),
             ("lease_seconds", "fencing_value"),
         ),
+        (
+            ReplayToolPermitRequest,
+            permit_request.model_dump(),
+            ("fencing_value", "call_ordinal"),
+        ),
         (ReplayBatchView, batch.model_dump(), ("cas_version",)),
         (
             ReplayItemView,
@@ -219,6 +277,17 @@ def _authority_integer_cases() -> list[tuple[type[BaseModel], dict[str, object],
             ReplayTicketView,
             ticket.model_dump(),
             ("attempt", "fencing_value"),
+        ),
+        (
+            ReplayToolPermitView,
+            permit_view.model_dump(),
+            (
+                "attempt",
+                "fencing_value",
+                "call_ordinal",
+                "tool_call_units",
+                "request_units",
+            ),
         ),
     ]
 
@@ -367,6 +436,126 @@ def test_replay_claim_and_lease_requests_use_authenticated_actor_identity() -> N
                 "worker_id": "body-controlled-worker",
             }
         )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("worker_id", "body-controlled-worker"),
+        ("lease_seconds", 60),
+        ("idempotency_key", "caller-selected-key"),
+        ("tool_id", "caller-selected-tool"),
+        ("target", "https://caller.invalid"),
+        ("method", "DELETE"),
+        ("arguments", {"caller": "selected"}),
+        ("request_units", 1),
+        ("compilation_id", f"replay-compilation_{'a' * 32}"),
+    ],
+)
+def test_replay_tool_permit_request_accepts_only_lease_identity_and_ordinal(
+    field_name: str,
+    value: object,
+) -> None:
+    request = _permit_request()
+    assert set(request.model_dump()) == {
+        "executor_profile",
+        "lease_token",
+        "ticket_id",
+        "fencing_value",
+        "call_ordinal",
+    }
+
+    with pytest.raises(ValidationError):
+        ReplayToolPermitRequest.model_validate({**request.model_dump(), field_name: value})
+
+
+@pytest.mark.parametrize("call_ordinal", [0, 21])
+def test_replay_tool_permit_request_uses_bounded_one_based_ordinal(call_ordinal: int) -> None:
+    with pytest.raises(ValidationError):
+        _permit_request(call_ordinal=call_ordinal)
+
+
+def test_replay_tool_permit_view_is_immutable_canonical_and_non_bearer() -> None:
+    permit = _permit_view()
+    assert permit.method == "POST"
+    assert permit.tool_call_units == 1
+    assert permit.request_units == 3
+    assert set(permit.model_dump()) == {
+        "permit_id",
+        "permit_digest",
+        "replay_request_id",
+        "job_id",
+        "batch_id",
+        "item_id",
+        "ticket_id",
+        "compilation_id",
+        "budget_reservation_id",
+        "rate_reservation_id",
+        "replay_run_id",
+        "attempt",
+        "fencing_value",
+        "call_ordinal",
+        "issued_to",
+        "executor_profile",
+        "source_root_digest",
+        "compilation_digest",
+        "grant_digest",
+        "original_request_id",
+        "tool_id",
+        "tool_version",
+        "target_id",
+        "target",
+        "method",
+        "compiled_argument_digest",
+        "tool_call_units",
+        "request_units",
+        "issued_at",
+        "expires_at",
+    }
+
+    with pytest.raises(ValidationError, match="frozen"):
+        permit.call_ordinal = 2
+    for field_name in ("lease_token", "lease_token_hash", "permit_token", "arguments"):
+        with pytest.raises(ValidationError):
+            ReplayToolPermitView.model_validate(
+                {**permit.model_dump(), field_name: "must-not-be-exposed"}
+            )
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"issued_at": NOW.replace(tzinfo=None)},
+        {"expires_at": (NOW + timedelta(seconds=15)).replace(tzinfo=None)},
+        {"expires_at": NOW},
+        {"expires_at": NOW + timedelta(seconds=31)},
+    ],
+)
+def test_replay_tool_permit_view_requires_short_aware_positive_lifetime(
+    updates: dict[str, object],
+) -> None:
+    with pytest.raises(ValidationError):
+        _permit_view(**updates)
+
+
+@pytest.mark.parametrize(
+    ("field_name", "invalid_value"),
+    [
+        ("permit_id", f"replay-permit_{'A' * 32}"),
+        ("permit_digest", "A" * 64),
+        ("replay_request_id", f"tool_replay_{'A' * 32}"),
+        ("source_root_digest", "A" * 64),
+        ("compiled_argument_digest", "A" * 64),
+        ("tool_call_units", 2),
+        ("request_units", 101),
+    ],
+)
+def test_replay_tool_permit_view_rejects_noncanonical_authority(
+    field_name: str,
+    invalid_value: object,
+) -> None:
+    with pytest.raises(ValidationError):
+        _permit_view(**{field_name: invalid_value})
 
 
 def test_replay_claim_view_binds_job_batch_item_ticket_attempt_and_fence() -> None:

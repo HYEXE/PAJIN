@@ -30,6 +30,7 @@ from pajin.control_plane.database import (
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
+    ReplayToolPermitRecord,
     RunRecord,
 )
 from pajin.control_plane.kisa_derivation import (
@@ -60,6 +61,7 @@ from pajin.control_plane.models import (
     ReplayJobPayload,
     ReplayLeaseRequest,
     ReplayTicketState,
+    ReplayToolPermitRequest,
     RunState,
     SubmitRunRequest,
 )
@@ -299,6 +301,16 @@ def _claim(service: ControlPlaneService, *, actor: str = "replay-worker-a"):
     )
     assert claimed is not None
     return claimed
+
+
+def _permit_request(claimed, call_ordinal: int) -> ReplayToolPermitRequest:
+    return ReplayToolPermitRequest(
+        executor_profile=EXECUTOR_PROFILE,
+        lease_token=claimed.lease_token,
+        ticket_id=claimed.ticket.ticket_id,
+        fencing_value=claimed.ticket.fencing_value,
+        call_ordinal=call_ordinal,
+    )
 
 
 def _force_replay_lease_expired(
@@ -1688,6 +1700,514 @@ def test_two_workers_can_burn_one_sqlite_replay_ticket_exactly_once(tmp_path: Pa
             assert ticket.claim_principal == winner.ticket.claimed_by
             assert job.state == JobState.LEASED.value
             assert job.attempts == 1
+    finally:
+        repository.close()
+
+
+def test_replay_tool_permit_is_canonical_and_idempotent_across_restart(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "tool-permit-idempotent.db"
+    repository, service = _service(database_path)
+    restarted_repository: ControlPlaneRepository | None = None
+    try:
+        _create_batch(repository, service, "tool-permit-idempotent")
+        claimed = _claim(service, actor="heartbeat-worker")
+        request = _permit_request(claimed, 1)
+
+        first = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            request,
+            actor="heartbeat-worker",
+        )
+        restarted_repository, restarted_service = _service(database_path)
+        repeated = restarted_service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            request,
+            actor="heartbeat-worker",
+        )
+
+        assert repeated == first
+        assert first.ticket_id == claimed.ticket.ticket_id
+        assert first.job_id == claimed.job.job_id
+        assert first.item_id == claimed.item.item_id
+        assert first.batch_id == claimed.batch.batch_id
+        assert first.replay_run_id == claimed.item.replay_run_id
+        assert first.call_ordinal == 1
+        assert first.issued_to == "heartbeat-worker"
+        assert first.executor_profile == EXECUTOR_PROFILE
+        assert first.tool_call_units == 1
+        assert first.expires_at <= first.issued_at + timedelta(seconds=30)
+
+        with repository.transaction() as session:
+            permit = session.scalar(select(ReplayToolPermitRecord))
+            compilation = session.get(ReplayCompilationRecord, first.compilation_id)
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                first.budget_reservation_id,
+            )
+            rate = session.get(ReplayRateReservationRecord, first.rate_reservation_id)
+            assert permit is not None
+            assert compilation is not None
+            assert budget_account is not None
+            assert budget is not None
+            assert rate is not None
+            trusted = ReplayCompilation.model_validate_json(compilation.canonical_compilation)
+            assert first.permit_digest == permit.permit_digest
+            assert first.original_request_id == trusted.original_request.request_id
+            assert first.tool_id == trusted.original_request.tool_id
+            assert first.tool_version == trusted.spec.binding.tool_version
+            assert first.target_id == trusted.spec.binding.target_id
+            assert first.target == trusted.original_request.target
+            assert first.method == trusted.original_request.method
+            assert first.compiled_argument_digest == trusted.spec.argument_digest
+            assert first.request_units == AIChatProbeTool().network_request_cost(
+                trusted.original_request
+            )
+            assert budget.consumed_calls == 1
+            assert budget.released_calls == 0
+            assert budget_account.consumed_calls == 1
+            assert budget_account.reserved_calls == budget.total_calls - 1
+            assert rate.consumed_request_units == first.request_units
+            assert rate.released_request_units == 0
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 1
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(ReplayEventRecord.event_type == "replay.tool-permit.issued")
+                )
+                == 1
+            )
+    finally:
+        if restarted_repository is not None:
+            restarted_repository.close()
+        repository.close()
+
+
+def test_replay_tool_permits_are_sequential_and_exhaust_exact_reservations(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-sequential.db")
+    try:
+        _create_batch(repository, service, "tool-permit-sequential")
+        claimed = _claim(service, actor="heartbeat-worker")
+
+        with pytest.raises(StateConflict, match="ordinal"):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 2),
+                actor="heartbeat-worker",
+            )
+        first = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 1),
+            actor="heartbeat-worker",
+        )
+        second = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 2),
+            actor="heartbeat-worker",
+        )
+        assert first.call_ordinal == 1
+        assert second.call_ordinal == 2
+        assert second.permit_id != first.permit_id
+        assert (
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 1),
+                actor="heartbeat-worker",
+            )
+            == first
+        )
+
+        with pytest.raises(StateConflict, match="exhausted"):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 3),
+                actor="heartbeat-worker",
+            )
+
+        refreshed = service.heartbeat_replay_job(
+            claimed.job.job_id,
+            ReplayLeaseRequest(
+                executor_profile=EXECUTOR_PROFILE,
+                lease_token=claimed.lease_token,
+                ticket_id=claimed.ticket.ticket_id,
+                fencing_value=claimed.ticket.fencing_value,
+            ),
+            actor="heartbeat-worker",
+        )
+        assert refreshed.ticket.state is ReplayTicketState.CLAIMED
+        with repository.transaction() as session:
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                claimed.ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            assert budget_account is not None and budget is not None and rate is not None
+            assert budget.state == "consumed"
+            assert budget.consumed_calls == budget.total_calls == 2
+            assert budget_account.reserved_calls == 0
+            assert budget_account.consumed_calls == 2
+            assert rate.state == "consumed"
+            assert rate.consumed_request_units == rate.total_request_units
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 2
+    finally:
+        repository.close()
+
+
+def test_replay_tool_permit_rejects_stale_identity_without_consumption(tmp_path: Path) -> None:
+    repository, service = _service(tmp_path / "tool-permit-identity.db")
+    try:
+        _create_batch(repository, service, "tool-permit-identity")
+        claimed = _claim(service, actor="heartbeat-worker")
+        request = _permit_request(claimed, 1)
+
+        for stale_request, stale_actor in (
+            (request, "stale-worker"),
+            (request.model_copy(update={"lease_token": "x" * 32}), "heartbeat-worker"),
+            (
+                request.model_copy(update={"ticket_id": f"replay-ticket_{'0' * 32}"}),
+                "heartbeat-worker",
+            ),
+            (
+                request.model_copy(update={"fencing_value": claimed.ticket.fencing_value + 1}),
+                "heartbeat-worker",
+            ),
+        ):
+            with pytest.raises(LeaseRejected):
+                service.issue_replay_tool_permit(
+                    claimed.job.job_id,
+                    stale_request,
+                    actor=stale_actor,
+                )
+        with pytest.raises(StateConflict, match=r"executor|profile|registered"):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                request.model_copy(update={"executor_profile": "unregistered-profile"}),
+                actor="heartbeat-worker",
+            )
+
+        with repository.transaction() as session:
+            budget = session.scalar(select(ReplayBudgetReservationRecord))
+            rate = session.scalar(select(ReplayRateReservationRecord))
+            assert budget is not None and rate is not None
+            assert budget.consumed_calls == 0
+            assert rate.consumed_request_units == 0
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_unclaimed_replay_job_cannot_issue_tool_permit(tmp_path: Path) -> None:
+    repository, service = _service(tmp_path / "tool-permit-unclaimed.db")
+    try:
+        _create_batch(repository, service, "tool-permit-unclaimed")
+        with repository.transaction() as session:
+            ticket = session.scalar(select(ReplayTicketRecord))
+            assert ticket is not None
+            job_id = ticket.job_id
+            request = ReplayToolPermitRequest(
+                executor_profile=EXECUTOR_PROFILE,
+                lease_token="unclaimed-replay-token-is-never-authority",
+                ticket_id=ticket.ticket_id,
+                fencing_value=ticket.fencing_value,
+                call_ordinal=1,
+            )
+
+        with pytest.raises(LeaseRejected):
+            service.issue_replay_tool_permit(
+                job_id,
+                request,
+                actor="heartbeat-worker",
+            )
+        with repository.transaction() as session:
+            budget = session.scalar(select(ReplayBudgetReservationRecord))
+            rate = session.scalar(select(ReplayRateReservationRecord))
+            assert budget is not None and rate is not None
+            assert budget.consumed_calls == 0
+            assert rate.consumed_request_units == 0
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_replay_tool_permit_rechecks_rate_window_after_original_reservation_expires(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-rate-readmission.db")
+    try:
+        _create_batch(repository, service, "tool-permit-rate-readmission")
+        claimed = service.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor="heartbeat-worker",
+        )
+        assert claimed is not None
+        first = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 1),
+            actor="heartbeat-worker",
+        )
+        with repository.transaction() as session:
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            permit = session.get(ReplayToolPermitRecord, first.permit_id)
+            assert rate is not None and permit is not None
+            rate_expires_at = (
+                rate.expires_at
+                if rate.expires_at.tzinfo is not None
+                else rate.expires_at.replace(tzinfo=UTC)
+            )
+            permit_window_expires_at = (
+                permit.rate_window_expires_at
+                if permit.rate_window_expires_at.tzinfo is not None
+                else permit.rate_window_expires_at.replace(tzinfo=UTC)
+            )
+        assert permit_window_expires_at > rate_expires_at
+        readmission_time = rate_expires_at + (permit_window_expires_at - rate_expires_at) / 2
+        monkeypatch.setattr(control_plane_service_module, "utc_now", lambda: readmission_time)
+
+        second = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 2),
+            actor="heartbeat-worker",
+        )
+
+        assert second.call_ordinal == 2
+        assert second.issued_at == readmission_time
+        with repository.transaction() as session:
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            assert rate is not None
+            assert rate.state == "consumed"
+            assert rate.consumed_request_units == rate.total_request_units
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 2
+    finally:
+        repository.close()
+
+
+def test_expired_replay_lease_keeps_issued_permit_consumed_and_releases_only_remainder(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-expiry.db")
+    try:
+        _create_batch(repository, service, "tool-permit-expiry")
+        claimed = _claim(service, actor="expired-worker")
+        issued = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 1),
+            actor="expired-worker",
+        )
+        _force_replay_lease_expired(
+            repository,
+            job_id=claimed.job.job_id,
+            ticket_id=claimed.ticket.ticket_id,
+        )
+
+        with pytest.raises(LeaseRejected, match="expired"):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 2),
+                actor="expired-worker",
+            )
+
+        assert service.get_job(claimed.job.job_id).state is JobState.FAILED
+        assert service.get_replay_ticket(claimed.ticket.ticket_id).state is (
+            ReplayTicketState.ABANDONED
+        )
+        with repository.transaction() as session:
+            permits = list(session.scalars(select(ReplayToolPermitRecord)))
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                claimed.ticket.budget_reservation_id,
+            )
+            rate = session.get(
+                ReplayRateReservationRecord,
+                claimed.ticket.rate_reservation_id,
+            )
+            assert [permit.permit_id for permit in permits] == [issued.permit_id]
+            assert budget_account is not None and budget is not None and rate is not None
+            assert budget.state == "released"
+            assert budget.consumed_calls == 1
+            assert budget.released_calls == budget.total_calls - 1
+            assert budget_account.consumed_calls == 1
+            assert budget_account.released_calls >= budget.released_calls
+            assert rate.state == "released"
+            assert rate.consumed_request_units == issued.request_units
+            assert rate.released_request_units == rate.total_request_units - issued.request_units
+    finally:
+        repository.close()
+
+
+def test_cancelling_replay_after_permit_never_refunds_consumed_call(tmp_path: Path) -> None:
+    repository, service = _service(tmp_path / "tool-permit-cancel.db")
+    try:
+        _create_batch(repository, service, "tool-permit-cancel")
+        claimed = _claim(service, actor="cancelled-worker")
+        issued = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 1),
+            actor="cancelled-worker",
+        )
+
+        service.cancel_run(
+            claimed.item.replay_run_id,
+            CancelRunRequest(reason="cancel after an uncertain Tool execution"),
+            actor="replay-operator",
+        )
+
+        with repository.transaction() as session:
+            permit = session.get(ReplayToolPermitRecord, issued.permit_id)
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget = session.get(
+                ReplayBudgetReservationRecord,
+                issued.budget_reservation_id,
+            )
+            rate = session.get(ReplayRateReservationRecord, issued.rate_reservation_id)
+            assert permit is not None
+            assert budget_account is not None and budget is not None and rate is not None
+            assert budget.consumed_calls == 1
+            assert budget.released_calls == budget.total_calls - 1
+            assert budget_account.consumed_calls == 1
+            assert rate.consumed_request_units == issued.request_units
+            assert rate.released_request_units == rate.total_request_units - issued.request_units
+        with pytest.raises((RunCancelled, LeaseRejected, StateConflict)):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 2),
+                actor="cancelled-worker",
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_tool_permit_rolls_back_after_late_audit_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-rollback.db")
+    try:
+        _create_batch(repository, service, "tool-permit-rollback")
+        claimed = _claim(service, actor="heartbeat-worker")
+
+        def fail_audit(*args, **kwargs):
+            raise RuntimeError("injected permit audit failure")
+
+        monkeypatch.setattr(service, "_replay_event", fail_audit)
+        with pytest.raises(RuntimeError, match="injected permit audit failure"):
+            service.issue_replay_tool_permit(
+                claimed.job.job_id,
+                _permit_request(claimed, 1),
+                actor="heartbeat-worker",
+            )
+
+        with repository.transaction() as session:
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            budget = session.scalar(select(ReplayBudgetReservationRecord))
+            rate = session.scalar(select(ReplayRateReservationRecord))
+            assert budget_account is not None and budget is not None and rate is not None
+            assert budget.consumed_calls == 0
+            assert budget.state == "active"
+            assert budget_account.consumed_calls == 0
+            assert budget_account.reserved_calls == budget.total_calls
+            assert rate.consumed_request_units == 0
+            assert rate.state == "active"
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_active_replay_permit_window_remains_counted_after_reservation_expiry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "tool-permit-rate-window.db")
+    try:
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_with_exact_rate_cap(**kwargs):
+            derived = real_derive(**kwargs)
+            return replace(
+                derived,
+                max_requests_per_minute=(
+                    derived.observed_campaign_request_units + derived.required_request_units
+                ),
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_with_exact_rate_cap,
+        )
+        source = _seed_completed_source(repository, service, "tool-permit-rate-window")
+        first_request = _batch_request(source, "tool-permit-rate-window-first")
+        first_batch = service.create_replay_batch(
+            first_request,
+            actor="trusted-replay-admission",
+        )
+        service.issue_replay_batch(first_batch.batch_id, actor="trusted-replay-admission")
+        claimed = _claim(service, actor="heartbeat-worker")
+        issued = service.issue_replay_tool_permit(
+            claimed.job.job_id,
+            _permit_request(claimed, 1),
+            actor="heartbeat-worker",
+        )
+
+        now = datetime.now(UTC)
+        with repository.transaction() as session:
+            session.execute(
+                update(ReplayRateReservationRecord)
+                .where(
+                    ReplayRateReservationRecord.rate_reservation_id == issued.rate_reservation_id
+                )
+                .values(
+                    reserved_at=now - timedelta(minutes=2),
+                    expires_at=now - timedelta(minutes=1),
+                )
+            )
+
+        second_request = _batch_request(source, "tool-permit-rate-window-second")
+        second_batch = service.create_replay_batch(
+            second_request,
+            actor="trusted-replay-admission",
+        )
+        with pytest.raises(StateConflict, match="rate reservation"):
+            service.issue_replay_batch(
+                second_batch.batch_id,
+                actor="trusted-replay-admission",
+            )
+
+        with repository.transaction() as session:
+            permit = session.get(ReplayToolPermitRecord, issued.permit_id)
+            second_stored = session.get(ReplayBatchRecord, second_batch.batch_id)
+            assert permit is not None and second_stored is not None
+            permit_window_expires_at = (
+                permit.rate_window_expires_at
+                if permit.rate_window_expires_at.tzinfo is not None
+                else permit.rate_window_expires_at.replace(tzinfo=UTC)
+            )
+            assert permit_window_expires_at > now
+            assert second_stored.state == ReplayBatchState.PLANNED.value
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayTicketRecord)
+                    .where(ReplayTicketRecord.batch_id == second_batch.batch_id)
+                )
+                == 0
+            )
     finally:
         repository.close()
 
