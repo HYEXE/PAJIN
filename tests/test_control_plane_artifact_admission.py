@@ -33,13 +33,10 @@ from pajin.control_plane.models import (
     InternalJobKind,
     JobKind,
     JobState,
-    ReplayBatchItemInput,
     RunState,
 )
 from pajin.control_plane.security import CheckpointSigner
 from pajin.control_plane.service import ControlPlaneService, StateConflict
-from pajin.domain.models import CampaignMode
-from pajin.domain.replay import ReplayPurpose
 from pajin.runtime.store import RunStore
 
 
@@ -232,26 +229,11 @@ def _seed_producer(
 
 def _batch_request(source: ArtifactRef, label: str) -> CreateReplayBatchRequest:
     return CreateReplayBatchRequest(
-        campaign_name="kisa-replay",
         source=ArtifactLocator(
             artifact_id=source.artifact_id,
             repository_version=source.repository_version,
         ),
-        mode=CampaignMode.AI_REDTEAM,
-        purpose=ReplayPurpose.CONFIRMATION,
-        policy_version="policy-v1",
         idempotency_key=f"replay-batch-{label}",
-        items=[
-            ReplayBatchItemInput(
-                candidate_id=f"candidate-{_identity(label)[:16]}",
-                candidate_digest=_identity(f"candidate:{label}"),
-                contract_digest=_identity(f"contract:{label}"),
-                compilation_digest=_identity(f"compilation:{label}"),
-                grant_digest=_identity(f"grant:{label}"),
-                required_attempts=1,
-                max_attempts=1,
-            )
-        ],
     )
 
 

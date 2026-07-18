@@ -16,21 +16,28 @@ from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.database import (
     _V2_METADATA,
     _V2_MIGRATION_WRITE_LOCK_TABLES,
+    _V3_METADATA,
+    _V3_MIGRATION_WRITE_LOCK_TABLES,
+    ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
+    V3_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
     JobRecord,
     ReplayBatchRecord,
+    ReplayCompilationRecord,
     ReplayEventRecord,
+    ReplayItemRecord,
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
     _lock_v2_migration_writes,
+    _lock_v3_migration_writes,
     _postgres_append_only_trigger_is_valid,
     _postgres_check_signature,
 )
@@ -96,6 +103,47 @@ def _create_v2_schema(repository: ControlPlaneRepository) -> None:
         )
 
 
+def _create_v3_schema(repository: ControlPlaneRepository) -> None:
+    pending = set(V3_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V3_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in ("cp_events", "cp_artifacts", "cp_replay_events"):
+            for operation in ("UPDATE", "DELETE"):
+                connection.exec_driver_sql(
+                    f"""
+                    CREATE TRIGGER {table_name}_no_{operation.lower()}
+                    BEFORE {operation} ON {table_name}
+                    BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
+                    """
+                )
+        schema_version = _V3_METADATA.tables["cp_schema_version"]
+        now = datetime.now(UTC)
+        connection.execute(
+            schema_version.insert(),
+            [
+                {
+                    "version": 1,
+                    "description": "legacy-control-plane-core",
+                    "applied_at": now,
+                },
+                {
+                    "version": 2,
+                    "description": "replay-authority",
+                    "applied_at": now,
+                },
+                {
+                    "version": 3,
+                    "description": "artifact-authority",
+                    "applied_at": now,
+                },
+            ],
+        )
+
+
 def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
     statements: list[str] = []
     connection = SimpleNamespace(
@@ -115,6 +163,21 @@ def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() 
         "cp_replay_tickets",
         "cp_replay_events",
     )
+
+
+def test_postgres_v3_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
+    statements: list[str] = []
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+    )
+
+    _lock_v3_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE " + ", ".join(_V3_MIGRATION_WRITE_LOCK_TABLES) + " IN ACCESS EXCLUSIVE MODE"
+    ]
+    assert _V3_MIGRATION_WRITE_LOCK_TABLES == _V2_MIGRATION_WRITE_LOCK_TABLES
 
 
 def test_sqlite_initialization_begins_with_immediate_write_reservation(
@@ -229,6 +292,84 @@ def _batch(run_id: str, batch_id: str = "batch_migration") -> ReplayBatchRecord:
     )
 
 
+def _item(
+    source_run_id: str,
+    replay_run_id: str,
+    *,
+    item_id: str = "item_migration",
+    batch_id: str = "batch_migration",
+) -> ReplayItemRecord:
+    now = datetime.now(UTC)
+    return ReplayItemRecord(
+        item_id=item_id,
+        batch_id=batch_id,
+        source_run_id=source_run_id,
+        replay_run_id=replay_run_id,
+        ordinal=0,
+        candidate_id="candidate-migration",
+        candidate_digest="d" * 64,
+        contract_digest="e" * 64,
+        compilation_digest="f" * 64,
+        grant_digest="1" * 64,
+        state="pending",
+        required_attempts=1,
+        max_attempts=1,
+        attempts=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _compilation(
+    *,
+    compilation_id: str = f"replay-compilation_{'6' * 32}",
+    item_id: str = "item_migration",
+    batch_id: str = "batch_migration",
+    candidate_id: str = "candidate-migration",
+    replay_run_id: str,
+    canonical_compilation: bytes = b'{"schemaVersion":1}',
+    byte_length: int | None = None,
+    candidate_digest: str = "d" * 64,
+    contract_digest: str = "e" * 64,
+    compilation_digest: str = "f" * 64,
+    grant_digest: str = "1" * 64,
+) -> ReplayCompilationRecord:
+    return ReplayCompilationRecord(
+        compilation_id=compilation_id,
+        item_id=item_id,
+        batch_id=batch_id,
+        candidate_id=candidate_id,
+        replay_run_id=replay_run_id,
+        candidate_digest=candidate_digest,
+        contract_digest=contract_digest,
+        compilation_digest=compilation_digest,
+        grant_digest=grant_digest,
+        canonical_compilation=canonical_compilation,
+        byte_length=(len(canonical_compilation) if byte_length is None else byte_length),
+        created_at=datetime.now(UTC),
+    )
+
+
+def _seed_replay_item_authority(
+    repository: ControlPlaneRepository,
+) -> tuple[str, str, str]:
+    source_run_id = f"run_{'2' * 32}"
+    source_job_id = f"job_{'3' * 32}"
+    replay_run_id = f"run_{'4' * 32}"
+    with repository.transaction() as session:
+        session.add(_run(source_run_id))
+        session.add(_run(replay_run_id))
+        session.flush()
+        session.add(_job(source_run_id, source_job_id))
+        session.flush()
+        session.add(_artifact(source_run_id, source_job_id))
+        session.flush()
+        session.add(_batch(source_run_id))
+        session.flush()
+        session.add(_item(source_run_id, replay_run_id))
+    return source_run_id, source_job_id, replay_run_id
+
+
 def _v2_batch_values(run_id: str, batch_id: str) -> dict[str, object]:
     now = datetime.now(UTC)
     return {
@@ -274,12 +415,13 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
         assert versions == [
             1,
             REPLAY_AUTHORITY_SCHEMA_VERSION,
+            ARTIFACT_AUTHORITY_SCHEMA_VERSION,
             CURRENT_SCHEMA_VERSION,
         ]
 
         repository.initialize()
         with repository.transaction() as session:
-            assert session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord)) == 3
+            assert session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord)) == 4
     finally:
         repository.close()
 
@@ -322,6 +464,33 @@ def test_exact_legacy_database_migrates_forward_without_losing_rows(tmp_path: Pa
         repository.close()
 
 
+def test_legacy_internal_replay_job_is_rejected_before_schema_history_is_created(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "legacy-internal-replay.db")
+    run_id = "run_legacy_internal_replay"
+    job_id = "job_legacy_internal_replay"
+    try:
+        _create_legacy_schema(repository)
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            job = _job(run_id, job_id)
+            job.kind = "internal-replay"
+            session.add(job)
+
+        with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
+            repository.initialize()
+
+        assert "cp_schema_version" not in inspect(repository.engine).get_table_names()
+        with repository.transaction() as session:
+            preserved = session.get(JobRecord, job_id)
+            assert preserved is not None
+            assert preserved.kind == "internal-replay"
+    finally:
+        repository.close()
+
+
 def test_empty_v2_database_migrates_forward_without_losing_core_rows(
     tmp_path: Path,
 ) -> None:
@@ -339,12 +508,116 @@ def test_empty_v2_database_migrates_forward_without_losing_core_rows(
             versions = session.scalars(
                 select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
             ).all()
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
         columns = {
             column["name"] for column in inspect(repository.engine).get_columns("cp_replay_batches")
         }
         assert "source_artifact_run_id" in columns
         assert "cp_artifacts" in inspect(repository.engine).get_table_names()
+    finally:
+        repository.close()
+
+
+def test_empty_v3_database_migrates_forward_without_losing_core_or_artifact_rows(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v3-empty.db")
+    run_id = f"run_{'7' * 32}"
+    job_id = f"job_{'8' * 32}"
+    try:
+        _create_v3_schema(repository)
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            session.add(_job(run_id, job_id))
+            session.flush()
+            session.add(_artifact(run_id, job_id))
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        with repository.transaction() as session:
+            assert session.get(RunRecord, run_id) is not None
+            assert session.get(ArtifactRecord, (f"artifact_{'1' * 32}", 1)) is not None
+            versions = session.scalars(
+                select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+            ).all()
+        assert versions == [1, 2, 3, 4]
+        assert "cp_replay_compilations" in inspect(repository.engine).get_table_names()
+        item_unique_names = {
+            constraint["name"]
+            for constraint in inspect(repository.engine).get_unique_constraints("cp_replay_items")
+        }
+        assert "uq_cp_replay_items_compilation_plan" in item_unique_names
+    finally:
+        repository.close()
+
+
+def test_v3_replay_rows_are_rejected_without_inventing_canonical_compilations(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v3-replay-data.db")
+    run_id = f"run_{'9' * 32}"
+    job_id = f"job_{'a' * 32}"
+    try:
+        _create_v3_schema(repository)
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            session.add(_job(run_id, job_id))
+            session.flush()
+            session.add(_artifact(run_id, job_id))
+            session.flush()
+            session.add(_batch(run_id))
+
+        with pytest.raises(
+            SchemaInitializationError,
+            match=r"schema v3.*cannot be trusted or backfilled",
+        ):
+            repository.initialize()
+
+        assert "cp_replay_compilations" not in inspect(repository.engine).get_table_names()
+        with repository.engine.connect() as connection:
+            assert connection.scalar(text("SELECT count(*) FROM cp_replay_batches")) == 1
+    finally:
+        repository.close()
+
+
+def test_v3_internal_replay_job_is_rejected_without_aggregate_rows(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "v3-internal-job.db")
+    run_id = f"run_{'b' * 32}"
+    try:
+        _create_v3_schema(repository)
+        now = datetime.now(UTC)
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            session.add(
+                JobRecord(
+                    job_id=f"job_{'c' * 32}",
+                    run_id=run_id,
+                    kind="internal-replay",
+                    state="queued",
+                    payload={},
+                    priority=0,
+                    attempts=0,
+                    max_attempts=1,
+                    idempotency_key="idempotency-v3-internal-replay",
+                    available_at=now,
+                    lease_owner=None,
+                    lease_token_hash=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    result=None,
+                    error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
+            repository.initialize()
+        assert "cp_replay_compilations" not in inspect(repository.engine).get_table_names()
     finally:
         repository.close()
 
@@ -640,7 +913,10 @@ def test_missing_required_column_is_rejected_without_automatic_repair(tmp_path: 
         restarted.close()
 
 
-@pytest.mark.parametrize("table_name", ["cp_artifacts", "cp_replay_events"])
+@pytest.mark.parametrize(
+    "table_name",
+    ["cp_artifacts", "cp_replay_compilations", "cp_replay_events"],
+)
 def test_missing_append_only_trigger_is_rejected_without_repair(
     tmp_path: Path,
     table_name: str,
@@ -904,6 +1180,7 @@ def _valid_postgres_trigger_row(table_name: str) -> SimpleNamespace:
     suffix = {
         "cp_artifacts": "artifact",
         "cp_events": "event",
+        "cp_replay_compilations": "replay_compilation",
         "cp_replay_events": "replay_event",
     }[table_name]
     return SimpleNamespace(
@@ -929,7 +1206,12 @@ def _valid_postgres_trigger_row(table_name: str) -> SimpleNamespace:
 
 
 def test_postgres_append_only_trigger_accepts_exact_managed_definition() -> None:
-    for table_name in ("cp_artifacts", "cp_events", "cp_replay_events"):
+    for table_name in (
+        "cp_artifacts",
+        "cp_events",
+        "cp_replay_compilations",
+        "cp_replay_events",
+    ):
         assert _postgres_append_only_trigger_is_valid(
             _valid_postgres_trigger_row(table_name), table_name
         )
@@ -1043,6 +1325,180 @@ def test_artifacts_are_append_only_and_batch_requires_exact_authority_binding(
         batch.idempotency_key = "idempotency-wrong-artifact-binding"
         batch.source_root_digest = "e" * 64
         session.add(batch)
+    repository.close()
+
+
+def test_replay_compilation_bytes_are_preserved_and_append_only(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "replay-compilation-append-only.db")
+    repository.initialize()
+    _, _, replay_run_id = _seed_replay_item_authority(repository)
+    canonical = b'{"schemaVersion":1,"kind":"ReplayCompilation"}'
+    with repository.transaction() as session:
+        session.add(
+            _compilation(
+                replay_run_id=replay_run_id,
+                canonical_compilation=canonical,
+            )
+        )
+
+    with repository.transaction() as session:
+        record = session.get(
+            ReplayCompilationRecord,
+            f"replay-compilation_{'6' * 32}",
+        )
+        assert record is not None
+        assert record.canonical_compilation == canonical
+        assert record.byte_length == len(canonical)
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        record = session.get(
+            ReplayCompilationRecord,
+            f"replay-compilation_{'6' * 32}",
+        )
+        assert record is not None
+        record.canonical_compilation = b"tampered"
+        record.byte_length = len(record.canonical_compilation)
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        record = session.get(
+            ReplayCompilationRecord,
+            f"replay-compilation_{'6' * 32}",
+        )
+        assert record is not None
+        session.delete(record)
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("item_id", "item_other"),
+        ("batch_id", "batch_other"),
+        ("candidate_id", "candidate-other"),
+        ("candidate_digest", "2" * 64),
+        ("contract_digest", "3" * 64),
+    ],
+)
+def test_replay_compilation_requires_exact_item_authority_binding(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    repository = _repository(tmp_path / f"replay-compilation-binding-{field}.db")
+    repository.initialize()
+    _, _, replay_run_id = _seed_replay_item_authority(repository)
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        compilation = _compilation(replay_run_id=replay_run_id)
+        setattr(compilation, field, value)
+        session.add(compilation)
+    repository.close()
+
+
+def test_replay_compilation_prevents_candidate_identity_mutation(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "replay-compilation-candidate-identity.db")
+    repository.initialize()
+    _, _, replay_run_id = _seed_replay_item_authority(repository)
+    with repository.transaction() as session:
+        session.add(_compilation(replay_run_id=replay_run_id))
+
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        item = session.get(ReplayItemRecord, "item_migration")
+        assert item is not None
+        item.candidate_id = "candidate-mutated-after-compilation"
+    repository.close()
+
+
+def test_replay_compilation_versions_own_fresh_run_grant_and_compilation_authority(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "replay-compilation-versions.db")
+    repository.initialize()
+    _, _, replay_run_id = _seed_replay_item_authority(repository)
+    next_replay_run_id = f"run_{'5' * 32}"
+    with repository.transaction() as session:
+        session.add(_run(next_replay_run_id))
+        session.flush()
+        session.add(_compilation(replay_run_id=replay_run_id))
+        session.add(
+            _compilation(
+                compilation_id=f"replay-compilation_{'7' * 32}",
+                replay_run_id=next_replay_run_id,
+                compilation_digest="2" * 64,
+                grant_digest="3" * 64,
+                canonical_compilation=b'{"schemaVersion":1,"version":2}',
+            )
+        )
+
+    with repository.transaction() as session:
+        records = list(
+            session.scalars(
+                select(ReplayCompilationRecord)
+                .where(ReplayCompilationRecord.item_id == "item_migration")
+                .order_by(ReplayCompilationRecord.compilation_id)
+            ).all()
+        )
+    assert [record.compilation_id for record in records] == [
+        f"replay-compilation_{'6' * 32}",
+        f"replay-compilation_{'7' * 32}",
+    ]
+    assert records[1].replay_run_id == next_replay_run_id
+    assert records[1].compilation_digest == "2" * 64
+    assert records[1].grant_digest == "3" * 64
+
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        session.add(
+            _compilation(
+                compilation_id=f"replay-compilation_{'8' * 32}",
+                replay_run_id=next_replay_run_id,
+                compilation_digest="4" * 64,
+            )
+        )
+
+    final_replay_run_id = f"run_{'9' * 32}"
+    with repository.transaction() as session:
+        session.add(_run(final_replay_run_id))
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        session.add(
+            _compilation(
+                compilation_id=f"replay-compilation_{'a' * 32}",
+                replay_run_id=final_replay_run_id,
+                compilation_digest="2" * 64,
+            )
+        )
+    repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("compilation_id", f"replay-compilation_{'A' * 32}"),
+        ("candidate_id", ""),
+        ("candidate_id", "c" * 201),
+        ("candidate_digest", "D" * 64),
+        ("contract_digest", "g" * 64),
+        ("compilation_digest", "f" * 63),
+        ("grant_digest", "1" * 63 + "z"),
+        ("byte_length", 1),
+    ],
+)
+def test_replay_compilation_strict_checks_reject_invalid_canonical_authority(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    repository = _repository(tmp_path / f"replay-compilation-check-{field}.db")
+    repository.initialize()
+    _, _, replay_run_id = _seed_replay_item_authority(repository)
+    with pytest.raises(IntegrityError), repository.transaction() as session:
+        compilation = _compilation(replay_run_id=replay_run_id)
+        setattr(compilation, field, value)
+        session.add(compilation)
     repository.close()
 
 

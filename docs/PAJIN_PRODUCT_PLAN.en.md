@@ -8,7 +8,7 @@
 | --- | --- |
 | Document Status | Product Baseline v0.3 |
 | Date Created | 2026-07-12 |
-| Last Updated | 2026-07-17 |
+| Last Updated | 2026-07-18 |
 | Document Purpose | Define the baseline for product direction, scope, core requirements, safety principles, MVP, and roadmap |
 | Key References | KISA "AI Security Red Teaming Guide" (2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -81,7 +81,7 @@ product values.
 
 ### 1.1 Current Implementation Baseline
 
-As of 2026-07-17, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
+As of 2026-07-18, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
 Phases 0 and 1 are complete, and Phase 2 has implemented the execution core, Replay contract, Compiler, single-use ticket,
 Restricted Reproducer, exact KISA M03, M06, A04 fresh-session materializer, live transcript Oracle, runner coordinator,
 verified receipt reload common Gate, append-only `validation/v1alpha1` projection, and the baseline Candidate-bound
@@ -93,11 +93,20 @@ was Accepted on 2026-07-17. Its first authority-state slice now implements a ver
 repository-managed v1-to-v2 migration with strict startup validation, internal-only payload, and atomic batch,
 burn-on-claim, heartbeat, lease-expiry, and cancellation transitions. M6-07B-2A adds an owner-controlled managed
 filesystem repository, immutable `cp_artifacts` metadata, schema v3, and internal server-owned admission of completed
-sealed sources through exact opaque locators. Full sealed-source KISA derivation, new-identity retry issuance, durable
-pre-ticket budget/rate permits, and executor/finalization/Gate wiring remain incomplete. Live PostgreSQL schema-v3
-acceptance is complete on a clean temporary database for migration/locking, `cp_artifacts` append-only enforcement,
-and the exact composite Artifact foreign key. Portable/off-host signed proof, materializers
-and Oracles for other Modes, and structured collaboration memory are follow-on work.
+sealed sources through exact opaque locators. On 2026-07-18, M6-07B-2B narrowed batch input to the locator and an
+idempotency key, then added server-owned rereading and exact M03/M06/A04 confirmation Candidate/contract derivation,
+trusted compilation, and append-only planned/pending PostgreSQL persistence of the canonical `ReplayCompilation` and
+`ReplayCapabilityGrant` as a non-dispatchable derivation record and proof. It issues no Job or ticket and dispatches
+no execution before the still-pending durable budget/request-rate permit. The stored five-minute Grant may expire
+while pending and MUST NOT be reused as later execution authority. Schema v4 gives every append-only row its own
+`compilation_id`, Replay Run identity, compilation digest, and Grant digest, while non-unique `item_id` plus the
+Candidate/contract plan-identity foreign key permits multiple attempt/version rows for one item. Permit/issuance must
+recompile with a fresh Replay Run identity and Grant, or bind an otherwise fresh and valid compilation, append the new
+row in the issuance transaction, and make the ticket directly reference its `compilation_id` and digests. Redesigning
+the existing ticket foreign key is next-slice work. Ticket issuance, new-identity retry,
+executor/finalization/Gate, and negative Control Plane retest remain incomplete.
+Portable/off-host signed proof, materializers and Oracles for other Modes, and structured collaboration memory are
+follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 has been implemented through the
 first vertical slice of the Control Plane.
 
@@ -109,7 +118,7 @@ first vertical slice of the Control Plane.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; ADR-0029 Replay authority state, M6-07B-2A managed Artifact admission and immutable schema-v3 metadata, and live PostgreSQL acceptance for migration/locking, `cp_artifacts` append-only enforcement, and the exact composite Artifact foreign key are implemented, while KISA derivation, retry, durable pre-ticket permits, and executor/finalization/Gate remain incomplete |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; ADR-0029 Replay authority state, M6-07B-2A managed Artifact admission, and M6-07B-2B exact KISA derivation with append-only planned/pending non-dispatchable compilation records are implemented, while durable pre-ticket permits, Job/ticket issuance, retry, executor/finalization/Gate, and negative Control Plane retest remain incomplete |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -1159,7 +1168,7 @@ follow-on scope for Phase 3-4.
 - Workers and Secret Leases are revoked when the campaign is aborted.
 - Re-executing the same campaign generates comparable results.
 
-As of 2026-07-17, Candidate admission, Semantic Validator, objective gate, Replay contract, Compiler, single-use
+As of 2026-07-18, Candidate admission, Semantic Validator, objective gate, Replay contract, Compiler, single-use
 ticket, Restricted Reproducer, exact KISA fresh-session materializer, live Oracle, runner coordinator, verified
 receipt reload in the common Gate, and append-only disposition projection have been implemented. M6-05 connected the
 same receipt boundary to hardened KISA retest, separating baseline-bound negative proof from normal-functionality
@@ -1167,8 +1176,10 @@ regression. Execution paths outside KISA do not generate ReplayOutcome and there
 M6-06 implemented durable SQLite tickets and post-restart read-only verification for local KISA positive and negative
 paths. M6-07A connected explicitly selected Local AI Red Team Campaigns to Candidate -> SQLite replay -> common Gate
 through `pajin run ... --kisa-replay --repetitions 2`. M6-07B-2A adds the internal managed-Artifact and sealed-source
-admission foundation described below, but end-to-end Control Plane Replay and portable/off-host proof remain separate
-completion criteria.
+admission foundation described below. M6-07B-2B derives and stores exact KISA confirmation compilations as
+planned/pending non-dispatchable derivation proof without issuing a Job or ticket. End-to-end Control Plane Replay,
+negative Control Plane
+retest, and portable/off-host proof remain separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1248,18 +1259,25 @@ M6-07 is split into two scopes with different execution-authority and durability
 
 **M6-07B Control Plane replay orchestration** is incomplete. It does not reinterpret arbitrary results from existing
 Campaign Jobs and local absolute paths as replay authority. ADR-0029 was Accepted on 2026-07-17, and implementation
-has delivered two bounded foundations. The first introduced the versioned Replay aggregate, repository-managed
+has delivered three bounded slices. The first introduced the versioned Replay aggregate, repository-managed
 v1-to-v2 migration, strict internal payload, lease fencing, and burn-on-claim lifecycle. M6-07B-2A adds an
 owner-controlled managed filesystem repository, immutable `cp_artifacts` metadata, schema v3, and trusted internal
 admission of completed sealed sources. Admission records the producer Control Plane Run ID separately from the sealed
 Run ID. Consumers submit only the exact opaque `(artifact_id, repository_version)` locator; the server resolves it
 and re-verifies the stored content and seal. Forward migration supports v1→v2→v3, while v2→v3 fails closed when legacy
-Replay rows exist rather than inventing Artifact bindings. No public Replay or admission API is opened by this slice.
-Live PostgreSQL schema-v3 acceptance is complete on a clean temporary database and covers forward migration and
-locking, `cp_artifacts` append-only enforcement, and the exact composite Artifact foreign key. Full KISA
-item/contract/compilation derivation from the sealed source, durable pre-ticket budget and request-rate reservation,
-new-identity retry issuance, and executor/finalization/Gate wiring remain outstanding, so full completion cannot be
-claimed. The Accepted ADR defines at least the following.
+Replay rows exist rather than inventing Artifact bindings. M6-07B-2B, implemented on 2026-07-18, accepts only the
+exact locator and idempotency key, rereads the managed sealed AI Red Team source, derives eligible exact M03/M06/A04
+confirmation Candidates and contracts, and uses the trusted Replay Compiler to persist canonical
+`ReplayCompilation` and Grant as non-dispatchable derivation records in append-only PostgreSQL storage with batch
+`planned` and item `pending` state. Caller-authored Candidate, contract, policy, digest, target, and arguments are not
+authority inputs. Schema v4 extends the forward path to v1→v2→v3→v4. No public Replay or admission API is opened.
+This slice issues no Job or
+ticket because durable budget/request-rate permits must precede issuance. The planned five-minute Grant may expire
+and MUST NOT be reused. The permit/issuance transaction must recompile with a fresh Replay Run identity and Grant, or
+bind an otherwise fresh valid compilation, append its new attempt/version row for the same item, and bind the ticket
+directly to that `compilation_id` and digests. The ticket foreign-key redesign is still pending. Ticket issuance,
+new-identity retry, executor/finalization/Gate, and negative Control Plane retest remain outstanding, so full
+completion cannot be claimed. The Accepted ADR defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
 - Fencing, claim/finalize, and crash policy that do not conflict with Worker lease and retry;
@@ -1271,11 +1289,11 @@ claimed. The Accepted ADR defines at least the following.
 
 ## 21. Phase-by-Phase Roadmap
 
-| Phase | Status | Assessment as of 2026-07-17 |
+| Phase | Status | Assessment as of 2026-07-18 |
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, the Control Plane Replay authority-state slice, and the M6-07B-2A managed-Artifact foundation are implemented; remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, the Control Plane Replay authority-state slice, M6-07B-2A managed Artifacts, and M6-07B-2B exact KISA planned/pending non-dispatchable compilation records are implemented; remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, Worker daemon, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1323,8 +1341,14 @@ claimed. The Accepted ADR defines at least the following.
   server-owned completed sealed-source admission, separate producer/sealed Run identities, and exact opaque locator
   resolution with content/seal re-verification; live PostgreSQL acceptance covers migration/locking,
   `cp_artifacts` append-only enforcement, and the exact composite Artifact foreign key
-- Remaining ADR-0029 scope: sealed-source KISA item/contract/compilation derivation, new-identity retry issuance,
-  durable pre-ticket budget and rate reservation, executor/finalization/Gate wiring, portable or off-host signed proof,
+- M6-07B-2B trusted derivation: locator plus idempotency-only input, managed sealed AI Red Team source rereading,
+  exact M03/M06/A04 confirmation Candidate and contract derivation, trusted canonical `ReplayCompilation` and Grant,
+  and append-only PostgreSQL batch `planned`/item `pending` non-dispatchable derivation records without Job or ticket
+  issuance; each row owns its `compilation_id`, Replay Run identity, compilation/Grant digests, and a non-unique
+  plan-bound `item_id`, while the expiring Grant is proof only and issuance must append a fresh row that the ticket
+  directly references (ticket-FK redesign pending)
+- Remaining ADR-0029 scope: durable pre-ticket budget and rate permits, Job/ticket and new-identity retry issuance,
+  executor/finalization/Gate, negative Control Plane retest, portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
   Facts, Hypotheses, and Agent Working Memory
@@ -1400,10 +1424,11 @@ claimed. The Accepted ADR defines at least the following.
 
 The execution boundary and technical structure are recorded across ADR-0001 through ADR-0029, all of which are
 Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice is
-implemented, and M6-07B-2A adds managed Artifact admission and immutable schema-v3 metadata. M6-07B remains incomplete
-pending sealed-source KISA derivation, retry issuance, durable pre-ticket permits, and executor/finalization/Gate
-wiring. Live PostgreSQL v3 migration/locking, `cp_artifacts` append-only, and exact composite-FK acceptance are
-complete. The following items need additional decisions before further Phase 3-4 work proceeds.
+implemented, M6-07B-2A adds managed Artifact admission, and M6-07B-2B adds server-derived exact KISA canonical
+compilation and Grant as append-only planned/pending non-dispatchable derivation proof. M6-07B remains incomplete
+pending
+durable pre-ticket permits, Job/ticket and retry issuance, executor/finalization/Gate wiring, and negative Control
+Plane retest. The following items need additional decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
 2. Authentication, sessions, organization and project isolation, and multi-tenancy boundary for the Web UI

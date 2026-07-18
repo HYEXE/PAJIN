@@ -30,11 +30,17 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
     ReplayTicketRecord,
     RunRecord,
     utc_now,
+)
+from pajin.control_plane.kisa_derivation import (
+    KISA_CONFIRMATION_POLICY_VERSION,
+    DerivedKISAReplayBatch,
+    derive_kisa_confirmation_batch,
 )
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
@@ -413,11 +419,7 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ReplayBatchView:
-        """Resolve a managed source for trusted, internal-only compiled item input.
-
-        ``request.items`` remains caller-authored scaffolding for this vertical slice. It is
-        deliberately not exposed as production admission until server-side derivation lands.
-        """
+        """Derive a planned KISA confirmation batch from one managed sealed source."""
 
         artifact_repository = self._require_artifact_repository()
         with self.repository.transaction() as session:
@@ -449,10 +451,27 @@ class ControlPlaneService:
             source,
             expected_storage_key=storage_key,
         )
+        derived: DerivedKISAReplayBatch | None = None
+        if existing is None:
+            try:
+                derived = derive_kisa_confirmation_batch(
+                    source_root=snapshot.path,
+                    artifact_ref=source,
+                )
+            except (OSError, ValueError) as exc:
+                raise StateConflict("managed source is not eligible for KISA Replay") from exc
+            # Re-open the immutable repository object after derivation. This catches a
+            # substituted or modified source before any Replay authority is committed.
+            snapshot = self._resolve_managed_artifact(
+                artifact_repository,
+                source,
+                expected_storage_key=storage_key,
+            )
         return self._create_replay_batch_from_source(
             request,
             source=source,
             verified_storage_key=snapshot.storage_key,
+            derived=derived,
             actor=actor,
         )
 
@@ -462,9 +481,10 @@ class ControlPlaneService:
         *,
         source: ArtifactRef,
         verified_storage_key: str,
+        derived: DerivedKISAReplayBatch | None,
         actor: str,
     ) -> ReplayBatchView:
-        """Atomically bind one already reverified managed source to Replay authority."""
+        """Atomically persist server-derived, non-issuable Replay planning authority."""
 
         try:
             with self.repository.transaction() as session:
@@ -490,23 +510,27 @@ class ControlPlaneService:
 
                 source_run = self._run(session, source.producer_run_id, lock=True)
                 self._require_run_state(source_run, RunState.COMPLETED)
-                if source_run.campaign_name != request.campaign_name:
-                    raise StateConflict(
-                        "Replay batch campaign does not match the admitted source Run"
-                    )
+                if derived is None:
+                    raise StateConflict("Replay batch derivation is missing")
                 if (
-                    request.mode is not CampaignMode.AI_REDTEAM
-                    or request.purpose is not ReplayPurpose.CONFIRMATION
+                    derived.artifact_ref != source
+                    or derived.candidate_run_id != source.run_id
+                    or derived.source_root_digest != source.integrity_root_digest
+                    or derived.campaign_name != source_run.campaign_name
+                    or derived.mode is not CampaignMode.AI_REDTEAM
+                    or derived.purpose is not ReplayPurpose.CONFIRMATION
+                    or derived.policy_version != KISA_CONFIRMATION_POLICY_VERSION
+                    or not derived.items
                 ):
                     raise StateConflict(
-                        "this Replay vertical slice accepts only AI Red Team confirmation"
+                        "derived KISA Replay authority does not match the admitted source"
                     )
                 now = utc_now()
                 batch = ReplayBatchRecord(
                     batch_id=f"replay-batch_{uuid4().hex}",
                     source_run_id=source.producer_run_id,
                     idempotency_key=request.idempotency_key,
-                    campaign_name=request.campaign_name,
+                    campaign_name=derived.campaign_name,
                     created_by=actor,
                     source_artifact_id=source.artifact_id,
                     source_repository_version=source.repository_version,
@@ -517,10 +541,10 @@ class ControlPlaneService:
                     source_schema_kind=source.schema_kind,
                     source_byte_length=source.byte_length,
                     source_created_by=source.created_by,
-                    mode=request.mode.value,
-                    purpose=request.purpose.value,
-                    policy_version=request.policy_version,
-                    state=ReplayBatchState.RUNNING.value,
+                    mode=derived.mode.value,
+                    purpose=derived.purpose.value,
+                    policy_version=derived.policy_version,
+                    state=ReplayBatchState.PLANNED.value,
                     cas_version=1,
                     cancellation_reason=None,
                     created_at=now,
@@ -538,41 +562,39 @@ class ControlPlaneService:
                         "sourceArtifactId": source.artifact_id,
                         "sourceRepositoryVersion": source.repository_version,
                         "sourceRootDigest": source.integrity_root_digest,
-                        "itemCount": len(request.items),
+                        "itemCount": len(derived.items),
+                        "policyVersion": derived.policy_version,
+                        "budgetDigest": derived.budget_digest,
+                        "rateLimitsDigest": derived.rate_limits_digest,
+                        "usedToolCalls": derived.used_tool_calls,
+                        "requiredToolCalls": derived.required_tool_calls,
                     },
                     run_id=source_run.run_id,
                 )
 
-                for ordinal, admitted in enumerate(request.items):
-                    replay_run_id = f"run_{uuid4().hex}"
+                for ordinal, admitted in enumerate(derived.items):
+                    replay_run_id = admitted.replay_run_id
                     item_id = f"replay-item_{uuid4().hex}"
-                    ticket_id = f"replay-ticket_{uuid4().hex}"
-                    job_id = f"job_{uuid4().hex}"
-                    attempt = 1
-                    fencing_value = 1
-                    payload = ReplayJobPayload(
-                        batch_id=batch.batch_id,
-                        item_id=item_id,
-                        ticket_id=ticket_id,
-                        replay_run_id=replay_run_id,
-                        source=source,
-                        mode=request.mode,
-                        purpose=request.purpose,
-                        policy_version=request.policy_version,
-                        candidate_id=admitted.candidate_id,
-                        candidate_digest=admitted.candidate_digest,
-                        contract_digest=admitted.contract_digest,
-                        compilation_digest=admitted.compilation_digest,
-                        grant_digest=admitted.grant_digest,
-                        attempt=attempt,
-                        fencing_value=fencing_value,
-                    )
                     replay_run = RunRecord(
                         run_id=replay_run_id,
-                        campaign_name=request.campaign_name,
+                        campaign_name=derived.campaign_name,
                         state=RunState.QUEUED.value,
-                        input={"replay": payload.model_dump(mode="json")},
-                        submission_key=f"replay:{batch.batch_id}:{ordinal}",
+                        input={
+                            "replayPlan": {
+                                "batchId": batch.batch_id,
+                                "itemId": item_id,
+                                "candidateId": admitted.candidate_id,
+                                "candidateDigest": admitted.candidate_digest,
+                                "contractDigest": admitted.contract_digest,
+                                "compilationDigest": admitted.compilation_digest,
+                                "grantDigest": admitted.grant_digest,
+                                "policyVersion": derived.policy_version,
+                                "sourceArtifactId": source.artifact_id,
+                                "sourceRepositoryVersion": source.repository_version,
+                                "sourceRootDigest": source.integrity_root_digest,
+                            }
+                        },
+                        submission_key=f"replay-plan:{batch.batch_id}:{ordinal}",
                         current_checkpoint_id=None,
                         created_at=now,
                         updated_at=now,
@@ -590,92 +612,56 @@ class ControlPlaneService:
                         contract_digest=admitted.contract_digest,
                         compilation_digest=admitted.compilation_digest,
                         grant_digest=admitted.grant_digest,
-                        state=ReplayItemState.QUEUED.value,
+                        state=ReplayItemState.PENDING.value,
                         required_attempts=admitted.required_attempts,
                         max_attempts=admitted.max_attempts,
-                        attempts=attempt,
+                        attempts=0,
                         created_at=now,
                         updated_at=now,
                     )
                     session.add(item)
                     session.flush()
-                    job = JobRecord(
-                        job_id=job_id,
-                        run_id=replay_run_id,
-                        kind=_INTERNAL_REPLAY_KIND,
-                        state=JobState.QUEUED.value,
-                        payload=payload.model_dump(mode="json"),
-                        priority=0,
-                        attempts=0,
-                        max_attempts=1,
-                        idempotency_key=f"replay:{item_id}:{attempt}",
-                        available_at=now,
-                        lease_owner=None,
-                        lease_token_hash=None,
-                        lease_expires_at=None,
-                        heartbeat_at=None,
-                        result=None,
-                        error=None,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    session.add(job)
-                    session.flush()
-                    ticket = ReplayTicketRecord(
-                        ticket_id=ticket_id,
+                    compilation = ReplayCompilationRecord(
+                        compilation_id=f"replay-compilation_{uuid4().hex}",
+                        item_id=item.item_id,
                         batch_id=batch.batch_id,
-                        item_id=item_id,
-                        job_id=job_id,
-                        replay_run_id=replay_run_id,
-                        attempt_number=attempt,
-                        fencing_value=fencing_value,
-                        state=ReplayTicketState.ISSUED.value,
-                        grant_digest=admitted.grant_digest,
-                        source_root_digest=batch.source_root_digest,
-                        compilation_digest=admitted.compilation_digest,
-                        executor_profile=None,
-                        claim_principal=None,
-                        lease_token_hash=None,
-                        result_digest=None,
-                        abandon_reason=None,
-                        issued_at=now,
-                        expires_at=now + _REPLAY_TICKET_TTL,
-                        claimed_at=None,
-                        lease_expires_at=None,
-                        finalized_at=None,
-                        abandoned_at=None,
-                        updated_at=now,
+                        replay_run_id=replay_run.run_id,
+                        candidate_id=item.candidate_id,
+                        candidate_digest=item.candidate_digest,
+                        contract_digest=item.contract_digest,
+                        compilation_digest=item.compilation_digest,
+                        grant_digest=item.grant_digest,
+                        canonical_compilation=admitted.canonical_compilation,
+                        byte_length=len(admitted.canonical_compilation),
+                        created_at=now,
                     )
-                    session.add(ticket)
+                    session.add(compilation)
                     session.flush()
                     self._event(
                         session,
                         replay_run,
-                        "run.submitted",
+                        "run.replay-planned",
                         actor,
                         {
-                            "campaignName": request.campaign_name,
-                            "jobId": job.job_id,
-                            "jobKind": _INTERNAL_REPLAY_KIND,
+                            "campaignName": derived.campaign_name,
                             "replayBatchId": batch.batch_id,
                             "replayItemId": item.item_id,
-                            "replayTicketId": ticket.ticket_id,
+                            "compilationDigest": item.compilation_digest,
                         },
                     )
                     self._replay_event(
                         session,
                         batch,
-                        "replay.ticket.issued",
+                        "replay.compilation.derived",
                         actor,
                         {
-                            "attempt": attempt,
-                            "fencingValue": fencing_value,
+                            "compilationId": compilation.compilation_id,
+                            "candidateDigest": item.candidate_digest,
+                            "contractDigest": item.contract_digest,
                             "compilationDigest": item.compilation_digest,
-                            "expiresAt": ticket.expires_at.isoformat(),
+                            "grantDigest": item.grant_digest,
                         },
                         item=item,
-                        ticket=ticket,
-                        job=job,
                         run_id=replay_run.run_id,
                     )
                 return self._replay_batch_view(batch)
@@ -2420,9 +2406,7 @@ class ControlPlaneService:
             raise StateConflict("source Artifact producer Job must have succeeded")
         if not 1 <= job.attempts <= 2_147_483_647:
             raise StateConflict("source Artifact producer Job attempt is outside authority bounds")
-        engine_run_id = (
-            job.result.get("engineRunId") if isinstance(job.result, dict) else None
-        )
+        engine_run_id = job.result.get("engineRunId") if isinstance(job.result, dict) else None
         if not isinstance(engine_run_id, str) or not engine_run_id:
             raise StateConflict("source Artifact producer Job has no sealed engine Run ID")
         return engine_run_id
@@ -2519,43 +2503,46 @@ class ControlPlaneService:
                 .order_by(ReplayItemRecord.ordinal)
             ).all()
         )
+        compilations = list(
+            session.scalars(
+                select(ReplayCompilationRecord).where(
+                    ReplayCompilationRecord.batch_id == batch.batch_id
+                )
+            ).all()
+        )
+        source_run = self._run(session, source.producer_run_id)
         batch_matches = (
-            batch.campaign_name == request.campaign_name
-            and batch.created_by == actor
+            batch.created_by == actor
+            and batch.campaign_name == source_run.campaign_name
             and request.source.artifact_id == source.artifact_id
             and request.source.repository_version == source.repository_version
             and self._artifact_ref(batch) == source
-            and batch.mode == request.mode.value
-            and batch.purpose == request.purpose.value
-            and batch.policy_version == request.policy_version
+            and batch.mode == CampaignMode.AI_REDTEAM.value
+            and batch.purpose == ReplayPurpose.CONFIRMATION.value
+            and batch.policy_version == KISA_CONFIRMATION_POLICY_VERSION
         )
-        requested_items = [
-            (
-                ordinal,
-                item.candidate_id,
-                item.candidate_digest,
-                item.contract_digest,
-                item.compilation_digest,
-                item.grant_digest,
-                item.required_attempts,
-                item.max_attempts,
-            )
-            for ordinal, item in enumerate(request.items)
-        ]
-        stored_items = [
-            (
-                item.ordinal,
-                item.candidate_id,
-                item.candidate_digest,
-                item.contract_digest,
-                item.compilation_digest,
-                item.grant_digest,
-                item.required_attempts,
-                item.max_attempts,
+        stored_item_ids = {item.item_id for item in items}
+        compilation_item_ids = {compilation.item_id for compilation in compilations}
+        current_compilation_counts = {
+            item.item_id: sum(
+                compilation.item_id == item.item_id
+                and compilation.candidate_id == item.candidate_id
+                and compilation.candidate_digest == item.candidate_digest
+                and compilation.contract_digest == item.contract_digest
+                and compilation.replay_run_id == item.replay_run_id
+                and compilation.compilation_digest == item.compilation_digest
+                and compilation.grant_digest == item.grant_digest
+                for compilation in compilations
             )
             for item in items
-        ]
-        if not batch_matches or stored_items != requested_items:
+        }
+        if (
+            not batch_matches
+            or not items
+            or [item.ordinal for item in items] != list(range(len(items)))
+            or compilation_item_ids != stored_item_ids
+            or any(count != 1 for count in current_compilation_counts.values())
+        ):
             raise StateConflict(
                 "Replay batch idempotency key was already used for different authority input"
             )
@@ -2596,9 +2583,7 @@ class ControlPlaneService:
         *,
         lock: bool = False,
     ) -> ArtifactRecord | None:
-        statement = select(ArtifactRecord).where(
-            ArtifactRecord.idempotency_key == idempotency_key
-        )
+        statement = select(ArtifactRecord).where(ArtifactRecord.idempotency_key == idempotency_key)
         if lock:
             statement = statement.with_for_update()
         return session.scalar(statement)

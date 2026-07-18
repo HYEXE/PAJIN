@@ -8,7 +8,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from sqlalchemy import (
     JSON,
@@ -19,6 +19,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    LargeBinary,
     MetaData,
     String,
     Table,
@@ -36,7 +37,8 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column, sess
 
 LEGACY_SCHEMA_VERSION = 1
 REPLAY_AUTHORITY_SCHEMA_VERSION = 2
-CURRENT_SCHEMA_VERSION = 3
+ARTIFACT_AUTHORITY_SCHEMA_VERSION = 3
+CURRENT_SCHEMA_VERSION = 4
 
 LEGACY_CONTROL_PLANE_TABLES = frozenset(
     {"cp_runs", "cp_jobs", "cp_checkpoints", "cp_approvals", "cp_events"}
@@ -53,7 +55,11 @@ V2_CONTROL_PLANE_TABLES = frozenset(
     {*LEGACY_CONTROL_PLANE_TABLES, "cp_schema_version", *REPLAY_AUTHORITY_TABLES}
 )
 ARTIFACT_AUTHORITY_TABLES = frozenset({"cp_artifacts"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset({*V2_CONTROL_PLANE_TABLES, *ARTIFACT_AUTHORITY_TABLES})
+V3_CONTROL_PLANE_TABLES = frozenset({*V2_CONTROL_PLANE_TABLES, *ARTIFACT_AUTHORITY_TABLES})
+REPLAY_COMPILATION_AUTHORITY_TABLES = frozenset({"cp_replay_compilations"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V3_CONTROL_PLANE_TABLES, *REPLAY_COMPILATION_AUTHORITY_TABLES}
+)
 
 
 def _lower_hex_check(value: str, length: int) -> str:
@@ -781,6 +787,127 @@ def _build_v2_metadata() -> MetaData:
 _V2_METADATA = _build_v2_metadata()
 
 
+def _build_v3_metadata() -> MetaData:
+    """Freeze the exact schema-v3 metadata before v4 authority is attached."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V3_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V3_METADATA = _build_v3_metadata()
+
+
+cast(Table, ReplayItemRecord.__table__).append_constraint(
+    UniqueConstraint(
+        "item_id",
+        "batch_id",
+        "candidate_id",
+        "candidate_digest",
+        "contract_digest",
+        name="uq_cp_replay_items_compilation_plan",
+    )
+)
+
+
+class ReplayCompilationRecord(Base):
+    """Canonical, append-only ReplayCompilation bytes bound to one Replay item."""
+
+    __tablename__ = "cp_replay_compilations"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "item_id",
+                "batch_id",
+                "candidate_id",
+                "candidate_digest",
+                "contract_digest",
+            ],
+            [
+                "cp_replay_items.item_id",
+                "cp_replay_items.batch_id",
+                "cp_replay_items.candidate_id",
+                "cp_replay_items.candidate_digest",
+                "cp_replay_items.contract_digest",
+            ],
+            name="fk_cp_replay_compilations_item_plan",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(compilation_id) = 51 AND "
+            "substr(compilation_id, 1, 19) = 'replay-compilation_' AND "
+            + _lower_hex_check("substr(compilation_id, 20, 32)", 32),
+            name="ck_cp_replay_compilations_compilation_id",
+        ),
+        CheckConstraint(
+            "length(item_id) > 0 AND length(item_id) <= 80",
+            name="ck_cp_replay_compilations_item_id",
+        ),
+        CheckConstraint(
+            "length(batch_id) > 0 AND length(batch_id) <= 80",
+            name="ck_cp_replay_compilations_batch_id",
+        ),
+        CheckConstraint(
+            "length(candidate_id) > 0 AND length(candidate_id) <= 200",
+            name="ck_cp_replay_compilations_candidate_id",
+        ),
+        CheckConstraint(
+            "length(replay_run_id) = 36 AND "
+            "substr(replay_run_id, 1, 4) = 'run_' AND "
+            + _lower_hex_check("substr(replay_run_id, 5, 32)", 32),
+            name="ck_cp_replay_compilations_replay_run_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("candidate_digest", 64),
+            name="ck_cp_replay_compilations_candidate_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_check("contract_digest", 64),
+            name="ck_cp_replay_compilations_contract_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_check("compilation_digest", 64),
+            name="ck_cp_replay_compilations_compilation_digest",
+        ),
+        CheckConstraint(
+            _lower_hex_check("grant_digest", 64),
+            name="ck_cp_replay_compilations_grant_digest",
+        ),
+        CheckConstraint(
+            "byte_length > 0 AND byte_length <= 2147483647 "
+            "AND length(canonical_compilation) = byte_length",
+            name="ck_cp_replay_compilations_canonical_bytes",
+        ),
+        UniqueConstraint(
+            "compilation_digest",
+            name="uq_cp_replay_compilations_compilation_digest",
+        ),
+        UniqueConstraint(
+            "replay_run_id",
+            name="uq_cp_replay_compilations_replay_run",
+        ),
+        Index("ix_cp_replay_compilations_batch", "batch_id", "created_at"),
+        Index("ix_cp_replay_compilations_item", "item_id", "created_at"),
+    )
+
+    compilation_id: Mapped[str] = mapped_column(String(51), primary_key=True)
+    item_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    candidate_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    replay_run_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_runs.run_id", ondelete="RESTRICT"), nullable=False
+    )
+    candidate_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    compilation_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    grant_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    canonical_compilation: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    byte_length: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
 class ControlPlaneRepository:
     """Own the database engine and expose short, explicit transaction scopes."""
 
@@ -862,7 +989,8 @@ class ControlPlaneRepository:
 _MIGRATIONS = {
     LEGACY_SCHEMA_VERSION: "legacy-control-plane-core",
     REPLAY_AUTHORITY_SCHEMA_VERSION: "replay-authority",
-    CURRENT_SCHEMA_VERSION: "artifact-authority",
+    ARTIFACT_AUTHORITY_SCHEMA_VERSION: "artifact-authority",
+    CURRENT_SCHEMA_VERSION: "trusted-replay-compilation-authority",
 }
 
 
@@ -887,6 +1015,11 @@ def _initialize_schema(connection: Connection) -> None:
     if cp_tables == V2_CONTROL_PLANE_TABLES:
         _validate_v2_schema(connection)
         _migrate_v2_schema(connection)
+        _validate_current_schema(connection)
+        return
+    if cp_tables == V3_CONTROL_PLANE_TABLES:
+        _validate_v3_schema(connection)
+        _migrate_v3_schema(connection)
         _validate_current_schema(connection)
         return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
@@ -915,10 +1048,15 @@ def _create_empty_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, "cp_artifacts")
     _create_tables(connection, REPLAY_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_compilations")
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
 def _migrate_legacy_schema(connection: Connection) -> None:
+    _lock_legacy_migration_writes(connection)
+    _assert_replay_authority_can_be_rebuilt(connection, schema_version=1)
     Base.metadata.tables[SchemaVersionRecord.__tablename__].create(connection, checkfirst=False)
     _record_migration(connection, LEGACY_SCHEMA_VERSION)
     _install_v2_job_binding_index(connection)
@@ -927,29 +1065,15 @@ def _migrate_legacy_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, "cp_artifacts")
     _create_tables(connection, REPLAY_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_compilations")
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
 def _migrate_v2_schema(connection: Connection) -> None:
     _lock_v2_migration_writes(connection)
-    nonempty_replay_tables = [
-        table_name
-        for table_name in sorted(REPLAY_AUTHORITY_TABLES)
-        if connection.scalar(text(f"SELECT count(*) FROM {table_name}"))
-    ]
-    internal_replay_jobs = int(
-        connection.scalar(text("SELECT count(*) FROM cp_jobs WHERE kind = 'internal-replay'")) or 0
-    )
-    if nonempty_replay_tables or internal_replay_jobs:
-        details: list[str] = []
-        if nonempty_replay_tables:
-            details.append(f"nonempty Replay tables: {', '.join(nonempty_replay_tables)}")
-        if internal_replay_jobs:
-            details.append(f"internal-replay Jobs: {internal_replay_jobs}")
-        raise SchemaInitializationError(
-            "schema v2 contains unverified Replay authority and cannot be trusted or "
-            "backfilled (" + "; ".join(details) + ")"
-        )
+    _assert_replay_authority_can_be_rebuilt(connection, schema_version=2)
 
     _remove_append_only_trigger_support(connection, "cp_replay_events")
     for table_name in (
@@ -963,9 +1087,59 @@ def _migrate_v2_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, "cp_artifacts")
     _create_tables(connection, REPLAY_AUTHORITY_TABLES)
     _install_append_only_trigger(connection, "cp_replay_events")
+    _record_migration(connection, ARTIFACT_AUTHORITY_SCHEMA_VERSION)
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_compilations")
     _record_migration(connection, CURRENT_SCHEMA_VERSION)
 
 
+def _assert_replay_authority_can_be_rebuilt(
+    connection: Connection,
+    *,
+    schema_version: int,
+) -> None:
+    existing_tables = set(inspect(connection).get_table_names())
+    nonempty_replay_tables = [
+        table_name
+        for table_name in sorted(REPLAY_AUTHORITY_TABLES)
+        if table_name in existing_tables
+        if connection.scalar(text(f"SELECT count(*) FROM {table_name}"))
+    ]
+    internal_replay_jobs = int(
+        connection.scalar(text("SELECT count(*) FROM cp_jobs WHERE kind = 'internal-replay'")) or 0
+    )
+    if nonempty_replay_tables or internal_replay_jobs:
+        details: list[str] = []
+        if nonempty_replay_tables:
+            details.append(f"nonempty Replay tables: {', '.join(nonempty_replay_tables)}")
+        if internal_replay_jobs:
+            details.append(f"internal-replay Jobs: {internal_replay_jobs}")
+        raise SchemaInitializationError(
+            f"schema v{schema_version} contains Replay authority without canonical "
+            "compilations and cannot be trusted or backfilled (" + "; ".join(details) + ")"
+        )
+
+
+def _migrate_v3_schema(connection: Connection) -> None:
+    _lock_v3_migration_writes(connection)
+    _assert_replay_authority_can_be_rebuilt(connection, schema_version=3)
+
+    _remove_append_only_trigger_support(connection, "cp_replay_events")
+    for table_name in (
+        "cp_replay_events",
+        "cp_replay_tickets",
+        "cp_replay_items",
+        "cp_replay_batches",
+    ):
+        connection.exec_driver_sql(f"DROP TABLE {table_name}")
+    _create_tables(connection, REPLAY_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_events")
+    _create_tables(connection, REPLAY_COMPILATION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, "cp_replay_compilations")
+    _record_migration(connection, CURRENT_SCHEMA_VERSION)
+
+
+_LEGACY_MIGRATION_WRITE_LOCK_TABLES = ("cp_jobs",)
 _V2_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_jobs",
     "cp_replay_batches",
@@ -973,6 +1147,21 @@ _V2_MIGRATION_WRITE_LOCK_TABLES = (
     "cp_replay_tickets",
     "cp_replay_events",
 )
+_V3_MIGRATION_WRITE_LOCK_TABLES = _V2_MIGRATION_WRITE_LOCK_TABLES
+
+
+def _lock_legacy_migration_writes(connection: Connection) -> None:
+    """Exclude legacy Job writers while rejecting uncompiled Replay authority."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        connection.exec_driver_sql("LOCK TABLE cp_jobs IN ACCESS EXCLUSIVE MODE")
+        return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
 
 
 def _lock_v2_migration_writes(connection: Connection) -> None:
@@ -983,6 +1172,21 @@ def _lock_v2_migration_writes(connection: Connection) -> None:
         return
     if connection.dialect.name == "postgresql":
         tables = ", ".join(_V2_MIGRATION_WRITE_LOCK_TABLES)
+        connection.exec_driver_sql(f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE")
+        return
+    raise SchemaInitializationError(
+        f"unsupported Control Plane database dialect: {connection.dialect.name}"
+    )
+
+
+def _lock_v3_migration_writes(connection: Connection) -> None:
+    """Exclude v3 writers from the canonical-compilation authority check."""
+
+    if connection.dialect.name == "sqlite":
+        # ``initialize`` acquired BEGIN IMMEDIATE before inspecting the table set.
+        return
+    if connection.dialect.name == "postgresql":
+        tables = ", ".join(_V3_MIGRATION_WRITE_LOCK_TABLES)
         connection.exec_driver_sql(f"LOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE")
         return
     raise SchemaInitializationError(
@@ -1073,6 +1277,30 @@ def _validate_v2_schema(connection: Connection) -> None:
         )
 
 
+def _validate_v3_schema(connection: Connection) -> None:
+    _validate_tables(connection, V3_CONTROL_PLANE_TABLES, metadata=_V3_METADATA)
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in (
+            LEGACY_SCHEMA_VERSION,
+            REPLAY_AUTHORITY_SCHEMA_VERSION,
+            ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v3 migration history: {actual!r}"
+        )
+
+
 def _validate_tables(
     connection: Connection,
     table_names: frozenset[str],
@@ -1144,6 +1372,8 @@ def _column_type_family(column_type: Any) -> str:
         return "datetime"
     if isinstance(column_type, Integer):
         return "integer"
+    if isinstance(column_type, LargeBinary):
+        return "binary"
     if isinstance(column_type, Text):
         return "text"
     if isinstance(column_type, String):
@@ -1678,6 +1908,7 @@ def _validate_indexes(
 _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_events": "event",
     "cp_artifacts": "artifact",
+    "cp_replay_compilations": "replay_compilation",
     "cp_replay_events": "replay_event",
 }
 

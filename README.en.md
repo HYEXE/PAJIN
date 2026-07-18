@@ -14,7 +14,7 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-17 is:
+The implementation baseline as of 2026-07-18 is:
 
 | Area | Current scope |
 | --- | --- |
@@ -22,8 +22,8 @@ The implementation baseline as of 2026-07-17 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, and an owner-controlled managed filesystem Artifact repository with immutable `cp_artifacts` metadata |
-| Primary gaps | Remaining Control Plane Replay orchestration, including trusted KISA item/contract/compilation derivation, durable pre-ticket budget/rate reservation, new-identity retries, executor/finalization/Gate wiring; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, and server-derived non-dispatchable planned/pending derivation records for exact KISA M03, M06, and A04 confirmation compilations |
+| Primary gaps | Remaining Control Plane Replay orchestration, including durable pre-ticket budget/rate reservation, Job/ticket issuance, new-identity retries, executor/finalization/Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -117,19 +117,31 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
   predicate or a distributed lock. Accepted ADR 0029 governs Control Plane replay artifact handoff,
   lease fencing, PostgreSQL ticket/batch/item state, and durable budget/rate state. The implemented
-  M6-07B-2A foundation now includes the versioned Replay aggregate and burn-on-claim lifecycle, an
+  M6-07B-2B foundation now includes the versioned Replay aggregate and burn-on-claim lifecycle, an
   owner-controlled managed filesystem repository, immutable `cp_artifacts` metadata, and
   server-owned admission of completed sealed sources. Producer Control Plane Run identity remains
   distinct from the sealed Run identity. Consumers provide only the exact opaque
   `(artifact_id, repository_version)` locator, and the server resolves it and re-verifies content
-  and seals. Schema v3 supports the forward v1→v2→v3 path; v2→v3 fails closed when legacy Replay
-  data exists instead of inventing Artifact bindings. This slice exposes no public Replay or
-  admission API and does not yet derive KISA items, contracts, or compilations. Durable pre-ticket
-  budget/rate reservation, new-identity retry issuance, and executor/finalization/Gate wiring remain
-  outstanding. Live PostgreSQL acceptance for schema v3 is complete on a clean temporary database,
-  covering forward migration and locking, `cp_artifacts` append-only enforcement, and the exact
-  composite Artifact foreign key. Those database checks do not complete the remaining Replay
-  execution path, so full M6-07B remains incomplete.
+  and seals. As of 2026-07-18, batch creation accepts only that locator and an idempotency key; the
+  Control Plane rereads the managed sealed AI Red Team source, derives eligible exact M03, M06, and
+  A04 confirmation Candidates and contracts, runs the trusted Replay Compiler, and persists the
+  canonical `ReplayCompilation` plus its `ReplayCapabilityGrant` as an append-only planned/pending,
+  non-dispatchable derivation record and proof in PostgreSQL. Caller-authored Candidate, contract,
+  policy, digest, target, and arguments are not authority inputs. Schema v4 extends the forward
+  v1→v2→v3→v4 path with canonical,
+  non-dispatchable compilation derivation records. Each append-only row has its own
+  `compilation_id`, Replay Run identity, compilation digest, and Grant digest; its non-unique
+  `item_id` and Candidate/contract plan-identity foreign key allow later attempt/version rows for
+  the same item. The permit/issuance slice must append the fresh row and make its ticket refer
+  directly to that `compilation_id` and digests; the existing ticket foreign-key redesign remains
+  next-slice work. This internal slice exposes no public Replay/admission API, deliberately creates
+  no Job or ticket, and dispatches no execution: durable budget/request-rate permits must
+  precede issuance. The persisted Grant lasts at most five minutes and may expire while pending, so
+  this derivation record MUST NOT be reused as later execution authority. The permit/issuance slice
+  must recompile with a fresh Replay Run identity and Grant, or bind an otherwise fresh and valid
+  compilation, by appending that row in the same issuance transaction. Ticket issuance, new-identity
+  retry, executor/finalization/Gate wiring, and negative Control Plane retest remain outstanding, so full
+  M6-07B remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 

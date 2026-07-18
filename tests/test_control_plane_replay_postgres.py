@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 from collections import Counter
 from collections.abc import Iterator
@@ -13,7 +14,8 @@ from threading import Event as ThreadEvent
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, inspect, select, text, update
+from kisa_control_plane_support import build_kisa_control_plane_source
+from sqlalchemy import create_engine, func, inspect, select, text, update
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DatabaseError, IntegrityError
@@ -21,12 +23,17 @@ from sqlalchemy.exc import DatabaseError, IntegrityError
 from pajin.control_plane.artifacts import ManagedArtifactRepository
 from pajin.control_plane.database import (
     _V2_METADATA,
+    _V3_METADATA,
     CURRENT_SCHEMA_VERSION,
+    LEGACY_CONTROL_PLANE_TABLES,
     V2_CONTROL_PLANE_TABLES,
+    V3_CONTROL_PLANE_TABLES,
     ArtifactRecord,
+    Base,
     ControlPlaneRepository,
     JobRecord,
     ReplayBatchRecord,
+    ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
     ReplayTicketRecord,
@@ -43,18 +50,15 @@ from pajin.control_plane.models import (
     CreateReplayBatchRequest,
     InternalJobKind,
     JobState,
-    ReplayBatchItemInput,
     ReplayBatchState,
     ReplayClaimRequest,
     ReplayItemState,
+    ReplayJobPayload,
     ReplayTicketState,
     RunState,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import ControlPlaneService
-from pajin.domain.models import CampaignMode
-from pajin.domain.replay import ReplayPurpose
-from pajin.runtime.store import RunStore
 
 POSTGRES_URL = os.environ.get("PAJIN_TEST_POSTGRES_URL")
 EXECUTOR_PROFILE = "kisa-exact-v1"
@@ -142,6 +146,56 @@ def _create_postgres_v2_schema(repository: ControlPlaneRepository) -> None:
         )
 
 
+def _create_postgres_legacy_schema(repository: ControlPlaneRepository) -> None:
+    """Create the exact pre-Replay schema in the repository's current schema."""
+
+    pending = set(LEGACY_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in Base.metadata.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        connection.exec_driver_sql("DROP INDEX ux_cp_jobs_job_run")
+        _install_append_only_trigger(connection, "cp_events")
+
+
+def _create_postgres_v3_schema(repository: ControlPlaneRepository) -> None:
+    """Create the exact managed v3 schema in the repository's current schema."""
+
+    pending = set(V3_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V3_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        _install_append_only_trigger(connection, "cp_events")
+        _install_append_only_trigger(connection, "cp_artifacts")
+        _install_append_only_trigger(connection, "cp_replay_events")
+        now = datetime.now(UTC)
+        connection.execute(
+            _V3_METADATA.tables["cp_schema_version"].insert(),
+            [
+                {
+                    "version": 1,
+                    "description": "legacy-control-plane-core",
+                    "applied_at": now,
+                },
+                {
+                    "version": 2,
+                    "description": "replay-authority",
+                    "applied_at": now,
+                },
+                {
+                    "version": 3,
+                    "description": "artifact-authority",
+                    "applied_at": now,
+                },
+            ],
+        )
+
+
 def _v2_run_values(suffix: str) -> dict[str, object]:
     now = datetime.now(UTC)
     return {
@@ -177,6 +231,27 @@ def _v2_job_values(suffix: str) -> dict[str, object]:
         "error": None,
         "created_at": now,
         "updated_at": now,
+    }
+
+
+def _v3_artifact_values(suffix: str) -> dict[str, object]:
+    return {
+        "artifact_id": f"artifact_{suffix}",
+        "repository_version": 1,
+        "producer_run_id": f"run_{suffix}",
+        "producer_job_id": _v2_job_values(suffix)["job_id"],
+        "producer_attempt": 1,
+        "sealed_run_id": f"sealed-postgres-v3-{suffix}",
+        "media_type": "application/vnd.pajin.run+json",
+        "schema_kind": "pajin.run.v1",
+        "byte_length": 512,
+        "content_digest": "c" * 64,
+        "root_digest": "d" * 64,
+        "created_by": "postgres-v3-migration",
+        "storage_key": f"objects/postgres-v3-{suffix}",
+        "idempotency_key": f"postgres-v3-artifact-{suffix}",
+        "admission_digest": "e" * 64,
+        "created_at": datetime.now(UTC),
     }
 
 
@@ -217,21 +292,54 @@ def _seed_batch(
     required_attempts: int = 2,
     max_attempts: int = 3,
 ) -> str:
+    source = _admit_kisa_source(
+        repository,
+        service,
+        suffix,
+        item_count=item_count,
+    )
+    created = service.create_replay_batch(
+        CreateReplayBatchRequest(
+            source=source,
+            idempotency_key=f"postgres-replay-batch-{suffix}",
+        ),
+        actor="postgres-replay-admission",
+    )
+    _activate_batch_for_test(
+        repository,
+        service,
+        created.batch_id,
+        item_count=item_count,
+        required_attempts=required_attempts,
+        max_attempts=max_attempts,
+    )
+    return created.batch_id
+
+
+def _admit_kisa_source(
+    repository: ControlPlaneRepository,
+    service: ControlPlaneService,
+    suffix: str,
+    *,
+    item_count: int = 1,
+) -> ArtifactLocator:
     source_run_id = f"run_{suffix}"
     producer_job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
-    sealed_run_id = f"run_sealed_{suffix[:32]}"
     stage_id = f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}"
     stage_path = _POSTGRES_ARTIFACT_ROOT / "staging" / stage_id
-    (stage_path / "evidence").mkdir(parents=True)
-    store = RunStore(run_id=sealed_run_id, path=stage_path)
-    store.append_event("campaign.completed", {"campaign": "postgres-replay"})
-    store.write_text("report.md", f"sealed postgres source {suffix}")
-    store.seal()
+    fixture = build_kisa_control_plane_source(
+        _POSTGRES_ARTIFACT_ROOT / "source-builds" / suffix,
+        scenario_count=item_count,
+        producer_run_id=source_run_id,
+        created_by="postgres-replay-admission",
+    )
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(fixture.path, stage_path)
     now = datetime.now(UTC)
     with repository.transaction() as session:
         source_run = RunRecord(
             run_id=source_run_id,
-            campaign_name="postgres-replay",
+            campaign_name=fixture.campaign.metadata.name,
             state=RunState.COMPLETED.value,
             input={"sealedSource": True, "suffix": suffix},
             submission_key=f"postgres-replay-source-{suffix}",
@@ -257,7 +365,7 @@ def _seed_batch(
                 lease_token_hash=None,
                 lease_expires_at=None,
                 heartbeat_at=None,
-                result={"engineRunId": sealed_run_id},
+                result={"engineRunId": fixture.artifact_ref.run_id},
                 error=None,
                 created_at=now,
                 updated_at=now,
@@ -272,35 +380,157 @@ def _seed_batch(
         ),
         actor="postgres-replay-admission",
     )
-    created = service.create_replay_batch(
-        CreateReplayBatchRequest(
-            campaign_name="postgres-replay",
-            source=ArtifactLocator(
-                artifact_id=source.artifact_id,
-                repository_version=source.repository_version,
-            ),
-            mode=CampaignMode.AI_REDTEAM,
-            purpose=ReplayPurpose.CONFIRMATION,
-            policy_version="policy-v1",
-            idempotency_key=f"postgres-replay-batch-{suffix}",
-            items=[
-                ReplayBatchItemInput(
-                    candidate_id=f"candidate-{suffix}-{ordinal}",
-                    candidate_digest=sha256(f"candidate:{suffix}:{ordinal}".encode()).hexdigest(),
-                    contract_digest=sha256(f"contract:{suffix}:{ordinal}".encode()).hexdigest(),
-                    compilation_digest=sha256(
-                        f"compilation:{suffix}:{ordinal}".encode()
-                    ).hexdigest(),
-                    grant_digest=sha256(f"grant:{suffix}:{ordinal}".encode()).hexdigest(),
-                    required_attempts=required_attempts,
-                    max_attempts=max_attempts,
-                )
-                for ordinal in range(item_count)
-            ],
-        ),
-        actor="postgres-replay-admission",
+    return ArtifactLocator(
+        artifact_id=source.artifact_id,
+        repository_version=source.repository_version,
     )
-    return created.batch_id
+
+
+def _activate_batch_for_test(
+    repository: ControlPlaneRepository,
+    service: ControlPlaneService,
+    batch_id: str,
+    *,
+    item_count: int,
+    required_attempts: int,
+    max_attempts: int,
+) -> None:
+    """Issue legacy one-shot authority only for PostgreSQL state-machine tests.
+
+    Production batch creation deliberately stops at planned/pending authority until
+    the durable permit slice exists. These tests still exercise the already-built
+    claim and fencing state machines, so they install the former issuance boundary
+    directly in their isolated database.
+    """
+
+    now = datetime.now(UTC)
+    with repository.transaction() as session:
+        batch = session.get(ReplayBatchRecord, batch_id)
+        assert batch is not None
+        items = list(
+            session.scalars(
+                select(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == batch_id)
+                .order_by(ReplayItemRecord.ordinal)
+            ).all()
+        )
+        assert len(items) == item_count
+        batch.state = ReplayBatchState.RUNNING.value
+        batch.cas_version += 1
+        batch.updated_at = now
+        source = service._artifact_ref(batch)
+
+        for item in items:
+            ticket_id = f"replay-ticket_{uuid4().hex}"
+            job_id = f"job_{uuid4().hex}"
+            item.required_attempts = required_attempts
+            item.max_attempts = max_attempts
+            item.attempts = 1
+            item.state = ReplayItemState.QUEUED.value
+            item.updated_at = now
+            payload = ReplayJobPayload.model_validate(
+                {
+                    "batch_id": batch.batch_id,
+                    "item_id": item.item_id,
+                    "ticket_id": ticket_id,
+                    "replay_run_id": item.replay_run_id,
+                    "source": source,
+                    "mode": batch.mode,
+                    "purpose": batch.purpose,
+                    "policy_version": batch.policy_version,
+                    "candidate_id": item.candidate_id,
+                    "candidate_digest": item.candidate_digest,
+                    "contract_digest": item.contract_digest,
+                    "compilation_digest": item.compilation_digest,
+                    "grant_digest": item.grant_digest,
+                    "attempt": 1,
+                    "fencing_value": 1,
+                }
+            )
+            replay_run = session.get(RunRecord, item.replay_run_id)
+            assert replay_run is not None
+            replay_run.input = {"replay": payload.model_dump(mode="json")}
+            replay_run.state = RunState.QUEUED.value
+            replay_run.updated_at = now
+            job = JobRecord(
+                job_id=job_id,
+                run_id=item.replay_run_id,
+                kind=InternalJobKind.REPLAY.value,
+                state=JobState.QUEUED.value,
+                payload=payload.model_dump(mode="json"),
+                priority=0,
+                attempts=0,
+                max_attempts=1,
+                idempotency_key=f"postgres-test-replay:{item.item_id}:1",
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(job)
+            session.flush()
+            ticket = ReplayTicketRecord(
+                ticket_id=ticket_id,
+                batch_id=batch.batch_id,
+                item_id=item.item_id,
+                job_id=job.job_id,
+                replay_run_id=item.replay_run_id,
+                attempt_number=1,
+                fencing_value=1,
+                state=ReplayTicketState.ISSUED.value,
+                grant_digest=item.grant_digest,
+                source_root_digest=batch.source_root_digest,
+                compilation_digest=item.compilation_digest,
+                executor_profile=None,
+                claim_principal=None,
+                lease_token_hash=None,
+                result_digest=None,
+                abandon_reason=None,
+                issued_at=now,
+                expires_at=now + timedelta(minutes=5),
+                claimed_at=None,
+                lease_expires_at=None,
+                finalized_at=None,
+                abandoned_at=None,
+                updated_at=now,
+            )
+            session.add(ticket)
+            session.flush()
+            service._event(
+                session,
+                replay_run,
+                "run.submitted",
+                "postgres-test-authority",
+                {
+                    "campaignName": batch.campaign_name,
+                    "jobId": job.job_id,
+                    "jobKind": InternalJobKind.REPLAY.value,
+                    "replayBatchId": batch.batch_id,
+                    "replayItemId": item.item_id,
+                    "replayTicketId": ticket.ticket_id,
+                },
+            )
+            service._replay_event(
+                session,
+                batch,
+                "replay.ticket.issued",
+                "postgres-test-authority",
+                {
+                    "attempt": 1,
+                    "fencingValue": 1,
+                    "compilationDigest": item.compilation_digest,
+                    "expiresAt": ticket.expires_at.isoformat(),
+                },
+                item=item,
+                ticket=ticket,
+                job=job,
+                run_id=replay_run.run_id,
+            )
 
 
 def test_postgres_artifact_authority_is_append_only_and_batch_binding_is_exact(
@@ -381,6 +611,58 @@ def test_postgres_artifact_authority_is_append_only_and_batch_binding_is_exact(
         repository.close()
 
 
+def test_postgres_replay_compilations_are_append_only(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository, service = _service(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    try:
+        source = _admit_kisa_source(repository, service, suffix)
+        batch = service.create_replay_batch(
+            CreateReplayBatchRequest(
+                source=source,
+                idempotency_key=f"postgres-compilation-append-only-{suffix}",
+            ),
+            actor="postgres-compilation-append-only",
+        )
+        with repository.transaction() as session:
+            compilation = session.scalar(
+                select(ReplayCompilationRecord).where(
+                    ReplayCompilationRecord.batch_id == batch.batch_id
+                )
+            )
+            assert compilation is not None
+            compilation_id = compilation.compilation_id
+            canonical_compilation = compilation.canonical_compilation
+
+        with (
+            pytest.raises(DatabaseError, match="cp_replay_compilations is append-only"),
+            repository.engine.begin() as connection,
+        ):
+            connection.execute(
+                update(ReplayCompilationRecord)
+                .where(ReplayCompilationRecord.compilation_id == compilation_id)
+                .values(canonical_compilation=b"tampered", byte_length=8)
+            )
+
+        with (
+            pytest.raises(DatabaseError, match="cp_replay_compilations is append-only"),
+            repository.engine.begin() as connection,
+        ):
+            connection.execute(
+                ReplayCompilationRecord.__table__.delete().where(
+                    ReplayCompilationRecord.compilation_id == compilation_id
+                )
+            )
+
+        with repository.transaction() as session:
+            preserved = session.get(ReplayCompilationRecord, compilation_id)
+            assert preserved is not None
+            assert preserved.canonical_compilation == canonical_compilation
+    finally:
+        repository.close()
+
+
 def test_postgres_reinitialize_rejects_stale_artifact_check_drift(
     isolated_postgres_schema_url: str,
 ) -> None:
@@ -413,7 +695,7 @@ def test_postgres_reinitialize_rejects_stale_artifact_check_drift(
         repository.close()
 
 
-def test_postgres_v2_to_v3_migration_preserves_core_rows_and_history(
+def test_postgres_v2_to_v4_migration_preserves_core_rows_and_history(
     isolated_postgres_schema_url: str,
 ) -> None:
     repository = ControlPlaneRepository(isolated_postgres_schema_url)
@@ -434,6 +716,7 @@ def test_postgres_v2_to_v3_migration_preserves_core_rows_and_history(
 
         assert repository.schema_version() == CURRENT_SCHEMA_VERSION
         assert "cp_artifacts" in inspect(repository.engine).get_table_names()
+        assert "cp_replay_compilations" in inspect(repository.engine).get_table_names()
         assert "source_artifact_run_id" in {
             column["name"] for column in inspect(repository.engine).get_columns("cp_replay_batches")
         }
@@ -449,7 +732,89 @@ def test_postgres_v2_to_v3_migration_preserves_core_rows_and_history(
         assert preserved_run.input == {"preserve": True}
         assert preserved_job is not None
         assert preserved_job.result == {"status": "completed"}
-        assert versions == [1, 2, 3]
+        assert versions == [1, 2, 3, 4]
+    finally:
+        repository.close()
+
+
+def test_postgres_legacy_internal_replay_job_refuses_migration_without_data_loss(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    run_values = _v2_run_values(suffix)
+    job_values = {
+        **_v2_job_values(suffix),
+        "kind": "internal-replay",
+        "state": "queued",
+        "attempts": 0,
+        "result": None,
+    }
+    try:
+        _create_postgres_legacy_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.execute(RunRecord.__table__.insert().values(**run_values))
+            connection.execute(JobRecord.__table__.insert().values(**job_values))
+
+        with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
+            repository.initialize()
+
+        assert "cp_schema_version" not in inspect(repository.engine).get_table_names()
+        with repository.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == "internal-replay")
+                )
+                == 1
+            )
+    finally:
+        repository.close()
+
+
+def test_postgres_v3_to_v4_migration_preserves_core_artifact_rows_and_history(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    run_id = f"run_{suffix}"
+    job_id = str(_v2_job_values(suffix)["job_id"])
+    artifact_id = f"artifact_{suffix}"
+    try:
+        _create_postgres_v3_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V3_METADATA.tables["cp_runs"].insert().values(**_v2_run_values(suffix))
+            )
+            connection.execute(
+                _V3_METADATA.tables["cp_jobs"].insert().values(**_v2_job_values(suffix))
+            )
+            connection.execute(
+                _V3_METADATA.tables["cp_artifacts"].insert().values(**_v3_artifact_values(suffix))
+            )
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert "cp_replay_compilations" in inspect(repository.engine).get_table_names()
+        with repository.transaction() as session:
+            preserved_run = session.get(RunRecord, run_id)
+            preserved_job = session.get(JobRecord, job_id)
+            preserved_artifact = session.get(ArtifactRecord, (artifact_id, 1))
+            versions = list(
+                session.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert preserved_run is not None
+        assert preserved_run.input == {"preserve": True}
+        assert preserved_job is not None
+        assert preserved_job.result == {"status": "completed"}
+        assert preserved_artifact is not None
+        assert preserved_artifact.producer_run_id == run_id
+        assert preserved_artifact.root_digest == "d" * 64
+        assert versions == [1, 2, 3, 4]
     finally:
         repository.close()
 
@@ -602,6 +967,88 @@ def test_postgres_v2_migration_lock_excludes_late_legacy_writer(
             )
         writer_repository.close()
         migration_repository.close()
+
+
+def test_postgres_concurrent_replay_batch_creation_converges_without_issuance(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository_a, service_a = _service(isolated_postgres_schema_url)
+    repository_b, service_b = _service(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    idempotency_key = f"postgres-replay-concurrent-{suffix}"
+    actor = "postgres-replay-concurrency"
+    try:
+        source = _admit_kisa_source(
+            repository_a,
+            service_a,
+            suffix,
+            item_count=2,
+        )
+        barrier = Barrier(2)
+
+        def create(service: ControlPlaneService):
+            barrier.wait(timeout=10)
+            return service.create_replay_batch(
+                CreateReplayBatchRequest(
+                    source=source,
+                    idempotency_key=idempotency_key,
+                ),
+                actor=actor,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            first = pool.submit(create, service_a)
+            second = pool.submit(create, service_b)
+            results = [first.result(timeout=30), second.result(timeout=30)]
+
+        assert results[0].batch_id == results[1].batch_id
+        assert all(result.state is ReplayBatchState.PLANNED for result in results)
+        batch_id = results[0].batch_id
+
+        with repository_a.transaction() as session:
+            batches = list(
+                session.scalars(
+                    select(ReplayBatchRecord).where(
+                        ReplayBatchRecord.idempotency_key == idempotency_key
+                    )
+                ).all()
+            )
+            items = list(
+                session.scalars(
+                    select(ReplayItemRecord)
+                    .where(ReplayItemRecord.batch_id == batch_id)
+                    .order_by(ReplayItemRecord.ordinal)
+                ).all()
+            )
+            compilations = list(
+                session.scalars(
+                    select(ReplayCompilationRecord)
+                    .where(ReplayCompilationRecord.batch_id == batch_id)
+                    .order_by(ReplayCompilationRecord.created_at)
+                ).all()
+            )
+            replay_job_count = session.scalar(
+                select(func.count())
+                .select_from(JobRecord)
+                .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            )
+            ticket_count = session.scalar(select(func.count()).select_from(ReplayTicketRecord))
+
+        assert [batch.batch_id for batch in batches] == [batch_id]
+        assert len(items) == 2
+        assert [item.ordinal for item in items] == [0, 1]
+        assert all(item.state == ReplayItemState.PENDING.value for item in items)
+        assert all(item.attempts == 0 for item in items)
+        assert len(compilations) == 2
+        assert {compilation.item_id for compilation in compilations} == {
+            item.item_id for item in items
+        }
+        assert len({compilation.compilation_id for compilation in compilations}) == 2
+        assert replay_job_count == 0
+        assert ticket_count == 0
+    finally:
+        repository_b.close()
+        repository_a.close()
 
 
 def test_postgres_replay_claim_has_exactly_one_winner_and_atomic_ticket_binding() -> None:
@@ -888,6 +1335,46 @@ def test_postgres_schema_fence_rejects_append_only_trigger_catalog_drift() -> No
                     _validate_append_only_trigger(connection, "cp_replay_events")
             finally:
                 transaction.rollback()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("drift_kind", ["trigger", "function"])
+def test_postgres_reinitialize_rejects_replay_compilation_trigger_drift(
+    isolated_postgres_schema_url: str,
+    drift_kind: str,
+) -> None:
+    repository, _service_instance = _service(isolated_postgres_schema_url)
+    try:
+        with repository.engine.begin() as connection:
+            if drift_kind == "trigger":
+                connection.execute(
+                    text(
+                        "DROP TRIGGER cp_replay_compilations_append_only ON cp_replay_compilations"
+                    )
+                )
+                connection.execute(
+                    text(
+                        "CREATE TRIGGER cp_replay_compilations_append_only "
+                        "BEFORE UPDATE ON cp_replay_compilations "
+                        "FOR EACH ROW EXECUTE FUNCTION "
+                        "pajin_cp_reject_replay_compilation_mutation()"
+                    )
+                )
+            else:
+                connection.execute(
+                    text(
+                        "CREATE OR REPLACE FUNCTION "
+                        "pajin_cp_reject_replay_compilation_mutation() RETURNS trigger "
+                        "LANGUAGE plpgsql AS $$ BEGIN RETURN OLD; END; $$"
+                    )
+                )
+
+        with pytest.raises(
+            SchemaInitializationError,
+            match="cp_replay_compilations append-only trigger",
+        ):
+            repository.initialize()
     finally:
         repository.close()
 

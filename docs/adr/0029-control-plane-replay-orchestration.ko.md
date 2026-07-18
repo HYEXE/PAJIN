@@ -4,6 +4,7 @@
 
 - 상태: 승인됨
 - 날짜: 2026-07-17
+- 구현 최신화: 2026-07-18 (M6-07B-2B trusted derivation)
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -20,13 +21,25 @@ Artifact 저장소와 서버 소유 소스 입장은 제한된 M6-07B-2A 기반�
 exact opaque `(artifact_id, repository_version)` resolution 및 content/seal 재검증을 포함한다.
 입장은 producer Control Plane Run ID와 sealed Run ID를 따로 보존한다. forward migration은
 v1→v2→v3이며, legacy Replay data가 있는 v2→v3는 가짜 Artifact binding을 만들지 않고 fail
-closed한다. 이 내부 서비스 경로는 public Replay/admission API를 열지 않는다. exact KISA
-item/contract/compilation 파생, 새 identity 재시도 발행, ticket 발행 전 영속형 budget/rate permit,
-Replay executor 연결, 타입이 지정된 서버 측 artifact 확정과 결과 digest 검증 및 Gate는 남아
-있다. 실제 PostgreSQL schema-v3 인수 검증은 깨끗한 임시 database에서 migration/locking,
-`cp_artifacts` append-only 강제와 exact composite Artifact foreign key를 검증해 완료했다. 나머지
-실행 경계가 완료되기 전에는 Control Plane이 완전한 영속형 Replay 오케스트레이션을 제공한다고
-주장할 수 없다.
+closed한다. M6-07B-2B는 2026-07-18에 구현됐다. batch command는 exact Artifact locator와
+idempotency key만 받는다. Control Plane은 managed sealed AI Red Team source를 다시 읽어 eligible
+exact M03·M06·A04 confirmation Candidate와 contract를 파생하고 trusted Replay Compiler를 실행한 뒤
+canonical `ReplayCompilation`과 `ReplayCapabilityGrant`를 batch `planned`, 각 item `pending` 상태의
+append-only, non-dispatchable PostgreSQL derivation record이자 proof로 저장한다. caller가 작성한
+Candidate, contract, policy, digest, target, arguments는 authority input이 아니다. schema v4는 canonical,
+non-dispatchable compilation derivation record를 추가해 forward 경로를 v1→v2→v3→v4로 확장한다.
+`compilation_id`가 row identity이고 `item_id`는 고유하지 않다. Candidate/contract field는 plan identity
+FK를 구성하며 각 row가 Replay Run identity, compilation digest와 Grant digest를 소유하므로 item 하나에
+attempt/version row를 append할 수 있다. 미래 issuance row는 ticket이 직접 참조해야 하며 기존
+`cp_replay_tickets` FK 재설계는 다음 조각이다. 이 내부 서비스 경로는 public Replay/admission API를
+열지 않고, durable budget/request-rate permit이 발행보다 먼저여야 하므로 의도적으로 Job이나 ticket을
+만들거나 실행을 dispatch하지 않는다. planned Grant는 최대 5분만 유효하고
+pending 중 만료될 수 있으므로 이후 실행 권한으로 절대 재사용하면 안 된다. permit/issuance transaction은
+새 Replay Run identity와 Grant로 다시 compile하거나, 별도의 fresh하고 유효한 compilation을 결박해
+그 row를 append해야 한다. ticket 발행, 새 identity retry, Replay executor, typed server-side artifact
+finalization과 result digest 검증, Gate와 negative Control Plane retest는 남아 있다. 이 실행 경계가
+완료되기 전에는 Control Plane이 완전한 영속형 Replay 오케스트레이션을
+제공한다고 주장할 수 없다.
 
 ## 맥락
 
@@ -69,10 +82,14 @@ M6-07B-2A는 이어서 private managed repository와 immutable Artifact metadata
 admission service는 완료된 producer Job의 strict staging identity만 받아 database lock 밖에서
 sealed source를 import·검증한 뒤 producer state를 다시 확인하고 canonical metadata와 internal
 storage key를 기록한다. Replay batch consumer는 exact opaque Artifact locator만 사용하며 service는
-batch 생성 전에 이를 resolve하고 다시 검증한다. 일반 Job completion/failure 경로는 Replay Job에
-계속 사용할 수 없다. KISA 파생, retry 발행, durable permit, executor, typed finalization, Gate와
-같은 실행 경계는 의도적으로 완료된 기반 밖에 남아 있다. 실제 PostgreSQL v3 migration/locking,
-`cp_artifacts` append-only와 exact composite-FK acceptance는 검증된 기반에 포함된다.
+batch 생성 전에 이를 resolve하고 다시 검증한다. M6-07B-2B는 나머지 command input을 idempotency로
+한정하고 trusted source 재로딩, exact M03·M06·A04 confirmation Candidate/contract 파생, canonical
+compilation과 append-only planned/pending, non-dispatchable PostgreSQL derivation record를 추가했다.
+저장된 compilation과 Grant는 파생 결과를 증명할 뿐 dispatch 권한이 아니며 issuance 때 재사용할 수 없다.
+이 조각은 Job이나 ticket을
+발행하지 않는다. 일반 Job completion/failure 경로는 Replay Job에 계속 사용할 수 없다. durable
+permit과 발행, retry, executor, typed finalization, Gate와 negative Control Plane retest는 의도적으로
+완료된 기반 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -118,12 +135,15 @@ Replay batch를 만들 때 서버는 다음 순서로 source를 admission한다.
    validation projection을 typed loader로 다시 읽는다.
 3. 서버가 exact KISA registry를 이용해 eligible Candidate와 Mode contract를 파생하고 Replay
    Compiler를 실행한다.
-4. 서버가 원 source root, canonical Candidate/contract/compilation digest와 새 Replay Capability를
-   PostgreSQL에 저장한다.
+4. 서버가 원 source root, canonical Candidate/contract identity와 최초 Replay compilation/Capability를
+   `compilation_id` 기반 non-dispatchable derivation record이자 proof로 저장한다. 이 row가 Replay Run
+   ID, compilation digest와 Grant digest를 소유한다.
 
 Worker가 보낸 Candidate, contract, comparison rule, Capability Grant, target, Tool arguments,
-source root 또는 eligibility flag는 authority input이 아니다. Worker claim envelope는 서버가
-이미 파생하고 저장한 exact compilation과 짧은 수명의 non-delegable Capability만 전달한다.
+source root 또는 eligibility flag는 authority input이 아니다. planned record의 5분 Grant는 발행 전에
+만료될 수 있으며 Worker 실행 권한이 아니다. Worker claim envelope는 durable reservation 뒤
+permit/issuance transaction에서 서버가 결박한 fresh compilation과 짧은 수명의 non-delegable
+Capability만 전달할 수 있다.
 
 ### PostgreSQL Replay 집합체와 순방향 마이그레이션
 
@@ -132,8 +152,9 @@ source root 또는 eligibility flag는 authority input이 아니다. Worker clai
 | Aggregate | 역할 | 핵심 불변식 |
 | --- | --- | --- |
 | `cp_replay_batches` | source snapshot과 전체 Gate lifecycle | 하나의 immutable source `ArtifactRef`/root, Mode, purpose, policy version 및 CAS version에 결박 |
-| `cp_replay_items` | eligible Candidate별 진행 상태 | Candidate/contract/compilation digest와 요구 반복 수가 batch 안에서 유일 |
-| `cp_replay_tickets` | 한 번의 실행 attempt authority | item attempt, Job, Replay Run ID, Grant, source root, claim principal/fence 및 exact finalization에 결박 |
+| `cp_replay_items` | eligible Candidate별 진행 및 plan identity | Candidate/contract plan identity와 요구 반복 수가 batch 안에서 유일하며 item 하나가 여러 compilation row를 가질 수 있음 |
+| `cp_replay_compilations` | non-dispatchable derivation/attempt record | `compilation_id`가 PK이고 non-unique `item_id`와 Candidate/contract field가 plan identity를 결박하며, 각 append-only row가 Replay Run ID, canonical bytes, compilation digest와 Grant digest를 소유 |
+| `cp_replay_tickets` | 한 번의 실행 attempt authority | 최종적으로 exact compilation row, item attempt, Job, source root, claim principal/fence와 finalization에 결박; direct `compilation_id`/digest FK는 다음 조각 |
 | `cp_replay_events` | Replay authority 감사 이력 | 상태 전이 transaction 안에서 append되고 update/delete 금지 |
 
 Artifact metadata, durable budget reservation과 rate-limit bucket/permit에는 별도 table을 둘 수
@@ -221,6 +242,12 @@ Replay batch admission은 전체 eligible item과 반복 수의 worst-case Tool 
 만들기 전에 Campaign budget을 PostgreSQL에서 원자적으로 reserve한다. reservation은 batch/item/
 ticket에 결박하고 다른 Local/Control Plane 실행과 같은 Campaign 한도를 초과할 수 없다. Worker가
 보고한 `usedCalls`나 로컬 snapshot은 정산 근거가 아니다.
+
+reservation과 issuance transaction은 최초 planned derivation record를 실행 권한으로 승격하지 않는다.
+새 Replay Run identity와 fresh Grant로 다시 compile하거나 별도의 fresh하고 아직 유효한 compilation을
+결박해 같은 item에 새 `cp_replay_compilations` row를 append하고, ticket을 그 row의 `compilation_id`와
+digest, durable reservation 및 Job에 원자적으로 연결한다. 만료됐거나 이전에 저장된 planned Grant는
+fail closed한다. 이 direct ticket FK 추가는 schema-v4 derivation admission이 아니라 다음 조각이다.
 
 각 실제 Tool call 전에 Worker의 trusted Replay runtime은 internal permit endpoint를 호출한다.
 서버는 active principal/lease/ticket fence를 다시 확인하고, canonical target/Tool/call ordinal에
@@ -352,7 +379,11 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 - forward migration이 빈 PostgreSQL과 직전 지원 version을 새 Replay schema로 올리고, unknown,
   partial 또는 constraint/trigger가 손상된 schema에서 서버가 fail closed한다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
-  verdict 주입을 거부하고, server-side sealed source admission만 exact KISA Job을 만든다;
+  verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
+  non-dispatchable compilation proof를 만들고 durable permit 전에는 Job이나 ticket을 만들지 않는다.
+  issuance는 만료된 planned Grant를 재사용하지 않고 같은 item에 새 compilation row를 append하며,
+  ticket을 그 row의 `compilation_id`, Replay Run identity, compilation digest와 Grant digest에
+  transaction에서 원자적으로 결박한다;
 - source와 replay `ArtifactRef`의 content, Run ID, seal root, artifact set 또는 repository version
   치환과 symlink/path traversal이 server-side verification에서 거부된다;
 - 두 Worker가 같은 queued Replay Job/ticket을 동시에 claim해 정확히 하나만 성공하고 principal,

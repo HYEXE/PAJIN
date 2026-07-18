@@ -8,7 +8,7 @@
 | --- | --- |
 | 문서 상태 | Product Baseline v0.3 |
 | 작성일 | 2026-07-12 |
-| 최종 최신화 | 2026-07-17 |
+| 최종 최신화 | 2026-07-18 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -76,7 +76,7 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 
 ### 1.1 현재 구현 기준선
 
-2026-07-17 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
+2026-07-18 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
 Phase 0과 1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
 Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
 Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
@@ -90,11 +90,20 @@ Candidate→SQLite replay→공통 Gate 경로를 추가했다. 기본 Local 실
 관리형 v1→v2 마이그레이션, 내부 전용 payload, 원자적 batch·burn-on-claim·heartbeat·lease
 만료·취소 전이를 구현했다. M6-07B-2A는 소유자가 통제하는 managed filesystem repository,
 immutable `cp_artifacts` metadata, schema v3와 exact opaque locator를 통한 완료·봉인 source의 내부
-server-owned admission을 추가했다. sealed-source KISA 파생, 새 identity retry 발행, ticket 발행 전
-durable budget/rate permit과 executor/finalization/Gate 연결이 남아 있어 M6-07B 전체는 미완료다.
-실제 PostgreSQL schema-v3 인수 검증은 깨끗한 임시 database에서 migration/locking,
-`cp_artifacts` append-only 강제와 exact composite Artifact foreign key를 검증해 완료했다.
-Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
+server-owned admission을 추가했다. 2026-07-18 구현된 M6-07B-2B는 batch input을 locator와
+idempotency key로 한정하고, server-owned source 재로딩과 exact M03·M06·A04 confirmation
+Candidate/contract 파생, trusted compilation, canonical `ReplayCompilation` 및
+`ReplayCapabilityGrant`를 append-only planned/pending, non-dispatchable PostgreSQL derivation
+record이자 proof로 영속화했다. 아직 남은 durable budget/request-rate permit보다 먼저 Job이나 ticket을
+발행하거나 실행을 dispatch하지 않는다. 저장된 5분 Grant는 pending 중 만료될 수 있으므로 이후 실행
+권한으로 절대 재사용하면 안 된다. schema v4의 각 append-only row는 고유한 `compilation_id`, Replay
+Run identity, compilation digest와 Grant digest를 소유한다. `item_id`는 고유하지 않고
+Candidate/contract plan identity FK에 결박되므로 item 하나에 여러 attempt/version row를 둘 수 있다.
+permit/issuance는 발행 transaction 안에서 새 Replay Run identity와 Grant로 다시 compile하거나 별도의
+fresh하고 유효한 compilation을 결박해 새 row를 append하고, ticket을 그 `compilation_id`와 digest에
+직접 결박해야 한다. 기존 ticket FK 재설계는 다음 조각이다. ticket 발행, 새
+identity retry, executor/finalization/Gate와 negative Control Plane retest가 남아 있어 M6-07B 전체는
+미완료다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
 Plane의 첫 수직 조각까지 구현되었다.
@@ -107,7 +116,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission 및 immutable schema-v3 metadata, migration/locking·`cp_artifacts` append-only·exact composite Artifact FK의 live PostgreSQL 인수 검증은 구현했으며 KISA 파생·재시도·ticket 발행 전 durable permit·executor/finalization/Gate는 미완료 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생과 append-only planned/pending non-dispatchable compilation record는 구현했으며 ticket 발행 전 durable permit, Job/ticket 발행, 재시도, executor/finalization/Gate와 negative Control Plane retest는 미완료 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1160,7 +1169,7 @@ Local 실행과 Control Plane·다른 Mode 경로는 계속 자동 replay 없이
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
 
-2026-07-17 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
+2026-07-18 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
 단일 사용 ticket·Restricted Reproducer와 exact KISA fresh-session materializer·live Oracle·
 runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only disposition 투영이
 구현됐다. M6-05는 같은 receipt 경계를 KISA hardened retest에 연결해 baseline-bound negative
@@ -1168,8 +1177,11 @@ runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only dis
 Confirmed를 내지 않는다. M6-06은 로컬 KISA positive/negative 경로의 영속형 SQLite ticket과
 재시작 후 read-only 검증을 구현했다. M6-07A는 `pajin run ... --kisa-replay --repetitions 2`로
 명시적으로 선택한 Local AI Red Team Campaign을 Candidate→SQLite replay→공통 Gate에
-연결했다. M6-07B-2A는 아래의 내부 managed Artifact와 sealed-source admission 기반을 추가했지만,
-end-to-end Control Plane Replay와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
+연결했다. M6-07B-2A는 아래의 내부 managed Artifact와 sealed-source admission 기반을 추가했고,
+M6-07B-2B는 Job이나 ticket을 발행하지 않은 채 exact KISA confirmation compilation을
+planned/pending non-dispatchable derivation proof로 파생·저장한다. end-to-end Control Plane Replay,
+negative Control Plane
+retest와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 강화된 KISA 재테스트 완료 기준
 
@@ -1251,19 +1263,28 @@ M6-07은 실행 권한과 영속성 경계가 다른 두 범위로 분리한다.
 
 **M6-07B Control Plane replay orchestration**은 미완료다. 기존 Campaign Job의 임의 result와
 로컬 절대 경로를 replay authority로 재해석하지 않는다. ADR-0029는 2026-07-17에 승인되었고 그
-결정의 두 가지 제한된 기반을 구현했다. 첫 조각은 버전형 Replay 집합체, 저장소 관리형 v1→v2
+결정의 세 가지 제한된 조각을 구현했다. 첫 조각은 버전형 Replay 집합체, 저장소 관리형 v1→v2
 마이그레이션, 엄격한 내부 payload, lease fencing과 burn-on-claim 수명주기를 도입했다.
 M6-07B-2A는 소유자가 통제하는 managed filesystem repository, immutable `cp_artifacts` metadata,
 schema v3와 완료·봉인된 source의 신뢰된 내부 admission을 추가한다. admission은 producer Control
 Plane Run ID와 sealed Run ID를 따로 기록한다. consumer는 opaque한 정확한
 `(artifact_id, repository_version)` locator만 제출하고 서버가 저장된 content와 seal을 다시
 검증한다. forward migration은 v1→v2→v3를 지원하지만 legacy Replay row가 있는 v2→v3는 가짜
-Artifact binding을 만들지 않고 fail closed한다. 이 조각은 public Replay/admission API를 열지 않는다.
-실제 PostgreSQL schema-v3 인수 검증은 깨끗한 임시 database에서 완료됐고 forward
-migration/locking, `cp_artifacts` append-only 강제와 exact composite Artifact foreign key를
-검증한다. sealed source에서 KISA item·contract·compilation을 완전히 파생하는 경로, ticket 발행 전
-durable budget/request-rate 예약, 새 identity를 사용하는 retry 발행과 executor/finalization/Gate
-연결이 남아 있어 전체 완료를 주장할 수 없다. 승인된 ADR은 최소한 다음을 정의한다.
+Artifact binding을 만들지 않고 fail closed한다. 2026-07-18 구현된 M6-07B-2B는 exact locator와
+idempotency key만 받고 managed sealed AI Red Team source를 다시 읽어 eligible exact M03·M06·A04
+confirmation Candidate와 contract를 파생한다. trusted Replay Compiler로 canonical
+`ReplayCompilation`과 Grant를 만들고 batch `planned`, item `pending` 상태의 append-only,
+non-dispatchable PostgreSQL derivation record로 저장한다. caller가 작성한 Candidate, contract, policy,
+digest, target, arguments는
+authority input이 아니다. schema v4는 forward 경로를 v1→v2→v3→v4로 확장한다. public
+Replay/admission API는 열지 않으며 durable budget/request-rate permit이 발행보다 먼저여야 하므로
+Job이나 ticket을 만들지 않는다. planned 5분 Grant는 만료될 수 있어 재사용하면 안 되며,
+permit/issuance transaction은 새 Replay Run identity와 Grant로 다시 compile하거나 별도의 fresh하고
+유효한 compilation을 결박해 같은 item에 새 attempt/version row를 append하고, ticket을 그
+`compilation_id`와 digest에 직접 결박해야 한다. ticket FK 재설계는 아직 남아 있다. ticket 발행, 새
+identity retry,
+executor/finalization/Gate와 negative Control Plane retest가 남아 있어 전체 완료를 주장할 수 없다.
+승인된 ADR은 최소한 다음을 정의한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
 - Worker lease·retry와 충돌하지 않는 fencing, claim/finalize 및 crash 정책;
@@ -1275,11 +1296,11 @@ durable budget/request-rate 예약, 새 identity를 사용하는 retry 발행과
 
 ## 21. 단계별 로드맵
 
-| 단계 | 상태 | 2026-07-17 기준 판단 |
+| 단계 | 상태 | 2026-07-18 기준 판단 |
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각과 M6-07B-2A managed-Artifact 기반은 구현; 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact와 M6-07B-2B exact KISA planned/pending non-dispatchable compilation record는 구현; 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1328,8 +1349,14 @@ durable budget/request-rate 예약, 새 identity를 사용하는 retry 발행과
   server-owned 완료·봉인 source admission, 분리된 producer/sealed Run identity, content/seal을 다시
   검증하는 exact opaque locator resolution; live PostgreSQL acceptance는 migration/locking,
   `cp_artifacts` append-only 강제와 exact composite Artifact foreign key를 검증
-- 남은 ADR-0029 범위: sealed-source KISA item/contract/compilation 파생, 새 identity를 사용하는 retry
-  발행, ticket 발행 전 durable budget/rate 예약, executor/finalization/Gate 연결,
+- M6-07B-2B trusted derivation: locator와 idempotency만 받는 input, managed sealed AI Red Team source
+  재로딩, exact M03·M06·A04 confirmation Candidate/contract 파생, trusted canonical
+  `ReplayCompilation`과 Grant, Job/ticket 발행 없는 append-only PostgreSQL batch `planned`/item `pending`
+  non-dispatchable derivation record; 각 row는 `compilation_id`, Replay Run identity,
+  compilation/Grant digest와 non-unique plan-bound `item_id`를 소유하며, 만료 가능한 Grant는 proof일
+  뿐이므로 issuance가 ticket이 직접 참조할 fresh row를 append해야 함(ticket FK 재설계 대기)
+- 남은 ADR-0029 범위: ticket 발행 전 durable budget/rate permit, Job/ticket과 새 identity retry 발행,
+  executor/finalization/Gate, negative Control Plane retest,
   portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
@@ -1404,11 +1431,12 @@ durable budget/request-rate 예약, 새 identity를 사용하는 retry 발행과
 ## 24. 오픈 의사결정
 
 실행 경계와 기술 구조는 모두 승인된 ADR-0001부터 ADR-0029까지에 기록돼 있다. ADR-0029는
-M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각과 M6-07B-2A
-managed Artifact admission 및 immutable schema-v3 metadata는 구현됐다. 다만 sealed-source KISA
-파생, retry 발행, ticket 발행 전 durable permit과 executor/finalization/Gate 연결이 남아 있어
-M6-07B 전체는 미완료다. 실제 PostgreSQL v3 migration/locking, `cp_artifacts` append-only와 exact
-composite-FK acceptance는 완료됐다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
+M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각, M6-07B-2A
+managed Artifact admission과 M6-07B-2B 서버 파생 exact KISA canonical compilation/Grant의 append-only
+planned/pending non-dispatchable PostgreSQL derivation proof는 구현됐다. 다만 ticket 발행 전 durable
+permit, Job/ticket과
+retry 발행, executor/finalization/Gate 연결과 negative Control Plane retest가 남아 있어 M6-07B
+전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
 2. Web UI의 인증, 세션, 조직·프로젝트 격리와 멀티테넌시 경계

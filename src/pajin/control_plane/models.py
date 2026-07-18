@@ -199,44 +199,11 @@ class ReplayJobPayload(StrictModel):
     fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
 
 
-class ReplayBatchItemInput(StrictModel):
-    """Exact server-derived replay work admitted into a batch."""
-
-    candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
-    candidate_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    contract_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    grant_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    required_attempts: int = Field(strict=True, ge=1, le=100)
-    max_attempts: int = Field(strict=True, ge=1, le=100)
-
-    @model_validator(mode="after")
-    def require_attempt_capacity(self) -> ReplayBatchItemInput:
-        if self.max_attempts < self.required_attempts:
-            raise ValueError("max_attempts must be greater than or equal to required_attempts")
-        return self
-
-
 class CreateReplayBatchRequest(StrictModel):
-    """Internal-only request produced after sealed-source admission and compilation."""
+    """Locator-only request for server-owned sealed-source Replay derivation."""
 
-    campaign_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     source: ArtifactLocator
-    mode: CampaignMode
-    purpose: ReplayPurpose
-    policy_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
     idempotency_key: str = Field(min_length=8, max_length=200)
-    items: list[ReplayBatchItemInput] = Field(min_length=1, max_length=100)
-
-    @model_validator(mode="after")
-    def require_unique_exact_items(self) -> CreateReplayBatchRequest:
-        candidate_ids = [item.candidate_id for item in self.items]
-        if len(candidate_ids) != len(set(candidate_ids)):
-            raise ValueError("replay batch candidate IDs must be unique")
-        compilation_digests = [item.compilation_digest for item in self.items]
-        if len(compilation_digests) != len(set(compilation_digests)):
-            raise ValueError("replay batch compilation digests must be unique")
-        return self
 
 
 class ReplayClaimRequest(StrictModel):
@@ -443,9 +410,7 @@ class ReplayClaimView(StrictModel):
                 for field_name in ("priority", "attempts", "max_attempts"):
                     field_value = job.get(field_name)
                     if not isinstance(field_value, int) or isinstance(field_value, bool):
-                        raise ValueError(
-                            f"Replay claim Job {field_name} must be a strict integer"
-                        )
+                        raise ValueError(f"Replay claim Job {field_name} must be a strict integer")
         return value
 
     @model_validator(mode="after")

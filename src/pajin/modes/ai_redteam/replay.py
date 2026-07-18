@@ -1203,7 +1203,9 @@ class KISARetestReplayCoordinator:
 
 
 @dataclass(frozen=True, slots=True)
-class _SourceReplayContext:
+class KISASourceReplayContext:
+    """Validated source execution context suitable for trusted compilation."""
+
     scenario: KISAScenarioDefinition
     target_id: str
     original_request: ToolRequest
@@ -1211,34 +1213,32 @@ class _SourceReplayContext:
     evidence_by_request: Mapping[str, list[str]]
 
 
-async def _execute_kisa_replay(
+# Keep the private spelling as a compatibility seam for established local callers.
+_SourceReplayContext = KISASourceReplayContext
+
+
+@dataclass(frozen=True, slots=True)
+class KISAReplayCompilationInputs:
+    """Trusted semantic inputs shared by local and Control Plane compilation."""
+
+    validation_packet: ValidationPacket
+    intent: ReplayIntent
+
+
+def build_kisa_replay_compilation_inputs(
     *,
-    tools: ToolRegistry,
-    policy: PolicyEngine,
-    worker: WorkerBackend,
-    output_root: Path,
-    campaign: CampaignManifest,
-    plan: AgentPlan,
     source_root: Path,
-    candidate_source_root_digest: str,
     candidate_run_id: str,
     candidate: CandidateFinding,
-    decision: ValidationDecision,
     source: _SourceReplayContext,
     contract: ModeReplayContract,
-    retest_context: ReplayRetestContext | None,
-    authority: ReplayTicketAuthority,
-    materializers: ReplayMaterializerRegistry,
-    oracles: ReplayOracleRegistry,
-    budget: BudgetController,
-    rate_limits: RequestRateLimitLedger,
-    cancellation: ExecutionCancellationContext | None,
-) -> tuple[VerifiedReplayResult, KISAReplayRecord]:
-    """Shared compile/execute path for confirmation and remediation replay purposes."""
+    created_at: datetime,
+    retest_context: ReplayRetestContext | None = None,
+) -> KISAReplayCompilationInputs:
+    """Derive Candidate-bound packet and intent without producing execution authority."""
 
     if (contract.purpose is ReplayPurpose.REMEDIATION_RETEST) != (retest_context is not None):
         raise ValueError("KISA replay purpose and remediation context must agree")
-    created_at = datetime.now(UTC)
     context_identity = (
         retest_context.retest_source_root_digest if retest_context is not None else "confirmation"
     )
@@ -1298,6 +1298,46 @@ async def _execute_kisa_replay(
         ),
         created_at=created_at,
     )
+    return KISAReplayCompilationInputs(validation_packet=packet, intent=intent)
+
+
+async def _execute_kisa_replay(
+    *,
+    tools: ToolRegistry,
+    policy: PolicyEngine,
+    worker: WorkerBackend,
+    output_root: Path,
+    campaign: CampaignManifest,
+    plan: AgentPlan,
+    source_root: Path,
+    candidate_source_root_digest: str,
+    candidate_run_id: str,
+    candidate: CandidateFinding,
+    decision: ValidationDecision,
+    source: _SourceReplayContext,
+    contract: ModeReplayContract,
+    retest_context: ReplayRetestContext | None,
+    authority: ReplayTicketAuthority,
+    materializers: ReplayMaterializerRegistry,
+    oracles: ReplayOracleRegistry,
+    budget: BudgetController,
+    rate_limits: RequestRateLimitLedger,
+    cancellation: ExecutionCancellationContext | None,
+) -> tuple[VerifiedReplayResult, KISAReplayRecord]:
+    """Shared compile/execute path for confirmation and remediation replay purposes."""
+
+    created_at = datetime.now(UTC)
+    inputs = build_kisa_replay_compilation_inputs(
+        source_root=source_root,
+        candidate_run_id=candidate_run_id,
+        candidate=candidate,
+        source=source,
+        contract=contract,
+        created_at=created_at,
+        retest_context=retest_context,
+    )
+    packet = inputs.validation_packet
+    intent = inputs.intent
     replay_store = RunStore.create(output_root, campaign.metadata.name)
     try:
         ticket = ReplayCompiler.compile_ticket(
@@ -1798,15 +1838,53 @@ def _source_replay_context(
     )
 
 
+def derive_kisa_source_replay_context(
+    *,
+    source_root: Path,
+    plan: AgentPlan,
+    candidate: CandidateFinding,
+    capability_records: Sequence[CapabilityRecord],
+    catalog: KISACatalog = KISA_CATALOG,
+) -> KISASourceReplayContext:
+    """Public trusted-core adapter for exact sealed KISA source validation."""
+
+    return _source_replay_context(
+        source_root=source_root,
+        plan=plan,
+        candidate=candidate,
+        capability_records=capability_records,
+        catalog=catalog,
+    )
+
+
 def _eligible_for_kisa_replay(
     candidate: CandidateFinding,
     decision: ValidationDecision,
 ) -> bool:
     return (
         candidate.source == "trusted-core:candidate-producer"
+        and candidate.source_agent_id == "trusted-core:kisa-candidate-producer"
+        and decision.candidate_id == candidate.candidate_id
+        and decision.supersedes_decision_id is None
+        and decision.method is ValidationMethod.HYBRID_LEGACY_GATE
         and decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.confirmation_basis is None
         and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        and decision.supporting_evidence == candidate.claim.evidence
+        and not decision.contradicting_evidence
+        and not decision.replay_request_ids
+        and not decision.replay_outcome_ids
+        and not decision.replay_lineage
     )
+
+
+def eligible_for_kisa_replay(
+    candidate: CandidateFinding,
+    decision: ValidationDecision,
+) -> bool:
+    """Return the exact trusted KISA confirmation eligibility decision."""
+
+    return _eligible_for_kisa_replay(candidate, decision)
 
 
 def _validate_shared_execution_state(

@@ -15,7 +15,6 @@ from pajin.control_plane.models import (
     JobKind,
     JobState,
     JobView,
-    ReplayBatchItemInput,
     ReplayBatchState,
     ReplayBatchView,
     ReplayClaimRequest,
@@ -59,29 +58,10 @@ def _locator(**updates: object) -> ArtifactLocator:
     return ArtifactLocator.model_validate(values)
 
 
-def _item(**updates: object) -> ReplayBatchItemInput:
-    values: dict[str, object] = {
-        "candidate_id": "candidate-kisa-m03-1",
-        "candidate_digest": "1" * 64,
-        "contract_digest": "d" * 64,
-        "compilation_digest": "e" * 64,
-        "grant_digest": "f" * 64,
-        "required_attempts": 2,
-        "max_attempts": 3,
-    }
-    values.update(updates)
-    return ReplayBatchItemInput.model_validate(values)
-
-
 def _batch_request(**updates: object) -> CreateReplayBatchRequest:
     values: dict[str, object] = {
-        "campaign_name": "kisa-replay",
         "source": _locator(),
-        "mode": CampaignMode.AI_REDTEAM,
-        "purpose": ReplayPurpose.CONFIRMATION,
-        "policy_version": "policy-v1",
         "idempotency_key": "kisa-replay-batch-1",
-        "items": [_item()],
     }
     values.update(updates)
     return CreateReplayBatchRequest.model_validate(values)
@@ -210,11 +190,6 @@ def _authority_integer_cases() -> list[tuple[type[BaseModel], dict[str, object],
             ("attempt", "fencing_value"),
         ),
         (
-            ReplayBatchItemInput,
-            _item().model_dump(),
-            ("required_attempts", "max_attempts"),
-        ),
-        (
             ReplayClaimRequest,
             ReplayClaimRequest(executor_profile="kisa-exact-v1").model_dump(),
             ("lease_seconds",),
@@ -311,9 +286,7 @@ def test_replay_authority_integers_fit_postgresql_int4() -> None:
         ("max_attempts", True),
     ],
 )
-def test_job_view_authority_integers_do_not_coerce(
-    field_name: str, invalid_value: object
-) -> None:
+def test_job_view_authority_integers_do_not_coerce(field_name: str, invalid_value: object) -> None:
     job = _claim_view_payload()["job"]
     assert isinstance(job, JobView)
     values = job.model_dump()
@@ -323,21 +296,38 @@ def test_job_view_authority_integers_do_not_coerce(
         JobView.model_validate(values)
 
 
-def test_create_replay_batch_requires_exact_nonempty_unique_items() -> None:
+@pytest.mark.parametrize(
+    ("field_name", "value"),
+    [
+        ("campaign_name", "caller-selected-campaign"),
+        ("mode", CampaignMode.AI_REDTEAM.value),
+        ("purpose", ReplayPurpose.CONFIRMATION.value),
+        ("policy_version", "caller-policy-v1"),
+        ("items", []),
+        ("candidate_id", "candidate-kisa-m03-1"),
+        ("candidate_digest", "1" * 64),
+        ("candidate", {}),
+        ("contract_digest", "d" * 64),
+        ("contract", {}),
+        ("compilation_digest", "e" * 64),
+        ("compilation", {}),
+        ("grant_digest", "f" * 64),
+        ("grant", {}),
+        ("run_path", "/tmp/untrusted-run"),
+        ("path", "/tmp/untrusted-source"),
+        ("source_path", "/tmp/untrusted-source"),
+        ("url", "https://attacker.invalid/run.tar"),
+        ("source_url", "https://attacker.invalid/run.tar"),
+    ],
+)
+def test_create_replay_batch_rejects_caller_authored_authority(
+    field_name: str, value: object
+) -> None:
     request = _batch_request()
-    assert request.items[0].required_attempts == 2
-    assert request.items[0].max_attempts == 3
+    assert set(request.model_dump()) == {"source", "idempotency_key"}
 
     with pytest.raises(ValidationError):
-        _batch_request(items=[])
-    with pytest.raises(ValidationError, match="max_attempts"):
-        _item(required_attempts=3, max_attempts=2)
-    with pytest.raises(ValidationError, match="candidate IDs must be unique"):
-        _batch_request(items=[_item(), _item(compilation_digest="1" * 64)])
-    with pytest.raises(ValidationError, match="compilation digests must be unique"):
-        _batch_request(items=[_item(), _item(candidate_id="candidate-kisa-m06-1")])
-    with pytest.raises(ValidationError):
-        CreateReplayBatchRequest.model_validate({**request.model_dump(), "run_path": "/tmp/run"})
+        CreateReplayBatchRequest.model_validate({**request.model_dump(), field_name: value})
 
 
 def test_replay_claim_and_lease_requests_use_authenticated_actor_identity() -> None:

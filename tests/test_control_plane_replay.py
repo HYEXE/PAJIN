@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import shutil
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from threading import Barrier
+from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from kisa_control_plane_support import build_kisa_control_plane_source
 from sqlalchemy import func, select, update
 
 from pajin.control_plane.api import ControlPlaneSettings, create_app
@@ -18,10 +21,16 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayItemRecord,
     ReplayTicketRecord,
     RunRecord,
+)
+from pajin.control_plane.kisa_derivation import (
+    KISA_CONFIRMATION_MAX_ATTEMPTS,
+    KISA_CONFIRMATION_POLICY_VERSION,
+    KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
 )
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
@@ -39,10 +48,10 @@ from pajin.control_plane.models import (
     LeaseRequest,
     Principal,
     PrincipalRole,
-    ReplayBatchItemInput,
     ReplayBatchState,
     ReplayClaimRequest,
     ReplayItemState,
+    ReplayJobPayload,
     ReplayLeaseRequest,
     ReplayTicketState,
     RunState,
@@ -57,8 +66,8 @@ from pajin.control_plane.service import (
     StateConflict,
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
-from pajin.domain.replay import ReplayPurpose
-from pajin.runtime.store import RunStore
+from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.replay.tickets import replay_context_digest
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
@@ -133,25 +142,27 @@ def _seed_completed_source(
     repository: ControlPlaneRepository,
     service: ControlPlaneService,
     suffix: str,
+    *,
+    item_count: int = 1,
 ) -> ArtifactRef:
     identity = sha256(suffix.encode()).hexdigest()
     run_id = f"run_{identity[:32]}"
     job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
-    sealed_run_id = f"run_sealed_{identity[:24]}"
     stage_id = f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}"
     database_path = Path(str(repository.engine.url.database))
     staging_root, _ = _artifact_roots(database_path)
     stage_path = staging_root / stage_id
-    (stage_path / "evidence").mkdir(parents=True)
-    store = RunStore(run_id=sealed_run_id, path=stage_path)
-    store.append_event("campaign.completed", {"campaign": "kisa-replay"})
-    store.write_text("report.md", f"sealed source {suffix}")
-    store.seal()
+    fixture = build_kisa_control_plane_source(
+        database_path.parent / f"{database_path.stem}-kisa-source-builds",
+        scenario_count=item_count,
+        producer_run_id=run_id,
+    )
+    shutil.copytree(fixture.path, stage_path)
     now = datetime.now(UTC)
     with repository.transaction() as session:
         run = RunRecord(
             run_id=run_id,
-            campaign_name="kisa-replay",
+            campaign_name=fixture.campaign.metadata.name,
             state=RunState.COMPLETED.value,
             input={"sealedSource": True},
             submission_key=f"sealed-source-{identity}",
@@ -177,7 +188,10 @@ def _seed_completed_source(
                 lease_token_hash=None,
                 lease_expires_at=None,
                 heartbeat_at=None,
-                result={"engineRunId": sealed_run_id, "runPath": "/ignored/untrusted"},
+                result={
+                    "engineRunId": fixture.artifact_ref.run_id,
+                    "runPath": "/ignored/untrusted",
+                },
                 error=None,
                 created_at=now,
                 updated_at=now,
@@ -197,35 +211,172 @@ def _seed_completed_source(
 def _batch_request(
     source: ArtifactRef,
     suffix: str,
-    *,
-    required_attempts: int = 2,
-    max_attempts: int = 3,
-    item_count: int = 1,
 ) -> CreateReplayBatchRequest:
-    item_suffixes = [suffix] if item_count == 1 else [f"{suffix}-{i}" for i in range(item_count)]
     return CreateReplayBatchRequest(
-        campaign_name="kisa-replay",
         source=ArtifactLocator(
             artifact_id=source.artifact_id,
             repository_version=source.repository_version,
         ),
-        mode=CampaignMode.AI_REDTEAM,
-        purpose=ReplayPurpose.CONFIRMATION,
-        policy_version="policy-v1",
         idempotency_key=f"replay-batch-{suffix}",
-        items=[
-            ReplayBatchItemInput(
-                candidate_id=f"candidate-{sha256(item_suffix.encode()).hexdigest()[:16]}",
-                candidate_digest=sha256(f"candidate:{item_suffix}".encode()).hexdigest(),
-                contract_digest=sha256(f"contract:{item_suffix}".encode()).hexdigest(),
-                compilation_digest=sha256(f"compilation:{item_suffix}".encode()).hexdigest(),
-                grant_digest=sha256(f"grant:{item_suffix}".encode()).hexdigest(),
-                required_attempts=required_attempts,
-                max_attempts=max_attempts,
-            )
-            for item_suffix in item_suffixes
-        ],
     )
+
+
+def _activate_planned_batch_for_state_machine_tests(
+    repository: ControlPlaneRepository,
+    service: ControlPlaneService,
+    request: CreateReplayBatchRequest,
+    *,
+    required_attempts: int,
+    max_attempts: int,
+) -> None:
+    """Issue legacy execution rows only inside tests of the downstream state machine.
+
+    Production intentionally stops at PLANNED/PENDING until the durable permit slice
+    exists. These direct rows keep claim, fencing, cancellation, and reaper regression
+    coverage without reintroducing an authority bypass in the service.
+    """
+
+    now = datetime.now(UTC)
+    with repository.transaction() as session:
+        batch = session.scalar(
+            select(ReplayBatchRecord).where(
+                ReplayBatchRecord.idempotency_key == request.idempotency_key
+            )
+        )
+        assert batch is not None
+        assert batch.state == ReplayBatchState.PLANNED.value
+        source = service._artifact_ref(batch)
+        items = list(
+            session.scalars(
+                select(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == batch.batch_id)
+                .order_by(ReplayItemRecord.ordinal)
+            ).all()
+        )
+        assert items
+        batch.state = ReplayBatchState.RUNNING.value
+        batch.cas_version += 1
+        batch.updated_at = now
+        for item in items:
+            replay_run = session.get(RunRecord, item.replay_run_id)
+            compilation = session.scalar(
+                select(ReplayCompilationRecord)
+                .where(ReplayCompilationRecord.item_id == item.item_id)
+                .order_by(
+                    ReplayCompilationRecord.created_at,
+                    ReplayCompilationRecord.compilation_id,
+                )
+                .limit(1)
+            )
+            assert replay_run is not None and compilation is not None
+            assert compilation.compilation_digest == item.compilation_digest
+            ticket_id = f"replay-ticket_{uuid4().hex}"
+            job_id = f"job_{uuid4().hex}"
+            attempt = 1
+            fencing_value = 1
+            payload = ReplayJobPayload(
+                batch_id=batch.batch_id,
+                item_id=item.item_id,
+                ticket_id=ticket_id,
+                replay_run_id=replay_run.run_id,
+                source=source,
+                mode=CampaignMode(batch.mode),
+                purpose=ReplayPurpose(batch.purpose),
+                policy_version=batch.policy_version,
+                candidate_id=item.candidate_id,
+                candidate_digest=item.candidate_digest,
+                contract_digest=item.contract_digest,
+                compilation_digest=item.compilation_digest,
+                grant_digest=item.grant_digest,
+                attempt=attempt,
+                fencing_value=fencing_value,
+            )
+            replay_run.input = {"replay": payload.model_dump(mode="json")}
+            replay_run.updated_at = now
+            item.state = ReplayItemState.QUEUED.value
+            item.required_attempts = required_attempts
+            item.max_attempts = max_attempts
+            item.attempts = attempt
+            item.updated_at = now
+            job = JobRecord(
+                job_id=job_id,
+                run_id=replay_run.run_id,
+                kind=InternalJobKind.REPLAY.value,
+                state=JobState.QUEUED.value,
+                payload=payload.model_dump(mode="json"),
+                priority=0,
+                attempts=0,
+                max_attempts=1,
+                idempotency_key=f"replay:{item.item_id}:{attempt}",
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result=None,
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(job)
+            session.flush()
+            ticket = ReplayTicketRecord(
+                ticket_id=ticket_id,
+                batch_id=batch.batch_id,
+                item_id=item.item_id,
+                job_id=job.job_id,
+                replay_run_id=replay_run.run_id,
+                attempt_number=attempt,
+                fencing_value=fencing_value,
+                state=ReplayTicketState.ISSUED.value,
+                grant_digest=item.grant_digest,
+                source_root_digest=batch.source_root_digest,
+                compilation_digest=item.compilation_digest,
+                executor_profile=None,
+                claim_principal=None,
+                lease_token_hash=None,
+                result_digest=None,
+                abandon_reason=None,
+                issued_at=now,
+                expires_at=now + timedelta(minutes=5),
+                claimed_at=None,
+                lease_expires_at=None,
+                finalized_at=None,
+                abandoned_at=None,
+                updated_at=now,
+            )
+            session.add(ticket)
+            session.flush()
+            service._event(
+                session,
+                replay_run,
+                "run.submitted",
+                "trusted-replay-test-activation",
+                {
+                    "campaignName": batch.campaign_name,
+                    "jobId": job.job_id,
+                    "jobKind": InternalJobKind.REPLAY.value,
+                    "replayBatchId": batch.batch_id,
+                    "replayItemId": item.item_id,
+                    "replayTicketId": ticket.ticket_id,
+                },
+            )
+            service._replay_event(
+                session,
+                batch,
+                "replay.ticket.issued",
+                "trusted-replay-test-activation",
+                {
+                    "attempt": attempt,
+                    "fencingValue": fencing_value,
+                    "compilationDigest": item.compilation_digest,
+                    "expiresAt": ticket.expires_at.isoformat(),
+                },
+                item=item,
+                ticket=ticket,
+                job=job,
+                run_id=replay_run.run_id,
+            )
 
 
 def _create_batch(
@@ -238,13 +389,17 @@ def _create_batch(
     item_count: int = 1,
 ) -> CreateReplayBatchRequest:
     request = _batch_request(
-        _seed_completed_source(repository, service, suffix),
+        _seed_completed_source(repository, service, suffix, item_count=item_count),
         suffix,
-        required_attempts=required_attempts,
-        max_attempts=max_attempts,
-        item_count=item_count,
     )
     service.create_replay_batch(request, actor="trusted-replay-admission")
+    _activate_planned_batch_for_state_machine_tests(
+        repository,
+        service,
+        request,
+        required_attempts=required_attempts,
+        max_attempts=max_attempts,
+    )
     return request
 
 
@@ -266,9 +421,7 @@ def _force_replay_lease_expired(
     expired_at = datetime.now(UTC) - timedelta(seconds=1)
     with repository.transaction() as session:
         session.execute(
-            update(JobRecord)
-            .where(JobRecord.job_id == job_id)
-            .values(lease_expires_at=expired_at)
+            update(JobRecord).where(JobRecord.job_id == job_id).values(lease_expires_at=expired_at)
         )
         session.execute(
             update(ReplayTicketRecord)
@@ -301,9 +454,7 @@ def test_source_artifact_admission_is_managed_exact_and_idempotent(tmp_path: Pat
             artifact = session.scalar(select(ArtifactRecord))
             events = list(
                 session.scalars(
-                    select(EventRecord).where(
-                        EventRecord.event_type == "artifact.source-admitted"
-                    )
+                    select(EventRecord).where(EventRecord.event_type == "artifact.source-admitted")
                 ).all()
             )
             assert artifact is not None
@@ -453,20 +604,23 @@ def test_generic_claim_service_rejects_bypassed_nonpublic_job_kinds(
         repository.close()
 
 
-def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
+def test_batch_creation_is_atomic_idempotent_and_stops_before_ticket_issuance(
     tmp_path: Path,
 ) -> None:
     repository, service = _service(tmp_path / "batch.db")
     try:
         source = _seed_completed_source(repository, service, "batch")
-        request = _batch_request(source, "batch", required_attempts=2, max_attempts=4)
+        request = _batch_request(source, "batch")
 
         created = service.create_replay_batch(request, actor="trusted-replay-admission")
         repeated = service.create_replay_batch(request, actor="trusted-replay-admission")
 
         assert repeated == created
         assert created.source == source
-        assert created.state is ReplayBatchState.RUNNING
+        assert created.mode is CampaignMode.AI_REDTEAM
+        assert created.purpose is ReplayPurpose.CONFIRMATION
+        assert created.policy_version == KISA_CONFIRMATION_POLICY_VERSION
+        assert created.state is ReplayBatchState.PLANNED
         with repository.transaction() as session:
             batch = session.scalar(
                 select(ReplayBatchRecord).where(ReplayBatchRecord.batch_id == created.batch_id)
@@ -477,41 +631,65 @@ def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
             tickets = session.scalars(
                 select(ReplayTicketRecord).where(ReplayTicketRecord.batch_id == created.batch_id)
             ).all()
+            compilations = session.scalars(
+                select(ReplayCompilationRecord).where(
+                    ReplayCompilationRecord.batch_id == created.batch_id
+                )
+            ).all()
             assert batch is not None
-            assert len(items) == len(tickets) == 1
+            assert len(items) == len(compilations) == 1
+            assert tickets == []
             item = items[0]
-            ticket = tickets[0]
-            job = session.get(JobRecord, ticket.job_id)
-            replay_run = session.get(RunRecord, ticket.replay_run_id)
-            assert job is not None and replay_run is not None
+            compilation = compilations[0]
+            replay_run = session.get(RunRecord, item.replay_run_id)
+            assert replay_run is not None
 
             assert batch.source_run_id == source.producer_run_id
             assert batch.source_artifact_run_id == source.run_id
             assert batch.source_artifact_id == source.artifact_id
             assert batch.source_content_digest == source.content_digest
             assert batch.source_root_digest == source.integrity_root_digest
-            assert item.state == ReplayItemState.QUEUED.value
-            assert item.required_attempts == 2
-            assert item.max_attempts == 4
-            assert item.attempts == 1
-            assert item.replay_run_id == ticket.replay_run_id == job.run_id
-            assert ticket.state == ReplayTicketState.ISSUED.value
-            assert ticket.attempt_number == ticket.fencing_value == 1
-            assert ticket.compilation_digest == item.compilation_digest
-            assert ticket.grant_digest == item.grant_digest
-            assert job.kind == InternalJobKind.REPLAY.value
-            assert job.state == JobState.QUEUED.value
-            assert job.max_attempts == 1
+            assert item.state == ReplayItemState.PENDING.value
+            assert item.required_attempts == KISA_CONFIRMATION_REQUIRED_ATTEMPTS
+            assert item.max_attempts == KISA_CONFIRMATION_MAX_ATTEMPTS
+            assert item.attempts == 0
+            assert compilation.item_id == item.item_id
+            assert compilation.compilation_id.startswith("replay-compilation_")
+            assert compilation.replay_run_id == item.replay_run_id
+            assert compilation.candidate_digest == item.candidate_digest
+            assert compilation.contract_digest == item.contract_digest
+            assert compilation.compilation_digest == item.compilation_digest
+            assert compilation.grant_digest == item.grant_digest
+            assert compilation.byte_length == len(compilation.canonical_compilation)
+            assert sha256(compilation.canonical_compilation).hexdigest() == item.compilation_digest
+            trusted_compilation = ReplayCompilation.model_validate_json(
+                compilation.canonical_compilation
+            )
+            assert replay_context_digest(trusted_compilation.validation_packet.candidate) == (
+                item.candidate_digest
+            )
+            assert replay_context_digest(trusted_compilation.contract) == item.contract_digest
+            assert replay_context_digest(trusted_compilation.grant) == item.grant_digest
             assert replay_run.state == RunState.QUEUED.value
+            assert "replayPlan" in replay_run.input
+            assert "replay" not in replay_run.input
 
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
             assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
-            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                == 0
+            )
 
-        drifted = request.model_copy(update={"policy_version": "policy-v2"})
         with pytest.raises(StateConflict, match="idempot"):
-            service.create_replay_batch(drifted, actor="trusted-replay-admission")
+            service.create_replay_batch(request, actor="different-replay-admission")
 
         unknown_locator = ArtifactLocator(
             artifact_id=f"artifact_{'f' * 32}",
@@ -534,6 +712,106 @@ def test_batch_creation_is_atomic_idempotent_and_binds_one_initial_attempt(
             )
         with repository.transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
+    finally:
+        repository.close()
+
+
+def test_batch_creation_rolls_back_every_derived_row_after_late_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "batch-rollback.db")
+    try:
+        source = _seed_completed_source(repository, service, "batch-rollback")
+        request = _batch_request(source, "batch-rollback")
+        original_event = service._event
+        reached_late_failure = False
+
+        def fail_after_compilation(session, run, event_type, actor, payload):
+            nonlocal reached_late_failure
+            if event_type != "run.replay-planned":
+                return original_event(session, run, event_type, actor, payload)
+
+            assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(RunRecord)) == 2
+            reached_late_failure = True
+            raise RuntimeError("simulated failure after Replay compilation persistence")
+
+        monkeypatch.setattr(service, "_event", fail_after_compilation)
+
+        with pytest.raises(RuntimeError, match="after Replay compilation persistence"):
+            service.create_replay_batch(request, actor="trusted-replay-admission")
+
+        assert reached_late_failure
+        with repository.transaction() as session:
+            source_run = session.get(RunRecord, source.producer_run_id)
+            artifact = session.get(
+                ArtifactRecord,
+                (source.artifact_id, source.repository_version),
+            )
+            assert source_run is not None
+            assert source_run.state == RunState.COMPLETED.value
+            assert artifact is not None
+            assert artifact.sealed_run_id == source.run_id
+
+            assert session.scalar(select(func.count()).select_from(RunRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayItemRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayCompilationRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayEventRecord)) == 0
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(EventRecord)
+                    .where(EventRecord.event_type == "run.replay-planned")
+                )
+                == 0
+            )
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                == 0
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("replay_run_id", "source-run"),
+        ("compilation_digest", "0" * 64),
+        ("grant_digest", "0" * 64),
+    ],
+)
+def test_replay_batch_idempotency_rejects_current_compilation_pointer_drift(
+    tmp_path: Path,
+    field: str,
+    replacement: str,
+) -> None:
+    repository, service = _service(tmp_path / f"batch-pointer-drift-{field}.db")
+    try:
+        source = _seed_completed_source(repository, service, f"batch-pointer-drift-{field}")
+        request = _batch_request(source, f"batch-pointer-drift-{field}")
+        created = service.create_replay_batch(request, actor="trusted-replay-admission")
+
+        drifted_value = source.producer_run_id if replacement == "source-run" else replacement
+        with repository.transaction() as session:
+            session.execute(
+                update(ReplayItemRecord)
+                .where(ReplayItemRecord.batch_id == created.batch_id)
+                .values({field: drifted_value})
+            )
+
+        with pytest.raises(StateConflict, match="authority input"):
+            service.create_replay_batch(request, actor="trusted-replay-admission")
     finally:
         repository.close()
 
@@ -1185,9 +1463,7 @@ def test_multi_item_batch_terminal_state_is_order_independent(
             ReplayItemState.CANCELLED.value,
             ReplayItemState.FAILED.value,
         }
-        assert service.get_replay_batch(first.batch.batch_id).state is (
-            ReplayBatchState.CANCELLED
-        )
+        assert service.get_replay_batch(first.batch.batch_id).state is (ReplayBatchState.CANCELLED)
     finally:
         repository.close()
 
