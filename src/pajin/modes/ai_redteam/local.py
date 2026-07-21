@@ -6,7 +6,9 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from pajin.agents.base import CandidateValidation
 from pajin.domain.models import AgentPlan, CampaignManifest, CampaignMode, Finding, ToolResult
+from pajin.domain.validation import CandidateFinding
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
 from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome, KISAReplayCoordinator
@@ -53,6 +55,15 @@ class KISALocalAgentRuntime:
         results: list[ToolResult],
     ) -> list[Finding]:
         return await self._validator.validate(campaign, plan, results)
+
+    async def validate_candidates(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+        candidates: list[CandidateFinding],
+    ) -> CandidateValidation:
+        return await self._validator.validate_candidates(campaign, plan, results, candidates)
 
 
 @dataclass(frozen=True, slots=True)

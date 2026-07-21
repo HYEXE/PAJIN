@@ -1,21 +1,38 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from threading import Barrier
+from types import SimpleNamespace
+from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from kisa_control_plane_support import build_kisa_control_plane_source
-from sqlalchemy import func, select, update
+from kisa_control_plane_support import SupportingKISAWorker, build_kisa_control_plane_source
+from pydantic import ValidationError
+from sqlalchemy import func, select, text, update
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.orm import Session
 
+import pajin.control_plane.replay_authority as replay_authority_module
 import pajin.control_plane.service as control_plane_service_module
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.artifacts import ManagedArtifactRepository
+from pajin.control_plane.client import (
+    ControlPlaneLeaseLost,
+    ControlPlaneLocalLeaseDeadlineExceeded,
+    ControlPlaneProtocolError,
+    ControlPlaneRunCancelled,
+    ControlPlaneTransientError,
+)
 from pajin.control_plane.database import (
     ArtifactRecord,
     ControlPlaneRepository,
@@ -27,6 +44,7 @@ from pajin.control_plane.database import (
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayExecutionContextRecord,
+    ReplayFinalizationRecord,
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
@@ -39,6 +57,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
 )
+from pajin.control_plane.lease_deadline import MonotonicLeaseDeadline
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
     ApprovalIntent,
@@ -60,6 +79,8 @@ from pajin.control_plane.models import (
     ReplayClaimRequest,
     ReplayExecutionClaimView,
     ReplayExecutionContext,
+    ReplayFinalizationView,
+    ReplayFinalizeRequest,
     ReplayItemState,
     ReplayJobPayload,
     ReplayLeaseRequest,
@@ -68,8 +89,16 @@ from pajin.control_plane.models import (
     RunState,
     SubmitRunRequest,
     canonical_replay_execution_context_bytes,
+    job_submission_authority_digest,
+    non_replayable_submission_authority_digest,
     replay_execution_component_digest,
     replay_execution_context_digest,
+)
+from pajin.control_plane.replay_executor import KISAExactReplayExecutor
+from pajin.control_plane.replay_worker import (
+    ReplayWorkerConfig,
+    ReplayWorkerDaemon,
+    ReplayWorkerStatus,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import (
@@ -81,8 +110,11 @@ from pajin.control_plane.service import (
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.validation import FindingDisposition, ValidationDecision, ValidationReasonCode
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
-from pajin.tools.ai import AIChatProbeTool
+from pajin.runtime.store import RunStore, verify_run_integrity
+from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
+from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
@@ -102,6 +134,202 @@ REGISTERED_REPLAY_ACTORS = frozenset(
         "cancelled-worker",
     }
 )
+
+
+class _ReplayServicePort:
+    def __init__(self, service: ControlPlaneService, *, actor: str) -> None:
+        self._service = service
+        self._actor = actor
+
+    async def issue_replay_tool_permit(
+        self,
+        job_id: str,
+        request: ReplayToolPermitRequest,
+    ):
+        return self._service.issue_replay_tool_permit(
+            job_id,
+            request,
+            actor=self._actor,
+        )
+
+
+class _ReplayDaemonServicePort(_ReplayServicePort):
+    def __init__(
+        self,
+        service: ControlPlaneService,
+        *,
+        actor: str,
+        permit_transient_failures_before_server: int = 0,
+        drop_first_permit_response: bool = False,
+        drop_first_finalize_response: bool = False,
+        mutate_retained_claim: bool = False,
+        transient_error_detail: str = "permit transport unavailable before response",
+    ) -> None:
+        super().__init__(service, actor=actor)
+        self._service = service
+        self._actor = actor
+        self.permit_transient_failures_before_server = permit_transient_failures_before_server
+        self.drop_first_permit_response = drop_first_permit_response
+        self.drop_first_finalize_response = drop_first_finalize_response
+        self.mutate_retained_claim = mutate_retained_claim
+        self.transient_error_detail = transient_error_detail
+        self.claimed: ReplayExecutionClaimView | None = None
+        self.original_claim: ReplayExecutionClaimView | None = None
+        self.heartbeat_calls = 0
+        self.permit_calls = 0
+        self.finalize_calls = 0
+        self.heartbeat_job_ids: list[str] = []
+        self.permit_job_ids: list[str] = []
+        self.finalize_job_ids: list[str] = []
+        self.finalizing_statuses: list[ReplayWorkerStatus] = []
+        self.status_path: Path | None = None
+
+    async def claim_replay(
+        self,
+        request: ReplayClaimRequest,
+    ) -> ReplayExecutionClaimView | None:
+        self.claimed = self._service.claim_replay_job(
+            request,
+            actor=self._actor,
+        )
+        if self.claimed is not None:
+            self.original_claim = self.claimed.model_copy(deep=True)
+            if self.mutate_retained_claim:
+                asyncio.get_running_loop().call_soon(self._retarget_retained_claim)
+        return self.claimed
+
+    def _retarget_retained_claim(self) -> None:
+        assert self.claimed is not None
+        self.claimed.job.job_id = f"job_{'f' * 32}"
+        self.claimed.lease_token = "m" * 43
+
+    async def heartbeat_replay(
+        self,
+        job_id: str,
+        request: ReplayLeaseRequest,
+    ) -> ReplayExecutionClaimView:
+        self.heartbeat_calls += 1
+        self.heartbeat_job_ids.append(job_id)
+        try:
+            return self._service.heartbeat_replay_job(
+                job_id,
+                request,
+                actor=self._actor,
+            )
+        except RunCancelled as exc:
+            raise ControlPlaneRunCancelled(str(exc)) from exc
+        except (LeaseRejected, StateConflict) as exc:
+            raise ControlPlaneLeaseLost(str(exc)) from exc
+
+    async def issue_replay_tool_permit(
+        self,
+        job_id: str,
+        request: ReplayToolPermitRequest,
+    ):
+        self.permit_calls += 1
+        self.permit_job_ids.append(job_id)
+        if self.permit_calls <= self.permit_transient_failures_before_server:
+            raise ControlPlaneTransientError(self.transient_error_detail)
+        result = self._service.issue_replay_tool_permit(
+            job_id,
+            request,
+            actor=self._actor,
+        )
+        if self.drop_first_permit_response and self.permit_calls == 1:
+            raise ControlPlaneTransientError("response dropped after permit commit")
+        return result
+
+    async def finalize_replay(
+        self,
+        job_id: str,
+        request: ReplayFinalizeRequest,
+    ):
+        self.finalize_calls += 1
+        self.finalize_job_ids.append(job_id)
+        if self.status_path is not None:
+            self.finalizing_statuses.append(
+                ReplayWorkerStatus.model_validate_json(self.status_path.read_text(encoding="utf-8"))
+            )
+        result = self._service.finalize_replay_job(
+            job_id,
+            request,
+            actor=self._actor,
+        )
+        if self.drop_first_finalize_response and self.finalize_calls == 1:
+            raise ControlPlaneTransientError("response dropped after finalization commit")
+        return result
+
+
+def _canonical_json_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+
+
+def _host_proxy_receipt_log(job: WorkerJob, result: WorkerResult) -> str:
+    payload = json.loads(job.stdin)
+    output = json.loads(result.stdout)
+    probe = payload["probe"]
+    parsed_target = urlsplit(payload["target"])
+    redacted_target = urlunsplit(
+        (
+            parsed_target.scheme,
+            parsed_target.netloc,
+            parsed_target.path,
+            "<redacted>" if parsed_target.query else "",
+            "",
+        )
+    )
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+        request_body = {
+            "sessionId": probe["session_id"],
+            "messages": turn["messages"],
+            "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
+        }
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                    "sequence": index + 1,
+                    "method": "POST",
+                    "target": redacted_target,
+                    "targetSha256": sha256(payload["target"].encode()).hexdigest(),
+                    "address": "172.17.0.1",
+                    "status": 200,
+                    "requestJsonSha256": _canonical_json_digest(request_body),
+                    "responseBodySha256": _canonical_json_digest(observed["response"]),
+                    "responseJsonSha256": _canonical_json_digest(observed["response"]),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
+
+
+def _trusted_replay_backend() -> DockerWorkerBackend:
+    transcript_worker = SupportingKISAWorker()
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(job: WorkerJob, *, secrets: object = None) -> WorkerResult:
+        del secrets
+        result = await transcript_worker.run(job)
+        return result.model_copy(
+            update={
+                "backend": DockerWorkerBackend.name,
+                "network_log": _host_proxy_receipt_log(job, result),
+            }
+        )
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
 
 
 def _settings(path: Path) -> ControlPlaneSettings:
@@ -152,6 +380,26 @@ def _service(
     )
 
 
+def _disable_sqlite_job_update_authority_guard(session: Session) -> None:
+    """Expose the service-level binding check behind the normal database guard."""
+
+    session.execute(text("DROP TRIGGER cp_jobs_lease_authority_guard_update"))
+
+
+def _disable_sqlite_replay_authority_update_guard(
+    session: Session,
+    *,
+    table_name: str,
+) -> None:
+    """Inject a damaged append-only row to exercise the service trust boundary."""
+
+    assert table_name in {
+        ReplayCompilationRecord.__tablename__,
+        ReplayExecutionContextRecord.__tablename__,
+    }
+    session.execute(text(f"DROP TRIGGER {table_name}_no_update"))
+
+
 def _artifact_roots(database_path: Path) -> tuple[Path, Path]:
     stem = database_path.name.replace(".", "-")
     return (
@@ -188,6 +436,10 @@ def _seed_completed_source(
             state=RunState.COMPLETED.value,
             input={"sealedSource": True},
             submission_key=f"sealed-source-{identity}",
+            submission_authority_digest=non_replayable_submission_authority_digest(
+                run_id=run_id,
+                authority_kind="sealed-source-fixture",
+            ),
             current_checkpoint_id=None,
             created_at=now,
             updated_at=now,
@@ -205,6 +457,14 @@ def _seed_completed_source(
                 attempts=1,
                 max_attempts=3,
                 idempotency_key=f"sealed-source-job-{identity}",
+                submission_authority_digest=job_submission_authority_digest(
+                    job_id=job_id,
+                    run_id=run_id,
+                    job_kind="campaign",
+                    payload={"input": {}},
+                    max_attempts=3,
+                    idempotency_key=f"sealed-source-job-{identity}",
+                ),
                 available_at=now,
                 lease_owner=None,
                 lease_token_hash=None,
@@ -478,6 +738,7 @@ def test_public_api_rejects_replay_submission_and_exposes_only_internal_worker_r
             "/v1/worker/replay/jobs/claim",
             "/v1/worker/replay/jobs/{job_id}/heartbeat",
             "/v1/worker/replay/jobs/{job_id}/tool-permits",
+            "/v1/worker/replay/jobs/{job_id}/finalize",
         }
 
         with app.state.repository.transaction() as session:
@@ -667,6 +928,42 @@ def test_generic_claim_service_rejects_bypassed_nonpublic_job_kinds(
             assert replay_job is not None and ticket is not None
             assert replay_job.state == JobState.QUEUED.value
             assert ticket.state == ReplayTicketState.ISSUED.value
+    finally:
+        repository.close()
+
+
+def test_generic_claim_rejects_tampered_job_submission_authority(tmp_path: Path) -> None:
+    repository, service = _service(tmp_path / "generic-job-authority.db")
+    try:
+        submitted = service.submit_run(
+            SubmitRunRequest(
+                campaign_name="authority-bound-campaign",
+                input={"command": "original"},
+                idempotency_key="generic-job-authority-submission",
+            ),
+            actor="ordinary-operator",
+        )
+        with repository.transaction() as session:
+            _disable_sqlite_job_update_authority_guard(session)
+            job = session.get(JobRecord, submitted.job.job_id)
+            assert job is not None
+            job.payload = {"input": {"command": "tampered"}}
+
+        with pytest.raises(StateConflict, match=r"authority|integrity"):
+            service.claim_job(
+                ClaimJobRequest(worker_id="ordinary-worker", lease_seconds=30),
+                actor="ordinary-worker-principal",
+            )
+
+        with repository.transaction() as session:
+            job = session.get(JobRecord, submitted.job.job_id)
+            run = session.get(RunRecord, submitted.run.run_id)
+            assert job is not None and run is not None
+            assert job.state == JobState.QUEUED.value
+            assert job.attempts == 0
+            assert job.lease_owner is None
+            assert job.lease_token_hash is None
+            assert run.state == RunState.QUEUED.value
     finally:
         repository.close()
 
@@ -945,6 +1242,7 @@ def test_replay_issuance_appends_fresh_compilation_and_exact_durable_reservation
             assert payload.execution_context_digest == execution_context_record.context_digest
             assert payload.budget_reservation_id == ticket.budget_reservation_id
             assert payload.rate_reservation_id == ticket.rate_reservation_id
+            assert "rate_authority" not in job.payload
             assert payload.replay_run_id == fresh_compilation.replay_run_id
             assert payload.compilation_digest == fresh_compilation.compilation_digest
             assert payload.grant_digest == fresh_compilation.grant_digest
@@ -1161,6 +1459,8 @@ def test_replay_issuance_rolls_back_all_fresh_authority_after_late_failure(
             _batch_request(source, "issuance-rollback"),
             actor="trusted-replay-admission",
         )
+        artifact_repository = service._require_artifact_repository()
+        staging_before = {entry.name for entry in artifact_repository.staging_root.iterdir()}
         original_event = service._replay_event
         reached_late_failure = False
 
@@ -1225,6 +1525,49 @@ def test_replay_issuance_rolls_back_all_fresh_authority_after_late_failure(
                 )
                 == 0
             )
+        staging_after = {entry.name for entry in artifact_repository.staging_root.iterdir()}
+        assert staging_after == staging_before
+    finally:
+        repository.close()
+
+
+def test_replay_issuance_cleanup_distinguishes_body_failure_from_commit_ambiguity(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "issuance-cleanup.db")
+    artifact_repository = service._require_artifact_repository()
+    body_failure_id = f"stage_{'a' * 32}"
+    ambiguous_commit_id = f"stage_{'b' * 32}"
+    try:
+        with (
+            pytest.raises(RuntimeError, match="transaction body failed"),
+            service._replay_issuance_transaction(artifact_repository) as (
+                _session,
+                reservations,
+            ),
+        ):
+            reservations.append(body_failure_id)
+            artifact_repository.reserve_staging(body_failure_id)
+            raise RuntimeError("transaction body failed")
+        assert not (artifact_repository.staging_root / body_failure_id).exists()
+
+        @contextmanager
+        def ambiguous_transaction():
+            yield None
+            raise RuntimeError("commit result is ambiguous")
+
+        monkeypatch.setattr(repository, "transaction", ambiguous_transaction)
+        with (
+            pytest.raises(RuntimeError, match="commit result is ambiguous"),
+            service._replay_issuance_transaction(artifact_repository) as (
+                _session,
+                reservations,
+            ),
+        ):
+            reservations.append(ambiguous_commit_id)
+            artifact_repository.reserve_staging(ambiguous_commit_id)
+        assert (artifact_repository.staging_root / ambiguous_commit_id).is_dir()
     finally:
         repository.close()
 
@@ -1289,16 +1632,12 @@ def test_replay_issuance_rejects_an_expired_fresh_grant_without_partial_rows(
 
         def derive_expired(**kwargs):
             derived = real_derive(**kwargs)
-            compiled_at = datetime.now(UTC) - timedelta(minutes=10)
-            expires_at = compiled_at + timedelta(minutes=5)
             expired_items = []
             for item in derived.items:
-                grant = item.compilation.grant.model_copy(
-                    update={"issued_at": compiled_at, "expires_at": expires_at}
-                )
-                spec = item.compilation.spec.model_copy(
-                    update={"compiled_at": compiled_at, "expires_at": expires_at}
-                )
+                compiled_at = item.compilation.spec.compiled_at
+                expires_at = compiled_at + timedelta(microseconds=1)
+                grant = item.compilation.grant.model_copy(update={"expires_at": expires_at})
+                spec = item.compilation.spec.model_copy(update={"expires_at": expires_at})
                 compilation = item.compilation.model_copy(update={"grant": grant, "spec": spec})
                 canonical = canonical_replay_compilation_bytes(compilation)
                 expired_items.append(
@@ -1312,7 +1651,6 @@ def test_replay_issuance_rejects_an_expired_fresh_grant_without_partial_rows(
                 )
             return replace(
                 derived,
-                compiled_at=compiled_at,
                 items=tuple(expired_items),
             )
 
@@ -1526,6 +1864,194 @@ def test_replay_issuance_fails_closed_on_budget_account_ledger_drift(
             assert (
                 session.scalar(select(func.count()).select_from(ReplayBudgetReservationRecord)) == 1
             )
+    finally:
+        repository.close()
+
+
+def test_v7_replay_payload_without_rate_snapshot_remains_claimable_after_upgrade(
+    tmp_path: Path,
+) -> None:
+    repository, service = _service(tmp_path / "legacy-rate-payload-upgrade.db")
+    try:
+        _create_batch(repository, service, "legacy-rate-payload-upgrade")
+        with repository.transaction() as session:
+            job = session.scalar(
+                select(JobRecord).where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            )
+            assert job is not None
+            assert "rate_authority" not in job.payload
+            ReplayJobPayload.model_validate(job.payload)
+
+        claimed = service.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+            actor="replay-worker-a",
+        )
+        assert claimed is not None
+    finally:
+        repository.close()
+
+
+def test_v7_replay_payload_without_rate_snapshot_rejects_rate_cap_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, service = _service(tmp_path / "rate-account-policy-drift.db")
+    try:
+        real_derive = control_plane_service_module.derive_kisa_confirmation_batch
+
+        def derive_with_finite_rate_cap(**kwargs):
+            derived = real_derive(**kwargs)
+            rate_cap = derived.observed_campaign_request_units + derived.required_request_units
+            rules = derived.campaign.spec.rules_of_engagement.model_copy(
+                update={"max_requests_per_minute": rate_cap}
+            )
+            campaign = derived.campaign.model_copy(
+                update={
+                    "spec": derived.campaign.spec.model_copy(update={"rules_of_engagement": rules})
+                }
+            )
+            return replace(
+                derived,
+                campaign=campaign,
+                max_requests_per_minute=rate_cap,
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "derive_kisa_confirmation_batch",
+            derive_with_finite_rate_cap,
+        )
+        _create_batch(repository, service, "rate-account-policy-drift")
+        with repository.transaction() as session:
+            job = session.scalar(
+                select(JobRecord).where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            )
+            account = session.scalar(select(ReplayRateAccountRecord))
+            assert job is not None and "rate_authority" not in job.payload
+            assert account is not None and account.max_requests_per_minute is not None
+            account.max_requests_per_minute = None
+
+        with pytest.raises(StateConflict, match="rate account"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replay-worker-a",
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "rate_limits_digest",
+        "ledger_id",
+        "observed_request_units",
+        "observed_at",
+        "window_seconds",
+    ],
+)
+def test_replay_claim_rejects_each_sealed_rate_authority_drift(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    repository, service = _service(tmp_path / f"rate-authority-{drift}.db")
+    try:
+        _create_batch(repository, service, f"rate-authority-{drift}")
+        with repository.transaction() as session:
+            account = session.scalar(select(ReplayRateAccountRecord))
+            assert account is not None
+            if drift == "rate_limits_digest":
+                account.rate_limits_digest = "f" * 64
+            elif drift == "ledger_id":
+                account.ledger_id = f"rate-ledger_{'f' * 32}"
+            elif drift == "observed_request_units":
+                account.observed_request_units += 1
+            elif drift == "observed_at":
+                account.observed_at += timedelta(seconds=1)
+            else:
+                # Exercise the service-level verifier even though the schema also
+                # rejects this value under normal operation.
+                session.execute(text("PRAGMA ignore_check_constraints = ON"))
+                account.window_seconds = 61
+
+        with pytest.raises(StateConflict, match="rate account"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replay-worker-a",
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ["duplicate-key", "oversize", "depth", "nodes", "root-substitution"],
+)
+def test_replay_claim_rejects_untrusted_rate_limit_snapshot_bytes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    attack: str,
+) -> None:
+    repository, service = _service(tmp_path / f"rate-snapshot-{attack}.db")
+    try:
+        _create_batch(repository, service, f"rate-snapshot-{attack}")
+        real_load = control_plane_service_module.load_verified_run_artifacts
+        calls: list[dict[str, object]] = []
+
+        def attacked_load(*args, **kwargs):
+            calls.append(dict(kwargs))
+            snapshot = real_load(*args, **kwargs)
+            if attack == "root-substitution":
+                return replace(
+                    snapshot,
+                    verification=snapshot.verification.model_copy(update={"root_digest": "f" * 64}),
+                )
+
+            ledger_id = f"rate-ledger_{'a' * 32}"
+            if attack == "duplicate-key":
+                content = (
+                    f'{{"ledgerId":"{ledger_id}","reservationCounts":'
+                    '{"campaign":1,"\\u0063ampaign":2}}'
+                ).encode()
+            elif attack == "oversize":
+                content = b"{}" + b" " * (
+                    control_plane_service_module._MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES
+                )
+            elif attack == "depth":
+                content = (
+                    (f'{{"ledgerId":"{ledger_id}","reservationCounts":{{"campaign":').encode()
+                    + b"[" * 10
+                    + b"0"
+                    + b"]" * 10
+                    + b"}}"
+                )
+            else:
+                reservations = ",".join(f'"campaign-{index}":{index}' for index in range(2_100))
+                content = (
+                    f'{{"ledgerId":"{ledger_id}","reservationCounts":{{{reservations}}}}}'
+                ).encode()
+            return replace(
+                snapshot,
+                artifacts={"rate-limits.json": content},
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "load_verified_run_artifacts",
+            attacked_load,
+        )
+
+        with pytest.raises(StateConflict, match="rate authority failed reverification"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replay-worker-a",
+            )
+
+        assert len(calls) == 1
+        assert calls[0]["requests"] == {
+            "rate-limits.json": (control_plane_service_module._MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES)
+        }
+        assert isinstance(calls[0]["expected_run_id"], str)
     finally:
         repository.close()
 
@@ -1879,6 +2405,114 @@ def test_replay_execution_claim_rejects_context_from_another_compilation(
         repository.close()
 
 
+@pytest.mark.parametrize("record_kind", ["compilation", "execution-context"])
+@pytest.mark.parametrize(
+    ("attack", "expected_cause"),
+    [
+        ("deep", "nesting-depth limit"),
+        ("duplicate-key", "is not strict JSON"),
+        ("non-finite", "is not strict JSON"),
+        ("node-count", "node-count limit"),
+        ("oversize", "byte limit"),
+    ],
+)
+def test_replay_claim_rejects_resource_hostile_stored_authority_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    record_kind: str,
+    attack: str,
+    expected_cause: str,
+) -> None:
+    repository, service = _service(tmp_path / f"stored-{record_kind}-{attack}.db")
+    try:
+        _create_batch(repository, service, f"stored-{record_kind}-{attack}")
+        if attack == "deep":
+            damaged = b"[" * 70 + b"0" + b"]" * 70
+        elif attack == "duplicate-key":
+            damaged = b'{"authority":1,"authority":2}'
+        elif attack == "non-finite":
+            damaged = b'{"authority":NaN}'
+        elif attack == "node-count":
+            monkeypatch.setattr(
+                replay_authority_module,
+                (
+                    "_MAX_REPLAY_COMPILATION_JSON_NODES"
+                    if record_kind == "compilation"
+                    else "_MAX_REPLAY_EXECUTION_CONTEXT_JSON_NODES"
+                ),
+                8,
+            )
+            damaged = b"[0,1,2,3,4,5,6,7,8]"
+        else:
+            monkeypatch.setattr(
+                replay_authority_module,
+                (
+                    "_MAX_REPLAY_COMPILATION_JSON_BYTES"
+                    if record_kind == "compilation"
+                    else "_MAX_REPLAY_EXECUTION_CONTEXT_JSON_BYTES"
+                ),
+                128,
+            )
+            damaged = b'{"padding":"' + b"a" * 128 + b'"}'
+
+        with repository.transaction() as session:
+            job = session.scalar(
+                select(JobRecord).where(JobRecord.kind == InternalJobKind.REPLAY.value)
+            )
+            ticket = session.scalar(select(ReplayTicketRecord))
+            item = session.scalar(select(ReplayItemRecord))
+            assert job is not None and ticket is not None and item is not None
+            identities = (job.job_id, ticket.ticket_id, item.item_id)
+            if record_kind == "compilation":
+                _disable_sqlite_replay_authority_update_guard(
+                    session,
+                    table_name=ReplayCompilationRecord.__tablename__,
+                )
+                session.execute(
+                    update(ReplayCompilationRecord).values(
+                        canonical_compilation=damaged,
+                        byte_length=len(damaged),
+                    )
+                )
+                expected_message = "stored Replay compilation is invalid"
+            else:
+                _disable_sqlite_replay_authority_update_guard(
+                    session,
+                    table_name=ReplayExecutionContextRecord.__tablename__,
+                )
+                session.execute(
+                    update(ReplayExecutionContextRecord).values(
+                        canonical_context=damaged,
+                        byte_length=len(damaged),
+                    )
+                )
+                expected_message = "stored Replay execution context is invalid"
+
+        with pytest.raises(StateConflict, match=expected_message) as exc_info:
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="authenticated-worker-a",
+            )
+        assert exc_info.value.__cause__ is not None
+        assert expected_cause in str(exc_info.value.__cause__)
+
+        with repository.transaction() as session:
+            job = session.get(JobRecord, identities[0])
+            ticket = session.get(ReplayTicketRecord, identities[1])
+            item = session.get(ReplayItemRecord, identities[2])
+            assert job is not None and ticket is not None and item is not None
+            assert job.state == JobState.QUEUED.value
+            assert job.attempts == 0
+            assert job.lease_owner is None
+            assert job.lease_token_hash is None
+            assert ticket.state == ReplayTicketState.ISSUED.value
+            assert ticket.claim_principal is None
+            assert ticket.lease_token_hash is None
+            assert item.state == ReplayItemState.QUEUED.value
+    finally:
+        repository.close()
+
+
 def test_replay_claim_rejects_allowed_but_wrong_required_profile_without_state_change(
     tmp_path: Path,
 ) -> None:
@@ -2005,6 +2639,7 @@ def test_replay_claim_rejects_tampered_job_payload_without_burning_ticket(
     try:
         _create_batch(repository, service, f"payload-{tamper}")
         with repository.transaction() as session:
+            _disable_sqlite_job_update_authority_guard(session)
             job = session.scalar(
                 select(JobRecord).where(JobRecord.kind == InternalJobKind.REPLAY.value)
             )
@@ -2031,7 +2666,7 @@ def test_replay_claim_rejects_tampered_job_payload_without_burning_ticket(
             job.payload = payload
             identities = (job.job_id, ticket.ticket_id, item.item_id)
 
-        with pytest.raises(StateConflict, match=r"Replay|payload|binding"):
+        with pytest.raises(StateConflict, match=r"Replay|payload|binding|authority|integrity"):
             service.claim_replay_job(
                 ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
                 actor="authenticated-worker-a",
@@ -2211,6 +2846,7 @@ def test_replay_tool_permit_rejects_context_payload_swap_without_consumption(
         second = _claim(service, actor="authenticated-worker-b")
 
         with repository.transaction() as session:
+            _disable_sqlite_job_update_authority_guard(session)
             job = session.get(JobRecord, first.job.job_id)
             assert job is not None
             payload = dict(job.payload)
@@ -2482,6 +3118,8 @@ def test_expired_replay_lease_keeps_issued_permit_consumed_and_releases_only_rem
         assert service.get_replay_ticket(claimed.ticket.ticket_id).state is (
             ReplayTicketState.ABANDONED
         )
+        assert service.get_replay_item(claimed.item.item_id).state is ReplayItemState.FAILED
+        assert service.get_replay_batch(claimed.batch.batch_id).state is ReplayBatchState.FAILED
         with repository.transaction() as session:
             permits = list(session.scalars(select(ReplayToolPermitRecord)))
             budget_account = session.scalar(select(ReplayBudgetAccountRecord))
@@ -2503,6 +3141,16 @@ def test_expired_replay_lease_keeps_issued_permit_consumed_and_releases_only_rem
             assert rate.state == "released"
             assert rate.consumed_request_units == issued.request_units
             assert rate.released_request_units == rate.total_request_units - issued.request_units
+            terminal_event = session.scalar(
+                select(ReplayEventRecord).where(
+                    ReplayEventRecord.ticket_id == claimed.ticket.ticket_id,
+                    ReplayEventRecord.event_type == "replay.ticket.lease-expired",
+                )
+            )
+            assert terminal_event is not None
+            assert terminal_event.payload["retryPending"] is False
+            assert terminal_event.payload["issuedPermitCount"] == 1
+            assert terminal_event.payload["sideEffectsUncertain"] is True
     finally:
         repository.close()
 
@@ -2595,11 +3243,19 @@ def test_active_replay_permit_window_remains_counted_after_reservation_expiry(
 
         def derive_with_exact_rate_cap(**kwargs):
             derived = real_derive(**kwargs)
+            rate_cap = derived.observed_campaign_request_units + derived.required_request_units
+            rules = derived.campaign.spec.rules_of_engagement.model_copy(
+                update={"max_requests_per_minute": rate_cap}
+            )
+            campaign = derived.campaign.model_copy(
+                update={
+                    "spec": derived.campaign.spec.model_copy(update={"rules_of_engagement": rules})
+                }
+            )
             return replace(
                 derived,
-                max_requests_per_minute=(
-                    derived.observed_campaign_request_units + derived.required_request_units
-                ),
+                campaign=campaign,
+                max_requests_per_minute=rate_cap,
             )
 
         monkeypatch.setattr(
@@ -2778,7 +3434,9 @@ def test_replay_heartbeat_requires_exact_actor_ticket_fence_and_dedicated_path(
         repository.close()
 
 
-def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path) -> None:
+def test_claimed_replay_lease_ignores_burned_issuance_but_respects_authority_deadline(
+    tmp_path: Path,
+) -> None:
     repository, service = _service(tmp_path / "claimed-lease-deadline.db")
     try:
         _create_batch(repository, service, "claimed-lease-deadline")
@@ -2796,7 +3454,11 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
                 if rate_reservation.expires_at.tzinfo is not None
                 else rate_reservation.expires_at.replace(tzinfo=UTC)
             )
-            issuance_deadline = rate_deadline - timedelta(seconds=1)
+            issuance_deadline = min(
+                rate_deadline - timedelta(seconds=1),
+                now + timedelta(seconds=1),
+            )
+            assert issuance_deadline > now
             session.execute(
                 update(ReplayTicketRecord)
                 .where(ReplayTicketRecord.ticket_id == ticket.ticket_id)
@@ -2806,7 +3468,7 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
                 )
             )
         claimed = service.claim_replay_job(
-            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=5),
             actor="heartbeat-worker",
         )
         assert claimed is not None
@@ -2835,6 +3497,11 @@ def test_claimed_replay_lease_is_not_capped_by_issuance_deadline(tmp_path: Path)
         )
         assert refreshed.ticket.lease_expires_at is not None
         assert refreshed.ticket.lease_expires_at > claimed.ticket.lease_expires_at
+        hard_authority_deadline = min(
+            claimed.compilation.spec.expires_at,
+            claimed.compilation.grant.expires_at,
+        )
+        assert refreshed.ticket.lease_expires_at <= hard_authority_deadline
         assert refreshed.ticket.lease_expires_at > stored_issuance_deadline
     finally:
         repository.close()
@@ -2887,6 +3554,89 @@ def test_expired_issued_replay_ticket_is_abandoned_before_claim(tmp_path: Path) 
         )
     finally:
         repository.close()
+
+
+def test_replay_expiry_prelocks_complete_capacity_graph_in_global_order() -> None:
+    class Result:
+        def __init__(self, rows: list[object]) -> None:
+            self.rows = rows
+
+        def all(self) -> list[object]:
+            return self.rows
+
+    class RecordingSession:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, object]] = []
+            self.execute_results = iter(
+                [
+                    Result([("budget-a", "budget-account-z"), ("budget-b", "budget-account-a")]),
+                    Result([("rate-a", "rate-account-z"), ("rate-b", "rate-account-a")]),
+                ]
+            )
+            self.scalar_results = iter(
+                [
+                    Result(
+                        [
+                            SimpleNamespace(budget_account_id="budget-account-a"),
+                            SimpleNamespace(budget_account_id="budget-account-z"),
+                        ]
+                    ),
+                    Result(
+                        [
+                            SimpleNamespace(rate_account_id="rate-account-a"),
+                            SimpleNamespace(rate_account_id="rate-account-z"),
+                        ]
+                    ),
+                    Result(["budget-a", "budget-b", "budget-sibling"]),
+                    Result(["rate-a", "rate-b", "rate-sibling"]),
+                ]
+            )
+
+        def execute(self, statement: object) -> Result:
+            self.calls.append(("execute", statement))
+            return next(self.execute_results)
+
+        def scalars(self, statement: object) -> Result:
+            self.calls.append(("scalars", statement))
+            return next(self.scalar_results)
+
+    tickets = [
+        SimpleNamespace(budget_reservation_id="budget-a", rate_reservation_id="rate-a"),
+        SimpleNamespace(budget_reservation_id="budget-b", rate_reservation_id="rate-b"),
+    ]
+    recording = RecordingSession()
+    service = object.__new__(ControlPlaneService)
+
+    service._prelock_replay_capacity(recording, tickets)  # type: ignore[arg-type]
+
+    assert [kind for kind, _statement in recording.calls] == [
+        "execute",
+        "execute",
+        "scalars",
+        "scalars",
+        "scalars",
+        "scalars",
+    ]
+    statements = [
+        " ".join(
+            str(
+                statement.compile(  # type: ignore[attr-defined]
+                    dialect=postgresql.dialect(),
+                    compile_kwargs={"literal_binds": False},
+                )
+            ).split()
+        )
+        for _kind, statement in recording.calls
+    ]
+    assert "cp_replay_budget_reservations.budget_reservation_id IN" in statements[0]
+    assert "cp_replay_rate_reservations.rate_reservation_id IN" in statements[1]
+    assert "ORDER BY cp_replay_budget_accounts.budget_account_id" in statements[2]
+    assert "ORDER BY cp_replay_rate_accounts.rate_account_id" in statements[3]
+    assert "cp_replay_budget_reservations.budget_account_id IN" in statements[4]
+    assert "ORDER BY cp_replay_budget_reservations.budget_reservation_id" in statements[4]
+    assert "cp_replay_rate_reservations.rate_account_id IN" in statements[5]
+    assert "ORDER BY cp_replay_rate_reservations.rate_reservation_id" in statements[5]
+    assert all(statement.endswith("FOR UPDATE") for statement in statements[2:])
 
 
 def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_fail(
@@ -3209,5 +3959,1182 @@ def test_ordinary_campaign_lease_expiry_still_requeues_the_same_job(tmp_path: Pa
         assert second.job.job_id == first.job.job_id
         assert second.job.attempts == 2
         assert second.lease_token != first.lease_token
+    finally:
+        repository.close()
+
+
+def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "kisa-exact-execution.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(
+            repository,
+            service,
+            "kisa-exact-execution",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+
+        finalize_request = asyncio.run(executor.execute(claim))
+        assert finalize_request == ReplayFinalizeRequest(
+            executor_profile=EXECUTOR_PROFILE,
+            lease_token=claim.lease_token,
+            ticket_id=claim.ticket.ticket_id,
+            fencing_value=claim.ticket.fencing_value,
+            output_staging_id=claim.execution_context.output_staging_id,
+        )
+        with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+            ReplayFinalizeRequest.model_validate(
+                {
+                    **finalize_request.model_dump(mode="json"),
+                    "result": {"workerVerdict": "confirmed"},
+                    "outputPath": "/tmp/worker-selected",
+                }
+            )
+
+        finalized = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+        assert not (staging_root / finalize_request.output_staging_id).exists()
+        repeated = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+        assert repeated == finalized
+        assert finalized.job.state is JobState.SUCCEEDED
+        assert finalized.ticket.state is ReplayTicketState.FINALIZED
+        assert finalized.item.state is ReplayItemState.GATED
+        assert finalized.batch.state is ReplayBatchState.COMPLETED
+        assert finalized.artifact.producer_run_id == claim.item.replay_run_id
+        assert finalized.artifact.run_id == claim.item.replay_run_id
+        assert finalized.gate_decision.candidate_id == claim.item.candidate_id
+        assert finalized.gate_decision.disposition is FindingDisposition.NEEDS_REVIEW
+        assert finalized.gate_decision.confirmation_basis is None
+        assert finalized.gate_decision.reason_codes == [
+            ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING
+        ]
+        assert finalized.job.result == {
+            "kind": "pajin.replay.finalization.v1",
+            "finalizationId": finalized.finalization_id,
+            "artifactId": finalized.artifact.artifact_id,
+            "repositoryVersion": finalized.artifact.repository_version,
+            "gateDecisionId": finalized.gate_decision.decision_id,
+            "resultDigest": finalized.result_digest,
+        }
+
+        with repository.transaction() as session:
+            permits = list(
+                session.scalars(
+                    select(ReplayToolPermitRecord)
+                    .where(ReplayToolPermitRecord.ticket_id == claim.ticket.ticket_id)
+                    .order_by(ReplayToolPermitRecord.call_ordinal)
+                ).all()
+            )
+            assert [permit.call_ordinal for permit in permits] == list(
+                range(1, claim.compilation.spec.repetitions + 1)
+            )
+            assert len({permit.replay_request_id for permit in permits}) == len(permits)
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
+            budget = session.scalar(
+                select(ReplayBudgetReservationRecord).where(
+                    ReplayBudgetReservationRecord.budget_reservation_id
+                    == claim.ticket.budget_reservation_id
+                )
+            )
+            rate = session.scalar(
+                select(ReplayRateReservationRecord).where(
+                    ReplayRateReservationRecord.rate_reservation_id
+                    == claim.ticket.rate_reservation_id
+                )
+            )
+            assert budget is not None
+            assert rate is not None
+            assert budget.state == "consumed"
+            assert budget.consumed_calls == budget.total_calls == len(permits)
+            assert rate.state == "consumed"
+            assert rate.consumed_request_units == rate.total_request_units
+            replay_event_types = list(
+                session.scalars(
+                    select(ReplayEventRecord.event_type).where(
+                        ReplayEventRecord.ticket_id == claim.ticket.ticket_id
+                    )
+                ).all()
+            )
+            assert replay_event_types.count("replay.output.verified") == 1
+            assert replay_event_types.count("replay.confirmation.gated") == 1
+    finally:
+        repository.close()
+
+
+def test_replay_finalization_rollback_preserves_staging_until_a_committed_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "replay-finalization-rollback.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(
+            repository,
+            service,
+            "replay-finalization-rollback",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        request = asyncio.run(executor.execute(claim))
+        stage = staging_root / request.output_staging_id
+        original_event = service._event
+
+        def reject_transaction_body(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("forced finalization rollback")
+
+        monkeypatch.setattr(service, "_event", reject_transaction_body)
+        with pytest.raises(RuntimeError, match="forced finalization rollback"):
+            service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+
+        assert stage.is_dir()
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
+
+        monkeypatch.setattr(service, "_event", original_event)
+        finalized = service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+
+        assert finalized.job.state is JobState.SUCCEEDED
+        assert not stage.exists()
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 2
+    finally:
+        repository.close()
+
+
+def test_replay_finalization_ambiguous_commit_is_recovered_by_exact_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "replay-finalization-ambiguous-commit.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(
+            repository,
+            service,
+            "replay-finalization-ambiguous-commit",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        request = asyncio.run(executor.execute(claim))
+        stage = staging_root / request.output_staging_id
+        real_transaction = repository.transaction
+        transaction_calls = 0
+
+        @contextmanager
+        def ambiguous_transaction():
+            nonlocal transaction_calls
+            transaction_calls += 1
+            current_call = transaction_calls
+            with real_transaction() as session:
+                yield session
+            if current_call == 2:
+                raise RuntimeError("finalization commit result is ambiguous")
+
+        monkeypatch.setattr(repository, "transaction", ambiguous_transaction)
+        with pytest.raises(RuntimeError, match="commit result is ambiguous"):
+            service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+
+        assert stage.is_dir()
+        with real_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
+            committed_id = session.scalar(select(ReplayFinalizationRecord.finalization_id))
+
+        recovered = service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+
+        assert recovered.finalization_id == committed_id
+        assert not stage.exists()
+        with real_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 2
+    finally:
+        repository.close()
+
+
+def test_replay_finalization_rejects_wrong_capability_and_tampered_sealed_output(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-finalization-tamper.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(
+            repository,
+            service,
+            "replay-finalization-tamper",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        finalize_request = asyncio.run(executor.execute(claim))
+
+        with pytest.raises(LeaseRejected, match="output capability"):
+            service.finalize_replay_job(
+                claim.job.job_id,
+                finalize_request.model_copy(update={"output_staging_id": f"stage_{'f' * 32}"}),
+                actor=actor,
+            )
+
+        run_summary = staging_root / finalize_request.output_staging_id / "run.json"
+        stored_summary = json.loads(run_summary.read_text(encoding="utf-8"))
+        stored_summary["reason"] = "worker-tampered-authoritative-result"
+        run_summary.write_text(
+            json.dumps(stored_summary, ensure_ascii=False, sort_keys=True),
+            encoding="utf-8",
+        )
+        with pytest.raises(StateConflict, match="authoritative verification"):
+            service.finalize_replay_job(
+                claim.job.job_id,
+                finalize_request,
+                actor=actor,
+            )
+
+        assert service.get_job(claim.job.job_id).state is JobState.LEASED
+        assert service.get_replay_ticket(claim.ticket.ticket_id).state is (
+            ReplayTicketState.CLAIMED
+        )
+        assert service.get_replay_item(claim.item.item_id).state is ReplayItemState.RUNNING
+        assert service.get_replay_batch(claim.batch.batch_id).state is ReplayBatchState.RUNNING
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
+    finally:
+        repository.close()
+
+
+def test_replay_worker_rejects_model_valid_retargeted_finalization(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-finalization-client-binding.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+
+    def set_nested(
+        payload: dict[str, Any],
+        path: tuple[str | int, ...],
+        value: Any,
+    ) -> None:
+        target: Any = payload
+        for field_name in path[:-1]:
+            if isinstance(field_name, int):
+                assert isinstance(target, list)
+            else:
+                assert isinstance(target, dict)
+            target = target[field_name]
+        final_field = path[-1]
+        if isinstance(final_field, int):
+            assert isinstance(target, list)
+        else:
+            assert isinstance(target, dict)
+        target[final_field] = value
+
+    def reseal_response(payload: dict[str, Any]) -> ReplayFinalizationView:
+        decision = ValidationDecision.model_validate(payload["gate_decision"])
+        artifact = ArtifactRef.model_validate(payload["artifact"])
+        result_digest = replay_context_digest(
+            {
+                "artifact": artifact.model_dump(mode="json"),
+                "artifactSetDigest": payload["artifact_set_digest"],
+                "artifactSealRootDigest": payload["artifact_seal_root_digest"],
+                "batchId": payload["batch"]["batch_id"],
+                "compilationId": payload["ticket"]["compilation_id"],
+                "fencingValue": payload["ticket"]["fencing_value"],
+                "gateDecisionDigest": replay_context_digest(
+                    decision.model_dump(mode="json", by_alias=True)
+                ),
+                "itemId": payload["item"]["item_id"],
+                "jobId": payload["job"]["job_id"],
+                "receiptSealRootDigest": payload["receipt_seal_root_digest"],
+                "ticketId": payload["ticket"]["ticket_id"],
+            }
+        )
+        payload["result_digest"] = result_digest
+        payload["job"]["result"] = {
+            "kind": "pajin.replay.finalization.v1",
+            "finalizationId": payload["finalization_id"],
+            "artifactId": artifact.artifact_id,
+            "repositoryVersion": artifact.repository_version,
+            "gateDecisionId": decision.decision_id,
+            "resultDigest": result_digest,
+        }
+        return ReplayFinalizationView.model_validate(payload)
+
+    try:
+        _create_batch(
+            repository,
+            service,
+            "replay-finalization-client-binding",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        request = asyncio.run(executor.execute(claim))
+        finalized = service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+        ReplayWorkerDaemon._validate_finalization(claim, finalized)
+        check_indexes = {
+            check.check_id: index for index, check in enumerate(finalized.gate_decision.checks)
+        }
+        reproduction_check_index = check_indexes["independent-reproduction"]
+        receipt_check_index = check_indexes["replay-receipt-integrity"]
+
+        retargeted_run_id = f"run_{'9' * 32}"
+        mutations = (
+            (
+                "Job payload authority",
+                ((("job", "payload", "candidate_id"), "candidate-payload-retargeted"),),
+            ),
+            ("Job priority", ((("job", "priority"), 137),)),
+            (
+                "Job identity graph",
+                (
+                    (("job", "job_id"), f"job_{'9' * 32}"),
+                    (("ticket", "job_id"), f"job_{'9' * 32}"),
+                ),
+            ),
+            (
+                "batch identity graph",
+                (
+                    (("batch", "batch_id"), f"replay-batch_{'9' * 32}"),
+                    (("item", "batch_id"), f"replay-batch_{'9' * 32}"),
+                    (("ticket", "batch_id"), f"replay-batch_{'9' * 32}"),
+                    (("job", "payload", "batch_id"), f"replay-batch_{'9' * 32}"),
+                ),
+            ),
+            (
+                "item identity graph",
+                (
+                    (("item", "item_id"), f"replay-item_{'9' * 32}"),
+                    (("ticket", "item_id"), f"replay-item_{'9' * 32}"),
+                    (("job", "payload", "item_id"), f"replay-item_{'9' * 32}"),
+                ),
+            ),
+            (
+                "Replay Run identity graph",
+                (
+                    (("job", "run_id"), retargeted_run_id),
+                    (("item", "replay_run_id"), retargeted_run_id),
+                    (("ticket", "replay_run_id"), retargeted_run_id),
+                    (("artifact", "producer_run_id"), retargeted_run_id),
+                    (("artifact", "run_id"), retargeted_run_id),
+                    (("gate_decision", "replay_lineage", 0, "replay_run_id"), retargeted_run_id),
+                    (("job", "payload", "replay_run_id"), retargeted_run_id),
+                ),
+            ),
+            (
+                "batch source digest",
+                ((("batch", "source", "content_digest"), "f" * 64),),
+            ),
+            ("batch policy", ((("batch", "policy_version"), "policy-retargeted"),)),
+            (
+                "Candidate identity",
+                (
+                    (("item", "candidate_id"), "candidate-retargeted"),
+                    (("gate_decision", "candidate_id"), "candidate-retargeted"),
+                    (("job", "payload", "candidate_id"), "candidate-retargeted"),
+                ),
+            ),
+            (
+                "Candidate digest",
+                (
+                    (("item", "candidate_digest"), "f" * 64),
+                    (("job", "payload", "candidate_digest"), "f" * 64),
+                ),
+            ),
+            (
+                "contract digest",
+                (
+                    (("item", "contract_digest"), "e" * 64),
+                    (("job", "payload", "contract_digest"), "e" * 64),
+                ),
+            ),
+            (
+                "compilation digest",
+                (
+                    (("item", "compilation_digest"), "d" * 64),
+                    (("job", "payload", "compilation_digest"), "d" * 64),
+                ),
+            ),
+            (
+                "grant digest",
+                (
+                    (("item", "grant_digest"), "c" * 64),
+                    (("job", "payload", "grant_digest"), "c" * 64),
+                ),
+            ),
+            (
+                "ticket compilation",
+                (
+                    (("ticket", "compilation_id"), f"replay-compilation_{'9' * 32}"),
+                    (("job", "payload", "compilation_id"), f"replay-compilation_{'9' * 32}"),
+                ),
+            ),
+            (
+                "ticket reservations",
+                (
+                    (("ticket", "budget_reservation_id"), f"budget-reservation_{'9' * 32}"),
+                    (("ticket", "rate_reservation_id"), f"rate-reservation_{'9' * 32}"),
+                    (
+                        ("job", "payload", "budget_reservation_id"),
+                        f"budget-reservation_{'9' * 32}",
+                    ),
+                    (
+                        ("job", "payload", "rate_reservation_id"),
+                        f"rate-reservation_{'9' * 32}",
+                    ),
+                ),
+            ),
+            (
+                "attempt and fence",
+                (
+                    (("job", "attempts"), 2),
+                    (("job", "max_attempts"), 2),
+                    (("item", "attempts"), 2),
+                    (("ticket", "attempt"), 2),
+                    (("ticket", "fencing_value"), 2),
+                    (("job", "payload", "attempt"), 2),
+                    (("job", "payload", "fencing_value"), 2),
+                ),
+            ),
+            (
+                "Worker principal",
+                (
+                    (("job", "lease_owner"), "replay-worker-retargeted"),
+                    (("ticket", "claimed_by"), "replay-worker-retargeted"),
+                    (("artifact", "created_by"), "replay-worker-retargeted"),
+                    (("finalized_by",), "replay-worker-retargeted"),
+                ),
+            ),
+            (
+                "Candidate source lineage",
+                (
+                    (
+                        ("gate_decision", "replay_lineage", 0, "candidate_source_root_digest"),
+                        "b" * 64,
+                    ),
+                ),
+            ),
+            ("Gate validator", ((("gate_decision", "validator_id"), "untrusted-gate"),)),
+            ("Gate decision identity", ((("gate_decision", "decision_id"), "forged-decision"),)),
+            (
+                "Gate reason matrix",
+                (
+                    (("gate_decision", "reason_codes"), ["validator-confirmed"]),
+                    (
+                        (
+                            "gate_decision",
+                            "checks",
+                            reproduction_check_index,
+                            "reason_code",
+                        ),
+                        "validator-confirmed",
+                    ),
+                ),
+            ),
+            (
+                "Gate receipt check",
+                (
+                    (
+                        ("gate_decision", "checks", receipt_check_index, "status"),
+                        "fail",
+                    ),
+                    (
+                        (
+                            "gate_decision",
+                            "checks",
+                            receipt_check_index,
+                            "reason_code",
+                        ),
+                        "replay-execution-failed",
+                    ),
+                ),
+            ),
+            ("output media type", ((("artifact", "media_type"), "application/octet-stream"),)),
+            ("output schema", ((("artifact", "schema_kind"), "forged.output.v1"),)),
+        )
+
+        for label, assignments in mutations:
+            payload = finalized.model_dump(mode="python")
+            for path, value in assignments:
+                set_nested(payload, path, value)
+            forged = reseal_response(payload)
+            try:
+                ReplayWorkerDaemon._validate_finalization(claim, forged)
+            except ControlPlaneProtocolError:
+                continue
+            pytest.fail(f"model-valid retargeted Replay finalization was accepted: {label}")
+    finally:
+        repository.close()
+
+
+def test_replay_finalization_rejects_managed_source_root_substitution_on_reopen(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "replay-finalization-source-substitution.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(
+            repository,
+            service,
+            "replay-finalization-source-substitution",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        request = asyncio.run(executor.execute(claim))
+
+        artifact_repository = service._require_artifact_repository()
+        original_source = artifact_repository.resolve(claim.batch.source)
+        replacement_stage_id = f"stage_{sha256(b'managed-source-replacement').hexdigest()[:32]}"
+        replacement_stage = staging_root / replacement_stage_id
+        shutil.copytree(original_source.path, replacement_stage)
+        replacement_store = RunStore(
+            run_id=original_source.ref.run_id,
+            path=replacement_stage,
+        )
+        replacement_store.write_text(
+            "substitution-marker.txt",
+            "same validation artifacts under a different sealed root",
+        )
+        replacement_store.seal()
+        replacement_source = artifact_repository.import_run(
+            staging_id=replacement_stage_id,
+            producer_run_id=original_source.ref.producer_run_id,
+            media_type=original_source.ref.media_type,
+            schema_kind=original_source.ref.schema_kind,
+            created_by=original_source.ref.created_by,
+        )
+        assert replacement_source.ref.run_id == original_source.ref.run_id
+        assert (
+            replacement_source.ref.integrity_root_digest
+            != original_source.ref.integrity_root_digest
+        )
+
+        real_load = control_plane_service_module.load_source_validation_artifacts
+        observed_authority: list[tuple[str | None, str | None]] = []
+
+        def substitute_managed_source(
+            _run_path: Path,
+            *,
+            expected_run_id: str | None = None,
+            expected_root_digest: str | None = None,
+        ):
+            observed_authority.append((expected_run_id, expected_root_digest))
+            return real_load(
+                replacement_source.path,
+                expected_run_id=expected_run_id,
+                expected_root_digest=expected_root_digest,
+            )
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "load_source_validation_artifacts",
+            substitute_managed_source,
+        )
+        with pytest.raises(StateConflict, match="managed Replay source validation"):
+            service.finalize_replay_job(claim.job.job_id, request, actor=actor)
+
+        assert observed_authority == [
+            (
+                original_source.ref.run_id,
+                original_source.ref.integrity_root_digest,
+            )
+        ]
+        assert service.get_job(claim.job.job_id).state is JobState.LEASED
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
+    finally:
+        repository.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_worker_daemon_executes_heartbeats_and_reconciles_finalization(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-daemon-e2e.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    status_path = tmp_path / "replay-worker-status.json"
+    try:
+        await asyncio.to_thread(
+            _create_batch,
+            repository,
+            service,
+            "replay-daemon-e2e",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        port = _ReplayDaemonServicePort(
+            service,
+            actor=actor,
+            drop_first_permit_response=True,
+            drop_first_finalize_response=True,
+            mutate_retained_claim=True,
+        )
+        port.status_path = status_path
+        backend = _trusted_replay_backend()
+        original_run = backend.run
+        running_statuses: list[ReplayWorkerStatus] = []
+
+        async def delayed_run(job: WorkerJob, *, secrets: object = None) -> WorkerResult:
+            del secrets
+            running_statuses.append(
+                ReplayWorkerStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+            )
+            await asyncio.sleep(0.08)
+            return await original_run(job)
+
+        backend.run = delayed_run  # type: ignore[method-assign]
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=port,
+            staging_root=staging_root,
+            worker=backend,
+            retry_base_seconds=0.05,
+            retry_max_seconds=0.05,
+        )
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=executor,
+            config=ReplayWorkerConfig(
+                worker_id=actor,
+                lease_seconds=5,
+                heartbeat_seconds=0.05,
+                long_poll_seconds=0,
+                retry_base_seconds=0.15,
+                retry_max_seconds=0.15,
+                finalize_attempts=3,
+                cancellation_grace_seconds=0.05,
+                cancellation_force_seconds=0.5,
+                status_path=status_path,
+            ),
+        )
+
+        assert await daemon.run_once() is True
+        assert port.claimed is not None
+        assert port.original_claim is not None
+        claim = port.original_claim
+        assert port.claimed.job.job_id != claim.job.job_id
+        assert set(port.heartbeat_job_ids) == {claim.job.job_id}
+        assert set(port.permit_job_ids) == {claim.job.job_id}
+        assert set(port.finalize_job_ids) == {claim.job.job_id}
+        assert port.heartbeat_calls >= 2
+        assert port.permit_calls == 3
+        assert port.finalize_calls == 2
+        assert running_statuses
+        assert all(status.state == "running" for status in running_statuses)
+        assert port.finalizing_statuses
+        assert all(status.state == "finalizing" for status in port.finalizing_statuses)
+
+        status_payload = json.loads(status_path.read_text(encoding="utf-8"))
+        status = ReplayWorkerStatus.model_validate(status_payload)
+        assert status.state == "idle"
+        assert status.handled_replays == 1
+        assert status.active_job_id is None
+        serialized_status = json.dumps(status_payload, sort_keys=True)
+        assert claim.lease_token not in serialized_status
+        assert claim.execution_context.output_staging_id not in serialized_status
+
+        with repository.transaction() as session:
+            permits = list(
+                session.scalars(
+                    select(ReplayToolPermitRecord)
+                    .where(ReplayToolPermitRecord.ticket_id == claim.ticket.ticket_id)
+                    .order_by(ReplayToolPermitRecord.call_ordinal)
+                ).all()
+            )
+            assert [permit.call_ordinal for permit in permits] == [1, 2]
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
+            event_types = list(
+                session.scalars(
+                    select(ReplayEventRecord.event_type).where(
+                        ReplayEventRecord.ticket_id == claim.ticket.ticket_id
+                    )
+                ).all()
+            )
+            assert event_types.count("replay.output.verified") == 1
+            assert event_types.count("replay.confirmation.gated") == 1
+    finally:
+        repository.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_worker_stalled_heartbeat_quiesces_before_reclaim_overlap(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-daemon-deadline.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    claim_received = asyncio.Event()
+
+    class StalledHeartbeatPort(_ReplayDaemonServicePort):
+        async def claim_replay(
+            self,
+            request: ReplayClaimRequest,
+        ) -> ReplayExecutionClaimView | None:
+            claim = await super().claim_replay(request)
+            assert claim is not None
+            server_now = datetime.now(UTC)
+            claim = claim.model_copy(
+                update={
+                    "job": claim.job.model_copy(
+                        update={
+                            "heartbeat_at": server_now,
+                            "updated_at": server_now,
+                            "lease_expires_at": server_now + timedelta(seconds=0.15),
+                        }
+                    ),
+                    "ticket": claim.ticket.model_copy(
+                        update={
+                            "updated_at": server_now,
+                            "lease_expires_at": server_now + timedelta(seconds=0.15),
+                        }
+                    ),
+                }
+            )
+            self.claimed = claim
+            self.original_claim = claim.model_copy(deep=True)
+            claim_received.set()
+            return claim
+
+        async def heartbeat_replay(
+            self,
+            job_id: str,
+            request: ReplayLeaseRequest,
+        ) -> ReplayExecutionClaimView:
+            del job_id, request
+            self.heartbeat_calls += 1
+            await asyncio.Event().wait()
+            raise AssertionError("stalled Replay heartbeat unexpectedly resumed")
+
+    class RepeatingReplayExecutor:
+        profile = EXECUTOR_PROFILE
+
+        def __init__(self, *, reclaim_started: asyncio.Event) -> None:
+            self.side_effects = 0
+            self.overlap_side_effects = 0
+            self.stopped = asyncio.Event()
+            self.reclaim_started = reclaim_started
+
+        async def execute(self, _claim, *, cancellation=None):
+            del cancellation
+            try:
+                while True:
+                    self.side_effects += 1
+                    if self.reclaim_started.is_set():
+                        self.overlap_side_effects += 1
+                    await asyncio.sleep(0.01)
+            finally:
+                self.stopped.set()
+
+    try:
+        await asyncio.to_thread(
+            _create_batch,
+            repository,
+            service,
+            "replay-daemon-deadline",
+        )
+        port = StalledHeartbeatPort(service, actor=actor)
+        reclaim_started = asyncio.Event()
+        executor = RepeatingReplayExecutor(reclaim_started=reclaim_started)
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=executor,
+            config=ReplayWorkerConfig(
+                worker_id=actor,
+                lease_seconds=5,
+                heartbeat_seconds=0.05,
+                long_poll_seconds=0,
+                cancellation_grace_seconds=0.05,
+                cancellation_force_seconds=0.25,
+            ),
+        )
+
+        async def mark_reclaim_after_fresh_lease() -> None:
+            await claim_received.wait()
+            await asyncio.sleep(0.16)
+            reclaim_started.set()
+
+        reclaim_timer = asyncio.create_task(mark_reclaim_after_fresh_lease())
+
+        with pytest.raises(ControlPlaneLeaseLost, match="local Replay lease deadline"):
+            await asyncio.wait_for(daemon.run_once(), timeout=1)
+        await reclaim_timer
+
+        await asyncio.wait_for(executor.stopped.wait(), timeout=0.25)
+        effects_at_reclaim = executor.side_effects
+        await asyncio.sleep(0.08)
+        assert executor.side_effects == effects_at_reclaim
+        assert reclaim_started.is_set()
+        assert executor.overlap_side_effects == 0
+        assert port.finalize_calls == 0
+    finally:
+        repository.close()
+
+
+@pytest.mark.asyncio
+async def test_replay_local_deadline_wins_over_simultaneous_stale_finalization() -> None:
+    daemon = ReplayWorkerDaemon(
+        client=SimpleNamespace(),
+        executor=SimpleNamespace(profile=EXECUTOR_PROFILE),
+        config=ReplayWorkerConfig(
+            worker_id="replay-worker-a",
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            cancellation_grace_seconds=0.05,
+            cancellation_force_seconds=0.25,
+        ),
+    )
+
+    async def stale_finalization():
+        return None
+
+    async def expired_heartbeat() -> None:
+        raise ControlPlaneLocalLeaseDeadlineExceeded("local Replay lease deadline elapsed")
+
+    finalization = asyncio.create_task(stale_finalization())
+    heartbeat = asyncio.create_task(expired_heartbeat())
+    await asyncio.sleep(0)
+
+    with pytest.raises(ControlPlaneLocalLeaseDeadlineExceeded):
+        await daemon._await_finalization_with_heartbeat(  # type: ignore[arg-type]
+            finalization,
+            heartbeat,
+            lease_deadline=MonotonicLeaseDeadline(expires_at=asyncio.get_running_loop().time() + 1),
+        )
+
+
+@pytest.mark.asyncio
+async def test_replay_finalization_reconciliation_cannot_outlive_local_lease() -> None:
+    daemon = ReplayWorkerDaemon(
+        client=SimpleNamespace(),
+        executor=SimpleNamespace(profile=EXECUTOR_PROFILE),
+        config=ReplayWorkerConfig(
+            worker_id="replay-worker-a",
+            lease_seconds=5,
+            heartbeat_seconds=0.05,
+            long_poll_seconds=0,
+            cancellation_grace_seconds=0.05,
+            cancellation_force_seconds=0.5,
+        ),
+    )
+
+    async def stalled_finalization():
+        await asyncio.Event().wait()
+
+    async def terminal_heartbeat() -> None:
+        raise ControlPlaneLeaseLost("server heartbeat rejected the lease")
+
+    finalization = asyncio.create_task(stalled_finalization())
+    heartbeat = asyncio.create_task(terminal_heartbeat())
+    deadline = MonotonicLeaseDeadline(expires_at=asyncio.get_running_loop().time() + 0.1)
+
+    with pytest.raises(
+        ControlPlaneLocalLeaseDeadlineExceeded,
+        match="finalization reconciliation",
+    ):
+        await asyncio.wait_for(
+            daemon._await_finalization_with_heartbeat(  # type: ignore[arg-type]
+                finalization,
+                heartbeat,
+                lease_deadline=deadline,
+            ),
+            timeout=0.4,
+        )
+
+    assert finalization.done()
+
+
+@pytest.mark.asyncio
+async def test_replay_worker_daemon_forced_cancellation_seals_quiescence(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-daemon-cancel.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    status_path = tmp_path / "replay-worker-cancel-status.json"
+    try:
+        await asyncio.to_thread(
+            _create_batch,
+            repository,
+            service,
+            "replay-daemon-cancel",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        port = _ReplayDaemonServicePort(service, actor=actor)
+        backend = _trusted_replay_backend()
+        started = asyncio.Event()
+        never = asyncio.Event()
+        cancellation_count = 0
+
+        async def stubborn_run(job: WorkerJob, *, secrets: object = None) -> WorkerResult:
+            nonlocal cancellation_count
+            del job, secrets
+            started.set()
+            while True:
+                try:
+                    await never.wait()
+                except asyncio.CancelledError:
+                    cancellation_count += 1
+                    if cancellation_count == 1:
+                        continue
+                    raise
+
+        backend.run = stubborn_run  # type: ignore[method-assign]
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=port,
+            staging_root=staging_root,
+            worker=backend,
+        )
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=executor,
+            config=ReplayWorkerConfig(
+                worker_id=actor,
+                lease_seconds=5,
+                heartbeat_seconds=0.05,
+                long_poll_seconds=0,
+                cancellation_grace_seconds=0.05,
+                cancellation_force_seconds=0.5,
+                status_path=status_path,
+            ),
+        )
+
+        daemon_task = asyncio.create_task(daemon.run_once())
+        await asyncio.wait_for(started.wait(), timeout=2)
+        assert port.claimed is not None
+        claim = port.claimed
+        service.cancel_run(
+            claim.job.run_id,
+            CancelRunRequest(reason="operator cancelled active Replay daemon"),
+            actor="replay-operator",
+        )
+        with pytest.raises(ControlPlaneRunCancelled):
+            await asyncio.wait_for(daemon_task, timeout=3)
+
+        stage = staging_root / claim.execution_context.output_staging_id
+        cancellation = json.loads((stage / "cancellation.json").read_text(encoding="utf-8"))
+        quiescence = json.loads((stage / "quiescence.json").read_text(encoding="utf-8"))
+        assert cancellation["cancellation"]["kind"] == "run-cancelled"
+        assert quiescence["cancellation"]["cleanupStatus"] == "quiesced"
+        assert quiescence["cancellation"]["forcedAt"] is not None
+        assert cancellation_count >= 2
+        assert verify_run_integrity(stage).seal_count >= 3
+        assert port.finalize_calls == 0
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
+
+        status = ReplayWorkerStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+        assert status.state == "lease-lost"
+        assert status.last_cancellation is not None
+        assert status.last_cancellation.kind.value == "run-cancelled"
+        assert status.last_cancellation.forced_at is not None
+    finally:
+        repository.close()
+
+
+def test_replay_executor_rejects_symlinked_staging_capabilities(tmp_path: Path) -> None:
+    database_path = tmp_path / "replay-staging-symlink.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        _create_batch(repository, service, "replay-staging-symlink")
+        claim = _claim(service, actor=actor)
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        stage = staging_root / claim.execution_context.output_staging_id
+        sibling = staging_root / "owner-controlled-sibling"
+        sibling.mkdir(mode=0o700)
+        stage.rmdir()
+        stage.symlink_to(sibling, target_is_directory=True)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+
+        with pytest.raises(PermissionError, match="symbolic links"):
+            asyncio.run(executor.execute(claim))
+        assert not any(sibling.iterdir())
+
+        root_link = tmp_path / "staging-root-link"
+        root_link.symlink_to(staging_root, target_is_directory=True)
+        with pytest.raises(PermissionError, match="symbolic links"):
+            KISAExactReplayExecutor(
+                client=_ReplayServicePort(service, actor=actor),
+                staging_root=root_link,
+                worker=_trusted_replay_backend(),
+            )
+    finally:
+        repository.close()
+
+
+def test_replay_worker_daemon_exhausts_exact_permit_retry_and_reports_degraded(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-daemon-transient.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    status_path = tmp_path / "replay-worker-transient-status.json"
+    transient_secret = "replay-transport-secret-MUST-NOT-PERSIST"
+    try:
+        _create_batch(repository, service, "replay-daemon-transient")
+        port = _ReplayDaemonServicePort(
+            service,
+            actor=actor,
+            permit_transient_failures_before_server=3,
+            transient_error_detail=transient_secret,
+        )
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=port,
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+            permit_attempts=3,
+            retry_base_seconds=0.05,
+            retry_max_seconds=0.05,
+        )
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=executor,
+            config=ReplayWorkerConfig(
+                worker_id=actor,
+                lease_seconds=5,
+                heartbeat_seconds=0.05,
+                long_poll_seconds=0,
+                cancellation_grace_seconds=0.05,
+                cancellation_force_seconds=0.5,
+                status_path=status_path,
+            ),
+        )
+
+        with pytest.raises(ControlPlaneTransientError):
+            asyncio.run(daemon.run_once())
+        assert port.claimed is not None
+        claim = port.claimed
+        assert port.permit_calls == 3
+        assert port.finalize_calls == 0
+        status = ReplayWorkerStatus.model_validate_json(status_path.read_text(encoding="utf-8"))
+        assert status.state == "degraded"
+        assert status.last_cancellation is not None
+        assert status.last_cancellation.kind.value == "heartbeat-unavailable"
+        assert status.last_cancellation.cleanup_status.value == "executor-drained"
+        stage = staging_root / claim.execution_context.output_staging_id
+        quiescence = json.loads((stage / "quiescence.json").read_text(encoding="utf-8"))
+        assert quiescence["cancellation"]["cleanupStatus"] == "quiesced"
+        persisted_text = (
+            status_path.read_text(encoding="utf-8")
+            + "\n"
+            + "\n".join(
+                path.read_text(encoding="utf-8") for path in stage.rglob("*") if path.is_file()
+            )
+        )
+        assert transient_secret not in persisted_text
+        assert verify_run_integrity(stage).valid
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayToolPermitRecord)) == 0
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
+    finally:
+        repository.close()
+
+
+def test_replay_worker_daemon_unexpected_executor_failure_reports_crashed(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "replay-daemon-crashed.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    status_path = tmp_path / "replay-worker-crashed-status.json"
+
+    class CrashingExecutor:
+        profile = EXECUTOR_PROFILE
+
+        async def execute(self, _claim, *, cancellation=None):
+            del cancellation
+            raise RuntimeError("untrusted detail must not enter status")
+
+    try:
+        _create_batch(repository, service, "replay-daemon-crashed")
+        port = _ReplayDaemonServicePort(service, actor=actor)
+        daemon = ReplayWorkerDaemon(
+            client=port,
+            executor=CrashingExecutor(),
+            config=ReplayWorkerConfig(
+                worker_id=actor,
+                lease_seconds=5,
+                heartbeat_seconds=0.05,
+                long_poll_seconds=0,
+                cancellation_grace_seconds=0.05,
+                cancellation_force_seconds=0.5,
+                status_path=status_path,
+            ),
+        )
+
+        with pytest.raises(RuntimeError, match="untrusted detail"):
+            asyncio.run(daemon.run_once())
+        status_payload = status_path.read_text(encoding="utf-8")
+        status = ReplayWorkerStatus.model_validate_json(status_payload)
+        assert status.state == "crashed"
+        assert status.last_error == "Replay executor crashed: RuntimeError"
+        assert "untrusted detail" not in status_payload
+        assert port.finalize_calls == 0
+        with repository.transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 0
     finally:
         repository.close()

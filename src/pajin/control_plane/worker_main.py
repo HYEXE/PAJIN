@@ -3,67 +3,103 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import signal
 import socket
 from pathlib import Path
 
 from pajin.control_plane.client import ControlPlaneClient
+from pajin.control_plane.daemon_runtime import (
+    env,
+    float_env,
+    install_stop_event,
+    integer_env,
+    literal_bool_env,
+    required_env,
+)
 from pajin.control_plane.executors import (
     CampaignJobExecutor,
     ExecutorRegistry,
     ToolLoopJobExecutor,
 )
 from pajin.control_plane.models import JobKind
+from pajin.control_plane.status_file import default_worker_status_path
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig
+
+_PLAINTEXT_LAB_ENV = "PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB"
 
 
 def _required_env(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise RuntimeError(f"missing required Worker daemon setting: {name}")
-    return value
+    return required_env(name, owner="Worker daemon")
+
+
+def _plaintext_http_for_lab_enabled() -> bool:
+    return literal_bool_env(_PLAINTEXT_LAB_ENV, owner="Worker daemon")
 
 
 async def run_from_env() -> None:
-    output_root = Path(os.environ.get("PAJIN_DAEMON_OUTPUT_ROOT", ".pajin/daemon-runs")).resolve()
+    output_root = Path(
+        env(
+            "PAJIN_DAEMON_OUTPUT_ROOT",
+            ".pajin/daemon-runs",
+            owner="Worker daemon",
+        )
+    ).resolve()
     executors = ExecutorRegistry(
         [
             CampaignJobExecutor(output_root=output_root),
             ToolLoopJobExecutor(output_root=output_root),
         ]
     )
-    raw_kinds = os.environ.get("PAJIN_DAEMON_KINDS", "campaign,tool-loop")
+    raw_kinds = env(
+        "PAJIN_DAEMON_KINDS",
+        "campaign,tool-loop",
+        owner="Worker daemon",
+    )
     kinds = [JobKind(item.strip()) for item in raw_kinds.split(",") if item.strip()]
     config = WorkerDaemonConfig(
-        worker_id=os.environ.get("PAJIN_WORKER_ID", f"worker-{socket.gethostname().lower()}"),
+        worker_id=env(
+            "PAJIN_WORKER_ID",
+            f"worker-{socket.gethostname().lower()}",
+            owner="Worker daemon",
+        ),
         kinds=kinds,
-        lease_seconds=int(os.environ.get("PAJIN_DAEMON_LEASE_SECONDS", "15")),
-        heartbeat_seconds=float(os.environ.get("PAJIN_DAEMON_HEARTBEAT_SECONDS", "5")),
-        cancellation_grace_seconds=float(
-            os.environ.get("PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS", "2")
+        lease_seconds=integer_env(
+            "PAJIN_DAEMON_LEASE_SECONDS",
+            15,
+            owner="Worker daemon",
         ),
-        cancellation_force_seconds=float(
-            os.environ.get("PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS", "5")
+        heartbeat_seconds=float_env(
+            "PAJIN_DAEMON_HEARTBEAT_SECONDS",
+            5,
+            owner="Worker daemon",
         ),
-        long_poll_seconds=int(os.environ.get("PAJIN_DAEMON_LONG_POLL_SECONDS", "10")),
+        cancellation_grace_seconds=float_env(
+            "PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS",
+            2,
+            owner="Worker daemon",
+        ),
+        cancellation_force_seconds=float_env(
+            "PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS",
+            5,
+            owner="Worker daemon",
+        ),
+        long_poll_seconds=integer_env(
+            "PAJIN_DAEMON_LONG_POLL_SECONDS",
+            10,
+            owner="Worker daemon",
+        ),
         status_path=Path(
-            os.environ.get("PAJIN_DAEMON_STATUS_PATH", "/tmp/pajin-worker-status.json")
+            env(
+                "PAJIN_DAEMON_STATUS_PATH",
+                str(default_worker_status_path()),
+                owner="Worker daemon",
+            )
         ),
     )
-    stop = asyncio.Event()
-    loop = asyncio.get_running_loop()
-    for selected_signal in (signal.SIGINT, signal.SIGTERM):
-        try:
-            loop.add_signal_handler(selected_signal, stop.set)
-        except (NotImplementedError, RuntimeError):
-            signal.signal(
-                selected_signal,
-                lambda _signum, _frame: loop.call_soon_threadsafe(stop.set),
-            )
+    stop = install_stop_event()
     async with ControlPlaneClient(
         base_url=_required_env("PAJIN_CP_URL"),
         bearer_token=_required_env("PAJIN_CP_WORKER_TOKEN"),
+        allow_plaintext_http_for_lab=_plaintext_http_for_lab_enabled(),
     ) as client:
         daemon = WorkerDaemon(client=client, executors=executors, config=config)
         await daemon.run_forever(stop)

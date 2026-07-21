@@ -8,11 +8,23 @@
 - 구현: 진행 중. 제한적 replay, receipt를 다시 로드하는 공통 확인/retest Gate,
   append-only 버전형 validation projection, 정확한 KISA fresh-session 통합,
   baseline-bound negative KISA retest, 영속적 Local SQLite ticket 검증, 명시적인
-  단일 프로세스 Local KISA orchestration은 구현되었으며, Control Plane orchestration과
-  추가 Mode는 계획 상태
+  단일 프로세스 Local KISA orchestration은 구현되었다. 전용 exact-KISA Control Plane의
+  claim → permit → execute/seal → server import/finalize → one-item 공통 Gate 수직 조각도
+  구현되었다. Public Replay admission/read API, 자동 fresh-identity retry 발행, negative
+  Control Plane retest, 추가 Mode는 계획 상태
 - 개정 대상: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.ko.md), [ADR 0026](0026-trusted-kisa-candidate-admission.ko.md)
 - 명확히 하는 문서: [ADR 0004](0004-dynamic-multi-agent-execution.ko.md)
 - 제품 기준선: [PAJIN 제품 계획](../PAJIN_PRODUCT_PLAN.ko.md)
+
+> **규범적 보안 정정(2026-07-19):** typed transcript, Worker/proxy receipt, ticket finalization,
+> hash, 로컬 seal은 내부 일관성과 lineage만 증명한다. source/replay Worker trust domain 밖에서
+> 의도한 target이 실행됐다는 사실은 증명하지 못한다. 따라서 제품 confirmation에는 독립적으로
+> 검증 가능한 execution/target attestation도 필요하다. 현재 저장소에는 그러한 verifier가 없으므로
+> 모든 Local·CLI·Control Plane Worker-only supporting replay는
+> `independent-execution-attestation-missing` 사유와 `verified-replay-evidence` 의미를 가진
+> `needs-review`로 제한된다. 공개 deterministic-lab response tuple을 포함한 negative target
+> transcript도 remediation proof가 아니며 `inconclusive`로 남는다. 이 정정은 아래의
+> `CONFIRMED` 또는 `FIXED` 승격 규칙보다 우선하며, 해당 문단은 이전 설계 기록으로만 본다.
 
 ## 맥락
 
@@ -43,9 +55,11 @@ Candidate가 제품 수준의 `confirmed`가 되려면 적용 가능한 다음 �
 4. 재현은 새로운 request identity와 별개의 evidence lineage를 사용한다.
 5. Mode 소유의 typed Oracle이 재현 관찰로부터 정확한 주장을 뒷받침한다.
 6. Mode가 의미론적 해석이 필요하다고 선언한 경우 Semantic Validator도 주장을 뒷받침한다.
+7. source/replay Worker trust domain 밖의 authority가 의도한 target의 실행을 독립적으로 attest한다.
 
 의미론적 지지, 원본 증거의 강도, producer 입장, Specialist의 반복 관찰 또는 사람의 확신은
-성공적인 독립 `ReplayOutcome`을 대신할 수 없다.
+성공적인 `ReplayOutcome`과 독립 실행 attestation을 대신할 수 없다. 별도 Run, request ID,
+process, backend instance 또는 로컬 sealed receipt만으로는 별도 trust domain이 아니다.
 
 ### Validator는 하나의 LLM Agent가 아니라 파이프라인이다
 
@@ -181,6 +195,18 @@ Candidate, Run, 원본 및 replay request, Mode, scenario, Tool, target, threat 
 명시적인 ReplayOutcome 참조를 부여한다. `ai.chat-probe` Tool 해석, 신뢰할 수 있는 Candidate
 생성, 결정론적 validation은 Worker verdict field를 신뢰하지 않고 다시 계산하면서 동일한
 strict `AIChatProbeOutput` contract를 공유한다.
+
+semantic authority 경계는 in-memory뿐 아니라 durable해야 한다. 각 validation phase는 정확한
+Validator Agent/Task identity, Finding, Candidate assessment를 같은 봉인 source Run의
+`validator-output.json`에 기록한다. 각 assessment는 정확한 canonical Candidate claim digest에
+결박되고 positive support는 비어 있지 않은 evidence를 인용해야 한다. legacy Finding에서 변환한
+CP-eligible KISA output은 Candidate의 전체 evidence list를 인용하고, 모든 semantic field가 동일한
+validated Validator Finding과 1:1로 일치해야 한다. trusted Candidate-aware adapter는 legacy
+Finding의 opaque ID와 validation-state field만 정규화한다. Control Plane replay derivation을 포함한
+durable consumer는 이 bytes를 다시 읽어 deterministic Gate를 replay해야 하며, Candidate 자체나
+저장된 lifecycle state에서 Validator support를 추론하거나 합성해서는 안 된다. 이 결박은 Validator가
+평가한 내용만 증명한다. 독립 execution attestation, 성공한 `ReplayOutcome`, 제품 `confirmed`,
+`fixed`를 위한 remediation evidence를 제공하지 않는다.
 
 PAJIN은 pure deterministic `ReplayCompiler`도 구현한다. 이 Compiler는 신뢰할 수 있는 Plan,
 실제 Specialist-bound `ToolRequest`, 원본 Specialist Grant, Candidate evidence, 신뢰할 수 있는

@@ -3,21 +3,308 @@
 from __future__ import annotations
 
 import json
+import math
 from collections.abc import Mapping
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, time, timedelta
 from enum import Enum, StrEnum
 from hashlib import sha256
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.validation import ValidationDecision
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.tools.base import ToolSpec
 
 KISA_EXACT_REPLAY_EXECUTOR_PROFILE: Literal["kisa-exact-v1"] = "kisa-exact-v1"
+
+
+@dataclass(frozen=True, slots=True)
+class JsonResourcePolicy:
+    """One explicit resource budget for an untrusted Control Plane JSON object."""
+
+    max_bytes: int
+    max_depth: int
+    max_nodes: int
+    max_keys: int
+    max_string_bytes: int
+    max_key_bytes: int = 1_024
+
+    def __post_init__(self) -> None:
+        values = (
+            self.max_bytes,
+            self.max_depth,
+            self.max_nodes,
+            self.max_keys,
+            self.max_string_bytes,
+            self.max_key_bytes,
+        )
+        if any(type(value) is not int or value < 1 for value in values):
+            raise ValueError("Control Plane JSON policy limits must be positive integers")
+        if self.max_string_bytes > self.max_bytes or self.max_key_bytes > self.max_bytes:
+            raise ValueError("Control Plane JSON text limits cannot exceed the byte limit")
+
+
+SUBMIT_RUN_INPUT_JSON_POLICY = JsonResourcePolicy(
+    max_bytes=1_000_000,
+    max_depth=24,
+    max_nodes=20_000,
+    max_keys=10_000,
+    max_string_bytes=1_000_000,
+)
+COMPLETE_JOB_RESULT_JSON_POLICY = JsonResourcePolicy(
+    max_bytes=1_000_000,
+    max_depth=32,
+    max_nodes=50_000,
+    max_keys=25_000,
+    max_string_bytes=1_000_000,
+)
+CHECKPOINT_STATE_JSON_POLICY = JsonResourcePolicy(
+    max_bytes=1_000_000,
+    max_depth=32,
+    max_nodes=50_000,
+    max_keys=25_000,
+    max_string_bytes=1_000_000,
+)
+CONTROL_PLANE_STORED_JSON_POLICY = JsonResourcePolicy(
+    max_bytes=2 * 1_024 * 1_024,
+    max_depth=40,
+    max_nodes=100_000,
+    max_keys=50_000,
+    max_string_bytes=2 * 1_024 * 1_024,
+)
+
+
+def _json_utf8_length(value: str, *, key: bool = False) -> int:
+    try:
+        return len(value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        label = "an invalid UTF-8 key" if key else "invalid UTF-8 text"
+        raise ValueError(f"Control Plane JSON contains {label}") from exc
+
+
+@dataclass(slots=True)
+class _BoundedJSONWalker:
+    policy: JsonResourcePolicy
+    active_containers: set[int] = field(default_factory=set)
+    node_count: int = 0
+    key_count: int = 0
+
+    def visit(self, item: object, *, depth: int) -> None:
+        self._count_node(depth=depth)
+        if item is None or isinstance(item, bool):
+            return
+        if isinstance(item, str):
+            if _json_utf8_length(item) > self.policy.max_string_bytes:
+                raise ValueError("Control Plane JSON exceeds the string byte limit")
+            return
+        if isinstance(item, int):
+            self._require_bounded_integer(item)
+            return
+        if isinstance(item, float):
+            self._require_finite_number(item)
+            return
+        if not isinstance(item, (dict, list)):
+            raise ValueError("Control Plane JSON contains a non-JSON value")
+        self._visit_container(item, depth=depth)
+
+    def _count_node(self, *, depth: int) -> None:
+        self.node_count += 1
+        if self.node_count > self.policy.max_nodes:
+            raise ValueError("Control Plane JSON exceeds the node-count limit")
+        if depth > self.policy.max_depth:
+            raise ValueError("Control Plane JSON exceeds the nesting-depth limit")
+
+    @staticmethod
+    def _require_bounded_integer(value: int) -> None:
+        if not -(2**63) <= value <= 2**63 - 1:
+            raise ValueError("Control Plane JSON integer is outside the signed 64-bit range")
+
+    @staticmethod
+    def _require_finite_number(value: float) -> None:
+        if not math.isfinite(value):
+            raise ValueError("Control Plane JSON numbers must be finite")
+
+    def _visit_container(self, item: dict[Any, Any] | list[Any], *, depth: int) -> None:
+        identity = id(item)
+        if identity in self.active_containers:
+            raise ValueError("Control Plane JSON cannot contain cycles")
+        self.active_containers.add(identity)
+        try:
+            if isinstance(item, dict):
+                self._visit_object(item, depth=depth)
+            else:
+                for nested in item:
+                    self.visit(nested, depth=depth + 1)
+        finally:
+            self.active_containers.remove(identity)
+
+    def _visit_object(self, item: dict[Any, Any], *, depth: int) -> None:
+        for key, nested in item.items():
+            self._count_key()
+            if not isinstance(key, str):
+                raise ValueError("Control Plane JSON object keys must be strings")
+            if _json_utf8_length(key, key=True) > self.policy.max_key_bytes:
+                raise ValueError("Control Plane JSON exceeds the key byte limit")
+            self.visit(nested, depth=depth + 1)
+
+    def _count_key(self) -> None:
+        self.key_count += 1
+        if self.key_count > self.policy.max_keys:
+            raise ValueError("Control Plane JSON exceeds the key-count limit")
+
+
+def canonical_control_plane_json(value: object) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise ValueError("Control Plane JSON is not canonical UTF-8 JSON") from exc
+
+
+def validate_bounded_json_object(
+    value: object,
+    *,
+    policy: JsonResourcePolicy = CONTROL_PLANE_STORED_JSON_POLICY,
+) -> dict[str, Any]:
+    """Reject non-JSON, non-finite, cyclic, or resource-unbounded object graphs."""
+
+    if not isinstance(value, dict):
+        raise ValueError("Control Plane JSON value must be an object")
+    _BoundedJSONWalker(policy=policy).visit(value, depth=0)
+    canonical = canonical_control_plane_json(value)
+    if len(canonical) > policy.max_bytes:
+        raise ValueError("Control Plane JSON exceeds the canonical byte limit")
+    return value
+
+
+def owned_bounded_json_object(
+    value: object,
+    *,
+    policy: JsonResourcePolicy = CONTROL_PLANE_STORED_JSON_POLICY,
+) -> dict[str, Any]:
+    """Return a strict decoded snapshot with no aliases to the caller's graph."""
+
+    validated = validate_bounded_json_object(value, policy=policy)
+    decoded = json.loads(canonical_control_plane_json(validated))
+    if not isinstance(decoded, dict):  # pragma: no cover - canonical object invariant
+        raise ValueError("Control Plane JSON snapshot is not an object")
+    return decoded
+
+
+def _validate_stored_json_object(value: object) -> dict[str, Any]:
+    return validate_bounded_json_object(value, policy=CONTROL_PLANE_STORED_JSON_POLICY)
+
+
+def _validate_submit_run_input(value: object) -> dict[str, Any]:
+    return validate_bounded_json_object(value, policy=SUBMIT_RUN_INPUT_JSON_POLICY)
+
+
+def _validate_complete_job_result(value: object) -> dict[str, Any]:
+    return validate_bounded_json_object(value, policy=COMPLETE_JOB_RESULT_JSON_POLICY)
+
+
+def _validate_checkpoint_state(value: object) -> dict[str, Any]:
+    return validate_bounded_json_object(value, policy=CHECKPOINT_STATE_JSON_POLICY)
+
+
+BoundedJsonObject = Annotated[dict[str, Any], BeforeValidator(_validate_stored_json_object)]
+SubmitRunInputJsonObject = Annotated[dict[str, Any], BeforeValidator(_validate_submit_run_input)]
+CompleteJobResultJsonObject = Annotated[
+    dict[str, Any], BeforeValidator(_validate_complete_job_result)
+]
+CheckpointStateJsonObject = Annotated[dict[str, Any], BeforeValidator(_validate_checkpoint_state)]
+
+
+def submission_authority_digest(
+    *,
+    actor: str,
+    campaign_name: str,
+    input_value: object,
+    idempotency_key: str,
+    job_kind: str,
+    max_attempts: int,
+) -> str:
+    """Bind one idempotency key's non-secret submission authority inputs."""
+
+    input_object = validate_bounded_json_object(
+        input_value,
+        policy=SUBMIT_RUN_INPUT_JSON_POLICY,
+    )
+    if not all(
+        isinstance(value, str) and value
+        for value in (actor, campaign_name, idempotency_key, job_kind)
+    ):
+        raise ValueError("submission authority string fields must not be empty")
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
+        raise ValueError("submission authority retry limit is invalid")
+    material = canonical_control_plane_json(
+        {
+            "actor": actor,
+            "campaignName": campaign_name,
+            "idempotencyKey": idempotency_key,
+            "input": input_object,
+            "jobKind": job_kind,
+            "maxAttempts": max_attempts,
+        }
+    )
+    return sha256(b"pajin.control-plane.submission-authority/v1\0" + material).hexdigest()
+
+
+def non_replayable_submission_authority_digest(*, run_id: str, authority_kind: str) -> str:
+    """Fence a non-public or incompletely proven Run from public idempotent replay."""
+
+    if not run_id or not authority_kind:
+        raise ValueError("non-replayable Run authority identity must not be empty")
+    material = canonical_control_plane_json({"authorityKind": authority_kind, "runId": run_id})
+    return sha256(
+        b"pajin.control-plane.non-replayable-submission-authority/v1\0" + material
+    ).hexdigest()
+
+
+def job_submission_authority_digest(
+    *,
+    job_id: str,
+    run_id: str,
+    job_kind: str,
+    payload: object,
+    max_attempts: int,
+    idempotency_key: str,
+) -> str:
+    """Bind every immutable field that determines one dispatchable Job."""
+
+    payload_object = validate_bounded_json_object(
+        payload,
+        policy=CONTROL_PLANE_STORED_JSON_POLICY,
+    )
+    if not all(
+        isinstance(value, str) and value for value in (job_id, run_id, job_kind, idempotency_key)
+    ):
+        raise ValueError("Job submission authority string fields must not be empty")
+    if job_kind not in {"campaign", "tool-loop", "internal-replay"}:
+        raise ValueError("Job submission authority kind is invalid")
+    if type(max_attempts) is not int or not 1 <= max_attempts <= 20:
+        raise ValueError("Job submission authority retry limit is invalid")
+    material = canonical_control_plane_json(
+        {
+            "idempotencyKey": idempotency_key,
+            "jobId": job_id,
+            "jobKind": job_kind,
+            "maxAttempts": max_attempts,
+            "payload": payload_object,
+            "runId": run_id,
+        }
+    )
+    return sha256(b"pajin.control-plane.job-submission-authority/v1\0" + material).hexdigest()
 
 
 class RunState(StrEnum):
@@ -107,7 +394,7 @@ class ControlPlaneConflictResponse(StrictModel):
 
 
 class Principal(StrictModel):
-    subject: str = Field(min_length=1, max_length=200)
+    subject: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:@-]{0,199}$")
     roles: frozenset[PrincipalRole] = Field(min_length=1)
 
 
@@ -129,7 +416,7 @@ class ApprovalIntent(StrictModel):
 
 class SubmitRunRequest(StrictModel):
     campaign_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
-    input: dict[str, Any] = Field(default_factory=dict)
+    input: SubmitRunInputJsonObject = Field(default_factory=dict)
     idempotency_key: str = Field(min_length=8, max_length=200)
     max_attempts: int = Field(default=3, ge=1, le=20)
     job_kind: JobKind = JobKind.CAMPAIGN
@@ -276,9 +563,11 @@ def _canonical_replay_execution_context_value(value: object) -> object:
     if callable(model_dump):
         return _canonical_replay_execution_context_value(model_dump(mode="python", by_alias=True))
     if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("canonical Replay execution context mapping keys must be strings")
         return {
-            str(key): _canonical_replay_execution_context_value(item)
-            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+            key: _canonical_replay_execution_context_value(item)
+            for key, item in sorted(value.items())
         }
     if isinstance(value, (set, frozenset)):
         items = [_canonical_replay_execution_context_value(item) for item in value]
@@ -320,6 +609,63 @@ class AdmitSourceArtifactRequest(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
+class ReplayRateAccountAuthority(StrictModel):
+    """Rate-account authority reconstructed from immutable source evidence."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    rate_limits_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    ledger_id: str = Field(pattern=r"^rate-ledger_[0-9a-f]{32}$")
+    max_requests_per_minute: int | None = Field(ge=1, le=60_000)
+    observed_request_units: int = Field(strict=True, ge=0, le=1_000_000)
+    observed_at: datetime
+    window_seconds: Literal[60]
+
+    @field_validator("observed_at")
+    @classmethod
+    def normalize_observed_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("Replay rate authority observed_at must be timezone-aware")
+        return value.astimezone(UTC)
+
+    @model_validator(mode="after")
+    def require_observed_units_within_cap(self) -> ReplayRateAccountAuthority:
+        if (
+            self.max_requests_per_minute is not None
+            and self.observed_request_units > self.max_requests_per_minute
+        ):
+            raise ValueError("Replay rate authority observed units exceed its cap")
+        return self
+
+
+class ReplayRateLimitSnapshot(StrictModel):
+    """Typed contents of the sealed source ``rate-limits.json`` artifact."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    ledger_id: str = Field(
+        alias="ledgerId",
+        pattern=r"^rate-ledger_[0-9a-f]{32}$",
+    )
+    reservation_counts: dict[str, int] = Field(
+        alias="reservationCounts",
+        max_length=1_000,
+    )
+
+    @model_validator(mode="after")
+    def require_bounded_counts(self) -> ReplayRateLimitSnapshot:
+        if any(
+            not campaign
+            or len(campaign) > 128
+            or type(count) is not int
+            or count < 0
+            or count > 1_000_000
+            for campaign, count in self.reservation_counts.items()
+        ):
+            raise ValueError("sealed Replay rate-limit reservations are invalid")
+        return self
+
+
 class ReplayJobPayload(StrictModel):
     """Canonical, non-executable authority envelope for one internal Replay Job."""
 
@@ -357,6 +703,7 @@ class ReplayClaimRequest(StrictModel):
 
     executor_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     lease_seconds: int = Field(default=30, strict=True, ge=5, le=300)
+    wait_seconds: int = Field(default=0, strict=True, ge=0, le=20)
 
 
 class ReplayLeaseRequest(StrictModel):
@@ -379,6 +726,21 @@ class ReplayToolPermitRequest(StrictModel):
     call_ordinal: int = Field(strict=True, ge=1, le=20)
 
 
+class ReplayFinalizeRequest(StrictModel):
+    """Lease/fence plus the server-owned opaque output capability only.
+
+    Worker-authored result, verdict, digest, or filesystem path fields are not part
+    of this contract. The Control Plane derives every authoritative value by
+    importing and re-verifying the sealed staging tree.
+    """
+
+    executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
+    lease_token: str = Field(min_length=32, max_length=300)
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
+
+
 class LeaseRequest(StrictModel):
     worker_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     lease_token: str = Field(min_length=32, max_length=300)
@@ -388,7 +750,7 @@ class LeaseRequest(StrictModel):
 class CompleteJobRequest(StrictModel):
     worker_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     lease_token: str = Field(min_length=32, max_length=300)
-    result: dict[str, Any] = Field(default_factory=dict)
+    result: CompleteJobResultJsonObject = Field(default_factory=dict)
 
 
 class FailJobRequest(StrictModel):
@@ -401,7 +763,7 @@ class FailJobRequest(StrictModel):
 class CreateCheckpointRequest(StrictModel):
     worker_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
     lease_token: str = Field(min_length=32, max_length=300)
-    state: dict[str, Any]
+    state: CheckpointStateJsonObject
     pending_intent: ApprovalIntent
 
 
@@ -435,17 +797,17 @@ class ResumeCheckpointRequest(StrictModel):
 
 
 class RunView(StrictModel):
-    run_id: str
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     campaign_name: str
     state: RunState
-    input: dict[str, Any]
+    input: BoundedJsonObject
     current_checkpoint_id: str | None
     created_at: datetime
     updated_at: datetime
 
 
 class RunSummaryView(StrictModel):
-    run_id: str
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     campaign_name: str
     state: RunState
     current_checkpoint_id: str | None
@@ -461,11 +823,11 @@ class RunListView(StrictModel):
 
 
 class JobView(StrictModel):
-    job_id: str
-    run_id: str
-    kind: str
+    job_id: str = Field(pattern=r"^job_[0-9a-f]{32}$")
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    kind: JobKind | InternalJobKind
     state: JobState
-    payload: dict[str, Any]
+    payload: BoundedJsonObject
     priority: int = Field(strict=True, ge=-2_147_483_648, le=2_147_483_647)
     attempts: int = Field(strict=True, ge=0, le=2_147_483_647)
     max_attempts: int = Field(strict=True, ge=1, le=2_147_483_647)
@@ -473,7 +835,7 @@ class JobView(StrictModel):
     lease_owner: str | None
     lease_expires_at: datetime | None
     heartbeat_at: datetime | None
-    result: dict[str, Any] | None
+    result: BoundedJsonObject | None
     error: str | None
     created_at: datetime
     updated_at: datetime
@@ -562,15 +924,24 @@ class ReplayBatchIssuanceView(StrictModel):
     def require_exact_item_ticket_binding(self) -> ReplayBatchIssuanceView:
         if len(self.items) != len(self.tickets):
             raise ValueError("Replay issuance requires exactly one ticket per item")
-
         items_by_id = {item.item_id: item for item in self.items}
         tickets_by_item_id = {ticket.item_id: ticket for ticket in self.tickets}
+        self._require_unique_issuance_ids(items_by_id, tickets_by_item_id)
+        if set(items_by_id) != set(tickets_by_item_id):
+            raise ValueError("Replay issuance tickets must cover the exact item set")
+        for item_id, item in items_by_id.items():
+            self._require_item_ticket_binding(item, tickets_by_item_id[item_id])
+        return self
+
+    def _require_unique_issuance_ids(
+        self,
+        items_by_id: dict[str, ReplayItemView],
+        tickets_by_item_id: dict[str, ReplayTicketView],
+    ) -> None:
         if len(items_by_id) != len(self.items):
             raise ValueError("Replay issuance item IDs must be unique")
         if len(tickets_by_item_id) != len(self.tickets):
             raise ValueError("Replay issuance ticket item IDs must be unique")
-        if set(items_by_id) != set(tickets_by_item_id):
-            raise ValueError("Replay issuance tickets must cover the exact item set")
         if len({ticket.ticket_id for ticket in self.tickets}) != len(self.tickets):
             raise ValueError("Replay issuance ticket IDs must be unique")
         if len({ticket.job_id for ticket in self.tickets}) != len(self.tickets):
@@ -578,15 +949,17 @@ class ReplayBatchIssuanceView(StrictModel):
         if len({ticket.compilation_id for ticket in self.tickets}) != len(self.tickets):
             raise ValueError("Replay issuance compilation IDs must be unique")
 
-        for item_id, item in items_by_id.items():
-            ticket = tickets_by_item_id[item_id]
-            if item.batch_id != self.batch.batch_id or ticket.batch_id != self.batch.batch_id:
-                raise ValueError("Replay issuance item and ticket batch IDs must match")
-            if ticket.replay_run_id != item.replay_run_id:
-                raise ValueError("Replay issuance ticket and item Replay Run IDs must match")
-            if ticket.attempt != item.attempts:
-                raise ValueError("Replay issuance ticket attempt must match the item attempt count")
-        return self
+    def _require_item_ticket_binding(
+        self,
+        item: ReplayItemView,
+        ticket: ReplayTicketView,
+    ) -> None:
+        if item.batch_id != self.batch.batch_id or ticket.batch_id != self.batch.batch_id:
+            raise ValueError("Replay issuance item and ticket batch IDs must match")
+        if ticket.replay_run_id != item.replay_run_id:
+            raise ValueError("Replay issuance ticket and item Replay Run IDs must match")
+        if ticket.attempt != item.attempts:
+            raise ValueError("Replay issuance ticket attempt must match the item attempt count")
 
 
 class ReplayClaimView(StrictModel):
@@ -612,16 +985,38 @@ class ReplayClaimView(StrictModel):
 
     @model_validator(mode="after")
     def require_burned_ticket_binding(self) -> ReplayClaimView:
-        if self.job.kind != InternalJobKind.REPLAY.value:
-            raise ValueError("Replay claim must contain an internal Replay Job")
-        if self.job.state is not JobState.LEASED:
-            raise ValueError("Replay claim Job must be leased")
-        if self.ticket.state is not ReplayTicketState.CLAIMED:
-            raise ValueError("Replay claim ticket must be claimed")
-        if self.batch.state is not ReplayBatchState.RUNNING:
-            raise ValueError("Replay claim batch must be running")
-        if self.item.state is not ReplayItemState.RUNNING:
-            raise ValueError("Replay claim item must be running")
+        self._require_live_claim_states()
+        self._require_job_attempt_authority()
+        self._require_claim_graph_binding()
+        payload = self._canonical_replay_job_payload()
+        self._require_payload_authority_binding(payload)
+        return self
+
+    def _require_live_claim_states(self) -> None:
+        state_requirements = (
+            (
+                self.job.kind == InternalJobKind.REPLAY.value,
+                "Replay claim must contain an internal Replay Job",
+            ),
+            (self.job.state is JobState.LEASED, "Replay claim Job must be leased"),
+            (
+                self.ticket.state is ReplayTicketState.CLAIMED,
+                "Replay claim ticket must be claimed",
+            ),
+            (
+                self.batch.state is ReplayBatchState.RUNNING,
+                "Replay claim batch must be running",
+            ),
+            (
+                self.item.state is ReplayItemState.RUNNING,
+                "Replay claim item must be running",
+            ),
+        )
+        for satisfied, message in state_requirements:
+            if not satisfied:
+                raise ValueError(message)
+
+    def _require_job_attempt_authority(self) -> None:
         job_integer_fields = {
             "priority": self.job.priority,
             "attempts": self.job.attempts,
@@ -642,47 +1037,75 @@ class ReplayClaimView(StrictModel):
             raise ValueError("Replay claim Job attempts must equal one")
         if self.job.max_attempts != 1:
             raise ValueError("Replay claim Job max attempts must equal one")
-        if self.item.batch_id != self.batch.batch_id:
-            raise ValueError("Replay claim item and batch IDs must match")
-        if self.ticket.batch_id != self.batch.batch_id:
-            raise ValueError("Replay claim ticket and batch IDs must match")
-        if self.ticket.item_id != self.item.item_id:
-            raise ValueError("Replay claim ticket and item IDs must match")
-        if self.ticket.job_id != self.job.job_id:
-            raise ValueError("Replay claim ticket and Job IDs must match")
-        if self.job.run_id != self.item.replay_run_id:
-            raise ValueError("Replay claim Job and item Replay Run IDs must match")
-        if self.ticket.replay_run_id != self.item.replay_run_id:
-            raise ValueError("Replay claim ticket and item Replay Run IDs must match")
-        if self.ticket.attempt != self.item.attempts:
-            raise ValueError("Replay claim ticket attempt must match the item attempt count")
+
+    def _require_claim_graph_binding(self) -> None:
+        binding_requirements = (
+            (
+                self.item.batch_id == self.batch.batch_id,
+                "Replay claim item and batch IDs must match",
+            ),
+            (
+                self.ticket.batch_id == self.batch.batch_id,
+                "Replay claim ticket and batch IDs must match",
+            ),
+            (
+                self.ticket.item_id == self.item.item_id,
+                "Replay claim ticket and item IDs must match",
+            ),
+            (
+                self.ticket.job_id == self.job.job_id,
+                "Replay claim ticket and Job IDs must match",
+            ),
+            (
+                self.job.run_id == self.item.replay_run_id,
+                "Replay claim Job and item Replay Run IDs must match",
+            ),
+            (
+                self.ticket.replay_run_id == self.item.replay_run_id,
+                "Replay claim ticket and item Replay Run IDs must match",
+            ),
+            (
+                self.ticket.attempt == self.item.attempts,
+                "Replay claim ticket attempt must match the item attempt count",
+            ),
+        )
+        for satisfied, message in binding_requirements:
+            if not satisfied:
+                raise ValueError(message)
+
+    def _canonical_replay_job_payload(self) -> ReplayJobPayload:
         try:
-            payload = ReplayJobPayload.model_validate(self.job.payload)
+            return ReplayJobPayload.model_validate(self.job.payload)
         except ValueError as exc:
             raise ValueError("Replay claim Job payload must be canonical") from exc
-        if (
-            payload.batch_id != self.batch.batch_id
-            or payload.item_id != self.item.item_id
-            or payload.ticket_id != self.ticket.ticket_id
-            or payload.compilation_id != self.ticket.compilation_id
-            or payload.budget_reservation_id != self.ticket.budget_reservation_id
-            or payload.rate_reservation_id != self.ticket.rate_reservation_id
-            or payload.replay_run_id != self.job.run_id
-            or payload.replay_run_id != self.item.replay_run_id
-            or payload.source != self.batch.source
-            or payload.mode is not self.batch.mode
-            or payload.purpose is not self.batch.purpose
-            or payload.policy_version != self.batch.policy_version
-            or payload.candidate_id != self.item.candidate_id
-            or payload.candidate_digest != self.item.candidate_digest
-            or payload.contract_digest != self.item.contract_digest
-            or payload.compilation_digest != self.item.compilation_digest
-            or payload.grant_digest != self.item.grant_digest
-            or payload.attempt != self.ticket.attempt
-            or payload.fencing_value != self.ticket.fencing_value
-        ):
+
+    def _require_payload_authority_binding(self, payload: ReplayJobPayload) -> None:
+        expected_fields = {
+            "batch_id": self.batch.batch_id,
+            "item_id": self.item.item_id,
+            "ticket_id": self.ticket.ticket_id,
+            "compilation_id": self.ticket.compilation_id,
+            "budget_reservation_id": self.ticket.budget_reservation_id,
+            "rate_reservation_id": self.ticket.rate_reservation_id,
+            "replay_run_id": self.job.run_id,
+            "source": self.batch.source,
+            "mode": self.batch.mode,
+            "purpose": self.batch.purpose,
+            "policy_version": self.batch.policy_version,
+            "candidate_id": self.item.candidate_id,
+            "candidate_digest": self.item.candidate_digest,
+            "contract_digest": self.item.contract_digest,
+            "compilation_digest": self.item.compilation_digest,
+            "grant_digest": self.item.grant_digest,
+            "attempt": self.ticket.attempt,
+            "fencing_value": self.ticket.fencing_value,
+        }
+        inconsistent = any(
+            getattr(payload, field_name) != expected
+            for field_name, expected in expected_fields.items()
+        )
+        if inconsistent or payload.replay_run_id != self.item.replay_run_id:
             raise ValueError("Replay claim Job payload authority binding is inconsistent")
-        return self
 
 
 class ReplayExecutionClaimView(ReplayClaimView):
@@ -803,12 +1226,53 @@ class ReplayToolPermitView(StrictModel):
         return self
 
 
+class ReplayFinalizationView(StrictModel):
+    """Authoritative server-derived result of one finalized Replay attempt."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    finalization_id: str = Field(pattern=r"^replay-finalization_[0-9a-f]{32}$")
+    job: JobView
+    batch: ReplayBatchView
+    item: ReplayItemView
+    ticket: ReplayTicketView
+    artifact: ArtifactRef
+    artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    artifact_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    gate_decision: ValidationDecision
+    result_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    finalized_by: str = Field(min_length=1, max_length=200)
+    finalized_at: datetime
+
+    @model_validator(mode="after")
+    def require_terminal_authority_binding(self) -> ReplayFinalizationView:
+        if (
+            self.job.state is not JobState.SUCCEEDED
+            or self.ticket.state is not ReplayTicketState.FINALIZED
+            or self.item.state is not ReplayItemState.GATED
+            or self.batch.state
+            not in {
+                ReplayBatchState.RUNNING,
+                ReplayBatchState.COMPLETED,
+            }
+            or self.job.job_id != self.ticket.job_id
+            or self.item.item_id != self.ticket.item_id
+            or self.batch.batch_id != self.ticket.batch_id
+            or self.artifact.producer_run_id != self.job.run_id
+            or self.artifact.run_id != self.job.run_id
+            or self.gate_decision.candidate_id != self.item.candidate_id
+        ):
+            raise ValueError("Replay finalization view authority binding is inconsistent")
+        return self
+
+
 class CheckpointView(StrictModel):
     checkpoint_id: str
     run_id: str
     sequence: int
     schema_version: int
-    state: dict[str, Any]
+    state: BoundedJsonObject
     pending_intent: ApprovalIntent
     payload_sha256: str
     signature: str
@@ -867,5 +1331,5 @@ class AuditEventView(StrictModel):
     sequence: int
     event_type: str
     actor: str
-    payload: dict[str, Any]
+    payload: BoundedJsonObject
     occurred_at: datetime

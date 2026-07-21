@@ -254,6 +254,7 @@ def test_run_kisa_replay_fails_closed_on_corrupt_sqlite_ledger(
     output = tmp_path / "runs"
     ledger = output / "local-replay" / "replay-tickets.sqlite3"
     ledger.parent.mkdir(parents=True)
+    ledger.parent.chmod(0o700)
     ledger.write_bytes(b"not a SQLite database")
 
     class LedgerOpeningOrchestrator:

@@ -18,12 +18,17 @@ implementation.
 ## Decision
 
 1. PAJIN Core directly owns the state of Campaign, Capability, ToolSpec, AuditEvent, and Finding.
-2. PydanticAI is used as the default Agent Runtime Adapter.
-3. The Agent Runtime is responsible only for model-based judgments such as planning and validation.
-4. Every actual Tool Invocation passes through the PAJIN Policy Engine and Tool Gateway.
-5. The initial Workflow Backend starts as a local implementation, with a Temporal Adapter added for
+2. `ProviderAgentRuntime` is the only supported production runtime for network-backed model
+   planning and validation.
+3. `PydanticAIAgentRuntime` is restricted to PydanticAI's exact local `TestModel` for deterministic
+   tests. Model names, general model objects, and subclasses are rejected before Agent construction.
+4. The Agent Runtime is responsible only for model-based judgments such as planning and validation.
+5. Every network-backed model call passes through `PolicyBoundProviderPort`, the Tool Gateway,
+   Campaign model budgets, and run-scoped Secret Leases. Every actual Tool Invocation also passes
+   through the PAJIN Policy Engine and Tool Gateway.
+6. The initial Workflow Backend starts as a local implementation, with a Temporal Adapter added for
    production operation.
-6. LangGraph is allowed only as an optional workflow implementation inside a specific Mode Pack,
+7. LangGraph is allowed only as an optional workflow implementation inside a specific Mode Pack,
    not as PAJIN Core.
 
 ## Consequences
@@ -40,6 +45,8 @@ implementation.
 - PAJIN must maintain the task state machine and execution contracts itself.
 - Some graph visualization and checkpoint features provided by frameworks must be integrated
   directly.
+- Network-backed PydanticAI models remain unsupported until they have a repository-native adapter
+  to the governed provider boundary.
 - The initial implementation is larger than a simple LangGraph application.
 
 ## References

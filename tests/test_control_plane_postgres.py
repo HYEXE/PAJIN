@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from threading import Barrier
 
 import pytest
-from sqlalchemy import select, update
+from sqlalchemy import create_engine, select, text, update
 from sqlalchemy.exc import DatabaseError
 
 from pajin.control_plane.database import (
@@ -16,6 +16,8 @@ from pajin.control_plane.database import (
     ControlPlaneRepository,
     EventRecord,
     JobRecord,
+    SchemaInitializationError,
+    _validate_current_schema,
 )
 from pajin.control_plane.models import (
     ApprovalIntent,
@@ -36,6 +38,24 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+@pytest.fixture(autouse=True)
+def _reset_isolated_postgres_database() -> Iterator[None]:
+    """Keep global Job claims independent across integration tests and reruns."""
+
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        yield
+    finally:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        engine.dispose()
+
+
 def _service() -> tuple[ControlPlaneRepository, ControlPlaneService]:
     assert POSTGRES_URL is not None
     repository = ControlPlaneRepository(POSTGRES_URL)
@@ -45,6 +65,137 @@ def _service() -> tuple[ControlPlaneRepository, ControlPlaneService]:
         keys={"integration-v1": b"postgres-integration-signing-key-32-bytes-minimum"},
     )
     return repository, ControlPlaneService(repository, signer)
+
+
+def test_postgres_append_only_events_reject_statement_level_truncate() -> None:
+    repository, service = _service()
+    suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    try:
+        submitted = service.submit_run(
+            SubmitRunRequest(
+                campaign_name="postgres-truncate-guard",
+                input={"preserve": True},
+                idempotency_key=f"postgres-{suffix}-truncate-guard",
+            ),
+            actor="integration-operator",
+        )
+        with repository.engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                with pytest.raises(DatabaseError, match="append-only"):
+                    connection.exec_driver_sql("TRUNCATE TABLE cp_events")
+            finally:
+                transaction.rollback()
+        with repository.transaction() as session:
+            assert (
+                session.scalar(
+                    select(EventRecord.event_id)
+                    .where(EventRecord.run_id == submitted.run.run_id)
+                    .limit(1)
+                )
+                is not None
+            )
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    "raw_json",
+    [
+        '{"outer":{"key":1,"key":2}}',
+        '{"outer":[{"key":1,"\\u006bey":2}]}',
+    ],
+)
+@pytest.mark.parametrize("authority", ["run", "job"])
+def test_postgres_raw_json_authority_rejects_nested_duplicate_keys(
+    raw_json: str,
+    authority: str,
+) -> None:
+    repository, service = _service()
+    suffix = datetime.now(UTC).strftime("%Y%m%d%H%M%S%f")
+    try:
+        submitted = service.submit_run(
+            SubmitRunRequest(
+                campaign_name="postgres-json-authority",
+                input={"source": "integration"},
+                idempotency_key=f"postgres-{suffix}-{authority}-parent",
+            ),
+            actor="integration-operator",
+        )
+        now = datetime.now(UTC)
+        statement = (
+            text(
+                """
+                INSERT INTO cp_runs (
+                  run_id, campaign_name, state, input, submission_key,
+                  current_checkpoint_id, created_at, updated_at,
+                  submission_authority_digest
+                ) VALUES (
+                  :identity, 'postgres-json-authority', 'queued',
+                  CAST(:raw_json AS json), :idempotency_key, NULL, :now, :now,
+                  :submission_authority_digest
+                )
+                """
+            )
+            if authority == "run"
+            else text(
+                """
+                INSERT INTO cp_jobs (
+                  job_id, run_id, kind, state, payload, priority, attempts,
+                  max_attempts, idempotency_key, available_at, created_at,
+                  updated_at, submission_authority_digest
+                ) VALUES (
+                  :identity, :run_id, 'campaign', 'queued',
+                  CAST(:raw_json AS json), 0, 0, 3, :idempotency_key, :now,
+                  :now, :now, :submission_authority_digest
+                )
+                """
+            )
+        )
+        prefix = "run" if authority == "run" else "job"
+        parameters = {
+            "identity": f"{prefix}_pgdup_{suffix}",
+            "run_id": submitted.run.run_id,
+            "raw_json": raw_json,
+            "idempotency_key": f"postgres-{suffix}-{authority}-duplicate",
+            "now": now,
+            "submission_authority_digest": "a" * 64,
+        }
+        with repository.engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                with pytest.raises(DatabaseError, match="authority is invalid"):
+                    connection.execute(statement, parameters)
+            finally:
+                transaction.rollback()
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize("drift_kind", ["enable", "policy"])
+def test_postgres_schema_fence_rejects_row_security_catalog_drift(drift_kind: str) -> None:
+    repository, _service_instance = _service()
+    try:
+        with repository.engine.connect() as connection:
+            transaction = connection.begin()
+            try:
+                if drift_kind == "enable":
+                    connection.execute(text("ALTER TABLE cp_events ENABLE ROW LEVEL SECURITY"))
+                    match = "row security does not match"
+                else:
+                    connection.execute(
+                        text(
+                            "CREATE POLICY pajin_unmanaged_policy ON cp_events "
+                            "FOR SELECT USING (true)"
+                        )
+                    )
+                    match = "row security policy inventory"
+                with pytest.raises(SchemaInitializationError, match=match):
+                    _validate_current_schema(connection)
+            finally:
+                transaction.rollback()
+    finally:
+        repository.close()
 
 
 def test_postgres_skip_locked_approval_recovery_and_tamper_boundary() -> None:
@@ -121,11 +272,31 @@ def test_postgres_skip_locked_approval_recovery_and_tamper_boundary() -> None:
             CompleteJobRequest(
                 worker_id="pg-worker-3",
                 lease_token=continuation.lease_token,
-                result={"validated": True},
+                result={"attempt": 1, "validated": True},
             ),
             actor="integration-worker-service",
         )
         assert completed.state.value == "succeeded"
+        exact_completion_retry = service.complete_job(
+            continuation.job.job_id,
+            CompleteJobRequest(
+                worker_id="pg-worker-3",
+                lease_token=continuation.lease_token,
+                result={"attempt": 1, "validated": True},
+            ),
+            actor="integration-worker-service",
+        )
+        assert exact_completion_retry.result == {"attempt": 1, "validated": True}
+        with pytest.raises(StateConflict, match="result differs"):
+            service.complete_job(
+                continuation.job.job_id,
+                CompleteJobRequest(
+                    worker_id="pg-worker-3",
+                    lease_token=continuation.lease_token,
+                    result={"attempt": 1.0, "validated": True},
+                ),
+                actor="integration-worker-service",
+            )
 
         service.complete_job(
             second.job.job_id,
@@ -404,8 +575,8 @@ def test_postgres_cancel_fences_concurrent_checkpoint_resume() -> None:
                 assert checkpoint.claimed_at is None
                 assert checkpoint.continuation_job_id is None
             assert not active_jobs
-        assert [
-            event.event_type for event in service.list_events(submission.run.run_id)
-        ].count("run.cancelled") == 1
+        assert [event.event_type for event in service.list_events(submission.run.run_id)].count(
+            "run.cancelled"
+        ) == 1
     finally:
         repository.close()

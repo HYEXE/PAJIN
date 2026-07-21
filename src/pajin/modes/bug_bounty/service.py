@@ -21,6 +21,7 @@ from pajin.domain.models import (
     Scope,
     Target,
 )
+from pajin.domain.yaml_loader import load_yaml_mapping
 from pajin.modes.bug_bounty.models import (
     DEFAULT_PROHIBITED_TECHNIQUES,
     DEFAULT_STOP_CONDITIONS,
@@ -29,6 +30,8 @@ from pajin.modes.bug_bounty.models import (
     BugBountyScopeApproval,
     BugBountyScopeReview,
 )
+from pajin.reporting import escape_markdown_text, markdown_code_span
+from pajin.runtime.safe_files import atomic_write_text_no_follow
 
 
 class BugBountyReviewArtifacts(BaseModel):
@@ -49,10 +52,7 @@ class BugBountyCampaignArtifact(BaseModel):
 
 
 def load_bug_bounty_program(path: Path) -> BugBountyProgramManifest:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError("bug bounty program manifest must contain a YAML mapping")
+    raw = load_yaml_mapping(path, label="bug bounty program manifest")
     return BugBountyProgramManifest.model_validate(raw)
 
 
@@ -141,11 +141,11 @@ class BugBountyScopeService:
     ) -> BugBountyReviewArtifacts:
         review = self.review(program, generated_at=generated_at)
         directory = output_root / program.metadata.name / review.scope_digest[:12]
-        directory.mkdir(parents=True, exist_ok=True)
         normalized_program_path = directory / "program.normalized.json"
         review_json_path = directory / "scope-review.json"
         review_markdown_path = directory / "scope-review.md"
-        normalized_program_path.write_text(
+        atomic_write_text_no_follow(
+            normalized_program_path,
             json.dumps(
                 self._stable_json_value(program.model_dump(mode="json", by_alias=True)),
                 ensure_ascii=False,
@@ -153,9 +153,10 @@ class BugBountyScopeService:
                 sort_keys=True,
             )
             + "\n",
-            encoding="utf-8",
+            label="Bug Bounty normalized program artifact",
         )
-        review_json_path.write_text(
+        atomic_write_text_no_follow(
+            review_json_path,
             json.dumps(
                 self._stable_json_value(review.model_dump(mode="json")),
                 ensure_ascii=False,
@@ -163,9 +164,13 @@ class BugBountyScopeService:
                 sort_keys=True,
             )
             + "\n",
-            encoding="utf-8",
+            label="Bug Bounty scope review artifact",
         )
-        review_markdown_path.write_text(self.render_review(program, review), encoding="utf-8")
+        atomic_write_text_no_follow(
+            review_markdown_path,
+            self.render_review(program, review),
+            label="Bug Bounty scope review artifact",
+        )
         return BugBountyReviewArtifacts(
             directory=directory,
             normalized_program_path=normalized_program_path,
@@ -178,11 +183,27 @@ class BugBountyScopeService:
         self,
         program: BugBountyProgramManifest,
         approval: BugBountyScopeApproval,
+        *,
+        evaluated_at: datetime | None = None,
     ) -> CampaignManifest:
+        unsupported = sorted(
+            asset.asset_id
+            for asset in program.spec.scope.in_scope
+            if asset.entry_points and asset.probe_profile is BugBountyProbeProfile.GENERIC_HTTP
+        )
+        if unsupported:
+            raise ValueError(
+                "concrete generic-http Bug Bounty assets are review-only and cannot be "
+                "compiled until a bounded probe profile is implemented: " + ", ".join(unsupported)
+            )
         review = self.review(program)
         if not compare_digest(review.scope_digest, approval.scope_digest):
             raise ValueError("scope approval digest does not match the current program policy")
         approved_at = self._aware(approval.approved_at)
+        expires_at = self._aware(approval.expires_at)
+        now = self._aware(evaluated_at or datetime.now(UTC))
+        if not approved_at <= now < expires_at:
+            raise ValueError("scope approval is not active at Campaign compilation time")
         retrieved_at = self._aware(program.spec.policy.retrieved_at)
         if approved_at < retrieved_at:
             raise ValueError("scope approval predates the retrieved program policy")
@@ -249,16 +270,18 @@ class BugBountyScopeService:
         program: BugBountyProgramManifest,
         approval: BugBountyScopeApproval,
         output_path: Path,
+        *,
+        evaluated_at: datetime | None = None,
     ) -> BugBountyCampaignArtifact:
-        campaign = self.compile_campaign(program, approval)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
+        campaign = self.compile_campaign(program, approval, evaluated_at=evaluated_at)
+        atomic_write_text_no_follow(
+            output_path,
             yaml.safe_dump(
                 self._stable_json_value(campaign.model_dump(mode="json", by_alias=True)),
                 allow_unicode=True,
                 sort_keys=False,
             ),
-            encoding="utf-8",
+            label="Bug Bounty Campaign artifact",
         )
         return BugBountyCampaignArtifact(path=output_path, campaign=campaign)
 
@@ -268,13 +291,13 @@ class BugBountyScopeService:
         review: BugBountyScopeReview,
     ) -> str:
         lines = [
-            f"# Bug Bounty Scope Review: {program.metadata.display_name}",
+            "# Bug Bounty Scope Review: " + escape_markdown_text(program.metadata.display_name),
             "",
-            f"- Program: `{program.metadata.name}`",
-            f"- Platform: `{program.metadata.platform}`",
-            f"- Policy source: `{program.spec.policy.uri}`",
-            f"- Source SHA-256: `{review.source_sha256}`",
-            f"- Approval scope digest: `{review.scope_digest}`",
+            f"- Program: {markdown_code_span(program.metadata.name)}",
+            f"- Platform: {markdown_code_span(program.metadata.platform)}",
+            f"- Policy source: {markdown_code_span(program.spec.policy.uri)}",
+            f"- Source SHA-256: {markdown_code_span(review.source_sha256)}",
+            f"- Approval scope digest: {markdown_code_span(review.scope_digest)}",
             "- Approval required: `true`",
             "",
             "## Executable scope",
@@ -282,21 +305,28 @@ class BugBountyScopeService:
             "### Allow",
             "",
         ]
-        lines.extend(f"- `{item}`" for item in review.allow)
+        lines.extend(f"- {markdown_code_span(item)}" for item in review.allow)
         lines.extend(["", "### Deny", ""])
-        lines.extend(f"- `{item}`" for item in review.deny)
+        lines.extend(f"- {markdown_code_span(item)}" for item in review.deny)
         if not review.deny:
             lines.append("- None declared")
         lines.extend(["", "### Concrete entry points", ""])
-        lines.extend(f"- `{item}`" for item in review.entry_points)
+        lines.extend(f"- {markdown_code_span(item)}" for item in review.entry_points)
         lines.extend(
             [
                 "",
                 "## Enforced execution policy",
                 "",
-                "- Allowed methods: " + ", ".join(sorted(review.allowed_methods)),
-                "- Allowed tool categories: " + ", ".join(sorted(review.allowed_tool_categories)),
-                "- Prohibited techniques: " + ", ".join(sorted(review.prohibited_techniques)),
+                "- Allowed methods: "
+                + ", ".join(markdown_code_span(item) for item in sorted(review.allowed_methods)),
+                "- Allowed tool categories: "
+                + ", ".join(
+                    markdown_code_span(item) for item in sorted(review.allowed_tool_categories)
+                ),
+                "- Prohibited techniques: "
+                + ", ".join(
+                    markdown_code_span(item) for item in sorted(review.prohibited_techniques)
+                ),
                 f"- Maximum requests per minute: {review.max_requests_per_minute}",
                 f"- Testing windows: {len(review.testing_windows)}",
                 "",
@@ -304,11 +334,11 @@ class BugBountyScopeService:
                 "",
             ]
         )
-        lines.extend(f"- {item}" for item in review.warnings)
+        lines.extend(f"- {escape_markdown_text(item)}" for item in review.warnings)
         if not review.warnings:
             lines.append("- None")
         lines.extend(["", "## Manual controls", ""])
-        lines.extend(f"- {item}" for item in review.manual_controls)
+        lines.extend(f"- {escape_markdown_text(item)}" for item in review.manual_controls)
         lines.extend(
             [
                 "",

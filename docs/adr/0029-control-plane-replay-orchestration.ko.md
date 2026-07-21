@@ -4,7 +4,7 @@
 
 - 상태: 승인됨
 - 날짜: 2026-07-17
-- 구현 최신화: 2026-07-18 (M6-07B-2F exact KISA 실행 컨텍스트 권위)
+- 구현 최신화: 2026-07-19 (전용 exact-KISA executor와 schema-v9 서버 finalization)
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -68,7 +68,9 @@ reserved budget/rate unit을 consumed로 원자적으로 옮기고 audit event�
 stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다. M6-07B-2E는 strict
 JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist와 전용 WORKER-role HTTP
 endpoint/async client를 추가했다. allowlist는 설정이 없으면 빈 목록으로 fail closed하며,
-`{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. claim,
+`{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 profile
+하나를 허용한다. `PAJIN_CP_REPLAY_WORKER_TOKEN`은 Operator, Approver 및 일반 Worker credential과
+달라야 한다. claim,
 heartbeat, Tool-permit 발급은 internal Worker transport로만 노출되고, claim/heartbeat envelope은
 서버가 exact digest·identity binding을 다시 검증한 canonical `ReplayCompilation`을 포함한다.
 permit은 발급 시 이미 소비된 non-bearer proof이며 별도 redeem mutation은 없다.
@@ -81,12 +83,16 @@ exact graph 검증 뒤 context를 반환한다. profile admission은 고정 prof
 발급은 같은 compilation/context 권위를 전이적으로 다시 검증한다. staging slot은 identity일 뿐
 path, store, upload 권한 또는 result claim이 아니다. v6→v7 migration은 exact issuance-time bytes를
 재구성할 수 없으므로 dispatch 가능한 v6 Replay authority가 하나라도 있으면 fail closed한다.
-non-dispatchable planned proof만 있는 database는 context table을 비운 채 전진할 수 있다. 실제
-executor daemon은 Compose에서 계속 기본 활성화하지 않는다. public Replay admission/read API,
-실제 Replay executor/pre-dispatch permit-use 집행, Worker execute/seal, output import와 typed
-server-side finalization, 새 identity retry, Gate와 negative Control Plane retest는 남아 있다. 이
-실행 경계가 완료되기 전에는 Control Plane이 완전한 영속형 Replay 오케스트레이션을 제공한다고
-주장할 수 없다.
+non-dispatchable planned proof만 있는 database는 context table을 비운 채 전진할 수 있다.
+2026-07-19 조각은 첫 one-item exact-KISA 실행 경계를 완성한다. Schema v8은 append-only guard를
+완성하고 schema v9는 서버 파생 append-only Replay finalization을 추가한다. 전용
+`kisa-exact-v1` daemon은 fenced ticket을 claim/heartbeat하고 각 Tool dispatch 직전에 durable
+permit을 받으며 서버가 예약한 opaque staging slot에만 쓴다. path, ArtifactRef, result, digest 또는
+verdict를 제출하지 않는다. 서버는 sealed output을 import해 다시 열고 exact
+source/compilation/ticket/permit lineage를 검증하며 ADR 0027 공통 Gate를 파생한 뒤 finalization과
+terminal authority state를 원자적으로 commit한다. Compose도 이 daemon과 owner-only staging handoff를
+활성화한다. Public Replay admission/read API, 자동 fresh-identity retry 발행, negative Control Plane
+retest와 multi-host/object-store handoff는 아직 남아 있다.
 
 ## 맥락
 
@@ -145,10 +151,10 @@ execution context를 추가해 fresh issuance compilation마다 exact typed Camp
 canonical ToolSpec, component/context digest, 고정 executor profile, secret 금지와 opaque
 output-staging identity를 결박한다. Job payload, claim envelope, profile admission과 permit issuance는
 이 authority graph를 보존하거나 전이적으로 재검증한다. v6→v7 migration은 누락된 issuance-time
-bytes를 만들어 내지 않고 dispatch 가능한 legacy authority를 거부한다. public Replay
-admission/read API, 실제 executor/pre-dispatch permit-use, Worker execute/seal, output import와 typed
-finalization, retry, Gate와 negative Control Plane retest는 의도적으로 완료된 기반 밖에 남아 있고,
-Compose에는 활성 Replay executor daemon이 없다.
+bytes를 만들어 내지 않고 dispatch 가능한 legacy authority를 거부한다. 2026-07-19 구현은 아래의
+전용 executor, pre-dispatch permit seam, opaque staging handoff, 서버 import/finalization과 one-item
+공통 Gate를 추가한다. Public admission/read API, fresh-identity retry 발행과 negative Control Plane
+retest는 완료된 조각 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -201,6 +207,15 @@ Replay batch를 만들 때 서버는 다음 순서로 source를 admission한다.
    durable account에 결박해 첫 시도 전체를 reserve한 뒤, fresh Replay Run/Grant compilation 권위를
    append하고 Job/ticket을 원자적으로 만든다.
 
+Candidate 자체는 semantic authority가 아니다. source snapshot은 정확한 Validator Agent/Task
+identity, Finding과 Candidate별 assessment를 담은 `validator-output.json`을 포함해야 한다. 서버는
+같은 pinned snapshot에서 이 artifact를 읽고 각 canonical claim digest, 전체 evidence list 및
+positive assessment와 exact validated Validator Finding의 1:1 결박을 검증한 뒤 deterministic Gate를
+replay한다. artifact 누락, identity/claim/evidence/Finding 대체 또는 저장된 Decision과의 불일치는
+admission을 fail closed하며, Candidate나 lifecycle state에서 support를 합성하지 않는다.
+이 검증은 원 Validator output의 보존만 증명하고 독립 execution attestation, 제품 confirmation 또는
+remediation을 추가하지 않는다.
+
 Worker가 보낸 Candidate, contract, comparison rule, Capability Grant, target, Tool arguments,
 source root 또는 eligibility flag는 authority input이 아니다. planned record의 5분 Grant는 발행 전에
 만료될 수 있으며 Worker 실행 권한이 아니다. Worker claim envelope는 구현된 durable issuance
@@ -219,11 +234,14 @@ transaction에서 서버가 결박한 fresh compilation과 짧은 수명의 non-
 | `cp_replay_budget_reservations` | item attempt 하나의 Tool-call authority | account, batch/item/attempt와 compilation에 결박되고 total call을 넘지 않는 active/partially-consumed/consumed/released lifecycle |
 | `cp_replay_rate_accounts` | 보수적인 sealed request-rate authority | source Run/root, Campaign, sealed ledger ID/digest와 observed unit, managed Artifact admission 시각인 `observed_at`, nullable per-minute cap, 60초 window와 CAS를 결박 |
 | `cp_replay_rate_reservations` | item attempt 하나의 request-unit authority | account, batch/item/attempt와 compilation에 결박되고 exact 60초 expiry와 같은 bounded lifecycle을 가짐 |
+| `cp_replay_execution_contexts` | exact executor input과 opaque staging capability | dispatch 가능한 compilation마다 append-only canonical context 하나, `kisa-exact-v1` 고정 및 secret 금지 |
+| `cp_replay_tool_permits` | pre-dispatch Tool-call 결정 하나 | append-only ticket/ordinal identity가 exact budget/rate unit을 burn하고 server-minted request ID를 결박 |
 | `cp_replay_tickets` | 한 번의 실행 attempt authority | exact compilation과 두 reservation FK, item attempt, Job, Replay Run, source root, claim principal/fence와 finalization에 결박 |
+| `cp_replay_finalizations` | 서버 파생 immutable result | ticket별 append-only row 하나가 imported Artifact, 두 seal root, artifact set, common Gate decision과 result digest를 결박 |
 | `cp_replay_events` | Replay authority 감사 이력 | 상태 전이 transaction 안에서 append되고 update/delete 금지 |
 
-Artifact metadata는 `cp_artifacts`에 따로 둔다. compilation/event row만 append-only이며 account와
-reservation은 제한된 accounting lifecycle 안에서만 변경된다. 모든 authority-bearing foreign key와
+Artifact metadata는 `cp_artifacts`에 따로 둔다. compilation/execution-context/permit/finalization/event
+row는 append-only이며 account와 reservation은 제한된 accounting lifecycle 안에서만 변경된다. 모든 authority-bearing foreign key와
 uniqueness/check constraint는 database에서 강제한다. Replay event와 필요 시 대응하는 `cp_events`
 summary는 같은 transaction에 기록한다.
 
@@ -354,9 +372,11 @@ method를 제공한다. `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`는 strict JSON subje
 allowlist이며 미설정 시 빈 목록으로 fail closed한다. claim/heartbeat의
 `ReplayExecutionClaimView`는 canonical `ReplayCompilation`을 포함하고 서버가 compilation,
 Candidate, contract, Grant, Campaign, Mode, Candidate Run, Replay Run의 exact binding을 다시
-검증한다. permit은 발급 시 소비가 완료된 non-bearer proof이므로 별도 redeem
-mutation을 추가하지 않는다. 실제 Worker executor의 Tool call 직전 permit-use 집행은 아직
-구현되지 않았다.
+검증한다. permit은 발급 시 소비가 완료된 non-bearer proof이므로 별도 redeem mutation을 추가하지
+않는다. 전용 `kisa-exact-v1` executor는 이제 각 Gateway dispatch의 마지막 durable seam에서 이
+endpoint를 호출하고 canonical claim 또는 call ordinal과 다른 permit을 거부한다. 제한된 transport
+response-loss retry는 동일한 ordinal-bound permit 요청만 다시 보낸다. 서버는 같은 row/accounting을
+반환하고 executor는 응답을 받아 재검증한 뒤 Tool을 한 번만 dispatch한다.
 
 ### Exact KISA 실행 컨텍스트 권위
 
@@ -382,10 +402,12 @@ authority verifier를 호출하므로 context/payload 치환은 permit도 차단
 identity를 반복할 필요는 없다. exact ticket/compilation graph가 one-to-one context에 전이적으로
 결박하기 때문이다.
 
-opaque output-staging slot은 의도적으로 storage 경계 전에 멈춘다. 후속 execute/seal과 output-import
-설계가 허가할 slot의 이름일 뿐 path, mutable storage handle, ArtifactRef, upload capability,
-imported artifact 또는 finalization evidence가 아니다. secret도 후속으로 미루지 않는다. 이 exact
-KISA profile은 secret을 금지하고 Secret Lease ID를 받지 않는다.
+Opaque output-staging slot은 여전히 path, mutable storage handle, ArtifactRef, upload capability,
+imported artifact 또는 result claim이 아니다. Issuance는 owner-controlled staging root에 private한
+빈 directory를 예약한다. 전용 executor는 configured root 아래에서 정확한 ID만 resolve해 두 번
+seal된 Replay Run을 쓴다. Worker가 아니라 서버가 finalization 중 검증된 staging tree를 immutable
+Artifact로 만든다. Secret도 후속으로 미루지 않는다. 이 exact KISA profile은 secret을 금지하고
+Secret Lease ID를 받지 않는다.
 
 v6→v7 migration은 이전 row에 이 authority 형태의 exact issuance-time Campaign, Scenario,
 ToolSpec과 staging identity가 저장되지 않았으므로 execution context를 안전하게 backfill할 수 없다.
@@ -400,28 +422,37 @@ context row를 만들지 않는다. 이 규칙은 호환성을 추측하지 않�
 분산 경로는 현재 process-local `_finish`를 두 단계로 나눈다.
 
 1. **Worker execute/seal:** Worker는 서버가 발급한 compilation과 permit만 사용해 ordinary Tool
-   Gateway/Worker boundary로 실행한다. 별도의 Replay Run에 canonical artifact set, Outcome과
-   execution receipt를 쓰고 두 seal을 완성한 뒤 managed repository로 import한다. 이 receipt는
-   Worker가 어떤 bytes를 만들고 seal했는지 나타낼 뿐 ticket finalization 권한은 아니다.
-2. **Control Plane authority finalize:** 서버는 immutable Replay `ArtifactRef`를 다시 열어 content
-   digest, 두 seal, artifact set, fresh request/evidence lineage, Mode Oracle result, source root,
-   Candidate, compilation, ticket과 Replay Run identity를 직접 검증한다. 검증된 값으로만 typed
-   finalization을 만들고 PostgreSQL transaction에서 ticket, Job, item과 event를 확정한다.
+   Gateway/Worker boundary로 실행한다. 예약된 opaque staging slot의 별도 Replay Run에 canonical
+   artifact set, Outcome과 execution receipt를 쓰고 두 seal을 완성한다. Repository로 import하지
+   않는다. 이 receipt는 Worker가 어떤 bytes를 만들고 seal했는지 나타낼 뿐 ticket finalization
+   권한은 아니다.
+2. **Control Plane authority finalize:** Worker는 executor profile, lease token, ticket ID, fence와
+   발급된 opaque staging ID만 보낸다. 서버는 staging tree를 import하고 immutable Replay
+   `ArtifactRef`를 다시 열어 content digest, 두 seal, artifact set, fresh request/evidence lineage,
+   Mode Oracle result, source root, Candidate, compilation, ticket, Replay Run identity와 정확한 ordinal
+   permit/request sequence를 직접 검증한다. 검증된 값으로만 typed finalization을 만들고, permit
+   발급에서 accounting unit을 이미 소비한 authority를 재검증한 뒤 Artifact, ticket, Job, item,
+   batch, Run과 event를 원자적으로 확정한다.
 
-Replay completion은 일반 `CompleteJobRequest.result: dict`를 사용하지 않는다. 전용 typed command는
-최소한 exact Job/ticket/fence, immutable `ArtifactRef`, compilation/source/replay Run identity,
-artifact-set digest, 두 seal root, Outcome digest와 canonical `result_digest`를 결박한다. 서버가
-artifact bytes에서 authority-bearing 값을 다시 계산하며 Worker가 보낸 verdict 또는 digest를
-그대로 신뢰하지 않는다.
+Replay completion은 일반 `CompleteJobRequest.result: dict`를 사용하지 않는다. Strict
+`ReplayFinalizeRequest`에는 Worker-authored `ArtifactRef`, path, result, verdict, Outcome, seal 또는
+digest field가 의도적으로 없다. Lease/ticket/fence/profile과 opaque staging ID는 이미 발급된
+authority만 선택한다. 서버가 imported bytes에서 ArtifactRef, artifact-set digest, 두 seal root,
+Gate decision과 canonical `result_digest`를 다시 계산한다.
 
-finalization transaction이 성공했지만 HTTP 응답이 유실된 경우, 같은 authenticated principal이
-동일한 canonical `result_digest`와 ArtifactRef로 재시도하면 저장된 성공을 idempotent하게
-반환한다. 하나라도 다른 retry는 conflict다. transaction이 commit되기 전에 lease/fence가
-끝났다면 해당 attempt는 abandoned되고 늦은 finalization은 거부된다. Gate는 이후 새 read-only
-repository/session으로 finalized ticket과 sealed artifact를 다시 검증하므로 API process의 mutable
-검증 객체를 신뢰하지 않는다.
+Finalization transaction이 성공했지만 HTTP 응답이 유실된 경우, 같은 authenticated principal이
+동일한 lease/ticket/fence/profile/staging identity로 재시도하면 서버 파생 결과를 idempotent하게
+반환한다. 하나라도 다른 retry는 conflict다. transaction commit 전에 lease/fence가 끝나면 attempt는
+abandoned되고 late finalization은 거부된다. Permit이 하나라도 발급되면 실행 failure는 terminal이며
+자동 retry가 같은 Job/ticket을 redispatch할 수 없다. 후속 fresh-identity issuance 설계만 새 attempt를
+만들 수 있다.
 
 ### 소스 루트 CAS 확인 Gate
+
+구현된 one-item 수직 조각은 새로 reload한 source와 output을 finalization할 때 pure ADR 0027 공통
+Gate를 호출하고 결정을 `cp_replay_finalizations`에 저장한다. Item을 `gated`로, terminal one-item
+batch를 `completed`로 원자적으로 전이한다. 아래의 더 넓은 multi-item versioned projection publish
+설계는 intended extension이며 이 첫 조각이 구현했다고 주장하지 않는다.
 
 Worker는 confirmation Gate를 실행하거나 `confirmed`를 제출하지 않는다. 모든 required item이
 exact finalized receipt를 가진 뒤 Control Plane authority가 Gate를 수행한다.
@@ -478,6 +509,33 @@ lease expiry, permit, finalization과 Gate publication도 같은 순서를 사�
 seal 검증과 Oracle 실행은 database lock을 잡지 않은 상태에서 수행하고 immutable reference와
 CAS로 결과를 commit한다.
 
+### Compose 배포 경계
+
+Single-host Compose lab은 UID/GID `10001` 소유, mode `0700`으로 initialize하고 검증한 named volume
+두 개를 사용한다. Control Plane이 staging과 repository를 소유하며 전용 Replay Worker는 같은
+identity로 staging만 공유하고 repository storage를 mount하지 않는다. Fresh Docker volume root는
+root-owned이므로 networkless one-shot initializer만 root와 `CHOWN` capability로 실행한다. 각 고정
+mount path를 no-follow 방식으로 root에 handoff하고 같은 inode를 열어 검증한 뒤 descriptor로 mode와
+최종 소유권을 적용하고 fsync한 다음 API 시작 전에 종료한다. 모든 long-running PAJIN service는
+UID/GID `10001`로 남는다. Symlink 또는 non-private
+root는 access를 넓히지 않고 startup/import를 fail closed한다. Digest-pinned Docker CLI는 daemon
+image에만 들어가고 API image에는 없으며 daemon은 `/var/run/docker.sock`을 mount한다. Host socket
+group이 0이 아니면 `PAJIN_DOCKER_SOCKET_GID`로 제공해야 한다.
+동일 UID, socket mount, supplemental group을 사용하는 networkless one-shot preflight는 Docker
+server, 고정 execution image 두 개, configured proxy uplink를 검사한다. 실패하면 Replay daemon은
+시작하지 않으며 이 검사가 socket authority를 줄이지는 않는다.
+
+Docker socket 보유는 사실상 host-root authority이며 container-local UID, capability, read-only root와
+`no-new-privileges` control보다 강하다. 따라서 이 Compose wiring은 trusted single-host lab이지 tenant
+isolation이 아니다. Production에는 전용 Docker host 또는 별도 설계한 restricted execution broker가
+필요하다. 번들 Compose는 전용 external uplink인 `pajin-replay-uplink-lab` network를 생성하고,
+configured override는 미리 존재해야 한다. Allowlist egress proxy만 이 uplink에 연결되며 각
+execution Worker는 fresh internal network에 남는다.
+
+Host-facing API/database network는 published loopback port를 유지하기 위한 일반 Docker bridge다.
+service attachment를 분리하지만 outbound deny 경계는 아니므로 production에는 host firewall 또는
+동등한 egress control이 필요하다.
+
 ## 첫 수직 조각과 비목표
 
 첫 구현은 PostgreSQL, Control Plane API, managed filesystem artifact repository와 한 호스트의
@@ -495,13 +553,11 @@ CAS로 결과를 commit한다.
 - Worker host compromise가 만든 외부 side effect의 rollback 또는 destination-level exactly-once;
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
-현재 구현된 M6-07B-2F 조각은 schema-v7 exact execution-context authority와 그
-payload/claim/profile/permit binding에서 끝난다. public Replay admission/read API, 실제 Worker
-executor와 pre-dispatch permit-use enforcement, Worker execute/seal, output import와 typed artifact
-finalization, 새 identity retry issuance, Gate와 negative Control Plane retest는 이 ADR의 후속 exit
-criteria다. opaque staging slot은 이 경계 중 어느 것도 구현하지 않으며 Compose에는 활성 Replay
-executor daemon이 없다. permit은 bearer credential이 아니므로 별도 redeem mutation을 exit
-criterion으로 추가하지 않는다.
+현재 구현 조각은 전용 exact-KISA Worker, 호출별 durable permit seam, twice-sealed opaque staging
+handoff, schema-v9 server-derived Artifact finalization과 one-item 공통 Gate에서 끝난다. Public Replay
+admission/read API, 자동 new-identity retry issuance, multi-item versioned projection publication과
+negative Control Plane retest는 후속 exit criteria다. Permit은 bearer credential이 아니므로 별도
+redeem mutation을 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -519,25 +575,24 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
   rate-limit 운영이 새로운 책임이 된다.
 - budget/permit을 보수적으로 소비하므로 ambiguous crash 뒤 가용 예산이 줄 수 있다. 이 손실은
   자동 환불로 중복 실행 위험을 키우는 것보다 우선한다.
-- Local M6-07A는 가벼운 단일 호스트 경로로 남고, 아직 미완료인 M6-07B
-  executor/finalization/Gate 경로가 있다고 가장하지 않는다.
+- Local M6-07A는 가벼운 단일 호스트 경로로 남고 Control Plane의 PostgreSQL, managed Artifact,
+  lease, permit 또는 finalization authority를 암시하지 않는다.
 
 ## 승인 및 검증
 
-M6-07B-2F 최신화 기준 source admission/derivation, schema-v5 reservation authority, fresh 첫 시도
-compilation, 원자적 내부 issuance와 issuance 멱등성, schema-v6 호출별 permit 원장/내부 서비스 발급,
-fail-closed WORKER-only HTTP transport/async client, server-validated compilation claim envelope와
-schema-v7 exact execution-context authority 및 그 transitive binding은 아래 항목 중 해당 server-side
-부분을 충족한다. public admission/read API, 실제 executor/pre-dispatch permit use, Worker
-execute/seal, output import/typed finalization, retry, Gate와 negative retest 항목은 M6-07B 전체의 exit
-criteria로 유지한다. Compose에는 활성 Replay executor daemon이 없다.
+2026-07-19 기준 source admission/derivation, durable reservation/permit authority, exact execution
+context, 전용 Worker transport/execution, opaque staging, schema-v9 server-derived finalization, exact
+response-loss idempotency와 one-item 공통 Gate가 첫 complete positive-confirmation 실행 조각을
+구성한다. Public admission/read API, 자동 fresh-identity retry, multi-item projection publication과
+negative Control Plane retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
 - forward migration이 빈 PostgreSQL과 직전 지원 version을 새 Replay schema로 올리고, unknown,
   partial 또는 constraint/trigger가 손상된 schema에서 서버가 fail closed한다. 특히 v6→v7은
   dispatch 가능한 v6 authority를 거부해 추측한 context bytes를 backfill하지 않고,
-  non-dispatchable planned proof는 가짜 context row 없이 전진시킨다;
+  non-dispatchable planned proof는 가짜 context row 없이 전진시킨다. v8은 append-only guard를
+  완성하고 v9는 no-replace server-derived finalization table을 추가한다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
   verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
   non-dispatchable compilation proof를 만든다. 내부 issuance는 source를 재검증하고 만료된 planned
@@ -570,8 +625,10 @@ criteria로 유지한다. Compose에는 활성 Replay executor daemon이 없다.
 - 여러 Worker의 동시 permit 요청이 reserved Tool-call budget과 durable rate window를 초과하지 않고,
   duplicate ordinal은 한 번만 소비되며 ordinal gap, over-limit, expired/finalized/abandoned/cancelled
   ticket은 새 permit을 받지 못한다;
-- finalization commit 뒤 응답 유실을 모사한 exact retry는 같은 result를 반환하고, 다른
-  ArtifactRef, root, Outcome 또는 `result_digest` retry는 거부된다;
+- finalization commit 뒤 응답 유실을 모사한 exact retry는 같은 server-derived result를 반환하고,
+  다른 authenticated principal, lease, ticket, fence, profile 또는 opaque staging identity는
+  거부된다. finalize request는 Worker-authored ArtifactRef, path, Outcome, verdict, seal 또는
+  `result_digest`를 받지 않는다;
 - finalization 이전 응답/connection loss와 lease expiry가 겹치면 이전 attempt는 Gate에 들어가지
   않고 새 ticket만 실행될 수 있다;
 - Gate verification 중 source reference/root, item set 또는 ticket finalization을 바꾸는 race가

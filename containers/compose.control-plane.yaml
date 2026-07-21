@@ -1,35 +1,49 @@
+name: pajin-control-plane-lab
+
+x-control-plane-build: &control-plane-build
+  context: ..
+  dockerfile: containers/control-plane/Dockerfile
+  target: control-plane
+
 services:
   postgres:
-    image: postgres:17.10-alpine
+    image: postgres:17.10-alpine@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193
     environment:
       POSTGRES_DB: pajin_test
       POSTGRES_USER: pajin
       POSTGRES_PASSWORD: pajin-control-plane-lab-password
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U pajin -d pajin_test"]
+      test: ["CMD", "pg_isready", "-U", "pajin", "-d", "pajin_test"]
       interval: 2s
       timeout: 3s
       retries: 20
+      start_period: 5s
     ports:
       - "127.0.0.1:55432:5432"
     read_only: true
     user: "70:70"
     tmpfs:
-      - /var/lib/postgresql/data:uid=70,gid=70,mode=0700
-      - /run/postgresql:uid=70,gid=70,mode=0775
-      - /tmp
+      - /var/lib/postgresql/data:uid=70,gid=70,mode=0700,noexec,nosuid,nodev
+      - /run/postgresql:uid=70,gid=70,mode=0775,noexec,nosuid,nodev
+      - /tmp:mode=1777,noexec,nosuid,nodev,size=32m
     cap_drop:
       - ALL
     security_opt:
       - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 1.0
     restart: "no"
+    networks:
+      - database-host
+      - database
 
   control-plane:
     image: pajin-control-plane:dev
-    build:
-      context: ..
-      dockerfile: containers/control-plane/Dockerfile
+    build: *control-plane-build
     depends_on:
+      artifact-storage-init:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     environment:
@@ -37,9 +51,17 @@ services:
       PAJIN_CP_OPERATOR_TOKEN: pajin-lab-operator-token-0000000000000001
       PAJIN_CP_APPROVER_TOKEN: pajin-lab-approver-token-0000000000000001
       PAJIN_CP_WORKER_TOKEN: pajin-lab-worker-token-000000000000000001
+      PAJIN_CP_WORKER_SUBJECT: worker-service
+      PAJIN_CP_REPLAY_WORKER_TOKEN: pajin-lab-replay-worker-token-00000000000001
+      PAJIN_CP_REPLAY_WORKER_SUBJECT: replay-worker-service
       PAJIN_CP_CHECKPOINT_KEY: pajin-lab-checkpoint-signing-key-000000000000000000000001
+      PAJIN_CP_REPLAY_EXECUTOR_PROFILES: '{"replay-worker-service":["kisa-exact-v1"]}'
+      PAJIN_CP_ARTIFACT_STAGING_ROOT: /var/lib/pajin/artifact-staging
+      PAJIN_CP_ARTIFACT_REPOSITORY_ROOT: /var/lib/pajin/artifact-repository
       PAJIN_CP_HOST: 0.0.0.0
       PAJIN_CP_PORT: 8090
+      PAJIN_CP_LIMIT_CONCURRENCY: 256
+      PAJIN_CP_REQUEST_BODY_TIMEOUT_SECONDS: 30
     healthcheck:
       test:
         [
@@ -53,9 +75,13 @@ services:
       retries: 20
     ports:
       - "127.0.0.1:18090:8090"
+    init: true
     read_only: true
+    volumes:
+      - artifact-staging:/var/lib/pajin/artifact-staging
+      - artifact-repository:/var/lib/pajin/artifact-repository
     tmpfs:
-      - /tmp
+      - /tmp:uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev,size=16m
     user: "10001:10001"
     cap_drop:
       - ALL
@@ -65,16 +91,48 @@ services:
     mem_limit: 256m
     cpus: 0.5
     restart: "no"
+    networks:
+      - api-host
+      - control
+      - database
+
+  artifact-storage-init:
+    image: pajin-control-plane:dev
+    build: *control-plane-build
+    command: ["python", "/app/init_storage.py"]
+    environment:
+      PAJIN_CP_ARTIFACT_STAGING_ROOT: /var/lib/pajin/artifact-staging
+      PAJIN_CP_ARTIFACT_REPOSITORY_ROOT: /var/lib/pajin/artifact-repository
+    network_mode: none
+    read_only: true
+    volumes:
+      - artifact-staging:/var/lib/pajin/artifact-staging
+      - artifact-repository:/var/lib/pajin/artifact-repository
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=0700
+    user: "0:0"
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 16
+    mem_limit: 64m
+    cpus: 0.1
+    restart: "no"
 
   worker-daemon:
     image: pajin-control-plane:dev
-    command: ["pajin-worker-daemon"]
+    command: ["python", "-m", "pajin.control_plane.worker_main"]
     stop_grace_period: 15s
     depends_on:
       control-plane:
         condition: service_healthy
     environment:
       PAJIN_CP_URL: http://control-plane:8090
+      # Local Compose lab only; production PAJIN_CP_URL must use HTTPS.
+      PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB: "true"
       PAJIN_CP_WORKER_TOKEN: pajin-lab-worker-token-000000000000000001
       PAJIN_WORKER_ID: pajin-compose-worker-1
       PAJIN_DAEMON_KINDS: campaign,tool-loop
@@ -91,10 +149,11 @@ services:
       timeout: 3s
       retries: 10
       start_period: 10s
+    init: true
     read_only: true
     tmpfs:
-      - /tmp:uid=10001,gid=10001,mode=0750
-      - /var/lib/pajin/runs:uid=10001,gid=10001,mode=0750
+      - /tmp:uid=10001,gid=10001,mode=0750,noexec,nosuid,nodev,size=16m
+      - /var/lib/pajin/runs:uid=10001,gid=10001,mode=0750,noexec,nosuid,nodev,size=128m
     user: "10001:10001"
     cap_drop:
       - ALL
@@ -104,3 +163,164 @@ services:
     mem_limit: 256m
     cpus: 0.5
     restart: "no"
+    networks:
+      - control
+
+  replay-tool-image:
+    image: pajin-worker:dev
+    build:
+      context: ./worker
+    entrypoint: ["python", "-c"]
+    command:
+      [
+        "import pathlib,sys; paths=['/app/worker_entry.py','/app/mcp_bridge.py','/app/demo_mcp_server.py']; sys.exit(0 if all(pathlib.Path(path).is_file() for path in paths) else 1)",
+      ]
+    network_mode: none
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 8
+    mem_limit: 32m
+    cpus: 0.1
+    restart: "no"
+
+  replay-egress-proxy-image:
+    image: pajin-egress-proxy:dev
+    build:
+      context: ./egress-proxy
+    entrypoint: ["python", "-c"]
+    command:
+      [
+        "import pathlib,sys; sys.exit(0 if pathlib.Path('/app/proxy.py').is_file() else 1)",
+      ]
+    networks:
+      - replay-uplink
+    read_only: true
+    user: "65532:65532"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 8
+    mem_limit: 32m
+    cpus: 0.1
+    restart: "no"
+
+  replay-runtime-preflight:
+    image: pajin-replay-worker:dev
+    build:
+      context: ..
+      dockerfile: containers/control-plane/Dockerfile
+      target: replay-worker
+    command: ["python", "/app/replay_runtime_preflight.py"]
+    depends_on:
+      replay-tool-image:
+        condition: service_completed_successfully
+      replay-egress-proxy-image:
+        condition: service_completed_successfully
+    environment:
+      PAJIN_REPLAY_WORKER_IMAGE: pajin-worker:dev
+      PAJIN_REPLAY_EGRESS_PROXY_IMAGE: pajin-egress-proxy:dev
+      PAJIN_REPLAY_EXTERNAL_NETWORK: ${PAJIN_REPLAY_EXTERNAL_NETWORK:-pajin-replay-uplink-lab}
+    network_mode: none
+    init: true
+    read_only: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=0700,noexec,nosuid,nodev,size=8m
+    user: "10001:10001"
+    group_add:
+      - "${PAJIN_DOCKER_SOCKET_GID:-0}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 32
+    mem_limit: 64m
+    cpus: 0.1
+    restart: "no"
+
+  replay-worker:
+    image: pajin-replay-worker:dev
+    build:
+      context: ..
+      dockerfile: containers/control-plane/Dockerfile
+      target: replay-worker
+    command: ["python", "-m", "pajin.control_plane.replay_worker_main"]
+    stop_grace_period: 65s
+    depends_on:
+      artifact-storage-init:
+        condition: service_completed_successfully
+      control-plane:
+        condition: service_healthy
+      replay-runtime-preflight:
+        condition: service_completed_successfully
+    environment:
+      PAJIN_CP_URL: http://control-plane:8090
+      # Local Compose lab only; production PAJIN_CP_URL must use HTTPS.
+      PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB: "true"
+      PAJIN_CP_REPLAY_WORKER_TOKEN: pajin-lab-replay-worker-token-00000000000001
+      PAJIN_REPLAY_WORKER_ID: pajin-compose-replay-worker-1
+      PAJIN_REPLAY_EXECUTOR_PROFILE: kisa-exact-v1
+      PAJIN_REPLAY_STAGING_ROOT: /var/lib/pajin/artifact-staging
+      PAJIN_REPLAY_LEASE_SECONDS: 30
+      PAJIN_REPLAY_HEARTBEAT_SECONDS: 5
+      PAJIN_REPLAY_LONG_POLL_SECONDS: 10
+      PAJIN_REPLAY_IDLE_DELAY_SECONDS: 0.2
+      PAJIN_REPLAY_RETRY_BASE_SECONDS: 0.25
+      PAJIN_REPLAY_RETRY_MAX_SECONDS: 5
+      PAJIN_REPLAY_FINALIZE_ATTEMPTS: 3
+      PAJIN_REPLAY_CANCELLATION_GRACE_SECONDS: 2
+      PAJIN_REPLAY_CANCELLATION_FORCE_SECONDS: 25
+      PAJIN_REPLAY_STATUS_PATH: /tmp/pajin-replay-worker-status.json
+      PAJIN_REPLAY_HEALTH_MAX_AGE_SECONDS: 30
+      PAJIN_REPLAY_DOCKER_EXECUTABLE: /usr/local/bin/docker
+      PAJIN_REPLAY_WORKER_IMAGE: pajin-worker:dev
+      PAJIN_REPLAY_EGRESS_PROXY_IMAGE: pajin-egress-proxy:dev
+      PAJIN_REPLAY_EXTERNAL_NETWORK: ${PAJIN_REPLAY_EXTERNAL_NETWORK:-pajin-replay-uplink-lab}
+    healthcheck:
+      test: ["CMD", "python", "-m", "pajin.control_plane.replay_worker_health"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    init: true
+    read_only: true
+    volumes:
+      - artifact-staging:/var/lib/pajin/artifact-staging
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    tmpfs:
+      - /tmp:uid=10001,gid=10001,mode=0750,noexec,nosuid,nodev,size=32m
+    user: "10001:10001"
+    group_add:
+      - "${PAJIN_DOCKER_SOCKET_GID:-0}"
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.0
+    restart: "no"
+    networks:
+      - control
+
+volumes:
+  artifact-staging:
+  artifact-repository:
+
+networks:
+  api-host:
+    driver: bridge
+  control:
+    internal: true
+  database-host:
+    driver: bridge
+  database:
+    internal: true
+  replay-uplink:
+    name: pajin-replay-uplink-lab

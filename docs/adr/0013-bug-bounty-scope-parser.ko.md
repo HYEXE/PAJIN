@@ -29,11 +29,13 @@ PAJIN에 엄격한 `BugBountyProgram` 매니페스트를 도입한다. 여기에
    컬렉션을 정렬하므로 Python 프로세스가 달라져도 다이제스트가 안정적으로 유지된다.
 2. `bug-bounty-compile`은 정확한 다이제스트와 함께 식별된 승인자, 오프셋을 포함한 승인 및 만료
    타임스탬프, 권한 부여 증거를 요구한다. 정책 스냅샷이 변경되었거나 더 오래된 것이면 승인이
-   무효가 된다.
+   무효가 되며 컴파일 순간에도 승인이 활성 상태여야 한다.
 
 컴파일된 Campaign에는 자체 허용 규칙과 일치하고 어떤 거부 규칙과도 일치하지 않는 구체적인
 진입점만 포함한다. 명시적 거부가 항상 우선한다. MVP는 T3/T4 위험과 안전하지 않은 데이터 처리
-설정을 거부한다. 원본에서 누락한 경우에도 필수 금지 사항을 추가한다.
+설정을 거부한다. 구체적인 `generic-http` asset은 제한된 probe profile이 구현될 때까지
+review-only이며, 이런 asset이 하나라도 있으면 혼합 Campaign에서 조용히 사라지는 대신 컴파일이
+실패한다. 원본에서 누락한 경우에도 필수 금지 사항을 추가한다.
 
 `RulesOfEngagement`에 재사용할 수 있는 두 가지 통제를 추가한다.
 
@@ -61,6 +63,11 @@ PAJIN에 엄격한 `BugBountyProgram` 매니페스트를 도입한다. 여기에
 - 이 MVP에서는 테스트 계정과 비밀 정보 마스킹이 필수다.
 - 실행 가능한 자산이 고정 `boolean-sqli-lab` 프로필과 `host.docker.internal` 진입점을 사용하는
   `local-lab` 프로그램을 제외하고 사설 네트워크 실행을 거부한다.
+- review와 Campaign artifact는 기존 regular file만 atomic replace하며 symbolic-link parent와
+  leaf를 거부한다.
+- `eligibleForBounty: false` target은 submission-eligible이 될 수 없다. duplicate review가
+  필수인데 known-finding index가 생략되면 `duplicate-check-not-performed`로 기록되어 제출 준비
+  item을 만들 수 없고, 명시적으로 제공한 빈 index만 완료된 검사로 인정한다.
 
 ## 결과
 
@@ -70,12 +77,15 @@ PAJIN에 엄격한 `BugBountyProgram` 매니페스트를 도입한다. 여기에
 
 이 단면은 임의의 공급자 HTML을 파싱하거나, LLM으로 범위를 추론하거나, 증거 삭제를 강제하거나,
 중복 보고 시스템을 조회하거나, 최종 플랫폼별 제출물을 생성하지 않는다. 검토 문서에는 보존 및
-중복 검사를 수동 통제로 명시한다. 향후 커넥터가 정책 문서를 수집할 수는 있지만, 그 출력도 타입이
-지정된 이 검토 및 다이제스트 승인 경계를 통과해야 한다.
+중복 검사를 수동 통제로 명시한다. PAJIN은 타입 지정된 로컬 snapshot을 소비할 수 있지만 snapshot이
+없을 때 검사가 수행되었다고 주장하지 않는다. 향후 커넥터가 정책 문서를 수집할 수는 있지만, 그
+출력도 타입이 지정된 이 검토 및 다이제스트 승인 경계를 통과해야 한다.
 
 ## 검증
 
 테스트는 정규화, 정책 텍스트의 다이제스트 결합, 집합 순서 안정성, 승인 불일치와 만료, 허용/거부
 중첩, 진입점 이탈, 필수 금지 사항 충돌, T3 거부, IANA 및 야간 시간대, Tool 범주 허용 목록,
 가중 분당 요청 한도 소진, 사설 랩 제한, 아티팩트 직렬화, Campaign 로딩 및 실제 CLI
-검토/컴파일/검증 왕복 과정을 다룬다.
+검토/컴파일/검증 왕복 과정을 다룬다. 회귀 테스트는 비활성 승인, 구체적 generic target,
+bounty-ineligible target, 누락된 필수 duplicate 검사, Markdown 구조 주입, symbolic-link output
+parent와 leaf도 거부하면서 regular-file overwrite는 유지하는지 확인한다.

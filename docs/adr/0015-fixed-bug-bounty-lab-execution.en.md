@@ -53,9 +53,12 @@ number of HTTP requests.
 5. evidence produced by the associated Specialist result.
 
 The Validator deliberately ignores the Worker's `vulnerable` value and derived check booleans.
-Only its recomputed result becomes a validated `CWE-89` Finding. The generic multi-agent runner then
-enforces evidence and target binding before the Bug Bounty reporter checks the current policy
-digest and creates conservative local drafts.
+Its recomputed positive result enters the generic validation gate as an exact `CWE-89` Candidate.
+The gate enforces request, evidence-provenance, target, scope, and semantic bindings, then records
+`needs-review` with `independent-reproduction-missing`; this original control-set execution does not
+populate the product Confirmed Finding projection. The Bug Bounty reporter consumes that sealed
+Candidate/Decision pair and creates one clearly marked `semantic-review-only` draft with
+`submission_eligible=false`. A hardened result produces no Candidate and no draft.
 
 `bug-bounty-run` is Docker-only. It has no simulated execution option and never submits externally.
 Generic public Bug Bounty programs can still be reviewed and compiled, but the Planner refuses to
@@ -77,6 +80,7 @@ review.
 
 Tests cover profile compilation and private-network restrictions, fixed Tool input, Gateway-only
 egress, three-unit rate reservation, independent observation recomputation, hardened rejection,
-five-role multi-agent execution, evidence-bound draft generation, Docker-only CLI selection, and
-the synthetic target behavior. The Docker integration sequence runs both vulnerable and hardened
-profiles through the same digest-approved Campaign.
+five-role multi-agent execution, sealed Candidate/Decision authority, vulnerable review-only draft
+generation, no-Candidate/no-draft hardened behavior, Docker-only CLI selection, and the synthetic
+target behavior. The Docker integration sequence runs both vulnerable and hardened profiles
+through the same digest-approved Campaign.

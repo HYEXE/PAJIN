@@ -14,16 +14,16 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-18 is:
+The implementation baseline as of 2026-07-19 is:
 
 | Area | Current scope |
 | --- | --- |
 | Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; verified reproduction-backed confirmation projections; and baseline-bound negative replay for hardened retest |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced and cooperative execution cancellation, leases, crash recovery, one Worker daemon, a same-origin Web Console preview, an owner-controlled managed filesystem Artifact repository, server-derived non-dispatchable planned/pending records for exact KISA M03, M06, and A04 confirmation compilations, M6-07B-2C schema-v5 durable reservation and internal first-attempt Job/ticket issuance, M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus idempotent internal service issuance, M6-07B-2E fail-closed dedicated Worker HTTP transport, and M6-07B-2F schema-v7 append-only exact Replay execution-context authority |
-| Primary gaps | Remaining Control Plane Replay orchestration, including a public Replay admission/read API, an actual Replay executor with pre-dispatch permit-use enforcement, the Worker execute/seal split, output import and typed finalization, new-identity retries, Gate wiring, and negative Control Plane retest; non-KISA Local replay orchestration; portable/off-host replay proof; Finding/report review UI; distributed Workers; external integrations; and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, durable exact-KISA Replay finalization, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization after sealed-output import and permit-lineage verification; it does not independently attest target execution. |
+| Primary gaps | Public Replay admission/read APIs, automatic fresh-identity retry issuance after a terminal Replay attempt, negative Control Plane retest, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -47,14 +47,15 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > contracts still fail closed without a registered trusted materializer. The M6 common gate now
 > reopens every KISA replay Run, verifies both seals and ticket finalization, applies the shared
 > reason matrix, and appends `validation/v1alpha1/` without rewriting the sealed source snapshot.
-> Only verified reproduction-backed Decisions enter that versioned Finding projection, as required
-> by [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.en.md). The KISA M6-05
-> retest path accepts only reproduction-backed Confirmed Findings from this projection as its
-> baseline. The ordinary retest Run handles normal-function probes and regression, while a separate
-> baseline-bound Restricted Replay executes the baseline Candidate's exact attack contract. A
-> Finding is closed as `fixed` only when all expected repetitions succeed and a trusted negative
-> Oracle, after revalidating the canonical receipt, explicitly returns
-> `ReplayOracleVerdict.CONTRADICTS`. The local KISA positive and negative paths atomically record
+> These artifacts prove Candidate binding, internal consistency, and receipt lineage, but not that
+> the intended target executed independently of the Worker trust domain. The current Local, CLI,
+> and Control Plane Worker-only paths therefore write `verified-replay-evidence` projections and
+> keep supporting claims at `needs-review` with
+> `independent-execution-attestation-missing`; they do not produce product Confirmed Findings. The
+> KISA M6-05 retest path still requires a previously and independently attested Confirmed baseline.
+> Negative target responses, including the public deterministic-lab tuple, remain `inconclusive`
+> until a separately verifiable remediation authority exists. Positive observations may still show
+> that an already trusted baseline is `still-vulnerable`. The local KISA paths atomically record
 > ticket issuance context, `issued → claimed → finalized` transitions, and an event journal in a
 > stable SQLite ledger outside individual sealed replay Runs. The `mode=ro` verifier compares the
 > compilation, source root, replay Run, artifact digest, and final seal root even after the process
@@ -91,13 +92,13 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   the Worker only through its stdin envelope, never Docker arguments, environment variables, Job
   metadata, events, or evidence.
 - Docker images are allowlisted and are never pulled implicitly during a campaign.
-- Product-level confirmation requires a successful independent Restricted Reproducer outcome and
-  the objective gate; a Semantic Validator mark alone is insufficient.
-- A KISA `fixed` determination requires a reproduction-backed baseline in the sealed
-  `validation/v1alpha1` projection and exact binding among the Candidate, Decision, Finding,
-  remediation, retest Run, root, request, scenario, threat, Tool, and target. The mere absence of an
-  attack signal, a Worker verdict flag, or `supports_claim == false` is not negative proof. A
-  binding or integrity mismatch fails the command closed without changing the baseline artifact.
+- Product-level confirmation requires the objective gate, Candidate-bound replay, and an
+  independently verifiable execution/target attestation. The repository does not currently have
+  that last authority, so Worker-only evidence cannot exceed `needs-review`.
+- A KISA `fixed` determination additionally requires independently verifiable remediation
+  attestation. Exact bindings, successful repetitions, a negative transcript, Worker flags, and
+  local receipts are necessary consistency checks but are not sufficient proof; current negative
+  replay remains `inconclusive`.
 - `ReplayIntent` is a strict, non-executable schema: raw Tool requests, commands, arbitrary URLs,
   Capability Grants, and undeclared executable fields are rejected. Versioned replay artifacts bind
   Candidate, Run, original and replay request, Mode, scenario, Tool, target, and threat identities
@@ -112,7 +113,8 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 - Local KISA replay ticket state is stored in a stable SQLite ledger outside the sealed replay Run.
   The ledger uses atomic single-use state transitions and a read-only verifier, but it is trusted as
   a local database under the host OS account/ACL boundary. It is not a portable signed proof, an
-  off-host attestation, or the PostgreSQL Control Plane replay authority.
+  off-host attestation, or the PostgreSQL Control Plane replay authority. Consequently it is not
+  product-level Confirmed/FIXED authority either.
 - The explicit Local KISA coordinator is limited to one process and one writer, and only the exact
   M03, M06, and A04 `ai.chat-probe` contracts are allowlisted. It is not a generic structural replay
   predicate or a distributed lock. Accepted ADR 0029 governs Control Plane replay artifact handoff,
@@ -169,7 +171,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   Replay claim, heartbeat, and Tool-permit issuance, plus matching async client methods. The strict
   JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-executor-profile-array allowlist accepts only
   authenticated Worker subjects; when unset it is empty and fails closed. For example,
-  `{"worker-service":["kisa-exact-v1"]}` grants that one profile to that one subject. Claim and heartbeat return a
+  `{"replay-worker-service":["kisa-exact-v1"]}` grants that one profile only to the
+  separately authenticated Replay Worker subject. Route authorization is symmetric: that Replay
+  subject is rejected from every generic Worker route, while the generic Worker and every
+  non-allowlisted subject are rejected from all Replay routes. Claim and heartbeat return a
   `ReplayExecutionClaimView` containing the exact server-validated canonical `ReplayCompilation`,
   and the envelope rechecks its canonical compilation, Candidate, contract, Grant, Campaign, Mode,
   Candidate Run, and Replay Run bindings. The permit remains a non-bearer proof whose issuance has
@@ -183,12 +188,19 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   every permit issuance revalidate the transitive compilation/context/ticket binding. A v6→v7
   migration advances only non-dispatchable v6 state with an empty context table and fails closed if
   tickets, permits, internal Replay Jobs, durable reservations, or advanced batch/item state already
-  exist, because those exact historical context bytes cannot be backfilled. These context bytes do
-  not implement execution or output storage. No actual Replay executor exists yet, and Compose does
-  not enable a dedicated Replay executor daemon. A public Replay admission/read API, the actual
-  executor and pre-dispatch permit-use enforcement, the Worker execute/seal split, output import and
-  typed finalization, new-identity retry issuance, Gate wiring, and negative Control Plane retest
-  remain outstanding, so full M6-07B remains incomplete.
+  exist, because those exact historical context bytes cannot be backfilled. The dedicated
+  `kisa-exact-v1` daemon now claims only that profile, heartbeats its fenced lease, obtains one
+  durable server permit immediately before every Tool dispatch, and seals output into the exact
+  opaque staging slot. It submits no path, ArtifactRef, result, digest, or verdict. Schema v9
+  finalization imports the slot into the server-owned repository, independently reopens the seals,
+  checks compilation/ticket/source/permit lineage, derives the common Gate decision, and atomically
+  finalizes the output Artifact, ticket, Job, item, batch, Run, and audit state after revalidating
+  the permit-backed authority whose budget/rate units were already consumed at issuance. Once
+  any permit exists, execution failure is terminal and automatic same-ticket dispatch retry is
+  forbidden. Exact response-loss retries of the identical ordinal-bound permit request and the
+  identical server finalization request are idempotent; neither retries a Tool dispatch.
+  Public admission/read APIs, fresh-identity retry issuance, and negative Control Plane retest remain
+  incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -229,18 +241,26 @@ python -m venv .venv
 | CTF | `ctf-run`, `ctf-web-run` (compatibility alias), `ctf-suite-run` |
 | Evidence and infrastructure | `evidence-verify`, `replay-verify`, `worker-check`, `egress-check`, `mcp-check` |
 
-The optional server processes are installed as `pajin-control-plane` and `pajin-worker-daemon`.
+The optional server processes are installed as `pajin-control-plane`, `pajin-worker-daemon`, and
+`pajin-replay-worker-daemon`.
 Run `pajin --help` or `pajin <command> --help` for the authoritative option list.
 
 ## Run the vertical slice
 
 ```powershell
 .venv\Scripts\pajin validate examples\ai-redteam.yaml
+.venv\Scripts\pajin run examples\ai-redteam.yaml
+
+# Explicit development/test-only execution
 .venv\Scripts\pajin run examples\ai-redteam.yaml --worker simulated
 ```
 
-The simulated backend exists only for deterministic development and unit tests. It is not an
-isolation boundary.
+`run` and `multi-run` default to the Docker Worker. The simulated backend must be selected
+explicitly and exists only for deterministic development and unit tests; it is not an isolation
+boundary and does not produce real-target evidence. Every Local and Multi-Agent Run seals the
+actual backend identity in `execution-context.json`, duplicates it in `run.json` and the start
+event, and renders it in the report. Simulated CLI output and reports carry an explicit
+`SIMULATED / NOT REAL TARGET EVIDENCE` warning.
 
 ## Bug Bounty Scope Parser
 
@@ -272,13 +292,20 @@ requires concrete entry points that match an allow rule without matching a deny 
 then enforces allow/deny scope, method and category allowlists, weekly test windows, and a sliding
 one-minute request limit before Worker dispatch.
 
+Compilation also requires the approval to be active at compilation time. A concrete asset using
+the generic `generic-http` profile remains review-only until PAJIN implements a bounded probe
+profile for it; mixed manifests fail instead of silently skipping that target. Review and Campaign
+artifacts are atomically replaced only when the destination is absent or a regular file, and any
+symbolic-link parent or leaf is rejected.
+
 Evidence retention remains an explicit manual control. Duplicate triage can consume a typed local
 snapshot, but synchronizing that snapshot with a platform or issue tracker remains manual.
 
 ### Finding triage and submission drafts
 
-After a completed Bug Bounty Campaign has validation findings, compare them with an optional
-program-specific known-finding index and generate submission drafts:
+After a completed Bug Bounty Campaign has a sealed validation snapshot, compare its reportable
+Candidates and Findings with a program-specific known-finding index and generate local review
+drafts:
 
 ```powershell
 .venv\Scripts\pajin bug-bounty-report `
@@ -287,9 +314,11 @@ program-specific known-finding index and generate submission drafts:
   --known-findings examples\bug-bounty-known-findings.yaml
 ```
 
-The reporter rechecks that the Run used the current program digest and exact compiled scope policy,
-accepts only declared targets, and requires every cited evidence file to resolve inside that Run's
-`evidence/` directory. It writes an immutable-input report set under:
+The reporter loads the exact sealed Candidate/Decision snapshot, including a complete versioned
+projection when one exists. It rechecks that the Run used the current program digest and exact
+compiled scope policy, accepts only declared targets, and requires every cited evidence file to be
+sealed under that Run's `evidence/` directory. A partial, substituted, or authority-mismatched
+snapshot fails closed. The reporter writes an immutable-input report set under:
 
 ```text
 bug-bounty-reports/<triage-id>/
@@ -305,10 +334,24 @@ the same cause on a different endpoint becomes `needs-review`, preserving possib
 multi-endpoint impact. Missing impact, remediation, component, or root-cause data produces a draft
 with explicit TODOs instead of an automatic submission.
 
+When the program declares `duplicateCheckRequired: true`, omitting `--known-findings` is not treated
+as an authoritative empty index: affected items receive `duplicate-check-not-performed`, remain
+`needs-review`, and are not submission-eligible. Supplying a typed index with `findings: []` records
+that the check was performed and found no known matches. A finding whose concrete target belongs
+only to an asset with `eligibleForBounty: false` likewise remains `needs-review` regardless of its
+other fields.
+
+A Candidate whose exact Decision records successful objective and semantic checks but lacks
+independent reproduction is retained as `semantic-review-only`. It receives
+`independent-reproduction-not-confirmed`, remains `needs-review` with
+`submissionEligible: false`, and may produce a clearly marked operator-review draft. Unsupported,
+inconclusive, rejected, or authority-mismatched Candidate claims do not become drafts. Only a
+Finding from a sealed `verified-independent-replay` projection can become `ready` and
+submission-eligible; Worker-only replay evidence without independently verifiable target-execution
+attestation remains review-only.
+
 The generated Markdown is a local draft only. PAJIN does not submit to a Bug Bounty platform or
-claim that the unsigned local evidence has production-grade artifact integrity.
-The current draft flow consumes the legacy validation projection. Until the control-set probe is
-executed again with a new replay request and evidence lineage, it is not product-level Confirmed.
+claim that local evidence has production-grade external attestation.
 
 ### Automated local Bug Bounty lab
 
@@ -367,8 +410,8 @@ docker compose -f containers\compose.bug-bounty-lab.yaml down
 ```
 
 `bug-bounty-run` always uses the Docker Worker, creates local evidence and triage drafts, and never
-submits a report externally. Generic public Bug Bounty assets remain reviewable and compilable, but
-are not executable until a separately bounded probe profile is implemented.
+submits a report externally. Generic public Bug Bounty assets remain reviewable, but compilation
+rejects them until a separately bounded executable probe profile is implemented.
 
 ## Local CTF Mode
 
@@ -496,8 +539,9 @@ than being selected by a generic predicate.
 The Mode Pack maps the 19 threat classes in the KISA AI Security Red Teaming Guide to a typed
 catalog, selects target-compatible scenarios, executes each scenario through separate Specialist
 agents, and deduplicates Candidate and legacy validation findings after same-Run evidence checks.
-Trusted M03, M06, and A04 Candidates can be promoted to the reproduction-backed Confirmed
-projection through separate replay Runs and the common Gate. Other requested threats remain a
+Trusted M03, M06, and A04 Candidates can receive a sealed `verified-replay-evidence` projection
+through separate replay Runs and the common Gate, but remain `needs-review` without independent
+execution attestation. Other requested threats remain a
 coverage gap or `needs-review` until an executable target-linked scenario and explicit replay
 contract are added.
 
@@ -543,11 +587,11 @@ service.
 A completed `kisa-run` additionally reproduces eligible trusted M03, M06, and A04 Candidates in
 separate replay Runs. Each attempt uses a session distinct from the source execution and every other
 attempt. The live KISA Oracle recomputes the exact catalog checks from the raw transcript, and the
-source/replay link is written to `kisa-replay-index.json`. When at least one verified receipt is
-projected, `confirmationMutationApplied` is `true`; a run with no eligible verified receipt remains
-`false`. The common gate reloads the receipts and appends a sealed `validation/v1alpha1`
-Decision/Finding/report projection; the original flat artifacts remain the immutable pre-replay
-snapshot.
+source/replay link is written to `kisa-replay-index.json`. The current Worker-only path keeps
+`confirmationMutationApplied` at `false`. The common gate reloads the receipts and appends a sealed
+`validation/v1alpha1` Decision/evidence/report projection with
+`verified-replay-evidence` semantics; the original flat artifacts remain the immutable pre-replay
+snapshot and no product Finding is added.
 
 The local positive replay-ticket ledger is stored at
 `<output>/replay/replay-tickets.sqlite3` under the selected output root. A new read-only verifier
@@ -558,7 +602,8 @@ The explicit Local `pajin run --kisa-replay` path uses the separate
 `<output>/local-replay/replay-tickets.sqlite3` ledger. A single writer in the same process creates
 the source Run, Candidate, SQLite ticket, and separate replay Run in sequence, after which the
 common Gate rereads the canonical receipt. The Gate does not modify the flat `findings.json`; it
-extends only the `validation/v1alpha1/` projection with reproduction-backed Confirmed Findings.
+extends only the `validation/v1alpha1/` projection with Candidate-bound evidence and the
+`independent-execution-attestation-missing` reason.
 
 ```powershell
 .venv\Scripts\pajin replay-verify <replay-run-directory> `
@@ -591,9 +636,10 @@ docker compose -f containers/compose.ai-lab.yaml `
   -f containers/compose.ai-lab.hardened.yaml down
 ```
 
-`kisa-retest` consumes only baseline Findings recorded as reproduction-backed Confirmed in the
-sealed `validation/v1alpha1` projection. It does not accept legacy flat Findings, semantic-only
-Candidates, or unconfirmed baselines as retest criteria. The ordinary parent retest Run performs
+`kisa-retest` consumes only baseline Findings that were independently attested before entering the
+sealed `validation/v1alpha1` Confirmed projection. Current Worker-only baselines do not qualify. It
+does not accept legacy flat Findings, semantic-only Candidates, or unconfirmed baselines as retest
+criteria. The ordinary parent retest Run performs
 normal-function probes and regression, while the baseline-bound Restricted Replay compiles each
 baseline Candidate's original request, scenario, threat, Tool, and target unchanged and executes
 them in a separate attack replay Run. Results from the two paths are recorded separately, but their
@@ -601,9 +647,9 @@ calls consume the same Campaign budget, rate limits, and cancellation boundary.
 
 The retest Gate reopens the canonical receipt from disk and verifies bindings among the Candidate,
 source Decision, versioned Finding, remediation action, baseline and retest Runs and seal roots,
-original and replay requests, scenario, threat, Tool, and target. A Finding is `fixed` only when all
-expected repetitions succeed and a trusted negative Oracle explicitly returns
-`ReplayOracleVerdict.CONTRADICTS` for the original compromise claim. A verified
+original and replay requests, scenario, threat, Tool, and target. These checks do not independently
+prove that remediation ran on the intended target. Negative Worker transcripts therefore remain
+`inconclusive` even when every repetition matches the deterministic-lab response. A verified
 `ReplayOracleVerdict.SUPPORTS` produces `still-vulnerable`; mixed support and contradiction,
 insufficient repetitions, execution failure, cancellation, timeout, an unavailable target, or the
 absence of explicit defensive evidence produces `inconclusive`. The existing positive Oracle
@@ -611,18 +657,19 @@ continues to treat zero support as `inconclusive` and does not claim `fixed` fro
 `vulnerable=false` from the Worker or the mere absence of a signal. A binding or integrity mismatch
 is not reduced to a status; it fails the command closed.
 
-The current trusted negative predicate jointly recomputes the exact registered defensive response
-for M03, M06, and A04 in the deterministic KISA Lab, the absence of previous-turn compromise
-markers, and the absence of `toolCalls` and `memoryWrites`. A04 distinguishes rejection of the
-initial write from a non-persistent response to the subsequent lookup. `safety.blocked` and its
-reason alone are not counterevidence; metadata inconsistent with the registered response, an
-unregistered defensive phrase, or an unregistered target safely produces `inconclusive`.
+The exact registered defensive responses for the deterministic KISA Lab are public test fixtures,
+not trusted remediation predicates. Matching those strings, model metadata, `safety.blocked`, or
+the absence of `toolCalls`, `memoryWrites`, and compromise markers cannot mark either the lab or a
+general target `fixed`; all such negative observations remain `inconclusive` without external
+attestation.
 
 Normal-function regression is evaluated independently of Finding status. The scope-limited
 `kisa-retest` Exit Gate opens only when every baseline Finding is `fixed`, both
 `still-vulnerable` and `inconclusive` counts are zero, no new Confirmed Findings were observed
 during execution, and regression is `pass`. Any other result exits non-zero after sealing its
-artifacts. This command closes the baseline loop; it is not a full rescan for new threat types. To
+artifacts. The current Worker-only implementation cannot satisfy the `fixed` prerequisite; the Gate
+remains closed until an external attestation path is implemented. This command closes the baseline
+loop; it is not a full rescan for new threat types. To
 claim the absence of new vulnerabilities, run a separate fresh `pajin kisa-run` discovery Gate.
 That discovery also covers only the currently executable scenario scope; the remaining KISA
 threats are still `not assessed`.
@@ -697,13 +744,27 @@ Reproducer stage required before product-level confirmation is not implemented y
 is stored separately in `model-narrative.json` and is appended as a clearly subordinate section; it
 cannot alter canonical findings or execution state.
 
-`maxModelCalls` and `maxModelTokens` bound model usage independently, while actual token usage and
-registration-supplied per-million token rates contribute to `maxCostUsd`. Provider failures,
-refusals, and schema errors retry at most twice before deterministic fallback. Duration, Capability,
-token, and cost exhaustion never activate fallback and terminate the campaign instead.
-Private Provider destinations are denied unless `--allow-private-provider` is explicitly supplied.
-For billable Providers, configure `--input-cost-per-million` and `--output-cost-per-million` from
-the Provider's trusted pricing configuration.
+`maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
+`maxCostUsd` applies registration-supplied per-million token rates to the same conservative
+reservation. Provider-reported token usage and its derived reported cost are retained only as
+untrusted audit observations; they neither reduce the Campaign enforcement charge nor settle an
+external Provider invoice. Before dispatch, PAJIN reserves a conservative prompt bound: four tokens
+for every canonical request UTF-8 byte, plus explicit base, per-message, per-tool,
+per-assistant-tool-call, and response-format framing allowances. It also reserves the request's
+declared `max_completion_tokens` and its configured maximum cost. Once dispatch is proven, success,
+failure, cancellation, or missing, inconsistent, or above-reservation reported usage commits the
+entire conservative reservation. Only proven non-execution releases it. A Campaign must therefore
+budget enough `maxModelTokens` for at least one complete in-flight reservation. This is an internal
+Campaign guard, not external billing reconciliation.
+
+Provider failures, refusals, and schema errors retry at most twice before deterministic fallback.
+Duration, Capability, token, and cost exhaustion never activate fallback and terminate the campaign
+instead. Bearer-authenticated public Provider endpoints require HTTPS. Plain HTTP is accepted only
+for fixed loopback/local-lab hosts with an explicit private-network opt-in; private Provider
+destinations are denied unless `--allow-private-provider` is supplied. For billable Providers,
+configure
+`--input-cost-per-million` and `--output-cost-per-million` from the Provider's trusted pricing
+configuration.
 
 ### Policy-governed iterative Tool Loop
 
@@ -753,6 +814,25 @@ without replacing the existing file-backed CLI. Run submission is idempotent, Wo
 bounded leases and heartbeats, crashed leases are requeued, and every transition appends an audit
 event. PostgreSQL rejects update or delete attempts against the event table.
 
+Schema v10 makes submission and lease authority durable across SQLite and PostgreSQL. A canonical
+digest binds the authenticated actor, Campaign, input, idempotency key, Job kind, and retry limit;
+an exact retry returns the existing Run, while any changed field fails closed. The v9-to-v10
+forward migration reconstructs only an exact public submission graph and marks ambiguous legacy
+Runs non-replayable. A separate Job digest binds the Job and Run IDs, kind, payload, retry limit,
+and idempotency key; migration, startup validation, and claim all recompute that binding. Database
+guards reject late v9 inserts, core-row delete/replace and identity rewrites, invalid lifecycle
+transitions, terminal-history mutation, malformed JSON authority, and lease deadline extensions.
+Each lease has an absolute server deadline no later than 24 hours after claim, heartbeats cannot
+move that deadline, and audit heartbeat events are coalesced to at most one per 60 seconds while
+lease renewal remains independently durable.
+
+Mutation endpoints reject request bodies above 4 MiB before authentication or parsing. Submit
+input, completion result, and checkpoint state then use operation-specific canonical JSON limits
+(at most 1,000,000 UTF-8 bytes plus bounded depth, nodes, keys, key length, and string length).
+Duplicate object names at any depth—including escaped spellings that decode to the same name—are
+rejected as 422; a wire-size violation is 413. Persisted input, result, and checkpoint state are
+owned snapshots, so caller mutation cannot alter stored authority, digests, or signatures.
+
 T3/T4 checkpoint creation records the exact call fingerprint, Tool, target, tier, and expiry. The
 checkpoint payload is signed with a key kept outside the database. Only an Approver credential can
 decide the request; only an Operator can consume an approved decision. Resume verifies the stored
@@ -766,6 +846,10 @@ $env:PAJIN_CP_DATABASE_URL='sqlite:///./.pajin/control-plane.db'
 $env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
 $env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
 $env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
+$env:PAJIN_CP_WORKER_SUBJECT='worker-service'
+$env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
+$env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
+$env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
@@ -780,8 +864,10 @@ Replay-batch source resolution remain unavailable and fail closed. Current durab
 requires a POSIX filesystem/runtime with directory `fsync` support; unsupported environments fail
 closed.
 
-SQLite is a local compatibility store, not a production multi-Worker queue. Run the PostgreSQL lab
-on loopback instead:
+SQLite is a local compatibility store, not a production multi-Worker queue. SQLite mutation
+transactions take an immediate writer reservation so claim and completion state machines remain
+serializable across processes; pure get/list operations use rollback-only snapshot reads and do not
+take that writer reservation. Run the PostgreSQL lab on loopback instead:
 
 ```powershell
 docker compose -f containers/compose.control-plane.yaml up --build --detach --wait
@@ -864,10 +950,29 @@ policy, checkpoint, and approval behavior. Cancellation source selection is firs
 later shutdown or transport failure cannot relabel the original cause. A local runner receipt is
 sealed with the Run evidence when cleanup completes; its absence does not imply successful cleanup.
 
+These built-in adapters are explicit verification profiles, not real target or provider execution.
+Their completed Job result includes `executionProfile` and the canonical `executionContext`; the
+same context is sealed as `execution-context.json` and bound by `run.json` before completion is
+accepted. The default profiles therefore report `simulated: true` and
+`evidenceScope: simulated-development-only`. A Docker-backed adapter reports
+`worker-observed-execution`, while any other custom backend remains
+`custom-backend-unclassified` rather than being promoted to real-target evidence.
+
 | Worker setting | Default and accepted range | Boundary |
 | --- | --- | --- |
+| `PAJIN_CP_URL` | HTTPS origin URL | Bearer-authenticated transport is HTTPS-only by default; credentials, paths, queries, fragments, malformed authorities, and non-HTTP(S) schemes are rejected |
+| `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `false`; literal `true` only in the bundled Compose lab | Explicitly permits HTTP only for loopback or the `control-plane` Compose service name; never enable it for remote or production transport |
 | `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS` | 2 seconds; 0.05-30 | Cooperative return before the daemon calls `task.cancel()` |
 | `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS` | 5 seconds; 0.05-30 | Bounded wait after forced task cancellation and for each final drain |
+| `PAJIN_DAEMON_STATUS_PATH` | `~/.pajin/status/worker-status.json` | Host default is below the user's non-shared home; custom parents must be daemon-owned and non-writable by group/others |
+
+Server lease timestamps are conservatively anchored to the local monotonic request-start time. A
+stalled heartbeat can never extend authority: at the local deadline both daemons cancel heartbeat
+I/O, force executor quiescence without a grace delay, and reject stale finalization. Status updates
+use the shared dirfd-anchored, exclusive-random-temp, fsync, atomic-replace writer.
+The status writer and Tool Loop continuation-checkpoint writer require POSIX
+dirfd/`O_NOFOLLOW` semantics; native Windows daemons fail closed before either write and must run
+through the Linux container or WSL (PowerShell-driven Compose remains supported).
 
 The daemon may use one grace window, one forced window, and one additional forced window to drain a
 task that is still pending. A process supervisor must therefore allow more than
@@ -883,7 +988,8 @@ are deterministic in-process profiles and do not embed it. A custom Docker-backe
 a forced window greater than 20 seconds and increase its supervisor allowance accordingly; for
 example, `grace=2`, `force=25`, and a stop grace of at least 60 seconds.
 
-The Control Plane Compose stack starts PostgreSQL, the API, and one non-root Worker daemon:
+The Control Plane Compose stack starts PostgreSQL, the API, one generic non-root Worker daemon, and
+the dedicated Replay daemon described in the next section:
 
 ```powershell
 docker compose -f containers/compose.control-plane.yaml up --detach --no-build --wait
@@ -900,7 +1006,7 @@ lease recovery:
 
 ```powershell
 $env:PAJIN_TEST_CONTROL_PLANE_URL='http://127.0.0.1:18090'
-$env:PAJIN_TEST_WORKER_CRASH_CONTAINER='containers-worker-daemon-1'
+$env:PAJIN_TEST_WORKER_CRASH_CONTAINER='pajin-control-plane-lab-worker-daemon-1'
 .venv\Scripts\pytest -q tests/test_worker_daemon_crash_live.py
 Remove-Item Env:PAJIN_TEST_WORKER_CRASH_CONTAINER
 Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
@@ -908,16 +1014,103 @@ Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
 
 Job delivery is at least once. A crash after an external Tool side effect but before durable
 completion can replay that Tool, so production adapters must propagate destination idempotency keys
-or make replay risk an explicit policy/approval decision. Compose artifacts use tmpfs and are not a
-durable evidence store. See [`ADR 0012`](docs/adr/0012-lease-aware-worker-daemon.en.md).
+or make replay risk an explicit policy/approval decision. The generic daemon's Compose Run output
+uses tmpfs and is not a durable evidence store. See
+[`ADR 0012`](docs/adr/0012-lease-aware-worker-daemon.en.md).
+
+### Dedicated Control Plane Replay Worker
+
+`pajin-replay-worker-daemon` (equivalently,
+`python -m pajin.control_plane.replay_worker_main`) is a separate, single-job daemon. It does not
+register the generic Campaign or Tool Loop executors. Its authority flow is deliberately narrow:
+
+1. claim only a server-issued `replay` Job whose authenticated Worker subject is allowlisted for
+   exactly `kisa-exact-v1`, then heartbeat the ticket-bound lease and fence;
+2. reconstruct the exact KISA Campaign/Scenario/Tool context from the canonical claim and request a
+   durable, ordinal-bound Tool permit immediately before every Gateway dispatch;
+3. write and twice seal the Replay Run only inside the server-reserved opaque staging slot; and
+4. finalize with only profile, lease token, ticket, fence, and staging ID. The Control Plane imports
+   that slot, reopens the immutable copy, verifies both seals and every permit/request binding,
+   derives the common confirmation Gate, and atomically commits the Artifact and schema-v9
+   append-only finalization with the Job/ticket/item/batch/Run transitions after revalidating the
+   permit-backed authority whose budget/rate units were already consumed at issuance.
+
+The Worker cannot submit a filesystem path, `ArtifactRef`, result, digest, Oracle verdict, or
+`confirmed` disposition. A permit is durably consumed before dispatch and is not a bearer token. If
+execution fails after any permit exists, the attempt is terminal and the same Job/ticket is not
+automatically dispatched again; the external destination still provides no exactly-once guarantee
+or rollback. Exact response-loss retries of an identical ordinal-bound permit request and the
+server-side finalize request are idempotent; neither path redispatches a Tool.
+The current executor is limited to the explicit M03, M06, and A04 `ai.chat-probe` confirmation
+contracts, forbids Secret Leases, and uses one host's shared POSIX filesystem and Docker daemon. It
+is not a generic Replay executor, negative-retest worker, multi-host transfer protocol, or portable
+attestation.
+
+The Compose lab now builds the fixed Tool Worker and egress-proxy images, starts an owner-only volume
+initializer, the API, the generic daemon, and the dedicated Replay daemon. The API and Replay daemon
+both run as `10001:10001` and share only `/var/lib/pajin/artifact-staging`; the managed repository
+volume is mounted only into the API. The initializer requires both roots to be owned by that identity
+and sets mode `0700`, failing closed on symlinks or invalid roots. Docker presents fresh named-volume
+roots as root-owned, so this one-shot initializer runs as root with only `CHOWN`. It performs a
+no-follow ownership handoff on each fixed mount path, opens and verifies the same inode, then applies
+the private mode and final ownership through that descriptor before fsyncing and exiting. Every
+long-running PAJIN service remains `10001:10001`. Named Artifact
+volumes survive a normal restart but remain local-lab storage; `down --volumes` removes them.
+
+The Replay daemon needs the Docker CLI and a read/write bind mount of `/var/run/docker.sock`. Set the
+socket's group when the host does not expose it to group 0:
+
+```bash
+export PAJIN_DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker compose -f containers/compose.control-plane.yaml up --build --detach --wait
+```
+
+Before the Replay daemon starts, a networkless one-shot preflight runs with the same UID, socket
+mount, and supplemental group. It must reach the Docker server and inspect both fixed images and the
+configured proxy uplink; otherwise Compose blocks daemon startup. This validates the current lab
+wiring but does not reduce the Docker socket's authority.
+
+On Docker Desktop the lab default, supplemental group 0, commonly matches the VM socket. A Docker
+socket is effectively host-root authority: the non-root UID, dropped capabilities, read-only root
+filesystem, and `no-new-privileges` setting do not constrain what an authorized Docker API client can
+start or mount. Do not expose this daemon to untrusted code or a remote unauthenticated daemon; use a
+dedicated Docker host or a separately designed restricted broker in production. Bundled Compose
+creates the dedicated `pajin-replay-uplink-lab` network; a different
+`PAJIN_REPLAY_EXTERNAL_NETWORK` override must already exist. Only the proxy-image preflight and
+per-execution egress proxies join that uplink; execution Workers remain on the per-call internal
+network.
+
+| Replay Worker setting | Compose value | Boundary |
+| --- | --- | --- |
+| `PAJIN_CP_URL`, `PAJIN_CP_REPLAY_WORKER_TOKEN` | HTTPS API origin and distinct Replay Worker secret | Required authenticated Replay transport; the token must differ from Operator, Approver, and generic Worker credentials; Replay and generic Worker routes reject each other's subjects; production requires managed secrets |
+| `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `true` only in bundled Compose; default `false` | Narrow local-lab exception for `http://control-plane:8090`; remote HTTP remains rejected and production must use HTTPS |
+| `PAJIN_REPLAY_WORKER_ID` | `pajin-compose-replay-worker-1` | Status identity only; the Bearer principal is the authorization identity |
+| `PAJIN_REPLAY_EXECUTOR_PROFILE` | `kisa-exact-v1` | Literal-only, matching `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` |
+| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only shared root; claims carry only an opaque `stage_<uuid>` |
+| `PAJIN_REPLAY_LEASE_SECONDS`, `PAJIN_REPLAY_HEARTBEAT_SECONDS`, `PAJIN_REPLAY_LONG_POLL_SECONDS` | 30, 5, 10 | Lease is 5-300 seconds; heartbeat must be less than half of it; long poll is at most 20 seconds |
+| `PAJIN_REPLAY_IDLE_DELAY_SECONDS` | 0.2 | Bounds empty-queue polling between long polls |
+| `PAJIN_REPLAY_RETRY_BASE_SECONDS`, `PAJIN_REPLAY_RETRY_MAX_SECONDS` | 0.25, 5 | Bounded identical permit/finalize response-loss backoff, never Tool redispatch authority |
+| `PAJIN_REPLAY_FINALIZE_ATTEMPTS` | 3 | Exact finalize calls only; differing authority is a conflict |
+| `PAJIN_REPLAY_CANCELLATION_GRACE_SECONDS`, `PAJIN_REPLAY_CANCELLATION_FORCE_SECONDS` | 2, 25 | Cooperative then forced drain; 25 seconds exceeds the Docker backend's 20-second cleanup cap |
+| `PAJIN_REPLAY_STATUS_PATH`, `PAJIN_REPLAY_HEALTH_MAX_AGE_SECONDS` | `~/.pajin/status/replay-worker-status.json`, 30 | Host default uses a private parent; Compose explicitly uses its UID-owned mode-0750 tmpfs; health bounds input to 64 KiB and does not attest target success or physical quiescence |
+| `PAJIN_REPLAY_DOCKER_EXECUTABLE`, `PAJIN_REPLAY_WORKER_IMAGE`, `PAJIN_REPLAY_EGRESS_PROXY_IMAGE`, `PAJIN_REPLAY_EXTERNAL_NETWORK` | pinned CLI path, two fixed `:dev` image names, `pajin-replay-uplink-lab` | Images are allowlisted and never pulled implicitly; bundled Compose creates the dedicated proxy uplink, while an override must be pre-created |
+
+The Compose `stop_grace_period` is 65 seconds, exceeding the configured
+`grace + (2 * force)` drain bound plus scheduling margin. `SIGKILL`, Docker-daemon loss, host loss,
+or a blocking kernel operation can bypass in-process cleanup; lease fencing and conservative permit
+consumption remain the authority boundary in those cases. See
+[`ADR 0029`](docs/adr/0029-control-plane-replay-orchestration.en.md).
 
 ## Dynamic multi-agent engine
 
-Run the deterministic five-role team through the simulated or Docker Worker:
+Run the deterministic five-role team through the default Docker Worker. Select the simulated
+Worker only for explicit development or unit-test exercises:
 
 ```powershell
+.venv\Scripts\pajin multi-run examples\multi-agent.yaml
+
+# Explicit development/test-only execution
 .venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker simulated
-.venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker docker
 ```
 
 The Supervisor creates one Specialist per planned step. Deterministic Planner, Validator, and
@@ -932,7 +1125,11 @@ artifact was produced by a Specialist in the same run. For cataloged KISA `ai.ch
 scenarios, a Tool-less trusted Candidate Producer independently recomputes the raw transcript
 checks before validation. The Tool, Candidate Producer, and deterministic Validator parse the same
 strict `AIChatProbeOutput` contract and do not trust Worker-authored `matched` or `vulnerable`
-verdict fields. A semantic Validator that returns no Finding therefore leaves a
+verdict fields. The exact Validator Agent/Task identity, Findings, and Candidate-bound assessments
+are persisted as `validator-output.json` in the same sealed Run snapshot. Durable Control Plane
+derivation reloads that artifact and replays the gate; it never reconstructs semantic support from
+the Candidate itself. This semantic authority binding does not establish independent reproduction,
+product confirmation, or remediation. A semantic Validator that returns no Finding therefore leaves a
 `needs-review` Candidate instead of deleting the observation. Matching semantic support plus the
 common objective gate also remains `needs-review` with `independent-reproduction-missing`; it cannot
 enter the confirmed compatibility projection until a fresh Restricted Reproducer outcome exists.
@@ -949,7 +1146,7 @@ cooperative scheduler does not provide distributed or crash-durable reservations
 Verify live Kill Switch propagation into a running Worker:
 
 ```powershell
-.venv\Scripts\pajin multi-cancel-check --worker docker
+.venv\Scripts\pajin multi-cancel-check examples\multi-agent-cancel.yaml --worker docker
 ```
 
 For operator-driven runs, `multi-run` also accepts `--kill-file <path>`. Creating that file activates
@@ -959,18 +1156,29 @@ removes the running container and any per-execution egress resources.
 
 ## Docker Worker
 
-Prepare the MCP SDK bundle using the platform trust store and the hash-locked Linux resolution,
-then build both development images:
+Build both development images directly from their checked-in, hash-locked inputs:
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-worker-dependencies.ps1
 docker build --tag pajin-worker:dev containers/worker
 docker build --tag pajin-egress-proxy:dev containers/egress-proxy
 ```
 
 `containers/worker/requirements.lock` pins the MCP v1 SDK and every transitive dependency with
-distribution hashes. The generated `containers/worker/vendor/` directory is intentionally ignored
-by Git and must exist before building the Worker image.
+distribution hashes. The Worker Dockerfile installs that lock with `--require-hashes` and
+`--only-binary`, so a generated or ignored `vendor/` tree is not required. All checked-in
+Dockerfiles also pin their base image by multi-platform manifest digest. The build downloads the
+selected binary wheels from the configured package index unless they are already cached; hash
+locking makes it reproducible but does not make it an offline build.
+
+After an intentional change to `containers/worker/requirements.in`, refresh the checked-in lock:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-worker-dependencies.ps1
+```
+
+The script performs a marker-preserving universal resolution. Linux Docker builds ignore the
+non-Linux branches while amd64 and arm64 use the same checked-in hash lock. It updates only the
+lock and does not create a vendor tree.
 
 Verify the effective isolation controls from inside the container:
 
@@ -1007,11 +1215,21 @@ blocking:
 .venv\Scripts\pajin egress-check
 ```
 
+The target-lab and host-facing Control Plane/PostgreSQL networks are ordinary Docker bridges so
+their loopback-published ports remain usable. They segment service attachment but do not deny
+container outbound traffic; production deployment needs host firewall or equivalent egress
+controls in addition to PAJIN's per-execution proxy boundary.
+
 The Worker is attached only to a per-execution `--internal` network. The dedicated proxy is attached
 to that network and the external Docker bridge, validates the destination again after DNS
 resolution, and records allow/deny decisions in the execution evidence. HTTP paths and methods are
-enforced directly. HTTPS uses CONNECT, so only host-wide allow rules are accepted; any deny rule for
-that HTTPS authority rejects the entire tunnel.
+enforced directly. HTTPS uses CONNECT, so the proxy enforces only authority-wide rules: only
+host-wide allows are accepted and any deny rule for that authority rejects the entire tunnel. The
+exact encrypted method and path remain bound to the Gateway-selected fixed Worker action, not proxy
+inspection. CONNECT events state `receiptEligible=false`,
+`methodEnforcement=trusted-worker-only`, and `pathEnforcement=authority-only`; they are not HTTP
+request/response receipts. Policy input and response buffering are bounded, and the fixed 64 MiB
+proxy rejects configured response limits above 8 MiB before execution rather than relying on OOM.
 
 ## Registered MCP tools
 
@@ -1133,9 +1351,12 @@ images or Compose fixtures.
 
 ## Architecture rule
 
-PydanticAI is an adapter for model-backed planning and validation. It does not own campaign state
-or execute privileged tools directly. Every MCP, CLI, browser, and sandbox call must pass through
-the PAJIN Tool Gateway and Policy Engine.
+`ProviderAgentRuntime` is the governed production path for network-backed planning and validation.
+It binds every model call to `PolicyBoundProviderPort`, the Tool Gateway, Campaign budgets, and
+run-scoped Secret Leases. `PydanticAIAgentRuntime` is limited to PydanticAI's exact local
+`TestModel` for deterministic tests and rejects model names, general models, and subclasses before
+Agent construction. Every MCP, CLI, browser, sandbox, and network-backed model call must cross its
+PAJIN policy boundary.
 
 See [the product plan](docs/PAJIN_PRODUCT_PLAN.en.md),
 [the KISA traceability matrix](docs/KISA_TRACEABILITY.en.md), and the complete

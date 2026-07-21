@@ -5,7 +5,7 @@
 이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행
 통제, 증적, 결과 산출물에 연결한다. 페이지는 첨부 PDF의 물리 페이지를 기준으로 한다.
 
-> 최종 최신화: 2026-07-18. Candidate admission, 원 증거 심사, 제한 재현 계약, Replay
+> 최종 최신화: 2026-07-19. Candidate admission, 원 증거 심사, 제한 재현 계약, Replay
 > Compiler·단일 사용 ticket·Restricted Reproducer와 M03·M06·A04용 trusted fresh-session
 > materializer·live KISA transcript Oracle·runner coordinator, receipt 재로딩 공통 Gate와
 > append-only `validation/v1alpha1` Confirmed 투영을 구현했다. flat `findings.json`은 봉인된
@@ -40,7 +40,8 @@
 > 실행 여부가 불확실해도 발급된 permit은 consumed로 남는다. M6-07B-2E는 fail-closed 내부 Worker HTTP
 > transport를 추가했다. strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array
 > allowlist는 설정이 없으면 빈 목록으로 fail closed하며, 예시
-> `{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. WORKER-role 전용
+> `{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 해당
+> profile 하나를 허용한다. WORKER-role 전용
 > claim·heartbeat·Tool-permit endpoint와 async client를 제공하고, claim/heartbeat envelope에 서버가
 > 검증한 canonical `ReplayCompilation`을 포함한다. permit은 발급 시 이미 소비된 non-bearer proof이며
 > 별도 redeem mutation은 없다. M6-07B-2F는 schema v7 append-only
@@ -49,10 +50,18 @@
 > context는 `kisa-exact-v1`을 고정하고 Secret Lease를 금지하며 opaque output-staging slot만
 > 할당한다. payload, claim/heartbeat, profile 검사와 permit 발급은 같은 authority를 전이적으로 다시
 > 검증한다. v6→v7 migration은 non-dispatchable 상태만 context table이 빈 채로 전진시키고, 과거
-> context byte를 backfill할 수 없는 dispatchable Replay authority가 있으면 fail closed한다. Compose는 전용 Replay executor daemon을
-> 활성화하지 않는다. public Replay admission/read API, 실제 executor/pre-dispatch permit-use 집행,
-> Worker execute/seal, output import와 typed finalization, 새 identity retry 발행, Gate와 negative Control
-> Plane retest가 후속이며 M6-07B 전체는 미완료다.
+> context byte를 backfill할 수 없는 dispatchable Replay authority가 있으면 fail closed한다. Schema
+> v9는 bounded exact-KISA 실행 slice를 구현한다. 전용 `kisa-exact-v1` daemon은 별도 Replay Worker
+> credential로 claim·heartbeat하고, 응답 유실 가능성이 있는 동일 permit 요청만 bounded retry하며,
+> 각 Tool dispatch 직전에 durable permit을 발급받아 서버 발행 opaque staging slot에 output을
+> seal한다. path, ArtifactRef, result, digest 또는 verdict는 제출하지 않는다. Control Plane은 staging
+> tree를 repository로 import해 두 seal과 source/compilation/ticket/permit lineage를 다시 검증하고,
+> 공통 Gate를 파생해 typed finalization과 Job/ticket/item/batch/Run 상태 전이를 원자적으로 append한다.
+> Compose는 일반 Worker daemon과 함께 이 전용 daemon을 활성화한다. Permit이 하나라도 생긴 뒤의
+> failure는 terminal이고 같은 ticket을 자동 재dispatch하지 않는다. Public Replay admission/read API,
+> fresh-identity retry 발행, multi-item versioned projection publication, negative Control Plane retest와
+> portable/off-host proof는 후속이므로
+> M6-07B 전체는 아직 미완료다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -102,14 +111,14 @@ flowchart LR
 | --- | ---: | --- | --- | --- |
 | AI 시스템 계층과 공격 표면 | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `kisa-test-plan.json`의 `scenarioDefinitions` | 구현 |
 | 19개 위협 분류 D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | `kisa-results.json`의 요청·실행·미실행 위협 | 전체 카탈로그 구현 |
-| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, `KISAMetricResult`, replay index, 공통 Confirmed Gate | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support, versioned Confirmed ID | 부분 구현: 기술 지표와 canonical Confirmed 연결 구현, 비즈니스 영향 지표 후속 |
+| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, sealed Worker transcript/request 재판정, `KISAMetricResult`, replay index, 공통 Confirmed Gate | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support, versioned Confirmed ID | 부분 구현: Worker summary verdict·집계값을 신뢰하지 않고 봉인 원문과 catalog check로 재계산하며, 원문 지연 또는 완결 실행이 없으면 `not-measured`; 비즈니스 영향 지표 후속 |
 | 위험 등급 | 27 | Candidate/Finding `severity`, 공통 Confirmed Gate, 체크리스트 판정 | `candidate-findings.json`, `validation/v1alpha1/findings.json`, `kisa-results.json` | 부분 구현: reproduction-backed 기술 등급 생성, 조직별 비즈니스 우선순위는 미완료 |
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
-| 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions` | `plan.json`, `task-graph.json`, `events.jsonl` | 구현 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·durable 첫 시도 발행·내부 호출별 permit 발급·Worker HTTP transport/client·exact execution-context 권위, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/issued ticket, append-only per-call permit ledger, 서버 검증 compilation/context claim envelope, schema-v7 append-only execution context와 component digest, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative replay 계약, 명시적 Local orchestration, 재시작 후 receipt 검증, Control Plane exact M03·M06·A04 파생, 내부 첫 시도 발행, 일회성 호출별 permit 원장/발급, fail-closed WORKER-only HTTP transport/client, M6-07B-2F exact context 권위 구현; public Replay admission/read API, 실제 executor/pre-dispatch permit-use, execute/seal, output import/typed finalization, retry, Gate와 조직 영향 분석은 후속 |
+| 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed 분리 | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | 구현: 같은 sealed Run의 terminal-success repetition 전체가 있을 때만 executed로 집계하며 FAILED/CANCELLED Run은 실행 성공·비율을 주장하지 않음 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, Control Plane M03·M06·A04 claim→permit→execute/seal→server import/finalize→공통 Gate 경로와 Compose daemon 구현; public Replay admission/read API, fresh-identity retry 발행, multi-item versioned projection publication, negative Control Plane retest, portable proof와 조직 영향 분석은 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | 로컬 DB/OS 신뢰 경계 구현; portable 서명 proof 후속 |
-| 결과 분석·보고 | 41-44 | `KISAModePack` 보고 생성 | `kisa-report.md`, `kisa-results.json` | 구현 |
+| 결과 분석·보고 | 41-44 | `KISAModePack` sealed Campaign·Plan·Agent·TaskGraph·Gateway evidence exact binding과 보고 생성 | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | 구현: 계획 시나리오와 실제 완결 시나리오를 분리하고 다른 Run 또는 caller 위조 결과를 거부 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
 | 테스트 계획(표 28) | 64 | `_test_plan` | `kisa-test-plan.json` | 구현 |
 | 테스트 완료 보고(표 29) | 64-65 | `_completion_report` | `kisa-completion-report.json` | 구현 |
@@ -352,7 +361,8 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   잔여분만 release한다. stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다.
   M6-07B-2E의 strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist는
   설정이 없으면 빈 목록으로 fail closed한다. 예시
-  `{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 profile 하나만 허용한다. 전용 WORKER-role
+  `{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 해당
+  profile 하나를 허용한다. 전용 WORKER-role
   claim·heartbeat·Tool-permit endpoint와 async client가 이 기존 서비스 authority를 노출하고,
   claim/heartbeat의 `ReplayExecutionClaimView`는 서버가 exact digest·identity binding을 다시 검증한
   canonical `ReplayCompilation`을 포함한다. permit은 발급 시 reserved unit을 이미 소비한
@@ -362,10 +372,16 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   `kisa-exact-v1`, secret 금지와 opaque output-staging slot에 one-to-one으로 결박된다. Job payload,
   claim/heartbeat, profile 선택과 permit 발급은 context identity/digest를 전이적으로 모두 다시
   검증한다. v6→v7 migration은 가짜 context row 없이 non-dispatchable 상태만 받아들이며 ticket,
-  permit, Job, reservation 또는 진행된 item이 있으면 fail closed한다. public Replay admission/read API, 실제
-  executor의 pre-dispatch permit-use 집행, Worker execute/seal, output import/typed finalization, 새
-  identity retry, Gate와 negative Control Plane retest는 남아 있고 Compose에는 Replay executor
-  daemon이 없다.
+  permit, Job, reservation 또는 진행된 item이 있으면 fail closed한다. Schema v9 append-only
+  server-derived finalization과 전용 `kisa-exact-v1` daemon이 구현됐다. Daemon은 별도
+  `replay-worker-service` credential로 fenced lease를 heartbeat하고 Tool dispatch 직전에 동일 permit
+  요청의 bounded response-loss retry만 수행하며 opaque staging slot의 Replay Run을 두 번 seal한다.
+  Worker는 발행된 profile/lease/ticket/fence/staging identity만 보내고, Control Plane이 staging tree와
+  두 seal 및 exact permit/request lineage를 독립 검증해 import한 뒤 공통 Gate와
+  Artifact·Job/ticket/item/batch/Run finalization을 원자적으로 확정한다. Permit 뒤 failure는 그
+  ticket에 terminal이다. Compose는 일반 Worker와 함께 전용 daemon을 활성화한다. Public Replay
+  admission/read API, fresh-identity retry 발행, multi-item versioned projection publication, negative
+  Control Plane retest와 portable/off-host proof는 남아 있다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

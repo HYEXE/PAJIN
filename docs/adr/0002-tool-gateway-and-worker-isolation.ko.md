@@ -37,6 +37,15 @@ PAJIN 에이전트는 향후 MCP, 보안 CLI, 브라우저, 코드 실행기를 
 7. 정책 판정, 안전하게 축약한 WorkerJob 메타데이터, WorkerResult, ToolResult를 하나의 증적
    파일에 연결한다.
 8. Simulated Worker는 개발·단위 테스트 전용이며 보안 격리로 간주하지 않는다.
+9. 일반 `pajin run`과 `pajin multi-run` 명령은 Docker Worker를 기본값으로 사용한다. Simulated
+   Worker는 `--worker simulated`를 명시해야만 선택된다.
+10. 모든 Local/Multi-Agent Run은 실제 backend instance에서 Worker identity를 파생하여
+    `execution-context.json`에 봉인하고, 핵심 field를 `run.json`과 `campaign.started` event에
+    반복 기록하며 report에도 표시한다. simulated Run은 항상
+    `SIMULATED / NOT REAL TARGET EVIDENCE`로 표시하고 CLI completion line만 권위로 삼지 않는다.
+11. Tool Adapter는 성공한 Worker stdout을 완전한 strict JSON object로만 해석한다. stdout이나
+    stderr가 잘렸거나, 중복 object key·비유한 수·과도한 depth/node 수가 있으면 fail closed로
+    처리한다. 따라서 원본 증적과 정규화된 ToolResult 사이에 last-wins 의미 차이가 생기지 않는다.
 
 ## 검증
 
@@ -50,6 +59,10 @@ PAJIN 에이전트는 향후 MCP, 보안 CLI, 브라우저, 코드 실행기를 
 - `no-new-privileges`
 - cgroup 메모리, PID, CPU 제한 관찰
 - timeout 강제 종료
+- 일반 Run 명령의 Docker 기본값과 명시적 simulated opt-in
+- 봉인된 execution context, Run summary, start event, report의 일치하는 backend identity
+- simulated CLI와 report의 명확한 개발 전용 경고
+- 중복 key, 잘린 transcript, 과도한 JSON tree를 거부하는 공통 Adapter decoder
 
 ## 결과
 

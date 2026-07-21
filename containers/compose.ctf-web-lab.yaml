@@ -1,3 +1,5 @@
+name: pajin-ctf-web-lab
+
 services:
   ctf-web-target:
     image: pajin-ctf-web-target:dev
@@ -8,6 +10,7 @@ services:
       PAJIN_CTF_WEB_LAB_PROFILE: ${PAJIN_CTF_WEB_LAB_PROFILE:-vulnerable}
     ports:
       - "127.0.0.1:8780:8080"
+    init: true
     read_only: true
     user: "65532:65532"
     cap_drop:
@@ -18,3 +21,9 @@ services:
     mem_limit: 64m
     cpus: 0.25
     restart: "no"
+    networks:
+      - lab
+
+networks:
+  lab:
+    driver: bridge

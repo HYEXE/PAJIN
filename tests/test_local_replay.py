@@ -4,6 +4,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -12,7 +13,6 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode
 from pajin.domain.validation import (
-    ConfirmationBasis,
     FindingDisposition,
     ValidationReasonCode,
 )
@@ -30,9 +30,16 @@ from pajin.replay.sqlite_tickets import (
 )
 from pajin.runtime.control import BudgetController
 from pajin.runtime.store import verify_run_integrity
-from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeTool
-from pajin.tools.base import ToolRegistry
+from pajin.runtime.worker import (
+    DockerWorkerBackend,
+    NetworkMode,
+    WorkerBackend,
+    WorkerJob,
+    WorkerResult,
+    WorkerStatus,
+)
+from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
+from pajin.tools.base import ToolRegistry, audit_http_target, http_target_sha256
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.validation_artifacts import (
     VERSIONED_VALIDATION_INDEX_PATH,
@@ -136,6 +143,72 @@ class M03TranscriptWorker:
         )
 
 
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+
+
+def _proxy_receipt_log(job: WorkerJob, worker_result: WorkerResult) -> str:
+    payload = json.loads(job.stdin)
+    output = json.loads(worker_result.stdout)
+    probe = payload["probe"]
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+        request_body = {
+            "sessionId": probe["session_id"],
+            "messages": turn["messages"],
+            "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
+        }
+        response = observed["response"]
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                    "sequence": index + 1,
+                    "method": "POST",
+                    "target": audit_http_target(payload["target"]),
+                    "targetSha256": http_target_sha256(payload["target"]),
+                    "address": "172.17.0.1",
+                    "status": 200,
+                    "requestJsonSha256": _canonical_digest(request_body),
+                    "responseBodySha256": _canonical_digest(response),
+                    "responseJsonSha256": _canonical_digest(response),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
+
+
+def _trusted_docker_backend(worker: M03TranscriptWorker) -> DockerWorkerBackend:
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        return result.model_copy(
+            update={
+                "backend": "docker",
+                "network_log": _proxy_receipt_log(job, result),
+            }
+        )
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
+
+
 class OmissionValidator:
     async def validate(self, campaign, plan, results):
         del campaign, plan, results
@@ -175,7 +248,7 @@ def _agents(*, omit_semantic_validation: bool = False) -> KISALocalAgentRuntime:
 def _orchestrator(
     root: Path,
     *,
-    worker: M03TranscriptWorker,
+    worker: WorkerBackend,
     omit_semantic_validation: bool = False,
 ) -> tuple[KISALocalReplayOrchestrator, Path]:
     ledger = root / "local-replay" / "replay-tickets.sqlite3"
@@ -194,11 +267,14 @@ def _orchestrator(
 
 
 @pytest.mark.asyncio
-async def test_kisa_local_replay_confirms_m03_through_real_sqlite_and_gate(
+async def test_kisa_local_replay_preserves_m03_evidence_without_product_confirmation(
     tmp_path: Path,
 ) -> None:
     worker = M03TranscriptWorker(supports_claim=True)
-    orchestrator, ledger = _orchestrator(tmp_path, worker=worker)
+    orchestrator, ledger = _orchestrator(
+        tmp_path,
+        worker=_trusted_docker_backend(worker),
+    )
     campaign = _campaign()
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
@@ -215,11 +291,11 @@ async def test_kisa_local_replay_confirms_m03_through_real_sqlite_and_gate(
     assert not hasattr(result.batch.tickets, "issuer")
     assert not hasattr(result.batch.tickets, "claimer")
     assert result.outcome.findings == result.outcome.validation.confirmed_findings
-    assert len(result.outcome.findings) == 1
+    assert result.outcome.findings == []
     decision = result.outcome.validation.decisions[0]
-    assert decision.disposition is FindingDisposition.CONFIRMED
-    assert decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
-    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
+    assert decision.disposition is FindingDisposition.NEEDS_REVIEW
+    assert decision.confirmation_basis is None
+    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING]
     assert result.outcome.report_path == (
         result.outcome.run_path / VERSIONED_VALIDATION_REPORT_PATH
     )
@@ -232,9 +308,9 @@ async def test_kisa_local_replay_confirms_m03_through_real_sqlite_and_gate(
         (result.outcome.run_path / "validation/v1alpha1/findings.json").read_text(encoding="utf-8")
     )
     assert legacy_findings == []
-    assert len(versioned_findings["findings"]) == 1
+    assert versioned_findings["findings"] == []
     assert load_validation_snapshot(result.outcome.run_path).semantics is (
-        ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
+        ValidationSnapshotSemantics.VERIFIED_REPLAY_EVIDENCE
     )
 
     replay_paths = [item.run_path for item in result.batch.verified_results.values()]
@@ -263,7 +339,12 @@ async def test_kisa_local_replay_confirms_m03_through_real_sqlite_and_gate(
     assert {step["request"]["agent_id"] for step in plan["steps"]} == {
         KISALocalAgentRuntime.agent_id
     }
-    assert capabilities[0]["grant"]["subject"] == KISALocalAgentRuntime.agent_id
+    assert len(capabilities) == 2
+    root_grant = capabilities[0]["grant"]
+    specialist_grant = capabilities[1]["grant"]
+    assert root_grant["subject"] == f"supervisor:{KISALocalAgentRuntime.agent_id}"
+    assert specialist_grant["subject"] == KISALocalAgentRuntime.agent_id
+    assert specialist_grant["parent_grant_id"] == root_grant["grant_id"]
 
 
 @pytest.mark.asyncio
@@ -274,7 +355,7 @@ async def test_kisa_local_successful_replay_cannot_override_semantic_omission(
     omitted_worker = M03TranscriptWorker(supports_claim=True)
     omitted_orchestrator, _ = _orchestrator(
         tmp_path,
-        worker=omitted_worker,
+        worker=_trusted_docker_backend(omitted_worker),
         omit_semantic_validation=True,
     )
     # Exercise the common Gate's semantic fail-closed branch even if an upstream
@@ -303,7 +384,7 @@ async def test_kisa_local_successful_replay_cannot_override_semantic_omission(
         omitted.outcome.run_path / VERSIONED_VALIDATION_REPORT_PATH
     )
     assert load_validation_snapshot(omitted.outcome.run_path).semantics is (
-        ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
+        ValidationSnapshotSemantics.VERIFIED_REPLAY_EVIDENCE
     )
 
 
@@ -312,7 +393,10 @@ async def test_kisa_local_empty_candidate_set_stays_legacy_without_gate_projecti
     tmp_path: Path,
 ) -> None:
     worker = M03TranscriptWorker(supports_claim=False)
-    orchestrator, ledger = _orchestrator(tmp_path, worker=worker)
+    orchestrator, ledger = _orchestrator(
+        tmp_path,
+        worker=_trusted_docker_backend(worker),
+    )
 
     result = await orchestrator.run(_campaign())
 

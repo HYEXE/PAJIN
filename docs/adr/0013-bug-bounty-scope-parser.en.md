@@ -31,11 +31,13 @@ The workflow has two separate commands:
    scalar collections so the digest is stable across Python processes.
 2. `bug-bounty-compile` requires the exact digest plus an identified approver, offset-aware approval
    and expiry timestamps, and authorization evidence. A changed or older policy snapshot invalidates
-   the approval.
+   the approval, and the approval must be active at the compilation instant.
 
 The compiled Campaign receives only concrete entry points that match their own allow rule and no
 deny rule. Explicit deny remains dominant. The MVP rejects T3/T4 risk and unsafe data-handling
-settings. Mandatory prohibitions are added even when the source omits them.
+settings. A concrete `generic-http` asset remains review-only until a bounded probe profile exists;
+one such asset makes compilation fail rather than disappearing from a mixed Campaign. Mandatory
+prohibitions are added even when the source omits them.
 
 `RulesOfEngagement` gains two reusable controls:
 
@@ -64,6 +66,11 @@ one runner, preserving that boundary.
 - Test accounts and secret redaction are mandatory in this MVP.
 - Private-network execution is rejected except for a `local-lab` program whose executable assets
   use the fixed `boolean-sqli-lab` profile and `host.docker.internal` entry points.
+- Review and Campaign artifacts atomically replace existing regular files but reject symbolic-link
+  parents and leaves.
+- `eligibleForBounty: false` targets cannot become submission-eligible. When duplicate review is
+  required, an omitted known-finding index is recorded as `duplicate-check-not-performed` and cannot
+  produce a submission-ready item; an explicitly supplied empty index remains a completed check.
 
 ## Consequences
 
@@ -73,8 +80,9 @@ window fields are optional.
 
 This slice does not parse arbitrary vendor HTML, infer scope with an LLM, enforce evidence deletion,
 query duplicate-report systems, or generate a final platform-specific submission. The review lists
-retention and duplicate checks as manual controls. A future connector may collect policy documents,
-but its output must still pass this typed review and digest approval boundary.
+retention and duplicate checks as manual controls. PAJIN can consume a typed local snapshot, but it
+does not claim the check happened when no snapshot is supplied. A future connector may collect
+policy documents, but its output must still pass this typed review and digest approval boundary.
 
 ## Validation
 
@@ -82,4 +90,6 @@ Tests cover normalization, policy-text digest binding, set-order stability, appr
 staleness, allow/deny overlap, entry-point escape, mandatory-prohibition conflicts, T3 rejection,
 IANA and overnight time windows, tool-category allowlisting, weighted per-minute rate exhaustion,
 private-lab restrictions, artifact serialization, Campaign loading, and a real CLI
-review/compile/validate round trip.
+review/compile/validate round trip. Regression coverage also rejects inactive approvals, concrete
+generic targets, ineligible bounty targets, missing required duplicate checks, Markdown structure
+injection, and symbolic-link output parents and leaves while preserving regular-file overwrite.

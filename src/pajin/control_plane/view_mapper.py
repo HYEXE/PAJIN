@@ -1,0 +1,369 @@
+"""Pure record-to-API view mapping for the Control Plane facade."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from pydantic import ValidationError
+
+from pajin.control_plane.database import (
+    ApprovalRecord,
+    ArtifactRecord,
+    CheckpointRecord,
+    EventRecord,
+    JobRecord,
+    ReplayBatchRecord,
+    ReplayFinalizationRecord,
+    ReplayItemRecord,
+    ReplayTicketRecord,
+    ReplayToolPermitRecord,
+    RunRecord,
+)
+from pajin.control_plane.errors import StateConflict
+from pajin.control_plane.models import (
+    ApprovalIntent,
+    ApprovalState,
+    ApprovalView,
+    ArtifactRef,
+    AuditEventView,
+    CheckpointView,
+    InternalJobKind,
+    JobKind,
+    JobState,
+    JobView,
+    ReplayBatchState,
+    ReplayBatchView,
+    ReplayExecutionClaimView,
+    ReplayExecutionContext,
+    ReplayFinalizationView,
+    ReplayItemState,
+    ReplayItemView,
+    ReplayTicketState,
+    ReplayTicketView,
+    ReplayToolPermitView,
+    RunState,
+    RunSummaryView,
+    RunView,
+)
+from pajin.domain.models import CampaignMode, ToolRiskTier
+from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.validation import ValidationDecision
+from pajin.replay.tickets import replay_context_digest
+
+
+def _aware(value: datetime) -> datetime:
+    return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+
+class ControlPlaneViewMapper:
+    """Build immutable public views while checking cross-record presentation authority."""
+
+    @staticmethod
+    def run(record: RunRecord) -> RunView:
+        return RunView(
+            run_id=record.run_id,
+            campaign_name=record.campaign_name,
+            state=RunState(record.state),
+            input=record.input,
+            current_checkpoint_id=record.current_checkpoint_id,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def run_summary(record: RunRecord) -> RunSummaryView:
+        return RunSummaryView(
+            run_id=record.run_id,
+            campaign_name=record.campaign_name,
+            state=RunState(record.state),
+            current_checkpoint_id=record.current_checkpoint_id,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def job(record: JobRecord) -> JobView:
+        return JobView(
+            job_id=record.job_id,
+            run_id=record.run_id,
+            kind=(
+                InternalJobKind(record.kind)
+                if record.kind == InternalJobKind.REPLAY.value
+                else JobKind(record.kind)
+            ),
+            state=JobState(record.state),
+            payload=record.payload,
+            priority=record.priority,
+            attempts=record.attempts,
+            max_attempts=record.max_attempts,
+            available_at=_aware(record.available_at),
+            lease_owner=record.lease_owner,
+            lease_expires_at=(_aware(record.lease_expires_at) if record.lease_expires_at else None),
+            heartbeat_at=_aware(record.heartbeat_at) if record.heartbeat_at else None,
+            result=record.result,
+            error=record.error,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def artifact(record: ArtifactRecord) -> ArtifactRef:
+        try:
+            return ArtifactRef(
+                artifact_id=record.artifact_id,
+                repository_version=record.repository_version,
+                producer_run_id=record.producer_run_id,
+                media_type=record.media_type,
+                schema_kind=record.schema_kind,
+                byte_length=record.byte_length,
+                content_digest=record.content_digest,
+                run_id=record.sealed_run_id,
+                integrity_root_digest=record.root_digest,
+                created_by=record.created_by,
+            )
+        except ValidationError as exc:
+            raise StateConflict("managed Artifact metadata is invalid") from exc
+
+    @staticmethod
+    def replay_source(record: ReplayBatchRecord) -> ArtifactRef:
+        try:
+            return ArtifactRef(
+                artifact_id=record.source_artifact_id,
+                repository_version=record.source_repository_version,
+                producer_run_id=record.source_run_id,
+                media_type=record.source_media_type,
+                schema_kind=record.source_schema_kind,
+                byte_length=record.source_byte_length,
+                content_digest=record.source_content_digest,
+                run_id=record.source_artifact_run_id,
+                integrity_root_digest=record.source_root_digest,
+                created_by=record.source_created_by,
+            )
+        except ValidationError as exc:
+            raise StateConflict("Replay batch Artifact metadata is invalid") from exc
+
+    @classmethod
+    def replay_batch(cls, record: ReplayBatchRecord) -> ReplayBatchView:
+        return ReplayBatchView(
+            batch_id=record.batch_id,
+            campaign_name=record.campaign_name,
+            source=cls.replay_source(record),
+            mode=CampaignMode(record.mode),
+            purpose=ReplayPurpose(record.purpose),
+            policy_version=record.policy_version,
+            state=ReplayBatchState(record.state),
+            cas_version=record.cas_version,
+            created_by=record.created_by,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def replay_item(record: ReplayItemRecord) -> ReplayItemView:
+        return ReplayItemView(
+            item_id=record.item_id,
+            batch_id=record.batch_id,
+            replay_run_id=record.replay_run_id,
+            state=ReplayItemState(record.state),
+            candidate_id=record.candidate_id,
+            candidate_digest=record.candidate_digest,
+            contract_digest=record.contract_digest,
+            compilation_digest=record.compilation_digest,
+            grant_digest=record.grant_digest,
+            required_attempts=record.required_attempts,
+            max_attempts=record.max_attempts,
+            attempts=record.attempts,
+            created_at=_aware(record.created_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def replay_ticket(record: ReplayTicketRecord) -> ReplayTicketView:
+        return ReplayTicketView(
+            ticket_id=record.ticket_id,
+            batch_id=record.batch_id,
+            item_id=record.item_id,
+            job_id=record.job_id,
+            compilation_id=record.compilation_id,
+            budget_reservation_id=record.budget_reservation_id,
+            rate_reservation_id=record.rate_reservation_id,
+            replay_run_id=record.replay_run_id,
+            state=ReplayTicketState(record.state),
+            attempt=record.attempt_number,
+            fencing_value=record.fencing_value,
+            executor_profile=record.executor_profile,
+            claimed_by=record.claim_principal,
+            lease_expires_at=(_aware(record.lease_expires_at) if record.lease_expires_at else None),
+            created_at=_aware(record.issued_at),
+            updated_at=_aware(record.updated_at),
+        )
+
+    @staticmethod
+    def replay_tool_permit(record: ReplayToolPermitRecord) -> ReplayToolPermitView:
+        return ReplayToolPermitView(
+            permit_id=record.permit_id,
+            permit_digest=record.permit_digest,
+            replay_request_id=record.replay_request_id,
+            job_id=record.job_id,
+            batch_id=record.batch_id,
+            item_id=record.item_id,
+            ticket_id=record.ticket_id,
+            compilation_id=record.compilation_id,
+            budget_reservation_id=record.budget_reservation_id,
+            rate_reservation_id=record.rate_reservation_id,
+            replay_run_id=record.replay_run_id,
+            attempt=record.attempt_number,
+            fencing_value=record.fencing_value,
+            call_ordinal=record.call_ordinal,
+            issued_to=record.issued_to,
+            executor_profile=record.executor_profile,
+            source_root_digest=record.source_root_digest,
+            compilation_digest=record.compilation_digest,
+            grant_digest=record.grant_digest,
+            original_request_id=record.original_request_id,
+            tool_id=record.tool_id,
+            tool_version=record.tool_version,
+            target_id=record.target_id,
+            target=record.target,
+            method=record.method,
+            compiled_argument_digest=record.compiled_argument_digest,
+            tool_call_units=record.tool_call_units,
+            request_units=record.request_units,
+            issued_at=_aware(record.issued_at),
+            expires_at=_aware(record.expires_at),
+        )
+
+    @classmethod
+    def replay_finalization(
+        cls,
+        record: ReplayFinalizationRecord,
+        *,
+        job: JobRecord,
+        batch: ReplayBatchRecord,
+        item: ReplayItemRecord,
+        ticket: ReplayTicketRecord,
+        artifact: ArtifactRecord,
+    ) -> ReplayFinalizationView:
+        try:
+            decision = ValidationDecision.model_validate(record.gate_decision)
+        except ValueError as exc:
+            raise StateConflict("durable Replay Gate decision is invalid") from exc
+        gate_digest = replay_context_digest(decision.model_dump(mode="json", by_alias=True))
+        if not (
+            record.job_id == job.job_id
+            and record.batch_id == batch.batch_id
+            and record.item_id == item.item_id
+            and record.ticket_id == ticket.ticket_id
+            and record.replay_run_id == job.run_id == ticket.replay_run_id
+            and record.compilation_id == ticket.compilation_id
+            and record.attempt_number == ticket.attempt_number
+            and record.fencing_value == ticket.fencing_value
+            and record.artifact_id == artifact.artifact_id
+            and record.repository_version == artifact.repository_version
+            and record.gate_decision_digest == gate_digest
+            and ticket.result_digest == record.result_digest
+            and isinstance(job.result, dict)
+            and job.result.get("finalizationId") == record.finalization_id
+            and job.result.get("resultDigest") == record.result_digest
+        ):
+            raise StateConflict("durable Replay finalization graph is inconsistent")
+        return ReplayFinalizationView(
+            finalization_id=record.finalization_id,
+            job=cls.job(job),
+            batch=cls.replay_batch(batch),
+            item=cls.replay_item(item),
+            ticket=cls.replay_ticket(ticket),
+            artifact=cls.artifact(artifact),
+            artifact_set_digest=record.artifact_set_digest,
+            artifact_seal_root_digest=record.artifact_seal_root_digest,
+            receipt_seal_root_digest=record.receipt_seal_root_digest,
+            gate_decision=decision,
+            result_digest=record.result_digest,
+            finalized_by=record.finalized_by,
+            finalized_at=_aware(record.finalized_at),
+        )
+
+    @classmethod
+    def replay_claim(
+        cls,
+        *,
+        job: JobRecord,
+        batch: ReplayBatchRecord,
+        item: ReplayItemRecord,
+        ticket: ReplayTicketRecord,
+        compilation: ReplayCompilation,
+        execution_context: ReplayExecutionContext,
+        execution_context_digest: str,
+        lease_token: str,
+    ) -> ReplayExecutionClaimView:
+        return ReplayExecutionClaimView(
+            job=cls.job(job),
+            batch=cls.replay_batch(batch),
+            item=cls.replay_item(item),
+            ticket=cls.replay_ticket(ticket),
+            compilation=compilation,
+            execution_context=execution_context,
+            execution_context_digest=execution_context_digest,
+            lease_token=lease_token,
+        )
+
+    @staticmethod
+    def checkpoint_intent(checkpoint: CheckpointRecord) -> ApprovalIntent:
+        value = checkpoint.payload.get("pendingIntent")
+        if not isinstance(value, dict):
+            raise StateConflict("signed checkpoint does not contain an approval intent")
+        return ApprovalIntent.model_validate(value)
+
+    @classmethod
+    def checkpoint(cls, record: CheckpointRecord) -> CheckpointView:
+        state = record.payload.get("state")
+        return CheckpointView(
+            checkpoint_id=record.checkpoint_id,
+            run_id=record.run_id,
+            sequence=record.sequence,
+            schema_version=record.schema_version,
+            state=state if isinstance(state, dict) else {},
+            pending_intent=cls.checkpoint_intent(record),
+            payload_sha256=record.payload_sha256,
+            signature=record.signature,
+            key_id=record.key_id,
+            created_at=_aware(record.created_at),
+            claimed_at=_aware(record.claimed_at) if record.claimed_at else None,
+            claimed_by=record.claimed_by,
+            continuation_job_id=record.continuation_job_id,
+        )
+
+    @staticmethod
+    def approval(record: ApprovalRecord) -> ApprovalView:
+        return ApprovalView(
+            approval_id=record.approval_id,
+            run_id=record.run_id,
+            checkpoint_id=record.checkpoint_id,
+            intent=ApprovalIntent(
+                call_fingerprint=record.call_fingerprint,
+                tool_id=record.tool_id,
+                target=record.target,
+                risk_tier=ToolRiskTier(record.risk_tier),
+                expires_at=_aware(record.expires_at),
+            ),
+            state=ApprovalState(record.state),
+            requested_by=record.requested_by,
+            requested_at=_aware(record.requested_at),
+            decided_by=record.decided_by,
+            decided_at=_aware(record.decided_at) if record.decided_at else None,
+            decision_reason=record.decision_reason,
+            consumed_by=record.consumed_by,
+            consumed_at=_aware(record.consumed_at) if record.consumed_at else None,
+        )
+
+    @staticmethod
+    def event(record: EventRecord) -> AuditEventView:
+        return AuditEventView(
+            event_id=record.event_id,
+            run_id=record.run_id,
+            sequence=record.sequence,
+            event_type=record.event_type,
+            actor=record.actor,
+            payload=record.payload,
+            occurred_at=_aware(record.occurred_at),
+        )

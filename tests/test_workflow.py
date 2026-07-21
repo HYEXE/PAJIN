@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from pajin.agents.base import CandidateProduction
+from pajin.agents.base import CandidateAuthority, CandidateProduction, CandidateValidation
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.models import (
     AgentPlan,
@@ -17,9 +17,11 @@ from pajin.domain.models import (
     ToolResult,
 )
 from pajin.domain.validation import (
+    CandidateAssessment,
     CandidateFinding,
     FindingDisposition,
     ValidationReasonCode,
+    candidate_claim_digest,
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import (
@@ -28,7 +30,7 @@ from pajin.runtime.control import (
     ExecutionCancellationContext,
 )
 from pajin.runtime.secrets import SecretMaterial
-from pajin.runtime.store import verify_run_integrity
+from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
     WorkerJob,
@@ -37,7 +39,7 @@ from pajin.runtime.worker import (
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.mock import MockAgentProbe
-from pajin.workflow.local import LocalCampaignRunner
+from pajin.workflow.local import LocalCampaignRunner, LocalToolExecutionError
 
 
 class UnknownToolRuntime(DeterministicAgentRuntime):
@@ -75,6 +77,16 @@ class UntrustedPlanIdentityRuntime(DeterministicAgentRuntime):
                 ]
             }
         )
+
+
+class MutatingPlannerRuntime(DeterministicAgentRuntime):
+    async def plan(self, campaign: CampaignManifest) -> AgentPlan:
+        plan = await super().plan(campaign)
+        campaign.metadata.name = "planner-mutated-campaign"
+        campaign.spec.scope.allow.clear()
+        campaign.spec.targets.clear()
+        campaign.spec.budgets.max_tool_calls = 0
+        return plan
 
 
 class UnconfirmedFindingRuntime(DeterministicAgentRuntime):
@@ -144,6 +156,34 @@ class FailingValidationRuntime(DeterministicAgentRuntime):
         raise RuntimeError("validator unavailable")
 
 
+class MutatingCandidateAwareRuntime(DeterministicAgentRuntime):
+    async def validate_candidates(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+        candidates: list[CandidateFinding],
+    ) -> CandidateValidation:
+        candidate = candidates[0].model_copy(deep=True)
+        candidates[0].claim.title = "validator-mutated producer claim"
+        candidates.clear()
+        campaign.metadata.name = "validator-mutated-campaign"
+        plan.steps.clear()
+        results.clear()
+        return CandidateValidation(
+            findings=[],
+            assessments=[
+                CandidateAssessment(
+                    candidate_id=candidate.candidate_id,
+                    claim_digest=candidate_claim_digest(candidate),
+                    supports_claim=False,
+                    reason_code=ValidationReasonCode.VALIDATOR_OMITTED,
+                    rationale="The mutation attempt deliberately omits semantic support.",
+                )
+            ],
+        )
+
+
 class RecordingCandidateProducer:
     producer_id = "trusted-core:test-candidate-producer"
 
@@ -181,11 +221,33 @@ class RecordingCandidateProducer:
         )
         return CandidateProduction(
             candidates=(candidate,),
-            authoritative_request_ids=frozenset({result.request_id}),
-            authoritative_claim_keys=frozenset(
-                {(candidate.claim.target, candidate.claim.threat_class)}
+            authoritative_request_claims=frozenset(
+                {
+                    CandidateAuthority(
+                        request_id=result.request_id,
+                        target=candidate.claim.target,
+                        threat_class=candidate.claim.threat_class,
+                    )
+                }
             ),
         )
+
+
+class MutatingCandidateProducer(RecordingCandidateProducer):
+    def produce(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> CandidateProduction:
+        production = super().produce(campaign, plan, results)
+        campaign.metadata.name = "producer-mutated-campaign"
+        campaign.spec.scope.allow.clear()
+        plan.steps.clear()
+        results[0].success = False
+        results[0].evidence.clear()
+        results.clear()
+        return production
 
 
 class BlockingWorker:
@@ -474,6 +536,32 @@ def test_local_runner_binds_untrusted_plan_identity_to_capability_subject(
     assert verify_run_integrity(outcome.run_path).valid
 
 
+def test_planner_mutation_cannot_change_authoritative_campaign_snapshot(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    original_campaign = sample_campaign.model_copy(deep=True)
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=MutatingPlannerRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    assert sample_campaign == original_campaign
+    assert outcome.tool_results[0].success
+    sealed_campaign = CampaignManifest.model_validate_json(
+        (outcome.run_path / "campaign.json").read_bytes()
+    )
+    assert sealed_campaign == original_campaign
+    assert verify_run_integrity(outcome.run_path).valid
+
+
 def test_local_runner_seals_completed_run_summary(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -561,6 +649,138 @@ def test_local_runner_produces_candidates_before_validator_without_claim_event_d
     ]
 
 
+def test_candidate_aware_validator_cannot_mutate_producer_authority_snapshot(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=MutatingCandidateAwareRuntime(),
+        candidate_producer=RecordingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    assert len(outcome.validation.candidates) == 1
+    assert outcome.validation.candidates[0].claim.title == "Trusted producer observation"
+    assert len(outcome.tool_results) == 1
+    sealed_campaign = json.loads((outcome.run_path / "campaign.json").read_text(encoding="utf-8"))
+    assert sealed_campaign["metadata"]["name"] == sample_campaign.metadata.name
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_candidate_producer_mutation_cannot_change_plan_result_or_campaign_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    original_campaign = sample_campaign.model_copy(deep=True)
+    calls: list[str] = []
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=RecordingCandidateRuntime(calls),
+        candidate_producer=MutatingCandidateProducer(calls),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(sample_campaign))
+
+    assert calls == ["producer", "validator"]
+    assert sample_campaign == original_campaign
+    assert len(outcome.tool_results) == 1
+    assert outcome.tool_results[0].success
+    assert outcome.tool_results[0].evidence
+    plan = AgentPlan.model_validate_json((outcome.run_path / "plan.json").read_bytes())
+    assert len(plan.steps) == 1
+    assert len(outcome.validation.candidates) == 1
+    assert verify_run_integrity(outcome.run_path).valid
+
+
+def test_local_terminal_state_write_failure_emits_only_failed_terminal_event(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+    real_write_json = RunStore.write_json
+    injected = False
+
+    def fail_completed_state_once(
+        store: RunStore,
+        relative_path: str,
+        data: object,
+    ) -> str:
+        nonlocal injected
+        if (
+            relative_path == "run.json"
+            and isinstance(data, dict)
+            and data.get("status") == "completed"
+            and not injected
+        ):
+            injected = True
+            raise RuntimeError("injected completed state write failure")
+        return real_write_json(store, relative_path, data)
+
+    monkeypatch.setattr(RunStore, "write_json", fail_completed_state_once)
+    with pytest.raises(RuntimeError, match="completed state write failure"):
+        asyncio.run(runner.run(sample_campaign))
+
+    run_path = next((tmp_path / sample_campaign.metadata.name).glob("run_*"))
+    terminal_events = [
+        json.loads(line)["event_type"]
+        for line in (run_path / "events.jsonl").read_text(encoding="utf-8").splitlines()
+        if json.loads(line)["event_type"]
+        in {"campaign.completed", "campaign.failed", "campaign.cancelled"}
+    ]
+    assert injected
+    assert terminal_events == ["campaign.failed"]
+    assert json.loads((run_path / "run.json").read_text(encoding="utf-8"))["status"] == "failed"
+    assert verify_run_integrity(run_path).valid
+
+
+def test_local_runner_rejects_prebound_cancellation_before_creating_run(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    cancellation = ExecutionCancellationContext()
+    cancellation.bind_run(
+        engine="another-engine",
+        run_id="run_existing",
+        path=tmp_path,
+    )
+    runner = LocalCampaignRunner(
+        agents=DeterministicAgentRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=SimulatedWorkerBackend(),
+        output_root=tmp_path,
+    )
+
+    with pytest.raises(ValueError, match="already bound"):
+        asyncio.run(runner.run(sample_campaign, cancellation=cancellation))
+
+    assert not (tmp_path / sample_campaign.metadata.name).exists()
+
+
 def test_local_runner_preserves_unconfirmed_candidate_for_review(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -630,9 +850,13 @@ def test_unknown_model_generated_tool_fails_closed(
         output_root=tmp_path,
     )
 
-    outcome = asyncio.run(runner.run(sample_campaign))
+    with pytest.raises(LocalToolExecutionError, match="failed 1 of 1"):
+        asyncio.run(runner.run(sample_campaign))
 
-    assert not outcome.findings
-    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    run_path = next((tmp_path / sample_campaign.metadata.name).glob("run_*"))
+    events = (run_path / "events.jsonl").read_text(encoding="utf-8")
     assert '"policy":"tool-registry"' in events
     assert '"event_type":"tool.failed"' in events
+    run_state = json.loads((run_path / "run.json").read_text(encoding="utf-8"))
+    assert run_state["status"] == "failed"
+    assert verify_run_integrity(run_path).valid

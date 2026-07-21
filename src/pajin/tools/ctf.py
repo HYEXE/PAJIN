@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
+from hmac import compare_digest
+from re import fullmatch
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, model_validator
 
-from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
-from pajin.modes.ctf.models import (
+from pajin.domain.ctf import (
     CTF_CRYPTO_ARTIFACT_HOST,
     CTF_WEB_BACKUP_PATH,
     CTF_WEB_LAB_HOST,
@@ -17,11 +19,24 @@ from pajin.modes.ctf.models import (
     CTFInlineArtifact,
     CTFScenario,
 )
+from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.base import Tool, ToolSpec
+from pajin.tools.base import (
+    Tool,
+    ToolSpec,
+    audit_http_target,
+    audit_safe_tool_interpretation_failure,
+    audit_safe_worker_failure,
+    decode_bounded_json_response,
+    decode_strict_worker_json_object,
+    host_observed_http_receipts,
+    http_target_sha256,
+)
 
 CTF_WEB_BACKUP_TOOL_ID = "ctf.web-backup-probe"
 CTF_CRYPTO_XOR_TOOL_ID = "ctf.crypto-single-byte-xor"
+MAX_CTF_WEB_RESPONSE_BYTES = 16_384
+MAX_CTF_WEB_RESPONSE_BASE64_CHARS = ((MAX_CTF_WEB_RESPONSE_BYTES + 2) // 3) * 4
 
 
 class CTFWebBackupProbeInput(StrictModel):
@@ -41,6 +56,11 @@ class CTFWebBackupProbeOutput(StrictModel):
         pattern=r"^PAJIN\{[A-Za-z0-9_-]{1,128}\}$",
     )
     body_sha256: str = Field(alias="bodySha256", pattern=r"^[a-f0-9]{64}$")
+    response_body_base64: str = Field(
+        alias="responseBodyBase64",
+        min_length=4,
+        max_length=MAX_CTF_WEB_RESPONSE_BASE64_CHARS,
+    )
     synthetic: bool
     network_performed: bool = Field(alias="networkPerformed")
 
@@ -124,6 +144,22 @@ def validate_ctf_crypto_target(
         raise ValueError("CTF Crypto artifact target does not match its content address")
 
 
+def _solve_single_byte_xor(ciphertext_hex: str) -> tuple[int | None, str | None]:
+    ciphertext = bytes.fromhex(ciphertext_hex)
+    matches: list[tuple[int, str]] = []
+    for key in range(256):
+        plaintext_bytes = bytes(value ^ key for value in ciphertext)
+        try:
+            plaintext = plaintext_bytes.decode("ascii")
+        except UnicodeDecodeError:
+            continue
+        if fullmatch(r"PAJIN\{[A-Za-z0-9_-]{1,128}\}", plaintext):
+            matches.append((key, plaintext))
+    if len(matches) > 1:
+        raise ValueError("CTF Crypto host analysis produced ambiguous flag candidates")
+    return matches[0] if matches else (None, None)
+
+
 class CTFWebBackupProbeTool(Tool):
     """Fetch one fixed synthetic backup path without accepting an agent-authored path."""
 
@@ -132,12 +168,15 @@ class CTFWebBackupProbeTool(Tool):
         version="1.0.0",
         description="Fetch the fixed backup configuration path in the local CTF Web lab",
         risk_tier=ToolRiskTier.T1,
-        categories={"ctf", "discovery", "http", "web"},
-        evidence_types={"http-observation", "json"},
+        categories=frozenset({"ctf", "discovery", "http", "web"}),
+        evidence_types=frozenset({"http-observation", "json"}),
         network_access=True,
         network_request_cost=1,
         parallel_safe=True,
     )
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return self._stable_spec_context()
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
         if request.method != "GET":
@@ -162,7 +201,7 @@ class CTFWebBackupProbeTool(Tool):
         if result.status is not WorkerStatus.SUCCEEDED:
             return _worker_failure(request, result)
         try:
-            raw = json.loads(result.stdout)
+            raw = decode_strict_worker_json_object(result, label="CTF Web probe output")
             output = CTFWebBackupProbeOutput.model_validate(raw)
             probe = CTFWebBackupProbeInput.model_validate(request.arguments)
             if (
@@ -173,9 +212,48 @@ class CTFWebBackupProbeTool(Tool):
                 raise ValueError("worker output identity does not match the Tool request")
             if not output.network_performed:
                 raise ValueError("worker did not attest network execution")
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             return _invalid_output(request, result, "CTF Web", exc)
         return _success(request, result, output.model_dump(mode="json", by_alias=True))
+
+    def validate_trusted_execution(
+        self,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult,
+        *,
+        network_log_trusted: bool,
+    ) -> None:
+        output = CTFWebBackupProbeOutput.model_validate(result.data)
+        receipts = host_observed_http_receipts(
+            worker_result,
+            network_log_trusted=network_log_trusted,
+        )
+        if receipts is None:
+            raise ValueError("CTF Web result requires a host-observed HTTP receipt")
+        if len(receipts) != 1:
+            raise ValueError("CTF Web receipt must cover exactly one request")
+        receipt = receipts[0]
+        body, response, response_json_sha256 = decode_bounded_json_response(
+            output.response_body_base64,
+            max_bytes=MAX_CTF_WEB_RESPONSE_BYTES,
+        )
+        body_sha256 = sha256(body).hexdigest()
+        if (
+            receipt.sequence != 1
+            or receipt.method != "GET"
+            or receipt.target != audit_http_target(request.target)
+            or receipt.target_sha256 != http_target_sha256(request.target)
+            or receipt.status != output.status
+            or not compare_digest(receipt.response_body_sha256, body_sha256)
+            or not compare_digest(output.body_sha256, body_sha256)
+            or receipt.response_json_sha256 is None
+            or not compare_digest(receipt.response_json_sha256, response_json_sha256)
+            or response.get("challengeId") != output.challenge_id
+            or response.get("synthetic") is not output.synthetic
+            or response.get("flag") != output.candidate_flag
+        ):
+            raise ValueError("CTF Web output differs from its host-observed HTTP receipt")
 
 
 class CTFCryptoXORTool(Tool):
@@ -186,11 +264,14 @@ class CTFCryptoXORTool(Tool):
         version="1.0.0",
         description="Solve a bounded synthetic single-byte XOR artifact without network access",
         risk_tier=ToolRiskTier.T0,
-        categories={"crypto", "ctf", "offline-analysis"},
-        evidence_types={"artifact-analysis", "json"},
+        categories=frozenset({"crypto", "ctf", "offline-analysis"}),
+        evidence_types=frozenset({"artifact-analysis", "json"}),
         network_access=False,
         parallel_safe=True,
     )
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return self._stable_spec_context()
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
         if request.method != "POST":
@@ -221,7 +302,10 @@ class CTFCryptoXORTool(Tool):
         if result.status is not WorkerStatus.SUCCEEDED:
             return _worker_failure(request, result)
         try:
-            raw = json.loads(result.stdout)
+            raw = decode_strict_worker_json_object(
+                result,
+                label="CTF Crypto probe output",
+            )
             output = CTFCryptoXOROutput.model_validate(raw)
             probe = CTFCryptoXORInput.model_validate(request.arguments)
             if (
@@ -231,9 +315,29 @@ class CTFCryptoXORTool(Tool):
                 or output.artifact_sha256 != probe.artifact_sha256
             ):
                 raise ValueError("worker output identity does not match the Tool request")
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             return _invalid_output(request, result, "CTF Crypto", exc)
         return _success(request, result, output.model_dump(mode="json", by_alias=True))
+
+    def validate_trusted_execution(
+        self,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult,
+        *,
+        network_log_trusted: bool,
+    ) -> None:
+        del worker_result, network_log_trusted
+        probe = CTFCryptoXORInput.model_validate(request.arguments)
+        output = CTFCryptoXOROutput.model_validate(result.data)
+        expected_key, expected_candidate = _solve_single_byte_xor(probe.ciphertext_hex)
+        if (
+            output.solved != (expected_candidate is not None)
+            or output.candidate_flag != expected_candidate
+            or output.key != expected_key
+            or output.attempted_keys != 256
+        ):
+            raise ValueError("CTF Crypto output differs from host-recomputed XOR analysis")
 
 
 def _worker_failure(request: ToolRequest, result: WorkerResult) -> ToolResult:
@@ -243,7 +347,7 @@ def _worker_failure(request: ToolRequest, result: WorkerResult) -> ToolResult:
         success=False,
         started_at=result.started_at,
         finished_at=result.finished_at,
-        error=f"worker {result.status.value}: {result.stderr or 'no error detail'}",
+        error=audit_safe_worker_failure(result),
     )
 
 
@@ -259,7 +363,10 @@ def _invalid_output(
         success=False,
         started_at=result.started_at,
         finished_at=result.finished_at,
-        error=f"invalid {label} probe output: {error}",
+        error=audit_safe_tool_interpretation_failure(
+            f"invalid {label} probe output",
+            error,
+        ),
     )
 
 

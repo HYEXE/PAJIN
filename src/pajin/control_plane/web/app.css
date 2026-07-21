@@ -28,6 +28,7 @@
 html {
   min-width: 320px;
   background: var(--bg);
+  scroll-padding-top: 152px;
 }
 
 body {
@@ -151,6 +152,7 @@ button {
   width: min(1480px, 94vw);
   margin: 0 auto;
   padding: 4.5rem 0 3rem;
+  scroll-margin-top: 152px;
 }
 
 .hero {
@@ -263,6 +265,7 @@ button {
 
 .detail-panel {
   margin-top: 1.25rem;
+  scroll-margin-top: 152px;
 }
 
 .field {
@@ -321,9 +324,17 @@ select:focus-visible,
 textarea:focus-visible,
 button:focus-visible,
 summary:focus-visible,
-.table-shell:focus-visible {
+.table-shell:focus-visible,
+.page-shell:focus-visible,
+.detail-panel:focus-visible {
   border-color: var(--accent);
   box-shadow: 0 0 0 3px rgba(104, 240, 178, 0.16);
+}
+
+.page-shell:focus-visible,
+.detail-panel:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 
 small {
@@ -388,11 +399,25 @@ textarea:disabled {
   flex: 0 0 auto;
 }
 
+.status-bar {
+  position: sticky;
+  top: 68px;
+  z-index: 19;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(7, 17, 15, 0.94);
+  backdrop-filter: blur(18px);
+}
+
 .status-message {
+  width: min(1480px, 94vw);
   min-height: 1.4em;
-  margin: 1rem 0 0;
+  max-height: 4.5rem;
+  overflow: auto;
+  margin: 0 auto;
+  padding: 0.65rem 0;
   color: var(--muted);
   font-size: 0.84rem;
+  line-height: 1.4;
 }
 
 .status-message.error {
@@ -658,7 +683,9 @@ pre {
 }
 
 .event-heading {
+  gap: 0.6rem;
   justify-content: space-between;
+  flex-wrap: wrap;
   margin-bottom: 0.75rem;
 }
 
@@ -669,6 +696,18 @@ pre {
 .event-heading span {
   color: var(--muted);
   font-size: 0.72rem;
+}
+
+.event-page-controls {
+  display: flex;
+  gap: 0.45rem;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.event-page-controls .button {
+  min-height: 30px;
+  padding: 0.3rem 0.55rem;
 }
 
 .event-list {

@@ -4,6 +4,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from test_kisa_replay import _trusted_docker_backend
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
@@ -108,6 +109,20 @@ class ContractAIWorker:
             started_at=started_at,
             finished_at=datetime.now(UTC),
         )
+
+
+class ForgedMetricAIWorker(ContractAIWorker):
+    """Forge Worker summary fields while leaving the raw transcript unchanged."""
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        result = await super().run(job)
+        output = json.loads(result.stdout)
+        output["vulnerable"] = False
+        output["sensitiveExposureCount"] = 0
+        output["meanResponseLatencySeconds"] = 999.0
+        for check in output["checks"]:
+            check["matched"] = False
+        return result.model_copy(update={"stdout": json.dumps(output)})
 
 
 class OmissionValidator:
@@ -266,7 +281,7 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
         candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=ContractAIWorker(),
+        worker=_trusted_docker_backend(ForgedMetricAIWorker()),
         output_root=tmp_path,
     )
 
@@ -284,8 +299,7 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
     assert all(len(candidate.claim.evidence) == 2 for candidate in outcome.validation.candidates)
     assert all(
         decision.disposition is FindingDisposition.NEEDS_REVIEW
-        and decision.reason_codes
-        == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
         for decision in outcome.validation.decisions
     )
     assessment = mode_outcome.assessment
@@ -293,12 +307,17 @@ def test_ai_chat_kisa_mode_runs_all_scenarios_and_deduplicates_findings(
     assert assessment.coverage.untested == set()
     assert assessment.coverage.coverage_rate == 1
     metrics = {metric.metric_id: metric for metric in assessment.metrics}
+    assert all(result.data["vulnerable"] is False for result in outcome.tool_results)
+    assert all(result.data["sensitiveExposureCount"] == 0 for result in outcome.tool_results)
+    assert all(
+        result.data["meanResponseLatencySeconds"] == 999.0 for result in outcome.tool_results
+    )
     assert metrics["attack-success-rate"].value == 1
     assert metrics["reproducibility-rate"].value == 1
     assert metrics["sensitive-exposure-count"].value == 2
     assert metrics["sensitive-exposure-count"].status is MetricStatus.FAIL
-    assert metrics["mean-response-latency"].value == pytest.approx(0.01)
-    assert metrics["mean-response-latency"].status is MetricStatus.PASS
+    assert metrics["mean-response-latency"].value is None
+    assert metrics["mean-response-latency"].status is MetricStatus.NOT_MEASURED
 
 
 def test_kisa_candidate_survives_validator_omission_without_confirmation(
@@ -313,7 +332,7 @@ def test_kisa_candidate_survives_validator_omission_without_confirmation(
         candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=ContractAIWorker(),
+        worker=_trusted_docker_backend(ContractAIWorker()),
         output_root=tmp_path,
     )
 
@@ -350,7 +369,7 @@ def test_validator_only_claim_cannot_bypass_kisa_candidate_authority(
         candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=ContractAIWorker(expose_markers=False),
+        worker=_trusted_docker_backend(ContractAIWorker(expose_markers=False)),
         output_root=tmp_path,
     )
 
@@ -371,3 +390,26 @@ def test_validator_only_claim_cannot_bypass_kisa_candidate_authority(
     assert produced["payload"]["candidateCount"] == 0
     assert produced["payload"]["authoritativeRequestCount"] == 6
     assert produced["payload"]["authoritativeClaimCount"] == 3
+
+
+def test_worker_only_ai_transcripts_cannot_drive_kisa_assessment(tmp_path: Path) -> None:
+    thresholds = EvaluationThresholds(repetitions=2)
+    registry = ToolRegistry()
+    registry.register(AIChatProbeTool())
+    runner = MultiAgentCampaignRunner(
+        planner=KISAPlannerRuntime(thresholds=thresholds),
+        validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=ForgedMetricAIWorker(),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(_campaign()))
+
+    assert outcome.status is RunStatus.FAILED
+    assert outcome.findings == []
+    assert outcome.validation.candidates == []
+    assert outcome.tool_results
+    assert all(result.success is False for result in outcome.tool_results)

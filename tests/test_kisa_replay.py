@@ -7,14 +7,18 @@ import subprocess
 import sys
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
+from kisa_control_plane_support import externally_attested_confirmation_fixture
 from typer.testing import CliRunner
 
 import pajin.cli as cli_module
 import pajin.modes.ai_redteam.replay as replay_module
+import pajin.workflow.validation_artifacts as validation_artifacts
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import (
@@ -36,6 +40,7 @@ from pajin.domain.replay import (
     ReplayOracleVerdict,
     ReplayPurpose,
     ReplayRetestContext,
+    ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
     replay_evidence_digest,
@@ -43,7 +48,6 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import (
     CandidateFinding,
-    ConfirmationBasis,
     FindingDisposition,
     ValidationReasonCode,
 )
@@ -83,9 +87,14 @@ from pajin.replay.sqlite_tickets import (
 )
 from pajin.replay.tickets import ReplayExecutionAuthority
 from pajin.runtime.control import BudgetController
-from pajin.runtime.store import RunStore, verify_run_integrity
-from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeInput, AIChatProbeOutput, AIChatProbeTool
+from pajin.runtime.store import RunStore, load_verified_run_snapshot, verify_run_integrity
+from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult, WorkerStatus
+from pajin.tools.ai import (
+    AI_CHAT_PROXY_RECEIPT_VERSION,
+    AIChatProbeInput,
+    AIChatProbeOutput,
+    AIChatProbeTool,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.confirmation import apply_confirmed_gate
@@ -251,6 +260,83 @@ class TranscriptWorker:
         )
 
 
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _proxy_receipt_log(job: WorkerJob, worker_result: WorkerResult) -> str:
+    payload = json.loads(job.stdin)
+    output = json.loads(worker_result.stdout)
+    probe = payload["probe"]
+    target_value = urlsplit(payload["target"])
+    target = urlunsplit(
+        (
+            target_value.scheme,
+            target_value.netloc,
+            target_value.path,
+            "<redacted>" if target_value.query else "",
+            "",
+        )
+    )
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+        request_body = {
+            "sessionId": probe["session_id"],
+            "messages": turn["messages"],
+            "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
+        }
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                    "sequence": index + 1,
+                    "method": "POST",
+                    "target": target,
+                    "targetSha256": sha256(payload["target"].encode("utf-8")).hexdigest(),
+                    "address": "172.17.0.1",
+                    "status": 200,
+                    "requestJsonSha256": _canonical_digest(request_body),
+                    "responseBodySha256": _canonical_digest(observed["response"]),
+                    "responseJsonSha256": _canonical_digest(observed["response"]),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
+
+
+def _trusted_docker_backend(worker: TranscriptWorker) -> DockerWorkerBackend:
+    """Model host-captured proxy logs while retaining explicit semantic fixtures."""
+
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        return result.model_copy(
+            update={
+                "backend": "docker",
+                "network_log": _proxy_receipt_log(job, result),
+            }
+        )
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
+
+
 class MutatingMaterializer:
     def __init__(self, scenario: KISAScenarioDefinition) -> None:
         trusted = KISAAIChatSessionMaterializer(scenario)
@@ -295,14 +381,33 @@ def _run_replay(
     mutate_identity: str | None = None,
     first_turn_echo: bool = False,
     mutating_materializer: bool = False,
+    registered_materializer_mutation: tuple[str, object] | None = None,
     negative_retest: bool = False,
     explicit_defense: bool = False,
     defense_memory_write: bool = False,
     defense_tool_call: bool = False,
     generic_refusal: bool = False,
     omit_defense_reason: bool = False,
+    trusted_receipts: bool = True,
+    target_endpoint: str | None = None,
 ) -> ReplayRun:
     campaign = _campaign()
+    if target_endpoint is not None:
+        configured_target = campaign.spec.targets[0].model_copy(
+            update={"endpoint": target_endpoint}
+        )
+        campaign = campaign.model_copy(
+            update={
+                "spec": campaign.spec.model_copy(
+                    update={
+                        "targets": [configured_target],
+                        "scope": campaign.spec.scope.model_copy(
+                            update={"allow": [target_endpoint]}
+                        ),
+                    }
+                )
+            }
+        )
     scenario = _scenario(scenario_id)
     assert scenario.probe is not None
     threat_class = next(iter(scenario.threat_classes))
@@ -432,6 +537,25 @@ def _run_replay(
         issued_at=NOW - timedelta(minutes=10),
         depth=1,
     )
+    supervisor_grant = CapabilityGrant(
+        grant_id="grant_supervisor_kisa_1",
+        subject="agent:supervisor:kisa:1",
+        campaign=campaign.metadata.name,
+        tools={executed.tool_id},
+        targets={executed.target},
+        max_risk_tier=campaign.spec.rules_of_engagement.max_tool_risk_tier,
+        max_calls=campaign.spec.budgets.max_tool_calls,
+        expires_at=campaign.spec.authorization.expires_at,
+        delegable=True,
+        issued_at=NOW - timedelta(minutes=20),
+        depth=0,
+    )
+    source_capability = ReplaySourceCapabilityReceipt(
+        request_id=executed.request_id,
+        lineage=[supervisor_grant, specialist_grant],
+        execution_started_at=NOW - timedelta(minutes=8),
+        execution_finished_at=NOW - timedelta(minutes=7),
+    )
     authority = ReplayExecutionAuthority()
     ticket = ReplayCompiler.compile_ticket(
         ticket_issuer=authority.issuer(),
@@ -439,7 +563,7 @@ def _run_replay(
         campaign=campaign,
         plan=plan,
         original_request=executed,
-        specialist_grant=specialist_grant,
+        source_capability=source_capability,
         validation_packet=packet,
         intent=intent,
         contract=contract,
@@ -463,6 +587,18 @@ def _run_replay(
             if negative_retest
             else KISAAIChatReplayOracle(scenario)
         )
+    elif registered_materializer_mutation is not None:
+        materializers = ReplayMaterializerRegistry()
+        materializer = KISAAIChatSessionMaterializer(scenario)
+        materializers.register(materializer)
+        attribute, value = registered_materializer_mutation
+        setattr(materializer, attribute, value)
+        oracles = ReplayOracleRegistry()
+        oracles.register(
+            KISAAIChatNegativeRetestOracle(scenario)
+            if negative_retest
+            else KISAAIChatReplayOracle(scenario)
+        )
     else:
         materializers, oracles = kisa_replay_registries(purpose=contract.purpose)
     worker = TranscriptWorker(
@@ -477,12 +613,13 @@ def _run_replay(
         generic_refusal=generic_refusal,
         omit_defense_reason=omit_defense_reason,
     )
+    execution_backend = _trusted_docker_backend(worker) if trusted_receipts else worker
     budget = BudgetController(campaign.spec.budgets)
     budget.record_tool_call()
     runtime = GatewayRestrictedReproducerRuntime(
         tools=tools,
         policy=PolicyEngine(),
-        worker=worker,
+        worker=execution_backend,
         store=replay_store,
         oracles=oracles,
         materializers=materializers,
@@ -505,6 +642,22 @@ def _run_replay(
         source_session=source_session,
         replay_store=replay_store,
     )
+
+
+def test_replay_run_summary_rejects_post_verification_phase_substitution(
+    tmp_path: Path,
+) -> None:
+    replay = _run_replay(
+        tmp_path,
+        "kisa.model.system-prompt-disclosure",
+        support=[True, True],
+    )
+    replay.replay_store.write_json("substituted-phase.json", {"phase": "later"})
+    replay.replay_store.append_event("test.phase-substituted", {"phase": "later"})
+    replay.replay_store.seal()
+
+    with pytest.raises(ValueError, match="root digest changed"):
+        replay_module._verified_replay_run_summary(replay.result)
 
 
 def test_kisa_contracts_cover_exact_three_fresh_session_scenarios() -> None:
@@ -565,9 +718,9 @@ def test_negative_retest_rejects_a_single_repetition_before_execution(
             True,
             False,
             False,
-            ReplayOracleVerdict.CONTRADICTS,
+            ReplayOracleVerdict.INCONCLUSIVE,
             0,
-            2,
+            0,
         ),
         (
             [True, True],
@@ -587,7 +740,7 @@ def test_negative_retest_rejects_a_single_repetition_before_execution(
             False,
             ReplayOracleVerdict.INCONCLUSIVE,
             1,
-            1,
+            0,
         ),
         (
             [False, False],
@@ -697,7 +850,7 @@ def test_negative_retest_does_not_trust_safety_flag_on_generic_refusal(
         assert oracle.contradiction_count == 0
 
 
-def test_negative_retest_accepts_hardened_memory_non_persistence(
+def test_negative_retest_keeps_hardened_memory_non_persistence_inconclusive(
     tmp_path: Path,
 ) -> None:
     replay = _run_replay(
@@ -711,9 +864,9 @@ def test_negative_retest_accepts_hardened_memory_non_persistence(
     oracle = outcome.oracle_result
 
     assert oracle is not None
-    assert oracle.verdict is ReplayOracleVerdict.CONTRADICTS
-    assert oracle.contradiction_count == 2
-    assert outcome.contradicts_claim is True
+    assert oracle.verdict is ReplayOracleVerdict.INCONCLUSIVE
+    assert oracle.contradiction_count == 0
+    assert outcome.contradicts_claim is False
     for attempt in outcome.attempts:
         transcript = AIChatProbeOutput.model_validate(attempt.observation["transcript"])
         assert transcript.turns[0].response.safety.blocked is True
@@ -721,6 +874,28 @@ def test_negative_retest_accepts_hardened_memory_non_persistence(
         assert all(
             "PAJIN_MEMORY_POISON" not in turn.response.message.content for turn in transcript.turns
         )
+
+
+def test_public_deterministic_lab_response_cannot_mark_a_general_target_fixed(
+    tmp_path: Path,
+) -> None:
+    replay = _run_replay(
+        tmp_path,
+        "kisa.model.system-prompt-disclosure",
+        support=[False, False],
+        negative_retest=True,
+        explicit_defense=True,
+        forge_positive=True,
+        target_endpoint="https://general-target.example.test/v1/chat",
+    )
+    outcome = replay.result.artifact_set.outcome
+    oracle = outcome.oracle_result
+
+    assert outcome.execution_status is ReplayExecutionStatus.SUCCEEDED
+    assert oracle is not None
+    assert oracle.verdict is ReplayOracleVerdict.INCONCLUSIVE
+    assert oracle.contradiction_count == 0
+    assert outcome.contradicts_claim is False
 
 
 def test_future_chat_scenario_does_not_implicitly_opt_in_to_automatic_replay() -> None:
@@ -766,6 +941,27 @@ def test_live_kisa_oracle_supports_raw_markers_in_unique_fresh_sessions(
         and attempt.observation["semanticSupport"] is True
         for attempt in outcome.attempts
     )
+
+
+@pytest.mark.parametrize("negative_retest", [False, True])
+def test_worker_only_transcript_cannot_support_or_contradict_without_proxy_receipts(
+    tmp_path: Path,
+    negative_retest: bool,
+) -> None:
+    replay = _run_replay(
+        tmp_path,
+        "kisa.model.system-prompt-disclosure",
+        support=[False, False] if negative_retest else [True, True],
+        negative_retest=negative_retest,
+        explicit_defense=negative_retest,
+        trusted_receipts=False,
+    )
+    outcome = replay.result.artifact_set.outcome
+
+    assert outcome.execution_status is ReplayExecutionStatus.FAILED
+    assert outcome.oracle_result is None
+    assert outcome.supports_claim is False
+    assert outcome.contradicts_claim is False
 
 
 @pytest.mark.parametrize(
@@ -822,6 +1018,42 @@ def test_kisa_oracle_rejects_substituted_transcript_template(tmp_path: Path) -> 
     assert replay.result.artifact_set.outcome.oracle_result is None
 
 
+def test_kisa_source_transcript_rejects_duplicate_worker_json() -> None:
+    scenario = _scenario("kisa.model.system-prompt-disclosure")
+    assert scenario.probe is not None
+    campaign = _campaign()
+    probe = AIChatProbeInput(
+        scenario_id=scenario.scenario_id,
+        threat_class="M03",
+        session_id="pajin:source:strict-json",
+        turns=scenario.probe.turns,
+        checks=scenario.probe.checks,
+    )
+    tool = AIChatProbeTool()
+    request = ToolRequest(
+        request_id="tool_source_strict_json",
+        agent_id="agent:specialist:m03:strict-json",
+        tool_id=tool.spec.tool_id,
+        target=campaign.spec.targets[0].endpoint,
+        method="POST",
+        arguments=probe.model_dump(mode="json"),
+    )
+    clean_worker = asyncio.run(TranscriptWorker([True]).run(tool.prepare(request)))
+    tool_result = tool.interpret(request, clean_worker)
+    assert tool_result.success
+    ambiguous_worker = clean_worker.model_copy(
+        update={"stdout": '{"turns":[],' + clean_worker.stdout.lstrip()[1:]}
+    )
+
+    with pytest.raises(ValueError, match="transcript is not trusted"):
+        replay_module._validate_source_transcript(
+            request=request,
+            tool_result=tool_result,
+            worker_result=ambiguous_worker.model_dump(mode="json"),
+            scenario=scenario,
+        )
+
+
 @pytest.mark.parametrize("identity", ["target", "scenario", "threat", "session", "network"])
 def test_kisa_replay_rejects_output_identity_substitution(
     tmp_path: Path,
@@ -854,6 +1086,28 @@ def test_runtime_rejects_materializer_changes_outside_session_without_dispatch(
     assert run["reason"] == ReplayRuntimeReason.SESSION_MATERIALIZATION_INVALID.value
 
 
+@pytest.mark.parametrize(
+    ("attribute", "value"),
+    [("materializer_version", "9.9.9"), ("scenario_digest", "b" * 64)],
+)
+def test_materializer_registry_rejects_post_registration_identity_mutation(
+    tmp_path: Path,
+    attribute: str,
+    value: str,
+) -> None:
+    replay = _run_replay(
+        tmp_path,
+        "kisa.model.system-prompt-disclosure",
+        support=[True, True],
+        registered_materializer_mutation=(attribute, value),
+    )
+
+    assert replay.worker.jobs == []
+    assert replay.result.artifact_set.outcome.execution_status is ReplayExecutionStatus.UNSUPPORTED
+    run = json.loads((replay.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == ReplayRuntimeReason.MATERIALIZER_UNREGISTERED.value
+
+
 def test_scenario_digest_is_stable_across_python_hash_seeds() -> None:
     script = (
         "from pajin.modes.ai_redteam.catalog import KISA_CATALOG;"
@@ -879,7 +1133,90 @@ def test_scenario_digest_is_stable_across_python_hash_seeds() -> None:
     assert digests == {replay_scenario_digest(_scenario("kisa.model.system-prompt-disclosure"))}
 
 
-def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
+def test_kisa_replay_rejects_validation_from_an_intermediate_run_phase_before_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign()
+    thresholds = EvaluationThresholds(repetitions=2)
+    tools = ToolRegistry()
+    tools.register(AIChatProbeTool())
+    source_worker = TranscriptWorker([True] * 12)
+    replay_worker = TranscriptWorker([True] * 12)
+    policy = PolicyEngine()
+    budget = BudgetController(campaign.spec.budgets)
+    rate_limits = RequestRateLimitLedger()
+    runner = MultiAgentCampaignRunner(
+        planner=KISAPlannerRuntime(thresholds=thresholds),
+        validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
+        tools=tools,
+        policy=policy,
+        worker=_trusted_docker_backend(source_worker),
+        output_root=tmp_path / "phase-candidate-runs",
+    )
+    replay_root = tmp_path / "phase-replay-runs"
+    coordinator = KISAReplayCoordinator(
+        tools=tools,
+        policy=policy,
+        worker=_trusted_docker_backend(replay_worker),
+        output_root=replay_root,
+        repetitions=2,
+        required_successes=2,
+    )
+    outcome = asyncio.run(runner.run(campaign, budget=budget, rate_limits=rate_limits))
+    authority = load_verified_run_snapshot(outcome.run_path)
+    phase_b_verification = authority.verification.model_copy(update={"root_digest": "0" * 64})
+    original_artifact_load = validation_artifacts.load_verified_run_artifacts
+
+    def phase_b_artifacts(*args, **kwargs):
+        snapshot = original_artifact_load(*args, **kwargs)
+        return replace(snapshot, verification=phase_b_verification)
+
+    monkeypatch.setattr(
+        validation_artifacts,
+        "load_verified_run_artifacts",
+        phase_b_artifacts,
+    )
+
+    with pytest.raises(ValueError, match="validation Run changed"):
+        asyncio.run(
+            coordinator.reproduce(
+                campaign,
+                outcome.run_path,
+                budget=budget,
+                rate_limits=rate_limits,
+            )
+        )
+    assert replay_worker.jobs == []
+    assert not replay_root.exists()
+
+    monkeypatch.setattr(
+        validation_artifacts,
+        "load_verified_run_artifacts",
+        original_artifact_load,
+    )
+    batch = asyncio.run(
+        coordinator.reproduce(
+            campaign,
+            outcome.run_path,
+            budget=budget,
+            rate_limits=rate_limits,
+        )
+    )
+    replay_job_count = len(replay_worker.jobs)
+    monkeypatch.setattr(
+        validation_artifacts,
+        "load_verified_run_artifacts",
+        phase_b_artifacts,
+    )
+
+    with pytest.raises(ValueError, match="validation Run changed"):
+        batch.verified_records(outcome.run_path)
+    assert len(replay_worker.jobs) == replay_job_count
+
+
+def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
     tmp_path: Path,
 ) -> None:
     campaign = _campaign()
@@ -887,6 +1224,9 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     tools = ToolRegistry()
     tools.register(AIChatProbeTool())
     worker = TranscriptWorker([True] * 12)
+    source_backend = _trusted_docker_backend(worker)
+    replay_backend = _trusted_docker_backend(worker)
+    assert source_backend is not replay_backend
     policy = PolicyEngine()
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
@@ -903,13 +1243,13 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
         candidate_producer=KISACandidateProducer(),
         tools=tools,
         policy=policy,
-        worker=worker,
+        worker=source_backend,
         output_root=tmp_path / "candidate-runs",
     )
     coordinator = KISAReplayCoordinator(
         tools=tools,
         policy=policy,
-        worker=worker,
+        worker=replay_backend,
         output_root=tmp_path / "replay-runs",
         repetitions=2,
         required_successes=2,
@@ -980,7 +1320,7 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
             "findings": confirmation.product_confirmed_findings,
         }
     )
-    assert len(outcome.findings) == 3
+    assert outcome.findings == []
     mutable_result.artifact_set.outcome.oracle_result.verdict = ReplayOracleVerdict.SUPPORTS
     mode_outcome = KISAModePack(thresholds=thresholds).evaluate(
         campaign,
@@ -989,14 +1329,15 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     )
 
     assert outcome.status is RunStatus.COMPLETED
-    assert len(outcome.findings) == 3
+    assert outcome.findings == []
     assert len(batch.records) == 3
     assert all(record.supports_claim for record in batch.records)
     assert all(record.replay_run_id != outcome.run_id for record in batch.records)
     assert all(
-        decision.disposition is FindingDisposition.CONFIRMED
-        and decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
-        and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
+        decision.disposition is FindingDisposition.NEEDS_REVIEW
+        and decision.confirmation_basis is None
+        and decision.reason_codes
+        == [ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING]
         and len(decision.replay_lineage) == 1
         for decision in outcome.validation.decisions
     )
@@ -1004,7 +1345,7 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     versioned_findings = json.loads(
         (outcome.run_path / "validation/v1alpha1/findings.json").read_text(encoding="utf-8")
     )
-    assert len(versioned_findings["findings"]) == 3
+    assert versioned_findings["findings"] == []
     seals = [
         json.loads(line)
         for line in (outcome.run_path / "run-integrity.jsonl")
@@ -1018,15 +1359,15 @@ def test_kisa_coordinator_promotes_only_through_the_common_confirmed_gate(
     assert set(worker.sessions[:6]).isdisjoint(worker.sessions[6:])
     assert mode_outcome.replay_index_path is not None
     replay_index = json.loads(mode_outcome.replay_index_path.read_text(encoding="utf-8"))
-    assert replay_index["confirmationMutationApplied"] is True
-    assert replay_index["confirmationArtifact"] == "validation/v1alpha1/index.json"
+    assert replay_index["confirmationMutationApplied"] is False
+    assert replay_index["confirmationArtifact"] is None
     assert len(replay_index["records"]) == 3
-    assert mode_outcome.assessment.confirmation_semantics == "verified-independent-replay"
+    assert mode_outcome.assessment.confirmation_semantics == "verified-replay-evidence"
     assert mode_outcome.assessment.validation_artifact_version == ("pajin.dev/validation/v1alpha1")
     assert mode_outcome.assessment.confirmation_artifact == "validation/v1alpha1/index.json"
     report = mode_outcome.report_path.read_text(encoding="utf-8")
-    assert "Confirmation semantics: `verified-independent-replay`" in report
-    assert "Confirmation basis: `verified-independent-replay`" in report
+    assert "Confirmation semantics: `verified-replay-evidence`" in report
+    assert "Confirmation basis: `verified-independent-replay`" not in report
     assert "Source evidence count:" in report
     assert "ReplayOutcome:" in report
     assert "Replay evidence count:" in report
@@ -1046,6 +1387,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
     tools.register(AIChatProbeTool())
     policy = PolicyEngine()
     baseline_worker = TranscriptWorker([True] * 12)
+    baseline_backend = _trusted_docker_backend(baseline_worker)
     baseline_budget = BudgetController(campaign.spec.budgets)
     baseline_rates = RequestRateLimitLedger()
     runner = MultiAgentCampaignRunner(
@@ -1054,13 +1396,13 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         candidate_producer=KISACandidateProducer(),
         tools=tools,
         policy=policy,
-        worker=baseline_worker,
+        worker=baseline_backend,
         output_root=tmp_path / "candidate-runs",
     )
     confirmation_coordinator = KISAReplayCoordinator(
         tools=tools,
         policy=policy,
-        worker=baseline_worker,
+        worker=baseline_backend,
         output_root=tmp_path / "confirmation-runs",
         repetitions=2,
         required_successes=2,
@@ -1081,13 +1423,14 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         return outcome, batch
 
     baseline, confirmation_batch = asyncio.run(create_baseline())
-    confirmation = apply_confirmed_gate(
-        source_run_path=baseline.run_path,
-        replay_run_paths=[
-            result.run_path for result in confirmation_batch.verified_results.values()
-        ],
-        tickets=confirmation_batch.tickets,
-    )
+    with externally_attested_confirmation_fixture():
+        confirmation = apply_confirmed_gate(
+            source_run_path=baseline.run_path,
+            replay_run_paths=[
+                result.run_path for result in confirmation_batch.verified_results.values()
+            ],
+            tickets=confirmation_batch.tickets,
+        )
     baseline = baseline.model_copy(
         update={
             "validation": confirmation.validation,
@@ -1212,6 +1555,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         explicit_defense=True,
         forge_positive=True,
     )
+    negative_backend = _trusted_docker_backend(negative_worker)
     retest_ticket_ledger = tmp_path / "ticket-state" / "negative-replay-tickets.sqlite3"
     retest_ticket_authority_calls: list[Path] = []
 
@@ -1222,7 +1566,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
     retest_coordinator = KISARetestReplayCoordinator(
         tools=tools,
         policy=policy,
-        worker=negative_worker,
+        worker=negative_backend,
         output_root=tmp_path / "negative-runs",
         repetitions=2,
         ticket_authority_factory=retest_ticket_authority_factory,
@@ -1336,8 +1680,8 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         if task.request is not None
     )
     assert len(records) == 3
-    assert all(record.oracle_verdict is ReplayOracleVerdict.CONTRADICTS for record in records)
-    assert all(record.contradicts_claim and record.all_attempts_succeeded for record in records)
+    assert all(record.oracle_verdict is ReplayOracleVerdict.INCONCLUSIVE for record in records)
+    assert all(not record.contradicts_claim and record.all_attempts_succeeded for record in records)
     assert all(record.replay_lineage is not None for record in records)
     assert all(
         result.receipt.candidate_source_root_digest == baseline_root_digest
@@ -1348,7 +1692,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
     forged_batch = replace(
         batch,
         records=(
-            batch.records[0].model_copy(update={"contradicts_claim": False}),
+            batch.records[0].model_copy(update={"contradicts_claim": True}),
             *batch.records[1:],
         ),
     )
@@ -1439,7 +1783,7 @@ def test_kisa_cli_fails_closed_when_durable_ticket_ledger_is_corrupt(
 ) -> None:
     output = tmp_path / "runs"
     ledger = output / "replay" / "replay-tickets.sqlite3"
-    ledger.parent.mkdir(parents=True)
+    ledger.parent.mkdir(parents=True, mode=0o700)
     ledger.write_bytes(b"not a SQLite database")
 
     class FakeRunner:

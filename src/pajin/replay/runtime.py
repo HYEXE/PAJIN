@@ -6,16 +6,17 @@ import asyncio
 import json
 import re
 from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Protocol
 from uuid import uuid4
 
-from pydantic import ConfigDict, Field, JsonValue, TypeAdapter, ValidationError
+from pydantic import JsonValue, TypeAdapter
 
-from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRequest
+from pajin.domain.models import CampaignManifest, ToolRequest
 from pajin.domain.replay import (
     CompiledReplaySpec,
     ReplayArtifactSet,
@@ -31,25 +32,40 @@ from pajin.domain.replay import (
     replay_argument_digest,
 )
 from pajin.policy.engine import PolicyEngine
+from pajin.replay import verified_result as _verified_result
 from pajin.replay.materializer import (
     ReplayMaterializerRegistry,
     ReplaySessionMaterializer,
+)
+from pajin.replay.oracle import (
+    ReplayModeOracle as ReplayModeOracle,
+)
+from pajin.replay.oracle import (
+    ReplayOracleRegistry as ReplayOracleRegistry,
 )
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
     ReplayExecutionTicket,
     ReplayTicketClaimer,
+    ReplayTicketContext,
     ReplayTicketFinalizationVerifier,
+    canonical_replay_compilation_bytes,
     canonical_replay_compilation_payload,
-    canonicalize_replay_compilation_wire_sets,
     replay_context_digest,
 )
+from pajin.replay.verified_result import (
+    ReplayVerificationReceipt as ReplayVerificationReceipt,
+)
+from pajin.replay.verified_result import (
+    VerifiedReplayResult as VerifiedReplayResult,
+)
 from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
+from pajin.runtime.error_safety import audit_safe_exception_type
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import (
-    RunIntegritySeal,
-    RunIntegrityVerification,
     RunStore,
+    load_verified_run_artifacts,
     verify_run_integrity,
 )
 from pajin.runtime.worker import WorkerBackend, WorkerStatus
@@ -68,6 +84,7 @@ from pajin.workflow.cancellation import (
 _ObservationAdapter = TypeAdapter(dict[str, JsonValue])
 _REPLAY_REQUEST_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,199}\Z")
 _REPLAY_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{2,127}\Z")
+_MAX_REPLAY_SNAPSHOT_FILE_BYTES = _verified_result.MAX_REPLAY_SNAPSHOT_FILE_BYTES
 
 
 class ReplayRuntimeReason(StrEnum):
@@ -96,148 +113,24 @@ class RestrictedReplayRuntimeError(RuntimeError):
         super().__init__(message)
 
 
-class ReplayModeOracle(Protocol):
-    """Trusted cooperative-async adapter; CPU work needs a separately bounded executor."""
+@dataclass(frozen=True, slots=True)
+class ReplayDispatchAuthority:
+    """One short-lived server authorization for the next exact Tool dispatch."""
 
-    oracle_id: str
-    oracle_version: str
-    observation_schema: str
-    mode: CampaignMode
-    scenario_id: str
-    tool_id: str
-    scenario_digest: str
+    request_id: str
+    expires_at: datetime
 
-    def observation(
+
+class ReplayDispatchAuthorizer(Protocol):
+    """Obtain durable authority immediately before one replay Tool dispatch."""
+
+    async def authorize(
         self,
         spec: CompiledReplaySpec,
-        request: ToolRequest,
-        materialization: ReplayMaterialization | None,
-        outcome: GatewayOutcome,
-    ) -> Mapping[str, JsonValue]:
-        """Normalize a successful Tool result into the declared observation schema."""
-
-    def classify_failure(self, outcome: GatewayOutcome) -> ReplayAttemptStatus:
-        """Classify a failed dispatch without turning attacker text into policy."""
-
-    async def evaluate(
-        self,
-        spec: CompiledReplaySpec,
-        attempts: Sequence[ReplayAttempt],
         *,
-        evaluated_at: datetime,
-    ) -> ReplayOracleResult:
-        """Evaluate successful fresh observations against the Mode-owned contract."""
-
-
-class ReplayOracleRegistry:
-    """Explicit allowlist of trusted Mode Oracles keyed by immutable identity."""
-
-    def __init__(self) -> None:
-        self._oracles: dict[tuple[str, str, str, str, str, str], ReplayModeOracle] = {}
-        self._frozen = False
-
-    def register(self, oracle: ReplayModeOracle) -> None:
-        if self._frozen:
-            raise RuntimeError("replay Oracle registry is frozen")
-        key = self._key(
-            oracle.oracle_id,
-            oracle.oracle_version,
-            oracle.observation_schema,
-            oracle.mode,
-            oracle.scenario_id,
-            oracle.tool_id,
-        )
-        if len(oracle.scenario_digest) != 64 or any(
-            character not in "0123456789abcdef" for character in oracle.scenario_digest
-        ):
-            raise ValueError("replay Oracle scenario_digest must be a lowercase SHA-256")
-        if key in self._oracles:
-            raise ValueError(
-                "replay Oracle is already registered: "
-                f"{oracle.oracle_id}@{oracle.oracle_version}/{oracle.observation_schema}"
-            )
-        self._oracles[key] = oracle
-
-    def resolve(self, spec: CompiledReplaySpec) -> ReplayModeOracle:
-        self._frozen = True
-        key = self._key(
-            spec.oracle_id,
-            spec.oracle_version,
-            spec.observation_schema,
-            spec.binding.mode,
-            spec.binding.scenario_id,
-            spec.binding.tool_id,
-        )
-        try:
-            oracle = self._oracles[key]
-        except KeyError as exc:
-            raise KeyError(
-                "unknown replay Oracle: "
-                f"{spec.oracle_id}@{spec.oracle_version}/{spec.observation_schema}"
-            ) from exc
-        if (
-            self._key(
-                oracle.oracle_id,
-                oracle.oracle_version,
-                oracle.observation_schema,
-                oracle.mode,
-                oracle.scenario_id,
-                oracle.tool_id,
-            )
-            != key
-        ):
-            raise KeyError("registered replay Oracle identity changed after registration")
-        return oracle
-
-    @staticmethod
-    def _key(
-        oracle_id: str,
-        version: str,
-        observation_schema: str,
-        mode: CampaignMode,
-        scenario_id: str,
-        tool_id: str,
-    ) -> tuple[str, str, str, str, str, str]:
-        values = (
-            oracle_id.strip(),
-            version.strip(),
-            observation_schema.strip(),
-            mode.value,
-            scenario_id.strip(),
-            tool_id.strip(),
-        )
-        if any(not value or len(value) > 200 for value in values):
-            raise ValueError("replay Oracle identity fields must contain 1-200 characters")
-        return values
-
-
-class ReplayVerificationReceipt(StrictModel):
-    """Persisted proof that replay artifacts were sealed and verified."""
-
-    api_version: Literal["pajin.dev/replay-verification-receipt/v1"] = Field(
-        default="pajin.dev/replay-verification-receipt/v1",
-        alias="apiVersion",
-    )
-    ticket_id: str
-    compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    candidate_source_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    replay_run_id: str
-    artifact_set_path: str
-    artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    artifact_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    verified_at: datetime
-
-
-class VerifiedReplayResult(StrictModel):
-    """Verified snapshot; confirmation gates must reload it from the sealed Run."""
-
-    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
-
-    artifact_set: ReplayArtifactSet
-    receipt: ReplayVerificationReceipt
-    verification: RunIntegrityVerification
-    receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    run_path: Path
+        call_ordinal: int,
+        request: ToolRequest,
+    ) -> ReplayDispatchAuthority: ...
 
 
 def load_verified_replay_result(
@@ -247,149 +140,42 @@ def load_verified_replay_result(
 ) -> VerifiedReplayResult:
     """Reload and cross-check replay artifacts, both seals, and ticket finalization."""
 
-    root = run_path.resolve()
-    verification = verify_run_integrity(root)
-    artifact_relative = "replay/artifact-set.json"
-    receipt_relative = "replay/verification-receipt.json"
-    compilation_relative = "replay/compilation.json"
-    artifact_path = root / artifact_relative
-    receipt_path = root / receipt_relative
-    compilation_path = root / compilation_relative
-    try:
-        artifact_bytes = artifact_path.read_bytes()
-        receipt = ReplayVerificationReceipt.model_validate_json(receipt_path.read_bytes())
-        artifact_set = ReplayArtifactSet.model_validate_json(artifact_bytes)
-        compilation_payload = json.loads(compilation_path.read_bytes())
-        if not isinstance(compilation_payload, dict):
-            raise ValueError("sealed replay compilation must be a JSON object")
-        # Digest the sealed wire object before Pydantic supplies defaults. This keeps
-        # v1 confirmation artifacts verifiable when newer readers add default fields,
-        # while the separate typed parse below still enforces the current contract.
-        compilation_digest = replay_context_digest(compilation_payload)
-        seals = [
-            RunIntegritySeal.model_validate_json(line)
-            for line in (root / "run-integrity.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError("sealed replay receipt artifacts could not be loaded") from exc
-
-    artifact_digest = sha256(artifact_bytes).hexdigest()
-    compilation: ReplayCompilation | None = None
-    if receipt.compilation_digest != compilation_digest:
-        try:
-            compilation = ReplayCompilation.model_validate(compilation_payload)
-        except ValueError as exc:
-            raise ValueError("sealed replay compilation could not be validated") from exc
-        # Compatibility for already-sealed v1 artifacts written before compilation
-        # set fields shared one deterministic serializer. The finalized ticket digest
-        # and the semantic artifact comparisons below remain mandatory, so this does
-        # not authorize a different compilation.
-        legacy_typed_digest = replay_context_digest(
-            compilation.model_dump(mode="json", by_alias=True)
-        )
-        deterministic_typed_digest = replay_context_digest(compilation)
-        # Some already-sealed v1 artifacts both predate newer default fields and
-        # serialized set-valued fields in a different order between the ticket and
-        # compilation wire. Normalize only those declared set paths on the original
-        # wire object: arbitrary ordered lists remain order-sensitive.
-        legacy_wire_set_digest = replay_context_digest(
-            canonicalize_replay_compilation_wire_sets(compilation_payload)
-        )
-        if receipt.compilation_digest not in {
-            legacy_typed_digest,
-            deterministic_typed_digest,
-            legacy_wire_set_digest,
-        }:
-            raise ValueError("sealed replay receipt does not match its canonical compilation")
-    if compilation is None:
-        try:
-            compilation = ReplayCompilation.model_validate(compilation_payload)
-        except ValueError as exc:
-            raise ValueError("sealed replay compilation could not be validated") from exc
-    if (
-        receipt.replay_run_id != verification.run_id
-        or artifact_set.outcome.binding.replay_run_id != verification.run_id
-        or receipt.artifact_set_path != artifact_relative
-        or receipt.artifact_set_digest != artifact_digest
-        or artifact_set.validation_packet != compilation.validation_packet
-        or artifact_set.contract != compilation.contract
-        or artifact_set.intent != compilation.intent
-        or artifact_set.spec != compilation.spec
-    ):
-        raise ValueError("sealed replay receipt does not match its canonical artifacts")
-    _validate_materialized_evidence(root, artifact_set)
-
-    artifact_seal_index = next(
-        (
-            index
-            for index, seal in enumerate(seals)
-            if seal.root_digest == receipt.artifact_seal_root_digest
-        ),
-        None,
-    )
-    if artifact_seal_index is None or artifact_seal_index + 1 >= len(seals):
-        raise ValueError("replay artifact seal is missing its receipt extension")
-    artifact_record = next(
-        (
-            artifact
-            for seal in seals[: artifact_seal_index + 1]
-            for artifact in seal.artifacts
-            if artifact.path == artifact_relative
-        ),
-        None,
-    )
-    receipt_seal = seals[artifact_seal_index + 1]
-    if (
-        artifact_record is None
-        or artifact_record.sha256 != artifact_digest
-        or receipt_seal.previous_root_digest != receipt.artifact_seal_root_digest
-        or receipt_relative not in {artifact.path for artifact in receipt_seal.artifacts}
-    ):
-        raise ValueError("replay receipt is not the direct sealed extension of its artifact set")
-
-    tickets.verify_finalized(
-        receipt.ticket_id,
-        final_seal_root_digest=receipt_seal.root_digest,
-        artifact_set_digest=artifact_digest,
-        compilation_digest=receipt.compilation_digest,
-        candidate_source_root_digest=receipt.candidate_source_root_digest,
-        replay_run_id=receipt.replay_run_id,
-    )
-    return VerifiedReplayResult(
-        artifact_set=artifact_set,
-        receipt=receipt,
-        verification=verification,
-        receipt_seal_root_digest=receipt_seal.root_digest,
-        run_path=root,
+    return _verified_result._load_verified_replay_result(
+        run_path,
+        tickets=tickets,
+        reader=_read_regular_file_bytes,
     )
 
 
-def _validate_materialized_evidence(root: Path, artifact_set: ReplayArtifactSet) -> None:
-    """Rebind sealed fresh-session records to the exact Gateway request evidence."""
+def inspect_sealed_replay_result(run_path: Path) -> VerifiedReplayResult:
+    """Read and fully verify sealed output without trusting ticket state."""
 
-    for attempt in artifact_set.outcome.attempts:
-        materialization = attempt.materialization
-        if materialization is None or not attempt.evidence:
-            continue
-        expected_reference = f"evidence/{attempt.replay_request_id}.json"
-        if attempt.evidence != [expected_reference]:
-            raise ValueError("materialized replay evidence lineage is not exact")
-        evidence_path = (root / expected_reference).resolve()
-        if root not in evidence_path.parents or not evidence_path.is_file():
-            raise ValueError("materialized replay evidence is missing")
-        try:
-            payload = json.loads(evidence_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            raise ValueError("materialized replay evidence could not be loaded") from exc
-        request = payload.get("request") if isinstance(payload, dict) else None
-        if (
-            not isinstance(request, dict)
-            or request.get("request_id") != attempt.replay_request_id
-            or request.get("arguments") != materialization.arguments
-            or replay_argument_digest(materialization.arguments) != materialization.argument_digest
-        ):
-            raise ValueError("materialized replay evidence does not match its sealed request")
+    return _verified_result._inspect_sealed_replay_result(
+        run_path,
+        reader=_read_regular_file_bytes,
+    )
+
+
+def recover_verified_replay_result(
+    run_path: Path,
+    *,
+    tickets: ReplayTicketClaimer,
+    recovered_at: datetime | None = None,
+) -> VerifiedReplayResult:
+    """Recover a claimed ticket from an exact, complete v2 sealed receipt."""
+
+    return _verified_result._recover_verified_replay_result(
+        run_path,
+        tickets=tickets,
+        recovered_at=recovered_at,
+        reader=_read_regular_file_bytes,
+    )
+
+
+def _read_regular_file_bytes(root: Path, path: Path, *, label: str) -> bytes:
+    """Compatibility hook for bounded replay reads and TOCTOU regression injection."""
+
+    return _verified_result._read_regular_file_bytes(root, path, label=label)
 
 
 class RestrictedReproducerRuntime(Protocol):
@@ -404,6 +190,43 @@ class RestrictedReproducerRuntime(Protocol):
         cancellation: ExecutionCancellationContext | None = None,
     ) -> VerifiedReplayResult:
         """Claim and execute one compiler-issued replay ticket exactly once."""
+
+
+@dataclass(slots=True)
+class _ReplayExecutionState:
+    """Mutable state owned by one single-use restricted replay execution."""
+
+    compilation: ReplayCompilation
+    oracle: ReplayModeOracle
+    materializer: ReplaySessionMaterializer | None
+    gateway: ToolGateway
+    cancellation: ExecutionCancellationContext | None
+    attempts: list[ReplayAttempt]
+    seen_request_ids: set[str]
+    seen_session_ids: set[str]
+    used_calls: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedReplayAttempt:
+    """Exact request and authority window prepared for one Tool dispatch."""
+
+    attempt_number: int
+    request: ToolRequest
+    materialization: ReplayMaterialization | None
+    started_at: datetime
+    remaining_seconds: float
+    dispatch_authority: ReplayDispatchAuthority | None
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayTermination:
+    """Typed terminal decision awaiting the ordinary sealed finalization path."""
+
+    status: ReplayExecutionStatus
+    reason: ReplayRuntimeReason | str
+    oracle_result: ReplayOracleResult | None = None
+    cancellation_receipt: str | None = None
 
 
 class GatewayRestrictedReproducerRuntime:
@@ -424,6 +247,7 @@ class GatewayRestrictedReproducerRuntime:
         secrets: SecretBroker | None = None,
         clock: Callable[[], datetime] | None = None,
         request_id_factory: Callable[[CompiledReplaySpec, int], str] | None = None,
+        dispatch_authorizer: ReplayDispatchAuthorizer | None = None,
     ) -> None:
         self._tools = tools
         self._policy = policy
@@ -437,6 +261,7 @@ class GatewayRestrictedReproducerRuntime:
         self._secrets = secrets
         self._clock = clock or (lambda: datetime.now(UTC))
         self._request_id_factory = request_id_factory or self._new_request_id
+        self._dispatch_authorizer = dispatch_authorizer
         self._started = False
         self._claim: ClaimedReplayExecution | None = None
 
@@ -448,53 +273,118 @@ class GatewayRestrictedReproducerRuntime:
         candidate_source_root_digest: str,
         cancellation: ExecutionCancellationContext | None = None,
     ) -> VerifiedReplayResult:
+        trusted_campaign = CampaignManifest.model_validate_json(campaign.model_dump_json())
+        trusted, replay_cancellation = self._start_execution(
+            trusted_campaign,
+            ReplayExecutionTicket(ticket.ticket_id),
+            candidate_source_root_digest=candidate_source_root_digest,
+            cancellation=cancellation,
+        )
+        unsupported = self._preflight(trusted_campaign, trusted)
+        if unsupported is not None:
+            return self._finish_termination(
+                trusted,
+                attempts=[],
+                termination=_ReplayTermination(
+                    status=ReplayExecutionStatus.UNSUPPORTED,
+                    reason=unsupported,
+                ),
+            )
+
+        state = self._execution_state(
+            trusted,
+            cancellation=replay_cancellation,
+        )
+        termination = await self._execute_attempts(trusted_campaign, state)
+        if termination is None:
+            termination = await self._evaluate_oracle(state)
+        return self._finish_termination(
+            trusted,
+            attempts=state.attempts,
+            termination=termination,
+        )
+
+    def _start_execution(
+        self,
+        campaign: CampaignManifest,
+        ticket: ReplayExecutionTicket,
+        *,
+        candidate_source_root_digest: str,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> tuple[ReplayCompilation, ExecutionCancellationContext | None]:
         if self._started:
             raise RuntimeError("restricted replay runtime instances are single-use")
         self._started = True
 
         self._validate_empty_store()
-        self._claim = self._tickets.claim(
+        claimed = self._tickets.claim(
             ticket,
             expected_replay_run_id=self._store.run_id,
             expected_candidate_source_root_digest=candidate_source_root_digest,
-            expected_campaign_digest=replay_context_digest(
-                campaign.model_dump(mode="json", by_alias=True)
-            ),
+            expected_campaign_digest=replay_context_digest(campaign),
             claimed_at=self._now(),
         )
+        self._claim = self._snapshot_claim(claimed)
         trusted = self._claim.compilation
         self._validate_fresh_store(trusted)
-        replay_cancellation = (
-            cancellation.fork_for_run(
-                engine="restricted-reproducer",
-                run_id=self._store.run_id,
-                path=self._store.path,
-            )
-            if cancellation is not None
-            else None
-        )
+        replay_cancellation = self._cancellation_for_run(cancellation)
 
         self._store.append_event(
             "replay.started",
             self._binding_payload(trusted.spec, grant_id=trusted.grant.grant_id),
         )
         self._write_compilation_artifacts(trusted)
+        return trusted, replay_cancellation
 
-        unsupported = self._preflight(campaign, trusted)
-        if unsupported is not None:
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.UNSUPPORTED,
-                    attempts=[],
-                ),
-                reason=unsupported,
-            )
+    @staticmethod
+    def _snapshot_claim(claim: ClaimedReplayExecution) -> ClaimedReplayExecution:
+        """Detach the runtime authority from a ticket backend's retained aliases."""
 
-        oracle = self._oracles.resolve(trusted.spec)
+        canonical = canonical_replay_compilation_bytes(claim.compilation)
+        return ClaimedReplayExecution(
+            ticket=ReplayExecutionTicket(claim.ticket.ticket_id),
+            compilation=ReplayCompilation.model_validate_json(canonical),
+            compilation_digest=str(claim.compilation_digest),
+            context=ReplayTicketContext(
+                candidate_source_root_digest=claim.context.candidate_source_root_digest,
+                campaign_digest=claim.context.campaign_digest,
+                tool_spec_digest=claim.context.tool_spec_digest,
+                scenario_digest=claim.context.scenario_digest,
+            ),
+        )
+
+    def _cancellation_for_run(
+        self,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> ExecutionCancellationContext | None:
+        if cancellation is None:
+            return None
+        binding = cancellation.binding
+        if (
+            binding is not None
+            and binding.engine == "restricted-reproducer"
+            and binding.run_id == self._store.run_id
+            and binding.path == self._store.path.resolve()
+        ):
+            # A trusted enclosing executor may already have created the run-local
+            # child. Reuse it so that executor quiescence can extend the engine's
+            # cancellation receipt after this stack has fully unwound.
+            return cancellation
+        return cancellation.fork_for_run(
+            engine="restricted-reproducer",
+            run_id=self._store.run_id,
+            path=self._store.path,
+        )
+
+    def _execution_state(
+        self,
+        trusted: ReplayCompilation,
+        *,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> _ReplayExecutionState:
+        oracle = self._oracles.resolve(trusted.spec.model_copy(deep=True))
         materializer = (
-            self._materializers.resolve(trusted.spec)
+            self._materializers.resolve(trusted.spec.model_copy(deep=True))
             if trusted.spec.session_policy is ReplaySessionPolicy.FRESH_SESSION
             else None
         )
@@ -508,190 +398,46 @@ class GatewayRestrictedReproducerRuntime:
             allow_secret_requests=False,
             clock=self._clock,
         )
-        attempts: list[ReplayAttempt] = []
-        seen_request_ids: set[str] = set()
-        seen_session_ids: set[str] = set()
-        used_calls = 0
+        return _ReplayExecutionState(
+            compilation=trusted,
+            oracle=oracle,
+            materializer=materializer,
+            gateway=gateway,
+            cancellation=cancellation,
+            attempts=[],
+            seen_request_ids=set(),
+            seen_session_ids=set(),
+        )
 
-        for attempt_number in range(1, trusted.spec.repetitions + 1):
-            try:
-                request, materialization = self._request(
-                    trusted.spec,
-                    attempt_number,
-                    seen_request_ids,
-                    seen_session_ids,
-                    materializer,
-                )
-            except RestrictedReplayRuntimeError as exc:
-                self._store.append_event(
-                    "replay.request.rejected",
-                    {
-                        **self._binding_payload(trusted.spec),
-                        "attemptNumber": attempt_number,
-                        "reason": exc.reason.value,
-                    },
-                )
-                return self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        (
-                            ReplayExecutionStatus.FAILED
-                            if attempts
-                            else ReplayExecutionStatus.UNSUPPORTED
-                        ),
-                        attempts=attempts,
-                    ),
-                    reason=exc.reason,
-                )
-            seen_request_ids.add(request.request_id)
-            if materialization is not None:
-                session_id = materialization.arguments["session_id"]
-                assert isinstance(session_id, str)
-                seen_session_ids.add(session_id)
-            started_at = self._now()
-            self._store.append_event(
-                "replay.attempt.started",
-                {
-                    **self._binding_payload(trusted.spec),
-                    "attemptNumber": attempt_number,
-                    "replayRequestId": request.request_id,
-                    "materializationId": (
-                        materialization.materialization_id if materialization is not None else None
-                    ),
-                },
-                occurred_at=started_at,
-            )
-            try:
-                self._budget.check_tool_call()
-                self._budget.record_tool_call()
-            except BudgetExceeded:
-                attempt = self._failed_attempt(
-                    trusted.spec,
-                    attempt_number,
-                    request.request_id,
-                    ReplayAttemptStatus.FAILED,
-                    started_at,
-                    "shared campaign budget was exhausted before replay dispatch",
-                    materialization=materialization,
-                )
-                attempts.append(attempt)
-                self._record_attempt(attempt)
-                return self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.FAILED,
-                        attempts=attempts,
-                    ),
-                    reason=ReplayRuntimeReason.BUDGET_EXHAUSTED,
-                )
-            remaining = self._remaining_seconds(trusted, started_at)
-            if remaining <= 0:
-                attempt = self._failed_attempt(
-                    trusted.spec,
-                    attempt_number,
-                    request.request_id,
-                    ReplayAttemptStatus.TIMED_OUT,
-                    started_at,
-                    "restricted replay deadline expired before dispatch",
-                    materialization=materialization,
-                )
-                attempts.append(attempt)
-                self._record_attempt(attempt)
-                return self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.TIMED_OUT,
-                        attempts=attempts,
-                    ),
-                    reason=self._deadline_reason(trusted, started_at),
-                )
+    async def _execute_attempts(
+        self,
+        campaign: CampaignManifest,
+        state: _ReplayExecutionState,
+    ) -> _ReplayTermination | None:
+        for attempt_number in range(1, state.compilation.spec.repetitions + 1):
+            prepared = await self._prepare_attempt(state, attempt_number)
+            if isinstance(prepared, _ReplayTermination):
+                return prepared
+            dispatched = await self._dispatch_attempt(campaign, state, prepared)
+            if isinstance(dispatched, _ReplayTermination):
+                return dispatched
 
-            try:
-                async with asyncio.timeout(remaining):
-                    gateway_outcome = await await_with_cancellation(
-                        gateway.execute(
-                            campaign,
-                            trusted.grant,
-                            request,
-                            used_calls=used_calls,
-                        ),
-                        replay_cancellation,
-                    )
-            except TimeoutError:
-                attempt = self._failed_attempt(
-                    trusted.spec,
-                    attempt_number,
-                    request.request_id,
-                    ReplayAttemptStatus.TIMED_OUT,
-                    started_at,
-                    "restricted replay dispatch exceeded its authority deadline",
-                    materialization=materialization,
-                )
-                attempts.append(attempt)
-                self._record_attempt(attempt)
-                return self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.TIMED_OUT,
-                        attempts=attempts,
-                    ),
-                    reason="dispatch-timeout",
-                )
-            except asyncio.CancelledError:
-                attempt = self._failed_attempt(
-                    trusted.spec,
-                    attempt_number,
-                    request.request_id,
-                    ReplayAttemptStatus.CANCELLED,
-                    started_at,
-                    "restricted replay execution was cancelled",
-                    materialization=materialization,
-                )
-                attempts.append(attempt)
-                self._record_attempt(attempt)
-                context = ensure_cancellation_context(
-                    replay_cancellation,
-                    engine="restricted-reproducer",
-                    store=self._store,
-                )
-                receipt = record_engine_cleanup(self._store, context)
-                self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.CANCELLED,
-                        attempts=attempts,
-                    ),
-                    reason="cancelled",
-                    cancellation_receipt=receipt,
-                )
-                raise
-
-            if gateway_outcome.executed:
-                used_calls += 1
+            if dispatched.executed:
+                state.used_calls += 1
             attempt, lineage_valid = self._attempt_from_gateway(
-                trusted,
-                oracle,
-                gateway_outcome,
-                attempt_number=attempt_number,
-                request=request,
-                materialization=materialization,
-                started_at=started_at,
+                state.compilation,
+                state.oracle,
+                dispatched,
+                attempt_number=prepared.attempt_number,
+                request=prepared.request,
+                materialization=prepared.materialization,
+                started_at=prepared.started_at,
             )
-            attempts.append(attempt)
+            state.attempts.append(attempt)
             self._record_attempt(attempt)
             if not lineage_valid:
-                return self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.FAILED,
-                        attempts=attempts,
-                    ),
+                return _ReplayTermination(
+                    status=ReplayExecutionStatus.FAILED,
                     reason=ReplayRuntimeReason.EVIDENCE_LINEAGE_INVALID,
                 )
             if attempt.status is not ReplayAttemptStatus.SUCCEEDED:
@@ -702,103 +448,256 @@ class GatewayRestrictedReproducerRuntime:
                         ReplayAttemptStatus.TIMED_OUT,
                         ReplayAttemptStatus.TARGET_UNAVAILABLE,
                     }
-                    or not gateway_outcome.decision.allowed
+                    or not dispatched.decision.allowed
                 ):
-                    return self._finish(
-                        trusted,
-                        self._outcome(
-                            trusted.spec,
-                            self._execution_status(attempt.status),
-                            attempts=attempts,
-                        ),
+                    return _ReplayTermination(
+                        status=self._execution_status(attempt.status),
                         reason=attempt.status.value,
                     )
                 continue
-            if replay_cancellation is not None and replay_cancellation.active:
-                context = ensure_cancellation_context(
-                    replay_cancellation,
-                    engine="restricted-reproducer",
-                    store=self._store,
-                )
-                receipt = record_engine_cleanup(self._store, context)
-                verified = self._finish(
-                    trusted,
-                    self._outcome(
-                        trusted.spec,
-                        ReplayExecutionStatus.CANCELLED,
-                        attempts=attempts,
-                    ),
+            if state.cancellation is not None and state.cancellation.active:
+                verified = self._finish_cancelled(
+                    state,
                     reason="cancelled-before-oracle",
-                    cancellation_receipt=receipt,
                 )
                 raise asyncio.CancelledError(verified.artifact_set.outcome.outcome_id)
+        return None
 
+    async def _prepare_attempt(
+        self,
+        state: _ReplayExecutionState,
+        attempt_number: int,
+    ) -> _PreparedReplayAttempt | _ReplayTermination:
+        trusted = state.compilation
+        try:
+            request, materialization = self._request(
+                trusted.spec,
+                attempt_number,
+                state.seen_request_ids,
+                state.seen_session_ids,
+                state.materializer,
+            )
+        except RestrictedReplayRuntimeError as exc:
+            self._store.append_event(
+                "replay.request.rejected",
+                {
+                    **self._binding_payload(trusted.spec),
+                    "attemptNumber": attempt_number,
+                    "reason": exc.reason.value,
+                },
+            )
+            return _ReplayTermination(
+                status=(
+                    ReplayExecutionStatus.FAILED
+                    if state.attempts
+                    else ReplayExecutionStatus.UNSUPPORTED
+                ),
+                reason=exc.reason,
+            )
+
+        started_at = self._now()
+        try:
+            self._budget.check_tool_call()
+            self._budget.record_tool_call()
+        except BudgetExceeded:
+            self._append_failed_attempt(
+                state,
+                attempt_number=attempt_number,
+                request=request,
+                materialization=materialization,
+                status=ReplayAttemptStatus.FAILED,
+                started_at=started_at,
+                error="shared campaign budget was exhausted before replay dispatch",
+            )
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.FAILED,
+                reason=ReplayRuntimeReason.BUDGET_EXHAUSTED,
+            )
+
+        remaining = self._remaining_seconds(trusted, started_at)
+        if remaining <= 0:
+            self._append_failed_attempt(
+                state,
+                attempt_number=attempt_number,
+                request=request,
+                materialization=materialization,
+                status=ReplayAttemptStatus.TIMED_OUT,
+                started_at=started_at,
+                error="restricted replay deadline expired before dispatch",
+            )
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.TIMED_OUT,
+                reason=self._deadline_reason(trusted, started_at),
+            )
+
+        dispatch_authority: ReplayDispatchAuthority | None = None
+        if self._dispatch_authorizer is not None:
+            authorized = await self._dispatch_authorizer.authorize(
+                trusted.spec.model_copy(deep=True),
+                call_ordinal=attempt_number,
+                request=request.model_copy(deep=True),
+            )
+            dispatch_authority = ReplayDispatchAuthority(
+                request_id=authorized.request_id,
+                expires_at=authorized.expires_at,
+            )
+            request, materialization = self._apply_dispatch_authority(
+                trusted.spec,
+                attempt_number=attempt_number,
+                request=request,
+                materialization=materialization,
+                authority=dispatch_authority,
+                seen_request_ids=state.seen_request_ids,
+            )
+        state.seen_request_ids.add(request.request_id)
+        if materialization is not None:
+            session_id = materialization.arguments["session_id"]
+            assert isinstance(session_id, str)
+            state.seen_session_ids.add(session_id)
+        self._store.append_event(
+            "replay.attempt.started",
+            {
+                **self._binding_payload(trusted.spec),
+                "attemptNumber": attempt_number,
+                "replayRequestId": request.request_id,
+                "materializationId": (
+                    materialization.materialization_id if materialization is not None else None
+                ),
+            },
+            occurred_at=started_at,
+        )
+        return _PreparedReplayAttempt(
+            attempt_number=attempt_number,
+            request=request,
+            materialization=materialization,
+            started_at=started_at,
+            remaining_seconds=remaining,
+            dispatch_authority=dispatch_authority,
+        )
+
+    async def _dispatch_attempt(
+        self,
+        campaign: CampaignManifest,
+        state: _ReplayExecutionState,
+        prepared: _PreparedReplayAttempt,
+    ) -> GatewayOutcome | _ReplayTermination:
+        trusted = state.compilation
+        try:
+            authority = prepared.dispatch_authority
+            if authority is not None and self._now() >= self._utc(authority.expires_at):
+                raise RestrictedReplayRuntimeError(
+                    ReplayRuntimeReason.AUTHORITY_EXPIRED,
+                    "Replay dispatch permit expired before Tool dispatch",
+                )
+            async with asyncio.timeout(prepared.remaining_seconds):
+                return await await_with_cancellation(
+                    state.gateway.execute(
+                        campaign.model_copy(deep=True),
+                        trusted.grant.model_copy(deep=True),
+                        prepared.request.model_copy(deep=True),
+                        used_calls=state.used_calls,
+                    ),
+                    state.cancellation,
+                )
+        except TimeoutError:
+            self._append_failed_attempt(
+                state,
+                attempt_number=prepared.attempt_number,
+                request=prepared.request,
+                materialization=prepared.materialization,
+                status=ReplayAttemptStatus.TIMED_OUT,
+                started_at=prepared.started_at,
+                error="restricted replay dispatch exceeded its authority deadline",
+            )
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.TIMED_OUT,
+                reason="dispatch-timeout",
+            )
+        except asyncio.CancelledError:
+            self._append_failed_attempt(
+                state,
+                attempt_number=prepared.attempt_number,
+                request=prepared.request,
+                materialization=prepared.materialization,
+                status=ReplayAttemptStatus.CANCELLED,
+                started_at=prepared.started_at,
+                error="restricted replay execution was cancelled",
+            )
+            self._finish_cancelled(state, reason="cancelled")
+            raise
+
+    def _append_failed_attempt(
+        self,
+        state: _ReplayExecutionState,
+        *,
+        attempt_number: int,
+        request: ToolRequest,
+        materialization: ReplayMaterialization | None,
+        status: ReplayAttemptStatus,
+        started_at: datetime,
+        error: str,
+    ) -> ReplayAttempt:
+        attempt = self._failed_attempt(
+            state.compilation.spec,
+            attempt_number,
+            request.request_id,
+            status,
+            started_at,
+            error,
+            materialization=materialization,
+        )
+        state.attempts.append(attempt)
+        self._record_attempt(attempt)
+        return attempt
+
+    async def _evaluate_oracle(
+        self,
+        state: _ReplayExecutionState,
+    ) -> _ReplayTermination:
+        trusted = state.compilation
         failed_attempts = [
-            attempt for attempt in attempts if attempt.status is not ReplayAttemptStatus.SUCCEEDED
+            attempt
+            for attempt in state.attempts
+            if attempt.status is not ReplayAttemptStatus.SUCCEEDED
         ]
         if failed_attempts:
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.FAILED,
-                    attempts=attempts,
-                ),
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.FAILED,
                 reason="one-or-more-attempts-failed",
             )
 
         evaluated_at = self._now()
         oracle_remaining = self._remaining_seconds(trusted, evaluated_at)
         if oracle_remaining <= 0:
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.TIMED_OUT,
-                    attempts=attempts,
-                ),
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.TIMED_OUT,
                 reason=self._deadline_reason(trusted, evaluated_at),
             )
+        private_spec = trusted.spec.model_copy(deep=True)
+        private_attempts = tuple(attempt.model_copy(deep=True) for attempt in state.attempts)
         try:
             async with asyncio.timeout(oracle_remaining):
                 evaluated = await await_with_cancellation(
-                    oracle.evaluate(
-                        trusted.spec,
-                        tuple(attempts),
+                    state.oracle.evaluate(
+                        private_spec.model_copy(deep=True),
+                        tuple(attempt.model_copy(deep=True) for attempt in private_attempts),
                         evaluated_at=evaluated_at,
                     ),
-                    replay_cancellation,
+                    state.cancellation,
                 )
-            oracle_result = ReplayOracleResult.model_validate(
-                evaluated.model_dump(mode="python", by_alias=True)
+            oracle_result = ReplayOracleResult.model_validate_json(
+                evaluated.model_dump_json(by_alias=True)
             )
-            self._validate_oracle_identity(trusted.spec, attempts, oracle_result)
+            self._validate_oracle_identity(private_spec, private_attempts, oracle_result)
         except TimeoutError:
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.TIMED_OUT,
-                    attempts=attempts,
-                ),
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.TIMED_OUT,
                 reason="oracle-timeout",
             )
         except asyncio.CancelledError:
-            context = ensure_cancellation_context(
-                replay_cancellation,
-                engine="restricted-reproducer",
-                store=self._store,
-            )
-            receipt = record_engine_cleanup(self._store, context)
-            verified = self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.CANCELLED,
-                    attempts=attempts,
-                ),
+            verified = self._finish_cancelled(
+                state,
                 reason="cancelled-during-oracle",
-                cancellation_receipt=receipt,
             )
             raise asyncio.CancelledError(verified.artifact_set.outcome.outcome_id) from None
         except Exception as exc:
@@ -806,46 +705,24 @@ class GatewayRestrictedReproducerRuntime:
                 "replay.oracle.failed",
                 {
                     **self._binding_payload(trusted.spec),
-                    "errorType": type(exc).__name__,
+                    "errorType": audit_safe_exception_type(exc),
                 },
             )
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.FAILED,
-                    attempts=attempts,
-                ),
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.FAILED,
                 reason=ReplayRuntimeReason.ORACLE_FAILED,
             )
 
         completed_at = self._now()
-        if replay_cancellation is not None and replay_cancellation.active:
-            context = ensure_cancellation_context(
-                replay_cancellation,
-                engine="restricted-reproducer",
-                store=self._store,
-            )
-            receipt = record_engine_cleanup(self._store, context)
-            verified = self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.CANCELLED,
-                    attempts=attempts,
-                ),
+        if state.cancellation is not None and state.cancellation.active:
+            verified = self._finish_cancelled(
+                state,
                 reason="cancelled-after-oracle",
-                cancellation_receipt=receipt,
             )
             raise asyncio.CancelledError(verified.artifact_set.outcome.outcome_id)
         if self._remaining_seconds(trusted, completed_at) <= 0:
-            return self._finish(
-                trusted,
-                self._outcome(
-                    trusted.spec,
-                    ReplayExecutionStatus.TIMED_OUT,
-                    attempts=attempts,
-                ),
+            return _ReplayTermination(
+                status=ReplayExecutionStatus.TIMED_OUT,
                 reason=self._deadline_reason(trusted, completed_at),
             )
 
@@ -860,15 +737,51 @@ class GatewayRestrictedReproducerRuntime:
             },
             occurred_at=oracle_result.evaluated_at,
         )
-        return self._finish(
-            trusted,
-            self._outcome(
-                trusted.spec,
-                ReplayExecutionStatus.SUCCEEDED,
-                attempts=attempts,
-                oracle_result=oracle_result,
-            ),
+        return _ReplayTermination(
+            status=ReplayExecutionStatus.SUCCEEDED,
             reason=f"oracle-{oracle_result.verdict.value}",
+            oracle_result=oracle_result,
+        )
+
+    def _finish_cancelled(
+        self,
+        state: _ReplayExecutionState,
+        *,
+        reason: str,
+    ) -> VerifiedReplayResult:
+        context = ensure_cancellation_context(
+            state.cancellation,
+            engine="restricted-reproducer",
+            store=self._store,
+        )
+        receipt = record_engine_cleanup(self._store, context)
+        return self._finish_termination(
+            state.compilation,
+            attempts=state.attempts,
+            termination=_ReplayTermination(
+                status=ReplayExecutionStatus.CANCELLED,
+                reason=reason,
+                cancellation_receipt=receipt,
+            ),
+        )
+
+    def _finish_termination(
+        self,
+        compilation: ReplayCompilation,
+        *,
+        attempts: list[ReplayAttempt],
+        termination: _ReplayTermination,
+    ) -> VerifiedReplayResult:
+        return self._finish(
+            compilation,
+            self._outcome(
+                compilation.spec,
+                termination.status,
+                attempts=attempts,
+                oracle_result=termination.oracle_result,
+            ),
+            reason=termination.reason,
+            cancellation_receipt=termination.cancellation_receipt,
         )
 
     def _preflight(
@@ -881,22 +794,23 @@ class GatewayRestrictedReproducerRuntime:
         claim = self._claim
         if claim is None:
             return ReplayRuntimeReason.TOOL_CONTRACT_MISMATCH
-        if (
-            campaign.metadata.name != binding.campaign
-            or campaign.spec.mode is not binding.mode
-            or not any(
+        campaign_binding = (
+            campaign.metadata.name,
+            campaign.spec.mode,
+            any(
                 target.id == binding.target_id and target.endpoint == binding.target
                 for target in campaign.spec.targets
-            )
-        ):
+            ),
+        )
+        if campaign_binding != (binding.campaign, binding.mode, True):
             return ReplayRuntimeReason.CAMPAIGN_MISMATCH
-        if self._now() >= spec.expires_at or self._now() >= compilation.grant.expires_at:
+        if self._now() >= min(spec.expires_at, compilation.grant.expires_at):
             return ReplayRuntimeReason.AUTHORITY_EXPIRED
         if spec.session_policy is ReplaySessionPolicy.PRESERVE_SCENARIO_SESSION:
             return ReplayRuntimeReason.SESSION_POLICY_UNSUPPORTED
         if spec.session_policy is ReplaySessionPolicy.FRESH_SESSION:
             try:
-                materializer = self._materializers.resolve(spec)
+                materializer = self._materializers.resolve(spec.model_copy(deep=True))
             except KeyError:
                 return ReplayRuntimeReason.MATERIALIZER_UNREGISTERED
             if claim.context.scenario_digest != materializer.scenario_digest:
@@ -907,18 +821,26 @@ class GatewayRestrictedReproducerRuntime:
             tool = self._tools.tool(binding.tool_id)
         except KeyError:
             return ReplayRuntimeReason.TOOL_UNREGISTERED
-        if (
-            tool.spec.tool_id != binding.tool_id
-            or tool.spec.version != binding.tool_version
-            or tool.spec.risk_tier != spec.risk_tier
-            or compilation.contract.tool_id != tool.spec.tool_id
-            or compilation.contract.tool_version != tool.spec.version
-            or claim.context.tool_spec_digest
-            != replay_context_digest(tool.spec.model_dump(mode="json"))
-        ):
+        actual_tool_contract = (
+            tool.spec.tool_id,
+            tool.spec.version,
+            tool.spec.risk_tier,
+            compilation.contract.tool_id,
+            compilation.contract.tool_version,
+            claim.context.tool_spec_digest,
+        )
+        expected_tool_contract = (
+            binding.tool_id,
+            binding.tool_version,
+            spec.risk_tier,
+            tool.spec.tool_id,
+            tool.spec.version,
+            replay_context_digest(tool.spec),
+        )
+        if actual_tool_contract != expected_tool_contract:
             return ReplayRuntimeReason.TOOL_CONTRACT_MISMATCH
         try:
-            oracle = self._oracles.resolve(spec)
+            oracle = self._oracles.resolve(spec.model_copy(deep=True))
         except KeyError:
             return ReplayRuntimeReason.ORACLE_UNREGISTERED
         if claim.context.scenario_digest != oracle.scenario_digest:
@@ -946,49 +868,25 @@ class GatewayRestrictedReproducerRuntime:
             outcome.result.request_id == request.request_id
             and outcome.result.tool_id == spec.binding.tool_id
         )
-        lineage_valid = lineage_valid and identity_valid
+        lineage_valid = lineage_valid and outcome.result_identity_valid and identity_valid
         finished_at = self._now()
         if outcome.result.success and lineage_valid:
             try:
-                observation = _ObservationAdapter.validate_python(
-                    dict(oracle.observation(spec, request, materialization, outcome))
-                )
-                if not observation:
-                    raise ValueError("successful replay observation cannot be empty")
-                if (
-                    len(
-                        json.dumps(
-                            observation,
-                            ensure_ascii=False,
-                            separators=(",", ":"),
-                            sort_keys=True,
-                        ).encode()
-                    )
-                    > 1_000_000
-                ):
-                    raise ValueError("typed replay observation exceeds one megabyte")
                 return (
-                    ReplayAttempt(
-                        attempt_id=self._attempt_id(
-                            spec,
-                            attempt_number,
-                            request.request_id,
-                        ),
-                        spec_id=spec.spec_id,
-                        binding=spec.binding,
+                    self._successful_attempt_from_observation(
+                        spec=spec,
+                        oracle=oracle,
+                        outcome=outcome,
                         attempt_number=attempt_number,
-                        replay_request_id=request.request_id,
-                        status=ReplayAttemptStatus.SUCCEEDED,
-                        observation_schema=spec.observation_schema,
+                        request=request,
                         materialization=materialization,
-                        observation=observation,
                         evidence=evidence,
                         started_at=started_at,
                         finished_at=finished_at,
                     ),
-                    True,
+                    lineage_valid,
                 )
-            except (TypeError, ValueError, ValidationError) as exc:
+            except Exception as exc:
                 return (
                     self._failed_attempt(
                         spec,
@@ -996,7 +894,7 @@ class GatewayRestrictedReproducerRuntime:
                         request.request_id,
                         ReplayAttemptStatus.FAILED,
                         started_at,
-                        f"typed observation rejected: {type(exc).__name__}",
+                        f"typed observation rejected: {audit_safe_exception_type(exc)}",
                         evidence=evidence,
                         finished_at=finished_at,
                         materialization=materialization,
@@ -1004,22 +902,7 @@ class GatewayRestrictedReproducerRuntime:
                     lineage_valid,
                 )
 
-        status = ReplayAttemptStatus.FAILED
-        if outcome.worker_result is not None and (
-            outcome.worker_result.status is WorkerStatus.TIMED_OUT
-        ):
-            status = ReplayAttemptStatus.TIMED_OUT
-        elif not outcome.result.success:
-            try:
-                classified = oracle.classify_failure(outcome)
-                if classified in {
-                    ReplayAttemptStatus.FAILED,
-                    ReplayAttemptStatus.TIMED_OUT,
-                    ReplayAttemptStatus.TARGET_UNAVAILABLE,
-                }:
-                    status = classified
-            except Exception:
-                status = ReplayAttemptStatus.FAILED
+        status = self._classified_failure_status(oracle, outcome)
         error = outcome.result.error or "replay Tool execution failed"
         if not identity_valid:
             error = "Tool result identity did not match the fresh replay request"
@@ -1040,6 +923,80 @@ class GatewayRestrictedReproducerRuntime:
             lineage_valid,
         )
 
+    def _successful_attempt_from_observation(
+        self,
+        *,
+        spec: CompiledReplaySpec,
+        oracle: ReplayModeOracle,
+        outcome: GatewayOutcome,
+        attempt_number: int,
+        request: ToolRequest,
+        materialization: ReplayMaterialization | None,
+        evidence: list[str],
+        started_at: datetime,
+        finished_at: datetime,
+    ) -> ReplayAttempt:
+        validated = _ObservationAdapter.validate_python(
+            dict(
+                oracle.observation(
+                    spec.model_copy(deep=True),
+                    request.model_copy(deep=True),
+                    (
+                        materialization.model_copy(deep=True)
+                        if materialization is not None
+                        else None
+                    ),
+                    outcome.model_copy(deep=True),
+                )
+            )
+        )
+        if not validated:
+            raise ValueError("successful replay observation cannot be empty")
+        canonical = json.dumps(
+            validated,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+        if len(canonical) > 1_000_000:
+            raise ValueError("typed replay observation exceeds one megabyte")
+        return ReplayAttempt(
+            attempt_id=self._attempt_id(spec, attempt_number, request.request_id),
+            spec_id=spec.spec_id,
+            binding=spec.binding,
+            attempt_number=attempt_number,
+            replay_request_id=request.request_id,
+            status=ReplayAttemptStatus.SUCCEEDED,
+            observation_schema=spec.observation_schema,
+            materialization=materialization,
+            observation=_ObservationAdapter.validate_json(canonical),
+            evidence=evidence,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+
+    @staticmethod
+    def _classified_failure_status(
+        oracle: ReplayModeOracle,
+        outcome: GatewayOutcome,
+    ) -> ReplayAttemptStatus:
+        if outcome.worker_result is not None and (
+            outcome.worker_result.status is WorkerStatus.TIMED_OUT
+        ):
+            return ReplayAttemptStatus.TIMED_OUT
+        if outcome.result.success:
+            return ReplayAttemptStatus.FAILED
+        try:
+            classified = oracle.classify_failure(outcome.model_copy(deep=True))
+        except Exception:
+            return ReplayAttemptStatus.FAILED
+        allowed = {
+            ReplayAttemptStatus.FAILED,
+            ReplayAttemptStatus.TIMED_OUT,
+            ReplayAttemptStatus.TARGET_UNAVAILABLE,
+        }
+        return classified if classified in allowed else ReplayAttemptStatus.FAILED
+
     def _validated_evidence(
         self,
         compilation: ReplayCompilation,
@@ -1053,12 +1010,16 @@ class GatewayRestrictedReproducerRuntime:
             return [], False
         original = set(compilation.original_evidence)
         root = self._store.path.resolve()
-        candidate = (root / expected).resolve()
-        if expected in original or root not in candidate.parents or not candidate.is_file():
+        candidate = root / expected
+        if expected in original:
             return [], False
         try:
-            payload = json.loads(candidate.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
+            payload = parse_strict_json_bytes(
+                _read_regular_file_bytes(root, candidate, label="pending evidence"),
+                label="pending replay evidence",
+                max_bytes=_MAX_REPLAY_SNAPSHOT_FILE_BYTES,
+            )
+        except (OSError, UnicodeError, ValueError):
             return [], False
         if not isinstance(payload, dict):
             return [], False
@@ -1073,6 +1034,7 @@ class GatewayRestrictedReproducerRuntime:
             payload.get("request") != request.model_dump(mode="json")
             or payload.get("policyDecision") != outcome.decision.model_dump(mode="json")
             or payload.get("result") != expected_result
+            or payload.get("networkLogTrusted") is not outcome.network_log_trusted
             or (expected_worker is None and "workerResult" in payload)
             or (expected_worker is not None and payload.get("workerResult") != expected_worker)
         ):
@@ -1087,7 +1049,17 @@ class GatewayRestrictedReproducerRuntime:
         seen_session_ids: set[str],
         materializer: ReplaySessionMaterializer | None,
     ) -> tuple[ToolRequest, ReplayMaterialization | None]:
-        request_id = self._request_id_factory(spec, attempt_number).strip()
+        try:
+            generated_request_id = self._request_id_factory(
+                spec.model_copy(deep=True),
+                attempt_number,
+            )
+        except Exception as exc:
+            raise RestrictedReplayRuntimeError(
+                ReplayRuntimeReason.REQUEST_ID_INVALID,
+                "replay request identity factory failed",
+            ) from exc
+        request_id = generated_request_id.strip() if isinstance(generated_request_id, str) else ""
         if (
             _REPLAY_REQUEST_ID.fullmatch(request_id) is None
             or request_id == spec.binding.original_request_id
@@ -1116,13 +1088,21 @@ class GatewayRestrictedReproducerRuntime:
                 candidate = dict(
                     materializer.materialize(spec.model_copy(deep=True), attempt_number)
                 )
-                arguments = _ObservationAdapter.validate_python(candidate)
+                validated_arguments = _ObservationAdapter.validate_python(candidate)
+                arguments = _ObservationAdapter.validate_json(
+                    json.dumps(
+                        validated_arguments,
+                        ensure_ascii=False,
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ).encode()
+                )
                 self._validate_fresh_arguments(
                     spec,
                     arguments,
                     seen_session_ids=seen_session_ids,
                 )
-            except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            except Exception as exc:
                 raise RestrictedReplayRuntimeError(
                     ReplayRuntimeReason.SESSION_MATERIALIZATION_INVALID,
                     "fresh-session materializer violated the compiled argument boundary",
@@ -1168,6 +1148,49 @@ class GatewayRestrictedReproducerRuntime:
             arguments=arguments,
         )
         return request, materialization
+
+    @staticmethod
+    def _apply_dispatch_authority(
+        spec: CompiledReplaySpec,
+        *,
+        attempt_number: int,
+        request: ToolRequest,
+        materialization: ReplayMaterialization | None,
+        authority: ReplayDispatchAuthority,
+        seen_request_ids: set[str],
+    ) -> tuple[ToolRequest, ReplayMaterialization | None]:
+        request_id = authority.request_id.strip()
+        if (
+            _REPLAY_REQUEST_ID.fullmatch(request_id) is None
+            or request_id == spec.binding.original_request_id
+            or request_id in seen_request_ids
+            or authority.expires_at.tzinfo is None
+            or authority.expires_at.utcoffset() is None
+        ):
+            raise RestrictedReplayRuntimeError(
+                ReplayRuntimeReason.REQUEST_ID_INVALID,
+                "Replay dispatch authority returned an invalid request identity",
+            )
+        authorized_request = request.model_copy(update={"request_id": request_id})
+        if materialization is None:
+            return authorized_request, None
+        identity = "|".join(
+            [
+                spec.spec_id,
+                str(attempt_number),
+                request_id,
+                materialization.argument_digest,
+            ]
+        )
+        authorized_materialization = materialization.model_copy(
+            update={
+                "materialization_id": (
+                    "replay-materialization_" + sha256(identity.encode("utf-8")).hexdigest()[:32]
+                ),
+                "replay_request_id": request_id,
+            }
+        )
+        return authorized_request, authorized_materialization
 
     @staticmethod
     def _validate_fresh_arguments(
@@ -1315,12 +1338,14 @@ class GatewayRestrictedReproducerRuntime:
             occurred_at=outcome.completed_at,
         )
         artifact_seal = self._store.seal()
-        artifact_verification = verify_run_integrity(self._store.path)
-        if artifact_verification.root_digest != artifact_seal.root_digest:
+        artifact_snapshot = load_verified_run_artifacts(
+            self._store.path,
+            requests={artifact_set_path: _MAX_REPLAY_SNAPSHOT_FILE_BYTES},
+            expected_run_id=self._store.run_id,
+        )
+        if artifact_snapshot.verification.root_digest != artifact_seal.root_digest:
             raise RuntimeError("replay artifact seal verification returned a different root")
-        artifact_set_digest = sha256(
-            (self._store.path / artifact_set_path).read_bytes()
-        ).hexdigest()
+        artifact_set_digest = sha256(artifact_snapshot.artifacts[artifact_set_path]).hexdigest()
         if self._claim is None:
             raise RuntimeError("replay ticket claim is missing at finalization")
         receipt = ReplayVerificationReceipt(
@@ -1330,7 +1355,8 @@ class GatewayRestrictedReproducerRuntime:
             replay_run_id=self._store.run_id,
             artifact_set_path=artifact_set_path,
             artifact_set_digest=artifact_set_digest,
-            artifact_seal_root_digest=artifact_verification.root_digest,
+            artifact_seal_root_digest=artifact_snapshot.verification.root_digest,
+            ticketContext=self._claim.context,
             verified_at=self._now(),
         )
         receipt_path = self._store.write_json(
@@ -1344,7 +1370,7 @@ class GatewayRestrictedReproducerRuntime:
                 "receipt": receipt_path,
                 "artifactSet": artifact_set_path,
                 "artifactSetDigest": artifact_set_digest,
-                "artifactSealRootDigest": artifact_verification.root_digest,
+                "artifactSealRootDigest": artifact_snapshot.verification.root_digest,
             },
             occurred_at=receipt.verified_at,
         )
@@ -1415,6 +1441,10 @@ class GatewayRestrictedReproducerRuntime:
             any(reference in oracle.supporting_evidence for reference in attempt.evidence)
             for attempt in attempts
         )
+        contradicting_attempt_count = sum(
+            any(reference in oracle.contradicting_evidence for reference in attempt.evidence)
+            for attempt in attempts
+        )
         verdict_consistent = (
             (
                 oracle.verdict is ReplayOracleVerdict.SUPPORTS
@@ -1425,6 +1455,9 @@ class GatewayRestrictedReproducerRuntime:
                 oracle.verdict is ReplayOracleVerdict.CONTRADICTS
                 and oracle.support_count == 0
                 and not oracle.supporting_evidence
+                and oracle.required_contradiction_count > 0
+                and oracle.contradiction_count >= oracle.required_contradiction_count
+                and bool(oracle.contradicting_evidence)
             )
             or (
                 oracle.verdict is ReplayOracleVerdict.INCONCLUSIVE
@@ -1440,10 +1473,16 @@ class GatewayRestrictedReproducerRuntime:
             or oracle.attempt_ids != [attempt.attempt_id for attempt in attempts]
             or oracle.required_support_count != spec.required_successes
             or oracle.support_count != supporting_attempt_count
+            or oracle.required_contradiction_count != spec.required_contradictions
+            or oracle.contradiction_count != contradicting_attempt_count
             or not verdict_consistent
             or any(
                 reference not in {item for attempt in attempts for item in attempt.evidence}
                 for reference in oracle.supporting_evidence
+            )
+            or any(
+                reference not in {item for attempt in attempts for item in attempt.evidence}
+                for reference in oracle.contradicting_evidence
             )
         ):
             raise ValueError("Mode Oracle result does not match the compiled replay")

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pajin.agents.base import ValidatorRuntime
+import json
+
+from pajin.agents.base import CandidateValidation, ValidatorRuntime
 from pajin.domain.models import (
     AgentPlan,
     CampaignManifest,
@@ -10,6 +12,13 @@ from pajin.domain.models import (
     PlannedStep,
     ToolRequest,
     ToolResult,
+)
+from pajin.domain.validation import (
+    CandidateAssessment,
+    CandidateFinding,
+    ValidationReasonCode,
+    candidate_claim_digest,
+    validator_finding_matches_candidate_claim,
 )
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
 from pajin.modes.ai_redteam.models import EvaluationThresholds
@@ -114,9 +123,9 @@ class KISAValidatorRuntime:
         results: list[ToolResult],
     ) -> list[Finding]:
         candidates = await self._delegate.validate(campaign, plan, results)
-        grouped: dict[tuple[str, str, str], Finding] = {}
+        grouped: dict[str, Finding] = {}
         for finding in candidates:
-            key = (finding.title, finding.threat_class, finding.target)
+            key = self._aggregation_claim_key(finding)
             current = grouped.get(key)
             if current is None:
                 grouped[key] = finding
@@ -130,6 +139,82 @@ class KISAValidatorRuntime:
                 }
             )
         return list(grouped.values())
+
+    @staticmethod
+    def _aggregation_claim_key(finding: Finding) -> str:
+        """Group repetitions only when every non-evidence claim field is identical."""
+
+        claim = finding.model_dump(mode="json")
+        claim.pop("finding_id")
+        claim.pop("evidence")
+        return json.dumps(
+            claim,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+
+    async def validate_candidates(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+        candidates: list[CandidateFinding],
+    ) -> CandidateValidation:
+        """Bind legacy delegate findings to exact KISA Candidate identities in trusted code."""
+
+        findings = await self.validate(campaign, plan, results)
+        eligible_by_candidate: dict[str, list[tuple[int, Finding]]] = {
+            candidate.candidate_id: [] for candidate in candidates
+        }
+        eligible_candidate_counts = [0] * len(findings)
+        for candidate in candidates:
+            for finding_index, finding in enumerate(findings):
+                if self._same_semantic_claim(candidate.claim, finding):
+                    eligible_by_candidate[candidate.candidate_id].append((finding_index, finding))
+                    eligible_candidate_counts[finding_index] += 1
+
+        assessments: list[CandidateAssessment] = []
+        for candidate in candidates:
+            eligible = eligible_by_candidate[candidate.candidate_id]
+            matched = (
+                eligible[0][1]
+                if len(eligible) == 1 and eligible_candidate_counts[eligible[0][0]] == 1
+                else None
+            )
+            supported = matched is not None and matched.validated
+            assessments.append(
+                CandidateAssessment(
+                    candidate_id=candidate.candidate_id,
+                    claim_digest=candidate_claim_digest(candidate),
+                    supports_claim=supported,
+                    reason_code=(
+                        ValidationReasonCode.VALIDATOR_CONFIRMED
+                        if supported
+                        else (
+                            ValidationReasonCode.VALIDATOR_DISAGREED
+                            if matched is not None
+                            else ValidationReasonCode.VALIDATOR_OMITTED
+                        )
+                    ),
+                    rationale=(
+                        "Independent KISA validator output matched the exact Candidate semantics."
+                        if supported
+                        else (
+                            "No unique validated KISA output matched the exact Candidate semantics."
+                        )
+                    ),
+                    supporting_evidence=(
+                        list(dict.fromkeys(matched.evidence)) if supported and matched else []
+                    ),
+                )
+            )
+        return CandidateValidation(findings=findings, assessments=assessments)
+
+    @staticmethod
+    def _same_semantic_claim(candidate: Finding, validator: Finding) -> bool:
+        return validator_finding_matches_candidate_claim(candidate, validator)
 
 
 class KISARetestPlannerRuntime:

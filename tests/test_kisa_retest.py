@@ -4,12 +4,17 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
+from kisa_control_plane_support import externally_attested_confirmation_fixture
 
+import pajin.workflow.validation_artifacts as validation_artifacts
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
+from pajin.domain.orchestration import RunStatus
 from pajin.domain.replay import ReplayOracleVerdict, ReplayPurpose
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import EvaluationThresholds
@@ -20,6 +25,7 @@ from pajin.modes.ai_redteam.replay import (
 from pajin.modes.ai_redteam.retest import (
     KISARetestService,
     RegressionStatus,
+    RetestFindingResult,
     RetestFindingStatus,
 )
 from pajin.modes.ai_redteam.runtime import (
@@ -30,9 +36,23 @@ from pajin.modes.ai_redteam.runtime import (
 from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import BudgetController
-from pajin.runtime.store import RunIntegrityError, verify_run_integrity
-from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeTool, AIChatRegressionTool
+from pajin.runtime.store import (
+    RunIntegrityError,
+    load_verified_run_snapshot,
+    verify_run_integrity,
+)
+from pajin.runtime.worker import (
+    DockerWorkerBackend,
+    NetworkMode,
+    WorkerJob,
+    WorkerResult,
+    WorkerStatus,
+)
+from pajin.tools.ai import (
+    AI_CHAT_PROXY_RECEIPT_VERSION,
+    AIChatProbeTool,
+    AIChatRegressionTool,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.confirmation import apply_confirmed_gate
@@ -179,6 +199,83 @@ class ProfileAIWorker:
         )
 
 
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _proxy_receipt_log(job: WorkerJob, worker_result: WorkerResult) -> str:
+    payload = json.loads(job.stdin)
+    output = json.loads(worker_result.stdout)
+    probe = payload["probe"]
+    target_value = urlsplit(payload["target"])
+    target = urlunsplit(
+        (
+            target_value.scheme,
+            target_value.netloc,
+            target_value.path,
+            "<redacted>" if target_value.query else "",
+            "",
+        )
+    )
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+        request_body = {
+            "sessionId": probe["session_id"],
+            "messages": turn["messages"],
+            "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
+        }
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                    "sequence": index + 1,
+                    "method": "POST",
+                    "target": target,
+                    "targetSha256": sha256(payload["target"].encode("utf-8")).hexdigest(),
+                    "address": "172.17.0.1",
+                    "status": 200,
+                    "requestJsonSha256": _canonical_digest(request_body),
+                    "responseBodySha256": _canonical_digest(observed["response"]),
+                    "responseJsonSha256": _canonical_digest(observed["response"]),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
+
+
+def _trusted_docker_backend(worker: ProfileAIWorker) -> DockerWorkerBackend:
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        if result.status is not WorkerStatus.SUCCEEDED:
+            return result.model_copy(update={"backend": "docker"})
+        return result.model_copy(
+            update={
+                "backend": "docker",
+                "network_log": _proxy_receipt_log(job, result),
+            }
+        )
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
+
+
 def _campaign():
     return load_manifest(Path("examples/kisa-ai-chat-lab.yaml"))
 
@@ -231,6 +328,7 @@ def _confirmed_baseline(tmp_path: Path, *, campaign=None):
     thresholds = EvaluationThresholds(repetitions=2)
     tools = _registry()
     worker = ProfileAIWorker(vulnerable=True)
+    execution_backend = _trusted_docker_backend(worker)
     policy = PolicyEngine()
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
@@ -240,13 +338,13 @@ def _confirmed_baseline(tmp_path: Path, *, campaign=None):
         candidate_producer=KISACandidateProducer(),
         tools=tools,
         policy=policy,
-        worker=worker,
+        worker=execution_backend,
         output_root=tmp_path / "baseline",
     )
     coordinator = KISAReplayCoordinator(
         tools=tools,
         policy=policy,
-        worker=worker,
+        worker=execution_backend,
         output_root=tmp_path / "baseline-replay",
         repetitions=2,
         required_successes=2,
@@ -263,11 +361,12 @@ def _confirmed_baseline(tmp_path: Path, *, campaign=None):
         return outcome, batch
 
     outcome, batch = asyncio.run(execute())
-    confirmation = apply_confirmed_gate(
-        source_run_path=outcome.run_path,
-        replay_run_paths=[result.run_path for result in batch.verified_results.values()],
-        tickets=batch.tickets,
-    )
+    with externally_attested_confirmation_fixture():
+        confirmation = apply_confirmed_gate(
+            source_run_path=outcome.run_path,
+            replay_run_paths=[result.run_path for result in batch.verified_results.values()],
+            tickets=batch.tickets,
+        )
     outcome = outcome.model_copy(
         update={
             "validation": confirmation.validation,
@@ -285,7 +384,7 @@ def _legacy_baseline(tmp_path: Path):
     outcome = asyncio.run(
         _runner(
             planner=KISAPlannerRuntime(thresholds=thresholds),
-            worker=ProfileAIWorker(vulnerable=True),
+            worker=_trusted_docker_backend(ProfileAIWorker(vulnerable=True)),
             output_root=tmp_path / "legacy",
             tools=tools,
         ).run(campaign)
@@ -303,6 +402,7 @@ def _parent_retest(
     raw_attack: bool = False,
     campaign=None,
     planner=None,
+    trusted_receipts: bool = True,
 ):
     campaign = campaign or _campaign()
     thresholds = EvaluationThresholds(repetitions=2)
@@ -313,6 +413,7 @@ def _parent_retest(
         regression_claimed=regression_claimed,
         regression_worker_failures=regression_worker_failures,
     )
+    execution_backend = _trusted_docker_backend(worker) if trusted_receipts else worker
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
     planner = planner or (
@@ -323,7 +424,7 @@ def _parent_retest(
     outcome = asyncio.run(
         _runner(
             planner=planner,
-            worker=worker,
+            worker=execution_backend,
             output_root=tmp_path / "parent-retest",
             tools=tools,
         ).run(campaign, budget=budget, rate_limits=rate_limits)
@@ -340,13 +441,16 @@ def _replay_retest(
     budget: BudgetController,
     rate_limits: RequestRateLimitLedger,
     vulnerable: bool | list[bool],
+    trusted_receipts: bool = True,
 ):
     service = KISARetestService()
     contexts = service.build_retest_contexts(baseline.run_path, retest.run_path)
+    worker = ProfileAIWorker(vulnerable=vulnerable)
+    execution_backend = _trusted_docker_backend(worker) if trusted_receipts else worker
     coordinator = KISARetestReplayCoordinator(
         tools=tools,
         policy=PolicyEngine(),
-        worker=ProfileAIWorker(vulnerable=vulnerable),
+        worker=execution_backend,
         output_root=tmp_path / "retest-replay",
         repetitions=2,
     )
@@ -368,6 +472,42 @@ def test_retest_planner_generates_only_normal_function_regression_tasks() -> Non
     assert len(plan.steps) == 2
     assert all(step.request.tool_id == "ai.normal-probe" for step in plan.steps)
     assert all(step.scenario_id is None for step in plan.steps)
+
+
+def test_retest_rejects_validation_from_an_intermediate_run_phase(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _confirmed_baseline(tmp_path)
+    authority = load_verified_run_snapshot(baseline.run_path)
+    phase_b_verification = authority.verification.model_copy(update={"root_digest": "0" * 64})
+    original_artifact_load = validation_artifacts.load_verified_run_artifacts
+    phase_b_initial_loads = 0
+
+    def phase_b_initial(*args, **kwargs):
+        nonlocal phase_b_initial_loads
+        phase_b_initial_loads += 1
+        return replace(authority, verification=phase_b_verification)
+
+    def phase_b_artifacts(*args, **kwargs):
+        snapshot = original_artifact_load(*args, **kwargs)
+        return replace(snapshot, verification=phase_b_verification)
+
+    monkeypatch.setattr(
+        validation_artifacts,
+        "load_verified_run_snapshot",
+        phase_b_initial,
+    )
+    monkeypatch.setattr(
+        validation_artifacts,
+        "load_verified_run_artifacts",
+        phase_b_artifacts,
+    )
+
+    with pytest.raises(ValueError, match="validation Run changed"):
+        KISARetestService().create_remediation_plan(baseline.run_path)
+    assert phase_b_initial_loads == 0
+    assert not (baseline.run_path / "remediation-plan.json").exists()
 
 
 def test_regression_uses_each_planned_tasks_terminal_retry_evidence(
@@ -458,7 +598,9 @@ def test_raw_non_vulnerable_results_without_receipts_remain_inconclusive(
     )
 
 
-def test_hardened_replay_receipts_mark_confirmed_findings_fixed(tmp_path: Path) -> None:
+def test_hardened_worker_replay_remains_inconclusive_without_external_attestation(
+    tmp_path: Path,
+) -> None:
     baseline = _confirmed_baseline(tmp_path)
     service = KISARetestService()
     plan = service.create_remediation_plan(baseline.run_path)
@@ -477,18 +619,28 @@ def test_hardened_replay_receipts_mark_confirmed_findings_fixed(tmp_path: Path) 
     result = service.compare(baseline.run_path, retest.run_path, batch)
 
     assert len(plan.actions) == 3
-    assert result.assessment.summary.fixed == 3
+    assert result.assessment.summary.fixed == 0
     assert result.assessment.summary.still_vulnerable == 0
-    assert result.assessment.summary.inconclusive == 0
+    assert result.assessment.summary.inconclusive == 3
     assert result.assessment.summary.regression is RegressionStatus.PASS
     assert all(
-        item.status is RetestFindingStatus.FIXED
-        and item.oracle_verdict is ReplayOracleVerdict.CONTRADICTS
+        item.status is RetestFindingStatus.INCONCLUSIVE
+        and item.oracle_verdict is ReplayOracleVerdict.INCONCLUSIVE
         and item.replay_context is not None
         and item.replay_lineage is not None
         and item.all_replay_attempts_succeeded
         for item in result.assessment.finding_results
     )
+    forged_fixed = result.assessment.finding_results[0].model_dump(mode="python")
+    forged_fixed.update(
+        {
+            "status": RetestFindingStatus.FIXED,
+            "oracle_verdict": ReplayOracleVerdict.CONTRADICTS,
+            "all_replay_attempts_succeeded": True,
+        }
+    )
+    with pytest.raises(ValueError, match="independently verifiable remediation attestation"):
+        RetestFindingResult.model_validate(forged_fixed)
     assert {
         "remediation-plan.json",
         "kisa-retest.json",
@@ -510,6 +662,94 @@ def test_hardened_replay_receipts_mark_confirmed_findings_fixed(tmp_path: Path) 
     )
     verify_run_integrity(retest.run_path)
     assert verify_run_integrity(baseline.run_path).root_digest == baseline_root
+
+
+def test_kisa_retest_report_neutralizes_heading_list_table_and_html_injection(
+    tmp_path: Path,
+) -> None:
+    baseline = _confirmed_baseline(tmp_path)
+    service = KISARetestService()
+    service.create_remediation_plan(baseline.run_path)
+    retest, tools, budget, rate_limits = _parent_retest(tmp_path)
+    batch = _replay_retest(
+        tmp_path,
+        baseline=baseline,
+        retest=retest,
+        tools=tools,
+        budget=budget,
+        rate_limits=rate_limits,
+        vulnerable=False,
+    )
+    assessment = service.compare(baseline.run_path, retest.run_path, batch).assessment
+    injected = "Visible\n\n## Forged Retest Section\n| forged | row |\n<script>x</script>\n```"
+    actions = [
+        assessment.remediation_actions[0].model_copy(
+            update={
+                "title": injected,
+                "controls": [injected],
+                "acceptance_criteria": [injected],
+                "owner": injected,
+            }
+        ),
+        *assessment.remediation_actions[1:],
+    ]
+    finding_results = [
+        assessment.finding_results[0].model_copy(update={"threat_class": injected}),
+        *assessment.finding_results[1:],
+    ]
+    regression = assessment.regression.model_copy(
+        update={
+            "evidence": [
+                assessment.regression.evidence[0].model_copy(update={"target": injected}),
+                *assessment.regression.evidence[1:],
+            ]
+        }
+    )
+    overlay = assessment.checklist_overlay.model_copy(
+        update={
+            "items": [
+                assessment.checklist_overlay.items[0].model_copy(
+                    update={"item_id": injected, "rationale": injected}
+                ),
+                *assessment.checklist_overlay.items[1:],
+            ]
+        }
+    )
+    injected_assessment = assessment.model_copy(
+        update={
+            "remediation_actions": actions,
+            "finding_results": finding_results,
+            "regression": regression,
+            "checklist_overlay": overlay,
+        }
+    )
+
+    report = service._render_report(injected_assessment)
+
+    assert report.count("\n## Finding outcomes\n") == 1
+    assert report.count("\n## Checklist overlay\n") == 1
+    assert "\n## Forged Retest Section" not in report
+    assert "\n| forged |" not in report
+    assert "\n```" not in report
+    assert "<script>" not in report
+    assert "&lt;script&gt;" in report
+    assert "\\|" in report
+
+
+def test_worker_only_profiles_cannot_mark_fixed_or_regression_pass(tmp_path: Path) -> None:
+    baseline = _confirmed_baseline(tmp_path)
+    service = KISARetestService()
+    service.create_remediation_plan(baseline.run_path)
+    retest, _tools, _budget, _rate_limits = _parent_retest(
+        tmp_path,
+        trusted_receipts=False,
+    )
+
+    assert retest.status is RunStatus.FAILED
+    assert retest.findings == []
+    assert retest.validation.candidates == []
+    assert retest.tool_results
+    assert all(result.success is False for result in retest.tool_results)
 
 
 def test_supporting_replay_receipts_mark_findings_still_vulnerable(
@@ -586,7 +826,8 @@ def test_security_status_is_independent_from_normal_regression(tmp_path: Path) -
 
     result = service.compare(baseline.run_path, retest.run_path, batch)
 
-    assert result.assessment.summary.fixed == 3
+    assert result.assessment.summary.fixed == 0
+    assert result.assessment.summary.inconclusive == 3
     assert result.assessment.regression.status is RegressionStatus.FAIL
     assert all(
         evidence.trusted_passed is False for evidence in result.assessment.regression.evidence

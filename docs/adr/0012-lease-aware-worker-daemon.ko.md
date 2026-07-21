@@ -22,6 +22,9 @@ PAJIN에 비동기 Worker 데몬과 타입이 지정된 Control Plane 클라이�
 적용하고, 401/403은 치명적 오류로 처리한다. 409는 Worker의 종료 상태 또는 소유권 펜스를
 의미한다. 구조화된 코드는 취소된 Run과 임대 거부를 구분하며, 이전 형식이거나 타입이 없는
 409는 `lease-lost`로 간주하여 안전하게 실패한다.
+인증 클라이언트는 origin-only HTTPS base URL만 허용한다. 평문 HTTP는
+`PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB`이 literal `true`인 경우에만 예외이며, 그 경우에도
+loopback 또는 번들 `control-plane` Compose service 이름으로 제한한다.
 
 데몬은 한 번에 하나의 Job을 처리한다. 디스패치 전에 하트비트 태스크를 시작하고 완료, 실패
 또는 체크포인트 최종화까지 이를 유지한다. 일시적인 최종화 실패는 동일한 임대 토큰으로
@@ -31,6 +34,22 @@ PAJIN에 비동기 Worker 데몬과 타입이 지정된 Control Plane 클라이�
 전에 실행기에 제한된 협력적 정리 유예 시간을 제공하며, 오래된 결과는 제출하지 않는다.
 실행기가 반환된 후 하트비트 또는 최종화 충돌이 발생하면 결과 제출을 즉시 취소한다. 엔진을
 다시 열거나 러너 정리가 수행되었다고 주장하지 않는다.
+
+각 claim과 renewal은 서버의 heartbeat/expiry 구간을 이벤트 루프의 monotonic clock에 매핑한다.
+매핑 기준은 응답 수신이 아니라 요청 시작 시점이므로 네트워크 및 서버 지연은 임대 구간을
+늘리지 않고 소비한다. heartbeat 호출 자체도 이 deadline을 넘을 수 없다. 만료까지 멈춰 있으면
+daemon은 I/O를 취소하고 cooperative grace를 생략한 채 executor를 강제 취소하며, 다른 Worker가
+Job을 재획득하기 전에 동시에 도착한 완료 응답도 거부한다.
+
+Control Plane schema v10은 별도의 절대 `lease_deadline_at`을 영속화한다. claim 시 server 시간을
+기준으로 최대 24시간 뒤로 설정하고 Replay는 compiled specification 또는 Grant expiry까지 더
+짧게 줄일 수 있지만, heartbeat와 늦게 재개된 schema-v9 writer는 이를 연장할 수 없다. database는
+leased row마다 해당 horizon 안의 canonical expiry, heartbeat, owner, token, attempt와 deadline
+authority를 요구한다. Job submission digest는 immutable dispatch tuple을 결박하고 migration,
+startup과 claim에서 다시 계산된다. managed trigger는 Run/Job state machine도 강제하고, 늦은 구
+writer insert와 row replace/delete를 거부하며 terminal history를 immutable하게 만든다. 승인된
+모든 renewal의 lease 전이는 계속 영속화하되 `job.heartbeat` audit event는 60초당 최대 하나만
+기록한다. lease expiry/reclaim은 rolling expiry와 절대 deadline을 모두 검사한다.
 
 SIGTERM/SIGINT를 받으면 제한 없이 드레이닝이 끝나기를 기다리는 대신 새로운 획득을 중단하고
 활성 실행에 `daemon-shutdown` 신호를 보낸다. 동일한 협력적 유예와 강제 폴백을 적용한다.
@@ -55,6 +74,11 @@ Plane 오류 텍스트에 복사하지 않는다.
 프로덕션 모델 백엔드가 아니라 안전한 통합 픽스처다. 그래도 실제 Tool Loop, Provider Tool,
 Secret Lease, Capability, 정책 재진입 및 체크포인트 코드를 실행한다.
 
+두 내장 profile은 canonical Worker execution context를 봉인된 Run에 결박하고, 검증된 값을 완료
+Job의 optional `executionProfile`, `executionContext` result field로 복사한다. 기본 profile은
+명시적으로 `simulated-development-only`이고, Docker-backed Adapter는
+`worker-observed-execution`, 그 밖의 custom backend는 `custom-backend-unclassified`로 남는다.
+
 Tool Loop 실행이 `awaiting-approval`에 도달하면 어댑터가 타입이 완전히 지정된 체크포인트와
 정확한 보류 인텐트를 업로드한다. Control Plane은 서명된 페이로드에 원본 Job 종류와 재시도
 한도를 추가한다. 재개 시 승인을 한 번만 소비하고 원본 종류를 보존하며, 신뢰할 수 있는 승인
@@ -73,8 +97,21 @@ Tool Loop 실행이 `awaiting-approval`에 도달하면 어댑터가 타입이 �
 ## 운영 및 보안
 
 - Worker 베어러 자격 증명은 상태, Job, 이벤트, 체크포인트 또는 아티팩트 데이터에 절대 쓰지 않는다.
+- Worker 베어러 자격 증명은 검증된 HTTPS origin으로만 전송한다. 명시적인 평문 flag는 격리된
+  번들 Compose/loopback lab 전용이며 원격 환경에서는 비활성 상태를 유지해야 한다.
 - 상태 파일에는 Worker ID, 상태, 활성 Job ID, 개수, 타임스탬프, 제한된 오류 및 비밀 정보가
   없는 마지막 타입 지정 취소 스냅샷만 포함한다.
+- 두 Worker daemon은 하나의 directory-descriptor 기반 writer로 상태를 교체한다. 이 writer는
+  `O_EXCL`/`O_NOFOLLOW`로 private random temporary leaf를 만들고 fsync한 뒤 symlink를 따라가지
+  않고 destination을 원자적으로 교체하며 parent directory도 fsync한다.
+- Host 기본값은 shared `/tmp`의 예측 가능한 leaf가 아니라 `~/.pajin/status` 아래에 둔다. custom
+  parent는 daemon effective UID 소유이고 group/other 쓰기가 불가능해야 한다. Compose가 명시하는
+  `/tmp`는 container-private UID 소유 mode-0750 tmpfs다. Health reader는 no-follow regular UTF-8
+  file만 최대 64 KiB까지 읽는다.
+- status 보장과 Tool Loop continuation-checkpoint 격리에는 POSIX dirfd, `O_NOFOLLOW`, effective UID,
+  sticky-directory 의미 체계가 필요하다. native Windows daemon은 어느 write도 시작하기 전에 명확한
+  오류로 fail closed하며 Linux container 또는 WSL을 사용해야 한다. PowerShell에서 실행하는 Docker
+  Compose는 계속 지원한다.
 - `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS`의 기본값은 2초이고,
   `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS`의 기본값은 5초다. 두 값 모두 0.05부터 30까지 허용한다.
 - 데몬은 아직 보류 중인 태스크를 포기하기 전에 유예 구간 하나와 강제 구간 두 개를 사용할 수
@@ -88,6 +125,8 @@ Tool Loop 실행이 `awaiting-approval`에 도달하면 어댑터가 타입이 �
   가능한 tmpfs만 가진다.
 - Compose는 충돌 테스트를 빠르게 하기 위해서만 6초 임대를 사용한다. 프로덕션에서는 지연 시간과
   복구 목표에 맞춰 임대 및 하트비트 간격을 정해야 한다.
+- 설정된 rolling lease 길이와 관계없이 절대 server lease horizon은 24시간이다. 장기 작업은 하나의
+  권위를 무기한 갱신하지 말고 새 fence를 가진 Job으로 이어져야 한다.
 - 프로덕션 실행 어댑터는 기존의 격리된 Worker 및 이그레스 경계를 유지해야 한다. 결정론적
   인프로세스 어댑터는 로컬 검증 프로필이다.
 - Compose의 아티팩트 tmpfs는 일시적이다. 프로덕션에는 보존, 암호화, 접근 제어 및 Run-객체 간

@@ -1,5 +1,6 @@
 from datetime import UTC, datetime
 
+from pajin.agents.base import AgentReportNarrative
 from pajin.domain.models import (
     AgentPlan,
     CampaignManifest,
@@ -7,6 +8,14 @@ from pajin.domain.models import (
     FindingSeverity,
     PlannedStep,
     ToolRequest,
+)
+from pajin.domain.orchestration import (
+    AgentNode,
+    AgentRole,
+    AgentStatus,
+    RunStatus,
+    TaskGraph,
+    TaskNode,
 )
 from pajin.domain.validation import (
     CandidateFinding,
@@ -16,7 +25,13 @@ from pajin.domain.validation import (
     ValidationMethod,
     ValidationReasonCode,
 )
-from pajin.reporting.markdown import render_markdown_report
+from pajin.reporting import (
+    escape_markdown_text,
+    markdown_code_span,
+    render_markdown_report,
+)
+from pajin.runtime.control import BudgetController, KillSwitch
+from pajin.workflow.multi_agent import MultiAgentCampaignRunner
 
 
 def _plan(target: str) -> AgentPlan:
@@ -187,3 +202,138 @@ def test_report_without_validation_keeps_legacy_call_compatible(
     assert "### Legacy validated finding" in report
     assert "## Validation Summary" not in report
     assert "Candidate findings preserved" not in report
+
+
+def test_report_neutralizes_markdown_structure_html_and_code_span_injection(
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0].endpoint
+    plan = _plan(target)
+    malicious_step = plan.steps[0].model_copy(
+        update={
+            "title": "Normal title\n\n## Forged Plan Section",
+            "rationale": '<img src="https://attacker.invalid/track">\n\n## Forged Scope',
+        }
+    )
+    plan = plan.model_copy(
+        update={
+            "summary": "Trusted summary\n\n## Forged Authorization",
+            "steps": [malicious_step],
+        }
+    )
+    finding = _finding(
+        "finding_injected",
+        target=target,
+        title="Legitimate title\n\n## Forged Validated Finding",
+        summary='<script>alert("report")</script>\n\n## Forged Summary',
+    ).model_copy(
+        update={
+            "reproduction": ["Replay safely.\n\n## Forged Reproduction"],
+            "evidence": ["evidence/result.json`\n\n## Forged Evidence"],
+            "remediation": ["Review.\n\n## Forged Remediation"],
+        }
+    )
+
+    report = render_markdown_report(
+        sample_campaign,
+        "run_injection_reporting",
+        plan,
+        [],
+        [finding],
+    )
+
+    assert "<img" not in report
+    assert "<script" not in report
+    assert "&lt;img" in report
+    assert "&lt;script&gt;" in report
+    assert "\n## Forged" not in report
+    assert report.count("\n## Authorization and Scope\n") == 1
+    assert report.count("\n## Validated Findings\n") == 1
+    evidence_line = next(line for line in report.splitlines() if "Forged Evidence" in line)
+    assert evidence_line.startswith("- ``")
+
+
+def test_multi_agent_report_neutralizes_model_table_list_and_heading_injection(
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0].endpoint
+    injected = "Visible\udfff\n\n## Forged Section\n| forged | row |\n<script>x</script>\n```"
+    agent = AgentNode(
+        agent_id=f"agent|table{injected}",
+        role=AgentRole.SUPERVISOR,
+        depth=0,
+        capability_grant_id="grant_reporting",
+        status=AgentStatus.COMPLETED,
+    )
+    task = TaskNode(
+        task_id=f"task`code{injected}",
+        title=injected,
+        assigned_agent_id=agent.agent_id,
+    )
+    graph = TaskGraph()
+    graph.add(task)
+    narrative = AgentReportNarrative(
+        summary=injected,
+        risk_overview=injected,
+        recommendations=[f"- nested item{injected}"],
+        limitations=[injected],
+    )
+
+    report = MultiAgentCampaignRunner._render_report(
+        sample_campaign,
+        "run_multi_agent_reporting",
+        _plan(target),
+        [],
+        [],
+        {agent.agent_id: agent},
+        graph,
+        BudgetController(sample_campaign.spec.budgets),
+        RunStatus.COMPLETED,
+        narrative=narrative,
+    )
+
+    assert report.count("\n## Multi-Agent Execution\n") == 1
+    assert report.count("\n## Model-generated Narrative\n") == 1
+    assert "\n## Forged Section" not in report
+    assert "\n| forged |" not in report
+    assert "\n```" not in report
+    assert "<script>" not in report
+    assert "&lt;script&gt;" in report
+    assert "\\|" in report
+    assert "\udfff" not in report
+    report.encode("utf-8")
+
+
+def test_public_markdown_helpers_remove_non_encodable_surrogates() -> None:
+    injected = "safe\udffftext"
+
+    assert escape_markdown_text(injected) == "safetext"
+    assert markdown_code_span(injected) == "`safetext`"
+
+
+def test_planless_cancellation_report_neutralizes_reason_and_identifier_injection(
+    sample_campaign: CampaignManifest,
+) -> None:
+    injected = "Visible\n\n## Forged Cancellation\n<script>x</script>\n```"
+    runner = object.__new__(MultiAgentCampaignRunner)
+    runner._kill_switch = KillSwitch()
+    runner._kill_switch.activate(injected)
+
+    report = runner._render_cancelled_report(
+        sample_campaign,
+        f"run`{injected}",
+        RunStatus.CANCELLED,
+        None,
+        [],
+        [],
+        FindingValidationSet(candidates=[], decisions=[], confirmed_findings=[]),
+        {},
+        TaskGraph(),
+        BudgetController(sample_campaign.spec.budgets),
+    )
+
+    assert "\n## Forged Cancellation\n" not in report
+    assert "\n```" not in report
+    assert "<script>" not in report
+    assert "&lt;script&gt;" in report
+    report.encode("utf-8")

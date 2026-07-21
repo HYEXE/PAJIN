@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import Mapping, Sequence
+import sqlite3
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
+from threading import Event
 
 import pytest
 from pydantic import JsonValue
 
+import pajin.replay.runtime as replay_runtime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import (
     AgentPlan,
@@ -35,6 +39,7 @@ from pajin.domain.replay import (
     ReplayOracleVerdict,
     ReplayPurpose,
     ReplaySessionPolicy,
+    ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
     replay_evidence_digest,
@@ -45,20 +50,26 @@ from pajin.policy.engine import PolicyEngine
 from pajin.replay.compiler import ReplayCompiler, replay_scenario_digest
 from pajin.replay.runtime import (
     GatewayRestrictedReproducerRuntime,
+    ReplayDispatchAuthority,
+    ReplayDispatchAuthorizer,
     ReplayModeOracle,
     ReplayOracleRegistry,
     ReplayRuntimeReason,
     VerifiedReplayResult,
+    inspect_sealed_replay_result,
     load_verified_replay_result,
+    recover_verified_replay_result,
 )
 from pajin.replay.sqlite_tickets import (
     SQLiteReplayExecutionAuthority,
     SQLiteReplayTicketFinalizationVerifier,
 )
 from pajin.replay.tickets import (
+    ClaimedReplayExecution,
     ReplayExecutionAuthority,
     ReplayExecutionTicket,
     ReplayTicketAuthority,
+    ReplayTicketClaimer,
     replay_context_digest,
 )
 from pajin.runtime.control import (
@@ -71,6 +82,7 @@ from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
     WorkerBackend,
+    WorkerFailureCode,
     WorkerJob,
     WorkerResult,
     WorkerSecretRequest,
@@ -133,6 +145,67 @@ class RecordingReplayTicketVerifier:
         self.called = True
 
 
+class RetainingClaimBackend:
+    def __init__(self, delegate: ReplayTicketClaimer) -> None:
+        self.delegate = delegate
+        self.claimed: ClaimedReplayExecution | None = None
+
+    def _claim(
+        self,
+        _token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        expected_replay_run_id: str,
+        expected_candidate_source_root_digest: str,
+        expected_campaign_digest: str,
+        claimed_at: datetime,
+    ) -> ClaimedReplayExecution:
+        self.claimed = self.delegate.claim(
+            ticket,
+            expected_replay_run_id=expected_replay_run_id,
+            expected_candidate_source_root_digest=expected_candidate_source_root_digest,
+            expected_campaign_digest=expected_campaign_digest,
+            claimed_at=claimed_at,
+        )
+        return self.claimed
+
+    def _finalize(
+        self,
+        _token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        finalized_at: datetime,
+    ) -> None:
+        self.delegate.finalize(
+            ticket,
+            final_seal_root_digest=final_seal_root_digest,
+            artifact_set_digest=artifact_set_digest,
+            finalized_at=finalized_at,
+        )
+
+    def _verify_finalized(
+        self,
+        _token: object,
+        ticket_id: str,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
+    ) -> None:
+        self.delegate.verify_finalized(
+            ticket_id,
+            final_seal_root_digest=final_seal_root_digest,
+            artifact_set_digest=artifact_set_digest,
+            compilation_digest=compilation_digest,
+            candidate_source_root_digest=candidate_source_root_digest,
+            replay_run_id=replay_run_id,
+        )
+
+
 class ThresholdMockOracle:
     oracle_id = "test.mock-vulnerability"
     oracle_version = "1.0.0"
@@ -155,7 +228,10 @@ class ThresholdMockOracle:
         return dict(outcome.result.data)
 
     def classify_failure(self, outcome: GatewayOutcome) -> ReplayAttemptStatus:
-        if "target unavailable" in (outcome.result.error or "").lower():
+        if (
+            outcome.worker_result is not None
+            and outcome.worker_result.failure_code is WorkerFailureCode.TARGET_UNAVAILABLE
+        ):
             return ReplayAttemptStatus.TARGET_UNAVAILABLE
         return ReplayAttemptStatus.FAILED
 
@@ -169,10 +245,15 @@ class ThresholdMockOracle:
         supportive = [
             attempt for attempt in attempts if attempt.observation.get("vulnerable") is True
         ]
+        contradictory = (
+            [attempt for attempt in attempts if attempt.observation.get("vulnerable") is False]
+            if spec.required_contradictions > 0
+            else []
+        )
         required = spec.required_successes
         if len(supportive) >= required:
             verdict = ReplayOracleVerdict.SUPPORTS
-        elif not supportive:
+        elif len(contradictory) >= spec.required_contradictions > 0:
             verdict = ReplayOracleVerdict.CONTRADICTS
         else:
             verdict = ReplayOracleVerdict.INCONCLUSIVE
@@ -188,8 +269,13 @@ class ThresholdMockOracle:
             supporting_evidence=[
                 reference for attempt in supportive for reference in attempt.evidence
             ],
+            contradicting_evidence=[
+                reference for attempt in contradictory for reference in attempt.evidence
+            ],
             support_count=len(supportive),
             required_support_count=required,
+            contradiction_count=len(contradictory),
+            required_contradiction_count=spec.required_contradictions,
             summary="The typed mock observations were evaluated independently.",
             evaluated_at=evaluated_at,
         )
@@ -239,6 +325,7 @@ class UnavailableWorker:
             execution_id=job.execution_id,
             backend="unavailable-test",
             status=WorkerStatus.FAILED,
+            failure_code=WorkerFailureCode.TARGET_UNAVAILABLE,
             exit_code=None,
             stderr="target unavailable",
             started_at=NOW,
@@ -308,6 +395,49 @@ class SubstitutingOracle(ThresholdMockOracle):
     ) -> ReplayOracleResult:
         result = await super().evaluate(spec, attempts, evaluated_at=evaluated_at)
         return result.model_copy(update={"spec_id": "compiled-replay_foreign"})
+
+
+class InputMutatingOracle(ThresholdMockOracle):
+    def observation(
+        self,
+        spec: CompiledReplaySpec,
+        request: ToolRequest,
+        materialization: object,
+        outcome: GatewayOutcome,
+    ) -> Mapping[str, JsonValue]:
+        observation = super().observation(spec, request, materialization, outcome)
+        spec.spec_id = "compiled-replay_observation-mutated"
+        request.target = "https://attacker.invalid/oracle-observation"
+        outcome.result.request_id = "tool_oracle-observation-mutated"
+        return observation
+
+    async def evaluate(
+        self,
+        spec: CompiledReplaySpec,
+        attempts: Sequence[ReplayAttempt],
+        *,
+        evaluated_at: datetime,
+    ) -> ReplayOracleResult:
+        spec.spec_id = "compiled-replay_plugin-mutated"
+        attempts[0].attempt_id = "replay-attempt_plugin-mutated"
+        return await super().evaluate(spec, attempts, evaluated_at=evaluated_at)
+
+
+class InputMutatingDispatchAuthorizer(ReplayDispatchAuthorizer):
+    async def authorize(
+        self,
+        spec: CompiledReplaySpec,
+        *,
+        call_ordinal: int,
+        request: ToolRequest,
+    ) -> ReplayDispatchAuthority:
+        spec.spec_id = "compiled-replay_authorizer-mutated"
+        request.target = "https://attacker.invalid/substituted"
+        request.arguments["simulation"] = {"unauthorizedToolCall": False}
+        return ReplayDispatchAuthority(
+            request_id=f"tool_authorized_{call_ordinal}",
+            expires_at=NOW + timedelta(minutes=1),
+        )
 
 
 class HangingOracle(ThresholdMockOracle):
@@ -383,6 +513,7 @@ def _fixture(
     campaign: CampaignManifest | None = None,
     allowed_argument_fields: set[str] | None = None,
     ticket_authority: ReplayTicketAuthority | None = None,
+    required_contradictions: int = 0,
 ) -> ReplayFixture:
     resolved = campaign or _campaign()
     scenario = MockReplayScenario()
@@ -498,6 +629,7 @@ def _fixture(
         ),
         repetitions=repetitions,
         required_successes=repetitions,
+        required_contradictions=required_contradictions,
         oracle_id=ThresholdMockOracle.oracle_id,
         oracle_version=ThresholdMockOracle.oracle_version,
         observation_schema=ThresholdMockOracle.observation_schema,
@@ -518,6 +650,25 @@ def _fixture(
         issued_at=NOW - timedelta(minutes=10),
         depth=1,
     )
+    root_grant = CapabilityGrant(
+        grant_id="grant_supervisor_mock_1",
+        subject="agent:supervisor:mock:1",
+        campaign=resolved.metadata.name,
+        tools={executed.tool_id},
+        targets={TARGET},
+        max_risk_tier=resolved.spec.rules_of_engagement.max_tool_risk_tier,
+        max_calls=resolved.spec.budgets.max_tool_calls,
+        expires_at=resolved.spec.authorization.expires_at,
+        delegable=True,
+        issued_at=NOW - timedelta(minutes=20),
+        depth=0,
+    )
+    source_capability = ReplaySourceCapabilityReceipt(
+        request_id=executed.request_id,
+        lineage=[root_grant, grant],
+        execution_started_at=NOW - timedelta(minutes=8),
+        execution_finished_at=NOW - timedelta(minutes=7),
+    )
     authority = ticket_authority if ticket_authority is not None else ReplayExecutionAuthority()
     ticket = ReplayCompiler.compile_ticket(
         ticket_issuer=authority.issuer(),
@@ -525,7 +676,7 @@ def _fixture(
         campaign=resolved,
         plan=plan,
         original_request=executed,
-        specialist_grant=grant,
+        source_capability=source_capability,
         validation_packet=packet,
         intent=intent,
         contract=contract,
@@ -558,6 +709,9 @@ def _runtime(
     budget: BudgetController | None = None,
     rate_limits: RequestRateLimitLedger | None = None,
     secrets: SecretBroker | None = None,
+    request_id_factory: Callable[[CompiledReplaySpec, int], str] | None = None,
+    dispatch_authorizer: ReplayDispatchAuthorizer | None = None,
+    tickets: ReplayTicketClaimer | None = None,
 ) -> GatewayRestrictedReproducerRuntime:
     tools = ToolRegistry()
     tools.register(tool or MockAgentProbe())
@@ -573,12 +727,17 @@ def _runtime(
         worker=worker,
         store=fixture.replay_store,
         oracles=oracles,
-        tickets=fixture.authority.claimer(),
+        tickets=tickets or fixture.authority.claimer(),
         budget=shared_budget,
         rate_limits=rate_limits or RequestRateLimitLedger(),
         secrets=secrets,
         clock=lambda: NOW,
-        request_id_factory=lambda _spec, number: f"tool_replay_{number}",
+        request_id_factory=(
+            request_id_factory
+            if request_id_factory is not None
+            else lambda _spec, number: f"tool_replay_{number}"
+        ),
+        dispatch_authorizer=dispatch_authorizer,
     )
 
 
@@ -593,6 +752,45 @@ def _run(
             candidate_source_root_digest=fixture.source_root_digest,
         )
     )
+
+
+def _sealed_claimed_replay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ReplayFixture, Path]:
+    ledger = tmp_path / "replay-tickets.sqlite3"
+    authority = SQLiteReplayExecutionAuthority(ledger, clock=lambda: NOW)
+    fixture = _fixture(
+        tmp_path,
+        repetitions=1,
+        ticket_authority=authority,
+    )
+    runtime = _runtime(
+        fixture,
+        worker=CountingWorker(),
+        oracle=ThresholdMockOracle(fixture.scenario),
+    )
+
+    def fail_finalization(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated finalization crash")
+
+    monkeypatch.setattr(authority, "_finalize", fail_finalization)
+    with pytest.raises(RuntimeError, match="simulated finalization crash"):
+        _run(fixture, runtime)
+    return fixture, ledger
+
+
+def _durable_ticket_state(ledger: Path) -> tuple[str, int]:
+    with sqlite3.connect(ledger) as connection:
+        row = connection.execute(
+            """
+            SELECT state, (
+                SELECT COUNT(*) FROM replay_ticket_events WHERE ticket_id = replay_tickets.ticket_id
+            ) FROM replay_tickets
+            """
+        ).fetchone()
+    assert row is not None
+    return str(row[0]), int(row[1])
 
 
 def _reseal_replay_artifacts(
@@ -639,7 +837,10 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
     ]
     assert len(worker.jobs) == 2
     assert all(job.command == ["mock-agent-probe"] for job in worker.jobs)
+    assert result.receipt.api_version == "pajin.dev/replay-verification-receipt/v2"
     assert result.receipt.candidate_source_root_digest == fixture.source_root_digest
+    assert result.receipt.ticket_context is not None
+    assert result.receipt.ticket_context.candidate_source_root_digest == fixture.source_root_digest
     assert result.receipt.artifact_set_digest
     assert result.verification.seal_count == 2
     assert verify_run_integrity(result.run_path).root_digest == result.verification.root_digest
@@ -647,6 +848,17 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
         (result.run_path / "replay/compilation.json").read_text(encoding="utf-8")
     )
     assert result.receipt.compilation_digest == replay_context_digest(compilation_payload)
+    artifact_bytes = (result.run_path / "replay/artifact-set.json").read_bytes()
+    assert artifact_bytes == (
+        json.dumps(
+            result.artifact_set.model_dump(mode="json", by_alias=True),
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
 
     verifier = fixture.authority.verifier()
     verifier.verify_finalized(
@@ -674,6 +886,27 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
     attempt_events = [
         event for event in events if event["event_type"] == "replay.attempt.completed"
     ]
+    assert [event["event_type"] for event in events] == [
+        "replay.started",
+        "replay.attempt.started",
+        "tool.request_reserved",
+        "tool.policy_evaluated",
+        "worker.dispatched",
+        "worker.completed",
+        "tool.completed",
+        "replay.attempt.completed",
+        "replay.attempt.started",
+        "tool.request_reserved",
+        "tool.policy_evaluated",
+        "worker.dispatched",
+        "worker.completed",
+        "tool.completed",
+        "replay.attempt.completed",
+        "replay.oracle.completed",
+        "replay.completed",
+        "replay.verified",
+    ]
+    assert [event["sequence"] for event in events] == list(range(1, len(events) + 1))
     assert len(attempt_events) == 2
     assert all(
         event["payload"]["candidateId"] == "candidate_mock_replay_1"
@@ -690,6 +923,123 @@ def test_reproducer_executes_fresh_requests_and_returns_verified_receipt(
             ),
             claimed_at=NOW,
         )
+
+
+def test_recovery_finalizes_exact_sealed_receipt_idempotently(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, ledger = _sealed_claimed_replay(tmp_path, monkeypatch)
+    assert _durable_ticket_state(ledger) == ("claimed", 2)
+    with pytest.raises(PermissionError, match="not finalized"):
+        load_verified_replay_result(
+            fixture.replay_store.path,
+            tickets=SQLiteReplayTicketFinalizationVerifier(ledger),
+        )
+
+    reopened = SQLiteReplayExecutionAuthority(
+        ledger,
+        clock=lambda: NOW + timedelta(seconds=1),
+    )
+    recovered = recover_verified_replay_result(
+        fixture.replay_store.path,
+        tickets=reopened.claimer(),
+        recovered_at=NOW + timedelta(seconds=1),
+    )
+    recovered_again = recover_verified_replay_result(
+        fixture.replay_store.path,
+        tickets=reopened.claimer(),
+        recovered_at=NOW + timedelta(seconds=2),
+    )
+
+    assert recovered_again == recovered
+    assert recovered.receipt.ticket_id == fixture.ticket.ticket_id
+    assert _durable_ticket_state(ledger) == ("finalized", 3)
+    with pytest.raises(PermissionError, match="already finalized"):
+        reopened.claimer().claim(
+            fixture.ticket,
+            expected_replay_run_id=fixture.replay_store.run_id,
+            expected_candidate_source_root_digest=fixture.source_root_digest,
+            expected_campaign_digest=replay_context_digest(
+                fixture.campaign.model_dump(mode="json", by_alias=True)
+            ),
+            claimed_at=NOW + timedelta(seconds=3),
+        )
+
+
+def test_recovery_rejects_partial_receipt_seal_without_finalizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, ledger = _sealed_claimed_replay(tmp_path, monkeypatch)
+    integrity_path = fixture.replay_store.integrity_path
+    first_seal = integrity_path.read_text(encoding="utf-8").splitlines()[0]
+    integrity_path.write_text(first_seal + "\n", encoding="utf-8")
+
+    reopened = SQLiteReplayExecutionAuthority(ledger, clock=lambda: NOW + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="unsealed appended events"):
+        recover_verified_replay_result(
+            fixture.replay_store.path,
+            tickets=reopened.claimer(),
+        )
+    assert _durable_ticket_state(ledger) == ("claimed", 2)
+
+
+def test_recovery_rejects_receipt_context_forgery_without_finalizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, ledger = _sealed_claimed_replay(tmp_path, monkeypatch)
+    receipt_path = fixture.replay_store.path / "replay/verification-receipt.json"
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    ticket_context = receipt_payload["ticketContext"]
+    assert isinstance(ticket_context, dict)
+    ticket_context["campaign_digest"] = "0" * 64
+    _reseal_replay_artifacts(fixture.replay_store.path, receipt_payload)
+
+    reopened = SQLiteReplayExecutionAuthority(ledger, clock=lambda: NOW + timedelta(seconds=1))
+    with pytest.raises(PermissionError, match="recovery context"):
+        recover_verified_replay_result(
+            fixture.replay_store.path,
+            tickets=reopened.claimer(),
+        )
+    assert _durable_ticket_state(ledger) == ("claimed", 2)
+
+
+def test_recovery_rejects_mismatched_artifact_digest_without_finalizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, ledger = _sealed_claimed_replay(tmp_path, monkeypatch)
+    receipt_path = fixture.replay_store.path / "replay/verification-receipt.json"
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    receipt_payload["artifact_set_digest"] = "0" * 64
+    _reseal_replay_artifacts(fixture.replay_store.path, receipt_payload)
+
+    reopened = SQLiteReplayExecutionAuthority(ledger, clock=lambda: NOW + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="canonical artifacts"):
+        recover_verified_replay_result(
+            fixture.replay_store.path,
+            tickets=reopened.claimer(),
+        )
+    assert _durable_ticket_state(ledger) == ("claimed", 2)
+
+
+def test_recovery_rejects_nonfinal_receipt_seal_without_finalizing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture, ledger = _sealed_claimed_replay(tmp_path, monkeypatch)
+    fixture.replay_store.write_json("replay/untrusted-extension.json", {"forged": True})
+    fixture.replay_store.seal()
+
+    reopened = SQLiteReplayExecutionAuthority(ledger, clock=lambda: NOW + timedelta(seconds=1))
+    with pytest.raises(ValueError, match="receipt seal to be final"):
+        recover_verified_replay_result(
+            fixture.replay_store.path,
+            tickets=reopened.claimer(),
+        )
+    assert _durable_ticket_state(ledger) == ("claimed", 2)
 
 
 def test_reproducer_seals_deterministically_sorted_compilation_sets(tmp_path: Path) -> None:
@@ -739,6 +1089,129 @@ def test_verified_loader_ignores_mutated_in_memory_replay_result(tmp_path: Path)
     assert not reloaded.artifact_set.outcome.supports_claim
     assert reloaded.receipt_seal_root_digest == result.receipt_seal_root_digest
     assert reloaded.verification.root_digest == result.verification.root_digest
+
+
+def test_runtime_reexports_extracted_replay_boundaries_with_compatible_api() -> None:
+    import inspect
+
+    import pajin.replay as replay_package
+    from pajin.replay import oracle, verified_result
+
+    assert replay_runtime.ReplayModeOracle is oracle.ReplayModeOracle
+    assert replay_runtime.ReplayOracleRegistry is oracle.ReplayOracleRegistry
+    assert replay_runtime.ReplayVerificationReceipt is verified_result.ReplayVerificationReceipt
+    assert replay_runtime.VerifiedReplayResult is verified_result.VerifiedReplayResult
+    assert replay_package.ReplayOracleRegistry is oracle.ReplayOracleRegistry
+    assert replay_package.VerifiedReplayResult is verified_result.VerifiedReplayResult
+    assert inspect.signature(replay_runtime.load_verified_replay_result) == inspect.signature(
+        verified_result.load_verified_replay_result
+    )
+    assert inspect.signature(replay_runtime.inspect_sealed_replay_result) == inspect.signature(
+        verified_result.inspect_sealed_replay_result
+    )
+    assert inspect.signature(replay_runtime.recover_verified_replay_result) == inspect.signature(
+        verified_result.recover_verified_replay_result
+    )
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "replay/artifact-set.json",
+        "replay/verification-receipt.json",
+        "replay/compilation.json",
+        "evidence/tool_replay_1.json",
+        "run-integrity.jsonl",
+    ],
+)
+def test_verified_loader_rejects_transient_snapshot_byte_substitution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    relative_path: str,
+) -> None:
+    fixture = _fixture(tmp_path, repetitions=1)
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    original_read = replay_runtime._read_regular_file_bytes
+    substituted = False
+
+    def substitute_once(root: Path, path: Path, *, label: str) -> bytes:
+        nonlocal substituted
+        content = original_read(root, path, label=label)
+        if not substituted and path.relative_to(root).as_posix() == relative_path:
+            substituted = True
+            return content + b" "
+        return content
+
+    monkeypatch.setattr(replay_runtime, "_read_regular_file_bytes", substitute_once)
+
+    with pytest.raises(ValueError, match="replay"):
+        inspect_sealed_replay_result(result.run_path)
+    assert substituted
+
+
+def test_verified_loader_holds_run_snapshot_lock_against_runstore_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fixture = _fixture(tmp_path, repetitions=1)
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    original_read = replay_runtime._read_regular_file_bytes
+    reader_entered = Event()
+    release_reader = Event()
+    writer_started = Event()
+    writer_finished = Event()
+    blocked_once = False
+
+    def block_first_artifact_read(root: Path, path: Path, *, label: str) -> bytes:
+        nonlocal blocked_once
+        if not blocked_once and path.relative_to(root).as_posix() == "replay/artifact-set.json":
+            blocked_once = True
+            reader_entered.set()
+            if not release_reader.wait(timeout=5):
+                raise AssertionError("timed out waiting to release replay snapshot reader")
+        return original_read(root, path, label=label)
+
+    monkeypatch.setattr(
+        replay_runtime,
+        "_read_regular_file_bytes",
+        block_first_artifact_read,
+    )
+    writer_store = RunStore(result.receipt.replay_run_id, result.run_path)
+
+    def append_extension() -> None:
+        writer_started.set()
+        writer_store.write_json("replay/concurrent-extension.json", {"version": 1})
+        writer_store.seal()
+        writer_finished.set()
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        reader = pool.submit(inspect_sealed_replay_result, result.run_path)
+        assert reader_entered.wait(timeout=5)
+        writer = pool.submit(append_extension)
+        assert writer_started.wait(timeout=5)
+        try:
+            assert not writer_finished.wait(timeout=0.2)
+        finally:
+            release_reader.set()
+        snapshot = reader.result(timeout=5)
+        writer.result(timeout=5)
+
+    assert snapshot.verification.root_digest == result.verification.root_digest
+    assert verify_run_integrity(result.run_path).root_digest != snapshot.verification.root_digest
 
 
 def test_sqlite_ticket_ledger_survives_restart_for_read_only_revalidation(
@@ -969,10 +1442,59 @@ def test_verified_loader_accepts_legacy_missing_defaults_and_reversed_set_order(
     assert reloaded.artifact_set.contract.allowed_argument_fields == allowed_fields
 
 
+@pytest.mark.parametrize("legacy_receipt", [True, False])
+def test_zero_threshold_confirmation_contradiction_is_legacy_loader_only(
+    tmp_path: Path,
+    legacy_receipt: bool,
+) -> None:
+    fixture = _fixture(tmp_path, vulnerable=False, repetitions=1)
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+        ),
+    )
+    artifact_path = result.run_path / "replay/artifact-set.json"
+    artifact_payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    oracle_payload = artifact_payload["outcome"]["oracle_result"]
+    assert isinstance(oracle_payload, dict)
+    assert oracle_payload["verdict"] == ReplayOracleVerdict.INCONCLUSIVE.value
+    oracle_payload["verdict"] = ReplayOracleVerdict.CONTRADICTS.value
+    artifact_path.write_text(
+        json.dumps(artifact_payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    receipt_path = result.run_path / "replay/verification-receipt.json"
+    receipt_payload = json.loads(receipt_path.read_text(encoding="utf-8"))
+    if legacy_receipt:
+        receipt_payload["apiVersion"] = "pajin.dev/replay-verification-receipt/v1"
+        receipt_payload.pop("ticketContext")
+    receipt_payload["artifact_set_digest"] = sha256(artifact_path.read_bytes()).hexdigest()
+    _reseal_replay_artifacts(result.run_path, receipt_payload)
+    verifier = RecordingReplayTicketVerifier(
+        expected_compilation_digest=result.receipt.compilation_digest,
+    )
+
+    if legacy_receipt:
+        reloaded = load_verified_replay_result(result.run_path, tickets=verifier)
+        assert reloaded.artifact_set.outcome.oracle_result is not None
+        assert (
+            reloaded.artifact_set.outcome.oracle_result.verdict is ReplayOracleVerdict.CONTRADICTS
+        )
+        assert verifier.called
+    else:
+        with pytest.raises(ValueError, match="could not be loaded"):
+            load_verified_replay_result(result.run_path, tickets=verifier)
+        assert not verifier.called
+
+
 def test_verified_loader_rejects_resealed_semantic_compilation_tamper(
     tmp_path: Path,
 ) -> None:
-    fixture = _fixture(tmp_path, repetitions=1)
+    fixture = _fixture(tmp_path)
     result = _run(
         fixture,
         _runtime(
@@ -1004,7 +1526,7 @@ def test_verified_loader_rejects_resealed_semantic_compilation_tamper(
 def test_replay_ticket_claim_is_atomic_and_single_use(tmp_path: Path) -> None:
     fixture = _fixture(tmp_path)
     claimers = [fixture.authority.claimer(), fixture.authority.claimer()]
-    campaign_digest = replay_context_digest(fixture.campaign.model_dump(mode="json", by_alias=True))
+    campaign_digest = replay_context_digest(fixture.campaign)
 
     def claim(index: int) -> str:
         try:
@@ -1070,7 +1592,11 @@ def test_replay_ticket_rejects_unknown_or_changed_trusted_context(tmp_path: Path
 def test_reproducer_preserves_objective_contradiction_without_supporting_claim(
     tmp_path: Path,
 ) -> None:
-    fixture = _fixture(tmp_path, vulnerable=False)
+    fixture = _fixture(
+        tmp_path,
+        vulnerable=False,
+        required_contradictions=2,
+    )
     result = _run(
         fixture,
         _runtime(
@@ -1083,25 +1609,19 @@ def test_reproducer_preserves_objective_contradiction_without_supporting_claim(
     assert result.artifact_set.outcome.execution_status is ReplayExecutionStatus.SUCCEEDED
     assert result.artifact_set.outcome.oracle_result is not None
     assert result.artifact_set.outcome.oracle_result.verdict is ReplayOracleVerdict.CONTRADICTS
+    assert result.artifact_set.outcome.oracle_result.contradiction_count == 2
+    assert len(result.artifact_set.outcome.oracle_result.contradicting_evidence) == 2
     assert not result.artifact_set.outcome.supports_claim
 
 
-@pytest.mark.parametrize(
-    ("session_policy", "expected_reason"),
-    [
-        (ReplaySessionPolicy.FRESH_SESSION, ReplayRuntimeReason.MATERIALIZER_UNREGISTERED),
-        (
-            ReplaySessionPolicy.PRESERVE_SCENARIO_SESSION,
-            ReplayRuntimeReason.SESSION_POLICY_UNSUPPORTED,
-        ),
-    ],
-)
 def test_reproducer_fails_closed_when_session_policy_cannot_be_materialized(
     tmp_path: Path,
-    session_policy: ReplaySessionPolicy,
-    expected_reason: ReplayRuntimeReason,
 ) -> None:
-    fixture = _fixture(tmp_path, session_policy=session_policy)
+    fixture = _fixture(
+        tmp_path,
+        session_policy=ReplaySessionPolicy.FRESH_SESSION,
+        allowed_argument_fields={"simulation", "session_id"},
+    )
     worker = NeverWorker()
 
     result = _run(
@@ -1116,7 +1636,7 @@ def test_reproducer_fails_closed_when_session_policy_cannot_be_materialized(
     assert result.artifact_set.outcome.execution_status is ReplayExecutionStatus.UNSUPPORTED
     assert worker.calls == 0
     run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
-    assert run["reason"] == expected_reason.value
+    assert run["reason"] == ReplayRuntimeReason.MATERIALIZER_UNREGISTERED.value
 
 
 def test_reproducer_fails_closed_for_missing_or_substituted_runtime_components(
@@ -1314,6 +1834,130 @@ def test_reproducer_preserves_failure_when_evidence_or_oracle_identity_is_substi
     )
     assert oracle_result.artifact_set.outcome.execution_status is ReplayExecutionStatus.FAILED
     assert oracle_result.artifact_set.outcome.oracle_result is None
+    run = json.loads((oracle.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == ReplayRuntimeReason.ORACLE_FAILED.value
+    events = [
+        json.loads(line)["event_type"]
+        for line in oracle.replay_store.events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events[-3:] == ["replay.oracle.failed", "replay.completed", "replay.verified"]
+
+
+def test_reproducer_validates_oracle_result_against_private_lineage_snapshots(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=InputMutatingOracle(fixture.scenario),
+        ),
+    )
+
+    outcome = result.artifact_set.outcome
+    assert outcome.execution_status is ReplayExecutionStatus.FAILED
+    assert outcome.oracle_result is None
+    assert outcome.attempts[0].attempt_id != "replay-attempt_plugin-mutated"
+    assert outcome.attempts[0].binding.target == TARGET
+    assert result.artifact_set.spec.spec_id != "compiled-replay_plugin-mutated"
+    assert result.artifact_set.spec.spec_id != "compiled-replay_observation-mutated"
+    run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == ReplayRuntimeReason.ORACLE_FAILED.value
+
+
+def test_reproducer_detaches_request_factory_and_dispatch_authorizer_inputs(
+    tmp_path: Path,
+) -> None:
+    def mutating_request_id_factory(spec: CompiledReplaySpec, number: int) -> str:
+        spec.spec_id = "compiled-replay_factory-mutated"
+        spec.arguments["simulation"] = {"unauthorizedToolCall": False}
+        return f"tool_factory_{number}"
+
+    factory_fixture = _fixture(tmp_path / "factory")
+    factory_result = _run(
+        factory_fixture,
+        _runtime(
+            factory_fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(factory_fixture.scenario),
+            request_id_factory=mutating_request_id_factory,
+        ),
+    )
+    assert factory_result.artifact_set.outcome.execution_status is ReplayExecutionStatus.SUCCEEDED
+    assert factory_result.artifact_set.spec.spec_id != "compiled-replay_factory-mutated"
+    assert factory_result.artifact_set.spec.arguments["simulation"] == {
+        "unauthorizedToolCall": True
+    }
+
+    authorizer_fixture = _fixture(tmp_path / "authorizer")
+    authorizer_result = _run(
+        authorizer_fixture,
+        _runtime(
+            authorizer_fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(authorizer_fixture.scenario),
+            dispatch_authorizer=InputMutatingDispatchAuthorizer(),
+        ),
+    )
+    assert (
+        authorizer_result.artifact_set.outcome.execution_status is ReplayExecutionStatus.SUCCEEDED
+    )
+    assert authorizer_result.artifact_set.spec.spec_id != "compiled-replay_authorizer-mutated"
+    assert authorizer_result.artifact_set.outcome.binding.target == TARGET
+    assert authorizer_result.artifact_set.spec.arguments["simulation"] == {
+        "unauthorizedToolCall": True
+    }
+
+
+def test_reproducer_snapshots_claimed_compilation_from_retained_backend_alias(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    backend = RetainingClaimBackend(fixture.authority.claimer())
+    claimer = ReplayTicketClaimer(backend, object())
+
+    def mutate_retained_claim(_spec: CompiledReplaySpec, number: int) -> str:
+        assert backend.claimed is not None
+        backend.claimed.compilation.spec.spec_id = "compiled-replay_backend-mutated"
+        backend.claimed.compilation.spec.arguments["simulation"] = {"unauthorizedToolCall": False}
+        return f"tool_retained_{number}"
+
+    result = _run(
+        fixture,
+        _runtime(
+            fixture,
+            worker=CountingWorker(),
+            oracle=ThresholdMockOracle(fixture.scenario),
+            request_id_factory=mutate_retained_claim,
+            tickets=claimer,
+        ),
+    )
+
+    assert result.artifact_set.outcome.execution_status is ReplayExecutionStatus.SUCCEEDED
+    assert result.artifact_set.spec.spec_id != "compiled-replay_backend-mutated"
+    assert result.artifact_set.spec.arguments["simulation"] == {"unauthorizedToolCall": True}
+
+
+def test_oracle_registry_rejects_post_registration_scenario_digest_mutation(
+    tmp_path: Path,
+) -> None:
+    fixture = _fixture(tmp_path)
+    oracle = ThresholdMockOracle(fixture.scenario)
+    runtime = _runtime(
+        fixture,
+        worker=NeverWorker(),
+        oracle=oracle,
+    )
+    oracle.scenario_digest = "b" * 64
+
+    result = _run(fixture, runtime)
+
+    assert result.artifact_set.outcome.execution_status is ReplayExecutionStatus.UNSUPPORTED
+    run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == ReplayRuntimeReason.ORACLE_UNREGISTERED.value
 
 
 def test_reproducer_times_out_and_seals_without_additional_dispatch(tmp_path: Path) -> None:
@@ -1335,6 +1979,8 @@ def test_reproducer_times_out_and_seals_without_additional_dispatch(tmp_path: Pa
     assert result.artifact_set.outcome.execution_status is ReplayExecutionStatus.TIMED_OUT
     assert worker.calls == 1
     assert verify_run_integrity(fixture.replay_store.path).seal_count == 2
+    run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == "dispatch-timeout"
 
 
 def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> None:
@@ -1363,6 +2009,8 @@ def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> 
     )
     assert dispatch_result.artifact_set.outcome.execution_status is ReplayExecutionStatus.TIMED_OUT
     assert dispatch_worker.calls == 1
+    dispatch_run = json.loads((dispatch.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert dispatch_run["reason"] == "dispatch-timeout"
 
     oracle_fixture = _fixture(tmp_path / "oracle", campaign=campaign, repetitions=1)
     oracle_budget = BudgetController(campaign.spec.budgets)
@@ -1389,6 +2037,10 @@ def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> 
     assert oracle_result.artifact_set.outcome.execution_status is ReplayExecutionStatus.TIMED_OUT
     assert len(oracle_result.artifact_set.outcome.attempts) == 1
     assert oracle_result.artifact_set.outcome.oracle_result is None
+    oracle_run = json.loads(
+        (oracle_fixture.replay_store.path / "run.json").read_text(encoding="utf-8")
+    )
+    assert oracle_run["reason"] == "oracle-timeout"
 
 
 def test_parent_cancellation_propagates_to_replay_child_and_seals_outcome(
@@ -1428,6 +2080,9 @@ def test_parent_cancellation_propagates_to_replay_child_and_seals_outcome(
     assert artifact_set["outcome"]["execution_status"] == "cancelled"
     assert worker.calls == 1
     assert verify_run_integrity(fixture.replay_store.path).seal_count == 2
+    run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == "cancelled"
+    assert run["cancellationReceipt"] == "cancellation.json"
     assert parent.binding is not None
     assert parent.binding.run_id == "run_candidate_parent"
 
@@ -1464,3 +2119,6 @@ def test_parent_cancellation_during_oracle_seals_outcome(tmp_path: Path) -> None
     assert artifact_set["outcome"]["execution_status"] == "cancelled"
     assert len(artifact_set["outcome"]["attempts"]) == 1
     assert verify_run_integrity(fixture.replay_store.path).seal_count == 2
+    run = json.loads((fixture.replay_store.path / "run.json").read_text(encoding="utf-8"))
+    assert run["reason"] == "cancelled-during-oracle"
+    assert run["cancellationReceipt"] == "cancellation.json"

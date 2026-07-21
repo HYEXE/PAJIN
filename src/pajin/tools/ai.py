@@ -4,12 +4,28 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
+from hashlib import sha256
 
 from pydantic import Field, JsonValue, StrictBool, model_validator
 
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.base import Tool, ToolSpec
+from pajin.tools.base import (
+    EGRESS_HTTP_RECEIPT_VERSION,
+    MAX_TRUSTED_NETWORK_LOG_BYTES,
+    HTTPJSONProxyReceipt,
+    Tool,
+    ToolSpec,
+    audit_http_target,
+    audit_safe_tool_interpretation_failure,
+    audit_safe_worker_failure,
+    decode_strict_worker_json_object,
+    host_observed_http_receipts,
+    http_target_sha256,
+)
+
+AI_CHAT_PROXY_RECEIPT_VERSION = EGRESS_HTTP_RECEIPT_VERSION
+MAX_AI_CHAT_NETWORK_LOG_BYTES = MAX_TRUSTED_NETWORK_LOG_BYTES
 
 
 class ChatRole(StrEnum):
@@ -215,6 +231,10 @@ class AIChatProbeOutput(StrictModel):
         return self
 
 
+class AIChatProxyReceipt(HTTPJSONProxyReceipt):
+    """Host-observed HTTP JSON exchange emitted by the isolated egress proxy."""
+
+
 class AIChatProbeTool(Tool):
     """Execute bounded multi-turn probes against the PAJIN AI chat contract."""
 
@@ -223,10 +243,13 @@ class AIChatProbeTool(Tool):
         version="1.0.0",
         description="POST a bounded provider-neutral conversation to an authorized AI target",
         risk_tier=ToolRiskTier.T2,
-        categories={"active-test", "ai-redteam", "llm", "rag", "agent"},
-        evidence_types={"json", "conversation"},
+        categories=frozenset({"active-test", "ai-redteam", "llm", "rag", "agent"}),
+        evidence_types=frozenset({"json", "conversation"}),
         network_access=True,
     )
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return self._stable_spec_context()
 
     def network_request_cost(self, request: ToolRequest) -> int:
         """The Worker performs exactly one bounded POST for every declared turn."""
@@ -258,20 +281,23 @@ class AIChatProbeTool(Tool):
                 success=False,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
-                error=f"worker {result.status.value}: {result.stderr or 'no error detail'}",
+                error=audit_safe_worker_failure(result),
             )
         try:
-            raw = json.loads(result.stdout)
+            raw = decode_strict_worker_json_object(result, label="AI probe output")
             output = AIChatProbeOutput.model_validate(raw)
             self._validate_output_identity(request, output)
-        except (json.JSONDecodeError, ValueError) as exc:
+        except ValueError as exc:
             return ToolResult(
                 request_id=request.request_id,
                 tool_id=request.tool_id,
                 success=False,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
-                error=f"invalid AI probe output: {exc}",
+                error=audit_safe_tool_interpretation_failure(
+                    "invalid AI probe output",
+                    exc,
+                ),
             )
         return ToolResult(
             request_id=request.request_id,
@@ -281,6 +307,43 @@ class AIChatProbeTool(Tool):
             finished_at=result.finished_at,
             data=output.model_dump(mode="json", by_alias=True),
         )
+
+    def validate_trusted_execution(
+        self,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult,
+        *,
+        network_log_trusted: bool,
+    ) -> None:
+        if worker_result.status is not WorkerStatus.SUCCEEDED:
+            raise ValueError("successful AI probe requires a successful Worker execution")
+        if worker_result.stdout_truncated or worker_result.stderr_truncated:
+            raise ValueError("trusted AI probe requires a complete Worker transcript")
+        if (
+            result.started_at != worker_result.started_at
+            or result.finished_at != worker_result.finished_at
+            or result.error is not None
+        ):
+            raise ValueError("AI probe result timing or error differs from its Worker receipt")
+        try:
+            raw = decode_strict_worker_json_object(
+                worker_result,
+                label="raw AI probe transcript",
+            )
+            output = AIChatProbeOutput.model_validate(raw)
+            self._validate_output_identity(request, output)
+        except ValueError as exc:
+            raise ValueError("raw AI probe transcript is invalid") from exc
+        if result.data != output.model_dump(mode="json", by_alias=True):
+            raise ValueError("AI probe Tool result differs from raw Worker stdout")
+        if not verify_ai_chat_proxy_receipts(
+            request,
+            worker_result,
+            output,
+            network_log_trusted=network_log_trusted,
+        ):
+            raise ValueError("AI probe requires complete host-observed HTTP receipts")
 
     def _validate_output_identity(
         self,
@@ -308,10 +371,13 @@ class AIChatRegressionTool(AIChatProbeTool):
         version="1.0.0",
         description="POST a bounded normal-use conversation to an authorized AI target",
         risk_tier=ToolRiskTier.T1,
-        categories={"active-test", "ai-redteam", "regression"},
-        evidence_types={"json", "conversation"},
+        categories=frozenset({"active-test", "ai-redteam", "regression"}),
+        evidence_types=frozenset({"json", "conversation"}),
         network_access=True,
     )
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return self._stable_spec_context()
 
     def network_request_cost(self, request: ToolRequest) -> int:
         return len(AIChatRegressionInput.model_validate(request.arguments).turns)
@@ -381,11 +447,98 @@ def evaluate_probe_check(check: ProbeCheck, turn_records: list[dict[str, object]
     return False
 
 
+def _canonical_json_sha256(value: object) -> str:
+    try:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AI transcript contains non-canonical JSON") from exc
+    return sha256(canonical).hexdigest()
+
+
+def verify_ai_chat_proxy_receipts(
+    request: ToolRequest,
+    worker_result: WorkerResult,
+    output: AIChatProbeOutput,
+    *,
+    network_log_trusted: bool,
+) -> bool:
+    """Bind each typed transcript turn to host-observed proxy request/response bytes.
+
+    ``False`` means the trusted observation is unavailable, including HTTPS CONNECT
+    where the proxy cannot observe plaintext. Malformed, partial, duplicate, mixed,
+    or contradictory trusted logs are integrity errors and fail closed.
+    """
+
+    receipts = host_observed_http_receipts(
+        worker_result,
+        network_log_trusted=network_log_trusted,
+    )
+    if receipts is None:
+        return False
+    if len(receipts) != len(output.turns):
+        raise ValueError("Docker egress proxy receipts do not cover every transcript turn")
+
+    probe: AIChatProbeInput | AIChatRegressionInput
+    if request.tool_id == AIChatProbeTool.spec.tool_id:
+        probe = AIChatProbeInput.model_validate(request.arguments)
+        scenario_id = probe.scenario_id
+    elif request.tool_id == AIChatRegressionTool.spec.tool_id:
+        probe = AIChatRegressionInput.model_validate(request.arguments)
+        scenario_id = "retest.normal-chat-function"
+    else:
+        raise ValueError("AI proxy receipts require a registered AI chat Tool")
+    if len(probe.turns) != len(output.turns):
+        raise ValueError("AI proxy receipt count differs from the sealed probe")
+
+    try:
+        raw_output = decode_strict_worker_json_object(
+            worker_result,
+            label="raw Worker transcript",
+        )
+        raw_turns = raw_output["turns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("raw Worker transcript cannot be bound to proxy receipts") from exc
+    if not isinstance(raw_turns, list) or len(raw_turns) != len(output.turns):
+        raise ValueError("raw Worker transcript turn count differs from proxy receipts")
+
+    expected_target = audit_http_target(request.target)
+    expected_target_digest = http_target_sha256(request.target)
+    for index, (receipt, turn, raw_turn) in enumerate(
+        zip(receipts, probe.turns, raw_turns, strict=True)
+    ):
+        if not isinstance(raw_turn, dict) or not isinstance(raw_turn.get("response"), dict):
+            raise ValueError("raw Worker transcript response is missing")
+        expected_request = {
+            "sessionId": probe.session_id,
+            "messages": [message.model_dump(mode="json") for message in turn.messages],
+            "metadata": {"scenarioId": scenario_id, "turn": index},
+        }
+        if (
+            receipt.method != request.method
+            or receipt.method != "POST"
+            or receipt.target != expected_target
+            or receipt.target_sha256 != expected_target_digest
+            or not 200 <= receipt.status < 300
+            or receipt.request_json_sha256 != _canonical_json_sha256(expected_request)
+            or receipt.response_json_sha256 != _canonical_json_sha256(raw_turn["response"])
+        ):
+            raise ValueError("AI transcript differs from its host-observed proxy receipt")
+    return True
+
+
 def evaluate_trusted_regression(
     request: ToolRequest,
     result: ToolResult,
     worker_result: WorkerResult,
-) -> bool:
+    *,
+    network_log_trusted: bool,
+) -> bool | None:
     """Recompute a normal-function verdict from sealed inputs and raw transcript.
 
     ``regressionPassed`` and the Worker's serialized check records remain useful
@@ -399,7 +552,7 @@ def evaluate_trusted_regression(
     if result.request_id != request.request_id or result.tool_id != request.tool_id:
         raise ValueError("AI regression Tool result identity differs from its request")
     if not result.success:
-        return False
+        return None
     if worker_result.status is not WorkerStatus.SUCCEEDED:
         raise ValueError("successful AI regression Tool result requires a successful Worker")
     if worker_result.stdout_truncated or worker_result.stderr_truncated:
@@ -412,10 +565,18 @@ def evaluate_trusted_regression(
         raise ValueError("AI regression Tool result timing or error differs from its Worker")
 
     try:
-        raw = json.loads(worker_result.stdout)
+        raw = decode_strict_worker_json_object(
+            worker_result,
+            label="raw AI regression transcript",
+        )
         output = AIChatProbeOutput.model_validate(raw)
-    except (json.JSONDecodeError, ValueError) as exc:
-        raise ValueError(f"invalid raw AI regression transcript: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(
+            audit_safe_tool_interpretation_failure(
+                "invalid raw AI regression transcript",
+                exc,
+            )
+        ) from exc
     if result.data != output.model_dump(mode="json", by_alias=True):
         raise ValueError("AI regression Tool result data differs from raw Worker stdout")
 
@@ -439,6 +600,14 @@ def evaluate_trusted_regression(
             or observed.request.messages != expected.messages
         ):
             raise ValueError("raw AI regression transcript request differs from its sealed input")
+
+    if not verify_ai_chat_proxy_receipts(
+        request,
+        worker_result,
+        output,
+        network_log_trusted=network_log_trusted,
+    ):
+        return None
 
     turn_records = output.model_dump(mode="json", by_alias=True)["turns"]
     assert isinstance(turn_records, list)

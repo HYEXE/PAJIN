@@ -6,6 +6,8 @@
     <meta name="color-scheme" content="dark">
     <title>PAJIN Control Plane</title>
     <link rel="stylesheet" href="/ui/assets/app.css">
+    <link rel="modulepreload" href="/ui/assets/protocol.js">
+    <link rel="modulepreload" href="/ui/assets/render.js">
     <script type="module" src="/ui/assets/app.js"></script>
   </head>
   <body>
@@ -24,7 +26,19 @@
       </div>
     </header>
 
-    <main id="main-content" class="page-shell">
+    <div class="status-bar">
+      <p
+        id="status-message"
+        class="status-message"
+        role="status"
+        aria-live="polite"
+        aria-atomic="true"
+      >
+        Enter an Operator, Approver, or Auditor credential to read Run state.
+      </p>
+    </div>
+
+    <main id="main-content" class="page-shell" tabindex="-1">
       <section class="hero" aria-labelledby="page-title">
         <div>
           <p class="eyebrow">OPERATOR CONSOLE · LOCAL SINGLE-TENANT PREVIEW</p>
@@ -50,7 +64,7 @@
           </div>
           <button id="lock-button" class="button button-quiet" type="button" disabled>Lock</button>
         </div>
-        <form id="token-form" class="token-form">
+        <form id="token-form" class="token-form" aria-busy="false">
           <div class="field field-grow">
             <label for="token-input">Bearer token</label>
             <input
@@ -61,15 +75,13 @@
               spellcheck="false"
               required
               minlength="32"
+              maxlength="4096"
               aria-describedby="token-help"
             >
             <small id="token-help">The token is retained only in this tab's JavaScript memory.</small>
           </div>
           <button class="button button-primary" type="submit">Connect</button>
         </form>
-        <p id="status-message" class="status-message" role="status" aria-live="polite">
-          Enter an Operator, Approver, or Auditor credential to read Run state.
-        </p>
       </section>
 
       <div class="workspace-grid">
@@ -80,7 +92,7 @@
               <h2 id="submit-heading">Create a durable Run</h2>
             </div>
           </div>
-          <form id="run-form">
+          <form id="run-form" aria-busy="false">
             <div class="field-row">
               <div class="field field-grow">
                 <label for="campaign-name">Campaign name</label>
@@ -125,7 +137,7 @@
 
             <div class="field">
               <label for="run-input">Executor input JSON</label>
-              <textarea id="run-input" name="run-input" rows="20" spellcheck="false" required>{
+              <textarea id="run-input" name="run-input" rows="20" maxlength="1000000" spellcheck="false" required>{
   "profile": "deterministic-local",
   "manifest": {
     "apiVersion": "pajin.dev/v1alpha1",
@@ -188,7 +200,7 @@
           </form>
         </section>
 
-        <section class="panel runs-panel" aria-labelledby="runs-heading">
+        <section id="runs-panel" class="panel runs-panel" aria-labelledby="runs-heading" aria-busy="false">
           <div class="section-heading">
             <div>
               <p class="section-kicker">03 · MONITOR</p>
@@ -239,7 +251,13 @@
         </section>
       </div>
 
-      <section class="panel detail-panel" aria-labelledby="detail-heading">
+      <section
+        id="detail-panel"
+        class="panel detail-panel"
+        aria-labelledby="detail-heading"
+        aria-busy="false"
+        tabindex="-1"
+      >
         <div class="section-heading">
           <div>
             <p class="section-kicker">04 · INSPECT</p>
@@ -260,7 +278,12 @@
               <summary>Submitted input</summary>
               <pre id="detail-input">Select a Run to inspect its authorized input.</pre>
             </details>
-            <section class="workflow-control" aria-labelledby="workflow-heading">
+            <section
+              id="workflow-control"
+              class="workflow-control"
+              aria-labelledby="workflow-heading"
+              aria-busy="false"
+            >
               <div class="event-heading">
                 <h3 id="workflow-heading">Approval and execution control</h3>
                 <span id="approval-state">No approval</span>
@@ -304,9 +327,17 @@
           <div class="event-column">
             <div class="event-heading">
               <h3>Append-only event trail</h3>
-              <span id="event-count">0 events</span>
+              <div class="event-page-controls" aria-label="Audit event pagination">
+                <span id="event-count">0 events</span>
+                <button id="latest-events-button" class="button button-quiet" type="button" disabled>
+                  Latest
+                </button>
+                <button id="older-events-button" class="button button-quiet" type="button" disabled>
+                  Older
+                </button>
+              </div>
             </div>
-            <ol id="event-list" class="event-list">
+            <ol id="event-list" class="event-list" aria-busy="false">
               <li class="empty-event">No events loaded.</li>
             </ol>
           </div>

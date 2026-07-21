@@ -1,9 +1,12 @@
 import asyncio
 import importlib.util
 import json
+from base64 import b64decode, b64encode
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import pytest
 from typer.testing import CliRunner
@@ -24,13 +27,26 @@ from pajin.modes.bug_bounty import (
     BugBountyReportService,
     BugBountyScopeApproval,
     BugBountyScopeService,
+    BugBountyValidationAuthority,
     BugBountyValidatorRuntime,
     load_bug_bounty_program,
 )
 from pajin.policy.engine import PolicyEngine
+from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import RunStore
-from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.base import ToolRegistry
+from pajin.runtime.worker import (
+    DockerWorkerBackend,
+    NetworkMode,
+    WorkerJob,
+    WorkerResult,
+    WorkerStatus,
+)
+from pajin.tools.base import (
+    EGRESS_HTTP_RECEIPT_VERSION,
+    ToolRegistry,
+    audit_http_target,
+    http_target_sha256,
+)
 from pajin.tools.bug_bounty import (
     BOOLEAN_SQLI_SCENARIO,
     BooleanSQLiProbeTool,
@@ -66,6 +82,20 @@ def _output(
     probe_count: int = 2,
     claimed_vulnerable: bool = False,
 ) -> dict[str, object]:
+    def observation(name: str, status: int, record_count: int) -> dict[str, object]:
+        body = json.dumps(
+            {"recordCount": record_count, "synthetic": True},
+            separators=(",", ":"),
+        ).encode()
+        return {
+            "name": name,
+            "status": status,
+            "recordCount": record_count,
+            "synthetic": True,
+            "bodySha256": sha256(body).hexdigest(),
+            "responseBodyBase64": b64encode(body).decode("ascii"),
+        }
+
     return {
         "target": target,
         "scenarioId": BOOLEAN_SQLI_SCENARIO,
@@ -77,22 +107,96 @@ def _output(
             "syntheticLabOnly": False,
         },
         "observations": [
-            {"name": "baseline", "status": 200, "recordCount": 1, "synthetic": True},
-            {
-                "name": "negative-control",
-                "status": 200,
-                "recordCount": 0,
-                "synthetic": True,
-            },
-            {
-                "name": "boolean-probe",
-                "status": probe_status,
-                "recordCount": probe_count,
-                "synthetic": True,
-            },
+            observation("baseline", 200, 1),
+            observation("negative-control", 200, 0),
+            observation("boolean-probe", probe_status, probe_count),
         ],
         "networkPerformed": True,
     }
+
+
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+
+
+def _proxy_receipt_log(job: WorkerJob, result: WorkerResult) -> str:
+    payload = json.loads(job.stdin)
+    output = json.loads(result.stdout)
+    parsed = urlsplit(payload["target"])
+    fixed_values = ("1", "1' AND '1'='2", "1' OR '1'='1")
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for sequence, (value, observation) in enumerate(
+        zip(fixed_values, output["observations"], strict=True),
+        start=1,
+    ):
+        target = urlunsplit(
+            (parsed.scheme, parsed.netloc, parsed.path, urlencode({"id": value}), "")
+        )
+        response_body = b64decode(observation["responseBodyBase64"], validate=True)
+        response = json.loads(response_body)
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": EGRESS_HTTP_RECEIPT_VERSION,
+                    "sequence": sequence,
+                    "method": "GET",
+                    "target": audit_http_target(target),
+                    "targetSha256": http_target_sha256(target),
+                    "address": "172.17.0.1",
+                    "status": observation["status"],
+                    "responseBodySha256": sha256(response_body).hexdigest(),
+                    "responseJsonSha256": _canonical_digest(response),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
+
+
+def _trusted_docker_backend(
+    worker: "ContractBugBountyWorker",
+    *,
+    forge_body_digest: bool = False,
+    forge_record_count: bool = False,
+    forge_target_digest: bool = False,
+) -> DockerWorkerBackend:
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        network_log = _proxy_receipt_log(job, result)
+        if forge_target_digest:
+            events = network_log.splitlines()
+            receipt = json.loads(events[1])
+            receipt["targetSha256"] = "0" * 64
+            events[1] = json.dumps(receipt, separators=(",", ":"))
+            network_log = "\n".join(events)
+        if forge_body_digest:
+            output = json.loads(result.stdout)
+            output["observations"][0]["bodySha256"] = "f" * 64
+            result = result.model_copy(update={"stdout": json.dumps(output)})
+        if forge_record_count:
+            output = json.loads(result.stdout)
+            output["observations"][2]["recordCount"] = 99
+            result = result.model_copy(update={"stdout": json.dumps(output)})
+        return result.model_copy(update={"backend": "docker", "network_log": network_log})
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
 
 
 class ContractBugBountyWorker:
@@ -100,7 +204,19 @@ class ContractBugBountyWorker:
         self.hardened = hardened
         self.jobs: list[WorkerJob] = []
 
-    async def run(self, job: WorkerJob) -> WorkerResult:
+    def stable_execution_context(self) -> dict[str, object]:
+        return {
+            "implementationVersion": "test.contract-bug-bounty-worker/v1",
+            "hardened": self.hardened,
+        }
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        del secrets
         self.jobs.append(job)
         assert job.command == ["bug-bounty-sqli-probe"]
         assert job.network is NetworkMode.EGRESS_PROXY
@@ -126,7 +242,16 @@ class ContractBugBountyWorker:
 
 
 class NeverWorker:
-    async def run(self, job: WorkerJob) -> WorkerResult:
+    def stable_execution_context(self) -> dict[str, object]:
+        return {"implementationVersion": "test.never-worker/v1"}
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        del secrets
         raise AssertionError(f"denied probe reached Worker: {job.execution_id}")
 
 
@@ -183,6 +308,7 @@ def test_trusted_worker_owns_exactly_three_fixed_probe_values(
             "status": 200,
             "recordCount": 2 if name == "boolean-probe" else int(name == "baseline"),
             "synthetic": True,
+            "bodySha256": "0" * 64,
         }
 
     monkeypatch.setattr(worker, "_get_bug_bounty_observation", observe)
@@ -269,6 +395,7 @@ def test_gateway_reserves_all_three_http_request_units(tmp_path: Path) -> None:
         targets={target},
         max_risk_tier=ToolRiskTier.T2,
         max_calls=1,
+        issued_at=campaign.spec.authorization.approved_at,
         expires_at=campaign.spec.authorization.expires_at,
     )
     gateway = ToolGateway(
@@ -286,7 +413,7 @@ def test_gateway_reserves_all_three_http_request_units(tmp_path: Path) -> None:
     assert "3 request units" in outcome.decision.reason
 
 
-def test_multi_agent_run_keeps_semantic_only_bug_bounty_candidate_unsubmitted(
+def test_multi_agent_run_creates_review_only_draft_for_semantic_candidate(
     tmp_path: Path,
 ) -> None:
     campaign = _campaign()
@@ -298,7 +425,7 @@ def test_multi_agent_run_keeps_semantic_only_bug_bounty_candidate_unsubmitted(
         validator=BugBountyValidatorRuntime(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=worker,
+        worker=_trusted_docker_backend(worker),
         output_root=tmp_path,
     )
 
@@ -316,9 +443,81 @@ def test_multi_agent_run_keeps_semantic_only_bug_bounty_candidate_unsubmitted(
     ]
     assert worker.jobs
     assert artifacts.report.summary.ready == 0
-    assert artifacts.report.summary.needs_review == 0
-    assert artifacts.submission_paths == []
+    assert artifacts.report.summary.needs_review == 1
+    assert len(artifacts.submission_paths) == 1
+    item = artifacts.report.items[0]
+    assert item.validation_authority is BugBountyValidationAuthority.SEMANTIC_REVIEW_ONLY
+    assert not item.finding.validated
+    assert not item.submission_eligible
+    assert "independent-reproduction-not-confirmed" in item.missing_fields
+    draft = artifacts.submission_paths[0].read_text(encoding="utf-8")
+    assert "Review-only Candidate" in draft
+    assert "not submission-eligible" in draft
     assert "Needs review: `1`" in outcome.report_path.read_text(encoding="utf-8")
+
+
+def test_hardened_bug_bounty_run_has_no_candidate_or_draft(tmp_path: Path) -> None:
+    campaign = _campaign()
+    worker = ContractBugBountyWorker(hardened=True)
+    registry = ToolRegistry()
+    registry.register(BooleanSQLiProbeTool())
+    runner = MultiAgentCampaignRunner(
+        planner=BugBountyPlannerRuntime(),
+        validator=BugBountyValidatorRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=_trusted_docker_backend(worker),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(campaign))
+    artifacts = BugBountyReportService().report_run(_program(), outcome.run_path)
+
+    assert outcome.status is RunStatus.COMPLETED
+    assert outcome.validation.candidates == []
+    assert outcome.validation.decisions == []
+    assert outcome.findings == []
+    assert artifacts.report.summary.total == 0
+    assert artifacts.submission_paths == []
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    ["untrusted", "body-digest", "record-count", "target-digest"],
+)
+def test_bug_bounty_worker_claim_cannot_succeed_without_matching_host_receipts(
+    tmp_path: Path,
+    forgery: str,
+) -> None:
+    campaign = _campaign()
+    worker = ContractBugBountyWorker()
+    registry = ToolRegistry()
+    registry.register(BooleanSQLiProbeTool())
+    backend: DockerWorkerBackend | ContractBugBountyWorker
+    if forgery == "body-digest":
+        backend = _trusted_docker_backend(worker, forge_body_digest=True)
+    elif forgery == "record-count":
+        backend = _trusted_docker_backend(worker, forge_record_count=True)
+    elif forgery == "target-digest":
+        backend = _trusted_docker_backend(worker, forge_target_digest=True)
+    else:
+        backend = worker
+    runner = MultiAgentCampaignRunner(
+        planner=BugBountyPlannerRuntime(),
+        validator=BugBountyValidatorRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=backend,
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(campaign))
+
+    assert outcome.status is RunStatus.FAILED
+    assert len(outcome.tool_results) == 1
+    assert not outcome.tool_results[0].success
+    assert outcome.findings == []
+    assert outcome.validation.candidates == []
 
 
 def test_bug_bounty_run_cli_is_docker_only_and_never_submits_externally(
@@ -344,9 +543,11 @@ def test_bug_bounty_run_cli_is_docker_only_and_never_submits_externally(
     worker = ContractBugBountyWorker()
     requested_backends: list[str] = []
 
-    def backend(name: str) -> ContractBugBountyWorker:
+    trusted_worker = _trusted_docker_backend(worker)
+
+    def backend(name: str) -> DockerWorkerBackend:
         requested_backends.append(name)
-        return worker
+        return trusted_worker
 
     monkeypatch.setattr(cli, "_worker_backend", backend)
     result = CliRunner().invoke(
@@ -363,4 +564,6 @@ def test_bug_bounty_run_cli_is_docker_only_and_never_submits_externally(
     assert result.exit_code == 0, result.output
     assert requested_backends == ["docker"]
     assert "Ready drafts" in result.output
+    assert "Candidate needs review" in result.output
+    assert "Submission drafts: 1" in result.output
     assert "No external submission was performed." in result.output

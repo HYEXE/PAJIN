@@ -8,7 +8,7 @@
 | --- | --- |
 | Document Status | Product Baseline v0.3 |
 | Date Created | 2026-07-12 |
-| Last Updated | 2026-07-18 |
+| Last Updated | 2026-07-19 |
 | Document Purpose | Define the baseline for product direction, scope, core requirements, safety principles, MVP, and roadmap |
 | Key References | KISA "AI Security Red Teaming Guide" (2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -40,17 +40,20 @@ and may not be weakened for implementation convenience.
 - A Semantic Validator that rereads existing evidence and judges its meaning is an evidence reviewer, not an independent
   reproducer.
 - A Candidate becomes `confirmed` only when a separate restricted Reproducer reproduces the same claim with a fresh request
-  and fresh evidence lineage, and a mode-owned Oracle and objective evidence gate support it.
+  and fresh evidence lineage, a mode-owned Oracle and objective evidence gate support it, and an authority outside the
+  source/replay Worker trust domain independently attests execution by the intended target.
 - The LLM does not directly generate or execute attack Tools, arbitrary commands, URLs, or Capability Grants.
   A non-executable `ReplayIntent` proposed by the LLM must pass through a compiler and policy checks inside the trust boundary.
-- If independent reproduction has not yet been executed or is not an automatic reproduction target, the maximum status is
-  `needs-review`; if execution disruption, cancellation, or timeout prevents a conclusion, the status is `inconclusive`.
+- If independent reproduction has not run, is not an automatic reproduction target, or lacks independent execution
+  attestation, the maximum status is `needs-review`; if disruption, cancellation, or timeout prevents a conclusion, the
+  status is `inconclusive`. A separate Run, request, process, backend instance, local hash, or seal proves consistency, not
+  an independent trust domain.
 - Previously sealed Runs are not rewritten. Historical `confirmed` decisions without reproduction are identified as legacy
   judgments and are not reinterpreted as `confirmed` under this baseline.
-- Remediation complete (`fixed`) is claimed only when there is a separate Restricted Replay and canonical receipt exactly
-  bound to a reproduction-backed Confirmed Finding in sealed `validation/v1alpha1`. In every expected repetition, the
-  trusted negative Oracle must explicitly contradict the original vulnerability claim; mere absence of signals or a Worker
-  judgment is not proof.
+- Remediation complete (`fixed`) is claimed only for an independently attested Confirmed Finding with an exactly bound
+  Restricted Replay and externally verifiable remediation attestation. Negative Worker transcripts, the public
+  deterministic-lab response tuple, missing signals, and Worker judgments are not proof and remain `inconclusive` in the
+  current implementation.
 - Normal-functionality regressions are recorded separately from a vulnerability's `fixed` status. Even if an individual Finding
   is remediated, comprehensive release-level revalidation success additionally requires no new Findings from a separate
   fresh discovery and successful normal-functionality regression results.
@@ -81,7 +84,7 @@ product values.
 
 ### 1.1 Current Implementation Baseline
 
-As of 2026-07-18, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
+As of 2026-07-19, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
 Phases 0 and 1 are complete, and Phase 2 has implemented the execution core, Replay contract, Compiler, single-use ticket,
 Restricted Reproducer, exact KISA M03, M06, A04 fresh-session materializer, live transcript Oracle, runner coordinator,
 verified receipt reload common Gate, append-only `validation/v1alpha1` projection, and the baseline Candidate-bound
@@ -120,7 +123,8 @@ response-loss duplicate; only the first issuance moves reserved budget/rate unit
 Issued units remain consumed when execution is uncertain. M6-07B-2E adds the strict JSON
 `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array allowlist, dedicated WORKER-role Replay
 claim/heartbeat/Tool-permit endpoints, and matching async client methods. An unset allowlist is empty and fail
-closed; for example, `{"worker-service":["kisa-exact-v1"]}` enables one exact profile. Claim and heartbeat return
+closed; for example, `{"replay-worker-service":["kisa-exact-v1"]}` enables one exact profile only for the
+separately authenticated Replay Worker subject. Claim and heartbeat return
 an envelope containing the server-validated canonical `ReplayCompilation` and recheck its compilation,
 Candidate, contract, Grant, and Run bindings. A permit remains non-bearer proof of units already consumed at
 issuance; there is no separate redeem mutation. M6-07B-2F adds schema v7 and the append-only
@@ -131,13 +135,25 @@ secrets forbidden with no Secret Lease IDs, and assigns only an opaque output-st
 claim/heartbeat envelope, required profile, and every permit issuance recheck the same context transitively.
 The v6→v7 migration creates an empty append-only context table only for non-dispatchable v6 authority and fails
 closed when dispatchable tickets, permits, Jobs, reservations, or advanced batch/item state cannot be backfilled
-honestly. A public Replay admission/read API, the actual executor and pre-dispatch permit-use enforcement, the
-Worker execute/seal split, output import and typed finalization, new-identity retry, Gate wiring, and negative
-Control Plane retest remain incomplete; Compose still enables no dedicated Replay executor daemon.
-Portable/off-host signed proof, materializers and Oracles for other Modes, and structured collaboration memory are
-follow-on work.
-Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 has been implemented through the
-first vertical slice of the Control Plane.
+honestly. The 2026-07-19 schema-v9 slice adds a dedicated `kisa-exact-v1` daemon with its own credential,
+pre-dispatch server-authorized permits, twice-sealed output in an opaque staging slot, server-owned Artifact import
+and verification, append-only typed finalization, and the one-item common Gate. Exact permit and finalize retries
+cover only possible response loss and never redispatch a Tool; once a permit exists, failure is terminal for that
+ticket. Compose enables this daemon alongside the generic Worker while keeping the managed repository API-only.
+The 2026-07-19 schema-v10 hardening adds canonical public-submission and immutable Job-dispatch
+authority digests, an exact v9-to-v10 forward migration with fail-closed legacy fencing, and
+database guards against late old writers, row replacement, identity drift, unauthorized state
+transitions, or terminal-history mutation. Mutation requests now have a 4 MiB wire ceiling, operation-specific
+canonical JSON byte/depth/node/key/string limits, duplicate-key rejection at every depth, and owned
+input/result/checkpoint snapshots. Generic and Replay leases now persist an absolute deadline capped
+at 24 hours (and narrowed by Replay specification/Grant expiry); heartbeat may renew only within it,
+audit heartbeat events are coalesced to one per 60 seconds, and reclaim checks both rolling and
+absolute expiry.
+A public Replay admission/read API, automatic fresh-identity retry issuance, multi-item versioned-projection
+publication, negative Control Plane retest, portable/off-host signed proof, materializers and Oracles for other
+Modes, and structured collaboration memory are follow-on work.
+Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
+Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
 | Area | Implementation Status | Current Boundary |
 | --- | --- | --- |
@@ -147,7 +163,7 @@ first vertical slice of the Control Plane.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, lease and heartbeat, single Worker daemon; ADR-0029 Replay authority state, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA derivation, M6-07B-2C schema-v5 durable reservation plus internal first-attempt Job/ticket issuance, M6-07B-2D schema-v6 append-only one-use per-call permit ledger plus internal service issuance, M6-07B-2E fail-closed dedicated Worker HTTP transport, and M6-07B-2F schema-v7 append-only exact execution-context authority are implemented, while a public Replay admission/read API, actual executor/pre-dispatch permit use, execute/seal split, output import/typed finalization, retry, Gate, and negative Control Plane retest remain incomplete; Compose enables no Replay executor daemon |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, and a one-item common Gate; Compose enables both daemons with distinct credentials. Public Replay admission/read APIs, automatic fresh-identity retry issuance, multi-item versioned-projection publication, and negative Control Plane retest remain incomplete |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -933,8 +949,8 @@ follows, and the options for each command use `pajin <command> --help` as the so
 | KISA AI Red Team | `pajin kisa-run`, `pajin kisa-plan-remediation`, `pajin kisa-retest` |
 | Bug Bounty | `pajin bug-bounty-review`, `pajin bug-bounty-compile`, `pajin bug-bounty-report`, `pajin bug-bounty-run` |
 | CTF | `pajin ctf-run`, `pajin ctf-web-run`, `pajin ctf-suite-run` |
-| Evidence and Infrastructure Checks | `pajin evidence-verify`, `pajin worker-check`, `pajin egress-check`, `pajin mcp-check` |
-| Server Processes | `pajin-control-plane`, `pajin-worker-daemon` |
+| Evidence and Infrastructure Checks | `pajin evidence-verify`, `pajin replay-verify`, `pajin worker-check`, `pajin egress-check`, `pajin mcp-check` |
+| Server Processes | `pajin-control-plane`, `pajin-worker-daemon`, `pajin-replay-worker-daemon` |
 
 The originally planned general `authorize`, `status`, `findings`, `report`, and `stop` CLIs are not yet implemented
 as separate commands. Submission, inspection, approval, resume, and cancellation for long-running execution are
@@ -948,7 +964,7 @@ The current `/ui` Web Console provides the following minimum operational flow wi
 - Memory-only Bearer authentication and role check
 - Idempotent Run submission by an Operator
 - Run list based on state filters and restricted offset pagination
-- Inspection of approved inputs and append-only events for a selected Run
+- Inspection of approved inputs and bounded latest/older append-only event pages for a selected Run
 - Inspection of the minimized approval intent attached to the current checkpoint
 - Approval or rejection by an Approver, and one-time resumption by the Operator
 - Idempotent cancellation with a reason by the Operator and disposal of active leases
@@ -1110,10 +1126,11 @@ confirmed in [`ADR-0001`](adr/0001-agent-runtime-and-orchestration.en.md).
 | Observability | Audit Event and Evidence Seal -> OpenTelemetry | Current priority is local reproducibility and integrity, with operational telemetry as later expansion |
 | External Tools | MCP Adapter + Canonical ToolSpec | Minimize protocol dependency |
 
-The core principle is that PydanticAI handles model-based planning and validation, while campaign state, Capability
-decisions, tool execution, and evidence are owned by PAJIN Core. The initial Workflow Backend uses a local
-implementation, and a Temporal Adapter is added at the stage where long-running execution and distributed workers are
-required.
+The core principle is that `ProviderAgentRuntime` handles network-backed planning and validation through PAJIN's
+governed Provider boundary, while campaign state, Capability decisions, tool execution, and evidence are owned by
+PAJIN Core. `PydanticAIAgentRuntime` is limited to the exact local `TestModel` for deterministic tests. The initial
+Workflow Backend uses a local implementation, and a Temporal Adapter is added at the stage where long-running
+execution and distributed workers are required.
 
 ### 19.1 Current Repository Structure
 
@@ -1164,7 +1181,7 @@ PAJIN/
 - Separation of candidate and confirmed Findings, KISA trusted Candidate admission, and versioned Confirmed-compatible output
 - Markdown and JSON reports
 - Revalidation based on identical inputs
-- Optional FastAPI and PostgreSQL Control Plane plus a single Worker daemon
+- Optional FastAPI and PostgreSQL Control Plane plus generic and dedicated exact-KISA Replay Worker daemons
 
 #### Excluded
 
@@ -1177,12 +1194,13 @@ PAJIN/
 
 The functional scope of the current implementation goes beyond the first minimum MVP and includes all three Mode
 Packs, Replay contracts, Compiler, Grant, stateless Restricted Reproducer, exact KISA fresh-session execution, live
-transcript Oracle, runner coordinator, receipt reload common Gate, and the initial slice of the persistent Control
-Plane. Supported KISA vertical paths satisfy the Finding confirmation standard that a Finding cannot become Confirmed
-without an independent ReplayOutcome. The general Local path also connects to the exact KISA contract only when
-explicitly selected with `--kisa-replay`, and default Local execution and Control Plane and other Mode paths still
-fail closed without automatic replay. The breadth of supported scenarios and production deployment level remain
-follow-on scope for Phase 3-4.
+transcript Oracle, runner coordinator, receipt reload common Gate, and the persistent Control Plane exact-KISA
+one-item positive-confirmation slice. Supported KISA vertical paths satisfy the Finding confirmation standard that
+a Finding cannot become Confirmed without an independent ReplayOutcome. The general Local path connects to the
+exact KISA contract only when explicitly selected with `--kisa-replay`; internal Control Plane issuance can execute
+the same exact-KISA allowlist through the dedicated daemon. Public Control Plane admission and other Mode paths
+still fail closed without automatic replay. Scenario breadth and production deployment remain Phase 3-4 follow-on
+scope.
 
 ### 20.3 MVP Completion Criteria
 
@@ -1197,7 +1215,7 @@ follow-on scope for Phase 3-4.
 - Workers and Secret Leases are revoked when the campaign is aborted.
 - Re-executing the same campaign generates comparable results.
 
-As of 2026-07-18, Candidate admission, Semantic Validator, objective gate, Replay contract, Compiler, single-use
+As of 2026-07-19, Candidate admission, Semantic Validator, objective gate, Replay contract, Compiler, single-use
 ticket, Restricted Reproducer, exact KISA fresh-session materializer, live Oracle, runner coordinator, verified
 receipt reload in the common Gate, and append-only disposition projection have been implemented. M6-05 connected the
 same receipt boundary to hardened KISA retest, separating baseline-bound negative proof from normal-functionality
@@ -1214,32 +1232,32 @@ issued units from reserved to consumed. M6-07B-2E connects fail-closed subject-t
 WORKER-only claim/heartbeat/permit endpoints, an async client, and the canonical `ReplayCompilation` claim
 envelope. M6-07B-2F adds schema-v7 append-only exact execution contexts, issuance-time Campaign/KISA
 Scenario/canonical ToolSpec component digests, fixed `kisa-exact-v1`, forbidden secrets, an opaque output-staging
-slot, and payload/claim/profile/permit transitive binding. A public Replay admission/read API, actual
-executor/pre-dispatch permit use, the Worker execute/seal split, output import/typed finalization, new-identity
-retry, end-to-end Control Plane Replay, Gate wiring, negative Control Plane retest, and portable/off-host proof
-remain separate completion criteria; Compose keeps the dedicated Replay executor disabled.
+slot, and payload/claim/profile/permit transitive binding. The schema-v9 slice now provides the dedicated
+`kisa-exact-v1` daemon, permit-before-dispatch enforcement, execute/seal into the opaque staging slot,
+server-owned import and typed finalization, and the one-item common Gate; Compose enables that daemon with a
+credential distinct from the generic Worker. A public Replay admission/read API, automatic fresh-identity retry,
+multi-item versioned-projection publication, negative Control Plane retest, and portable/off-host proof remain
+separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
 M6-05 is considered complete only when all of the following conditions are satisfied.
 
-- The baseline loader allows only reproduction-backed Confirmed Findings from sealed `validation/v1alpha1` and rejects
+- The baseline loader allows only independently attested Confirmed Findings from sealed `validation/v1alpha1` and rejects
   legacy flat, semantic-only, and unconfirmed baselines.
 - Each retest proof exactly binds the Candidate, source Decision, versioned Finding, remediation action, baseline and
   retest Run and seal root, original and replay request, scenario, threat, Tool, and target. ID, digest, receipt, and
   seal mismatches do not degrade to `inconclusive`; they hard fail.
 - The normal parent retest is responsible only for normal-functionality probes and regression, while vulnerability
   status is decided by the result of a separate baseline-bound Restricted Replay attack.
-- It is `fixed` only when every expected repetition succeeds and the trusted negative Oracle verdict of the verified
-  canonical receipt is `ReplayOracleVerdict.CONTRADICTS`. `ReplayOracleVerdict.SUPPORTS` yields `still-vulnerable`.
-  Mixed results, terminal outcomes, insufficient repetitions, or absence of explicit defense evidence yield `inconclusive`.
+- Without external remediation attestation, negative Worker replay remains `inconclusive` even when every repetition
+  matches the public deterministic-lab response. `ReplayOracleVerdict.SUPPORTS` can keep an already trusted baseline
+  `still-vulnerable`.
 - Zero-support judgments from the positive confirmation Oracle remain `inconclusive`. `vulnerable=false` from the
   Worker or mere absence of attack signals cannot create negative proof.
-- The trusted core recalculates the M03, M06, and A04 negative predicates from the exact defensive responses registered
-  in the deterministic KISA Lab and from the absence of full-turn markers, `toolCalls`, and `memoryWrites`. A04
-  distinguishes rejection of the write from a subsequent check that the write did not persist, and `safety.blocked`
-  or reason metadata alone cannot create contradiction. If the registered response and metadata mismatch or the defensive phrase or target is
-  unregistered, the result is `inconclusive`.
+- The registered M03, M06, and A04 defensive responses are public lab fixtures, not remediation authority. Matching
+  strings, markers, `toolCalls`, `memoryWrites`, and `safety.blocked` metadata cannot produce `fixed`; without external
+  attestation the result is `inconclusive`.
 - The remediation plan appends without overwriting the versioned baseline projection and existing seal entries, then
   creates a new current root. The retest receipt binds that root, and later baseline changes hard fail. ReplayOutcome,
   request, evidence, Oracle, and receipt are each sealed in separate replay Runs, and the parent Run adds new seals for
@@ -1297,7 +1315,8 @@ M6-07 is split into two scopes with different execution-authority and durability
 
 **M6-07B Control Plane replay orchestration** is incomplete. It does not reinterpret arbitrary results from existing
 Campaign Jobs and local absolute paths as replay authority. ADR-0029 was Accepted on 2026-07-17, and implementation
-has delivered three bounded slices. The first introduced the versioned Replay aggregate, repository-managed
+now reaches the first complete one-item positive-confirmation slice through schema v9. Its foundation introduced
+the versioned Replay aggregate, repository-managed
 v1-to-v2 migration, strict internal payload, lease fencing, and burn-on-claim lifecycle. M6-07B-2A adds an
 owner-controlled managed filesystem repository, immutable `cp_artifacts` metadata, schema v3, and trusted internal
 admission of completed sealed sources. Admission records the producer Control Plane Run ID separately from the sealed
@@ -1340,10 +1359,15 @@ with its compilation and canonically includes the exact Campaign, exact KISA Sce
 `kisa-exact-v1`, forbidden secrets with an empty lease-ID set, and an opaque output-staging slot. Payload and
 claim repeat the context identity/digest, the claim profile must match it, and permit issuance rechecks it through
 the exact authority graph. The v6 migration refuses any dispatchable authority that lacks context bytes instead
-of inventing a backfill. A public Replay admission/read API, the actual executor and pre-dispatch permit-use
-enforcement, Worker execute/seal, output import/typed finalization, new-identity retry, Gate, and negative Control
-Plane retest remain outstanding, so full completion cannot be claimed. Compose has no active Replay executor
-daemon. The Accepted ADR defines at least the following.
+of inventing a backfill. Schema v9 implements a dedicated exact-KISA daemon that claims with its separate Replay
+Worker principal, heartbeats the fenced lease, issues a durable permit immediately before each Tool dispatch,
+seals output into the opaque staging slot, and finalizes using only issued authority identifiers. The Control
+Plane imports and re-verifies the Artifact, both seals, and permit lineage, then atomically records typed
+finalization and the one-item common Gate. Bounded identical permit/finalize response-loss retries do not
+redispatch a Tool, and any failure after permit issuance is terminal for that ticket. Compose enables the daemon.
+A public Replay admission/read API, automatic fresh-identity retry, multi-item versioned-projection publication,
+and negative Control Plane retest remain outstanding, so full completion cannot be claimed. The Accepted ADR
+defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
 - Fencing, claim/finalize, and crash policy that do not conflict with Worker lease and retry;
@@ -1355,13 +1379,13 @@ daemon. The Accepted ADR defines at least the following.
 
 ## 21. Phase-by-Phase Roadmap
 
-| Phase | Status | Assessment as of 2026-07-18 |
+| Phase | Status | Assessment as of 2026-07-19 |
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, the Control Plane Replay authority-state slice, M6-07B-2A managed Artifacts, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance, M6-07B-2D internal one-use per-call permit ledger/issuance, M6-07B-2E internal Worker HTTP transport, and M6-07B-2F exact execution-context authority are implemented; public admission/read API, executor/pre-dispatch permit use, execute/seal, output import/finalization, remaining Control Plane replay, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate slice are implemented; public admission/read APIs, automatic fresh-identity retry, multi-item projection publication, negative Control Plane retest, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
-| Phase 4 | Initial implementation | PostgreSQL Control Plane, Worker daemon, and the approve, resume, and cancel Web Console vertical flow are implemented |
+| Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
 ### Phase 0 - Foundation & Governance (Complete)
 
@@ -1392,8 +1416,8 @@ daemon. The Accepted ADR defines at least the following.
   Secret Lease request blocking, fresh evidence validation, and double-seal verified loader
 - Exact KISA M03, M06, A04 fresh-session materializer, raw transcript Oracle, Multi-Agent runner
   coordinator, and source/replay-separated index
-- Common Confirmed Gate that reloads verified receipts internally, reason matrix, preserved original seals,
-  `validation/v1alpha1` Decision, Finding, and Markdown projection, and KISA report linkage
+- Common replay-evidence Gate that reloads verified receipts internally, preserves original seals, and writes a
+  `verified-replay-evidence` Decision/Markdown projection capped at `needs-review` without execution attestation
 - KISA negative ReplayOutcome bound to exact Candidate, Decision, Finding, remediation, and Run or root lineage from a
   reproduction-backed baseline, plus a hardened retest Gate and separate normal-functionality regression
 - Stable SQLite ticket ledger for local KISA positive and negative replay, atomic state transitions and event journal,
@@ -1425,15 +1449,17 @@ daemon. The Accepted ADR defines at least the following.
 - M6-07B-2E internal Worker HTTP transport: strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`
   subject-to-profile-array allowlist (unset means empty/fail closed), dedicated WORKER-only
   claim/heartbeat/Tool-permit endpoints, matching async client, and a claim/heartbeat envelope that contains the
-  server-validated canonical `ReplayCompilation` and rechecks exact digests and identities; the real executor is
-  absent, so compose does not enable it by default
+  server-validated canonical `ReplayCompilation` and rechecks exact digests and identities
 - M6-07B-2F exact execution context: schema-v7 append-only `cp_replay_execution_contexts`, one canonical row per
   fresh compilation with exact Campaign/KISA Scenario/canonical ToolSpec bytes and component digests, fixed
   `kisa-exact-v1`, forbidden secrets, an opaque output-staging slot, payload/claim/profile/permit transitive
   binding, and fail-closed v6 migration when dispatchable authority cannot receive an honest context backfill
-- Remaining ADR-0029 scope: a public Replay admission/read API, actual executor and pre-dispatch permit-use
-  enforcement, Worker execute/seal, output import and typed finalization, new-identity retry issuance, Gate,
-  negative Control Plane retest, portable or off-host signed proof,
+- Schema-v9 exact-KISA execution/finalization: dedicated Replay Worker principal and daemon, bounded identical
+  response-loss retry for a permit immediately before dispatch, twice-sealed opaque staging, server-owned Artifact
+  import and lineage verification, append-only typed finalization, and a one-item common Gate; Compose enables the
+  daemon, and permit issuance makes same-ticket execution failure terminal
+- Remaining ADR-0029 scope: a public Replay admission/read API, automatic fresh-identity retry issuance,
+  multi-item versioned-projection publication, negative Control Plane retest, portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
   Facts, Hypotheses, and Agent Working Memory
@@ -1448,7 +1474,7 @@ daemon. The Accepted ADR defines at least the following.
 
 ### Phase 4 - Platform & Ecosystem (Initial implementation)
 
-- The FastAPI and PostgreSQL-based Job queue and lease-aware Worker daemon are complete at the initial implementation level
+- The FastAPI and PostgreSQL-based Job queue plus lease-aware generic and dedicated exact-KISA Replay Worker daemons are complete at the initial implementation level
 - Run submit, inspect, approve, resume, and cancel in the same-origin Web Console are complete at the initial implementation level
 - Typed cancellation propagation, bounded cooperative grace and forced fallback, and local cleanup and quiescence seals are complete at the initial implementation level
 - Remaining cancellation scope: `cancelling` transition, per-Worker trusted ID, fenced cleanup acknowledgement, and centralized receipt verification
@@ -1513,10 +1539,11 @@ M6-07B-2A managed Artifact admission, M6-07B-2B server-derived exact KISA planne
 durable reservation plus fresh-authority-bound internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6
 append-only one-use per-call permit ledger/internal service issuance, and M6-07B-2E fail-closed internal Worker HTTP
 transport with a canonical-compilation claim envelope, and M6-07B-2F schema-v7 exact execution-context authority
-are implemented. M6-07B remains incomplete pending a public Replay admission/read API, actual
-executor/pre-dispatch permit-use enforcement, the Worker execute/seal split, output import and typed finalization,
-new-identity retry issuance, Gate wiring, and negative Control Plane retest. Compose continues to leave the Replay
-executor daemon disabled. The following items need additional decisions before further Phase 3-4 work proceeds.
+are implemented. The schema-v9 dedicated exact-KISA daemon, pre-dispatch permits, twice-sealed opaque staging,
+server-owned import/typed finalization, and one-item common Gate are also implemented and enabled in Compose with a
+distinct Replay Worker credential. M6-07B remains incomplete pending a public Replay admission/read API,
+automatic fresh-identity retry issuance, multi-item versioned-projection publication, and negative Control Plane
+retest. The following items need additional decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
 2. Authentication, sessions, organization and project isolation, and multi-tenancy boundary for the Web UI
@@ -1536,7 +1563,7 @@ executor daemon disabled. The following items need additional decisions before f
 - **First report format**: Markdown + JSON
 - **First isolation method**: per-campaign Docker Worker
 - **Finding confirmation boundary**: Confirmed is prohibited without successful evidence from separate restricted reproduction and the objective gate
-- **Agent runtime**: PAJIN Core owns state, policy, and execution, and PydanticAI is limited to an Agent Runtime Adapter
+- **Agent runtime**: PAJIN Core owns state, policy, and execution; `ProviderAgentRuntime` is the governed production path, while PydanticAI is limited to the exact local `TestModel` for deterministic tests
 - **First Provider contract**: a registered OpenAI-compatible endpoint and one-time Secret Lease
 
 The first `mock-agent` scenario verifies PAJIN's multi-agent behavior, MCP and tool authority, KISA A01 and A02,

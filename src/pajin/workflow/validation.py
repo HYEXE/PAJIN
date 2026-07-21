@@ -2,16 +2,17 @@
 
 from __future__ import annotations
 
-import json
 from collections import Counter
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
+from pajin.agents.base import CandidateAuthority, CandidateProduction
 from pajin.domain.models import CampaignManifest, Finding, ToolResult
 from pajin.domain.validation import (
+    CandidateAssessment,
     CandidateFinding,
     FindingDisposition,
     FindingValidationSet,
@@ -20,9 +21,13 @@ from pajin.domain.validation import (
     ValidationDecision,
     ValidationMethod,
     ValidationReasonCode,
+    candidate_claim_digest,
 )
 from pajin.policy.scope import scope_matches
+from pajin.runtime.safe_files import load_bounded_strict_json, parse_strict_json_bytes
 from pajin.runtime.store import RunStore
+
+_MAX_EVIDENCE_JSON_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -38,7 +43,37 @@ class _EvidenceInspection:
 class _CandidateSignal:
     candidate: CandidateFinding
     validator_finding: Finding | None
+    validator_assessment: CandidateAssessment | None = None
     confirmation_block_reason: ValidationReasonCode | None = None
+
+
+@dataclass(frozen=True)
+class _CandidateEvaluationContext:
+    signal: _CandidateSignal
+    decision_id: str
+    evidence_references: tuple[str, ...]
+    linked_results: tuple[ToolResult, ...]
+
+
+@dataclass(frozen=True)
+class _ObjectiveEvaluation:
+    checks: tuple[ValidationCheckResult, ...]
+    reason_codes: tuple[ValidationReasonCode, ...]
+    inspections: tuple[_EvidenceInspection, ...]
+
+
+@dataclass(frozen=True)
+class _DispositionEvaluation:
+    disposition: FindingDisposition
+    reason_codes: tuple[ValidationReasonCode, ...]
+    summary: str
+    checks: tuple[ValidationCheckResult, ...]
+
+
+@dataclass(frozen=True)
+class _EvidenceProjection:
+    supporting: tuple[str, ...]
+    contradicting: tuple[str, ...]
 
 
 def validate_findings(
@@ -48,9 +83,10 @@ def validate_findings(
     store: RunStore,
     validator_id: str,
     admitted_candidates: list[CandidateFinding] | None = None,
-    producer_authoritative_request_ids: set[str] | None = None,
-    producer_authoritative_claim_keys: set[tuple[str, str]] | None = None,
+    producer_authoritative_request_claims: set[CandidateAuthority] | None = None,
     validator_unavailable_reason: ValidationReasonCode | None = None,
+    validator_assessments: list[CandidateAssessment] | None = None,
+    pinned_evidence: Mapping[str, bytes] | None = None,
 ) -> FindingValidationSet:
     """Reconcile admitted candidates and classify them through one objective gate.
 
@@ -63,15 +99,7 @@ def validate_findings(
     one-to-one reconciliation.
     """
 
-    unavailable_reasons = {
-        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
-        ValidationReasonCode.VALIDATOR_CANCELLED,
-    }
-    if (
-        validator_unavailable_reason is not None
-        and validator_unavailable_reason not in unavailable_reasons
-    ):
-        raise ValueError("validator_unavailable_reason must describe unavailability")
+    _require_unavailability_reason(validator_unavailable_reason)
 
     evaluated_at = datetime.now(UTC)
     signals = _prepare_candidate_signals(
@@ -81,8 +109,8 @@ def validate_findings(
         evaluated_at=evaluated_at,
         store=store,
         validator_id=validator_id,
-        producer_authoritative_request_ids=(producer_authoritative_request_ids or set()),
-        producer_authoritative_claim_keys=(producer_authoritative_claim_keys or set()),
+        producer_authoritative_request_claims=(producer_authoritative_request_claims or set()),
+        validator_assessments=validator_assessments,
     )
     candidates: list[CandidateFinding] = []
     decisions: list[ValidationDecision] = []
@@ -90,307 +118,535 @@ def validate_findings(
     request_id_counts = Counter(result.request_id for result in results)
 
     for ordinal, signal in enumerate(signals, start=1):
-        candidate = signal.candidate
-        finding = candidate.claim
-        validator_finding = signal.validator_finding
-        evidence_references = _ordered_unique(
-            reference for reference in finding.evidence if reference
+        context = _build_evaluation_context(
+            signal=signal,
+            ordinal=ordinal,
+            results=results,
         )
-        linked_results = [
-            result
-            for result in results
-            if any(reference in result.evidence for reference in evidence_references)
-        ]
-        candidate_id = candidate.candidate_id
-        decision_id = _bounded_identifier("decision", finding.finding_id, ordinal)
-        pending_event_payload = _validation_event_payload(
-            candidate=candidate,
-            decision_id=decision_id,
+        _persist_validation_started(
+            store=store,
+            context=context,
             validator_id=validator_id,
-            reason_codes=[],
         )
-        store.append_event("candidate.finding.created", pending_event_payload)
-        store.append_event("validation.started", pending_event_payload)
-
-        inspections = [
-            _inspect_evidence(
-                reference,
-                finding=finding,
-                results=results,
-                request_id_counts=request_id_counts,
-                store=store,
-            )
-            for reference in evidence_references
-        ]
-
-        checks: list[ValidationCheckResult] = []
-        objective_reasons: list[ValidationReasonCode] = []
-
-        target_declared = any(target.endpoint == finding.target for target in campaign.spec.targets)
-        checks.append(
-            _check(
-                "target-declared",
-                ValidationCheckStatus.PASS if target_declared else ValidationCheckStatus.FAIL,
-                "Finding target exactly matches a declared campaign target."
-                if target_declared
-                else "Finding target does not exactly match a declared campaign target.",
-                None if target_declared else ValidationReasonCode.TARGET_UNDECLARED,
-            )
+        objective = _evaluate_objective_checks(
+            campaign=campaign,
+            context=context,
+            results=results,
+            request_id_counts=request_id_counts,
+            store=store,
+            pinned_evidence=pinned_evidence,
         )
-        if not target_declared:
-            objective_reasons.append(ValidationReasonCode.TARGET_UNDECLARED)
-
-        threat_class_declared = (
-            not campaign.spec.threat_classes or finding.threat_class in campaign.spec.threat_classes
+        disposition = _evaluate_disposition(
+            context=context,
+            objective=objective,
+            validator_unavailable_reason=validator_unavailable_reason,
         )
-        checks.append(
-            _check(
-                "threat-class-declared",
-                (
-                    ValidationCheckStatus.PASS
-                    if threat_class_declared
-                    else ValidationCheckStatus.FAIL
-                ),
-                (
-                    "Finding threat class is declared by the campaign."
-                    if campaign.spec.threat_classes and threat_class_declared
-                    else (
-                        "Campaign does not constrain finding threat classes."
-                        if not campaign.spec.threat_classes
-                        else "Finding threat class is not declared by the campaign."
-                    )
-                ),
-                (None if threat_class_declared else ValidationReasonCode.THREAT_CLASS_UNDECLARED),
-            )
+        evidence = _project_evidence(objective.inspections)
+        decision = _build_validation_decision(
+            context=context,
+            objective=objective,
+            disposition=disposition,
+            evidence=evidence,
+            validator_id=validator_id,
+            evaluated_at=evaluated_at,
         )
-        if not threat_class_declared:
-            objective_reasons.append(ValidationReasonCode.THREAT_CLASS_UNDECLARED)
-
-        scope_check, scope_reason = _scope_check(campaign, finding.target)
-        checks.append(scope_check)
-        if scope_reason is not None:
-            objective_reasons.append(scope_reason)
-
-        has_evidence = bool(evidence_references)
-        checks.append(
-            _check(
-                "evidence-present",
-                ValidationCheckStatus.PASS if has_evidence else ValidationCheckStatus.FAIL,
-                "Finding includes at least one evidence reference."
-                if has_evidence
-                else "Finding does not include an evidence reference.",
-                None if has_evidence else ValidationReasonCode.EVIDENCE_MISSING,
-            )
-        )
-        if not has_evidence:
-            objective_reasons.append(ValidationReasonCode.EVIDENCE_MISSING)
-
-        _append_evidence_checks(
-            checks,
-            objective_reasons,
-            inspections=inspections,
-            has_evidence=has_evidence,
+        decisions.append(decision)
+        candidates.append(context.signal.candidate)
+        _persist_validation_decided(
+            store=store,
+            context=context,
+            decision=decision,
         )
 
-        linked_request_ids = {result.request_id for result in linked_results}
-        source_requests_match = set(candidate.source_request_ids) == linked_request_ids
-        checks.append(
-            _check(
-                "candidate-source-requests",
-                (
-                    ValidationCheckStatus.PASS
-                    if source_requests_match
-                    else ValidationCheckStatus.FAIL
-                ),
-                (
-                    "Candidate source requests exactly match its evidence-linked executions."
-                    if source_requests_match
-                    else "Candidate source requests do not match its evidence-linked executions."
-                ),
-                (None if source_requests_match else ValidationReasonCode.SOURCE_REQUEST_MISMATCH),
-            )
-        )
-        if not source_requests_match:
-            objective_reasons.append(ValidationReasonCode.SOURCE_REQUEST_MISMATCH)
+    _persist_validation_summary(
+        store=store,
+        candidates=candidates,
+        decisions=decisions,
+        confirmed_findings=confirmed_findings,
+    )
 
-        if objective_reasons:
-            checks.extend(
-                [
-                    _check(
-                        "linked-executions",
-                        ValidationCheckStatus.NOT_APPLICABLE,
-                        "Execution outcome was not evaluated after an objective check failed.",
-                    ),
-                    _check(
-                        "legacy-validator-signal",
-                        ValidationCheckStatus.NOT_APPLICABLE,
-                        "Legacy validator signal cannot override an objective check failure.",
-                    ),
-                ]
-            )
-            disposition = FindingDisposition.REJECTED_OBJECTIVE
-            reason_codes = _ordered_unique_reasons(objective_reasons)
-            decision_summary = "Deterministic objective checks rejected the candidate finding."
-        elif linked_results and all(not result.success for result in linked_results):
-            checks.extend(
-                [
-                    _check(
-                        "linked-executions",
-                        ValidationCheckStatus.FAIL,
-                        "Every evidence-linked tool execution failed.",
-                        ValidationReasonCode.EXECUTION_FAILED,
-                    ),
-                    _check(
-                        "legacy-validator-signal",
-                        ValidationCheckStatus.NOT_APPLICABLE,
-                        "Legacy validator signal was not used because execution failed.",
-                    ),
-                ]
-            )
-            disposition = FindingDisposition.INCONCLUSIVE
-            reason_codes = [ValidationReasonCode.EXECUTION_FAILED]
-            decision_summary = (
-                "All evidence-linked tool executions failed, so the candidate is inconclusive."
-            )
-        else:
-            checks.append(
+    return FindingValidationSet(
+        candidates=candidates,
+        decisions=decisions,
+        confirmed_findings=confirmed_findings,
+    )
+
+
+def _require_unavailability_reason(reason: ValidationReasonCode | None) -> None:
+    if reason is not None and reason not in {
+        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
+        ValidationReasonCode.VALIDATOR_CANCELLED,
+    }:
+        raise ValueError("validator_unavailable_reason must describe unavailability")
+
+
+def _build_evaluation_context(
+    *,
+    signal: _CandidateSignal,
+    ordinal: int,
+    results: list[ToolResult],
+) -> _CandidateEvaluationContext:
+    finding = signal.candidate.claim
+    evidence_references = tuple(
+        _ordered_unique(reference for reference in finding.evidence if reference)
+    )
+    linked_results = tuple(
+        result
+        for result in results
+        if any(reference in result.evidence for reference in evidence_references)
+    )
+    return _CandidateEvaluationContext(
+        signal=signal,
+        decision_id=_bounded_identifier("decision", finding.finding_id, ordinal),
+        evidence_references=evidence_references,
+        linked_results=linked_results,
+    )
+
+
+def _evaluate_objective_checks(
+    *,
+    campaign: CampaignManifest,
+    context: _CandidateEvaluationContext,
+    results: list[ToolResult],
+    request_id_counts: Counter[str],
+    store: RunStore,
+    pinned_evidence: Mapping[str, bytes] | None,
+) -> _ObjectiveEvaluation:
+    finding = context.signal.candidate.claim
+    checks: list[ValidationCheckResult] = []
+    reasons: list[ValidationReasonCode] = []
+    inspections = tuple(
+        _inspect_evidence(
+            reference,
+            finding=finding,
+            results=results,
+            request_id_counts=request_id_counts,
+            store=store,
+            pinned_evidence=pinned_evidence,
+        )
+        for reference in context.evidence_references
+    )
+
+    _append_check_and_reason(checks, reasons, *_target_declared_check(campaign, finding))
+    _append_check_and_reason(checks, reasons, *_threat_class_check(campaign, finding))
+    _append_check_and_reason(checks, reasons, *_scope_check(campaign, finding.target))
+
+    has_evidence = bool(context.evidence_references)
+    _append_check_and_reason(checks, reasons, *_evidence_present_check(has_evidence))
+    _append_evidence_checks(
+        checks,
+        reasons,
+        inspections=list(inspections),
+        has_evidence=has_evidence,
+    )
+    _append_check_and_reason(
+        checks,
+        reasons,
+        *_source_requests_check(
+            context.signal.candidate,
+            context.linked_results,
+        ),
+    )
+    return _ObjectiveEvaluation(
+        checks=tuple(checks),
+        reason_codes=tuple(_ordered_unique_reasons(reasons)),
+        inspections=inspections,
+    )
+
+
+def _target_declared_check(
+    campaign: CampaignManifest,
+    finding: Finding,
+) -> tuple[ValidationCheckResult, ValidationReasonCode | None]:
+    declared = any(target.endpoint == finding.target for target in campaign.spec.targets)
+    reason = None if declared else ValidationReasonCode.TARGET_UNDECLARED
+    return (
+        _check(
+            "target-declared",
+            ValidationCheckStatus.PASS if declared else ValidationCheckStatus.FAIL,
+            "Finding target exactly matches a declared campaign target."
+            if declared
+            else "Finding target does not exactly match a declared campaign target.",
+            reason,
+        ),
+        reason,
+    )
+
+
+def _threat_class_check(
+    campaign: CampaignManifest,
+    finding: Finding,
+) -> tuple[ValidationCheckResult, ValidationReasonCode | None]:
+    constrained = bool(campaign.spec.threat_classes)
+    declared = not constrained or finding.threat_class in campaign.spec.threat_classes
+    reason = None if declared else ValidationReasonCode.THREAT_CLASS_UNDECLARED
+    if not constrained:
+        summary = "Campaign does not constrain finding threat classes."
+    elif declared:
+        summary = "Finding threat class is declared by the campaign."
+    else:
+        summary = "Finding threat class is not declared by the campaign."
+    return (
+        _check(
+            "threat-class-declared",
+            ValidationCheckStatus.PASS if declared else ValidationCheckStatus.FAIL,
+            summary,
+            reason,
+        ),
+        reason,
+    )
+
+
+def _evidence_present_check(
+    has_evidence: bool,
+) -> tuple[ValidationCheckResult, ValidationReasonCode | None]:
+    reason = None if has_evidence else ValidationReasonCode.EVIDENCE_MISSING
+    return (
+        _check(
+            "evidence-present",
+            ValidationCheckStatus.PASS if has_evidence else ValidationCheckStatus.FAIL,
+            "Finding includes at least one evidence reference."
+            if has_evidence
+            else "Finding does not include an evidence reference.",
+            reason,
+        ),
+        reason,
+    )
+
+
+def _source_requests_check(
+    candidate: CandidateFinding,
+    linked_results: tuple[ToolResult, ...],
+) -> tuple[ValidationCheckResult, ValidationReasonCode | None]:
+    linked_request_ids = {result.request_id for result in linked_results}
+    matches = set(candidate.source_request_ids) == linked_request_ids
+    reason = None if matches else ValidationReasonCode.SOURCE_REQUEST_MISMATCH
+    return (
+        _check(
+            "candidate-source-requests",
+            ValidationCheckStatus.PASS if matches else ValidationCheckStatus.FAIL,
+            "Candidate source requests exactly match its evidence-linked executions."
+            if matches
+            else "Candidate source requests do not match its evidence-linked executions.",
+            reason,
+        ),
+        reason,
+    )
+
+
+def _append_check_and_reason(
+    checks: list[ValidationCheckResult],
+    reasons: list[ValidationReasonCode],
+    check: ValidationCheckResult,
+    reason: ValidationReasonCode | None,
+) -> None:
+    checks.append(check)
+    if reason is not None:
+        reasons.append(reason)
+
+
+def _evaluate_disposition(
+    *,
+    context: _CandidateEvaluationContext,
+    objective: _ObjectiveEvaluation,
+    validator_unavailable_reason: ValidationReasonCode | None,
+) -> _DispositionEvaluation:
+    if objective.reason_codes:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.REJECTED_OBJECTIVE,
+            reason_codes=objective.reason_codes,
+            summary="Deterministic objective checks rejected the candidate finding.",
+            checks=(
                 _check(
                     "linked-executions",
-                    ValidationCheckStatus.PASS,
-                    "At least one evidence-linked tool execution succeeded.",
-                )
-            )
-            if validator_finding is None and validator_unavailable_reason is not None:
-                checks.append(
-                    _check(
-                        "validator-availability",
-                        ValidationCheckStatus.ERROR,
-                        "Validator did not complete, so no semantic decision is available.",
-                        validator_unavailable_reason,
-                    )
-                )
-                disposition = FindingDisposition.INCONCLUSIVE
-                reason_codes = [validator_unavailable_reason]
-                decision_summary = "Objective checks passed, but validation did not complete."
-            elif signal.confirmation_block_reason is not None:
-                checks.append(
-                    _check(
-                        "candidate-producer-admission",
-                        ValidationCheckStatus.FAIL,
-                        (
-                            "Validator-only output falls inside a trusted Candidate "
-                            "Producer authority boundary."
-                        ),
-                        signal.confirmation_block_reason,
-                    )
-                )
-                disposition = FindingDisposition.NEEDS_REVIEW
-                reason_codes = [signal.confirmation_block_reason]
-                decision_summary = (
-                    "Objective checks passed, but the trusted Candidate Producer did not "
-                    "admit this Validator-only claim."
-                )
-            elif validator_finding is None:
-                checks.append(
-                    _check(
-                        "legacy-validator-signal",
-                        ValidationCheckStatus.FAIL,
-                        "Validator omitted the admitted candidate finding.",
-                        ValidationReasonCode.VALIDATOR_OMITTED,
-                    )
-                )
-                disposition = FindingDisposition.NEEDS_REVIEW
-                reason_codes = [ValidationReasonCode.VALIDATOR_OMITTED]
-                decision_summary = (
-                    "Objective checks passed, but the validator omitted the admitted candidate."
-                )
-            elif validator_finding.validated:
-                checks.append(
-                    _check(
-                        "legacy-validator-signal",
-                        ValidationCheckStatus.PASS,
-                        "Legacy validator marked the finding as validated.",
-                        ValidationReasonCode.VALIDATOR_CONFIRMED,
-                    )
-                )
-                checks.append(
-                    _check(
-                        "independent-reproduction",
-                        ValidationCheckStatus.FAIL,
-                        (
-                            "No successful Candidate-bound independent ReplayOutcome "
-                            "is available."
-                        ),
-                        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING,
-                    )
-                )
-                disposition = FindingDisposition.NEEDS_REVIEW
-                reason_codes = [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
-                decision_summary = (
-                    "Objective checks and semantic review passed, but independent reproduction "
-                    "has not run."
-                )
-            else:
-                checks.append(
-                    _check(
-                        "legacy-validator-signal",
-                        ValidationCheckStatus.FAIL,
-                        "Legacy validator did not mark the finding as validated.",
-                        ValidationReasonCode.VALIDATOR_DISAGREED,
-                    )
-                )
-                disposition = FindingDisposition.NEEDS_REVIEW
-                reason_codes = [ValidationReasonCode.VALIDATOR_DISAGREED]
-                decision_summary = (
-                    "Objective checks passed, but the legacy validator did not confirm the finding."
-                )
+                    ValidationCheckStatus.NOT_APPLICABLE,
+                    "Execution outcome was not evaluated after an objective check failed.",
+                ),
+                _check(
+                    "legacy-validator-signal",
+                    ValidationCheckStatus.NOT_APPLICABLE,
+                    "Legacy validator signal cannot override an objective check failure.",
+                ),
+            ),
+        )
+    if context.linked_results and all(not result.success for result in context.linked_results):
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.INCONCLUSIVE,
+            reason_codes=(ValidationReasonCode.EXECUTION_FAILED,),
+            summary=(
+                "All evidence-linked tool executions failed, so the candidate is inconclusive."
+            ),
+            checks=(
+                _check(
+                    "linked-executions",
+                    ValidationCheckStatus.FAIL,
+                    "Every evidence-linked tool execution failed.",
+                    ValidationReasonCode.EXECUTION_FAILED,
+                ),
+                _check(
+                    "legacy-validator-signal",
+                    ValidationCheckStatus.NOT_APPLICABLE,
+                    "Legacy validator signal was not used because execution failed.",
+                ),
+            ),
+        )
 
-        supporting_evidence = [
+    semantic = _evaluate_semantic_disposition(
+        signal=context.signal,
+        validator_unavailable_reason=validator_unavailable_reason,
+    )
+    return _DispositionEvaluation(
+        disposition=semantic.disposition,
+        reason_codes=semantic.reason_codes,
+        summary=semantic.summary,
+        checks=(
+            _check(
+                "linked-executions",
+                ValidationCheckStatus.PASS,
+                "At least one evidence-linked tool execution succeeded.",
+            ),
+            *semantic.checks,
+        ),
+    )
+
+
+def _evaluate_semantic_disposition(
+    *,
+    signal: _CandidateSignal,
+    validator_unavailable_reason: ValidationReasonCode | None,
+) -> _DispositionEvaluation:
+    if signal.validator_finding is None and validator_unavailable_reason is not None:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.INCONCLUSIVE,
+            reason_codes=(validator_unavailable_reason,),
+            summary="Objective checks passed, but validation did not complete.",
+            checks=(
+                _check(
+                    "validator-availability",
+                    ValidationCheckStatus.ERROR,
+                    "Validator did not complete, so no semantic decision is available.",
+                    validator_unavailable_reason,
+                ),
+            ),
+        )
+    if signal.confirmation_block_reason is not None:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.NEEDS_REVIEW,
+            reason_codes=(signal.confirmation_block_reason,),
+            summary=(
+                "Objective checks passed, but the trusted Candidate Producer did not "
+                "admit this Validator-only claim."
+            ),
+            checks=(
+                _check(
+                    "candidate-producer-admission",
+                    ValidationCheckStatus.FAIL,
+                    (
+                        "Validator-only output falls inside a trusted Candidate "
+                        "Producer authority boundary."
+                    ),
+                    signal.confirmation_block_reason,
+                ),
+            ),
+        )
+    if signal.validator_assessment is not None:
+        return _assessment_disposition(signal.validator_assessment)
+    return _legacy_disposition(signal.validator_finding)
+
+
+def _assessment_disposition(assessment: CandidateAssessment) -> _DispositionEvaluation:
+    if assessment.supports_claim:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.NEEDS_REVIEW,
+            reason_codes=(ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING,),
+            summary=(
+                "Candidate-bound semantic review passed, but independent reproduction has not run."
+            ),
+            checks=(
+                _check(
+                    "candidate-bound-validator-assessment",
+                    ValidationCheckStatus.PASS,
+                    "Validator explicitly supported the exact Candidate claim digest.",
+                    ValidationReasonCode.VALIDATOR_CONFIRMED,
+                ),
+                _independent_reproduction_missing_check(),
+            ),
+        )
+
+    reason = assessment.reason_code
+    omitted = reason is ValidationReasonCode.VALIDATOR_OMITTED
+    return _DispositionEvaluation(
+        disposition=FindingDisposition.NEEDS_REVIEW,
+        reason_codes=(reason,),
+        summary=(
+            "Objective checks passed, but the Candidate-bound validator omitted the claim."
+            if omitted
+            else "Objective checks passed, but the Candidate-bound validator disagreed."
+        ),
+        checks=(
+            _check(
+                "candidate-bound-validator-assessment",
+                ValidationCheckStatus.FAIL,
+                "Validator omitted the exact Candidate claim."
+                if omitted
+                else "Validator explicitly declined the exact Candidate claim digest.",
+                reason,
+            ),
+        ),
+    )
+
+
+def _legacy_disposition(validator_finding: Finding | None) -> _DispositionEvaluation:
+    if validator_finding is None:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.NEEDS_REVIEW,
+            reason_codes=(ValidationReasonCode.VALIDATOR_OMITTED,),
+            summary="Objective checks passed, but the validator omitted the admitted candidate.",
+            checks=(
+                _check(
+                    "legacy-validator-signal",
+                    ValidationCheckStatus.FAIL,
+                    "Validator omitted the admitted candidate finding.",
+                    ValidationReasonCode.VALIDATOR_OMITTED,
+                ),
+            ),
+        )
+    if validator_finding.validated:
+        return _DispositionEvaluation(
+            disposition=FindingDisposition.NEEDS_REVIEW,
+            reason_codes=(ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING,),
+            summary=(
+                "Objective checks and semantic review passed, but independent reproduction "
+                "has not run."
+            ),
+            checks=(
+                _check(
+                    "legacy-validator-signal",
+                    ValidationCheckStatus.PASS,
+                    "Legacy validator marked the finding as validated.",
+                    ValidationReasonCode.VALIDATOR_CONFIRMED,
+                ),
+                _independent_reproduction_missing_check(),
+            ),
+        )
+    return _DispositionEvaluation(
+        disposition=FindingDisposition.NEEDS_REVIEW,
+        reason_codes=(ValidationReasonCode.VALIDATOR_DISAGREED,),
+        summary=("Objective checks passed, but the legacy validator did not confirm the finding."),
+        checks=(
+            _check(
+                "legacy-validator-signal",
+                ValidationCheckStatus.FAIL,
+                "Legacy validator did not mark the finding as validated.",
+                ValidationReasonCode.VALIDATOR_DISAGREED,
+            ),
+        ),
+    )
+
+
+def _independent_reproduction_missing_check() -> ValidationCheckResult:
+    return _check(
+        "independent-reproduction",
+        ValidationCheckStatus.FAIL,
+        "No successful Candidate-bound independent ReplayOutcome is available.",
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING,
+    )
+
+
+def _project_evidence(
+    inspections: tuple[_EvidenceInspection, ...],
+) -> _EvidenceProjection:
+    return _EvidenceProjection(
+        supporting=tuple(
             inspection.reference
             for inspection in inspections
             if inspection.linked_results
             and inspection.contained
             and inspection.file_exists
             and inspection.provenance_valid is True
-        ]
-        contradicting_evidence = [
+        ),
+        contradicting=tuple(
             inspection.reference
             for inspection in inspections
             if not inspection.linked_results
             or not inspection.contained
             or not inspection.file_exists
             or inspection.provenance_valid is False
-        ]
-        decision = ValidationDecision(
-            decision_id=decision_id,
-            candidate_id=candidate_id,
-            validator_id=validator_id,
-            method=ValidationMethod.HYBRID_LEGACY_GATE,
-            disposition=disposition,
-            reason_codes=reason_codes,
-            decision_summary=decision_summary,
-            supporting_evidence=supporting_evidence,
-            contradicting_evidence=contradicting_evidence,
-            replay_request_ids=[],
-            checks=checks,
-            decided_at=evaluated_at,
-        )
-        decisions.append(decision)
-        candidates.append(candidate)
-        decided_event_payload = _validation_event_payload(
-            candidate=candidate,
-            decision_id=decision_id,
-            validator_id=validator_id,
-            reason_codes=reason_codes,
-        )
-        store.append_event(f"validation.{disposition.value}", decided_event_payload)
-        store.append_event(
-            "finding.validated"
-            if disposition is FindingDisposition.CONFIRMED
-            else "finding.rejected",
-            decided_event_payload,
-        )
+        ),
+    )
 
+
+def _build_validation_decision(
+    *,
+    context: _CandidateEvaluationContext,
+    objective: _ObjectiveEvaluation,
+    disposition: _DispositionEvaluation,
+    evidence: _EvidenceProjection,
+    validator_id: str,
+    evaluated_at: datetime,
+) -> ValidationDecision:
+    return ValidationDecision(
+        decision_id=context.decision_id,
+        candidate_id=context.signal.candidate.candidate_id,
+        validator_id=validator_id,
+        method=ValidationMethod.HYBRID_LEGACY_GATE,
+        disposition=disposition.disposition,
+        reason_codes=list(disposition.reason_codes),
+        decision_summary=disposition.summary,
+        supporting_evidence=list(evidence.supporting),
+        contradicting_evidence=list(evidence.contradicting),
+        replay_request_ids=[],
+        checks=[*objective.checks, *disposition.checks],
+        decided_at=evaluated_at,
+    )
+
+
+def _persist_validation_started(
+    *,
+    store: RunStore,
+    context: _CandidateEvaluationContext,
+    validator_id: str,
+) -> None:
+    payload = _validation_event_payload(
+        candidate=context.signal.candidate,
+        decision_id=context.decision_id,
+        validator_id=validator_id,
+        reason_codes=[],
+    )
+    store.append_event("candidate.finding.created", payload)
+    store.append_event("validation.started", payload)
+
+
+def _persist_validation_decided(
+    *,
+    store: RunStore,
+    context: _CandidateEvaluationContext,
+    decision: ValidationDecision,
+) -> None:
+    payload = _validation_event_payload(
+        candidate=context.signal.candidate,
+        decision_id=context.decision_id,
+        validator_id=decision.validator_id,
+        reason_codes=decision.reason_codes,
+    )
+    store.append_event(f"validation.{decision.disposition.value}", payload)
+    # This legacy event is part of the sealed KISA lineage contract. The preceding
+    # typed validation event carries the exact non-confirmed disposition.
+    store.append_event(
+        "finding.validated"
+        if decision.disposition is FindingDisposition.CONFIRMED
+        else "finding.rejected",
+        payload,
+    )
+
+
+def _persist_validation_summary(
+    *,
+    store: RunStore,
+    candidates: list[CandidateFinding],
+    decisions: list[ValidationDecision],
+    confirmed_findings: list[Finding],
+) -> None:
     disposition_counts = {disposition.value: 0 for disposition in FindingDisposition}
     for decision in decisions:
         disposition_counts[decision.disposition.value] += 1
@@ -403,12 +659,6 @@ def validate_findings(
         },
     )
 
-    return FindingValidationSet(
-        candidates=candidates,
-        decisions=decisions,
-        confirmed_findings=confirmed_findings,
-    )
-
 
 def _prepare_candidate_signals(
     *,
@@ -418,15 +668,77 @@ def _prepare_candidate_signals(
     evaluated_at: datetime,
     store: RunStore,
     validator_id: str,
-    producer_authoritative_request_ids: set[str],
-    producer_authoritative_claim_keys: set[tuple[str, str]],
+    producer_authoritative_request_claims: set[CandidateAuthority],
+    validator_assessments: list[CandidateAssessment] | None,
 ) -> list[_CandidateSignal]:
+    candidate_ids = _validated_candidate_ids(
+        admitted_candidates,
+        producer_authoritative_request_claims,
+    )
+    assessments_by_candidate = _validated_assessments(
+        admitted_candidates,
+        validator_assessments,
+    )
+    matched_candidates, matched_findings, same_run_evidence = _reconcile_candidate_findings(
+        admitted_candidates=admitted_candidates,
+        findings=findings,
+        results=results,
+    )
+
+    signals = [
+        _CandidateSignal(
+            candidate=candidate,
+            validator_finding=(
+                findings[matched_candidates[index]] if index in matched_candidates else None
+            ),
+            validator_assessment=assessments_by_candidate.get(candidate.candidate_id),
+        )
+        for index, candidate in enumerate(admitted_candidates)
+    ]
+
+    used_candidate_ids = set(candidate_ids)
+    for finding_index, finding in enumerate(findings):
+        if finding_index in matched_findings:
+            continue
+        signals.append(
+            _legacy_candidate_signal(
+                finding=finding,
+                ordinal=finding_index + 1,
+                admitted_candidates=admitted_candidates,
+                results=results,
+                same_run_evidence=same_run_evidence,
+                used_candidate_ids=used_candidate_ids,
+                producer_authoritative_request_claims=(producer_authoritative_request_claims),
+                evaluated_at=evaluated_at,
+                store=store,
+                validator_id=validator_id,
+            )
+        )
+    return signals
+
+
+def _validated_candidate_ids(
+    admitted_candidates: list[CandidateFinding],
+    producer_authoritative_request_claims: set[CandidateAuthority],
+) -> list[str]:
     candidate_ids = [candidate.candidate_id for candidate in admitted_candidates]
     if len(candidate_ids) != len(set(candidate_ids)):
         raise ValueError("admitted candidate IDs must be unique")
     if any(candidate.claim.validated for candidate in admitted_candidates):
         raise ValueError("admitted candidate claims must have validated=False")
+    production = CandidateProduction(
+        candidates=tuple(admitted_candidates),
+        authoritative_request_claims=frozenset(producer_authoritative_request_claims),
+    )
+    return [candidate.candidate_id for candidate in production.candidates]
 
+
+def _reconcile_candidate_findings(
+    *,
+    admitted_candidates: list[CandidateFinding],
+    findings: list[Finding],
+    results: list[ToolResult],
+) -> tuple[dict[int, int], set[int], set[str]]:
     same_run_evidence = {
         reference for result in results for reference in result.evidence if reference
     }
@@ -439,104 +751,161 @@ def _prepare_candidate_signals(
         if not candidate_evidence:
             continue
         for finding_index, finding in enumerate(findings):
-            matches_identity = (
-                candidate.claim.target == finding.target
-                and candidate.claim.threat_class == finding.threat_class
-            )
-            if matches_identity and candidate_evidence.intersection(finding.evidence):
+            if _candidate_matches_finding(candidate, finding, candidate_evidence):
                 eligible_by_candidate[candidate_index].append(finding_index)
                 eligible_by_finding[finding_index].append(candidate_index)
 
-    matched_findings: dict[int, int] = {}
     matched_candidates: dict[int, int] = {}
+    matched_findings: set[int] = set()
     for candidate_index, eligible_findings in eligible_by_candidate.items():
         if len(eligible_findings) != 1:
             continue
         finding_index = eligible_findings[0]
-        if len(eligible_by_finding[finding_index]) != 1:
-            continue
-        matched_candidates[candidate_index] = finding_index
-        matched_findings[finding_index] = candidate_index
+        if len(eligible_by_finding[finding_index]) == 1:
+            matched_candidates[candidate_index] = finding_index
+            matched_findings.add(finding_index)
+    return matched_candidates, matched_findings, same_run_evidence
 
-    signals = [
-        _CandidateSignal(
-            candidate=candidate,
-            validator_finding=(
-                findings[matched_candidates[index]] if index in matched_candidates else None
-            ),
-        )
-        for index, candidate in enumerate(admitted_candidates)
+
+def _candidate_matches_finding(
+    candidate: CandidateFinding,
+    finding: Finding,
+    candidate_evidence: set[str],
+) -> bool:
+    return bool(
+        candidate.claim.target == finding.target
+        and candidate.claim.threat_class == finding.threat_class
+        and candidate_evidence.intersection(finding.evidence)
+    )
+
+
+def _legacy_candidate_signal(
+    *,
+    finding: Finding,
+    ordinal: int,
+    admitted_candidates: list[CandidateFinding],
+    results: list[ToolResult],
+    same_run_evidence: set[str],
+    used_candidate_ids: set[str],
+    producer_authoritative_request_claims: set[CandidateAuthority],
+    evaluated_at: datetime,
+    store: RunStore,
+    validator_id: str,
+) -> _CandidateSignal:
+    overlapping_candidates = [
+        candidate
+        for candidate in admitted_candidates
+        if set(candidate.claim.evidence) & set(finding.evidence) & same_run_evidence
     ]
+    source_request_ids = _ordered_unique(
+        result.request_id
+        for result in results
+        if any(reference in result.evidence for reference in finding.evidence)
+    )
+    producer_owned = _producer_owns_finding(
+        finding=finding,
+        source_request_ids=source_request_ids,
+        overlapping_candidates=overlapping_candidates,
+        authoritative_request_claims=producer_authoritative_request_claims,
+    )
+    _persist_unmatched_validator_output(
+        store=store,
+        finding=finding,
+        validator_id=validator_id,
+        overlapping_candidates=overlapping_candidates,
+        producer_owned=producer_owned,
+    )
+    candidate_id = _unique_candidate_id(
+        finding_id=finding.finding_id,
+        ordinal=ordinal,
+        used=used_candidate_ids,
+    )
+    used_candidate_ids.add(candidate_id)
+    return _CandidateSignal(
+        candidate=CandidateFinding(
+            candidate_id=candidate_id,
+            claim=finding,
+            source="legacy-validator-output",
+            source_agent_id=validator_id,
+            source_request_ids=source_request_ids,
+            created_at=evaluated_at,
+        ),
+        validator_finding=finding,
+        confirmation_block_reason=(
+            ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED if producer_owned else None
+        ),
+    )
 
-    used_candidate_ids = set(candidate_ids)
-    for finding_index, finding in enumerate(findings):
-        if finding_index in matched_findings:
-            continue
-        overlapping_candidates = [
-            candidate
-            for candidate in admitted_candidates
-            if (set(candidate.claim.evidence) & set(finding.evidence) & same_run_evidence)
-        ]
-        source_request_ids = _ordered_unique(
-            result.request_id
-            for result in results
-            if any(reference in result.evidence for reference in finding.evidence)
-        )
-        if overlapping_candidates:
-            store.append_event(
-                "validation.output.unmatched",
-                {
-                    "findingId": finding.finding_id,
-                    "validatorId": validator_id,
-                    "reason": "overlaps-admitted-same-run-evidence",
-                    "candidateIds": [
-                        candidate.candidate_id for candidate in overlapping_candidates
-                    ],
-                },
+
+def _producer_owns_finding(
+    *,
+    finding: Finding,
+    source_request_ids: list[str],
+    overlapping_candidates: list[CandidateFinding],
+    authoritative_request_claims: set[CandidateAuthority],
+) -> bool:
+    return bool(
+        overlapping_candidates
+        or any(
+            CandidateAuthority(
+                request_id=request_id,
+                target=finding.target,
+                threat_class=finding.threat_class,
             )
-        producer_owned = (
-            bool(overlapping_candidates)
-            or bool(set(source_request_ids) & producer_authoritative_request_ids)
-            or (
-                finding.target,
-                finding.threat_class,
-            )
-            in producer_authoritative_claim_keys
+            in authoritative_request_claims
+            for request_id in source_request_ids
         )
-        if producer_owned and not overlapping_candidates:
-            store.append_event(
-                "validation.output.unmatched",
-                {
-                    "findingId": finding.finding_id,
-                    "validatorId": validator_id,
-                    "reason": "candidate-producer-not-admitted",
-                    "candidateIds": [],
-                },
-            )
-        legacy_ordinal = finding_index + 1
-        candidate_id = _unique_candidate_id(
-            finding_id=finding.finding_id,
-            ordinal=legacy_ordinal,
-            used=used_candidate_ids,
-        )
-        used_candidate_ids.add(candidate_id)
-        signals.append(
-            _CandidateSignal(
-                candidate=CandidateFinding(
-                    candidate_id=candidate_id,
-                    claim=finding,
-                    source="legacy-validator-output",
-                    source_agent_id=validator_id,
-                    source_request_ids=source_request_ids,
-                    created_at=evaluated_at,
-                ),
-                validator_finding=finding,
-                confirmation_block_reason=(
-                    ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED if producer_owned else None
-                ),
-            )
-        )
-    return signals
+    )
+
+
+def _persist_unmatched_validator_output(
+    *,
+    store: RunStore,
+    finding: Finding,
+    validator_id: str,
+    overlapping_candidates: list[CandidateFinding],
+    producer_owned: bool,
+) -> None:
+    if overlapping_candidates:
+        reason = "overlaps-admitted-same-run-evidence"
+        candidate_ids = [candidate.candidate_id for candidate in overlapping_candidates]
+    elif producer_owned:
+        reason = "candidate-producer-not-admitted"
+        candidate_ids = []
+    else:
+        return
+    store.append_event(
+        "validation.output.unmatched",
+        {
+            "findingId": finding.finding_id,
+            "validatorId": validator_id,
+            "reason": reason,
+            "candidateIds": candidate_ids,
+        },
+    )
+
+
+def _validated_assessments(
+    admitted_candidates: list[CandidateFinding],
+    assessments: list[CandidateAssessment] | None,
+) -> dict[str, CandidateAssessment]:
+    if assessments is None:
+        return {}
+    candidate_by_id = {candidate.candidate_id: candidate for candidate in admitted_candidates}
+    assessment_ids = [assessment.candidate_id for assessment in assessments]
+    if len(assessment_ids) != len(set(assessment_ids)):
+        raise ValueError("Candidate assessment IDs must be unique")
+    if set(assessment_ids) != set(candidate_by_id):
+        raise ValueError("typed validator must assess every admitted Candidate exactly once")
+    validated: dict[str, CandidateAssessment] = {}
+    for assessment in assessments:
+        candidate = candidate_by_id[assessment.candidate_id]
+        if assessment.claim_digest != candidate_claim_digest(candidate):
+            raise ValueError("Candidate assessment claim digest does not match the Candidate")
+        if not set(assessment.supporting_evidence) <= set(candidate.claim.evidence):
+            raise ValueError("Candidate assessment cites evidence outside the Candidate claim")
+        validated[assessment.candidate_id] = assessment
+    return validated
 
 
 def _scope_check(
@@ -594,31 +963,42 @@ def _inspect_evidence(
     results: list[ToolResult],
     request_id_counts: Counter[str],
     store: RunStore,
+    pinned_evidence: Mapping[str, bytes] | None,
 ) -> _EvidenceInspection:
     linked_results = tuple(result for result in results if reference in result.evidence)
-    evidence_root = store.evidence_path.resolve()
     candidate: Path | None
-    try:
-        candidate = (store.path / reference).resolve()
-    except (OSError, RuntimeError):
+    evidence_bytes: bytes | None = None
+    if pinned_evidence is not None:
         candidate = None
-    contained = candidate is not None and (
-        candidate == evidence_root or evidence_root in candidate.parents
-    )
-    file_exists = False
-    if contained and candidate is not None:
+        contained = _is_contained_evidence_reference(reference)
+        file_exists = contained and reference in pinned_evidence
+        if file_exists:
+            evidence_bytes = pinned_evidence[reference]
+    else:
+        evidence_root = store.evidence_path.resolve()
         try:
-            file_exists = candidate.is_file()
-        except OSError:
-            file_exists = False
+            candidate = (store.path / reference).resolve()
+        except (OSError, RuntimeError):
+            candidate = None
+        contained = candidate is not None and (
+            candidate == evidence_root or evidence_root in candidate.parents
+        )
+        file_exists = False
+        if contained and candidate is not None:
+            try:
+                file_exists = candidate.is_file()
+            except OSError:
+                file_exists = False
 
     provenance_valid: bool | None = None
-    if linked_results and contained and file_exists and candidate is not None:
+    if linked_results and contained and file_exists:
         provenance_valid = (
             len(linked_results) == 1
             and request_id_counts[linked_results[0].request_id] == 1
             and _evidence_provenance_matches(
                 candidate,
+                evidence_bytes=evidence_bytes,
+                pinned=pinned_evidence is not None,
                 reference=reference,
                 finding=finding,
                 linked_result=linked_results[0],
@@ -633,16 +1013,44 @@ def _inspect_evidence(
     )
 
 
+def _is_contained_evidence_reference(reference: str) -> bool:
+    path = PurePosixPath(reference)
+    return bool(
+        not path.is_absolute()
+        and len(path.parts) >= 2
+        and path.parts[0] == "evidence"
+        and all(part not in {"", ".", ".."} for part in path.parts)
+        and path.as_posix() == reference
+    )
+
+
 def _evidence_provenance_matches(
-    path: Path,
+    path: Path | None,
     *,
+    evidence_bytes: bytes | None,
+    pinned: bool,
     reference: str,
     finding: Finding,
     linked_result: ToolResult,
 ) -> bool:
     try:
-        payload: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError, RecursionError):
+        if pinned:
+            if evidence_bytes is None:
+                return False
+            payload = parse_strict_json_bytes(
+                evidence_bytes,
+                max_bytes=_MAX_EVIDENCE_JSON_BYTES,
+                label="finding evidence",
+            )
+        else:
+            if path is None:
+                return False
+            payload = load_bounded_strict_json(
+                path,
+                max_bytes=_MAX_EVIDENCE_JSON_BYTES,
+                label="finding evidence",
+            )
+    except (OSError, TypeError, ValueError, RecursionError):
         return False
     if not isinstance(payload, dict):
         return False

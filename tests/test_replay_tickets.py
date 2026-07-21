@@ -18,6 +18,7 @@ import pytest
 
 from pajin.domain.models import (
     CampaignMode,
+    CapabilityGrant,
     Finding,
     FindingSeverity,
     ToolRequest,
@@ -31,11 +32,13 @@ from pajin.domain.replay import (
     ReplayCompilation,
     ReplayIntent,
     ReplaySessionPolicy,
+    ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
     replay_argument_digest,
     replay_evidence_digest,
     replay_request_digest,
+    replay_source_capability_digest,
 )
 from pajin.domain.validation import CandidateFinding
 from pajin.replay.sqlite_tickets import (
@@ -43,6 +46,7 @@ from pajin.replay.sqlite_tickets import (
     SQLiteReplayTicketFinalizationVerifier,
 )
 from pajin.replay.tickets import (
+    ReplayExecutionAuthority,
     ReplayExecutionTicket,
     ReplayTicketClaimer,
     ReplayTicketContext,
@@ -192,6 +196,39 @@ def _compilation(
         target_id=TARGET_ID,
         target=TARGET,
     )
+    source_root = CapabilityGrant(
+        grant_id="grant_supervisor_ticket_1",
+        subject="agent:supervisor:ticket-test",
+        campaign=CAMPAIGN,
+        tools={TOOL_ID},
+        targets={TARGET},
+        max_risk_tier=ToolRiskTier.T1,
+        max_calls=10,
+        expires_at=NOW + timedelta(hours=1),
+        delegable=True,
+        issued_at=NOW - timedelta(minutes=20),
+        depth=0,
+    )
+    source_specialist = CapabilityGrant(
+        grant_id="grant_specialist_ticket_1",
+        parent_grant_id=source_root.grant_id,
+        subject=request.agent_id,
+        campaign=CAMPAIGN,
+        tools={TOOL_ID},
+        targets={TARGET},
+        max_risk_tier=ToolRiskTier.T1,
+        max_calls=1,
+        expires_at=NOW + timedelta(minutes=30),
+        issued_at=NOW - timedelta(minutes=10),
+        depth=1,
+    )
+    source_capability = ReplaySourceCapabilityReceipt(
+        request_id=request.request_id,
+        lineage=[source_root, source_specialist],
+        execution_started_at=NOW - timedelta(minutes=6),
+        execution_finished_at=NOW - timedelta(minutes=5),
+    )
+    source_capability_digest = replay_source_capability_digest(source_capability)
     grant_id = f"grant_replay_{replay_run_id}"
     spec = CompiledReplaySpec(
         spec_id=f"replay-spec_{replay_run_id}",
@@ -204,6 +241,7 @@ def _compilation(
         argument_digest=replay_argument_digest(request.arguments),
         original_request_digest=replay_request_digest(request),
         original_evidence_digest=replay_evidence_digest([EVIDENCE]),
+        source_capability_digest=source_capability_digest,
         risk_tier=ToolRiskTier.T1,
         replay_safe=True,
         idempotent=True,
@@ -235,6 +273,7 @@ def _compilation(
         replay_run_id=replay_run_id,
         original_request_id=REQUEST_ID,
         original_grant_id="grant_specialist_ticket_1",
+        source_capability_digest=source_capability_digest,
         original_subject=request.agent_id,
         tool_id=TOOL_ID,
         target=TARGET,
@@ -246,6 +285,7 @@ def _compilation(
         intent=intent,
         original_request=request,
         original_evidence=[EVIDENCE],
+        source_capability=source_capability,
         spec=spec,
         grant=grant,
     )
@@ -668,6 +708,163 @@ def test_same_replay_run_cannot_be_issued_twice(tmp_path: Path) -> None:
         authority.issuer().issue_from_compiler(case.compilation, context=case.context)
 
 
+def test_process_local_same_replay_run_cannot_be_issued_twice() -> None:
+    authority = ReplayExecutionAuthority()
+    compilation = _compilation()
+    context = _context()
+    authority.issuer().issue_from_compiler(compilation, context=context)
+
+    with pytest.raises(
+        PermissionError,
+        match="a replay execution ticket already exists for this Run",
+    ):
+        authority.issuer().issue_from_compiler(compilation, context=context)
+
+
+def test_process_local_replay_run_issuance_is_atomic_across_threads() -> None:
+    authority = ReplayExecutionAuthority()
+    compilation = _compilation()
+    context = _context()
+    barrier = Barrier(2)
+
+    def issue() -> str:
+        barrier.wait()
+        try:
+            authority.issuer().issue_from_compiler(compilation, context=context)
+        except PermissionError as exc:
+            assert str(exc) == "a replay execution ticket already exists for this Run"
+            return "rejected"
+        return "issued"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(lambda _index: issue(), range(2)))
+
+    assert sorted(outcomes) == ["issued", "rejected"]
+
+
+def test_process_local_recovery_is_context_bound_and_idempotent() -> None:
+    authority = ReplayExecutionAuthority()
+    compilation = _compilation()
+    context = _context()
+    ticket = authority.issuer().issue_from_compiler(compilation, context=context)
+    authority.claimer().claim(
+        ticket,
+        expected_replay_run_id=compilation.spec.binding.replay_run_id,
+        expected_candidate_source_root_digest=context.candidate_source_root_digest,
+        expected_campaign_digest=context.campaign_digest,
+        claimed_at=CLAIMED_AT,
+    )
+    wrong_context = ReplayTicketContext(
+        candidate_source_root_digest=context.candidate_source_root_digest,
+        campaign_digest=context.campaign_digest,
+        tool_spec_digest=context.tool_spec_digest,
+        scenario_digest="0" * 64,
+    )
+    compilation_digest = sha256(canonical_replay_compilation_bytes(compilation)).hexdigest()
+
+    with pytest.raises(PermissionError, match="recovery context"):
+        authority.claimer().recover_finalization(
+            ticket,
+            final_seal_root_digest=FINAL_SEAL_ROOT_DIGEST,
+            artifact_set_digest=ARTIFACT_SET_DIGEST,
+            compilation_digest=compilation_digest,
+            context=wrong_context,
+            replay_run_id=compilation.spec.binding.replay_run_id,
+            finalized_at=FINALIZED_AT,
+        )
+
+    for recovered_at in (FINALIZED_AT, FINALIZED_AT + timedelta(seconds=1)):
+        authority.claimer().recover_finalization(
+            ticket,
+            final_seal_root_digest=FINAL_SEAL_ROOT_DIGEST,
+            artifact_set_digest=ARTIFACT_SET_DIGEST,
+            compilation_digest=compilation_digest,
+            context=context,
+            replay_run_id=compilation.spec.binding.replay_run_id,
+            finalized_at=recovered_at,
+        )
+    authority.verifier().verify_finalized(
+        ticket.ticket_id,
+        final_seal_root_digest=FINAL_SEAL_ROOT_DIGEST,
+        artifact_set_digest=ARTIFACT_SET_DIGEST,
+        compilation_digest=compilation_digest,
+        candidate_source_root_digest=context.candidate_source_root_digest,
+        replay_run_id=compilation.spec.binding.replay_run_id,
+    )
+
+
+@pytest.mark.parametrize(
+    ("transition", "expected_state", "expected_events"),
+    [
+        ("issue", None, 0),
+        ("claim", "issued", 1),
+        ("finalize", "claimed", 2),
+    ],
+)
+def test_permission_hardening_failure_precedes_ticket_transaction(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    transition: str,
+    expected_state: str | None,
+    expected_events: int,
+) -> None:
+    ledger = tmp_path / "replay-tickets.sqlite3"
+    case: TicketCase | None = None
+    if transition == "issue":
+        authority = SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+    else:
+        case = _issue(ledger)
+        if transition == "finalize":
+            _claim(case)
+            authority = SQLiteReplayExecutionAuthority(
+                ledger,
+                clock=FrozenClock(FINALIZED_AT),
+            )
+        else:
+            authority = SQLiteReplayExecutionAuthority(
+                ledger,
+                clock=FrozenClock(CLAIMED_AT),
+            )
+
+    def deny_chmod(_descriptor: int, _mode: int) -> None:
+        raise PermissionError("chmod denied")
+
+    monkeypatch.setattr(os, "fchmod", deny_chmod)
+    with pytest.raises(PermissionError, match="chmod denied"):
+        if transition == "issue":
+            authority.issuer().issue_from_compiler(_compilation(), context=_context())
+        elif transition == "claim":
+            assert case is not None
+            authority.claimer().claim(
+                case.ticket,
+                expected_replay_run_id=case.replay_run_id,
+                expected_candidate_source_root_digest=SOURCE_ROOT_DIGEST,
+                expected_campaign_digest=CAMPAIGN_DIGEST,
+                claimed_at=CLAIMED_AT,
+            )
+        else:
+            assert case is not None
+            authority.claimer().finalize(
+                case.ticket,
+                final_seal_root_digest=FINAL_SEAL_ROOT_DIGEST,
+                artifact_set_digest=ARTIFACT_SET_DIGEST,
+                finalized_at=FINALIZED_AT,
+            )
+
+    with sqlite3.connect(ledger) as connection:
+        row = connection.execute(
+            """
+            SELECT state, (
+                SELECT COUNT(*) FROM replay_ticket_events WHERE ticket_id = replay_tickets.ticket_id
+            ) FROM replay_tickets
+            """
+        ).fetchone()
+    if expected_state is None:
+        assert row is None
+    else:
+        assert row == (expected_state, expected_events)
+
+
 def test_created_ledger_has_strict_unique_fk_index_and_append_only_schema(
     tmp_path: Path,
 ) -> None:
@@ -978,3 +1175,104 @@ def test_new_state_directory_and_ledger_are_owner_only(tmp_path: Path) -> None:
 
     assert stat.S_IMODE(state_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE(ledger.stat().st_mode) == 0o600
+
+
+@pytest.mark.skipif(os.name != "posix", reason="O_NOFOLLOW is a POSIX boundary")
+def test_sqlite_authority_rejects_symlink_leaf_without_touching_target(tmp_path: Path) -> None:
+    state_dir = tmp_path / "private-state"
+    state_dir.mkdir(mode=0o700)
+    external = tmp_path / "external.sqlite3"
+    external.write_bytes(b"do-not-touch")
+    external.chmod(0o640)
+    ledger = state_dir / "replay-tickets.sqlite3"
+    ledger.symlink_to(external)
+
+    with pytest.raises(RuntimeError, match="regular file"):
+        SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+
+    assert external.read_bytes() == b"do-not-touch"
+    assert stat.S_IMODE(external.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name != "posix", reason="O_NOFOLLOW is a POSIX boundary")
+def test_sqlite_authority_rejects_symlink_parent(tmp_path: Path) -> None:
+    external_state = tmp_path / "external-state"
+    external_state.mkdir(mode=0o700)
+    linked_state = tmp_path / "linked-state"
+    linked_state.symlink_to(external_state, target_is_directory=True)
+
+    with pytest.raises(RuntimeError, match="regular directory"):
+        SQLiteReplayExecutionAuthority(
+            linked_state / "replay-tickets.sqlite3",
+            clock=FrozenClock(NOW),
+        )
+
+    assert list(external_state.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="hard-link identity is a POSIX boundary")
+def test_sqlite_authority_rejects_hard_linked_ledger(tmp_path: Path) -> None:
+    state_dir = tmp_path / "private-state"
+    state_dir.mkdir(mode=0o700)
+    external = tmp_path / "external.sqlite3"
+    external.write_bytes(b"do-not-touch")
+    external.chmod(0o640)
+    ledger = state_dir / "replay-tickets.sqlite3"
+    os.link(external, ledger)
+
+    with pytest.raises(RuntimeError, match="private regular file"):
+        SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+
+    assert external.read_bytes() == b"do-not-touch"
+    assert stat.S_IMODE(external.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name != "posix", reason="O_NOFOLLOW is a POSIX boundary")
+def test_sqlite_authority_rejects_symlink_journal(tmp_path: Path) -> None:
+    state_dir = tmp_path / "private-state"
+    ledger = state_dir / "replay-tickets.sqlite3"
+    SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+    external = tmp_path / "external-journal"
+    external.write_bytes(b"do-not-touch")
+    external.chmod(0o640)
+    Path(f"{ledger}-journal").symlink_to(external)
+
+    with pytest.raises(RuntimeError, match="journal is not a regular file"):
+        SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+
+    assert external.read_bytes() == b"do-not-touch"
+    assert stat.S_IMODE(external.stat().st_mode) == 0o640
+
+
+@pytest.mark.skipif(os.name != "posix", reason="directory identity is a POSIX boundary")
+def test_sqlite_authority_detects_parent_directory_swap_before_schema_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state_dir = tmp_path / "private-state"
+    ledger = state_dir / "replay-tickets.sqlite3"
+    SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+    original_bytes = ledger.read_bytes()
+
+    replacement = tmp_path / "replacement-state"
+    replacement.mkdir(mode=0o700)
+    replacement_ledger = replacement / ledger.name
+    replacement_ledger.touch(mode=0o600)
+    saved_state = tmp_path / "saved-state"
+    real_connect = sqlite3.connect
+    swapped = False
+
+    def swap_parent_before_connect(*args: object, **kwargs: object) -> sqlite3.Connection:
+        nonlocal swapped
+        if not swapped:
+            swapped = True
+            state_dir.rename(saved_state)
+            replacement.rename(state_dir)
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(sqlite3, "connect", swap_parent_before_connect)
+    with pytest.raises(RuntimeError, match="changed while it was opened"):
+        SQLiteReplayExecutionAuthority(ledger, clock=FrozenClock(NOW))
+
+    assert (saved_state / ledger.name).read_bytes() == original_bytes
+    assert ledger.read_bytes() == b""

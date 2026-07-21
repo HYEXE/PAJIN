@@ -1,21 +1,28 @@
-"""Optional PydanticAI adapter for model-backed planning and validation."""
+"""Deterministic local-only PydanticAI adapter for planning and validation tests."""
 
 from __future__ import annotations
 
 import json
 
 from pydantic_ai import Agent, UsageLimits
-from pydantic_ai.models import KnownModelName, Model
+from pydantic_ai.models.test import TestModel
 
 from pajin.domain.models import AgentPlan, CampaignManifest, Finding, ToolResult
 
 
 class PydanticAIAgentRuntime:
-    """Use PydanticAI while keeping PAJIN's domain state outside the framework."""
+    """Use PydanticAI's exact local TestModel without granting provider authority."""
 
     agent_id = "agent:planner-pydantic-ai"
 
-    def __init__(self, model: Model | KnownModelName | str) -> None:
+    def __init__(self, model: TestModel) -> None:
+        # TestModel subclasses can override request handling, so only the exact
+        # deterministic implementation is safe outside PolicyBoundProviderPort.
+        if type(model) is not TestModel:
+            raise TypeError(
+                "PydanticAIAgentRuntime accepts only the exact PydanticAI TestModel; "
+                "use ProviderAgentRuntime for governed network-backed model providers"
+            )
         self._planner = Agent(
             model,
             name="pajin_planner",

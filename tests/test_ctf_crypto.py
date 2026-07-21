@@ -86,6 +86,18 @@ class ContractCryptoWorker:
         )
 
 
+class ForgedCryptoWorker(ContractCryptoWorker):
+    def __init__(self, mutation: dict[str, object]) -> None:
+        super().__init__()
+        self.mutation = mutation
+
+    async def run(self, job: WorkerJob) -> WorkerResult:
+        result = await super().run(job)
+        output = json.loads(result.stdout)
+        output.update(self.mutation)
+        return result.model_copy(update={"stdout": json.dumps(output)})
+
+
 def test_crypto_challenge_compiles_to_offline_content_addressed_policy() -> None:
     challenge = _challenge()
     campaign = CTFChallengeService().compile_campaign(
@@ -226,6 +238,39 @@ def test_crypto_multi_agent_run_routes_specialist_and_seals_result(tmp_path: Pat
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        {"candidateFlag": "PAJIN{forged}", "solved": True, "key": 55},
+        {"candidateFlag": CRYPTO_FLAG, "solved": True, "key": 54},
+        {"candidateFlag": None, "solved": False, "key": None},
+    ],
+)
+def test_crypto_worker_cannot_forge_host_recomputed_solve(
+    tmp_path: Path,
+    mutation: dict[str, object],
+) -> None:
+    challenge = _challenge()
+    campaign = CTFChallengeService().compile_campaign(challenge)
+    registry = ToolRegistry()
+    registry.register(CTFCryptoXORTool())
+    runner = MultiAgentCampaignRunner(
+        planner=CTFTriagePlannerRuntime(),
+        validator=CTFFlagValidatorRuntime(),
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=ForgedCryptoWorker(mutation),
+        output_root=tmp_path,
+    )
+
+    outcome = asyncio.run(runner.run(campaign))
+
+    assert outcome.status is RunStatus.FAILED
+    assert len(outcome.tool_results) == 1
+    assert not outcome.tool_results[0].success
+    assert outcome.findings == []
+
+
 def test_generic_ctf_cli_routes_crypto_and_web_alias_rejects_it(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -247,6 +292,8 @@ def test_generic_ctf_cli_routes_crypto_and_web_alias_rejects_it(
     assert result.exit_code == 0, result.output
     assert requested_backends == ["docker"]
     assert f"Verified flag: {CRYPTO_FLAG}" in result.output
+    assert "Confirmed findings" in result.output
+    assert "Independent validations" not in result.output
     assert "No external scoreboard submission was performed." in result.output
 
     rejected = CliRunner().invoke(

@@ -14,16 +14,16 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 
 ## 현재 구현 상태
 
-2026-07-18 기준 구현 범위는 다음과 같습니다.
+2026-07-19 기준 구현 범위는 다음과 같습니다.
 
 | 영역 | 현재 범위 |
 | --- | --- |
 | Core engine | 타입이 지정된 Campaign, 정책 및 Capability 집행, 동적 Specialist, 예산, 재시도, 취소, Candidate 수용, 의미론적 증거 검토, 버전이 지정된 replay 계약, 결정론적 Replay Compiler, 일회용 실행 ticket, 로컬 SQLite replay-ticket 원장, 무상태 및 등록된 fresh-session Restricted Reproducer 경로, receipt 재로딩 confirmation/retest Gate, 변조 탐지 증거 seal |
-| AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, 검증된 reproduction-backed confirmation projection, 강화 후 retest를 위한 baseline-bound negative replay |
+| AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced 및 cooperative 실행 취소, lease, 비정상 종료 복구, Worker daemon 한 개, same-origin Web Console preview, 소유자가 통제하는 managed filesystem Artifact repository, exact KISA M03·M06·A04 confirmation compilation의 서버 파생 non-dispatchable planned/pending record, M6-07B-2C schema v5 durable 예약과 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema v6 append-only 일회성 호출별 permit 원장과 멱등 내부 서비스 발급, M6-07B-2E fail-closed 전용 Worker HTTP transport, M6-07B-2F schema v7 append-only exact Replay execution-context 권위 |
-| 주요 공백 | public Replay admission/read API, pre-dispatch permit-use 집행을 갖춘 실제 Replay executor, Worker execute/seal 분리, output import와 typed finalization, 새 identity 재시도, Gate 연결과 negative Control Plane retest를 포함한 나머지 Control Plane Replay 오케스트레이션, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, durable exact-KISA Replay finalization, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 sealed output import와 permit lineage 검증 뒤 서버 파생 append-only finalization을 추가하지만 target 실행을 독립적으로 attest하지는 않습니다. |
+| 주요 공백 | Public Replay admission/read API, terminal Replay 시도 뒤의 자동 fresh-identity retry 발행, negative Control Plane retest, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -47,14 +47,14 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 > Gate는 이제 모든 KISA replay Run을 다시 열어 두 seal과 ticket finalization을 검증하고, 공유
 > reason matrix를 적용한 다음 봉인된 source snapshot을 다시 쓰지 않고
 > `validation/v1alpha1/`을 append합니다. [ADR 0027](docs/adr/0027-independent-reproduction-confirmation-boundary.ko.md)이
-> 요구하듯 검증된 reproduction-backed Decision만 이 버전 지정 Finding projection에 들어갑니다.
-> M6-05의 KISA retest 경로는 이 projection의 reproduction-backed Confirmed Finding만 기준선으로
-> 받아들입니다.
-> 일반 retest Run은 정상 기능 probe와 regression을 담당하고, 별도의 baseline-bound
-> Restricted Replay가 기준 Candidate의 정확한 공격 계약을 실행합니다. 모든 기대 반복이 성공하고
-> canonical receipt를 다시 검증한 trusted negative Oracle이 명시적으로
-> `ReplayOracleVerdict.CONTRADICTS`를 반환할
-> 때만 해당 Finding을 `fixed`로 닫습니다. 로컬 KISA positive/negative 경로는 개별 sealed replay
+> 이 artifact는 Candidate 결박, 내부 일관성, receipt lineage를 증명하지만 Worker trust domain과
+> 독립된 target 실행 사실은 증명하지 않습니다. 현재 Local·CLI·Control Plane Worker-only 경로는
+> `verified-replay-evidence` projection을 작성하고, supporting claim을
+> `independent-execution-attestation-missing` 사유의 `needs-review`로 유지합니다. 따라서 제품 수준
+> Confirmed Finding을 만들지 않습니다. M6-05 retest는 이전에 독립적으로 attested된 Confirmed
+> baseline만 받을 수 있습니다. 공개 deterministic-lab tuple을 포함한 negative target response는
+> 별도로 검증 가능한 remediation authority가 생길 때까지 `inconclusive`입니다. positive 관찰은
+> 이미 신뢰된 baseline이 `still-vulnerable`임을 보이는 데 사용할 수 있습니다. 로컬 KISA 경로는
 > Run 밖의 안정된 SQLite 원장에 ticket 발급 context와 `issued → claimed → finalized` 전이 및
 > event journal을 원자적으로 기록합니다. `mode=ro` verifier는 process를 다시 시작한 뒤에도
 > compilation, source root, replay Run, artifact digest와 최종 seal root를 대조합니다. 자세한
@@ -90,13 +90,12 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   envelope로만 Worker에 들어갑니다. Docker argument, environment variable, Job metadata,
   event, evidence에는 절대 들어가지 않습니다.
 - Docker image는 allowlist로 제한되며 Campaign 중 암시적으로 pull되지 않습니다.
-- 제품 수준 confirmation에는 성공적인 독립 Restricted Reproducer 결과와 objective Gate가
-  필요합니다. Semantic Validator 표식만으로는 충분하지 않습니다.
-- KISA `fixed` 판정은 봉인된 `validation/v1alpha1`의 reproduction-backed baseline과 exact
-  Candidate/Decision/Finding/remediation/retest Run/root/request/scenario/threat/Tool/target 결박을
-  요구합니다. 단순한 공격 신호 부재, Worker 판정 flag, 또는 `supports_claim == false`는 negative
-  proof가 아닙니다. 결박·무결성 불일치는 명령을 fail closed로 종료하며 baseline artifact를
-  변경하지 않습니다.
+- 제품 수준 confirmation에는 objective Gate, Candidate-bound replay, 독립적으로 검증 가능한
+  execution/target attestation이 모두 필요합니다. 현재 저장소에는 마지막 authority가 없으므로
+  Worker-only 증거는 `needs-review`를 넘을 수 없습니다.
+- KISA `fixed`에는 독립적으로 검증 가능한 remediation attestation도 필요합니다. 정확한 결박,
+  성공한 반복, negative transcript, Worker flag, 로컬 receipt는 일관성 확인에는 필요하지만
+  충분한 proof가 아니며, 현재 negative replay는 `inconclusive`로 남습니다.
 - `ReplayIntent`는 엄격한 non-executable schema입니다. raw Tool request, command, 임의 URL,
   Capability Grant, 선언되지 않은 executable field는 거부됩니다. 버전 지정 replay artifact가
   Candidate, Run, original/replay request, Mode, scenario, Tool, target, threat identity를 결박한
@@ -111,7 +110,7 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 - Local KISA replay ticket 상태는 봉인된 replay Run 외부의 안정된 SQLite 원장에 저장됩니다.
   원장은 원자적 일회용 상태 전이와 read-only verifier를 사용하지만 host OS account/ACL 경계
   아래의 로컬 데이터베이스로 신뢰됩니다. 이 원장은 portable signed proof, off-host attestation,
-  PostgreSQL Control Plane replay authority가 아닙니다.
+  PostgreSQL Control Plane replay authority가 아니며 제품 수준 Confirmed/FIXED authority도 아닙니다.
 - 명시적 Local KISA coordinator는 한 process와 한 writer로 제한되며, 정확한 M03, M06, A04
   `ai.chat-probe` 계약만 allowlist에 포함됩니다. generic structural replay predicate나
   distributed lock이 아닙니다. 승인된 ADR 0029는 Control Plane replay의 artifact handoff, lease
@@ -164,7 +163,10 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   WORKER-role HTTP endpoint와 대응 async client method로 노출합니다. strict JSON
   `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist는 인증된 Worker subject만 받으며,
   설정이 없으면 빈 allowlist로 fail closed합니다. 예를 들어
-  `{"worker-service":["kisa-exact-v1"]}`는 해당 subject에 해당 profile 하나만 허용합니다. claim과
+  `{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 해당
+  profile 하나를 허용합니다. Route 권한도 대칭입니다. 이 Replay subject는 모든 일반 Worker
+  route에서 거부되고, 일반 Worker와 그 밖의 non-allowlisted subject는 모든 Replay route에서
+  거부됩니다. claim과
   heartbeat는 정확한 서버 검증 canonical `ReplayCompilation`을 담은
   `ReplayExecutionClaimView`를 반환하고, envelope는 canonical compilation, Candidate, contract, Grant,
   Campaign, Mode, Candidate Run, Replay Run 결박을 다시 확인합니다. permit은 발급 시 durable unit을 이미
@@ -178,11 +180,17 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   compilation/context/ticket의 전이적 결박을 다시 검증합니다. v6→v7 migration은
   non-dispatchable v6 상태만 context table이 빈 채로 전진시키며, 정확한 과거 context byte를 backfill할 수
   없으므로 ticket, permit, 내부 Replay Job, durable reservation 또는 진행된 batch/item 상태가 있으면
-  fail closed합니다. 이 context byte는 실행이나 output 저장 자체를 구현하지 않습니다. 실제 Replay
-  executor는 아직 없으며 Compose는 전용 Replay executor daemon을 활성화하지 않습니다. public Replay
-  admission/read API, 실제 executor와 pre-dispatch permit-use 집행, Worker execute/seal 분리, output
-  import와 typed finalization, 새 identity retry 발행, Gate 연결과 negative Control Plane retest가 남아
-  있어 M6-07B 전체는 여전히 미완료입니다.
+  fail closed합니다. 이제 전용 `kisa-exact-v1` daemon은 그 profile만 claim하고 fenced lease를
+  heartbeat하며, 실제 Tool dispatch 직전에 매번 durable server permit 하나를 발급받아 정확한 opaque
+  staging slot에 output을 seal합니다. Worker는 path, ArtifactRef, result, digest 또는 verdict를 제출하지
+  않습니다. Schema v9 finalization은 그 slot을 서버 소유 repository로 import한 뒤 seal을 독립적으로
+  다시 열고, compilation/ticket/source/permit lineage를 검증하며, 공통 Gate 결정을 파생하고 output
+  Artifact, ticket, Job, item, batch, Run과 audit state를 원자적으로 finalize합니다. 이때 permit
+  발급에서 budget/rate unit을 이미 소비한 authority를 다시 검증합니다.
+  Permit이 하나라도 존재한 뒤 실행이 실패하면 terminal이며 같은 ticket의 자동 dispatch retry는
+  금지됩니다. 동일한 ordinal-bound permit 요청과 동일한 서버 finalization 요청의 정확한
+  response-loss retry는 모두 멱등이며 어느 쪽도 Tool dispatch를 재시도하지 않습니다. Public admission/read
+  API, fresh-identity retry 발행과 negative Control Plane retest는 아직 완료되지 않았습니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 
@@ -222,17 +230,26 @@ python -m venv .venv
 | CTF | `ctf-run`, `ctf-web-run`(호환 alias), `ctf-suite-run` |
 | 증거 및 인프라 | `evidence-verify`, `replay-verify`, `worker-check`, `egress-check`, `mcp-check` |
 
-선택적 server process는 `pajin-control-plane`과 `pajin-worker-daemon`으로 설치됩니다. 정확한
+선택적 server process는 `pajin-control-plane`, `pajin-worker-daemon`,
+`pajin-replay-worker-daemon`으로 설치됩니다. 정확한
 option 목록은 `pajin --help` 또는 `pajin <command> --help`로 확인합니다.
 
 ## 수직 슬라이스 실행
 
 ```powershell
 .venv\Scripts\pajin validate examples\ai-redteam.yaml
+.venv\Scripts\pajin run examples\ai-redteam.yaml
+
+# 명시적인 개발/테스트 전용 실행
 .venv\Scripts\pajin run examples\ai-redteam.yaml --worker simulated
 ```
 
-simulated backend는 결정론적 개발과 unit test에만 사용됩니다. 격리 경계가 아닙니다.
+`run`과 `multi-run`의 기본값은 Docker Worker입니다. simulated backend는 명시적으로 선택해야
+하며 결정론적 개발과 unit test에만 사용됩니다. 이는 격리 경계가 아니고 실제 target evidence를
+만들지 않습니다. 모든 Local/Multi-Agent Run은 실제 backend identity를
+`execution-context.json`에 봉인하고 `run.json`과 start event에 반복 기록하며 report에도
+표시합니다. simulated CLI 출력과 report에는 `SIMULATED / NOT REAL TARGET EVIDENCE` 경고가
+명시됩니다.
 
 ## Bug Bounty 범위 파서
 
@@ -264,14 +281,20 @@ rule에는 맞지 않으면서 allow rule에는 맞는 구체적 entry point를 
 dispatch 전에 allow/deny scope, method 및 category allowlist, 주간 test window, sliding 1분
 request limit을 집행합니다.
 
+컴파일 시점에 승인도 활성 상태여야 합니다. 구체적 entry point가 있더라도 `generic-http`
+profile인 asset은 PAJIN에 제한된 probe profile이 구현될 때까지 review-only이며, 이런 target이
+섞인 manifest는 해당 target을 조용히 건너뛰지 않고 전체 컴파일에 실패합니다. review와 Campaign
+artifact는 destination이 없거나 regular file일 때만 atomic replace하며, parent나 leaf가 symbolic
+link이면 거부합니다.
+
 Evidence retention은 계속 명시적인 수동 제어입니다. duplicate triage는 타입이 지정된 로컬
 snapshot을 사용할 수 있지만, 이 snapshot을 platform 또는 issue tracker와 동기화하는 작업은
 수동입니다.
 
 ### Finding triage와 제출 초안
 
-완료된 Bug Bounty Campaign에 validation Finding이 있으면 선택적 program-specific known-finding
-index와 비교하여 제출 초안을 만듭니다.
+완료된 Bug Bounty Campaign에 봉인된 validation snapshot이 있으면 보고 가능한 Candidate와
+Finding을 program-specific known-finding index와 비교하여 로컬 검토 초안을 만듭니다.
 
 ```powershell
 .venv\Scripts\pajin bug-bounty-report `
@@ -280,9 +303,12 @@ index와 비교하여 제출 초안을 만듭니다.
   --known-findings examples\bug-bounty-known-findings.yaml
 ```
 
-Reporter는 Run이 현재 program digest와 정확히 컴파일된 scope policy를 사용했는지 다시
-확인하고 선언된 target만 받아들입니다. 인용한 모든 evidence file은 해당 Run의 `evidence/`
-directory 안에서 resolve되어야 합니다. immutable-input 보고서 묶음은 다음 위치에 작성됩니다.
+Reporter는 완전한 versioned projection이 존재하면 이를 포함하여 정확히 봉인된
+Candidate/Decision snapshot을 로드합니다. Run이 현재 program digest와 정확히 컴파일된 scope
+policy를 사용했는지 다시 확인하고 선언된 target만 받아들입니다. 인용한 모든 evidence file은
+해당 Run의 `evidence/` directory 아래에 봉인되어 있어야 합니다. 일부만 존재하거나 대체되었거나
+authority가 일치하지 않는 snapshot은 fail-closed로 거부합니다. immutable-input 보고서 묶음은
+다음 위치에 작성됩니다.
 
 ```text
 bug-bounty-reports/<triage-id>/
@@ -298,10 +324,24 @@ Run과 정확히 일치할 때만 자동으로 억제합니다. 해결된 known 
 remediation, component, root-cause data가 빠지면 자동 제출 대신 명시적 TODO가 있는 초안을
 만듭니다.
 
-생성된 Markdown은 로컬 초안일 뿐입니다. PAJIN은 Bug Bounty platform에 제출하지 않으며 서명되지
-않은 로컬 evidence에 production-grade artifact integrity가 있다고 주장하지 않습니다. 현재 초안
-flow는 legacy validation projection을 사용합니다. 새 replay request와 evidence lineage로
-control-set probe를 다시 실행하기 전까지는 제품 수준 Confirmed가 아닙니다.
+program이 `duplicateCheckRequired: true`를 선언한 경우 `--known-findings` 생략을 권위 있는 빈
+index로 취급하지 않습니다. 해당 item에는 `duplicate-check-not-performed`가 기록되고
+`needs-review`와 submission-ineligible 상태로 남습니다. `findings: []`인 타입 지정 index를
+제공해야 “검사를 수행했지만 알려진 일치 항목이 없음”을 뜻합니다. 구체 target이
+`eligibleForBounty: false` asset에만 속한 Finding도 나머지 field와 관계없이 `needs-review`로
+남습니다.
+
+정확한 Decision에 objective check와 semantic check 성공이 기록되었지만 독립 재현이 없는
+Candidate는 `semantic-review-only`로 보존됩니다. 이 item에는
+`independent-reproduction-not-confirmed`가 기록되고 `needs-review`,
+`submissionEligible: false` 상태로 남으며, 운영자 검토 전용임을 명시한 초안을 만들 수 있습니다.
+지원되지 않거나 inconclusive/rejected 상태이거나 authority가 일치하지 않는 Candidate 주장은
+초안으로 승격되지 않습니다. 봉인된 `verified-independent-replay` projection에서 가져온 Finding만
+`ready` 및 제출 가능 상태가 될 수 있습니다. 독립적으로 검증 가능한 target-execution attestation이
+없는 Worker-only replay evidence는 계속 검토 전용입니다.
+
+생성된 Markdown은 로컬 초안일 뿐입니다. PAJIN은 Bug Bounty platform에 제출하지 않으며 로컬
+evidence에 production-grade 외부 attestation이 있다고 주장하지 않습니다.
 
 ### 자동화된 로컬 Bug Bounty lab
 
@@ -360,8 +400,8 @@ docker compose -f containers\compose.bug-bounty-lab.yaml down
 ```
 
 `bug-bounty-run`은 항상 Docker Worker를 사용하고 로컬 evidence와 triage 초안을 만들며 외부에
-보고서를 제출하지 않습니다. 일반 공개 Bug Bounty asset은 계속 검토하고 컴파일할 수 있지만,
-별도로 제한된 probe profile이 구현되기 전에는 실행할 수 없습니다.
+보고서를 제출하지 않습니다. 일반 공개 Bug Bounty asset은 계속 검토할 수 있지만, 별도로 제한된
+실행용 probe profile이 구현되기 전에는 compiler가 명시적으로 거부합니다.
 
 ## 로컬 CTF Mode
 
@@ -488,8 +528,9 @@ unconfirmed 상태로 남습니다.
 Mode Pack은 KISA AI Security Red Teaming Guide의 19개 위협 분류를 typed catalog에 매핑하고,
 target-compatible 시나리오를 선택하며, 각 시나리오를 별도 Specialist Agent에서 실행합니다.
 그런 다음 same-Run evidence 확인 후 Candidate와 legacy validation Finding의 중복을 제거합니다.
-M03·M06·A04의 trusted Candidate는 별도 replay Run과 공통 Gate를 거쳐 reproduction-backed
-Confirmed projection으로 승격될 수 있습니다. 그 밖의 요청 위협은 실행 가능한 target-linked
+M03·M06·A04의 trusted Candidate는 별도 replay Run과 공통 Gate를 거쳐 봉인된
+`verified-replay-evidence` projection을 받을 수 있지만, 독립 실행 attestation 없이는
+`needs-review`로 남습니다. 그 밖의 요청 위협은 실행 가능한 target-linked
 scenario와 명시적인 replay 계약이 추가될 때까지 coverage gap 또는 `needs-review`로 남습니다.
 
 `kisa-run`은 표준 Run artifact 외에도 다음 파일을 작성합니다.
@@ -532,11 +573,11 @@ filesystem과 Linux Capability가 없는 non-root user로 실행되며, producti
 완료된 `kisa-run`은 적격한 신뢰 M03, M06, A04 Candidate를 별도 replay Run에서 추가로 재현합니다.
 각 시도는 source 실행 및 다른 모든 시도와 구별되는 session을 사용합니다. live KISA Oracle은 raw
 transcript에서 정확한 catalog check를 다시 계산하고 source/replay link는
-`kisa-replay-index.json`에 기록됩니다. 검증된 receipt가 하나 이상 projection에 들어가면
-`confirmationMutationApplied`는 `true`이고, 적격한 검증 receipt가 없는 Run은 `false`로
-유지됩니다. 공통 Gate는 receipt를 다시 불러와 봉인된 `validation/v1alpha1`
-Decision/Finding/report projection을 append합니다. 원래 flat artifact는 변경 불가능한 pre-replay
-snapshot으로 유지됩니다.
+`kisa-replay-index.json`에 기록됩니다. 현재 Worker-only 경로의
+`confirmationMutationApplied`는 `false`로 유지됩니다. 공통 Gate는 receipt를 다시 불러와
+`verified-replay-evidence` 의미의 봉인된 `validation/v1alpha1`
+Decision/evidence/report projection을 append합니다. 원래 flat artifact는 변경 불가능한
+pre-replay snapshot으로 유지되고 제품 Finding은 추가되지 않습니다.
 
 로컬 positive replay ticket 원장은 선택한 output root의
 `<output>/replay/replay-tickets.sqlite3`에 저장됩니다. 발급된 compilation과 source root, replay
@@ -547,7 +588,8 @@ verifier로 다시 확인할 수 있습니다.
 `<output>/local-replay/replay-tickets.sqlite3`를 사용합니다. source Run, Candidate, SQLite
 ticket과 별도 replay Run을 같은 process의 single writer가 순서대로 만든 뒤 공통 Gate가
 canonical receipt를 다시 읽습니다. Gate는 flat `findings.json`을 변경하지 않고
-`validation/v1alpha1/` projection만 reproduction-backed Confirmed로 확장합니다.
+`validation/v1alpha1/` projection에 Candidate-bound evidence와
+`independent-execution-attestation-missing` 사유만 추가합니다.
 
 ```powershell
 .venv\Scripts\pajin replay-verify <replay-run-directory> `
@@ -580,8 +622,9 @@ docker compose -f containers/compose.ai-lab.yaml `
   -f containers/compose.ai-lab.hardened.yaml down
 ```
 
-`kisa-retest`는 봉인된 `validation/v1alpha1`에 reproduction-backed Confirmed로 기록된 baseline
-Finding만 소비합니다. legacy flat Finding, semantic-only Candidate, 미확정 baseline은 재검증
+`kisa-retest`는 독립 attestation을 거쳐 봉인된 `validation/v1alpha1` Confirmed projection에
+기록된 baseline Finding만 소비합니다. 현재 Worker-only baseline은 이 조건을 충족하지 않습니다.
+legacy flat Finding, semantic-only Candidate, 미확정 baseline은 재검증
 기준으로 받아들이지 않습니다. 일반 parent retest Run은 정상 기능 probe와 regression을
 수행하고, baseline-bound Restricted Replay는 각 기준 Candidate의 원 request·scenario·threat·
 Tool·target을 그대로 컴파일해 별도 공격 replay Run에서 실행합니다. 두 경로의 결과는 구분해
@@ -589,25 +632,27 @@ Tool·target을 그대로 컴파일해 별도 공격 replay Run에서 실행합�
 
 재검증 Gate는 canonical receipt를 디스크에서 다시 열어 Candidate, source Decision, versioned
 Finding, remediation action, baseline/retest Run과 seal root, original/replay request, scenario,
-threat, Tool, target 결박을 확인합니다. 모든 기대 반복이 성공하고 trusted negative Oracle이 원
-compromise claim에 대해 명시적으로 `ReplayOracleVerdict.CONTRADICTS`를 반환할 때만 `fixed`입니다.
-검증된 `ReplayOracleVerdict.SUPPORTS`는 `still-vulnerable`로 판정됩니다. support와 contradiction이
+threat, Tool, target 결박을 확인합니다. 이 확인만으로 remediation이 의도한 target에서 실행됐음을
+독립적으로 증명할 수는 없습니다. 따라서 모든 반복이 deterministic-lab response와 일치해도
+negative Worker transcript는 `inconclusive`로 남습니다. 검증된
+`ReplayOracleVerdict.SUPPORTS`는 기존 신뢰 baseline을 `still-vulnerable`로 판정합니다. support가
 섞였거나 반복 부족·실행 실패·취소·timeout·target unavailable·명시적인 방어 증적 부재가 있으면
 `inconclusive`입니다. 기존 positive Oracle은 zero support를
 계속 `inconclusive`로 처리하며, Worker의 `vulnerable=false`나 단순 신호 부재만으로 `fixed`를
 주장하지 않습니다. 결박 또는 무결성 불일치는 상태로 축소하지 않고 명령을 fail closed로
 종료합니다.
 
-현재 trusted negative predicate는 결정론 KISA Lab의 M03·M06·A04에 등록된 정확한 방어 응답,
-이전 turn compromise marker 부재, `toolCalls`·`memoryWrites` 부재를 함께 다시 계산합니다. A04는
-첫 write 거부와 후속 lookup의 non-persistent response를 구분합니다. `safety.blocked`와 reason만으로는
-반증이 되지 않으며, 등록 response와 일치하지 않는 metadata, 미등록 방어 문구 또는 target은
-안전하게 `inconclusive`로 판정됩니다.
+결정론 KISA Lab에 등록된 정확한 방어 응답은 공개 test fixture이지 trusted remediation
+predicate가 아닙니다. 해당 문자열, model metadata, `safety.blocked`, compromise marker·
+`toolCalls`·`memoryWrites` 부재가 모두 일치해도 lab 또는 일반 target을 `fixed`로 만들 수 없으며,
+외부 attestation 없이는 모두 `inconclusive`입니다.
 
 정상 기능 regression은 Finding 상태와 독립적으로 평가됩니다. `kisa-retest`의 범위 한정 Exit
 Gate는 모든 baseline Finding이 `fixed`, `still-vulnerable`·`inconclusive`가 0, 실행 중 관찰된
 새 Confirmed Finding이 0, regression이 `pass`일 때만 열립니다. 그 밖의 결과는 artifact를 봉인한
-뒤 non-zero로 종료됩니다. 이 명령은 baseline closed loop이지 새로운 위협 유형을 찾는 전체
+뒤 non-zero로 종료됩니다. 현재 Worker-only 구현은 `fixed` 선행 조건을 충족할 수 없으므로 외부
+attestation 경로가 구현될 때까지 Gate는 닫힌 상태입니다. 이 명령은 baseline closed loop이지
+새로운 위협 유형을 찾는 전체
 rescan이 아닙니다. 신규 취약점 부재까지 주장하려면 별도의 fresh `pajin kisa-run` discovery
 Gate를 실행해야 합니다. 이 discovery도 현재 실행 가능한 시나리오 범위만 다루며, 나머지 KISA
 위협은 아직 `not assessed`입니다.
@@ -682,11 +727,24 @@ Restricted Reproducer 단계는 아직 구현되지 않았습니다. Reporter ou
 `model-narrative.json`에 별도로 저장되어 명확히 하위 섹션으로 append되며, canonical Finding이나
 실행 상태를 변경할 수 없습니다.
 
-`maxModelCalls`와 `maxModelTokens`는 model 사용량을 각각 제한하고, 실제 token 사용량과 등록 시
-제공된 100만 token당 rate는 `maxCostUsd`에 반영됩니다. Provider failure, refusal, schema error는
-결정론적 fallback 전에 최대 두 번 재시도합니다. duration, Capability, token, cost가 소진되면
-fallback을 활성화하지 않고 Campaign을 종료합니다. `--allow-private-provider`를 명시하지 않으면
-private Provider destination은 거부됩니다. 과금 Provider에서는 신뢰된 Provider pricing
+`maxModelCalls`와 `maxModelTokens`는 Campaign 내부 model 사용량을 각각 제한하며, `maxCostUsd`는
+등록 시 제공된 100만 token당 rate를 같은 보수적 예약량에 적용합니다. Provider가 보고한 token
+usage와 그 값으로 계산한 reported cost는 비신뢰 감사 관찰값으로만 보존됩니다. 이 값은 Campaign
+집행 차감을 줄이지 않으며 외부 Provider 청구서를 정산하는 근거도 아닙니다. PAJIN은 dispatch 전에
+canonical request의 UTF-8 byte마다 token 4개를 예약하고 base, message별, tool별, assistant tool
+call별, response-format별 framing 상한을 명시적으로 더합니다. 요청에 선언된
+`max_completion_tokens`와 그 최대 비용도 함께 예약합니다. dispatch가 증명된 뒤에는 성공, 실패,
+취소, usage 누락·불일치 또는 예약 상한을 넘는 보고와 관계없이 보수적 예약량 전체를 확정
+소비합니다. 명백한 미실행만 예약을 해제합니다. 따라서 Campaign의 `maxModelTokens`는 적어도 한
+번의 완전한 in-flight 예약을 수용해야 합니다. 이는 Campaign 내부 보호 장치이며 외부 과금
+정산이 아닙니다.
+
+Provider failure, refusal, schema error는 결정론적 fallback 전에 최대 두 번 재시도합니다.
+duration, Capability, token, cost가 소진되면 fallback을 활성화하지 않고 Campaign을 종료합니다.
+Bearer 인증을 사용하는 public Provider endpoint에는 HTTPS가 필수입니다. 평문 HTTP는 고정된
+loopback/local-lab host와 명시적 private-network opt-in이 모두 있을 때만 허용됩니다.
+`--allow-private-provider`를 명시하지 않으면 private Provider destination은 거부됩니다. 과금
+Provider에서는 신뢰된 Provider pricing
 configuration에 따라 `--input-cost-per-million`과 `--output-cost-per-million`을 설정합니다.
 
 ### 정책 통제를 받는 반복형 Tool Loop
@@ -737,6 +795,24 @@ durable Job queue를 추가합니다. Run 제출은 idempotent하고, Worker cla
 heartbeat를 사용하며, 중단된 lease는 queue에 다시 들어가고, 모든 transition은 audit event를
 append합니다. PostgreSQL은 event table의 update 또는 delete 시도를 거부합니다.
 
+schema v10은 SQLite와 PostgreSQL 모두에서 제출 및 lease 권위를 영속화합니다. canonical digest는
+인증 actor, Campaign, input, idempotency key, Job kind와 retry limit을 결박합니다. 정확히 같은
+재시도만 기존 Run을 반환하고 필드 하나라도 바뀌면 fail closed합니다. v9→v10 forward migration은
+정확한 public submission graph만 재구성하며 모호한 legacy Run은 non-replayable로 표시합니다.
+별도의 Job digest는 Job/Run ID, kind, payload, retry limit과 idempotency key를 결박하며 migration,
+startup validation과 claim에서 이 결박을 다시 계산합니다. database guard는 migration 뒤 늦게
+재개된 v9 insert, core row delete/replace와 identity 변경, 허용되지 않은 lifecycle transition,
+terminal history 변경, 잘못된 JSON authority와 lease deadline 연장을 거부합니다. 각 lease에는
+claim 뒤 최대 24시간인 절대 server deadline이 있고 heartbeat는 이를 연장할 수 없습니다. lease
+갱신은 계속 영속화하되 audit heartbeat event는 60초당 최대 하나로 coalesce합니다.
+
+mutation endpoint는 authentication 또는 parsing 전에 4 MiB를 넘는 request body를 거부합니다.
+그 뒤 submit input, completion result와 checkpoint state에는 operation별 canonical JSON 한도
+(UTF-8 최대 1,000,000 bytes 및 제한된 depth, node, key, key 길이, string 길이)를 적용합니다.
+escaped 표기가 decode된 뒤 같은 이름이 되는 경우를 포함해 모든 depth의 duplicate object key는
+422로 거부하고 wire-size 위반은 413입니다. 저장된 input, result와 checkpoint state는 소유권이
+분리된 snapshot이므로 caller mutation이 저장 권위, digest 또는 signature를 바꿀 수 없습니다.
+
 T3/T4 checkpoint 생성은 정확한 call fingerprint, Tool, target, tier, expiry를 기록합니다.
 checkpoint payload는 database 외부에 보관된 key로 서명됩니다. Approver credential만 요청을
 결정할 수 있고 Operator만 승인된 결정을 소비할 수 있습니다. resume은 checkpoint를 원자적으로
@@ -750,6 +826,10 @@ $env:PAJIN_CP_DATABASE_URL='sqlite:///./.pajin/control-plane.db'
 $env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
 $env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
 $env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
+$env:PAJIN_CP_WORKER_SUBJECT='worker-service'
+$env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
+$env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
+$env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
@@ -763,8 +843,10 @@ consumer에게서 입력받지 않습니다. 두 값을 생략하면 managed Art
 source resolution은 사용할 수 없으며 fail closed합니다. 현재 durable admission은 directory
 `fsync`를 지원하는 POSIX filesystem/runtime도 필요하며, 미지원 환경에서는 fail closed합니다.
 
-SQLite는 로컬 compatibility store이며 production multi-Worker queue가 아닙니다. 대신 loopback에서
-PostgreSQL lab을 실행합니다.
+SQLite는 로컬 compatibility store이며 production multi-Worker queue가 아닙니다. SQLite 변경
+transaction은 즉시 writer reservation을 획득해 프로세스 간 claim 및 completion state machine을
+직렬화하고, 순수 get/list 작업은 rollback-only snapshot read를 사용해 해당 writer reservation을
+획득하지 않습니다. 대신 loopback에서 PostgreSQL lab을 실행합니다.
 
 ```powershell
 docker compose -f containers/compose.control-plane.yaml up --build --detach --wait
@@ -848,10 +930,28 @@ first-write-wins이므로 이후 shutdown이나 transport failure가 원래 원�
 cleanup이 완료되면 local runner receipt가 Run evidence와 함께 봉인됩니다. receipt가 없다는 사실이
 cleanup 성공을 뜻하지는 않습니다.
 
+이 내장 Adapter는 실제 target 또는 Provider 실행이 아니라 명시적인 검증 profile입니다. 완료된
+Job result에는 `executionProfile`과 canonical `executionContext`가 포함되고, 같은 context가
+`execution-context.json`으로 봉인되어 completion 수락 전에 `run.json`과 결박됩니다. 따라서 기본
+profile은 `simulated: true`, `evidenceScope: simulated-development-only`를 보고합니다. Docker-backed
+Adapter는 `worker-observed-execution`을 보고하고, 그 밖의 custom backend는 실제 target 증거로
+승격되지 않고 `custom-backend-unclassified`로 남습니다.
+
 | Worker 설정 | 기본값 및 허용 범위 | 경계 |
 | --- | --- | --- |
+| `PAJIN_CP_URL` | HTTPS origin URL | Bearer 인증 transport는 기본적으로 HTTPS만 허용하며 credential, path, query, fragment, 잘못된 authority, HTTP(S) 이외 scheme을 거부 |
+| `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `false`; 번들 Compose lab에서만 literal `true` | loopback 또는 `control-plane` Compose service 이름에만 HTTP를 명시적으로 허용하며 원격·production transport에서는 절대 활성화하지 않음 |
 | `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS` | 2초; 0.05-30 | daemon이 `task.cancel()`을 호출하기 전 cooperative return |
 | `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS` | 5초; 0.05-30 | forced task cancellation 이후 및 각 final drain의 제한된 wait |
+| `PAJIN_DAEMON_STATUS_PATH` | `~/.pajin/status/worker-status.json` | Host 기본값은 shared가 아닌 사용자 home 아래에 있고 custom parent는 daemon 소유이며 group/other 쓰기가 불가해야 함 |
+
+서버 lease timestamp는 보수적으로 local monotonic request-start 시점에 고정됩니다. 멈춘
+heartbeat가 authority를 연장할 수 없도록 local deadline에서 두 daemon 모두 heartbeat I/O를
+취소하고 grace 지연 없이 executor를 강제 quiesce하며 stale finalization을 거부합니다. 상태 갱신은
+공통 dirfd 기반 exclusive random temp, fsync, atomic replace writer를 사용합니다.
+status writer와 Tool Loop continuation-checkpoint writer에는 POSIX dirfd/`O_NOFOLLOW` 의미 체계가
+필요합니다. native Windows daemon은 어느 write도 시작하기 전에 fail closed하며 Linux container
+또는 WSL에서 실행해야 합니다. PowerShell 기반 Compose는 계속 지원됩니다.
 
 daemon은 아직 pending인 task를 drain하기 위해 grace window 한 번, forced window 한 번, 추가
 forced window 한 번을 사용할 수 있습니다. 따라서 process supervisor는
@@ -868,7 +968,8 @@ profile이며 이를 내장하지 않습니다. 사용자 지정 Docker-backed A
 window를 사용하고 Supervisor 허용 시간을 그에 맞게 늘려야 합니다. 예를 들어 `grace=2`,
 `force=25`, stop grace는 최소 60초로 설정합니다.
 
-Control Plane Compose stack은 PostgreSQL, API, non-root Worker daemon 한 개를 시작합니다.
+Control Plane Compose stack은 PostgreSQL, API, 일반 non-root Worker daemon 하나와 다음
+절에서 설명하는 전용 Replay daemon을 함께 시작합니다.
 
 ```powershell
 docker compose -f containers/compose.control-plane.yaml up --detach --no-build --wait
@@ -884,7 +985,7 @@ test는 격리된 lab Worker container만 추가로 종료하고 PostgreSQL leas
 
 ```powershell
 $env:PAJIN_TEST_CONTROL_PLANE_URL='http://127.0.0.1:18090'
-$env:PAJIN_TEST_WORKER_CRASH_CONTAINER='containers-worker-daemon-1'
+$env:PAJIN_TEST_WORKER_CRASH_CONTAINER='pajin-control-plane-lab-worker-daemon-1'
 .venv\Scripts\pytest -q tests/test_worker_daemon_crash_live.py
 Remove-Item Env:PAJIN_TEST_WORKER_CRASH_CONTAINER
 Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
@@ -892,17 +993,100 @@ Remove-Item Env:PAJIN_TEST_CONTROL_PLANE_URL
 
 Job delivery는 at least once입니다. 외부 Tool side effect 뒤 durable completion 전의 crash는 해당
 Tool을 replay할 수 있습니다. 따라서 production Adapter는 destination idempotency key를 전달하거나
-replay risk를 명시적인 policy/approval 결정으로 만들어야 합니다. Compose artifact는 tmpfs를
-사용하며 durable evidence store가 아닙니다. [`ADR 0012`](docs/adr/0012-lease-aware-worker-daemon.ko.md)를
-참고하십시오.
+replay risk를 명시적인 policy/approval 결정으로 만들어야 합니다. 일반 daemon의 Compose Run
+output은 tmpfs를 사용하며 durable evidence store가 아닙니다.
+[`ADR 0012`](docs/adr/0012-lease-aware-worker-daemon.ko.md)를 참고하십시오.
+
+### 전용 Control Plane Replay Worker
+
+`pajin-replay-worker-daemon`은
+`python -m pajin.control_plane.replay_worker_main`과 같은 전용 single-Job daemon입니다. 일반
+Campaign 또는 Tool Loop executor를 등록하지 않습니다. 권위 흐름은 다음과 같이 제한됩니다.
+
+1. 인증된 Worker subject에 정확히 `kisa-exact-v1`이 allowlist된 서버 발행 `replay` Job만
+   claim하고 ticket-bound lease와 fence를 heartbeat합니다.
+2. canonical claim에서 정확한 KISA Campaign/Scenario/Tool context를 복원하고, 각 Gateway
+   dispatch 직전에 ordinal-bound durable Tool permit을 발급받습니다.
+3. 서버가 예약한 opaque staging slot 안에만 Replay Run을 쓰고 두 번 seal합니다.
+4. profile, lease token, ticket, fence와 staging ID만 finalize합니다. Control Plane은 해당 slot을
+   import하고 immutable copy를 다시 열어 두 seal과 모든 permit/request 결박을 검증하며, 공통
+   confirmation Gate를 파생하고 Artifact와 schema-v9 append-only finalization을
+   Job/ticket/item/batch/Run 전이와 함께 원자적으로 commit합니다. 이때 permit 발급에서
+   budget/rate unit을 이미 소비한 authority를 다시 검증합니다.
+
+Worker는 filesystem path, `ArtifactRef`, result, digest, Oracle verdict 또는 `confirmed`
+disposition을 제출할 수 없습니다. Permit은 dispatch 전에 durable하게 소비되는 non-bearer
+proof입니다. Permit이 하나라도 생긴 뒤 실행이 실패하면 해당 시도는 terminal이며 같은 Job/ticket을
+자동으로 다시 dispatch하지 않습니다. 외부 destination은 여전히 exactly-once 또는 rollback을
+제공하지 않습니다. 동일한 ordinal-bound permit 요청과 서버 finalize 요청의 정확한 response-loss
+retry는 모두 멱등이며 어느 경로도 Tool을 다시 dispatch하지 않습니다. 현재 executor는
+명시적인 M03, M06, A04 `ai.chat-probe` confirmation 계약만 지원하고 Secret Lease를 금지하며, 한
+host의 shared POSIX filesystem과 Docker daemon을 사용합니다. Generic Replay executor, negative
+retest Worker, multi-host 전송 protocol 또는 portable attestation이 아닙니다.
+
+Compose lab은 고정 Tool Worker 및 egress-proxy image를 build하고 owner-only volume initializer,
+API, 일반 daemon, 전용 Replay daemon을 시작합니다. API와 Replay daemon은 모두 `10001:10001`로
+실행되며 `/var/lib/pajin/artifact-staging`만 공유합니다. Managed repository volume은 API에만
+mount됩니다. Initializer는 두 root를 해당 identity 소유, mode `0700`으로 만들고 symlink 또는 invalid
+root에서는 fail closed합니다. Docker의 fresh named-volume root는 root-owned이므로 이 one-shot
+initializer만 root와 `CHOWN` capability로 실행합니다. 각 고정 mount path를 no-follow 방식으로
+root에 handoff한 뒤 같은 inode를 열어 검증하고, 해당 descriptor로 private mode와 최종 소유권을
+적용한 다음 fsync하고 API 시작 전에 종료합니다. 모든 long-running PAJIN service는
+계속 `10001:10001`입니다. Named Artifact volume은 일반 restart 뒤에도 남지만 local-lab storage일
+뿐이며 `down --volumes`가 제거합니다.
+
+Replay daemon에는 Docker CLI와 `/var/run/docker.sock`의 read/write bind mount가 필요합니다. Host가
+socket을 group 0에 노출하지 않으면 socket group을 설정합니다.
+
+```bash
+export PAJIN_DOCKER_SOCKET_GID="$(stat -c '%g' /var/run/docker.sock)"
+docker compose -f containers/compose.control-plane.yaml up --build --detach --wait
+```
+
+Replay daemon 시작 전에는 동일 UID, socket mount, supplemental group을 쓰는 networkless one-shot
+preflight가 Docker server 접근, 고정 image 두 개, configured proxy uplink를 검사합니다. 하나라도
+실패하면 Compose가 daemon 시작을 막습니다. 이 검사는 현재 lab wiring만 확인하며 Docker socket의
+권위를 줄이지는 않습니다.
+
+Docker Desktop lab 기본값인 supplemental group 0은 보통 VM socket과 일치합니다. Docker socket은
+사실상 host-root 권위입니다. Docker API client가 시작하거나 mount할 수 있는 대상은 non-root UID,
+dropped capability, read-only root filesystem, `no-new-privileges`로 제한되지 않습니다. 이 daemon을
+untrusted code 또는 인증되지 않은 remote daemon에 노출하지 마십시오. Production에서는 전용 Docker
+host 또는 별도 설계한 restricted broker가 필요합니다. 번들 Compose는 전용
+`pajin-replay-uplink-lab` network를 생성하며, 다른 `PAJIN_REPLAY_EXTERNAL_NETWORK` override는
+미리 존재해야 합니다. Proxy image preflight와 실행별 egress proxy만 이 uplink에 연결되고 실행
+Worker는 호출별 internal network에 남습니다.
+
+| Replay Worker 설정 | Compose 값 | 경계 |
+| --- | --- | --- |
+| `PAJIN_CP_URL`, `PAJIN_CP_REPLAY_WORKER_TOKEN` | HTTPS API origin, 별도 Replay Worker secret | 필수 인증 Replay transport이며 token은 Operator, Approver, 일반 Worker credential과 달라야 하고 Replay/일반 Worker route는 서로의 subject를 거부하며 production에서는 managed secret 필요 |
+| `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | 번들 Compose에서만 `true`; 기본 `false` | `http://control-plane:8090`을 위한 좁은 local-lab 예외이며 원격 HTTP는 계속 거부되고 production은 HTTPS를 사용해야 함 |
+| `PAJIN_REPLAY_WORKER_ID` | `pajin-compose-replay-worker-1` | Status identity일 뿐이고 Bearer principal이 authorization identity |
+| `PAJIN_REPLAY_EXECUTOR_PROFILE` | `kisa-exact-v1` | Literal-only이며 `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`와 일치해야 함 |
+| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only shared root이며 claim에는 opaque `stage_<uuid>`만 포함 |
+| `PAJIN_REPLAY_LEASE_SECONDS`, `PAJIN_REPLAY_HEARTBEAT_SECONDS`, `PAJIN_REPLAY_LONG_POLL_SECONDS` | 30, 5, 10 | Lease 범위는 5-300초, heartbeat는 lease 절반 미만, long poll은 최대 20초 |
+| `PAJIN_REPLAY_IDLE_DELAY_SECONDS` | 0.2 | 빈 queue long poll 사이의 polling 제한 |
+| `PAJIN_REPLAY_RETRY_BASE_SECONDS`, `PAJIN_REPLAY_RETRY_MAX_SECONDS` | 0.25, 5 | 동일한 permit/finalize response-loss 요청의 제한된 backoff이며 Tool redispatch 권위가 아님 |
+| `PAJIN_REPLAY_FINALIZE_ATTEMPTS` | 3 | 정확한 finalize 호출만 재시도하며 다른 권위는 conflict |
+| `PAJIN_REPLAY_CANCELLATION_GRACE_SECONDS`, `PAJIN_REPLAY_CANCELLATION_FORCE_SECONDS` | 2, 25 | Cooperative/forced drain이며 25초는 Docker backend 20초 cleanup cap보다 큼 |
+| `PAJIN_REPLAY_STATUS_PATH`, `PAJIN_REPLAY_HEALTH_MAX_AGE_SECONDS` | `~/.pajin/status/replay-worker-status.json`, 30 | Host 기본값은 private parent를 사용하고 Compose는 UID 소유 mode-0750 tmpfs를 명시하며 health input은 64 KiB로 제한되고 target 성공이나 physical quiescence를 attest하지 않음 |
+| `PAJIN_REPLAY_DOCKER_EXECUTABLE`, `PAJIN_REPLAY_WORKER_IMAGE`, `PAJIN_REPLAY_EGRESS_PROXY_IMAGE`, `PAJIN_REPLAY_EXTERNAL_NETWORK` | pinned CLI path, 고정 `:dev` image 두 개, `pajin-replay-uplink-lab` | Image는 allowlist되며 암묵적으로 pull하지 않고, 번들 Compose는 전용 proxy uplink를 생성하며 override는 미리 생성해야 함 |
+
+Compose `stop_grace_period` 65초는 설정된 `grace + (2 * force)` drain bound와 scheduling margin을
+넘습니다. `SIGKILL`, Docker-daemon loss, host loss 또는 blocking kernel operation은 in-process
+cleanup을 우회할 수 있으며, 이 경우 lease fencing과 보수적인 permit 소비가 권위 경계로 남습니다.
+[`ADR 0029`](docs/adr/0029-control-plane-replay-orchestration.ko.md)를 참고하십시오.
 
 ## 동적 멀티 에이전트 engine
 
-simulated Worker 또는 Docker Worker에서 결정론적 5개 역할 팀을 실행합니다.
+기본 Docker Worker에서 결정론적 5개 역할 팀을 실행합니다. simulated Worker는 명시적인
+개발 또는 unit-test exercise에서만 선택합니다.
 
 ```powershell
+.venv\Scripts\pajin multi-run examples\multi-agent.yaml
+
+# 명시적인 개발/테스트 전용 실행
 .venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker simulated
-.venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker docker
 ```
 
 Supervisor는 계획된 step마다 Specialist 하나를 만듭니다. 결정론적 Planner, Validator, Reporter
@@ -917,7 +1101,11 @@ Specialist가 만든 경우에만 Candidate를 지지할 수 있습니다. catal
 `ai.chat-probe` 시나리오에서는 Tool이 없는 신뢰 Candidate Producer가 validation 전에 raw
 transcript check를 독립적으로 다시 계산합니다. Tool, Candidate Producer, 결정론적 Validator는
 같은 엄격한 `AIChatProbeOutput` 계약을 parse하며 Worker가 작성한 `matched` 또는 `vulnerable`
-verdict field를 신뢰하지 않습니다. 따라서 Finding을 반환하지 않는 Semantic Validator는
+verdict field를 신뢰하지 않습니다. 정확한 Validator Agent/Task identity, Finding 및 Candidate에
+결박된 assessment는 같은 봉인 Run snapshot의 `validator-output.json`에 보존됩니다. 영속 Control
+Plane derivation은 이 artifact를 다시 읽어 Gate를 replay하며 Candidate 자체에서 semantic support를
+재구성하지 않습니다. 이 semantic authority 결박 자체는 독립 재현, 제품 confirmation 또는
+remediation을 입증하지 않습니다. 따라서 Finding을 반환하지 않는 Semantic Validator는
 observation을 삭제하지 않고 `needs-review` Candidate로 남깁니다. semantic support가 일치하고
 공통 objective Gate를 통과하더라도 `independent-reproduction-missing`인 `needs-review`로 남으며,
 fresh Restricted Reproducer 결과가 생기기 전에는 confirmed compatibility projection에 들어갈 수
@@ -934,7 +1122,7 @@ scheduler는 distributed 또는 crash-durable reservation을 제공하지 않습
 실행 중인 Worker에 live Kill Switch가 전달되는지 검증합니다.
 
 ```powershell
-.venv\Scripts\pajin multi-cancel-check --worker docker
+.venv\Scripts\pajin multi-cancel-check examples\multi-agent-cancel.yaml --worker docker
 ```
 
 운영자가 시작한 Run에서는 `multi-run`이 `--kill-file <path>`도 받습니다. 이 파일을 만들면 단방향
@@ -944,18 +1132,29 @@ container와 실행별 egress resource를 강제로 제거합니다.
 
 ## Docker Worker
 
-platform trust store와 hash-locked Linux resolution을 사용해 MCP SDK bundle을 준비한 다음 개발
-image 두 개를 build합니다.
+체크인된 hash lock만으로 개발 image 두 개를 직접 build합니다.
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-worker-dependencies.ps1
 docker build --tag pajin-worker:dev containers/worker
 docker build --tag pajin-egress-proxy:dev containers/egress-proxy
 ```
 
 `containers/worker/requirements.lock`은 distribution hash로 MCP v1 SDK와 모든 transitive
-dependency를 고정합니다. 생성된 `containers/worker/vendor/` directory는 의도적으로 Git에서
-무시되며 Worker image를 build하기 전에 존재해야 합니다.
+dependency를 고정합니다. Worker Dockerfile은 이 lock을 `--require-hashes`와 `--only-binary`로
+직접 설치하므로 생성되거나 Git에서 무시되는 `vendor/` tree가 필요하지 않습니다. 체크인된 모든
+Dockerfile은 base image도 multi-platform manifest digest로 고정합니다. Build는 선택된 binary
+wheel이 cache에 없으면 설정된 package index에서 내려받습니다. Hash lock은 재현성을 제공하지만
+offline build를 뜻하지는 않습니다.
+
+`containers/worker/requirements.in`을 의도적으로 변경한 뒤에는 체크인된 lock을 갱신합니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-worker-dependencies.ps1
+```
+
+이 스크립트는 환경 marker를 보존하는 universal resolution을 수행합니다. Linux Docker build는
+비-Linux 분기를 무시하고 amd64와 arm64는 같은 체크인 hash lock을 사용합니다. 스크립트는
+lock만 갱신하며 vendor tree를 만들지 않습니다.
 
 container 안에서 실제 적용된 isolation control을 검증합니다.
 
@@ -992,11 +1191,21 @@ Docker backend는 다음 고정 profile을 적용합니다.
 .venv\Scripts\pajin egress-check
 ```
 
+target lab과 host-facing Control Plane/PostgreSQL network는 loopback published port를 유지하기 위한
+일반 Docker bridge입니다. service attachment는 분리하지만 container outbound traffic을 차단하지는
+않습니다. Production에서는 PAJIN의 실행별 proxy 경계와 별도로 host firewall 또는 동등한 egress
+control이 필요합니다.
+
 Worker는 실행별 `--internal` network에만 연결됩니다. 전용 proxy는 이 network와 external Docker
 bridge에 연결되고 DNS resolution 뒤 destination을 다시 검증하며 allow/deny decision을 실행
-evidence에 기록합니다. HTTP path와 method는 직접 집행됩니다. HTTPS는 CONNECT를 사용하므로
-host-wide allow rule만 받아들이고, 해당 HTTPS authority에 deny rule이 하나라도 있으면 전체
-tunnel을 거부합니다.
+evidence에 기록합니다. 평문 HTTP path와 method는 직접 집행됩니다. HTTPS는 CONNECT를 사용하므로
+proxy는 authority-wide rule만 집행합니다. host-wide allow rule만 받아들이고 해당 authority에
+deny rule이 하나라도 있으면 전체 tunnel을 거부합니다. 암호화된 정확한 method와 path는 proxy
+inspection이 아니라 Gateway가 선택한 고정 Worker action에 결박됩니다. CONNECT event는
+`receiptEligible=false`, `methodEnforcement=trusted-worker-only`,
+`pathEnforcement=authority-only`를 명시하므로 HTTP request/response receipt가 아닙니다. Policy
+input과 response buffering은 제한되며, 고정 64 MiB proxy는 OOM에 의존하지 않고 8 MiB를 넘는
+response limit 설정을 실행 전에 거부합니다.
 
 ## 등록된 MCP Tool
 
@@ -1116,9 +1325,11 @@ Mode Pack lab에는 실행 중인 Docker daemon과 문서에 설명된 로컬 im
 
 ## 아키텍처 규칙
 
-PydanticAI는 model-backed planning 및 validation을 위한 Adapter입니다. Campaign state를 소유하지
-않으며 privileged Tool을 직접 실행하지 않습니다. 모든 MCP, CLI, browser, sandbox call은 PAJIN
-Tool Gateway와 Policy Engine을 통과해야 합니다.
+`ProviderAgentRuntime`은 network-backed planning 및 validation을 위한 유일한 운영 경로입니다.
+모든 model call은 `PolicyBoundProviderPort`, Tool Gateway, Campaign budget, run-scoped Secret
+Lease에 결박됩니다. `PydanticAIAgentRuntime`은 결정론적 test를 위한 PydanticAI의 정확한 로컬
+`TestModel`만 허용하며, model name, 일반 model 및 subclass는 Agent 생성 전에 거부합니다. 모든
+MCP, CLI, browser, sandbox 및 network-backed model call은 PAJIN 정책 경계를 통과해야 합니다.
 
 [제품 계획](docs/PAJIN_PRODUCT_PLAN.ko.md), [KISA 추적성 매트릭스](docs/KISA_TRACEABILITY.ko.md),
 전체 [ADR 결정 기록](docs/adr/)을 참고하십시오. 최신 구현 결정은

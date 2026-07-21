@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
@@ -197,7 +199,7 @@ class SQLiteReplayExecutionAuthority:
         *,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
-        self.path = Path(path).expanduser().resolve(strict=False)
+        self.path = _absolute_path(path)
         self._clock = clock or _utc_now
         self.__issuer_token = object()
         self.__claimer_token = object()
@@ -256,6 +258,7 @@ class SQLiteReplayExecutionAuthority:
             artifact_set_digest=None,
             previous_event_digest=None,
         )
+        _secure_ledger_files(self.path)
         try:
             with _write_transaction(self.path) as connection:
                 _validate_schema(connection)
@@ -308,7 +311,6 @@ class SQLiteReplayExecutionAuthority:
             raise RuntimeError("replay ticket ledger rejected a duplicate record") from exc
         except sqlite3.Error as exc:
             raise RuntimeError("replay ticket ledger write failed") from exc
-        _secure_ledger_files(self.path)
         return ticket
 
     def _claim(
@@ -326,6 +328,7 @@ class SQLiteReplayExecutionAuthority:
         del claimed_at  # The durable authority trusts only its own injected clock.
         now = self._trusted_now()
         now_wire = _format_timestamp(now)
+        _secure_ledger_files(self.path)
         try:
             with _write_transaction(self.path) as connection:
                 _validate_schema(connection)
@@ -404,7 +407,6 @@ class SQLiteReplayExecutionAuthority:
                 compilation_digest = _required_digest(row, "compilation_digest")
         except sqlite3.Error as exc:
             raise RuntimeError("replay ticket ledger claim failed") from exc
-        _secure_ledger_files(self.path)
         return ClaimedReplayExecution(
             ticket=ticket,
             compilation=trusted,
@@ -424,15 +426,65 @@ class SQLiteReplayExecutionAuthority:
         if token is not self.__claimer_token:
             raise PermissionError("invalid replay ticket finalizer authority")
         del finalized_at  # The durable authority trusts only its own injected clock.
+        self._finalize_record(
+            ticket,
+            final_seal_root_digest=final_seal_root_digest,
+            artifact_set_digest=artifact_set_digest,
+        )
+
+    def _recover_finalization(
+        self,
+        token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        context: ReplayTicketContext,
+        replay_run_id: str,
+        finalized_at: datetime,
+    ) -> None:
+        if token is not self.__claimer_token:
+            raise PermissionError("invalid replay ticket recovery authority")
+        del finalized_at  # The durable authority trusts only its own injected clock.
+        _validate_digest(compilation_digest, "compilation_digest")
+        if not replay_run_id:
+            raise ValueError("replay_run_id must be non-empty")
+        self._finalize_record(
+            ticket,
+            final_seal_root_digest=final_seal_root_digest,
+            artifact_set_digest=artifact_set_digest,
+            expected_compilation_digest=compilation_digest,
+            expected_context=context,
+            expected_replay_run_id=replay_run_id,
+        )
+
+    def _finalize_record(
+        self,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        expected_compilation_digest: str | None = None,
+        expected_context: ReplayTicketContext | None = None,
+        expected_replay_run_id: str | None = None,
+    ) -> None:
         _validate_digest(final_seal_root_digest, "final_seal_root_digest")
         _validate_digest(artifact_set_digest, "artifact_set_digest")
         now = self._trusted_now()
         now_wire = _format_timestamp(now)
+        _secure_ledger_files(self.path)
         try:
             with _write_transaction(self.path) as connection:
                 _validate_schema(connection)
                 row = _load_ticket(connection, ticket.ticket_id, unknown_as_permission=False)
-                _, _, state = _validate_ticket_record(connection, row)
+                _, context, state = _validate_ticket_record(connection, row)
+                if expected_compilation_digest is not None and (
+                    _required_digest(row, "compilation_digest") != expected_compilation_digest
+                    or context != expected_context
+                    or _required_text(row, "replay_run_id") != expected_replay_run_id
+                ):
+                    raise PermissionError("replay ticket recovery context does not match issuance")
                 if state is ReplayTicketState.FINALIZED:
                     if (
                         _optional_text(row, "final_seal_root_digest") == final_seal_root_digest
@@ -508,7 +560,6 @@ class SQLiteReplayExecutionAuthority:
                 )
         except sqlite3.Error as exc:
             raise RuntimeError("replay ticket ledger finalization failed") from exc
-        _secure_ledger_files(self.path)
 
     def _verify_finalized(
         self,
@@ -536,29 +587,9 @@ class SQLiteReplayExecutionAuthority:
         return _aware_utc(self._clock(), "trusted clock")
 
     def _initialize(self) -> None:
-        if self.path.exists() and not self.path.is_file():
-            raise RuntimeError("replay ticket ledger path is not a regular file")
-        try:
-            self.path.parent.mkdir(parents=True, exist_ok=False, mode=0o700)
-        except FileExistsError:
-            if not self.path.parent.is_dir():
-                raise RuntimeError("replay ticket ledger parent is not a directory") from None
-        else:
-            self.path.parent.chmod(0o700)
-        created_file = False
-        if not self.path.exists():
-            try:
-                descriptor = os.open(
-                    self.path,
-                    os.O_CREAT | os.O_EXCL | os.O_RDWR,
-                    0o600,
-                )
-            except FileExistsError:
-                pass
-            else:
-                os.close(descriptor)
-                created_file = True
-        initialize_empty_file = created_file or self.path.stat().st_size == 0
+        created_file, file_size = _prepare_ledger_file(self.path)
+        initialize_empty_file = created_file or file_size == 0
+        _secure_ledger_files(self.path)
         try:
             connection = _open_write_connection(self.path)
             try:
@@ -594,14 +625,13 @@ class SQLiteReplayExecutionAuthority:
                 connection.close()
         except sqlite3.Error as exc:
             raise RuntimeError("replay ticket ledger initialization failed") from exc
-        _secure_ledger_files(self.path)
 
 
 class SQLiteReplayTicketFinalizationVerifier:
     """Read-only verifier that can be reopened after the issuing process exits."""
 
     def __init__(self, path: Path) -> None:
-        self.path = Path(path).expanduser().resolve(strict=False)
+        self.path = _absolute_path(path)
 
     def verify_finalized(
         self,
@@ -622,8 +652,7 @@ class SQLiteReplayTicketFinalizationVerifier:
             _validate_digest(value, name)
         if not ticket_id or not replay_run_id:
             raise ValueError("ticket_id and replay_run_id must be non-empty")
-        if not self.path.is_file():
-            raise RuntimeError("replay ticket ledger does not exist")
+        _validate_existing_ledger(self.path)
         try:
             with _readonly_connection(self.path) as connection:
                 _validate_schema(connection)
@@ -645,6 +674,301 @@ class SQLiteReplayTicketFinalizationVerifier:
             raise RuntimeError("replay ticket ledger verification failed") from exc
 
 
+def _absolute_path(path: Path) -> Path:
+    """Normalize lexical components without following attacker-controlled symlinks."""
+
+    return Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+
+
+type _FileIdentity = tuple[int, int]
+
+
+@dataclass(frozen=True, slots=True)
+class _PrivateParent:
+    path: Path
+    identity: _FileIdentity
+    descriptor: int | None
+
+    def close(self) -> None:
+        if self.descriptor is not None:
+            os.close(self.descriptor)
+
+
+def _file_identity(file_stat: os.stat_result) -> _FileIdentity:
+    return file_stat.st_dev, file_stat.st_ino
+
+
+def _open_private_parent(directory: Path, *, create: bool) -> _PrivateParent:
+    directory = _absolute_path(directory)
+    if os.name == "posix":
+        return _open_posix_private_parent(directory, create=create)
+    return _open_windows_private_parent(directory, create=create)
+
+
+def _open_posix_private_parent(directory: Path, *, create: bool) -> _PrivateParent:
+    current = os.open(
+        directory.anchor,
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0),
+    )
+    try:
+        for component in directory.parts[1:]:
+            child = _open_posix_directory_component(current, component, create=create)
+            os.close(current)
+            current = child
+        identity = _validate_posix_parent_descriptor(directory, current)
+        return _PrivateParent(path=directory, identity=identity, descriptor=current)
+    except BaseException:
+        os.close(current)
+        raise
+
+
+def _open_posix_directory_component(parent: int, component: str, *, create: bool) -> int:
+    flags = (
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    )
+    if create:
+        with suppress(FileExistsError):
+            os.mkdir(component, 0o700, dir_fd=parent)
+    try:
+        return os.open(component, flags, dir_fd=parent)
+    except FileNotFoundError:
+        raise RuntimeError("replay ticket ledger parent does not exist") from None
+    except OSError as exc:
+        raise RuntimeError("replay ticket ledger parent is not a regular directory") from exc
+
+
+def _validate_posix_parent_descriptor(directory: Path, descriptor: int) -> _FileIdentity:
+    parent_stat = os.fstat(descriptor)
+    if not stat.S_ISDIR(parent_stat.st_mode):
+        raise RuntimeError("replay ticket ledger parent is not a regular directory")
+    if parent_stat.st_uid != os.geteuid():
+        raise RuntimeError("replay ticket ledger parent is not owned by this user")
+    if stat.S_IMODE(parent_stat.st_mode) & 0o077:
+        raise RuntimeError("replay ticket ledger parent must be owner-only")
+    try:
+        path_stat = os.stat(directory, follow_symlinks=False)
+    except OSError as exc:
+        raise RuntimeError("replay ticket ledger parent changed during validation") from exc
+    identity = _file_identity(parent_stat)
+    if not stat.S_ISDIR(path_stat.st_mode) or _file_identity(path_stat) != identity:
+        raise RuntimeError("replay ticket ledger parent changed during validation")
+    return identity
+
+
+def _open_windows_private_parent(
+    directory: Path,
+    *,
+    create: bool,
+) -> _PrivateParent:  # pragma: no cover - exercised by Windows CI
+    current = Path(directory.anchor)
+    for component in directory.parts[1:]:
+        current /= component
+        _validate_windows_directory_component(current, create=create)
+    parent_stat = _windows_path_stat(directory, kind="parent")
+    return _PrivateParent(
+        path=directory,
+        identity=_file_identity(parent_stat),
+        descriptor=None,
+    )
+
+
+def _validate_windows_directory_component(
+    directory: Path,
+    *,
+    create: bool,
+) -> None:  # pragma: no cover - exercised by Windows CI
+    if create:
+        with suppress(FileExistsError):
+            directory.mkdir(mode=0o700)
+    try:
+        directory_stat = directory.lstat()
+    except FileNotFoundError:
+        raise RuntimeError("replay ticket ledger parent does not exist") from None
+    if (
+        directory.is_symlink()
+        or directory.is_junction()
+        or not stat.S_ISDIR(directory_stat.st_mode)
+    ):
+        raise RuntimeError("replay ticket ledger parent is not a regular directory")
+
+
+def _windows_path_stat(
+    path: Path,
+    *,
+    kind: str,
+) -> os.stat_result:  # pragma: no cover - exercised by Windows CI
+    try:
+        path_stat = path.lstat()
+    except OSError as exc:
+        raise RuntimeError(f"replay ticket ledger {kind} changed during validation") from exc
+    if path.is_symlink() or path.is_junction():
+        raise RuntimeError(f"replay ticket ledger {kind} is not a regular file")
+    return path_stat
+
+
+def _open_ledger_descriptor(
+    path: Path,
+    *,
+    create: bool,
+) -> tuple[int, _PrivateParent, bool]:
+    parent = _open_private_parent(path.parent, create=create)
+    try:
+        if parent.descriptor is not None:
+            descriptor, created = _open_posix_ledger_descriptor(
+                path,
+                parent,
+                create=create,
+            )
+        else:
+            descriptor, created = _open_windows_ledger_descriptor(
+                path,
+                parent,
+                create=create,
+            )
+        return descriptor, parent, created
+    except BaseException:
+        parent.close()
+        raise
+
+
+def _open_posix_ledger_descriptor(
+    path: Path,
+    parent: _PrivateParent,
+    *,
+    create: bool,
+) -> tuple[int, bool]:
+    assert parent.descriptor is not None
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor, created = _open_descriptor(
+        path.name,
+        flags=flags,
+        create=create,
+        dir_fd=parent.descriptor,
+        error="replay ticket ledger path is not a regular file",
+    )
+    try:
+        file_stat = _validate_private_regular_descriptor(descriptor, owner_required=True)
+        os.fchmod(descriptor, 0o600)
+        path_stat = os.stat(path.name, dir_fd=parent.descriptor, follow_symlinks=False)
+        _validate_unchanged_regular_file(file_stat, path_stat)
+        return descriptor, created
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_windows_ledger_descriptor(
+    path: Path,
+    parent: _PrivateParent,
+    *,
+    create: bool,
+) -> tuple[int, bool]:  # pragma: no cover - exercised by Windows CI
+    _validate_windows_parent_identity(parent)
+    if path.exists() or path.is_symlink() or path.is_junction():
+        _validate_windows_regular_path(path)
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    descriptor, created = _open_descriptor(
+        path,
+        flags=flags,
+        create=create,
+        dir_fd=None,
+        error="replay ticket ledger path is not a regular file",
+    )
+    try:
+        file_stat = _validate_private_regular_descriptor(descriptor, owner_required=False)
+        path_stat = _validate_windows_regular_path(path)
+        _validate_unchanged_regular_file(file_stat, path_stat)
+        _validate_windows_parent_identity(parent)
+        return descriptor, created
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _open_descriptor(
+    path: str | Path,
+    *,
+    flags: int,
+    create: bool,
+    dir_fd: int | None,
+    error: str,
+) -> tuple[int, bool]:
+    if create:
+        try:
+            return os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd), True
+        except FileExistsError:
+            pass
+    try:
+        return os.open(path, flags, dir_fd=dir_fd), False
+    except OSError as exc:
+        raise RuntimeError(error) from exc
+
+
+def _validate_private_regular_descriptor(
+    descriptor: int,
+    *,
+    owner_required: bool,
+) -> os.stat_result:
+    file_stat = os.fstat(descriptor)
+    if not stat.S_ISREG(file_stat.st_mode) or file_stat.st_nlink != 1:
+        raise RuntimeError("replay ticket ledger path is not a private regular file")
+    if owner_required and file_stat.st_uid != os.geteuid():
+        raise RuntimeError("replay ticket ledger is not owned by this user")
+    return file_stat
+
+
+def _validate_unchanged_regular_file(
+    descriptor_stat: os.stat_result,
+    path_stat: os.stat_result,
+) -> None:
+    if not stat.S_ISREG(path_stat.st_mode) or _file_identity(path_stat) != _file_identity(
+        descriptor_stat
+    ):
+        raise RuntimeError("replay ticket ledger changed during validation")
+
+
+def _validate_windows_regular_path(
+    path: Path,
+) -> os.stat_result:  # pragma: no cover - exercised by Windows CI
+    path_stat = _windows_path_stat(path, kind="path")
+    if not stat.S_ISREG(path_stat.st_mode) or path_stat.st_nlink != 1:
+        raise RuntimeError("replay ticket ledger path is not a private regular file")
+    return path_stat
+
+
+def _validate_windows_parent_identity(
+    parent: _PrivateParent,
+) -> None:  # pragma: no cover - exercised by Windows CI
+    parent_stat = _windows_path_stat(parent.path, kind="parent")
+    if not stat.S_ISDIR(parent_stat.st_mode) or _file_identity(parent_stat) != parent.identity:
+        raise RuntimeError("replay ticket ledger parent changed during validation")
+
+
+def _prepare_ledger_file(path: Path) -> tuple[bool, int]:
+    descriptor, parent, created = _open_ledger_descriptor(path, create=True)
+    try:
+        return created, os.fstat(descriptor).st_size
+    finally:
+        os.close(descriptor)
+        parent.close()
+
+
+def _validate_existing_ledger(path: Path) -> None:
+    descriptor, parent, _created = _open_ledger_descriptor(path, create=False)
+    os.close(descriptor)
+    parent.close()
+
+
+def _ledger_identity(path: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    descriptor, parent, _created = _open_ledger_descriptor(path, create=False)
+    try:
+        file_stat = os.fstat(descriptor)
+        return parent.identity, _file_identity(file_stat)
+    finally:
+        os.close(descriptor)
+        parent.close()
+
+
 @contextmanager
 def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
     connection = _open_write_connection(path)
@@ -662,6 +986,7 @@ def _write_transaction(path: Path) -> Iterator[sqlite3.Connection]:
 
 @contextmanager
 def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
+    identity = _ledger_identity(path)
     uri = f"{path.as_uri()}?mode=ro"
     connection = sqlite3.connect(
         uri,
@@ -669,6 +994,9 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
         isolation_level=None,
         timeout=_BUSY_TIMEOUT_MS / 1_000,
     )
+    if _ledger_identity(path) != identity:
+        connection.close()
+        raise RuntimeError("replay ticket ledger changed while it was opened")
     connection.row_factory = sqlite3.Row
     connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -687,11 +1015,15 @@ def _readonly_connection(path: Path) -> Iterator[sqlite3.Connection]:
 
 
 def _open_write_connection(path: Path) -> sqlite3.Connection:
+    identity = _ledger_identity(path)
     connection = sqlite3.connect(
         path,
         isolation_level=None,
         timeout=_BUSY_TIMEOUT_MS / 1_000,
     )
+    if _ledger_identity(path) != identity:
+        connection.close()
+        raise RuntimeError("replay ticket ledger changed while it was opened")
     connection.row_factory = sqlite3.Row
     connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
     connection.execute("PRAGMA foreign_keys = ON")
@@ -978,41 +1310,68 @@ def _validate_event_chain(
         raise PermissionError("replay ticket event chain length is invalid")
     previous_digest: str | None = None
     for index, (event, to_state) in enumerate(zip(events, expected_states, strict=True), start=1):
-        ordinal = event["ordinal"]
-        if type(ordinal) is not int or ordinal != index:
-            raise PermissionError("replay ticket event ordinal is invalid")
         from_state = None if index == 1 else expected_states[index - 2]
-        if (
-            _optional_text(event, "from_state")
-            != (from_state.value if from_state is not None else None)
-            or _required_text(event, "to_state") != to_state.value
-        ):
-            raise PermissionError("replay ticket event transition is invalid")
-        occurred_at = _required_text(event, "occurred_at")
-        _parse_timestamp(occurred_at, "occurred_at")
-        final_seal = _optional_text(event, "final_seal_root_digest")
-        artifact_set = _optional_text(event, "artifact_set_digest")
-        stored_previous = _optional_text(event, "previous_event_digest")
-        if stored_previous != previous_digest:
-            raise PermissionError("replay ticket event chain was broken")
-        digest = _required_digest(event, "event_digest")
-        expected_digest = _event_digest(
+        previous_digest = _validate_event_record(
+            event=event,
             ticket_id=ticket_id,
             ordinal=index,
             from_state=from_state,
             to_state=to_state,
-            occurred_at=occurred_at,
-            final_seal_root_digest=final_seal,
-            artifact_set_digest=artifact_set,
             previous_event_digest=previous_digest,
         )
-        if digest != expected_digest:
-            raise PermissionError("replay ticket event integrity check failed")
-        if to_state is not ReplayTicketState.FINALIZED and (
-            final_seal is not None or artifact_set is not None
-        ):
-            raise PermissionError("non-final replay ticket event contains sealed artifacts")
-        previous_digest = digest
+    _validate_event_ticket_bindings(events, ticket=ticket, state=state)
+
+
+def _validate_event_record(
+    *,
+    event: sqlite3.Row,
+    ticket_id: str,
+    ordinal: int,
+    from_state: ReplayTicketState | None,
+    to_state: ReplayTicketState,
+    previous_event_digest: str | None,
+) -> str:
+    stored_ordinal = event["ordinal"]
+    if type(stored_ordinal) is not int or stored_ordinal != ordinal:
+        raise PermissionError("replay ticket event ordinal is invalid")
+    expected_from_state = from_state.value if from_state is not None else None
+    if (
+        _optional_text(event, "from_state") != expected_from_state
+        or _required_text(event, "to_state") != to_state.value
+    ):
+        raise PermissionError("replay ticket event transition is invalid")
+    occurred_at = _required_text(event, "occurred_at")
+    _parse_timestamp(occurred_at, "occurred_at")
+    final_seal = _optional_text(event, "final_seal_root_digest")
+    artifact_set = _optional_text(event, "artifact_set_digest")
+    if _optional_text(event, "previous_event_digest") != previous_event_digest:
+        raise PermissionError("replay ticket event chain was broken")
+    digest = _required_digest(event, "event_digest")
+    expected_digest = _event_digest(
+        ticket_id=ticket_id,
+        ordinal=ordinal,
+        from_state=from_state,
+        to_state=to_state,
+        occurred_at=occurred_at,
+        final_seal_root_digest=final_seal,
+        artifact_set_digest=artifact_set,
+        previous_event_digest=previous_event_digest,
+    )
+    if digest != expected_digest:
+        raise PermissionError("replay ticket event integrity check failed")
+    if to_state is not ReplayTicketState.FINALIZED and (
+        final_seal is not None or artifact_set is not None
+    ):
+        raise PermissionError("non-final replay ticket event contains sealed artifacts")
+    return digest
+
+
+def _validate_event_ticket_bindings(
+    events: list[sqlite3.Row],
+    *,
+    ticket: sqlite3.Row,
+    state: ReplayTicketState,
+) -> None:
     if _required_text(events[0], "occurred_at") != _required_text(ticket, "issued_at"):
         raise PermissionError("replay ticket issuance event timestamp changed")
     if state is not ReplayTicketState.ISSUED and _required_text(
@@ -1190,8 +1549,64 @@ def _utc_now() -> datetime:
 
 
 def _secure_ledger_files(path: Path) -> None:
-    for candidate in (path, Path(f"{path}-journal")):
-        try:
-            candidate.chmod(0o600)
-        except FileNotFoundError:
-            continue
+    _validate_existing_ledger(path)
+    parent = _open_private_parent(path.parent, create=False)
+    try:
+        if parent.descriptor is not None:
+            _secure_posix_journal(path, parent)
+        else:
+            _validate_windows_journal(path, parent)
+    finally:
+        parent.close()
+
+
+def _secure_posix_journal(path: Path, parent: _PrivateParent) -> None:
+    assert parent.descriptor is not None
+    flags = os.O_RDWR | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(f"{path.name}-journal", flags, dir_fd=parent.descriptor)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise RuntimeError("replay ticket journal is not a regular file") from exc
+    try:
+        journal_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(journal_stat.st_mode) or journal_stat.st_nlink != 1:
+            raise RuntimeError("replay ticket journal is not a private regular file")
+        if journal_stat.st_uid != os.geteuid():
+            raise RuntimeError("replay ticket journal is not owned by this user")
+        os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+
+
+def _validate_windows_journal(
+    path: Path,
+    parent: _PrivateParent,
+) -> None:  # pragma: no cover - exercised by Windows CI
+    journal_path = Path(f"{path}-journal")
+    _validate_windows_parent_identity(parent)
+    if (
+        not journal_path.exists()
+        and not journal_path.is_symlink()
+        and not journal_path.is_junction()
+    ):
+        return
+    _validate_windows_regular_path(journal_path)
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOINHERIT", 0)
+    descriptor, _created = _open_descriptor(
+        journal_path,
+        flags=flags,
+        create=False,
+        dir_fd=None,
+        error="replay ticket journal is not a regular file",
+    )
+    try:
+        descriptor_stat = os.fstat(descriptor)
+        if not stat.S_ISREG(descriptor_stat.st_mode) or descriptor_stat.st_nlink != 1:
+            raise RuntimeError("replay ticket journal is not a private regular file")
+        path_stat = _validate_windows_regular_path(journal_path)
+        _validate_unchanged_regular_file(descriptor_stat, path_stat)
+        _validate_windows_parent_identity(parent)
+    finally:
+        os.close(descriptor)

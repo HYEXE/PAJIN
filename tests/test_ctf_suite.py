@@ -1,6 +1,8 @@
 import asyncio
 import json
+from base64 import b64decode, b64encode
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -13,6 +15,8 @@ from pajin.modes.ctf import (
     CTFChallengeManifest,
     CTFChallengeService,
     CTFFlagValidatorRuntime,
+    CTFModePack,
+    CTFRunResult,
     CTFSolveStatus,
     CTFSuiteModePack,
     CTFTriagePlannerRuntime,
@@ -20,8 +24,19 @@ from pajin.modes.ctf import (
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.store import verify_run_integrity
-from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.base import ToolRegistry
+from pajin.runtime.worker import (
+    DockerWorkerBackend,
+    NetworkMode,
+    WorkerJob,
+    WorkerResult,
+    WorkerStatus,
+)
+from pajin.tools.base import (
+    EGRESS_HTTP_RECEIPT_VERSION,
+    ToolRegistry,
+    audit_http_target,
+    http_target_sha256,
+)
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner
 
@@ -55,6 +70,12 @@ class ContractSuiteWorker:
             assert job.network is NetworkMode.EGRESS_PROXY
             assert job.egress_policy is not None
             candidate = self.web_candidate
+            response = {
+                "challengeId": payload["challengeId"],
+                "synthetic": True,
+                "flag": candidate,
+            }
+            body = json.dumps(response, separators=(",", ":")).encode()
             output = {
                 "target": payload["target"],
                 "challengeId": payload["challengeId"],
@@ -62,7 +83,8 @@ class ContractSuiteWorker:
                 "status": 200 if candidate is not None else 404,
                 "discovered": candidate is not None,
                 "candidateFlag": candidate,
-                "bodySha256": "0" * 64,
+                "bodySha256": sha256(body).hexdigest(),
+                "responseBodyBase64": b64encode(body).decode("ascii"),
                 "synthetic": True,
                 "networkPerformed": True,
             }
@@ -132,6 +154,55 @@ class KillSwitchSuiteWorker(ContractSuiteWorker):
         return await super().run(job)
 
 
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode()
+    ).hexdigest()
+
+
+def _trusted_docker_backend(worker: ContractSuiteWorker) -> DockerWorkerBackend:
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        network_log = ""
+        if job.network is NetworkMode.EGRESS_PROXY:
+            output = json.loads(result.stdout)
+            response_body = b64decode(output["responseBodyBase64"], validate=True)
+            response = json.loads(response_body)
+            events = [
+                {"event": "ready", "port": 8080},
+                {
+                    "event": "allow",
+                    "receiptVersion": EGRESS_HTTP_RECEIPT_VERSION,
+                    "sequence": 1,
+                    "method": "GET",
+                    "target": audit_http_target(output["target"]),
+                    "targetSha256": http_target_sha256(output["target"]),
+                    "address": "172.17.0.1",
+                    "status": output["status"],
+                    "responseBodySha256": sha256(response_body).hexdigest(),
+                    "responseJsonSha256": _canonical_digest(response),
+                },
+            ]
+            network_log = "\n".join(json.dumps(event, separators=(",", ":")) for event in events)
+        return result.model_copy(update={"backend": "docker", "network_log": network_log})
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
+
+
 def _run(
     tmp_path: Path,
     worker: ContractSuiteWorker,
@@ -147,7 +218,7 @@ def _run(
         validator=CTFFlagValidatorRuntime(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=worker,
+        worker=_trusted_docker_backend(worker),
         output_root=tmp_path,
         kill_after_tool_calls=kill_after_tool_calls,
     )
@@ -281,6 +352,38 @@ def test_suite_run_spawns_category_specialists_and_seals_aggregate_result(
     assert "External scoreboard submission: `not performed`" in writeup
 
 
+def test_ctf_writeup_markdown_neutralizes_untrusted_structure_and_surrogates() -> None:
+    challenge = _challenges()[0]
+    challenge = challenge.model_copy(
+        update={
+            "metadata": challenge.metadata.model_copy(
+                update={"display_name": "Challenge\n## forged heading\ud800"}
+            )
+        }
+    )
+    expected_digest = challenge.spec.flag.sha256
+    result = CTFRunResult(
+        run_id="run-safe",
+        challenge_id=challenge.metadata.name,
+        category=challenge.spec.category,
+        scenario=challenge.spec.scenario,
+        status=CTFSolveStatus.SOLVED,
+        candidate_flag=WEB_FLAG,
+        candidate_sha256=expected_digest,
+        expected_sha256=expected_digest,
+        evidence=["evidence\n### injected <script>alert(1)</script>\ud800"],
+    )
+
+    rendered = CTFModePack._render_writeup(challenge, result)
+
+    assert "\n## forged heading" not in rendered
+    assert "\n### injected" not in rendered
+    assert "<script>" not in rendered
+    assert "\ud800" not in rendered
+    assert "Challenge \\#\\# forged heading" in rendered
+    assert "`evidence ### injected &lt;script&gt;alert" in rendered
+
+
 def test_suite_runs_opted_in_specialists_concurrently(tmp_path: Path) -> None:
     worker = ParallelSuiteWorker()
 
@@ -370,9 +473,11 @@ def test_ctf_suite_cli_is_docker_only_and_never_submits(
     worker = ContractSuiteWorker()
     requested_backends: list[str] = []
 
-    def backend(name: str) -> ContractSuiteWorker:
+    trusted_worker = _trusted_docker_backend(worker)
+
+    def backend(name: str) -> DockerWorkerBackend:
         requested_backends.append(name)
-        return worker
+        return trusted_worker
 
     monkeypatch.setattr(cli, "_worker_backend", backend)
     result = CliRunner().invoke(

@@ -17,38 +17,60 @@ from pajin.runtime.worker import (
     WorkerSecretRequest,
     WorkerStatus,
 )
-from pajin.tools.base import Tool, ToolSpec
+from pajin.tools.base import (
+    Tool,
+    ToolSpec,
+    audit_safe_tool_interpretation_failure,
+    audit_safe_worker_failure,
+    decode_strict_worker_json_object,
+)
 
 
 class OpenAICompatibleChatTool(Tool):
     """Translate canonical messages to one pre-registered provider endpoint."""
 
     def __init__(self, registration: ProviderRegistration) -> None:
-        self.registration = registration
+        self._registration = ProviderRegistration.model_validate(
+            registration.model_dump(mode="python")
+        )
         self.spec = ToolSpec(
-            tool_id=f"provider.{registration.provider_id}.chat",
+            tool_id=f"provider.{self._registration.provider_id}.chat",
             version="1.0.0",
-            description=(f"Call registered OpenAI-compatible provider {registration.provider_id}"),
+            description=(
+                f"Call registered OpenAI-compatible provider {self._registration.provider_id}"
+            ),
             risk_tier=ToolRiskTier.T1,
-            categories={"model-provider", "chat-completions"},
-            evidence_types={"json", "provider-response"},
+            categories=frozenset({"model-provider", "chat-completions"}),
+            evidence_types=frozenset({"json", "provider-response"}),
             network_access=True,
         )
+
+    @property
+    def registration(self) -> ProviderRegistration:
+        """Return a detached observation of the sealed provider registration."""
+
+        return self._registration.model_copy(deep=True)
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return {
+            **self._stable_spec_context(),
+            "registration": self._registration.model_dump(mode="python"),
+        }
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
         if request.method != "POST":
             raise ValueError("provider chat calls require POST")
-        target = str(self.registration.endpoint)
+        target = str(self._registration.endpoint)
         if request.target != target:
             raise ValueError("provider request target differs from registered endpoint")
         chat = ProviderChatRequest.model_validate(request.arguments)
-        if chat.stream and not self.registration.allow_streaming:
+        if chat.stream and not self._registration.allow_streaming:
             raise ValueError("provider registration does not allow streaming")
         requested_tools = {tool.function.name for tool in chat.tools}
-        if not requested_tools <= self.registration.allowed_function_tools:
+        if not requested_tools <= self._registration.allowed_function_tools:
             raise ValueError("request contains an unregistered provider function tool")
         provider_request: dict[str, object] = {
-            "model": self.registration.model,
+            "model": self._registration.model,
             "messages": [
                 message.model_dump(mode="json", exclude_none=True) for message in chat.messages
             ],
@@ -70,7 +92,7 @@ class OpenAICompatibleChatTool(Tool):
             command=["openai-chat-completion"],
             stdin=json.dumps(
                 {
-                    "providerId": self.registration.provider_id,
+                    "providerId": self._registration.provider_id,
                     "target": target,
                     "request": provider_request,
                 },
@@ -79,9 +101,9 @@ class OpenAICompatibleChatTool(Tool):
             network=NetworkMode.NONE,
             secret_requests=[
                 WorkerSecretRequest(
-                    secret_ref=self.registration.secret_ref,
+                    secret_ref=self._registration.secret_ref,
                     binding="provider-api-key",
-                    ttl_seconds=self.registration.lease_ttl_seconds,
+                    ttl_seconds=self._registration.lease_ttl_seconds,
                 )
             ],
         )
@@ -94,12 +116,19 @@ class OpenAICompatibleChatTool(Tool):
                 success=False,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
-                error=f"worker {result.status.value}: {result.stderr or 'no error detail'}",
+                error=audit_safe_worker_failure(result),
             )
         try:
-            normalized = ProviderChatResult.model_validate_json(result.stdout)
-            if normalized.provider_id != self.registration.provider_id:
+            normalized = ProviderChatResult.model_validate(
+                decode_strict_worker_json_object(
+                    result,
+                    label="provider response",
+                )
+            )
+            if normalized.provider_id != self._registration.provider_id:
                 raise ValueError("provider response ID differs from registration")
+            if normalized.model != self._registration.model:
+                raise ValueError("provider response model differs from registration")
             if normalized.target != request.target:
                 raise ValueError("provider response target differs from request")
         except ValueError as exc:
@@ -109,7 +138,10 @@ class OpenAICompatibleChatTool(Tool):
                 success=False,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
-                error=f"invalid provider response: {exc}",
+                error=audit_safe_tool_interpretation_failure(
+                    "invalid provider response",
+                    exc,
+                ),
             )
         return ToolResult(
             request_id=request.request_id,

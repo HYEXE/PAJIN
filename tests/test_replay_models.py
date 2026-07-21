@@ -198,6 +198,7 @@ def _spec(**updates: object) -> CompiledReplaySpec:
         "argument_digest": replay_argument_digest(arguments),
         "original_request_digest": "b" * 64,
         "original_evidence_digest": "c" * 64,
+        "source_capability_digest": "9" * 64,
         "secret_lease_ids": [],
         "risk_tier": ToolRiskTier.T2,
         "replay_safe": True,
@@ -340,6 +341,8 @@ def test_validation_packet_is_bounded_redacted_and_candidate_bound() -> None:
 
     with pytest.raises(ValidationError, match="target must match the candidate"):
         _packet(target="https://different.example/v1/chat")
+    with pytest.raises(ValidationError, match="cannot predate its Candidate"):
+        _packet(created_at=NOW - timedelta(seconds=1))
 
 
 @pytest.mark.parametrize(
@@ -529,30 +532,32 @@ def test_oracle_contradiction_thresholds_and_evidence_are_typed() -> None:
         ReplayOracleResult.model_validate(values)
 
 
-def test_legacy_zero_threshold_contradiction_is_confirmation_only() -> None:
+def test_zero_threshold_contradiction_is_rejected_without_legacy_loader_context() -> None:
     attempts = [_attempt(1), _attempt(2)]
-    legacy_confirmation = ReplayOracleResult(
-        oracle_result_id="replay-oracle_legacy_contradicts_1",
-        spec_id="compiled-replay_1",
-        binding=_binding(),
-        oracle_id="kisa.exact-marker",
-        oracle_version="1.0.0",
-        observation_schema="pajin.ai-chat-probe-output/v1",
-        verdict=ReplayOracleVerdict.CONTRADICTS,
-        attempt_ids=[attempt.attempt_id for attempt in attempts],
-        support_count=0,
-        required_support_count=2,
-        summary="Legacy confirmation recorded a zero-support contradiction.",
-        evaluated_at=NOW + timedelta(seconds=4),
-    )
-    assert legacy_confirmation.verdict is ReplayOracleVerdict.CONTRADICTS
+    unthresholded_confirmation: dict[str, object] = {
+        "oracle_result_id": "replay-oracle_legacy_contradicts_1",
+        "spec_id": "compiled-replay_1",
+        "binding": _binding(),
+        "oracle_id": "kisa.exact-marker",
+        "oracle_version": "1.0.0",
+        "observation_schema": "pajin.ai-chat-probe-output/v1",
+        "verdict": ReplayOracleVerdict.CONTRADICTS,
+        "attempt_ids": [attempt.attempt_id for attempt in attempts],
+        "support_count": 0,
+        "required_support_count": 2,
+        "summary": "Legacy confirmation recorded a zero-support contradiction.",
+        "evaluated_at": NOW + timedelta(seconds=4),
+    }
+    with pytest.raises(ValidationError, match="required contradiction count"):
+        ReplayOracleResult.model_validate(unthresholded_confirmation)
 
-    unthresholded_confirmation = legacy_confirmation.model_dump()
+    unthresholded_confirmation = dict(unthresholded_confirmation)
     unthresholded_confirmation["contradiction_count"] = 1
     with pytest.raises(ValidationError, match="required contradiction count"):
         ReplayOracleResult.model_validate(unthresholded_confirmation)
 
-    retest_values = legacy_confirmation.model_dump()
+    retest_values = dict(unthresholded_confirmation)
+    retest_values["contradiction_count"] = 0
     retest_values["binding"] = _binding(
         purpose=ReplayPurpose.REMEDIATION_RETEST,
         context_run_id="run_retest_1",
@@ -680,6 +685,92 @@ def test_replay_outcome_rejects_foreign_attempt_binding_and_evidence_substitutio
 
     with pytest.raises(ValidationError, match="evidence must exactly match"):
         _outcome(evidence=["evidence/substituted.json"])
+
+
+def test_fresh_session_materialization_rejects_hidden_non_ephemeral_changes() -> None:
+    values = _artifact_set().model_dump()
+    materialization = values["outcome"]["attempts"][0]["materialization"]
+    materialization["arguments"]["scenario_id"] = "foreign.scenario"
+    materialization["argument_digest"] = replay_argument_digest(materialization["arguments"])
+
+    with pytest.raises(ValidationError, match="changed non-ephemeral arguments"):
+        ReplayArtifactSet.model_validate(values)
+
+
+def test_replay_outcome_rejects_cross_attempt_evidence_reuse() -> None:
+    values = _outcome().model_dump()
+    shared = values["attempts"][0]["evidence"][0]
+    values["attempts"][1]["evidence"] = [shared]
+    values["evidence"] = [shared]
+    values["oracle_result"]["supporting_evidence"] = [shared]
+
+    with pytest.raises(ValidationError, match="unique across attempts"):
+        ReplayOutcome.model_validate(values)
+
+
+def test_oracle_support_count_requires_distinct_successful_attempt_evidence() -> None:
+    values = _artifact_set().model_dump()
+    values["outcome"]["oracle_result"]["supporting_evidence"] = [
+        values["outcome"]["attempts"][0]["evidence"][0]
+    ]
+
+    with pytest.raises(ValidationError, match="support count must match"):
+        ReplayArtifactSet.model_validate(values)
+
+
+def test_replay_requests_are_disjoint_from_every_candidate_source_request() -> None:
+    candidate_values = _candidate().model_dump()
+    candidate_values["source_request_ids"] = ["tool_original_1", "tool_original_2"]
+    candidate = CandidateFinding.model_validate(candidate_values)
+    packet = _packet(
+        candidate=candidate,
+        original_request_ids=candidate.source_request_ids,
+    )
+    attempts = [_attempt(1), _attempt(2, request_id="tool_original_2")]
+    outcome = _outcome(
+        attempts=attempts,
+        attempt_ids=[attempt.attempt_id for attempt in attempts],
+        replay_request_ids=[attempt.replay_request_id for attempt in attempts],
+        evidence=[reference for attempt in attempts for reference in attempt.evidence],
+        oracle_result=_oracle(attempts),
+    )
+
+    with pytest.raises(ValidationError, match="distinct from all Candidate requests"):
+        _artifact_set(validation_packet=packet, outcome=outcome)
+
+
+def test_replay_timestamps_preserve_compilation_execution_and_oracle_causality() -> None:
+    oracle_values = _oracle([_attempt(1), _attempt(2)]).model_dump()
+    oracle_values["evaluated_at"] = NOW + timedelta(seconds=2)
+    with pytest.raises(ValidationError, match="cannot evaluate before"):
+        _outcome(oracle_result=ReplayOracleResult.model_validate(oracle_values))
+
+    compiled_after_dispatch = _spec(compiled_at=NOW + timedelta(seconds=2))
+    with pytest.raises(ValidationError, match="started outside compiled authority"):
+        _artifact_set(spec=compiled_after_dispatch)
+
+    expires_during_execution = _spec(expires_at=NOW + timedelta(seconds=2, milliseconds=500))
+    with pytest.raises(ValidationError, match="finished outside compiled authority"):
+        _artifact_set(spec=expires_during_execution)
+
+
+def test_replay_authority_ttl_and_thresholds_are_unambiguous() -> None:
+    with pytest.raises(ValidationError, match="TTL ceiling"):
+        _spec(expires_at=NOW + timedelta(seconds=301))
+    with pytest.raises(ValidationError, match="simultaneously reachable"):
+        _contract(repetitions=2, required_successes=1, required_contradictions=1)
+
+
+def test_artifact_set_detaches_caller_owned_nested_models() -> None:
+    spec = _spec()
+    outcome = _outcome()
+    artifacts = _artifact_set(spec=spec, outcome=outcome)
+
+    spec.arguments["substituted"] = True
+    outcome.attempts[0].binding.replay_run_id = "run_foreign"
+
+    assert "substituted" not in artifacts.spec.arguments
+    assert artifacts.outcome.attempts[0].binding == artifacts.outcome.binding
 
 
 def test_validation_decision_reads_legacy_payload_and_tracks_replay_outcomes() -> None:

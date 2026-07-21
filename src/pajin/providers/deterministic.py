@@ -14,11 +14,21 @@ from pajin.tools.ai import ChatRole
 
 
 class ProviderValidationPlanner:
+    _TARGET_TYPE = "openai-compatible-provider"
+
     def __init__(self, registration: ProviderRegistration) -> None:
-        self._registration = registration
+        self._registration = ProviderRegistration.model_validate(
+            registration.model_dump(mode="python")
+        )
 
     async def plan(self, campaign: CampaignManifest) -> AgentPlan:
+        if len(campaign.spec.targets) != 1:
+            raise ValueError(
+                "provider validation requires exactly one openai-compatible-provider target"
+            )
         target = campaign.spec.targets[0]
+        if target.type != self._TARGET_TYPE:
+            raise ValueError("provider validation target must use type openai-compatible-provider")
         if target.endpoint != str(self._registration.endpoint):
             raise ValueError("campaign target differs from provider registration")
         tool_id = f"provider.{self._registration.provider_id}.chat"

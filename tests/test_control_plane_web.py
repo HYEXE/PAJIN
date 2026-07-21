@@ -3,8 +3,11 @@ from __future__ import annotations
 import html
 import json
 import re
+import shutil
+import subprocess
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -13,7 +16,14 @@ from sqlalchemy import func, select, update
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.database import EventRecord, RunRecord
 from pajin.control_plane.executors import CampaignJobExecutor, CampaignJobInput
-from pajin.control_plane.models import JobState, JobView, Principal, PrincipalRole, RunState
+from pajin.control_plane.models import (
+    JobKind,
+    JobState,
+    JobView,
+    Principal,
+    PrincipalRole,
+    RunState,
+)
 
 OPERATOR_TOKEN = "web-operator-token-that-is-long-and-distinct"
 APPROVER_TOKEN = "web-approver-token-that-is-long-and-distinct"
@@ -64,7 +74,7 @@ def _submit(client: TestClient, suffix: str, *, marker: str) -> dict[str, object
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    return cast(dict[str, object], response.json())
 
 
 def _executor_input(markup: str) -> dict[str, object]:
@@ -106,7 +116,7 @@ def test_run_list_is_safely_paginated_filtered_and_stably_sorted(tmp_path: Path)
             _submit(client, "bravo", marker="LIST-SECRET-BRAVO"),
             _submit(client, "charlie", marker="LIST-SECRET-CHARLIE"),
         ]
-        run_ids = [str(item["run"]["run_id"]) for item in submissions]
+        run_ids = [str(cast(dict[str, object], item["run"])["run_id"]) for item in submissions]
         newest = datetime(2026, 7, 14, 8, 0, tzinfo=UTC)
         tied = newest - timedelta(minutes=1)
         with app.state.repository.transaction() as session:
@@ -116,14 +126,10 @@ def test_run_list_is_safely_paginated_filtered_and_stably_sorted(tmp_path: Path)
                 .values(updated_at=tied, state=RunState.RUNNING.value)
             )
             session.execute(
-                update(RunRecord)
-                .where(RunRecord.run_id == run_ids[1])
-                .values(updated_at=tied)
+                update(RunRecord).where(RunRecord.run_id == run_ids[1]).values(updated_at=tied)
             )
             session.execute(
-                update(RunRecord)
-                .where(RunRecord.run_id == run_ids[2])
-                .values(updated_at=newest)
+                update(RunRecord).where(RunRecord.run_id == run_ids[2]).values(updated_at=newest)
             )
 
         first = client.get("/v1/runs?limit=2&offset=0", headers=_auth(AUDITOR_TOKEN))
@@ -183,8 +189,8 @@ def test_run_list_is_safely_paginated_filtered_and_stably_sorted(tmp_path: Path)
                 "idempotency_key": "console-submission-alpha",
             },
         )
-        assert replay.status_code == 200
-        assert replay.json()["created"] is False
+        assert replay.status_code == 409
+        assert "idempotency key" in replay.json()["detail"]
         assert client.get("/v1/runs", headers=_auth(OPERATOR_TOKEN)).json()["total"] == 3
 
 
@@ -202,9 +208,7 @@ def test_run_list_is_safely_paginated_filtered_and_stably_sorted(tmp_path: Path)
         ("state=not-a-state", 422),
     ],
 )
-def test_run_list_validates_query_bounds(
-    tmp_path: Path, query: str, expected_status: int
-) -> None:
+def test_run_list_validates_query_bounds(tmp_path: Path, query: str, expected_status: int) -> None:
     app = create_app(_settings(tmp_path / f"bounds-{expected_status}-{query.split('=')[0]}.db"))
     with TestClient(app) as client:
         response = client.get(f"/v1/runs?{query}", headers=_auth(OPERATOR_TOKEN))
@@ -219,6 +223,8 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
             "html-slash": client.get("/ui/"),
             "css": client.get("/ui/assets/app.css"),
             "js": client.get("/ui/assets/app.js"),
+            "protocol-js": client.get("/ui/assets/protocol.js"),
+            "render-js": client.get("/ui/assets/render.js"),
         }
         for response in responses.values():
             assert response.status_code == 200
@@ -236,6 +242,8 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
         assert responses["html"].headers["content-type"].startswith("text/html")
         assert responses["css"].headers["content-type"].startswith("text/css")
         assert responses["js"].headers["content-type"].startswith("text/javascript")
+        assert responses["protocol-js"].headers["content-type"].startswith("text/javascript")
+        assert responses["render-js"].headers["content-type"].startswith("text/javascript")
         policy = responses["html"].headers["content-security-policy"]
         for directive in (
             "default-src 'none'",
@@ -253,6 +261,7 @@ def test_web_console_shell_and_assets_are_public_but_hardened(tmp_path: Path) ->
             assert directive in policy
 
         assert client.get("/ui/assets/missing.js").status_code == 404
+        assert client.get("/ui/assets/__init__.py").status_code == 404
         assert client.get("/ui/assets/%2e%2e/api.py").status_code == 404
         assert client.get("/v1/runs").status_code == 401
         assert client.post("/v1/runs", json={}).status_code == 401
@@ -262,16 +271,36 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
     app = create_app(_settings(tmp_path / "web-source.db"))
     with TestClient(app) as client:
         markup = client.get("/ui").text
-        javascript = client.get("/ui/assets/app.js").text
+        application = client.get("/ui/assets/app.js").text
+        protocol = client.get("/ui/assets/protocol.js").text
+        rendering = client.get("/ui/assets/render.js").text
+        javascript = "\n".join((application, protocol, rendering))
 
     assert '<link rel="stylesheet" href="/ui/assets/app.css">' in markup
+    assert '<link rel="modulepreload" href="/ui/assets/protocol.js">' in markup
+    assert '<link rel="modulepreload" href="/ui/assets/render.js">' in markup
     assert '<script type="module" src="/ui/assets/app.js"></script>' in markup
     assert "<style" not in markup
     assert re.search(r"<script(?![^>]+src=)", markup) is None
     assert re.search(r"\son[a-z]+\s*=", markup, re.IGNORECASE) is None
     assert re.search(r'id="token-input"[^>]+type="password"', markup) is not None
-    for action_id in ("approve-button", "deny-button", "resume-button", "cancel-button"):
-        assert re.search(fr'id="{action_id}"[^>]+disabled', markup) is not None
+    assert re.search(r'id="token-input"[^>]+maxlength="4096"', markup) is not None
+    assert re.search(r'id="run-input"[^>]+maxlength="1000000"', markup) is not None
+    assert re.search(r'id="main-content"[^>]+tabindex="-1"', markup) is not None
+    assert re.search(r'id="detail-panel"[^>]+aria-busy="false"[^>]+tabindex="-1"', markup)
+    assert re.search(r'id="status-message"[^>]+aria-atomic="true"', markup)
+    assert '<div class="status-bar">' in markup
+    for busy_id in ("token-form", "run-form", "runs-panel", "workflow-control", "event-list"):
+        assert re.search(rf'id="{busy_id}"[^>]+aria-busy="false"', markup) is not None
+    for action_id in (
+        "approve-button",
+        "deny-button",
+        "resume-button",
+        "cancel-button",
+        "latest-events-button",
+        "older-events-button",
+    ):
+        assert re.search(rf'id="{action_id}"[^>]+disabled', markup) is not None
     assert OPERATOR_TOKEN not in markup
     assert APPROVER_TOKEN not in markup
     assert WORKER_TOKEN not in markup
@@ -299,6 +328,16 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         'apiRequest("/v1/session"',
         "session.canApprove",
         "session.canOperate",
+        "StaleRequestError",
+        "AbortController",
+        "parseJsonPayload",
+        "LosslessJsonNumber",
+        "resetBusyIndicators",
+        "renderDetailFailure",
+        "validateJob",
+        "runSubmissionBody",
+        "eventPagePath",
+        'params.set("before"',
         "encodeURIComponent(approval.approval_id)",
         "encodeURIComponent(approval.checkpoint_id)",
         "encodeURIComponent(run.run_id)",
@@ -306,14 +345,43 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "/decision`",
         "/resume`",
         "/cancel`",
+        "Promise.allSettled",
         "pagehide",
     ):
         assert required in javascript
+
+    assert 'from "./protocol.js"' in application
+    assert 'from "./render.js"' in application
+    assert 'from "./protocol.js"' in rendering
+    assert 'from "./render.js"' not in protocol
+    assert 'from "./app.js"' not in protocol + rendering
+    assert "document." not in protocol
+    assert "globalThis." not in protocol
 
     executor_input = _executor_input(markup)
     validated = CampaignJobInput.model_validate(executor_input)
     assert validated.profile == "deterministic-local"
     assert validated.manifest.spec.targets[0].type == "mock-agent"
+
+
+def test_web_console_runtime_fails_closed_and_discards_stale_responses() -> None:
+    node = shutil.which("node")
+    if node is None:
+        pytest.skip("Node.js is required for the dependency-free Web Console runtime test")
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [
+            node,
+            str(root / "tests" / "js" / "control_plane_web_runtime.mjs"),
+            str(root / "src" / "pajin" / "control_plane" / "web" / "app.js"),
+        ],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
 
 
 @pytest.mark.asyncio
@@ -328,7 +396,7 @@ async def test_web_console_default_campaign_executes_through_trusted_adapter(
     job = JobView(
         job_id="job_" + "1" * 32,
         run_id="run_" + "1" * 32,
-        kind="campaign",
+        kind=JobKind.CAMPAIGN,
         state=JobState.LEASED,
         payload={"input": executor_input},
         priority=0,

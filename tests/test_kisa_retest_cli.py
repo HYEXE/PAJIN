@@ -133,6 +133,7 @@ def test_kisa_retest_cli_requires_fixed_findings_and_regression_pass(
     assert "Not assessed" in result.output
     assert "Scope note:" in result.output
     assert "pajin kisa-run" in result.output
+    assert "Worker backend: custom" in result.output
 
 
 def test_kisa_retest_cli_reserves_normal_probe_retry_budget(
@@ -188,6 +189,7 @@ def test_kisa_retest_cli_fails_closed_when_durable_ticket_ledger_is_corrupt(
     output = tmp_path / "runs"
     ledger = output / "retest-replay" / "replay-tickets.sqlite3"
     ledger.parent.mkdir(parents=True)
+    ledger.parent.chmod(0o700)
     ledger.write_bytes(b"not a SQLite database")
 
     class FakeRetestService:

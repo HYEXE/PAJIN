@@ -7,13 +7,11 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
-from html import escape
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from re import fullmatch
 from typing import ClassVar
 from urllib.parse import parse_qsl, urlsplit, urlunsplit
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from pajin.domain.models import (
@@ -23,13 +21,39 @@ from pajin.domain.models import (
     Finding,
     StrictModel,
 )
+from pajin.domain.validation import (
+    CandidateFinding,
+    FindingDisposition,
+    ValidationCheckResult,
+    ValidationCheckStatus,
+    ValidationDecision,
+    ValidationMethod,
+    ValidationReasonCode,
+)
+from pajin.domain.yaml_loader import load_yaml_mapping
 from pajin.modes.bug_bounty.models import (
     BugBountyProbeProfile,
     BugBountyProgramManifest,
 )
 from pajin.modes.bug_bounty.service import BugBountyScopeService
 from pajin.policy.scope import normalize_target_url, scope_matches
-from pajin.runtime.store import AuditEvent, RunStore, verify_run_integrity
+from pajin.reporting import escape_markdown_text, markdown_code_span
+from pajin.runtime.store import (
+    AuditEvent,
+    RunIntegrityError,
+    RunStore,
+    load_verified_run_artifacts,
+    load_verified_run_snapshot,
+)
+from pajin.runtime.verified_snapshot import require_same_authority, strict_json
+from pajin.workflow.validation_artifacts import (
+    LoadedValidationSnapshot,
+    ValidationSnapshotSemantics,
+    load_validation_snapshot,
+)
+
+_MAX_MANAGED_JSON_BYTES = 64 * 1024 * 1024
+_MAX_MANAGED_EVIDENCE_BYTES = 64 * 1024 * 1024
 
 
 class KnownFindingStatus(StrEnum):
@@ -86,15 +110,34 @@ class DuplicateDisposition(StrEnum):
     RUN_DUPLICATE = "run-duplicate"
 
 
+class BugBountyValidationAuthority(StrEnum):
+    VERIFIED_INDEPENDENT_REPLAY = "verified-independent-replay"
+    SEMANTIC_REVIEW_ONLY = "semantic-review-only"
+
+
 class BugBountyTriageItem(StrictModel):
     finding: Finding
     fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
     cause_fingerprint: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     disposition: DuplicateDisposition
+    validation_authority: BugBountyValidationAuthority
     duplicate_candidates: list[str] = Field(default_factory=list)
     missing_fields: list[str] = Field(default_factory=list)
     submission_eligible: bool = False
     draft_path: str | None = None
+
+    @model_validator(mode="after")
+    def enforce_submission_authority(self) -> BugBountyTriageItem:
+        eligible = (
+            self.disposition is DuplicateDisposition.READY
+            and self.validation_authority
+            is BugBountyValidationAuthority.VERIFIED_INDEPENDENT_REPLAY
+        )
+        if self.submission_eligible != eligible:
+            raise ValueError(
+                "submission eligibility requires a ready independently replayed Finding"
+            )
+        return self
 
 
 class BugBountyTriageSummary(StrictModel):
@@ -133,15 +176,14 @@ class _RunSnapshot(BaseModel):
     path: Path
     campaign: CampaignManifest
     findings: list[Finding]
+    review_only_finding_ids: frozenset[str]
+    evidence_paths: frozenset[str]
     started_at: datetime
     completed_at: datetime
 
 
 def load_bug_bounty_finding_index(path: Path) -> BugBountyFindingIndex:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError("Bug Bounty finding index must contain a YAML mapping")
+    raw = load_yaml_mapping(path, label="Bug Bounty finding index")
     return BugBountyFindingIndex.model_validate(raw)
 
 
@@ -181,12 +223,18 @@ class BugBountyReportService:
             raise ValueError("known finding index belongs to a different Bug Bounty program")
         scope_digest = self.validate_campaign(program, snapshot.campaign)
         for finding in snapshot.findings:
-            self._validate_finding(snapshot, finding)
+            self._validate_finding(
+                snapshot,
+                finding,
+                review_only=finding.finding_id in snapshot.review_only_finding_ids,
+            )
 
         items = self._triage(
             program,
             snapshot.findings,
-            known_findings.findings if known_findings else [],
+            known_findings.findings if known_findings is not None else [],
+            duplicate_check_performed=known_findings is not None,
+            review_only_finding_ids=snapshot.review_only_finding_ids,
         )
         generated = generated_at or datetime.now(UTC)
         report_id = self._report_id(snapshot.run_id, scope_digest, items, known_findings)
@@ -255,7 +303,16 @@ class BugBountyReportService:
         program: BugBountyProgramManifest,
         findings: list[Finding],
         known_findings: list[KnownBugBountyFinding],
+        *,
+        duplicate_check_performed: bool,
+        review_only_finding_ids: frozenset[str],
     ) -> list[BugBountyTriageItem]:
+        bounty_eligible_targets = {
+            entry_point
+            for asset in program.spec.scope.in_scope
+            if asset.eligible_for_bounty
+            for entry_point in asset.entry_points
+        }
         known_exact: dict[str, list[KnownBugBountyFinding]] = defaultdict(list)
         known_cause: dict[str, list[KnownBugBountyFinding]] = defaultdict(list)
         for known in known_findings:
@@ -265,7 +322,11 @@ class BugBountyReportService:
 
         ordered = sorted(
             findings,
-            key=lambda finding: (-finding.confidence, finding.finding_id),
+            key=lambda finding: (
+                finding.finding_id in review_only_finding_ids,
+                -finding.confidence,
+                finding.finding_id,
+            ),
         )
         seen_exact: dict[str, str] = {}
         items: list[BugBountyTriageItem] = []
@@ -274,7 +335,13 @@ class BugBountyReportService:
                 program.metadata.name,
                 finding,
             )
-            missing = self._missing_fields(program, finding)
+            missing = self._missing_fields(
+                program,
+                finding,
+                bounty_eligible_targets=bounty_eligible_targets,
+                duplicate_check_performed=duplicate_check_performed,
+                review_only=finding.finding_id in review_only_finding_ids,
+            )
             candidates: set[str] = set()
             disposition = DuplicateDisposition.READY
 
@@ -307,9 +374,17 @@ class BugBountyReportService:
                     fingerprint=fingerprint,
                     cause_fingerprint=cause_fingerprint,
                     disposition=disposition,
+                    validation_authority=(
+                        BugBountyValidationAuthority.SEMANTIC_REVIEW_ONLY
+                        if finding.finding_id in review_only_finding_ids
+                        else BugBountyValidationAuthority.VERIFIED_INDEPENDENT_REPLAY
+                    ),
                     duplicate_candidates=sorted(candidates),
                     missing_fields=missing,
-                    submission_eligible=disposition is DuplicateDisposition.READY,
+                    submission_eligible=(
+                        disposition is DuplicateDisposition.READY
+                        and finding.finding_id not in review_only_finding_ids
+                    ),
                 )
             )
 
@@ -341,6 +416,10 @@ class BugBountyReportService:
     def _missing_fields(
         program: BugBountyProgramManifest,
         finding: Finding,
+        *,
+        bounty_eligible_targets: set[str],
+        duplicate_check_performed: bool,
+        review_only: bool,
     ) -> list[str]:
         field_presence = {
             "affected-component": bool(finding.affected_component),
@@ -363,6 +442,12 @@ class BugBountyReportService:
             missing.add("dedup-affected-component")
         if not finding.root_cause:
             missing.add("dedup-root-cause")
+        if finding.target not in bounty_eligible_targets:
+            missing.add("target-not-bounty-eligible")
+        if program.spec.reporting.duplicate_check_required and not duplicate_check_performed:
+            missing.add("duplicate-check-not-performed")
+        if review_only:
+            missing.add("independent-reproduction-not-confirmed")
         return sorted(missing)
 
     @staticmethod
@@ -453,8 +538,17 @@ class BugBountyReportService:
         return normalized or None
 
     @staticmethod
-    def _validate_finding(snapshot: _RunSnapshot, finding: Finding) -> None:
-        if not finding.validated:
+    def _validate_finding(
+        snapshot: _RunSnapshot,
+        finding: Finding,
+        *,
+        review_only: bool,
+    ) -> None:
+        if review_only and finding.validated:
+            raise ValueError(
+                f"review-only Candidate is incorrectly marked validated: {finding.finding_id}"
+            )
+        if not review_only and not finding.validated:
             raise ValueError(f"finding is not independently validated: {finding.finding_id}")
         targets = {target.endpoint for target in snapshot.campaign.spec.targets}
         if finding.target not in targets:
@@ -465,9 +559,7 @@ class BugBountyReportService:
         if not any(scope_matches(rule, finding.target) for rule in scope.allow):
             raise ValueError(f"finding target is outside run allow scope: {finding.finding_id}")
         for relative in finding.evidence:
-            candidate = (snapshot.path / relative).resolve()
-            evidence_root = (snapshot.path / "evidence").resolve()
-            if evidence_root not in candidate.parents or not candidate.is_file():
+            if relative not in snapshot.evidence_paths:
                 raise ValueError(
                     f"finding evidence is missing or outside this run: {finding.finding_id}"
                 )
@@ -530,32 +622,262 @@ class BugBountyReportService:
         run_path: Path,
     ) -> _RunSnapshot:
         resolved = run_path.resolve()
-        verify_run_integrity(resolved)
-        required = {"campaign.json", "events.jsonl", "findings.json", "evidence"}
-        missing = [name for name in required if not (resolved / name).exists()]
+        initial = load_verified_run_snapshot(resolved)
+        validation_snapshot = load_validation_snapshot(
+            resolved,
+            verified_snapshot=initial,
+        )
+        sealed_paths = {artifact.path for seal in initial.seals for artifact in seal.artifacts}
+        required = {"campaign.json", "findings.json"}
+        missing = sorted(required - sealed_paths)
         if missing:
-            raise ValueError(f"run is missing required artifacts: {sorted(missing)}")
-        if not (resolved / "evidence").is_dir():
-            raise ValueError("run evidence artifact must be a directory")
+            raise ValueError(f"run is missing required artifacts: {missing}")
 
-        campaign_raw = json.loads((resolved / "campaign.json").read_text(encoding="utf-8"))
+        metadata_requests = {
+            "campaign.json": _MAX_MANAGED_JSON_BYTES,
+            "findings.json": _MAX_MANAGED_JSON_BYTES,
+        }
+        if "run.json" in sealed_paths:
+            metadata_requests["run.json"] = _MAX_MANAGED_JSON_BYTES
+        metadata = load_verified_run_artifacts(
+            resolved,
+            requests=metadata_requests,
+            expected_run_id=initial.verification.run_id,
+        )
+        require_same_authority(
+            initial,
+            metadata,
+            message="sealed Bug Bounty Run changed while report inputs were derived",
+        )
+
+        campaign_raw = strict_json(
+            metadata,
+            "campaign.json",
+            label="Bug Bounty campaign artifact",
+            max_bytes=_MAX_MANAGED_JSON_BYTES,
+        )
         campaign = CampaignManifest.model_validate(campaign_raw)
         if campaign.metadata.name != program.metadata.name:
             raise ValueError("run campaign belongs to a different Bug Bounty program")
 
-        findings_raw = json.loads((resolved / "findings.json").read_text(encoding="utf-8"))
-        if not isinstance(findings_raw, list):
-            raise ValueError("findings.json must contain a list")
-        findings = [Finding.model_validate(item) for item in findings_raw]
-        finding_ids = [finding.finding_id for finding in findings]
-        if len(finding_ids) != len(set(finding_ids)):
+        findings_raw = strict_json(
+            metadata,
+            "findings.json",
+            label="Bug Bounty findings artifact",
+            max_bytes=_MAX_MANAGED_JSON_BYTES,
+            expected_type=list,
+            type_message="findings.json must contain a list",
+        )
+        source_findings = [Finding.model_validate(item) for item in findings_raw]
+        source_finding_ids = [finding.finding_id for finding in source_findings]
+        if len(source_finding_ids) != len(set(source_finding_ids)):
             raise ValueError("findings.json contains duplicate finding identifiers")
 
-        events: list[AuditEvent] = []
-        for line in (resolved / "events.jsonl").read_text(encoding="utf-8").splitlines():
-            if not line:
+        findings, review_only_finding_ids = BugBountyReportService._reportable_findings(
+            validation_snapshot
+        )
+        finding_ids = [finding.finding_id for finding in findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError("validation snapshot contains duplicate reportable Finding IDs")
+
+        evidence_paths: set[str] = set()
+        for finding in findings:
+            for relative in finding.evidence:
+                if not BugBountyReportService._is_canonical_evidence_path(relative):
+                    raise ValueError(f"finding evidence is outside this run: {finding.finding_id}")
+                evidence_paths.add(relative)
+        evidence_requests = {relative: _MAX_MANAGED_EVIDENCE_BYTES for relative in evidence_paths}
+        try:
+            snapshot = load_verified_run_artifacts(
+                resolved,
+                requests={**metadata_requests, **evidence_requests},
+                expected_run_id=initial.verification.run_id,
+            )
+        except (RunIntegrityError, ValueError) as exc:
+            raise ValueError("finding evidence is missing or outside this Run") from exc
+        require_same_authority(
+            metadata,
+            snapshot,
+            message="sealed Bug Bounty Run changed while report inputs were derived",
+        )
+
+        completed_run_id, started_event, completed_event = (
+            BugBountyReportService._load_campaign_lifecycle(snapshot.events, campaign)
+        )
+
+        if "run.json" in metadata_requests:
+            run_state = strict_json(
+                snapshot,
+                "run.json",
+                label="Bug Bounty Run state artifact",
+                max_bytes=_MAX_MANAGED_JSON_BYTES,
+                expected_type=dict,
+                type_message="Bug Bounty report requires completed run state",
+            )
+            if run_state.get("status") != "completed":
+                raise ValueError("Bug Bounty report requires completed run state")
+            state_run_id = run_state.get("runId")
+            if state_run_id != completed_run_id:
+                raise ValueError("run state and completion event identifiers do not match")
+        return _RunSnapshot(
+            run_id=completed_run_id,
+            path=resolved,
+            campaign=campaign,
+            findings=findings,
+            review_only_finding_ids=review_only_finding_ids,
+            evidence_paths=frozenset(evidence_paths),
+            started_at=started_event.occurred_at,
+            completed_at=completed_event.occurred_at,
+        )
+
+    @staticmethod
+    def _reportable_findings(
+        snapshot: LoadedValidationSnapshot,
+    ) -> tuple[list[Finding], frozenset[str]]:
+        confirmed = [
+            finding.model_copy(deep=True) for finding in snapshot.product_confirmed_findings
+        ]
+        review_only: list[Finding] = []
+        decisions = {decision.candidate_id: decision for decision in snapshot.validation.decisions}
+        for candidate in snapshot.validation.candidates:
+            decision = decisions[candidate.candidate_id]
+            if not BugBountyReportService._is_semantically_supported_review(decision):
                 continue
-            events.append(AuditEvent.model_validate_json(line))
+            BugBountyReportService._validate_review_authority(
+                snapshot,
+                candidate,
+                decision,
+            )
+            review_only.append(candidate.claim.model_copy(deep=True, update={"validated": False}))
+        review_ids = frozenset(finding.finding_id for finding in review_only)
+        return [*confirmed, *review_only], review_ids
+
+    @staticmethod
+    def _is_semantically_supported_review(decision: ValidationDecision) -> bool:
+        return bool(
+            decision.disposition is FindingDisposition.NEEDS_REVIEW
+            and decision.reason_codes
+            in (
+                [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING],
+                [ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING],
+            )
+        )
+
+    @staticmethod
+    def _validate_review_authority(
+        snapshot: LoadedValidationSnapshot,
+        candidate: CandidateFinding,
+        decision: ValidationDecision,
+    ) -> None:
+        claim = candidate.claim
+        checks = {check.check_id: check for check in decision.checks}
+        required_passes = {
+            "target-declared",
+            "threat-class-declared",
+            "target-http-scope",
+            "evidence-present",
+            "evidence-result-links",
+            "evidence-path-contained",
+            "evidence-files",
+            "evidence-provenance",
+            "candidate-source-requests",
+            "linked-executions",
+        }
+        passed = {
+            check_id
+            for check_id, check in checks.items()
+            if check.status is ValidationCheckStatus.PASS
+        }
+        legacy_support = BugBountyReportService._check_passed_with_reason(
+            checks,
+            "legacy-validator-signal",
+            ValidationReasonCode.VALIDATOR_CONFIRMED,
+        )
+        candidate_bound_support = BugBountyReportService._check_passed_with_reason(
+            checks,
+            "candidate-bound-validator-assessment",
+            ValidationReasonCode.VALIDATOR_CONFIRMED,
+        )
+        reproduction = checks.get("independent-reproduction")
+        reason = decision.reason_codes[0]
+        if (
+            not candidate.source_request_ids
+            or not claim.evidence
+            or decision.supporting_evidence != claim.evidence
+            or decision.contradicting_evidence
+            or not required_passes <= passed
+            or not (legacy_support or candidate_bound_support)
+            or reproduction is None
+            or reproduction.status is not ValidationCheckStatus.FAIL
+            or reproduction.reason_code is not reason
+        ):
+            raise ValueError(
+                f"review-only Candidate lacks exact validation authority: {candidate.candidate_id}"
+            )
+
+        if reason is ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING:
+            legacy_authority = bool(
+                candidate.source == "legacy-validator-output"
+                and candidate.source_agent_id == decision.validator_id
+                and legacy_support
+            )
+            candidate_authority = bool(
+                candidate.source.startswith("trusted-core:")
+                and candidate.source_agent_id.startswith("trusted-core:")
+                and candidate_bound_support
+            )
+            if (
+                decision.method is not ValidationMethod.HYBRID_LEGACY_GATE
+                or decision.confirmation_basis is not None
+                or decision.replay_request_ids
+                or decision.replay_outcome_ids
+                or decision.replay_lineage
+                or not (legacy_authority or candidate_authority)
+            ):
+                raise ValueError(
+                    f"review-only Candidate has invalid source authority: {candidate.candidate_id}"
+                )
+            return
+
+        replay_source_authority = bool(
+            (candidate.source == "legacy-validator-output" and legacy_support)
+            or (
+                candidate.source.startswith("trusted-core:")
+                and candidate.source_agent_id.startswith("trusted-core:")
+                and candidate_bound_support
+            )
+        )
+        if (
+            snapshot.semantics is not ValidationSnapshotSemantics.VERIFIED_REPLAY_EVIDENCE
+            or decision.method is not ValidationMethod.RESTRICTED_REPLAY_GATE
+            or decision.validator_id != "trusted-core:confirmed-gate"
+            or not decision.replay_lineage
+            or decision.confirmation_basis is not None
+            or not {"replay-receipt-integrity", "replay-lineage", "replay-oracle"} <= passed
+            or not replay_source_authority
+        ):
+            raise ValueError(
+                f"review-only Candidate has invalid replay authority: {candidate.candidate_id}"
+            )
+
+    @staticmethod
+    def _check_passed_with_reason(
+        checks: dict[str, ValidationCheckResult],
+        check_id: str,
+        reason: ValidationReasonCode,
+    ) -> bool:
+        check = checks.get(check_id)
+        return bool(
+            check is not None
+            and check.status is ValidationCheckStatus.PASS
+            and check.reason_code is reason
+        )
+
+    @staticmethod
+    def _load_campaign_lifecycle(
+        events: tuple[AuditEvent, ...],
+        campaign: CampaignManifest,
+    ) -> tuple[str, AuditEvent, AuditEvent]:
         run_ids = {event.run_id for event in events}
         if len(run_ids) != 1:
             raise ValueError("run event stream contains inconsistent run identifiers")
@@ -574,23 +896,18 @@ class BugBountyReportService:
             raise ValueError("campaign completion event predates its start event")
         if not campaign.spec.authorization.is_active(started_event.occurred_at):
             raise ValueError("campaign authorization was not active when the run started")
-        completed_run_id = completed_event.run_id
+        return completed_event.run_id, started_event, completed_event
 
-        run_state_path = resolved / "run.json"
-        if run_state_path.exists():
-            run_state = json.loads(run_state_path.read_text(encoding="utf-8"))
-            if not isinstance(run_state, dict) or run_state.get("status") != "completed":
-                raise ValueError("Bug Bounty report requires completed run state")
-            state_run_id = run_state.get("runId")
-            if state_run_id != completed_run_id:
-                raise ValueError("run state and completion event identifiers do not match")
-        return _RunSnapshot(
-            run_id=completed_run_id,
-            path=resolved,
-            campaign=campaign,
-            findings=findings,
-            started_at=started_event.occurred_at,
-            completed_at=completed_event.occurred_at,
+    @staticmethod
+    def _is_canonical_evidence_path(relative: str) -> bool:
+        if not relative.startswith("evidence/") or "\\" in relative:
+            return False
+        path = PurePosixPath(relative)
+        return (
+            not path.is_absolute()
+            and path.as_posix() == relative
+            and all(part not in {"", ".", ".."} for part in relative.split("/"))
+            and len(path.parts) > 1
         )
 
     @staticmethod
@@ -625,6 +942,8 @@ class BugBountyReportService:
                     "finding": item.finding.model_dump(mode="json"),
                     "fingerprint": item.fingerprint,
                     "disposition": item.disposition.value,
+                    "validationAuthority": item.validation_authority.value,
+                    "submissionEligible": item.submission_eligible,
                     "candidates": item.duplicate_candidates,
                     "missing": item.missing_fields,
                 }
@@ -656,49 +975,55 @@ class BugBountyReportService:
                 + BugBountyReportService._text(program.metadata.display_name)
             ),
             "",
-            f"- Report ID: `{report.report_id}`",
-            f"- Run ID: `{report.run_id}`",
-            f"- Scope digest: `{report.scope_digest}`",
-            f"- Severity standard: `{BugBountyReportService._code(report.severity_standard)}`",
-            f"- Ready for submission: `{summary.ready}`",
-            f"- Needs review: `{summary.needs_review}`",
-            f"- Known duplicates: `{summary.known_duplicates}`",
-            f"- Same-run duplicates: `{summary.run_duplicates}`",
+            f"- Report ID: {BugBountyReportService._code(report.report_id)}",
+            f"- Run ID: {BugBountyReportService._code(report.run_id)}",
+            f"- Scope digest: {BugBountyReportService._code(report.scope_digest)}",
+            "- Severity standard: " + BugBountyReportService._code(report.severity_standard),
+            f"- Ready for submission: {BugBountyReportService._code(str(summary.ready))}",
+            f"- Needs review: {BugBountyReportService._code(str(summary.needs_review))}",
+            "- Known duplicates: " + BugBountyReportService._code(str(summary.known_duplicates)),
+            "- Same-run duplicates: " + BugBountyReportService._code(str(summary.run_duplicates)),
             "",
             "## Findings",
             "",
         ]
         if not report.items:
-            lines.append("No independently validated findings were present in this run.")
+            lines.append(
+                "No independently reproduced Findings or semantically supported review "
+                "Candidates were present in this run."
+            )
         for item in report.items:
             lines.extend(
                 [
                     f"### {BugBountyReportService._text(item.finding.title)}",
                     "",
-                    f"- Finding ID: `{item.finding.finding_id}`",
+                    f"- Finding ID: {BugBountyReportService._code(item.finding.finding_id)}",
                     f"- Disposition: **{item.disposition.value}**",
-                    f"- Fingerprint: `{item.fingerprint}`",
-                    f"- Target: `{BugBountyReportService._code(item.finding.target)}`",
-                    f"- Severity: `{item.finding.severity.value}`",
+                    "- Validation authority: "
+                    + BugBountyReportService._code(item.validation_authority.value),
+                    "- Submission eligible: "
+                    + BugBountyReportService._code(str(item.submission_eligible).lower()),
+                    f"- Fingerprint: {BugBountyReportService._code(item.fingerprint)}",
+                    f"- Target: {BugBountyReportService._code(item.finding.target)}",
+                    f"- Severity: {BugBountyReportService._code(item.finding.severity.value)}",
                 ]
             )
             if item.duplicate_candidates:
                 lines.append(
                     "- Duplicate candidates: "
                     + ", ".join(
-                        f"`{BugBountyReportService._code(value)}`"
-                        for value in item.duplicate_candidates
+                        BugBountyReportService._code(value) for value in item.duplicate_candidates
                     )
                 )
             if item.missing_fields:
                 lines.append(
                     "- Missing fields: "
                     + ", ".join(
-                        f"`{BugBountyReportService._code(value)}`" for value in item.missing_fields
+                        BugBountyReportService._code(value) for value in item.missing_fields
                     )
                 )
             if item.draft_path:
-                lines.append(f"- Draft: `{BugBountyReportService._code(item.draft_path)}`")
+                lines.append(f"- Draft: {BugBountyReportService._code(item.draft_path)}")
             lines.append("")
         lines.extend(
             [
@@ -725,22 +1050,31 @@ class BugBountyReportService:
                 f"> Triage status: **{item.disposition.value}**. "
                 "This is a draft, not an automatic submission."
             ),
+            *(
+                [
+                    "> Review-only Candidate: semantic validation supported the exact claim, "
+                    "but verified independent reproduction is not confirmed. This draft is "
+                    "not submission-eligible."
+                ]
+                if item.validation_authority is BugBountyValidationAuthority.SEMANTIC_REVIEW_ONLY
+                else []
+            ),
             "",
-            f"- Program: `{BugBountyReportService._code(program.metadata.display_name)}`",
-            f"- Target: `{BugBountyReportService._code(finding.target)}`",
+            f"- Program: {BugBountyReportService._code(program.metadata.display_name)}",
+            f"- Target: {BugBountyReportService._code(finding.target)}",
             (
-                f"- Severity: `{finding.severity.value}` "
+                f"- Severity: {BugBountyReportService._code(finding.severity.value)} "
                 f"({BugBountyReportService._text(program.spec.reporting.severity_standard)})"
             ),
-            f"- Vulnerability class: `{BugBountyReportService._code(finding.threat_class)}`",
+            "- Vulnerability class: " + BugBountyReportService._code(finding.threat_class),
             (
                 "- Affected component: "
                 + BugBountyReportService._text(
                     finding.affected_component or "TODO: operator review"
                 )
             ),
-            f"- Confidence: `{finding.confidence:.2f}`",
-            f"- PAJIN fingerprint: `{item.fingerprint}`",
+            f"- Confidence: {BugBountyReportService._code(f'{finding.confidence:.2f}')}",
+            f"- PAJIN fingerprint: {BugBountyReportService._code(item.fingerprint)}",
             "",
             "## Summary",
             "",
@@ -770,7 +1104,7 @@ class BugBountyReportService:
             lines.append("1. TODO: add a minimum-impact reproduction.")
         lines.extend(["", "## Evidence", ""])
         if finding.evidence:
-            lines.extend(f"- `{BugBountyReportService._code(path)}`" for path in finding.evidence)
+            lines.extend(f"- {BugBountyReportService._code(path)}" for path in finding.evidence)
         else:
             lines.append("- TODO: attach same-run evidence.")
         lines.extend(["", "## Remediation", ""])
@@ -783,28 +1117,24 @@ class BugBountyReportService:
             lines.append(
                 "Review these candidates before submission: "
                 + ", ".join(
-                    f"`{BugBountyReportService._code(value)}`"
-                    for value in item.duplicate_candidates
+                    BugBountyReportService._code(value) for value in item.duplicate_candidates
                 )
             )
         if item.missing_fields:
             lines.extend(["", "## Required completion", ""])
             lines.extend(
-                f"- `{BugBountyReportService._code(value)}`" for value in item.missing_fields
+                f"- {BugBountyReportService._code(value)}" for value in item.missing_fields
             )
         lines.append("")
         return "\n".join(lines)
 
     @staticmethod
     def _code(value: str) -> str:
-        return escape(value.replace("`", "\\`"))
+        return markdown_code_span(value)
 
     @staticmethod
     def _text(value: str) -> str:
-        escaped_markdown = value
-        for marker in "\\`*_{}[]()#+-.!|":
-            escaped_markdown = escaped_markdown.replace(marker, f"\\{marker}")
-        return escape(escaped_markdown)
+        return escape_markdown_text(value)
 
     @staticmethod
     def _safe_finding_slug(finding_id: str) -> str:

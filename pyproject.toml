@@ -1,6 +1,7 @@
 [build-system]
 requires = ["setuptools>=75"]
-build-backend = "setuptools.build_meta"
+build-backend = "build_backend"
+backend-path = ["."]
 
 [project]
 name = "pajin"
@@ -32,20 +33,24 @@ dev = [
   "pytest>=8,<10",
   "pytest-asyncio>=0.24,<2",
   "ruff>=0.11,<1",
+  # The artifact smoke builds offline with the current environment.
+  "setuptools>=75",
   "types-PyYAML>=6,<7",
   "uv>=0.11,<1",
 ]
 
 [project.scripts]
 pajin = "pajin.cli:app"
-pajin-control-plane = "pajin.control_plane.__main__:main"
-pajin-worker-daemon = "pajin.control_plane.worker_main:main"
+pajin-control-plane = "pajin.entrypoints:control_plane_main"
+pajin-replay-worker-daemon = "pajin.entrypoints:replay_worker_daemon_main"
+pajin-worker-daemon = "pajin.entrypoints:worker_daemon_main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
 
 [tool.setuptools.package-data]
-"pajin.control_plane.web" = ["*.html", "*.css", "*.js"]
+"pajin" = ["py.typed"]
+"pajin.control_plane.web" = ["index.html", "app.css", "app.js", "protocol.js", "render.js"]
 
 [tool.pytest.ini_options]
 addopts = "-ra"
@@ -57,7 +62,10 @@ line-length = 100
 target-version = "py312"
 
 [tool.ruff.lint]
-select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF", "C90"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 15
 
 [tool.mypy]
 python_version = "3.12"

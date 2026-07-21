@@ -29,10 +29,12 @@ from pajin.domain.replay import (
     ReplayPurpose,
     ReplayRetestContext,
     ReplaySessionPolicy,
+    ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
     replay_evidence_digest,
     replay_request_digest,
+    replay_source_capability_digest,
 )
 from pajin.domain.validation import CandidateFinding
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
@@ -238,6 +240,34 @@ def _specialist_grant(campaign: CampaignManifest | None = None) -> CapabilityGra
     )
 
 
+def _source_capability(
+    campaign: CampaignManifest | None = None,
+    *,
+    specialist: CapabilityGrant | None = None,
+) -> ReplaySourceCapabilityReceipt:
+    resolved = campaign or _campaign()
+    leaf = specialist or _specialist_grant(resolved)
+    root = CapabilityGrant(
+        grant_id="grant_supervisor_1",
+        subject="agent:supervisor:1",
+        campaign=resolved.metadata.name,
+        tools={"ai.chat-probe"},
+        targets={TARGET},
+        max_risk_tier=resolved.spec.rules_of_engagement.max_tool_risk_tier,
+        max_calls=resolved.spec.budgets.max_tool_calls,
+        expires_at=resolved.spec.authorization.expires_at,
+        delegable=True,
+        issued_at=NOW - timedelta(minutes=20),
+        depth=0,
+    )
+    return ReplaySourceCapabilityReceipt(
+        request_id=ORIGINAL_REQUEST_ID,
+        lineage=[root, leaf],
+        execution_started_at=NOW - timedelta(minutes=7),
+        execution_finished_at=NOW - timedelta(minutes=6),
+    )
+
+
 def _compile_inputs() -> dict[str, object]:
     _planned, executed = _requests()
     campaign = _campaign()
@@ -245,7 +275,7 @@ def _compile_inputs() -> dict[str, object]:
         "campaign": campaign,
         "plan": _plan(),
         "original_request": executed,
-        "specialist_grant": _specialist_grant(campaign),
+        "source_capability": _source_capability(campaign),
         "validation_packet": _packet(),
         "intent": _intent(),
         "contract": _contract(),
@@ -303,6 +333,11 @@ def test_compiler_is_deterministic_and_issues_only_minimal_replay_authority() ->
     assert first.grant.subject == f"reproducer:{first.grant.grant_id}"
     assert first.grant.expires_at == NOW + timedelta(minutes=5)
     assert first.spec.grant_id == first.grant.grant_id
+    assert first.source_capability.specialist_grant.grant_id == "grant_specialist_m03_1"
+    assert first.spec.source_capability_digest == replay_source_capability_digest(
+        first.source_capability
+    )
+    assert first.grant.source_capability_digest == first.spec.source_capability_digest
     assert first.spec.arguments == _requests()[1].arguments
     assert first.spec.secret_lease_ids == ["lease_replay_m03_1"]
 
@@ -475,7 +510,6 @@ def test_compiler_rechecks_cancellation_authorization_scope_and_budget() -> None
         ReplayCompileReason.AUTHORIZATION_INACTIVE,
         lambda: _compile(
             campaign=expired_campaign,
-            specialist_grant=_specialist_grant(),
         ),
     )
 
@@ -487,7 +521,7 @@ def test_compiler_rechecks_cancellation_authorization_scope_and_budget() -> None
         ReplayCompileReason.POLICY_DENIED,
         lambda: _compile(
             campaign=denied_campaign,
-            specialist_grant=_specialist_grant(denied_campaign),
+            source_capability=_source_capability(denied_campaign),
         ),
     )
     assert policy_error.policy == "scope-deny"
@@ -512,7 +546,7 @@ def test_replay_grant_ttl_is_capped_by_campaign_authorization() -> None:
 
     compiled = _compile(
         campaign=short_campaign,
-        specialist_grant=_specialist_grant(short_campaign),
+        source_capability=_source_capability(short_campaign),
     )
 
     assert compiled.grant.expires_at == NOW + timedelta(minutes=2)
@@ -550,6 +584,73 @@ def test_compiler_rejects_unregistered_destructive_and_non_idempotent_tools() ->
     )
 
 
+def test_automatic_preserve_session_is_rejected_by_schema_and_compiler_backstop() -> None:
+    with pytest.raises(ValueError, match="preserve-scenario-session"):
+        _contract(
+            session_policy=ReplaySessionPolicy.PRESERVE_SCENARIO_SESSION,
+            materializer_id=None,
+            materializer_version=None,
+            ephemeral_argument_fields=set(),
+        )
+
+    bypassed = _contract().model_copy(
+        update={
+            "session_policy": ReplaySessionPolicy.PRESERVE_SCENARIO_SESSION,
+            "materializer_id": None,
+            "materializer_version": None,
+            "ephemeral_argument_fields": set(),
+        }
+    )
+    _assert_reason(
+        ReplayCompileReason.REPLAY_NOT_ELIGIBLE,
+        lambda: _compile(contract=bypassed),
+    )
+
+
+@pytest.mark.parametrize(
+    "invalid_arguments",
+    [
+        {1: "integer-key", "1": "string-key"},
+        float("nan"),
+        ("tuple-is-not-json",),
+    ],
+)
+def test_compiler_normalizes_noncanonical_nested_arguments_to_typed_rejection(
+    invalid_arguments: object,
+) -> None:
+    _planned, executed = _requests()
+    arguments = {**executed.arguments, "turns": invalid_arguments}
+    plan, request = _replace_request_arguments(arguments)
+
+    error = _assert_reason(
+        ReplayCompileReason.ARGUMENT_NOT_ALLOWLISTED,
+        lambda: _compile(plan=plan, original_request=request),
+    )
+    assert "integer-key" not in str(error)
+    assert "tuple-is-not-json" not in str(error)
+
+
+def test_compiler_rejects_deep_cyclic_and_oversized_arguments_without_raw_errors() -> None:
+    _planned, executed = _requests()
+    deep: object = "leaf"
+    for _ in range(40):
+        deep = {"nested": deep}
+    cycle: list[object] = []
+    cycle.append(cycle)
+    invalid_values = [deep, cycle, "x" * (256 * 1024)]
+
+    for invalid in invalid_values:
+        arguments = {**executed.arguments, "turns": invalid}
+        plan, request = _replace_request_arguments(arguments)
+        _assert_reason(
+            ReplayCompileReason.ARGUMENT_NOT_ALLOWLISTED,
+            lambda plan=plan, request=request: _compile(
+                plan=plan,
+                original_request=request,
+            ),
+        )
+
+
 def test_compiler_rejects_ambiguous_plan_and_replay_grant_as_original_authority() -> None:
     _assert_reason(
         ReplayCompileReason.PROVENANCE_MISMATCH,
@@ -559,7 +660,7 @@ def test_compiler_rejects_ambiguous_plan_and_replay_grant_as_original_authority(
     compiled = _compile()
     _assert_reason(
         ReplayCompileReason.SPECIALIST_GRANT_INVALID,
-        lambda: _compile(specialist_grant=compiled.grant),
+        lambda: _compile(source_capability=compiled.grant),
     )
 
 
@@ -577,12 +678,97 @@ def test_compiler_rejects_ambiguous_plan_and_replay_grant_as_original_authority(
 def test_compiler_rejects_confused_deputy_specialist_grants(
     updates: dict[str, object],
 ) -> None:
-    grant = _specialist_grant().model_copy(update=updates)
+    source = _source_capability()
+    grant = source.specialist_grant.model_copy(update=updates)
+    corrupted = source.model_copy(update={"lineage": [source.lineage[0], grant]})
 
     _assert_reason(
         ReplayCompileReason.SPECIALIST_GRANT_INVALID,
-        lambda: _compile(specialist_grant=grant),
+        lambda: _compile(source_capability=corrupted),
     )
+
+
+@pytest.mark.parametrize("corruption", ["root-only", "orphan", "future", "outside-window"])
+def test_compiler_rejects_unverified_or_temporally_invalid_source_authority(
+    corruption: str,
+) -> None:
+    source = _source_capability()
+    root, specialist = source.lineage
+    if corruption == "root-only":
+        corrupted = source.model_copy(update={"lineage": [root]})
+    elif corruption == "orphan":
+        corrupted_specialist = specialist.model_copy(
+            update={"parent_grant_id": "grant_missing_parent"}
+        )
+        corrupted = source.model_copy(update={"lineage": [root, corrupted_specialist]})
+    elif corruption == "future":
+        future = specialist.model_copy(
+            update={
+                "issued_at": NOW + timedelta(minutes=1),
+                "expires_at": NOW + timedelta(minutes=2),
+            }
+        )
+        corrupted = source.model_copy(update={"lineage": [root, future]})
+    else:
+        corrupted = source.model_copy(update={"execution_finished_at": specialist.expires_at})
+
+    _assert_reason(
+        ReplayCompileReason.SPECIALIST_GRANT_INVALID,
+        lambda: _compile(source_capability=corrupted),
+    )
+
+
+def test_full_source_capability_receipt_changes_compilation_identity() -> None:
+    source = _source_capability()
+    expanded = source.specialist_grant.model_copy(update={"max_calls": 2})
+    changed_source = ReplaySourceCapabilityReceipt(
+        request_id=source.request_id,
+        lineage=[source.lineage[0], expanded],
+        execution_started_at=source.execution_started_at,
+        execution_finished_at=source.execution_finished_at,
+    )
+
+    original = _compile(source_capability=source)
+    changed = _compile(source_capability=changed_source)
+
+    assert source.specialist_grant.grant_id == changed_source.specialist_grant.grant_id
+    assert original.spec.source_capability_digest != changed.spec.source_capability_digest
+    assert original.spec.spec_id != changed.spec.spec_id
+    assert original.grant.grant_id != changed.grant.grant_id
+
+
+def test_source_capability_receipt_is_bound_to_the_exact_request() -> None:
+    substituted = _source_capability().model_copy(update={"request_id": "tool_foreign"})
+
+    _assert_reason(
+        ReplayCompileReason.SPECIALIST_GRANT_INVALID,
+        lambda: _compile(source_capability=substituted),
+    )
+
+
+def test_compilation_schema_rejects_digest_consistent_foreign_source_authority() -> None:
+    compiled = _compile()
+    root, specialist = compiled.source_capability.lineage
+    foreign_source = ReplaySourceCapabilityReceipt(
+        request_id=compiled.source_capability.request_id,
+        lineage=[
+            root.model_copy(update={"tools": {"shell.exec"}}),
+            specialist.model_copy(update={"tools": {"shell.exec"}}),
+        ],
+        execution_started_at=compiled.source_capability.execution_started_at,
+        execution_finished_at=compiled.source_capability.execution_finished_at,
+    )
+    foreign_digest = replay_source_capability_digest(foreign_source)
+    forged = compiled.model_copy(
+        update={
+            "source_capability": foreign_source,
+            "spec": compiled.spec.model_copy(update={"source_capability_digest": foreign_digest}),
+            "grant": compiled.grant.model_copy(update={"source_capability_digest": foreign_digest}),
+        }
+    )
+
+    with pytest.raises(ValueError, match="source capability receipt does not match"):
+        ReplayCompilation.model_validate(forged.model_dump(mode="python", by_alias=True))
 
 
 def test_compiler_requires_distinct_candidate_and_replay_runs() -> None:

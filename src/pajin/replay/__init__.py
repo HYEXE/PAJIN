@@ -13,6 +13,8 @@ from pajin.replay.materializer import (
 )
 from pajin.replay.runtime import (
     GatewayRestrictedReproducerRuntime,
+    ReplayDispatchAuthority,
+    ReplayDispatchAuthorizer,
     ReplayModeOracle,
     ReplayOracleRegistry,
     ReplayRuntimeReason,
@@ -20,7 +22,9 @@ from pajin.replay.runtime import (
     RestrictedReplayRuntimeError,
     RestrictedReproducerRuntime,
     VerifiedReplayResult,
+    inspect_sealed_replay_result,
     load_verified_replay_result,
+    recover_verified_replay_result,
     replay_run_store,
 )
 from pajin.replay.sqlite_tickets import (
@@ -48,6 +52,8 @@ __all__ = [
     "ReplayCompilationError",
     "ReplayCompileReason",
     "ReplayCompiler",
+    "ReplayDispatchAuthority",
+    "ReplayDispatchAuthorizer",
     "ReplayExecutionAuthority",
     "ReplayExecutionTicket",
     "ReplayMaterializerRegistry",
@@ -70,7 +76,9 @@ __all__ = [
     "SQLiteReplayTicketFinalizationVerifier",
     "VerifiedReplayResult",
     "canonical_replay_compilation_bytes",
+    "inspect_sealed_replay_result",
     "load_verified_replay_result",
+    "recover_verified_replay_result",
     "replay_context_digest",
     "replay_run_store",
     "replay_scenario_digest",

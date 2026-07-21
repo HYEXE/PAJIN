@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -14,6 +13,7 @@ from uuid import uuid4
 
 from pydantic import Field, model_validator
 
+from pajin.agents.base import CandidateAuthority
 from pajin.control_plane.models import ArtifactRef
 from pajin.domain.models import (
     AgentPlan,
@@ -32,7 +32,13 @@ from pajin.domain.replay import (
     replay_evidence_digest,
     replay_request_digest,
 )
-from pajin.domain.validation import CandidateFinding, ValidationDecision
+from pajin.domain.validation import (
+    CandidateFinding,
+    ValidationDecision,
+    ValidatorOutputArtifact,
+    candidate_claim_digest,
+    validator_finding_matches_candidate_claim,
+)
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.modes.ai_redteam.replay import (
@@ -47,10 +53,21 @@ from pajin.replay.tickets import (
     canonical_replay_compilation_bytes,
     replay_context_digest,
 )
-from pajin.runtime.store import AuditEvent, RunStore, verify_run_integrity
+from pajin.runtime.store import (
+    AuditEvent,
+    RunStore,
+    VerifiedRunSnapshot,
+    load_verified_run_artifacts,
+    load_verified_run_snapshot,
+)
+from pajin.runtime.verified_snapshot import require_same_authority, strict_json
 from pajin.tools.ai import AIChatProbeTool
 from pajin.workflow.validation import validate_findings
-from pajin.workflow.validation_artifacts import load_source_validation_artifacts
+from pajin.workflow.validation_artifacts import (
+    VALIDATOR_OUTPUT_PATH,
+    VERSIONED_VALIDATION_ROOT,
+    load_source_validation_artifacts_from_snapshot,
+)
 
 KISA_CONFIRMATION_POLICY_VERSION = "pajin.kisa-confirmation:v1"
 KISA_CONFIRMATION_REPETITIONS = 2
@@ -61,6 +78,22 @@ KISA_CONFIRMATION_MAX_ATTEMPTS = 3
 _SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
 _SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 _REPLAY_RUN_ID = re.compile(r"^run_[0-9a-f]{32}$")
+_MAX_KISA_SOURCE_JSON_BYTES = 64 * 1024 * 1024
+_MAX_KISA_SOURCE_EVIDENCE_BYTES = 16 * 1024 * 1024
+_KISA_SOURCE_FIXED_ARTIFACTS = (
+    "run.json",
+    "campaign.json",
+    "plan.json",
+    "capabilities.json",
+    "budget.json",
+    "rate-limits.json",
+    "agents.json",
+    "task-graph.json",
+    "candidate-findings.json",
+    VALIDATOR_OUTPUT_PATH,
+    "validation-decisions.json",
+    "findings.json",
+)
 
 
 class _BudgetSnapshot(StrictModel):
@@ -170,13 +203,13 @@ class DerivedKISAReplayBatch:
 class _CanonicalCandidateDerivation:
     candidates: list[CandidateFinding]
     results: list[ToolResult]
-    authoritative_request_ids: set[str]
-    authoritative_claim_keys: set[tuple[str, str]]
+    authoritative_request_claims: set[CandidateAuthority]
 
 
 @dataclass(frozen=True, slots=True)
 class _ValidatorExecutionIdentity:
     validator_id: str
+    validation_task_id: str
     running_sequence: int
     task_succeeded_sequence: int
 
@@ -205,52 +238,55 @@ def derive_kisa_confirmation_batch(
     """Compile all exact eligible KISA Candidates without issuing execution tickets."""
 
     root = source_root.resolve()
-    verification = verify_run_integrity(root)
+    snapshot = _load_kisa_source_snapshot(root)
+    verification = snapshot.verification
     _require_artifact_binding(
         artifact_ref,
         run_id=verification.run_id,
         root_digest=verification.root_digest,
     )
 
-    run_summary = _read_object(root / "run.json")
+    run_summary = _read_object(snapshot, "run.json")
     if run_summary.get("runId") != verification.run_id or run_summary.get("status") != "completed":
         raise ValueError("KISA replay derivation requires a sealed completed source Run")
 
-    campaign = CampaignManifest.model_validate(_read_object(root / "campaign.json"))
+    campaign = CampaignManifest.model_validate(_read_object(snapshot, "campaign.json"))
     if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
         raise ValueError("KISA replay derivation requires an AI Red Team Campaign")
-    plan = AgentPlan.model_validate(_read_object(root / "plan.json"))
-    if (root / "validation" / "v1alpha1").exists():
-        raise ValueError(
-            "KISA replay derivation rejects an already-versioned validation projection"
-        )
-    validation = load_source_validation_artifacts(root)
+    plan = AgentPlan.model_validate(_read_object(snapshot, "plan.json"))
+    validation = load_source_validation_artifacts_from_snapshot(snapshot)
     capability_records = [
-        CapabilityRecord.model_validate(item) for item in _read_array(root / "capabilities.json")
+        CapabilityRecord.model_validate(item) for item in _read_array(snapshot, "capabilities.json")
     ]
-    budget = _BudgetSnapshot.model_validate(_read_object(root / "budget.json"))
-    rate_limits = _RateLimitSnapshot.model_validate(_read_object(root / "rate-limits.json"))
-    _require_campaign_budget(campaign, budget, events=_load_events(root))
+    budget = _BudgetSnapshot.model_validate(_read_object(snapshot, "budget.json"))
+    rate_limits = _RateLimitSnapshot.model_validate(_read_object(snapshot, "rate-limits.json"))
+    events = list(snapshot.events)
+    _require_campaign_budget(campaign, budget, events=events)
 
     canonical_derivation = _derive_canonical_candidates(
-        root=root,
+        snapshot=snapshot,
         campaign=campaign,
         plan=plan,
         stored_candidates=validation.candidates,
     )
     validator = _derive_validator_identity(
-        root=root,
+        snapshot=snapshot,
         campaign=campaign,
         capability_records=capability_records,
     )
+    validator_output = _load_validator_output(
+        snapshot=snapshot,
+        validator=validator,
+        candidates=canonical_derivation.candidates,
+    )
     canonical_decisions = _derive_canonical_decisions(
-        root=root,
+        snapshot=snapshot,
         campaign=campaign,
         candidates=canonical_derivation.candidates,
         results=canonical_derivation.results,
-        authoritative_request_ids=canonical_derivation.authoritative_request_ids,
-        authoritative_claim_keys=canonical_derivation.authoritative_claim_keys,
+        authoritative_request_claims=canonical_derivation.authoritative_request_claims,
         validator=validator,
+        validator_output=validator_output,
         stored_decisions=validation.decisions,
     )
     decisions_by_candidate = {decision.candidate_id: decision for decision in canonical_decisions}
@@ -285,6 +321,9 @@ def derive_kisa_confirmation_batch(
             plan=plan,
             candidate=candidate,
             capability_records=capability_records,
+            verified_source=snapshot,
+            expected_run_id=artifact_ref.run_id,
+            expected_root_digest=artifact_ref.integrity_root_digest,
         )
         contract = kisa_replay_contract(
             source.scenario.scenario_id,
@@ -307,12 +346,15 @@ def derive_kisa_confirmation_batch(
             source=source,
             contract=contract,
             created_at=compiled_at,
+            verified_source=snapshot,
+            expected_run_id=artifact_ref.run_id,
+            expected_root_digest=artifact_ref.integrity_root_digest,
         )
         compilation = ReplayCompiler.compile(
             campaign=campaign,
             plan=plan,
             original_request=source.original_request,
-            specialist_grant=source.specialist_grant,
+            source_capability=source.source_capability,
             validation_packet=inputs.validation_packet,
             intent=inputs.intent,
             contract=contract,
@@ -350,9 +392,12 @@ def derive_kisa_confirmation_batch(
             )
         )
 
-    final_verification = verify_run_integrity(root)
-    if final_verification != verification:
-        raise ValueError("sealed KISA source changed during replay derivation")
+    final_snapshot = load_verified_run_snapshot(root, expected_run_id=verification.run_id)
+    require_same_authority(
+        snapshot,
+        final_snapshot,
+        message="sealed KISA source changed during replay derivation",
+    )
     return DerivedKISAReplayBatch(
         artifact_ref=artifact_ref,
         campaign=campaign,
@@ -381,14 +426,14 @@ def derive_kisa_confirmation_batch(
 
 def _derive_canonical_candidates(
     *,
-    root: Path,
+    snapshot: VerifiedRunSnapshot,
     campaign: CampaignManifest,
     plan: AgentPlan,
     stored_candidates: list[CandidateFinding],
 ) -> _CanonicalCandidateDerivation:
     """Re-run the trusted producer and reject any stored Candidate substitution."""
 
-    results = _load_planned_tool_results(root, plan)
+    results = _load_planned_tool_results(snapshot, plan)
     producer = KISACandidateProducer()
     production = producer.produce(campaign, plan, results)
     derived = list(production.candidates)
@@ -419,20 +464,19 @@ def _derive_canonical_candidates(
     return _CanonicalCandidateDerivation(
         candidates=canonical,
         results=results,
-        authoritative_request_ids=set(production.authoritative_request_ids),
-        authoritative_claim_keys=set(production.authoritative_claim_keys),
+        authoritative_request_claims=set(production.authoritative_request_claims),
     )
 
 
 def _derive_validator_identity(
     *,
-    root: Path,
+    snapshot: VerifiedRunSnapshot,
     campaign: CampaignManifest,
     capability_records: list[CapabilityRecord],
 ) -> _ValidatorExecutionIdentity:
     """Bind the semantic Validator to its completed Agent, Task, and grant lineage."""
 
-    agents = [AgentNode.model_validate(item) for item in _read_array(root / "agents.json")]
+    agents = [AgentNode.model_validate(item) for item in _read_array(snapshot, "agents.json")]
     if len({agent.agent_id for agent in agents}) != len(agents):
         raise ValueError("sealed KISA Agent graph contains duplicate identities")
     supervisors = [agent for agent in agents if agent.role is AgentRole.SUPERVISOR]
@@ -453,7 +497,7 @@ def _derive_validator_identity(
     ):
         raise ValueError("sealed KISA Validator Agent role lineage is not completed and exact")
 
-    graph = TaskGraph.model_validate(_read_object(root / "task-graph.json"))
+    graph = TaskGraph.model_validate(_read_object(snapshot, "task-graph.json"))
     validation_tasks = [
         task
         for task in graph.tasks.values()
@@ -495,9 +539,7 @@ def _derive_validator_identity(
     supervisor_grant = supervisor_record.grant
     validator_grant = validator_record.grant
     if (
-        supervisor_record.revoked
-        or validator_record.revoked
-        or supervisor_grant.subject != supervisor.agent_id
+        supervisor_grant.subject != supervisor.agent_id
         or supervisor_grant.campaign != campaign.metadata.name
         or supervisor_grant.parent_grant_id is not None
         or supervisor_grant.depth != 0
@@ -516,7 +558,7 @@ def _derive_validator_identity(
     ):
         raise ValueError("sealed KISA Validator capability lineage is not least privilege")
 
-    events = _load_events(root)
+    events = list(snapshot.events)
     expected_spawn = {
         "agentId": validator.agent_id,
         "role": AgentRole.VALIDATOR.value,
@@ -539,7 +581,14 @@ def _derive_validator_identity(
     running = _matching_events(events, "agent.running", expected_running)
     task_succeeded = _matching_events(events, "task.succeeded", expected_task)
     completed = _matching_events(events, "agent.completed", expected_completed)
-    if len(spawned) != 1 or len(running) != 1 or len(task_succeeded) != 1 or len(completed) != 1:
+    validated = [event for event in events if event.event_type == "findings.validated"]
+    if (
+        len(spawned) != 1
+        or len(running) != 1
+        or len(task_succeeded) != 1
+        or len(completed) != 1
+        or len(validated) != 1
+    ):
         raise ValueError("sealed KISA Validator identity differs from its audit lineage")
     if not (
         spawned[0].sequence
@@ -548,39 +597,115 @@ def _derive_validator_identity(
         < completed[0].sequence
     ):
         raise ValueError("sealed KISA Validator lifecycle event sequence is not exact")
+    _require_post_execution_revocation(
+        events,
+        (
+            (supervisor_record, completed[0].sequence),
+            (validator_record, validated[0].sequence),
+        ),
+    )
     return _ValidatorExecutionIdentity(
         validator_id=validator.agent_id,
+        validation_task_id=validation_task.task_id,
         running_sequence=running[0].sequence,
         task_succeeded_sequence=task_succeeded[0].sequence,
     )
 
 
+def _require_post_execution_revocation(
+    events: list[AuditEvent],
+    records: tuple[tuple[CapabilityRecord, int], ...],
+) -> None:
+    """Treat snapshot revocation as live state while preserving historical authority."""
+
+    for record, after_sequence in records:
+        grant_id = record.grant.grant_id
+        revocations = [
+            event
+            for event in events
+            if event.event_type == "capability.revoked"
+            and isinstance(event.payload.get("revokedGrantIds"), list)
+            and grant_id in event.payload["revokedGrantIds"]
+        ]
+        if record.revoked != bool(revocations):
+            raise ValueError("sealed KISA capability live revocation state is inconsistent")
+        if any(event.sequence <= after_sequence for event in revocations):
+            raise ValueError("sealed KISA capability was revoked before execution completed")
+
+
+def _load_validator_output(
+    *,
+    snapshot: VerifiedRunSnapshot,
+    validator: _ValidatorExecutionIdentity,
+    candidates: list[CandidateFinding],
+) -> ValidatorOutputArtifact:
+    """Load one exact Candidate-aware Validator output from the pinned source snapshot."""
+
+    output = ValidatorOutputArtifact.model_validate(_read_object(snapshot, VALIDATOR_OUTPUT_PATH))
+    if (
+        output.source_run_id != snapshot.verification.run_id
+        or output.validator_id != validator.validator_id
+        or output.validation_task_id != validator.validation_task_id
+    ):
+        raise ValueError("sealed KISA Validator output belongs to another Run, Agent, or Task")
+
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidates}
+    assessments_by_id = {assessment.candidate_id: assessment for assessment in output.assessments}
+    if set(assessments_by_id) != set(candidates_by_id):
+        raise ValueError("sealed KISA Validator output must assess every exact Candidate once")
+    claimed_finding_indices: set[int] = set()
+    for candidate_id, assessment in assessments_by_id.items():
+        candidate = candidates_by_id[candidate_id]
+        if assessment.claim_digest != candidate_claim_digest(candidate):
+            raise ValueError("sealed KISA Validator assessment differs from its Candidate claim")
+        if assessment.supports_claim:
+            if assessment.supporting_evidence != candidate.claim.evidence:
+                raise ValueError(
+                    "sealed KISA supporting assessment differs from exact Candidate evidence"
+                )
+            matching_finding_indices = [
+                finding_index
+                for finding_index, finding in enumerate(output.findings)
+                if finding.validated
+                and validator_finding_matches_candidate_claim(candidate.claim, finding)
+            ]
+            if (
+                len(matching_finding_indices) != 1
+                or matching_finding_indices[0] in claimed_finding_indices
+            ):
+                raise ValueError(
+                    "sealed KISA supporting assessment has no unique exact Validator Finding"
+                )
+            claimed_finding_indices.add(matching_finding_indices[0])
+    return output
+
+
 def _derive_canonical_decisions(
     *,
-    root: Path,
+    snapshot: VerifiedRunSnapshot,
     campaign: CampaignManifest,
     candidates: list[CandidateFinding],
     results: list[ToolResult],
-    authoritative_request_ids: set[str],
-    authoritative_claim_keys: set[tuple[str, str]],
+    authoritative_request_claims: set[CandidateAuthority],
     validator: _ValidatorExecutionIdentity,
+    validator_output: ValidatorOutputArtifact,
     stored_decisions: list[ValidationDecision],
 ) -> list[ValidationDecision]:
-    """Replay the trusted semantic/objective gate and compare every Decision field."""
+    """Replay the gate from the exact sealed Validator output and compare Decisions."""
 
-    semantic_findings = [
-        candidate.claim.model_copy(update={"validated": True}) for candidate in candidates
-    ]
-    replay_store = cast(RunStore, _ReadOnlyValidationStore(path=root))
+    replay_store = cast(RunStore, _ReadOnlyValidationStore(path=snapshot.run_path))
     replayed = validate_findings(
         campaign,
         results,
-        semantic_findings,
+        [finding.model_copy(deep=True) for finding in validator_output.findings],
         replay_store,
         validator_id=validator.validator_id,
+        validator_assessments=[
+            assessment.model_copy(deep=True) for assessment in validator_output.assessments
+        ],
         admitted_candidates=candidates,
-        producer_authoritative_request_ids=authoritative_request_ids,
-        producer_authoritative_claim_keys=authoritative_claim_keys,
+        producer_authoritative_request_claims=authoritative_request_claims,
+        pinned_evidence=snapshot.artifacts,
     )
     if replayed.candidates != candidates or replayed.confirmed_findings:
         raise ValueError("trusted KISA validation replay changed the canonical Candidate set")
@@ -592,7 +717,7 @@ def _derive_canonical_decisions(
     ):
         raise ValueError("sealed KISA Decisions differ from trusted validation replay")
 
-    events = _load_events(root)
+    events = list(snapshot.events)
     canonical: list[ValidationDecision] = []
     previous_terminal_sequence = validator.running_sequence
     for decision in replayed.decisions:
@@ -677,17 +802,6 @@ def _validate_decision_event_lineage(
     return created[0].sequence, rejected[0].sequence
 
 
-def _load_events(root: Path) -> list[AuditEvent]:
-    try:
-        return [
-            AuditEvent.model_validate_json(line)
-            for line in (root / "events.jsonl").read_text(encoding="utf-8").splitlines()
-            if line
-        ]
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError("sealed KISA audit event lineage could not be loaded") from exc
-
-
 def _matching_events(
     events: list[AuditEvent],
     event_type: str,
@@ -698,18 +812,18 @@ def _matching_events(
     ]
 
 
-def _load_planned_tool_results(root: Path, plan: AgentPlan) -> list[ToolResult]:
+def _load_planned_tool_results(
+    snapshot: VerifiedRunSnapshot,
+    plan: AgentPlan,
+) -> list[ToolResult]:
     """Reconstruct producer inputs from exact Gateway evidence, never Candidate files."""
 
     results: list[ToolResult] = []
     for step in plan.steps:
         reference = f"evidence/{step.request.request_id}.json"
-        evidence_path = (root / reference).resolve()
-        if root not in evidence_path.parents:
-            raise ValueError("sealed KISA Plan evidence path escapes its source Run")
-        if not evidence_path.is_file():
+        if reference not in snapshot.artifacts:
             continue
-        payload = _read_object(evidence_path)
+        payload = _read_object(snapshot, reference)
         try:
             executed_request = ToolRequest.model_validate(payload.get("request"))
             result_value = payload.get("result")
@@ -789,24 +903,83 @@ def _executed_tool_call_count(events: list[AuditEvent]) -> int:
     return len(dispatched)
 
 
-def _read_object(path: Path) -> dict[str, object]:
-    try:
-        parsed = json.loads(path.read_bytes())
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError(f"sealed KISA source artifact could not be read: {path.name}") from exc
-    if not isinstance(parsed, dict):
-        raise ValueError(f"sealed KISA source artifact must be an object: {path.name}")
-    return parsed
+def _load_kisa_source_snapshot(root: Path) -> VerifiedRunSnapshot:
+    initial = load_verified_run_snapshot(root)
+    sealed_paths = frozenset(artifact.path for seal in initial.seals for artifact in seal.artifacts)
+    if any(path.startswith(f"{VERSIONED_VALIDATION_ROOT}/") for path in sealed_paths):
+        raise ValueError(
+            "KISA replay derivation rejects an already-versioned validation projection"
+        )
+
+    fixed_requests = {path: _MAX_KISA_SOURCE_JSON_BYTES for path in _KISA_SOURCE_FIXED_ARTIFACTS}
+    preliminary = load_verified_run_artifacts(
+        root,
+        requests=fixed_requests,
+        expected_run_id=initial.verification.run_id,
+    )
+    require_same_authority(
+        initial,
+        preliminary,
+        message="sealed KISA source changed during replay derivation",
+    )
+    plan = AgentPlan.model_validate(_read_object(preliminary, "plan.json"))
+    evidence_paths = {
+        f"evidence/{step.request.request_id}.json"
+        for step in plan.steps
+        if f"evidence/{step.request.request_id}.json" in sealed_paths
+    }
+    requests = dict(fixed_requests)
+    requests.update({path: _MAX_KISA_SOURCE_EVIDENCE_BYTES for path in evidence_paths})
+    snapshot = load_verified_run_artifacts(
+        root,
+        requests=requests,
+        expected_run_id=initial.verification.run_id,
+    )
+    require_same_authority(
+        preliminary,
+        snapshot,
+        message="sealed KISA source changed during replay derivation",
+    )
+    return snapshot
 
 
-def _read_array(path: Path) -> list[object]:
-    try:
-        parsed = json.loads(path.read_bytes())
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError(f"sealed KISA source artifact could not be read: {path.name}") from exc
-    if not isinstance(parsed, list):
-        raise ValueError(f"sealed KISA source artifact must be an array: {path.name}")
-    return parsed
+def _read_object(
+    snapshot: VerifiedRunSnapshot,
+    relative_path: str,
+) -> dict[str, object]:
+    max_bytes = (
+        _MAX_KISA_SOURCE_EVIDENCE_BYTES
+        if relative_path.startswith("evidence/")
+        else _MAX_KISA_SOURCE_JSON_BYTES
+    )
+    return strict_json(
+        snapshot,
+        relative_path,
+        label=f"sealed KISA source artifact {relative_path}",
+        max_bytes=max_bytes,
+        expected_type=dict,
+        missing_or_invalid_message=(
+            f"sealed KISA source artifact could not be read: {relative_path}"
+        ),
+        type_message=f"sealed KISA source artifact must be an object: {relative_path}",
+    )
+
+
+def _read_array(
+    snapshot: VerifiedRunSnapshot,
+    relative_path: str,
+) -> list[object]:
+    return strict_json(
+        snapshot,
+        relative_path,
+        label=f"sealed KISA source artifact {relative_path}",
+        max_bytes=_MAX_KISA_SOURCE_JSON_BYTES,
+        expected_type=list,
+        missing_or_invalid_message=(
+            f"sealed KISA source artifact could not be read: {relative_path}"
+        ),
+        type_message=f"sealed KISA source artifact must be an array: {relative_path}",
+    )
 
 
 def _utc(value: datetime) -> datetime:

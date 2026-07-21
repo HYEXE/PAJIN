@@ -44,7 +44,8 @@ spec:
     maxSpawnDepth: 1
     maxToolCalls: 3
     maxModelCalls: 2
-    maxModelTokens: 100
+    # Covers one 4x growing loop prompt/framing bound plus the 2048-token completion reservation.
+    maxModelTokens: 50000
   outputs:
     - approval-checkpoint
     - continuation-run

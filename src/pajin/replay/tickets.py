@@ -117,6 +117,19 @@ class _ReplayTicketClaimBackend(Protocol):
         finalized_at: datetime,
     ) -> None: ...
 
+    def _recover_finalization(
+        self,
+        token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        context: ReplayTicketContext,
+        replay_run_id: str,
+        finalized_at: datetime,
+    ) -> None: ...
+
     def _verify_finalized(
         self,
         token: object,
@@ -200,6 +213,30 @@ class ReplayTicketClaimer:
             ticket,
             final_seal_root_digest=final_seal_root_digest,
             artifact_set_digest=artifact_set_digest,
+            finalized_at=finalized_at,
+        )
+
+    def recover_finalization(
+        self,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        context: ReplayTicketContext,
+        replay_run_id: str,
+        finalized_at: datetime,
+    ) -> None:
+        """Finalize only a claimed ticket matching a fully reverified sealed receipt."""
+
+        self.__authority._recover_finalization(
+            self.__token,
+            ticket,
+            final_seal_root_digest=final_seal_root_digest,
+            artifact_set_digest=artifact_set_digest,
+            compilation_digest=compilation_digest,
+            context=context,
+            replay_run_id=replay_run_id,
             finalized_at=finalized_at,
         )
 
@@ -289,6 +326,7 @@ class ReplayExecutionAuthority:
         self.__claimer_token = object()
         self.__verifier_token = object()
         self.__entries: dict[str, _ReplayTicketEntry] = {}
+        self.__tickets_by_replay_run_id: dict[str, str] = {}
         self.__lock = Lock()
 
     def issuer(self) -> ReplayTicketIssuer:
@@ -321,7 +359,10 @@ class ReplayExecutionAuthority:
             expires_at=_utc(trusted.spec.expires_at),
         )
         with self.__lock:
+            if entry.replay_run_id in self.__tickets_by_replay_run_id:
+                raise PermissionError("a replay execution ticket already exists for this Run")
             self.__entries[ticket.ticket_id] = entry
+            self.__tickets_by_replay_run_id[entry.replay_run_id] = ticket.ticket_id
         return ticket
 
     def _claim(
@@ -389,6 +430,56 @@ class ReplayExecutionAuthority:
                 raise PermissionError("only a claimed replay ticket can be finalized")
             entry.state = ReplayTicketState.FINALIZED
             entry.finalized_at = _utc(finalized_at)
+            entry.final_seal_root_digest = final_seal_root_digest
+            entry.artifact_set_digest = artifact_set_digest
+
+    def _recover_finalization(
+        self,
+        token: object,
+        ticket: ReplayExecutionTicket,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        context: ReplayTicketContext,
+        replay_run_id: str,
+        finalized_at: datetime,
+    ) -> None:
+        if token is not self.__claimer_token:
+            raise PermissionError("invalid replay ticket recovery authority")
+        for name, value in (
+            ("final_seal_root_digest", final_seal_root_digest),
+            ("artifact_set_digest", artifact_set_digest),
+            ("compilation_digest", compilation_digest),
+        ):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+        recovered_at = _utc(finalized_at)
+        with self.__lock:
+            entry = self.__entries.get(ticket.ticket_id)
+            if entry is None:
+                raise KeyError("unknown replay execution ticket")
+            if (
+                entry.compilation_digest != compilation_digest
+                or entry.context != context
+                or entry.replay_run_id != replay_run_id
+            ):
+                raise PermissionError("replay ticket recovery context does not match issuance")
+            if entry.state is ReplayTicketState.FINALIZED:
+                if (
+                    entry.final_seal_root_digest == final_seal_root_digest
+                    and entry.artifact_set_digest == artifact_set_digest
+                ):
+                    return
+                raise PermissionError(
+                    "replay ticket was already finalized with different sealed artifacts"
+                )
+            if entry.state is not ReplayTicketState.CLAIMED:
+                raise PermissionError("only a claimed replay ticket can be recovered")
+            if entry.claimed_at is None or recovered_at < entry.claimed_at:
+                raise PermissionError("replay ticket recovery cannot predate its claim")
+            entry.state = ReplayTicketState.FINALIZED
+            entry.finalized_at = recovered_at
             entry.final_seal_root_digest = final_seal_root_digest
             entry.artifact_set_digest = artifact_set_digest
 

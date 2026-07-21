@@ -26,6 +26,8 @@ from pajin.domain.models import (
     ToolRiskTier,
 )
 from pajin.domain.orchestration import RunStatus
+from pajin.domain.yaml_loader import load_yaml_mapping
+from pajin.modes.ctf.evidence import load_authoritative_ctf_execution
 from pajin.modes.ctf.models import (
     CTFCategory,
     CTFChallengeManifest,
@@ -34,7 +36,9 @@ from pajin.modes.ctf.models import (
     CTFSuiteResult,
     CTFSuiteSummary,
 )
-from pajin.runtime.store import RunStore, verify_run_integrity
+from pajin.reporting import escape_markdown_text, markdown_code_span
+from pajin.runtime.safe_files import atomic_write_text_no_follow
+from pajin.runtime.store import RunStore
 from pajin.tools.ctf import (
     CTF_CRYPTO_XOR_TOOL_ID,
     CTF_WEB_BACKUP_TOOL_ID,
@@ -73,10 +77,7 @@ class _CompiledProfile:
 
 
 def load_ctf_challenge(path: Path) -> CTFChallengeManifest:
-    with path.open("r", encoding="utf-8") as handle:
-        raw = yaml.safe_load(handle)
-    if not isinstance(raw, dict):
-        raise ValueError("CTF challenge manifest must contain a YAML mapping")
+    raw = load_yaml_mapping(path, label="CTF challenge manifest")
     return CTFChallengeManifest.model_validate(raw)
 
 
@@ -315,14 +316,14 @@ class CTFChallengeService:
         evaluated_at: datetime | None = None,
     ) -> CTFCampaignArtifact:
         campaign = self.compile_campaign(challenge, evaluated_at=evaluated_at)
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(
+        atomic_write_text_no_follow(
+            output_path,
             yaml.safe_dump(
                 campaign.model_dump(mode="json", by_alias=True),
                 allow_unicode=True,
                 sort_keys=False,
             ),
-            encoding="utf-8",
+            label="CTF Campaign artifact",
         )
         return CTFCampaignArtifact(path=output_path, campaign=campaign)
 
@@ -337,18 +338,27 @@ class CTFModePack:
     ) -> CTFRunArtifacts:
         if outcome.status is not RunStatus.COMPLETED or outcome.plan is None:
             raise ValueError("CTF finalization requires a completed typed run")
-        verify_run_integrity(outcome.run_path)
-        campaign = self._validate_run_campaign(challenge, outcome)
+        execution = load_authoritative_ctf_execution(outcome)
+        campaign = self._validate_run_campaign(challenge, execution.campaign)
         target = campaign.spec.targets[0]
         tool_id = (
             CTF_WEB_BACKUP_TOOL_ID
             if challenge.spec.category is CTFCategory.WEB
             else CTF_CRYPTO_XOR_TOOL_ID
         )
-        probe_results = [result for result in outcome.tool_results if result.tool_id == tool_id]
-        if len(outcome.tool_results) != 1 or len(probe_results) != 1:
+        if len(execution.plan.steps) != 1 or len(execution.tool_results) != 1:
             raise ValueError("CTF MVP requires exactly one category Specialist result")
-        tool_result = probe_results[0]
+        step = execution.plan.steps[0]
+        tool_result = execution.tool_results[0]
+        if (
+            step.request.target != target.endpoint
+            or step.request.tool_id != tool_id
+            or tool_result.request_id != step.request.request_id
+            or tool_result.tool_id != tool_id
+        ):
+            raise ValueError("sealed CTF result does not match its Specialist request")
+        if not tool_result.success:
+            raise ValueError("CTF finalization requires a successful Specialist result")
         candidate = self._candidate(challenge, target.endpoint, tool_result.data)
         candidate_digest = sha256(candidate.encode("utf-8")).hexdigest() if candidate else None
         expected_digest = challenge.spec.flag.sha256
@@ -435,14 +445,8 @@ class CTFModePack:
     @staticmethod
     def _validate_run_campaign(
         challenge: CTFChallengeManifest,
-        outcome: MultiAgentRunOutcome,
+        campaign: CampaignManifest,
     ) -> CampaignManifest:
-        campaign_path = outcome.run_path / "campaign.json"
-        try:
-            raw = json.loads(campaign_path.read_text(encoding="utf-8"))
-            campaign = CampaignManifest.model_validate(raw)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            raise ValueError("sealed CTF run campaign is invalid") from exc
         expected = CTFChallengeService().compile_campaign(
             challenge,
             evaluated_at=challenge.spec.authorization.approved_at,
@@ -483,13 +487,13 @@ class CTFModePack:
                 "artifact size, and candidate grammar."
             )
         lines = [
-            f"# CTF Write-up: {challenge.metadata.display_name}",
+            f"# CTF Write-up: {escape_markdown_text(challenge.metadata.display_name)}",
             "",
-            f"- Challenge ID: `{challenge.metadata.name}`",
-            f"- Category: `{category.value}`",
-            f"- Scenario: `{challenge.spec.scenario.value}`",
-            f"- Solve status: `{result.status.value}`",
-            f"- Run ID: `{result.run_id}`",
+            f"- Challenge ID: {markdown_code_span(challenge.metadata.name)}",
+            f"- Category: {markdown_code_span(category.value)}",
+            f"- Scenario: {markdown_code_span(challenge.spec.scenario.value)}",
+            f"- Solve status: {markdown_code_span(result.status.value)}",
+            f"- Run ID: {markdown_code_span(result.run_id)}",
             "- External scoreboard submission: `not performed`",
             "",
             "## Agent route",
@@ -503,12 +507,14 @@ class CTFModePack:
             "",
         ]
         if result.status is CTFSolveStatus.SOLVED:
+            if result.candidate_flag is None or result.candidate_sha256 is None:
+                raise ValueError("solved CTF write-up requires verified flag material")
             lines.extend(
                 [
                     solved_observation,
                     "",
-                    f"- Verified flag: `{result.candidate_flag}`",
-                    f"- Candidate SHA-256: `{result.candidate_sha256}`",
+                    f"- Verified flag: {markdown_code_span(result.candidate_flag)}",
+                    "- Candidate SHA-256: " + markdown_code_span(result.candidate_sha256),
                 ]
             )
         elif result.status is CTFSolveStatus.INVALID_FLAG:
@@ -519,7 +525,7 @@ class CTFModePack:
                         "did not match."
                     ),
                     "",
-                    f"- Candidate SHA-256: `{result.candidate_sha256}`",
+                    "- Candidate SHA-256: " + markdown_code_span(result.candidate_sha256 or ""),
                 ]
             )
         else:
@@ -529,7 +535,7 @@ class CTFModePack:
                 "",
                 "## Evidence",
                 "",
-                *[f"- `{item}`" for item in result.evidence],
+                *[f"- {markdown_code_span(item)}" for item in result.evidence],
                 "",
                 "## Defensive lesson",
                 "",
@@ -550,10 +556,10 @@ class CTFSuiteModePack:
     ) -> CTFSuiteArtifacts:
         if outcome.status is not RunStatus.COMPLETED or outcome.plan is None:
             raise ValueError("CTF Suite finalization requires a completed typed run")
-        verify_run_integrity(outcome.run_path)
+        execution = load_authoritative_ctf_execution(outcome)
         ordered = CTFChallengeService._ordered_suite(suite_name, challenges)
-        campaign = self._validate_run_campaign(suite_name, ordered, outcome)
-        if len(outcome.plan.steps) != 2 or len(outcome.tool_results) != 2:
+        campaign = self._validate_run_campaign(suite_name, ordered, execution.campaign)
+        if len(execution.plan.steps) != 2 or len(execution.tool_results) != 2:
             raise ValueError("CTF Suite MVP requires exactly two Specialist results")
 
         items: list[CTFRunResult] = []
@@ -575,19 +581,21 @@ class CTFSuiteModePack:
             )
             steps = [
                 step
-                for step in outcome.plan.steps
+                for step in execution.plan.steps
                 if step.request.target == target.endpoint and step.request.tool_id == tool_id
             ]
             if len(steps) != 1:
                 raise ValueError("CTF Suite plan does not uniquely bind each Specialist")
             tool_results = [
                 result
-                for result in outcome.tool_results
+                for result in execution.tool_results
                 if result.request_id == steps[0].request.request_id and result.tool_id == tool_id
             ]
             if len(tool_results) != 1:
                 raise ValueError("CTF Suite result does not match its Specialist request")
             tool_result = tool_results[0]
+            if not tool_result.success:
+                raise ValueError("CTF Suite finalization requires successful Specialist results")
             candidate = CTFModePack._candidate(challenge, target.endpoint, tool_result.data)
             candidate_digest = sha256(candidate.encode("utf-8")).hexdigest() if candidate else None
             expected_digest = challenge.spec.flag.sha256
@@ -656,14 +664,8 @@ class CTFSuiteModePack:
     def _validate_run_campaign(
         suite_name: str,
         challenges: list[CTFChallengeManifest],
-        outcome: MultiAgentRunOutcome,
+        campaign: CampaignManifest,
     ) -> CampaignManifest:
-        campaign_path = outcome.run_path / "campaign.json"
-        try:
-            raw = json.loads(campaign_path.read_text(encoding="utf-8"))
-            campaign = CampaignManifest.model_validate(raw)
-        except (OSError, json.JSONDecodeError, ValueError) as exc:
-            raise ValueError("sealed CTF Suite campaign is invalid") from exc
         evaluated_at = max(challenge.spec.authorization.approved_at for challenge in challenges)
         expected = CTFChallengeService().compile_suite(
             suite_name,
@@ -677,9 +679,9 @@ class CTFSuiteModePack:
     @staticmethod
     def _render_writeup(result: CTFSuiteResult) -> str:
         lines = [
-            f"# CTF Suite Write-up: {result.suite_name}",
+            f"# CTF Suite Write-up: {escape_markdown_text(result.suite_name)}",
             "",
-            f"- Run ID: `{result.run_id}`",
+            f"- Run ID: {markdown_code_span(result.run_id)}",
             f"- Solved: `{result.summary.solved}`",
             f"- Unsolved: `{result.summary.unsolved}`",
             f"- Invalid flag: `{result.summary.invalid_flag}`",
@@ -691,7 +693,7 @@ class CTFSuiteModePack:
         for item in result.items:
             lines.extend(
                 [
-                    f"### {item.challenge_id}",
+                    f"### {escape_markdown_text(item.challenge_id)}",
                     "",
                     f"- Category: `{item.category.value}`",
                     f"- Scenario: `{item.scenario.value}`",
@@ -699,11 +701,13 @@ class CTFSuiteModePack:
                 ]
             )
             if item.status is CTFSolveStatus.SOLVED:
-                lines.append(f"- Verified flag: `{item.candidate_flag}`")
+                if item.candidate_flag is None or item.candidate_sha256 is None:
+                    raise ValueError("solved CTF Suite write-up requires verified flag material")
+                lines.append(f"- Verified flag: {markdown_code_span(item.candidate_flag)}")
             elif item.candidate_sha256 is not None:
-                lines.append(f"- Candidate SHA-256: `{item.candidate_sha256}`")
+                lines.append(f"- Candidate SHA-256: {markdown_code_span(item.candidate_sha256)}")
             lines.extend(["", "Evidence:", ""])
-            lines.extend(f"- `{evidence}`" for evidence in item.evidence)
+            lines.extend(f"- {markdown_code_span(evidence)}" for evidence in item.evidence)
             lines.append("")
         lines.extend(
             [

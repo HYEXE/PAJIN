@@ -203,9 +203,11 @@ class KISAAssessment(StrictModel):
     validation_artifact_version: Literal["legacy-unversioned", "pajin.dev/validation/v1alpha1"] = (
         "legacy-unversioned"
     )
-    confirmation_semantics: Literal["legacy-unversioned", "verified-independent-replay"] = (
-        "legacy-unversioned"
-    )
+    confirmation_semantics: Literal[
+        "legacy-unversioned",
+        "verified-replay-evidence",
+        "verified-independent-replay",
+    ] = "legacy-unversioned"
     confirmation_artifact: str | None = None
     confirmed_finding_ids: list[str]
     residual_risks: list[str]

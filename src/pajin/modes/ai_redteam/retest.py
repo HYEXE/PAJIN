@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from datetime import datetime
@@ -14,14 +13,12 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import Field, model_validator
 
 from pajin.domain.models import (
-    AgentPlan,
-    CampaignManifest,
     Finding,
+    PlannedStep,
     StrictModel,
     ToolRequest,
-    ToolResult,
 )
-from pajin.domain.orchestration import TaskGraph, TaskStatus
+from pajin.domain.orchestration import TaskNode, TaskStatus
 from pajin.domain.replay import (
     ReplayExecutionStatus,
     ReplayOracleVerdict,
@@ -29,34 +26,30 @@ from pajin.domain.replay import (
     ReplayRetestContext,
 )
 from pajin.domain.validation import (
-    CandidateFinding,
-    ConfirmationBasis,
-    FindingDisposition,
     ReplayConfirmationLineage,
-    ValidationDecision,
-    ValidationMethod,
 )
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
 from pajin.modes.ai_redteam.models import (
     ChecklistResult,
     ChecklistStatus,
-    KISAAssessment,
 )
-from pajin.runtime.store import RunStore, verify_run_integrity
-from pajin.runtime.worker import WorkerResult
-from pajin.tools.ai import evaluate_trusted_regression
-from pajin.workflow.validation_artifacts import (
-    VERSIONED_VALIDATION_INDEX_PATH,
-    LoadedValidationSnapshot,
-    ValidationSnapshotSemantics,
-    load_validation_snapshot,
+from pajin.modes.ai_redteam.retest_reporting import render_retest_report
+from pajin.modes.ai_redteam.retest_snapshot import (
+    KISARetestSnapshotReader,
+    _ConfirmedBaselineRecord,
+    _EvidenceRecord,
+    _RunSnapshot,
 )
+from pajin.runtime.store import RunStore
+from pajin.runtime.verified_snapshot import strict_json
 
 if TYPE_CHECKING:
     from pajin.modes.ai_redteam.replay import (
         KISAReplayBatchOutcome,
         KISAReplayRecord,
     )
+
+_MAX_MANAGED_JSON_BYTES = 64 * 1024 * 1024
 
 
 class RetestFindingStatus(StrEnum):
@@ -128,15 +121,10 @@ class RetestFindingResult(StrictModel):
                 raise ValueError(
                     "retest lifecycle IDs and evidence must exactly match replay lineage"
                 )
-        if self.status is RetestFindingStatus.FIXED and (
-            self.replay_context is None
-            or self.replay_lineage is None
-            or self.replay_execution_status is not ReplayExecutionStatus.SUCCEEDED
-            or self.oracle_verdict is not ReplayOracleVerdict.CONTRADICTS
-            or not self.all_replay_attempts_succeeded
-            or self.replay_lineage.oracle_result_id is None
-        ):
-            raise ValueError("fixed requires a complete verified contradicting replay")
+        if self.status is RetestFindingStatus.FIXED:
+            raise ValueError(
+                "fixed is unavailable without independently verifiable remediation attestation"
+            )
         if self.status is RetestFindingStatus.STILL_VULNERABLE and (
             self.replay_context is None
             or self.replay_lineage is None
@@ -154,7 +142,7 @@ class RegressionEvidence(StrictModel):
     request_id: str
     target: str
     attempt: int = Field(ge=1)
-    trusted_passed: bool
+    trusted_passed: bool | None
 
 
 class RegressionResult(StrictModel):
@@ -173,9 +161,9 @@ class RegressionResult(StrictModel):
             raise ValueError("regression terminal evidence must be unique per planned request")
         if len(request_ids) != len(set(request_ids)):
             raise ValueError("regression terminal evidence request IDs must be unique")
-        if self.passed != sum(item.trusted_passed for item in self.evidence):
+        if self.passed != sum(item.trusted_passed is True for item in self.evidence):
             raise ValueError("regression passed count differs from trusted evidence")
-        if self.failed != sum(not item.trusted_passed for item in self.evidence):
+        if self.failed != sum(item.trusted_passed is False for item in self.evidence):
             raise ValueError("regression failed count differs from trusted evidence")
         if len(self.expected_targets) != len(set(self.expected_targets)):
             raise ValueError("regression expected targets must be unique")
@@ -188,12 +176,15 @@ class RegressionResult(StrictModel):
             and set(item.target for item in self.evidence) == set(self.expected_targets)
             and all(count == self.expected_repetitions for count in target_counts.values())
         )
-        if self.status is RegressionStatus.PASS and (not coverage_complete or self.failed != 0):
+        measurement_complete = coverage_complete and all(
+            item.trusted_passed is not None for item in self.evidence
+        )
+        if self.status is RegressionStatus.PASS and (not measurement_complete or self.failed != 0):
             raise ValueError("regression pass requires complete trusted target coverage")
-        if self.status is RegressionStatus.FAIL and (not coverage_complete or self.failed == 0):
+        if self.status is RegressionStatus.FAIL and (not measurement_complete or self.failed == 0):
             raise ValueError("regression fail requires complete coverage with a trusted failure")
-        if self.status is RegressionStatus.NOT_MEASURED and coverage_complete:
-            raise ValueError("complete trusted regression coverage must be pass or fail")
+        if self.status is RegressionStatus.NOT_MEASURED and measurement_complete:
+            raise ValueError("complete measured regression coverage must be pass or fail")
         return self
 
 
@@ -287,69 +278,77 @@ class KISARemediationPlanOutcome:
     path: Path
 
 
-@dataclass(frozen=True)
-class _EvidenceRecord:
-    relative_path: str
-    request: ToolRequest | None
-    result: ToolResult | None
-    worker_result: WorkerResult | None
-    tool_id: str
-    success: bool
-    threat_class: str | None
-    vulnerable: bool | None
-    regression_passed: bool | None
-    trusted_regression_passed: bool | None
-    backend: str | None
+def _validate_regression_retry_results(
+    task: TaskNode,
+    attempts: dict[int, _EvidenceRecord],
+) -> None:
+    for index in range(1, task.attempts):
+        prior_result = attempts[index].result
+        if prior_result is None:
+            raise ValueError("AI regression retry evidence lacks its Tool result")
+        if prior_result.success:
+            raise ValueError("AI regression Task retried after a successful Tool result")
 
 
-@dataclass(frozen=True)
-class _RunSnapshot:
-    path: Path
-    run_id: str
-    campaign: CampaignManifest
-    plan: AgentPlan
-    task_graph: TaskGraph
-    assessment: KISAAssessment | None
-    findings: list[Finding]
-    evidence: list[_EvidenceRecord]
-    validation_snapshot: LoadedValidationSnapshot
-    root_digest: str
-
-
-@dataclass(frozen=True)
-class _ConfirmedBaselineRecord:
-    candidate: CandidateFinding
-    decision: ValidationDecision
-    finding: Finding
+def _validate_regression_terminal_status(
+    task: TaskNode,
+    terminal: _EvidenceRecord,
+) -> None:
+    if terminal.result is None:
+        raise ValueError("AI regression terminal evidence lacks its Tool result")
+    if task.status is TaskStatus.SUCCEEDED:
+        if not terminal.result.success:
+            raise ValueError("successful AI regression Task has a failed terminal Tool result")
+        return
+    if task.status is TaskStatus.FAILED:
+        if terminal.result.success:
+            raise ValueError("failed AI regression Task has a successful terminal Tool result")
+        return
+    raise ValueError("completed KISA retest has a non-terminal regression Task")
 
 
 class KISARetestService:
     """Compare two immutable KISA runs and write a retest evidence overlay."""
 
-    def __init__(self, *, catalog: KISACatalog = KISA_CATALOG) -> None:
+    def __init__(
+        self,
+        *,
+        catalog: KISACatalog = KISA_CATALOG,
+        snapshot_reader: KISARetestSnapshotReader | None = None,
+    ) -> None:
         self._catalog = catalog
+        self._snapshot_reader = snapshot_reader or KISARetestSnapshotReader()
 
     def create_remediation_plan(self, baseline_run: Path) -> KISARemediationPlanOutcome:
         baseline = self._load_snapshot(baseline_run, require_confirmed_baseline=True)
         records = self._confirmed_baseline_records(baseline)
         actions = [self._remediation(record) for record in records]
         destination = baseline.path / "remediation-plan.json"
-        if destination.exists():
-            existing_data = json.loads(destination.read_text(encoding="utf-8"))
-            if not isinstance(existing_data, list):
-                raise ValueError("existing remediation-plan.json must contain a list")
+        if "remediation-plan.json" in baseline.verified.artifacts:
+            existing_data = strict_json(
+                baseline.verified,
+                "remediation-plan.json",
+                label="baseline remediation plan",
+                max_bytes=_MAX_MANAGED_JSON_BYTES,
+                expected_type=list,
+                type_message="existing remediation-plan.json must contain a list",
+            )
             existing = [RemediationAction.model_validate(item) for item in existing_data]
             if existing != actions:
                 raise ValueError("existing remediation plan differs from baseline findings")
-            if verify_run_integrity(baseline.path).root_digest != baseline.root_digest:
-                raise ValueError("baseline Run changed while the remediation plan was loaded")
+            self._require_current_snapshot(
+                baseline,
+                label="baseline Run changed while the remediation plan was loaded",
+            )
             return KISARemediationPlanOutcome(
                 baseline_run_id=baseline.run_id,
                 actions=existing,
                 path=destination,
             )
-        if verify_run_integrity(baseline.path).root_digest != baseline.root_digest:
-            raise ValueError("baseline Run changed while the remediation plan was prepared")
+        self._require_current_snapshot(
+            baseline,
+            label="baseline Run changed while the remediation plan was prepared",
+        )
         store = RunStore(baseline.run_id, baseline.path)
         relative_path = store.write_json(
             "remediation-plan.json",
@@ -384,10 +383,14 @@ class KISARetestService:
         self._validate_comparable(baseline, retest)
         actions = self._load_remediation_plan(baseline)
         contexts = self._retest_contexts(baseline, retest, actions)
-        if verify_run_integrity(baseline.path).root_digest != baseline.root_digest:
-            raise ValueError("baseline Run changed while retest contexts were prepared")
-        if verify_run_integrity(retest.path).root_digest != retest.root_digest:
-            raise ValueError("retest Run changed while retest contexts were prepared")
+        self._require_current_snapshot(
+            baseline,
+            label="baseline Run changed while retest contexts were prepared",
+        )
+        self._require_current_snapshot(
+            retest,
+            label="retest Run changed while retest contexts were prepared",
+        )
         return contexts
 
     def compare(
@@ -401,120 +404,20 @@ class KISARetestService:
         self._validate_comparable(baseline, retest)
         remediation_actions = self._load_remediation_plan(baseline)
         baseline_records = self._confirmed_baseline_records(baseline)
-        replay_records: dict[str, KISAReplayRecord] = {}
-        batch_contexts: dict[str, ReplayRetestContext] = {}
-        if replay_batch is not None:
-            expected_contexts = self._retest_contexts(
-                baseline,
-                retest,
-                remediation_actions,
-            )
-            if (
-                replay_batch.purpose is not ReplayPurpose.REMEDIATION_RETEST
-                or replay_batch.baseline_run_id != baseline.run_id
-                or replay_batch.retest_run_id != retest.run_id
-                or dict(replay_batch.contexts) != expected_contexts
-            ):
-                raise ValueError("KISA retest replay batch differs from the exact retest context")
-            batch_contexts = dict(replay_batch.contexts)
-            canonical = replay_batch.verified_records(baseline.path, retest.path)
-            replay_records = {record.candidate_id: record for record in canonical}
-            expected_candidate_ids = {record.candidate.candidate_id for record in baseline_records}
-            if (
-                len(replay_records) != len(canonical)
-                or set(replay_records) != expected_candidate_ids
-            ):
-                raise ValueError(
-                    "KISA retest replay batch must contain one canonical receipt per Candidate"
-                )
-
-        action_by_candidate = {
-            action.baseline_candidate_id: action for action in remediation_actions
-        }
-        retest_findings_by_id = {finding.finding_id: finding for finding in retest.findings}
-        finding_results: list[RetestFindingResult] = []
-        for baseline_record in baseline_records:
-            candidate = baseline_record.candidate
-            decision = baseline_record.decision
-            finding = baseline_record.finding
-            action = action_by_candidate[candidate.candidate_id]
-            replay_record = replay_records.get(candidate.candidate_id)
-            context: ReplayRetestContext | None = None
-            lineage: ReplayConfirmationLineage | None = None
-            execution_status: ReplayExecutionStatus | None = None
-            oracle_verdict: ReplayOracleVerdict | None = None
-            all_attempts_succeeded = False
-            retest_evidence: list[str] = []
-            if replay_record is None:
-                status = RetestFindingStatus.INCONCLUSIVE
-                rationale = (
-                    "기준 Candidate에 결박된 verified negative ReplayOutcome이 없어 "
-                    "raw 비취약 관찰만으로 fixed를 판정하지 않음"
-                )
-            else:
-                if (
-                    replay_record.decision_id != decision.decision_id
-                    or replay_record.baseline_finding_id != finding.finding_id
-                    or replay_record.remediation_id != action.remediation_id
-                    or replay_record.retest_context != batch_contexts[candidate.candidate_id]
-                ):
-                    raise ValueError(
-                        "canonical KISA retest receipt differs from its baseline lifecycle binding"
-                    )
-                context = replay_record.retest_context
-                lineage = replay_record.replay_lineage
-                if context is None or lineage is None:
-                    raise ValueError("canonical KISA retest receipt is missing verified lineage")
-                execution_status = ReplayExecutionStatus(replay_record.execution_status)
-                oracle_verdict = replay_record.oracle_verdict
-                all_attempts_succeeded = replay_record.all_attempts_succeeded
-                retest_evidence = list(lineage.replay_evidence)
-                if (
-                    execution_status is ReplayExecutionStatus.SUCCEEDED
-                    and oracle_verdict is ReplayOracleVerdict.CONTRADICTS
-                    and all_attempts_succeeded
-                ):
-                    status = RetestFindingStatus.FIXED
-                    rationale = (
-                        "모든 제한 재현 반복이 성공했고 trusted negative Oracle이 "
-                        "기준 취약점 주장을 객관적으로 반증함"
-                    )
-                elif (
-                    execution_status is ReplayExecutionStatus.SUCCEEDED
-                    and oracle_verdict is ReplayOracleVerdict.SUPPORTS
-                ):
-                    status = RetestFindingStatus.STILL_VULNERABLE
-                    rationale = (
-                        "기준 Candidate에 결박된 제한 재현의 trusted Oracle이 "
-                        "동일 취약점 주장을 다시 지지함"
-                    )
-                else:
-                    status = RetestFindingStatus.INCONCLUSIVE
-                    rationale = (
-                        "제한 재현이 혼합·불완전·종단 결과이거나 Oracle이 결론을 "
-                        "내리지 못해 fixed 또는 still-vulnerable로 승격하지 않음"
-                    )
-            repeated = retest_findings_by_id.get(finding.finding_id)
-            finding_results.append(
-                RetestFindingResult(
-                    finding_fingerprint=self._fingerprint(finding),
-                    baseline_candidate_id=candidate.candidate_id,
-                    baseline_decision_id=decision.decision_id,
-                    baseline_finding_id=finding.finding_id,
-                    retest_finding_id=repeated.finding_id if repeated is not None else None,
-                    threat_class=finding.threat_class,
-                    target=finding.target,
-                    status=status,
-                    rationale=rationale,
-                    baseline_evidence=finding.evidence,
-                    retest_evidence=retest_evidence,
-                    replay_context=context,
-                    replay_lineage=lineage,
-                    replay_execution_status=execution_status,
-                    oracle_verdict=oracle_verdict,
-                    all_replay_attempts_succeeded=all_attempts_succeeded,
-                )
-            )
+        replay_records, batch_contexts = self._verified_retest_replay_records(
+            baseline=baseline,
+            retest=retest,
+            remediation_actions=remediation_actions,
+            baseline_records=baseline_records,
+            replay_batch=replay_batch,
+        )
+        finding_results = self._project_finding_results(
+            baseline_records=baseline_records,
+            remediation_actions=remediation_actions,
+            retest=retest,
+            replay_records=replay_records,
+            batch_contexts=batch_contexts,
+        )
 
         baseline_finding_ids = {record.finding.finding_id for record in baseline_records}
         new_findings = [
@@ -553,10 +456,147 @@ class KISARetestService:
             baseline_run_path=str(baseline.path),
             retest_run_path=str(retest.path),
         )
-        if verify_run_integrity(baseline.path).root_digest != baseline.root_digest:
-            raise ValueError("baseline Run changed while canonical replay receipts were evaluated")
-        if verify_run_integrity(retest.path).root_digest != retest.root_digest:
-            raise ValueError("retest Run changed while canonical replay receipts were evaluated")
+        self._require_current_snapshot(
+            baseline,
+            label="baseline Run changed while canonical replay receipts were evaluated",
+        )
+        self._require_current_snapshot(
+            retest,
+            label="retest Run changed while canonical replay receipts were evaluated",
+        )
+        return self._persist_retest_assessment(
+            baseline=baseline,
+            retest=retest,
+            baseline_records=baseline_records,
+            assessment=assessment,
+        )
+
+    def _project_finding_results(
+        self,
+        *,
+        baseline_records: tuple[_ConfirmedBaselineRecord, ...],
+        remediation_actions: list[RemediationAction],
+        retest: _RunSnapshot,
+        replay_records: dict[str, KISAReplayRecord],
+        batch_contexts: dict[str, ReplayRetestContext],
+    ) -> list[RetestFindingResult]:
+        action_by_candidate = {
+            action.baseline_candidate_id: action for action in remediation_actions
+        }
+        retest_findings_by_id = {finding.finding_id: finding for finding in retest.findings}
+        results: list[RetestFindingResult] = []
+        for record in baseline_records:
+            candidate_id = record.candidate.candidate_id
+            replay_record = replay_records.get(candidate_id)
+            expected_context = batch_contexts[candidate_id] if replay_record is not None else None
+            results.append(
+                self._project_finding_result(
+                    baseline_record=record,
+                    action=action_by_candidate[candidate_id],
+                    repeated=retest_findings_by_id.get(record.finding.finding_id),
+                    replay_record=replay_record,
+                    expected_context=expected_context,
+                )
+            )
+        return results
+
+    def _project_finding_result(
+        self,
+        *,
+        baseline_record: _ConfirmedBaselineRecord,
+        action: RemediationAction,
+        repeated: Finding | None,
+        replay_record: KISAReplayRecord | None,
+        expected_context: ReplayRetestContext | None,
+    ) -> RetestFindingResult:
+        candidate = baseline_record.candidate
+        decision = baseline_record.decision
+        finding = baseline_record.finding
+        context: ReplayRetestContext | None = None
+        lineage: ReplayConfirmationLineage | None = None
+        execution_status: ReplayExecutionStatus | None = None
+        oracle_verdict: ReplayOracleVerdict | None = None
+        all_attempts_succeeded = False
+        retest_evidence: list[str] = []
+        if replay_record is None:
+            status = RetestFindingStatus.INCONCLUSIVE
+            rationale = (
+                "기준 Candidate에 결박된 verified negative ReplayOutcome이 없어 "
+                "raw 비취약 관찰만으로 fixed를 판정하지 않음"
+            )
+        else:
+            if (
+                replay_record.decision_id != decision.decision_id
+                or replay_record.baseline_finding_id != finding.finding_id
+                or replay_record.remediation_id != action.remediation_id
+                or replay_record.retest_context != expected_context
+            ):
+                raise ValueError(
+                    "canonical KISA retest receipt differs from its baseline lifecycle binding"
+                )
+            context = replay_record.retest_context
+            lineage = replay_record.replay_lineage
+            if context is None or lineage is None:
+                raise ValueError("canonical KISA retest receipt is missing verified lineage")
+            execution_status = ReplayExecutionStatus(replay_record.execution_status)
+            oracle_verdict = replay_record.oracle_verdict
+            all_attempts_succeeded = replay_record.all_attempts_succeeded
+            retest_evidence = list(lineage.replay_evidence)
+            if (
+                execution_status is ReplayExecutionStatus.SUCCEEDED
+                and oracle_verdict is ReplayOracleVerdict.CONTRADICTS
+                and all_attempts_succeeded
+            ):
+                status = RetestFindingStatus.INCONCLUSIVE
+                rationale = (
+                    "제한 재현의 음성 관찰은 일관되지만 독립적으로 검증 가능한 "
+                    "대상 실행·수정 증명이 없어 fixed로 승격하지 않음"
+                )
+            elif (
+                execution_status is ReplayExecutionStatus.SUCCEEDED
+                and oracle_verdict is ReplayOracleVerdict.SUPPORTS
+            ):
+                status = RetestFindingStatus.STILL_VULNERABLE
+                rationale = (
+                    "기준 Candidate에 결박된 제한 재현의 trusted Oracle이 "
+                    "동일 취약점 주장을 다시 지지함"
+                )
+            else:
+                status = RetestFindingStatus.INCONCLUSIVE
+                rationale = (
+                    "제한 재현이 혼합·불완전·종단 결과이거나 Oracle이 결론을 "
+                    "내리지 못해 fixed 또는 still-vulnerable로 승격하지 않음"
+                )
+        return RetestFindingResult(
+            finding_fingerprint=self._fingerprint(finding),
+            baseline_candidate_id=candidate.candidate_id,
+            baseline_decision_id=decision.decision_id,
+            baseline_finding_id=finding.finding_id,
+            retest_finding_id=repeated.finding_id if repeated is not None else None,
+            threat_class=finding.threat_class,
+            target=finding.target,
+            status=status,
+            rationale=rationale,
+            baseline_evidence=finding.evidence,
+            retest_evidence=retest_evidence,
+            replay_context=context,
+            replay_lineage=lineage,
+            replay_execution_status=execution_status,
+            oracle_verdict=oracle_verdict,
+            all_replay_attempts_succeeded=all_attempts_succeeded,
+        )
+
+    def _persist_retest_assessment(
+        self,
+        *,
+        baseline: _RunSnapshot,
+        retest: _RunSnapshot,
+        baseline_records: tuple[_ConfirmedBaselineRecord, ...],
+        assessment: KISARetestAssessment,
+    ) -> KISARetestOutcome:
+        remediation_actions = assessment.remediation_actions
+        overlay = assessment.checklist_overlay
+        summary = assessment.summary
         store = RunStore(retest.run_id, retest.path)
         remediation_path = store.write_json(
             "remediation-plan.json",
@@ -585,7 +625,7 @@ class KISARetestService:
             baseline_candidate_ids=[record.candidate.candidate_id for record in baseline_records],
             replay_outcome_ids=[
                 result.replay_lineage.replay_outcome_id
-                for result in finding_results
+                for result in assessment.finding_results
                 if result.replay_lineage is not None
             ],
         )
@@ -616,251 +656,91 @@ class KISARetestService:
             index_path=retest.path / index_path,
         )
 
-    @classmethod
-    def _load_remediation_plan(cls, baseline: _RunSnapshot) -> list[RemediationAction]:
-        path = baseline.path / "remediation-plan.json"
-        if not path.is_file():
+    def _verified_retest_replay_records(
+        self,
+        *,
+        baseline: _RunSnapshot,
+        retest: _RunSnapshot,
+        remediation_actions: list[RemediationAction],
+        baseline_records: tuple[_ConfirmedBaselineRecord, ...],
+        replay_batch: KISAReplayBatchOutcome | None,
+    ) -> tuple[dict[str, KISAReplayRecord], dict[str, ReplayRetestContext]]:
+        if replay_batch is None:
+            return {}, {}
+        expected_contexts = self._retest_contexts(
+            baseline,
+            retest,
+            remediation_actions,
+        )
+        actual_context = (
+            replay_batch.purpose,
+            replay_batch.baseline_run_id,
+            replay_batch.retest_run_id,
+            dict(replay_batch.contexts),
+        )
+        expected_context = (
+            ReplayPurpose.REMEDIATION_RETEST,
+            baseline.run_id,
+            retest.run_id,
+            expected_contexts,
+        )
+        if actual_context != expected_context:
+            raise ValueError("KISA retest replay batch differs from the exact retest context")
+        canonical = replay_batch.verified_records(baseline.path, retest.path)
+        replay_records = {record.candidate_id: record for record in canonical}
+        expected_candidate_ids = {record.candidate.candidate_id for record in baseline_records}
+        if len(replay_records) != len(canonical) or set(replay_records) != expected_candidate_ids:
+            raise ValueError(
+                "KISA retest replay batch must contain one canonical receipt per Candidate"
+            )
+        return replay_records, dict(replay_batch.contexts)
+
+    def _load_remediation_plan(self, baseline: _RunSnapshot) -> list[RemediationAction]:
+        if "remediation-plan.json" not in baseline.verified.artifacts:
             raise ValueError("baseline remediation plan must be created before retest comparison")
-        data = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(data, list):
-            raise ValueError("remediation-plan.json must contain a list")
+        data = strict_json(
+            baseline.verified,
+            "remediation-plan.json",
+            label="baseline remediation plan",
+            max_bytes=_MAX_MANAGED_JSON_BYTES,
+            expected_type=list,
+            type_message="remediation-plan.json must contain a list",
+        )
         actions = [RemediationAction.model_validate(item) for item in data]
         expected = [
-            cls._remediation(record) for record in cls._confirmed_baseline_records(baseline)
+            self._remediation(record) for record in self._confirmed_baseline_records(baseline)
         ]
         if actions != expected:
             raise ValueError("remediation plan does not match the baseline findings")
         return actions
 
-    @classmethod
     def _load_snapshot(
-        cls,
+        self,
         path: Path,
         *,
         require_confirmed_baseline: bool = False,
     ) -> _RunSnapshot:
-        resolved = path.resolve()
-        verification = verify_run_integrity(resolved)
-        required = {
-            "run.json",
-            "campaign.json",
-            "findings.json",
-            "plan.json",
-            "task-graph.json",
-        }
-        if require_confirmed_baseline:
-            required.add("kisa-results.json")
-        missing = [name for name in required if not (resolved / name).is_file()]
-        if missing:
-            raise ValueError(f"run is missing required artifacts: {sorted(missing)}")
-        run = json.loads((resolved / "run.json").read_text(encoding="utf-8"))
-        if run.get("status") != "completed":
-            raise ValueError("KISA retest comparison requires completed runs")
-        validation_snapshot = load_validation_snapshot(resolved)
-        evidence: list[_EvidenceRecord] = []
-        for item_path in sorted((resolved / "evidence").glob("*.json")):
-            payload = json.loads(item_path.read_text(encoding="utf-8"))
-            result = payload.get("result", {})
-            data = result.get("data", {}) if isinstance(result, dict) else {}
-            worker = payload.get("workerResult", {})
-            request = payload.get("request", {})
-            typed_request = (
-                ToolRequest.model_validate(request) if isinstance(request, dict) else None
-            )
-            typed_result = ToolResult.model_validate(result) if isinstance(result, dict) else None
-            typed_worker = (
-                WorkerResult.model_validate(worker) if isinstance(worker, dict) and worker else None
-            )
-            tool_id = (
-                typed_result.tool_id
-                if typed_result is not None
-                else typed_request.tool_id
-                if typed_request is not None
-                else ""
-            )
-            trusted_regression_passed: bool | None = None
-            is_regression = (
-                typed_request is not None and typed_request.tool_id == "ai.normal-probe"
-            ) or (typed_result is not None and typed_result.tool_id == "ai.normal-probe")
-            if is_regression:
-                if typed_request is None or typed_result is None:
-                    raise ValueError("AI regression evidence is missing its request or Tool result")
-                if (
-                    typed_result.request_id != typed_request.request_id
-                    or typed_result.tool_id != typed_request.tool_id
-                ):
-                    raise ValueError("AI regression Tool result identity differs from its request")
-                if typed_result.success:
-                    if typed_worker is None:
-                        raise ValueError(
-                            "successful AI regression evidence is missing raw Worker stdout"
-                        )
-                    trusted_regression_passed = evaluate_trusted_regression(
-                        typed_request,
-                        typed_result,
-                        typed_worker,
-                    )
-                else:
-                    trusted_regression_passed = False
-            evidence.append(
-                _EvidenceRecord(
-                    relative_path=item_path.relative_to(resolved).as_posix(),
-                    request=typed_request,
-                    result=typed_result,
-                    worker_result=typed_worker,
-                    tool_id=tool_id,
-                    success=typed_result.success if typed_result is not None else False,
-                    threat_class=(
-                        str(data["threatClass"])
-                        if isinstance(data, dict) and isinstance(data.get("threatClass"), str)
-                        else None
-                    ),
-                    vulnerable=(
-                        data.get("vulnerable")
-                        if isinstance(data, dict) and isinstance(data.get("vulnerable"), bool)
-                        else None
-                    ),
-                    regression_passed=(
-                        data.get("regressionPassed")
-                        if isinstance(data, dict) and isinstance(data.get("regressionPassed"), bool)
-                        else None
-                    ),
-                    trusted_regression_passed=trusted_regression_passed,
-                    backend=(typed_worker.backend if typed_worker is not None else None),
-                )
-            )
-        assessment_path = resolved / "kisa-results.json"
-        snapshot = _RunSnapshot(
-            path=resolved,
-            run_id=str(run["runId"]),
-            campaign=CampaignManifest.model_validate_json(
-                (resolved / "campaign.json").read_text(encoding="utf-8")
-            ),
-            plan=AgentPlan.model_validate_json(
-                (resolved / "plan.json").read_text(encoding="utf-8")
-            ),
-            task_graph=TaskGraph.model_validate_json(
-                (resolved / "task-graph.json").read_text(encoding="utf-8")
-            ),
-            assessment=(
-                KISAAssessment.model_validate_json(assessment_path.read_text(encoding="utf-8"))
-                if assessment_path.is_file()
-                else None
-            ),
-            findings=validation_snapshot.product_confirmed_findings,
-            evidence=evidence,
-            validation_snapshot=validation_snapshot,
-            root_digest=verification.root_digest,
+        return self._snapshot_reader.load(
+            path,
+            require_confirmed_baseline=require_confirmed_baseline,
         )
-        if snapshot.run_id != verification.run_id:
-            raise ValueError("sealed run.json identifier differs from the Run integrity chain")
-        cls._validate_assessment_projection(snapshot)
-        if require_confirmed_baseline:
-            if (
-                validation_snapshot.semantics
-                is not ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
-            ):
-                raise ValueError(
-                    "baseline requires sealed validation/v1alpha1 "
-                    "VERIFIED_INDEPENDENT_REPLAY semantics"
-                )
-            if not snapshot.findings:
-                raise ValueError(
-                    "baseline has no reproduction-backed Confirmed findings to remediate"
-                )
-            if snapshot.assessment is None:
-                raise ValueError("baseline requires a sealed KISA assessment")
-            cls._confirmed_baseline_records(snapshot)
-        return snapshot
 
-    @staticmethod
-    def _validate_assessment_projection(snapshot: _RunSnapshot) -> None:
-        validation = snapshot.validation_snapshot
-        assessment = snapshot.assessment
-        if assessment is None:
-            return
-        expected_version = (
-            validation.index.api_version if validation.index is not None else "legacy-unversioned"
-        )
-        expected_artifact = (
-            VERSIONED_VALIDATION_INDEX_PATH
-            if validation.semantics is ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
-            else None
-        )
-        expected_finding_ids = [finding.finding_id for finding in snapshot.findings]
-        if assessment.run_id != snapshot.run_id:
-            raise ValueError("KISA assessment belongs to another Run")
-        if (
-            assessment.validation_artifact_version != expected_version
-            or assessment.confirmation_semantics != validation.semantics.value
-            or assessment.confirmation_artifact != expected_artifact
-            or assessment.confirmed_finding_ids != expected_finding_ids
-        ):
-            raise ValueError(
-                "KISA assessment confirmation semantics and IDs differ from validation artifacts"
-            )
+    def _require_current_snapshot(self, snapshot: _RunSnapshot, *, label: str) -> None:
+        self._snapshot_reader.require_current(snapshot, label=label)
 
-    @staticmethod
     def _confirmed_baseline_records(
+        self,
         baseline: _RunSnapshot,
     ) -> tuple[_ConfirmedBaselineRecord, ...]:
-        validation = baseline.validation_snapshot
-        if (
-            validation.semantics is not ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY
-            or validation.index is None
-        ):
-            raise ValueError(
-                "baseline requires sealed validation/v1alpha1 verified replay semantics"
-            )
-        candidates = {
-            candidate.candidate_id: candidate for candidate in validation.validation.candidates
-        }
-        decisions = [
-            decision
-            for decision in validation.validation.decisions
-            if decision.disposition is FindingDisposition.CONFIRMED
-        ]
-        findings = {finding.finding_id: finding for finding in baseline.findings}
-        records: list[_ConfirmedBaselineRecord] = []
-        for decision in decisions:
-            candidate = candidates.get(decision.candidate_id)
-            if candidate is None:
-                raise ValueError("Confirmed Decision has no exact baseline Candidate")
-            finding = findings.get(candidate.claim.finding_id)
-            expected_finding = candidate.claim.model_copy(update={"validated": True})
-            if (
-                finding is None
-                or finding != expected_finding
-                or decision.confirmation_basis is not ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
-                or decision.method is not ValidationMethod.RESTRICTED_REPLAY_GATE
-                or not decision.replay_lineage
-            ):
-                raise ValueError(
-                    "baseline Confirmed Candidate, Decision, Finding, and replay lineage differ"
-                )
-            records.append(
-                _ConfirmedBaselineRecord(
-                    candidate=candidate,
-                    decision=decision,
-                    finding=finding,
-                )
-            )
-        if len(records) != len(baseline.findings):
-            raise ValueError("baseline Confirmed Decision and Finding sets differ")
-        if [record.candidate.candidate_id for record in records] != (
-            validation.index.confirmed_candidate_ids
-        ):
-            raise ValueError("baseline Confirmed Candidate order differs from validation index")
-        return tuple(records)
+        return self._snapshot_reader.confirmed_baseline_records(baseline)
 
-    @classmethod
     def _retest_contexts(
-        cls,
+        self,
         baseline: _RunSnapshot,
         retest: _RunSnapshot,
         actions: list[RemediationAction],
     ) -> dict[str, ReplayRetestContext]:
-        records = cls._confirmed_baseline_records(baseline)
+        records = self._confirmed_baseline_records(baseline)
         action_by_candidate = {action.baseline_candidate_id: action for action in actions}
         if len(action_by_candidate) != len(actions) or set(action_by_candidate) != {
             record.candidate.candidate_id for record in records
@@ -883,18 +763,8 @@ class KISARetestService:
             )
         return contexts
 
-    @staticmethod
-    def _validate_comparable(baseline: _RunSnapshot, retest: _RunSnapshot) -> None:
-        if baseline.run_id == retest.run_id:
-            raise ValueError("baseline and retest must be different runs")
-        baseline_targets = {target.endpoint for target in baseline.campaign.spec.targets}
-        retest_targets = {target.endpoint for target in retest.campaign.spec.targets}
-        if baseline_targets != retest_targets:
-            raise ValueError("baseline and retest targets differ")
-        if baseline.campaign.spec.mode is not retest.campaign.spec.mode:
-            raise ValueError("baseline and retest Campaign modes differ")
-        if set(baseline.campaign.spec.threat_classes) != set(retest.campaign.spec.threat_classes):
-            raise ValueError("baseline and retest requested KISA threats differ")
+    def _validate_comparable(self, baseline: _RunSnapshot, retest: _RunSnapshot) -> None:
+        self._snapshot_reader.validate_comparable(baseline, retest)
 
     @staticmethod
     def _finding_key(finding: Finding) -> tuple[str, str, str]:
@@ -963,6 +833,22 @@ class KISARetestService:
 
     @classmethod
     def _regression_result(cls, retest: _RunSnapshot) -> RegressionResult:
+        planned_steps, expected_targets = cls._regression_plan(retest)
+        planned_by_id = {step.request.request_id: step for step in planned_steps}
+        records_by_plan = cls._regression_records_by_plan(retest, planned_by_id)
+        terminal_evidence = cls._regression_terminal_evidence(
+            retest,
+            planned_by_id=planned_by_id,
+            records_by_plan=records_by_plan,
+        )
+        return cls._summarize_regression(
+            planned_steps=planned_steps,
+            expected_targets=expected_targets,
+            terminal_evidence=terminal_evidence,
+        )
+
+    @staticmethod
+    def _regression_plan(retest: _RunSnapshot) -> tuple[list[PlannedStep], list[str]]:
         planned_steps = [
             step for step in retest.plan.steps if step.request.tool_id == "ai.normal-probe"
         ]
@@ -975,8 +861,14 @@ class KISARetestService:
         )
         if not expected_targets:
             raise ValueError("KISA retest Campaign has no normal-function AI target")
+        return planned_steps, expected_targets
 
-        planned_by_id = {step.request.request_id: step for step in planned_steps}
+    @classmethod
+    def _regression_records_by_plan(
+        cls,
+        retest: _RunSnapshot,
+        planned_by_id: dict[str, PlannedStep],
+    ) -> dict[str, dict[int, _EvidenceRecord]]:
         records_by_plan: dict[str, dict[int, _EvidenceRecord]] = {
             request_id: {} for request_id in planned_by_id
         }
@@ -984,81 +876,62 @@ class KISARetestService:
         for record in normal_records:
             if record.request is None or record.result is None:
                 raise ValueError("AI regression evidence lacks a typed request or Tool result")
-            matches: list[tuple[str, int]] = []
-            for planned_request_id in planned_by_id:
-                if record.request.request_id == planned_request_id:
-                    matches.append((planned_request_id, 1))
-                    continue
-                prefix = f"{planned_request_id}_attempt"
-                suffix = record.request.request_id.removeprefix(prefix)
-                if (
-                    record.request.request_id.startswith(prefix)
-                    and suffix.isdigit()
-                    and int(suffix) >= 2
-                ):
-                    matches.append((planned_request_id, int(suffix)))
-            if len(matches) != 1:
-                raise ValueError(
-                    "AI regression evidence request does not map to exactly one planned request"
-                )
-            planned_request_id, attempt = matches[0]
+            planned_request_id, attempt = cls._regression_attempt_identity(
+                record.request.request_id,
+                planned_by_id,
+            )
             planned = planned_by_id[planned_request_id].request
-            if cls._request_operation(record.request) != cls._request_operation(planned):
-                raise ValueError("AI regression evidence operation differs from its plan")
-            if Path(record.relative_path).stem != record.request.request_id:
-                raise ValueError("AI regression evidence path differs from its request ID")
+            cls._validate_regression_evidence_record(record, planned)
             if attempt in records_by_plan[planned_request_id]:
                 raise ValueError("AI regression evidence repeats a planned attempt")
             records_by_plan[planned_request_id][attempt] = record
+        return records_by_plan
 
+    @staticmethod
+    def _regression_attempt_identity(
+        request_id: str,
+        planned_by_id: dict[str, PlannedStep],
+    ) -> tuple[str, int]:
+        matches: list[tuple[str, int]] = []
+        for planned_request_id in planned_by_id:
+            if request_id == planned_request_id:
+                matches.append((planned_request_id, 1))
+                continue
+            prefix = f"{planned_request_id}_attempt"
+            suffix = request_id.removeprefix(prefix)
+            if request_id.startswith(prefix) and suffix.isdigit() and int(suffix) >= 2:
+                matches.append((planned_request_id, int(suffix)))
+        if len(matches) != 1:
+            raise ValueError(
+                "AI regression evidence request does not map to exactly one planned request"
+            )
+        return matches[0]
+
+    @classmethod
+    def _validate_regression_evidence_record(
+        cls,
+        record: _EvidenceRecord,
+        planned: ToolRequest,
+    ) -> None:
+        assert record.request is not None
+        if cls._request_operation(record.request) != cls._request_operation(planned):
+            raise ValueError("AI regression evidence operation differs from its plan")
+        if Path(record.relative_path).stem != record.request.request_id:
+            raise ValueError("AI regression evidence path differs from its request ID")
+
+    @classmethod
+    def _regression_terminal_evidence(
+        cls,
+        retest: _RunSnapshot,
+        *,
+        planned_by_id: dict[str, PlannedStep],
+        records_by_plan: dict[str, dict[int, _EvidenceRecord]],
+    ) -> list[RegressionEvidence]:
         terminal_evidence: list[RegressionEvidence] = []
         for planned_request_id, step in planned_by_id.items():
-            tasks = [
-                task
-                for task in retest.task_graph.tasks.values()
-                if task.request is not None and task.request.request_id == planned_request_id
-            ]
-            if len(tasks) != 1:
-                raise ValueError(
-                    "AI regression plan request does not map to exactly one execution Task"
-                )
-            task = tasks[0]
-            assert task.request is not None
-            if cls._request_operation(task.request) != cls._request_operation(step.request):
-                raise ValueError("AI regression execution Task differs from its plan")
-            if task.attempts > task.max_attempts:
-                raise ValueError("AI regression Task exceeded its bounded retry allocation")
-            attempts = records_by_plan[planned_request_id]
-            expected_attempts = set(range(1, task.attempts + 1))
-            if set(attempts) != expected_attempts or not expected_attempts:
-                raise ValueError(
-                    "AI regression evidence does not cover the exact execution attempts"
-                )
-            terminal = attempts[task.attempts]
+            task = cls._regression_execution_task(retest, planned_request_id, step)
+            terminal = cls._terminal_regression_record(task, records_by_plan[planned_request_id])
             assert terminal.result is not None
-            if any(
-                item.request is None or item.request.agent_id != task.request.agent_id
-                for item in attempts.values()
-            ):
-                raise ValueError("AI regression evidence agent differs from its execution Task")
-            for index in range(1, task.attempts):
-                prior_result = attempts[index].result
-                if prior_result is None:
-                    raise ValueError("AI regression retry evidence lacks its Tool result")
-                if prior_result.success:
-                    raise ValueError("AI regression Task retried after a successful Tool result")
-            if task.status is TaskStatus.SUCCEEDED:
-                if not terminal.result.success:
-                    raise ValueError(
-                        "successful AI regression Task has a failed terminal Tool result"
-                    )
-            elif task.status is TaskStatus.FAILED:
-                if terminal.result.success:
-                    raise ValueError(
-                        "failed AI regression Task has a successful terminal Tool result"
-                    )
-            else:
-                raise ValueError("completed KISA retest has a non-terminal regression Task")
             assert terminal.request is not None
             terminal_evidence.append(
                 RegressionEvidence(
@@ -1067,10 +940,61 @@ class KISARetestService:
                     request_id=terminal.request.request_id,
                     target=terminal.request.target,
                     attempt=task.attempts,
-                    trusted_passed=terminal.trusted_regression_passed is True,
+                    trusted_passed=terminal.trusted_regression_passed,
                 )
             )
+        return terminal_evidence
 
+    @classmethod
+    def _regression_execution_task(
+        cls,
+        retest: _RunSnapshot,
+        planned_request_id: str,
+        step: PlannedStep,
+    ) -> TaskNode:
+        tasks = [
+            task
+            for task in retest.task_graph.tasks.values()
+            if task.request is not None and task.request.request_id == planned_request_id
+        ]
+        if len(tasks) != 1:
+            raise ValueError(
+                "AI regression plan request does not map to exactly one execution Task"
+            )
+        task = tasks[0]
+        assert task.request is not None
+        if cls._request_operation(task.request) != cls._request_operation(step.request):
+            raise ValueError("AI regression execution Task differs from its plan")
+        if task.attempts > task.max_attempts:
+            raise ValueError("AI regression Task exceeded its bounded retry allocation")
+        return task
+
+    @staticmethod
+    def _terminal_regression_record(
+        task: TaskNode,
+        attempts: dict[int, _EvidenceRecord],
+    ) -> _EvidenceRecord:
+        expected_attempts = set(range(1, task.attempts + 1))
+        if set(attempts) != expected_attempts or not expected_attempts:
+            raise ValueError("AI regression evidence does not cover the exact execution attempts")
+        terminal = attempts[task.attempts]
+        assert task.request is not None
+        if any(
+            item.request is None or item.request.agent_id != task.request.agent_id
+            for item in attempts.values()
+        ):
+            raise ValueError("AI regression evidence agent differs from its execution Task")
+        _validate_regression_retry_results(task, attempts)
+        _validate_regression_terminal_status(task, terminal)
+        return terminal
+
+    @staticmethod
+    def _summarize_regression(
+        *,
+        planned_steps: list[PlannedStep],
+        expected_targets: list[str],
+        terminal_evidence: list[RegressionEvidence],
+    ) -> RegressionResult:
         repetitions_by_target: dict[str, int] = {}
         for step in planned_steps:
             repetitions_by_target[step.request.target] = (
@@ -1084,9 +1008,12 @@ class KISARetestService:
             and repetitions >= 2
             and len(terminal_evidence) == len(planned_steps)
         )
-        passed = sum(item.trusted_passed for item in terminal_evidence)
-        failed = sum(not item.trusted_passed for item in terminal_evidence)
-        if not coverage_complete:
+        passed = sum(item.trusted_passed is True for item in terminal_evidence)
+        failed = sum(item.trusted_passed is False for item in terminal_evidence)
+        measurement_complete = coverage_complete and all(
+            item.trusted_passed is not None for item in terminal_evidence
+        )
+        if not measurement_complete:
             status = RegressionStatus.NOT_MEASURED
         elif failed:
             status = RegressionStatus.FAIL
@@ -1202,113 +1129,4 @@ class KISARetestService:
 
     @staticmethod
     def _render_report(assessment: KISARetestAssessment) -> str:
-        summary = assessment.summary
-        lines = [
-            "# KISA Remediation and Retest Report",
-            "",
-            f"- Baseline run: `{assessment.baseline_run_id}`",
-            f"- Retest run: `{assessment.retest_run_id}`",
-            f"- Fixed: `{summary.fixed}`",
-            f"- Still vulnerable: `{summary.still_vulnerable}`",
-            f"- Inconclusive: `{summary.inconclusive}`",
-            *(
-                [
-                    "- Unexpected new confirmed findings observed in scoped parent Run: "
-                    f"`{summary.new_findings}`"
-                ]
-                if summary.new_findings
-                else []
-            ),
-            "- New threat discovery: **not assessed**; run a fresh `pajin kisa-run` "
-            "as a separate discovery Gate for currently supported scenarios.",
-            f"- Normal-function regression: `{summary.regression.value}`",
-            "",
-            "## Finding outcomes",
-            "",
-            "| Threat | Baseline candidate | Status | Oracle | ReplayOutcome | Receipt seal |",
-            "| --- | --- | --- | --- | --- | --- |",
-        ]
-        for result in assessment.finding_results:
-            lineage = result.replay_lineage
-            lines.append(
-                f"| `{result.threat_class}` | `{result.baseline_candidate_id}` | "
-                f"**{result.status.value}** | `{result.oracle_verdict or '-'}` | "
-                f"`{lineage.replay_outcome_id if lineage else '-'}` | "
-                f"`{lineage.receipt_seal_root_digest if lineage else '-'}` |"
-            )
-            lines.extend(
-                [
-                    "",
-                    f"- Baseline Decision: `{result.baseline_decision_id}`",
-                    f"- Baseline Finding: `{result.baseline_finding_id}`",
-                ]
-            )
-            if lineage is not None:
-                lines.extend(
-                    [
-                        f"- Replay Run: `{lineage.replay_run_id}`",
-                        f"- ReplayOutcome: `{lineage.replay_outcome_id}`",
-                        "- Replay requests: "
-                        + ", ".join(f"`{request_id}`" for request_id in lineage.replay_request_ids),
-                        f"- OracleResult: `{lineage.oracle_result_id or '-'}`",
-                        "- Replay evidence: "
-                        + ", ".join(f"`{path}`" for path in lineage.replay_evidence),
-                        f"- Replay artifact seal: `{lineage.artifact_seal_root_digest}`",
-                        f"- Verification receipt seal: `{lineage.receipt_seal_root_digest}`",
-                    ]
-                )
-            if result.replay_context is not None:
-                lines.append(
-                    "- Parent Retest source root: "
-                    f"`{result.replay_context.retest_source_root_digest}`"
-                )
-        lines.extend(
-            [
-                "",
-                "## Normal-function regression evidence",
-                "",
-                "- Expected targets: "
-                + ", ".join(f"`{target}`" for target in assessment.regression.expected_targets),
-                "- Expected repetitions per target: "
-                f"`{assessment.regression.expected_repetitions}`",
-                "",
-                "| Target | Planned request | Terminal request | Attempt | Trusted result |",
-                "| --- | --- | --- | --- | --- |",
-            ]
-        )
-        for evidence in assessment.regression.evidence:
-            lines.append(
-                f"| `{evidence.target}` | `{evidence.planned_request_id}` | "
-                f"`{evidence.request_id}` | `{evidence.attempt}` | "
-                f"`{'pass' if evidence.trusted_passed else 'fail'}` |"
-            )
-        lines.extend(["", "## Remediation plan", ""])
-        for action in assessment.remediation_actions:
-            lines.extend(
-                [
-                    f"### {action.threat_class}: {action.title}",
-                    "",
-                    f"- Baseline Candidate: `{action.baseline_candidate_id}`",
-                    f"- Baseline Decision: `{action.baseline_decision_id}`",
-                    f"- Baseline Finding: `{action.baseline_finding_id}`",
-                    f"- Display fingerprint: `{action.finding_fingerprint}`",
-                    f"- Owner: `{action.owner or 'needs human assignment'}`",
-                    "- Controls:",
-                ]
-            )
-            lines.extend(f"  - {control}" for control in action.controls)
-            lines.append("- Acceptance criteria:")
-            lines.extend(f"  - {criterion}" for criterion in action.acceptance_criteria)
-        lines.extend(
-            [
-                "",
-                "## Checklist overlay",
-                "",
-                "This append-only overlay updates only the listed KISA lifecycle items. "
-                "It is evidence support, not a compliance certification.",
-                "",
-            ]
-        )
-        for overlay in assessment.checklist_overlay.items:
-            lines.append(f"- `{overlay.item_id}`: **{overlay.status.value}** — {overlay.rationale}")
-        return "\n".join(lines) + "\n"
+        return render_retest_report(assessment)

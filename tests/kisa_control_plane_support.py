@@ -4,15 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from typing import Any
+from unittest.mock import patch
+from urllib.parse import urlsplit, urlunsplit
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.control_plane.models import ArtifactRef
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest
+from pajin.domain.validation import (
+    ConfirmationBasis,
+    FindingDisposition,
+    ValidationReasonCode,
+)
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import EvaluationThresholds
 from pajin.modes.ai_redteam.runtime import KISAPlannerRuntime, KISAValidatorRuntime
@@ -20,10 +30,11 @@ from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import BudgetController
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import verify_run_integrity
-from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeTool
+from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult, WorkerStatus
+from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
+from pajin.workflow import confirmation as confirmation_module
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner
 
 _THREAT_CLASSES = ("M03", "M06", "A04")
@@ -34,9 +45,10 @@ class KISAControlPlaneSource:
     path: Path
     artifact_ref: ArtifactRef
     campaign: CampaignManifest
+    compilation_time: datetime
 
 
-class _SupportingKISAWorker:
+class SupportingKISAWorker:
     async def run(
         self,
         job: WorkerJob,
@@ -114,6 +126,132 @@ class _SupportingKISAWorker:
         )
 
 
+def _canonical_json_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _trusted_supporting_backend(worker: SupportingKISAWorker) -> DockerWorkerBackend:
+    backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
+
+    async def run(
+        job: WorkerJob,
+        *,
+        secrets: object = None,
+    ) -> WorkerResult:
+        del secrets
+        result = await worker.run(job)
+        payload = json.loads(job.stdin)
+        output = json.loads(result.stdout)
+        probe = payload["probe"]
+        parsed_target = urlsplit(payload["target"])
+        audit_target = urlunsplit(
+            (
+                parsed_target.scheme,
+                parsed_target.netloc,
+                parsed_target.path,
+                "<redacted>" if parsed_target.query else "",
+                "",
+            )
+        )
+        events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+        for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+            request_body = {
+                "sessionId": probe["session_id"],
+                "messages": turn["messages"],
+                "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
+            }
+            events.append(
+                json.dumps(
+                    {
+                        "event": "allow",
+                        "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                        "sequence": index + 1,
+                        "method": "POST",
+                        "target": audit_target,
+                        "targetSha256": sha256(payload["target"].encode("utf-8")).hexdigest(),
+                        "address": "172.17.0.1",
+                        "status": 200,
+                        "requestJsonSha256": _canonical_json_digest(request_body),
+                        "responseBodySha256": _canonical_json_digest(observed["response"]),
+                        "responseJsonSha256": _canonical_json_digest(observed["response"]),
+                    },
+                    separators=(",", ":"),
+                )
+            )
+        return result.model_copy(
+            update={
+                "backend": "docker",
+                "network_log": "\n".join(events),
+            }
+        )
+
+    backend.run = run  # type: ignore[method-assign]
+    return backend
+
+
+@contextmanager
+def externally_attested_confirmation_fixture() -> Iterator[None]:
+    """Build a historical trusted baseline without reopening the production Worker-only Gate.
+
+    Retest tests still need a pre-existing Confirmed baseline.  Production code has no external
+    execution-attestation verifier yet, so this narrowly scoped fixture substitutes that missing
+    authority only while constructing the baseline.  It must never be used to test current Local,
+    CLI, or Control Plane confirmation behavior.
+    """
+
+    original_build = confirmation_module._build_confirmation_projection
+
+    def externally_attested_disposition(
+        *_args: object,
+        **_kwargs: object,
+    ) -> confirmation_module._ReplayDisposition:
+        return confirmation_module._ReplayDisposition(
+            disposition=FindingDisposition.CONFIRMED,
+            reason=ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED,
+            confirmation_basis=ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY,
+            summary="A test-only external authority attested the target execution.",
+        )
+
+    def externally_attested_projection(
+        **kwargs: Any,
+    ) -> confirmation_module._ConfirmationProjection:
+        projection = original_build(**kwargs)
+        return replace(
+            projection,
+            index=projection.index.model_copy(
+                update={"confirmation_semantics": "verified-independent-replay"}
+            ),
+            finding_set=projection.finding_set.model_copy(
+                update={"confirmation_semantics": "verified-independent-replay"}
+            ),
+            report=projection.report.replace(
+                "verified-replay-evidence", "verified-independent-replay"
+            ),
+        )
+
+    with (
+        patch.object(
+            confirmation_module,
+            "_successful_replay_disposition",
+            side_effect=externally_attested_disposition,
+        ),
+        patch.object(
+            confirmation_module,
+            "_build_confirmation_projection",
+            side_effect=externally_attested_projection,
+        ),
+    ):
+        yield
+
+
 def build_kisa_control_plane_source(
     output_root: Path,
     *,
@@ -143,7 +281,7 @@ def build_kisa_control_plane_source(
         candidate_producer=KISACandidateProducer(),
         tools=tools,
         policy=PolicyEngine(),
-        worker=_SupportingKISAWorker(),
+        worker=_trusted_supporting_backend(SupportingKISAWorker()),
         output_root=output_root,
     )
     outcome = asyncio.run(runner.run(campaign, budget=budget, rate_limits=rate_limits))
@@ -165,6 +303,7 @@ def build_kisa_control_plane_source(
             created_by=created_by,
         ),
         campaign=campaign,
+        compilation_time=datetime.now(UTC),
     )
 
 

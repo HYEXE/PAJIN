@@ -41,7 +41,24 @@ from pajin.domain.replay import ReplayPurpose
 from pajin.tools.ai import AIChatProbeTool
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
-EXECUTION_NOW = datetime(2026, 7, 18, 8, 0, tzinfo=UTC)
+
+
+def test_replay_component_digest_rejects_non_string_nested_mapping_keys() -> None:
+    with pytest.raises(ValueError, match="mapping keys must be strings"):
+        replay_execution_component_digest(
+            {
+                "nested": {
+                    1: "integer-key",
+                    "1": "string-key",
+                }
+            }
+        )
+
+
+def test_replay_component_digest_preserves_canonical_string_mapping_order() -> None:
+    assert replay_execution_component_digest(
+        {"nested": {"b": 2, "a": 1}}
+    ) == replay_execution_component_digest({"nested": {"a": 1, "b": 2}})
 
 
 def _artifact(**updates: object) -> ArtifactRef:
@@ -191,7 +208,7 @@ def _execution_claim_view_payload(root: Path) -> dict[str, object]:
         source_root=source.path,
         artifact_ref=source.artifact_ref,
         replay_run_id_factory=lambda: f"run_{'8' * 32}",
-        clock=lambda: EXECUTION_NOW,
+        clock=lambda: source.compilation_time,
     )
     admitted = derived.items[0]
     payload = _claim_view_payload()
@@ -245,7 +262,7 @@ def _execution_claim_view_payload(root: Path) -> dict[str, object]:
         secret_policy="forbidden",
         secret_lease_ids=(),
         output_staging_id=f"stage_{'9' * 32}",
-        created_at=EXECUTION_NOW,
+        created_at=source.compilation_time,
     )
     context_digest = replay_execution_context_digest(execution_context)
     job_payload = {

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
-from dataclasses import dataclass
 from pathlib import Path
+from threading import Lock
 from typing import TypeVar
 from uuid import uuid4
 
@@ -14,7 +14,6 @@ from pydantic import BaseModel, ConfigDict
 from pajin.agents.base import (
     AgentReportNarrative,
     CandidateProducerRuntime,
-    ModelBoundRuntime,
     PlannerRuntime,
     ReporterRuntime,
     ValidatorRuntime,
@@ -36,24 +35,27 @@ from pajin.domain.orchestration import (
     TaskNode,
     TaskStatus,
 )
-from pajin.domain.validation import (
-    CandidateFinding,
-    FindingValidationSet,
-    ValidationReasonCode,
-)
+from pajin.domain.validation import FindingValidationSet, ValidationReasonCode
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
-from pajin.providers.models import ProviderRegistration
-from pajin.providers.session import PolicyBoundProviderPort
-from pajin.reporting.markdown import render_markdown_report
+from pajin.reporting import (
+    escape_markdown_text,
+    markdown_code_span,
+    render_markdown_report,
+)
 from pajin.runtime.control import (
     BudgetController,
     BudgetExceeded,
     ExecutionCancellationContext,
     KillSwitch,
 )
+from pajin.runtime.execution_context import (
+    SIMULATED_EVIDENCE_LABEL,
+    WorkerExecutionContext,
+    worker_execution_context,
+)
 from pajin.runtime.secrets import SecretBroker
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunIntegrityError, RunStore, verify_run_integrity
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, RequestRateLimitLedger, ToolGateway
@@ -62,20 +64,71 @@ from pajin.workflow.cancellation import (
     record_engine_cleanup,
     seal_executor_quiescence,
 )
-from pajin.workflow.validation import validate_findings
+from pajin.workflow.multi_agent_execution import (
+    InitializedExecution as _InitializedExecution,
+)
+from pajin.workflow.multi_agent_execution import (
+    MultiAgentExecutionScheduler,
+)
+from pajin.workflow.multi_agent_projection import (
+    MultiAgentResultProjector,
+)
+from pajin.workflow.multi_agent_projection import (
+    MultiAgentRunState as _RunState,
+)
+from pajin.workflow.multi_agent_projection import (
+    ReportingTerminal as _TerminalRun,
+)
 from pajin.workflow.validation_artifacts import write_validation_artifacts
 
 T = TypeVar("T")
 _MAX_LOCAL_PARALLEL_SPECIALISTS = 16
+_MAX_AUDIT_TOKEN_CHARS = 80
 
 
-@dataclass(frozen=True)
-class _ModelAccess:
-    registration: ProviderRegistration
-    tool_id: str
-    endpoint: str
-    max_attempts: int
-    risk_tier: ToolRiskTier
+def _audit_safe_token(value: object, *, fallback: str) -> str:
+    """Normalize an untrusted label for one bounded, single-line audit field."""
+
+    if not isinstance(value, str):
+        return fallback
+    normalized: list[str] = []
+    separator_pending = False
+    for character in value[: _MAX_AUDIT_TOKEN_CHARS * 4]:
+        if character.isascii() and (character.isalnum() or character in "._-"):
+            if separator_pending and normalized:
+                normalized.append("-")
+            normalized.append(character)
+            separator_pending = False
+        else:
+            separator_pending = True
+        if len(normalized) >= _MAX_AUDIT_TOKEN_CHARS:
+            break
+    token = "".join(normalized).strip("._-")[:_MAX_AUDIT_TOKEN_CHARS]
+    return token or fallback
+
+
+def _audit_safe_exception_type(exc: BaseException) -> str:
+    try:
+        exception_name = type(exc).__name__
+    except BaseException:
+        return "Exception"
+    return _audit_safe_token(exception_name, fallback="Exception")
+
+
+def _audit_safe_exception_diagnostic(
+    exc: BaseException,
+    *,
+    stage: str,
+    role: str,
+) -> str:
+    """Describe an exception without persisting its provider-controlled message."""
+
+    safe_stage = _audit_safe_token(stage, fallback="unknown")
+    safe_role = _audit_safe_token(role, fallback="unknown")
+    return (
+        f"exception_type={_audit_safe_exception_type(exc)}; "
+        f"stage={safe_stage}; role={safe_role}; detail=omitted"
+    )
 
 
 class MultiAgentRunOutcome(BaseModel):
@@ -95,7 +148,7 @@ class MultiAgentRunOutcome(BaseModel):
 
 
 class MultiAgentCampaignRunner:
-    """Spawn bounded role agents and execute their task graph through one gateway."""
+    """Execute one Run at a time; an activated one-way KillSwitch survives reuse."""
 
     def __init__(
         self,
@@ -120,20 +173,34 @@ class MultiAgentCampaignRunner:
                 "max_parallel_specialists must be between one and "
                 f"{_MAX_LOCAL_PARALLEL_SPECIALISTS}"
             )
-        self._planner = planner
-        self._validator = validator
-        self._reporter = reporter
         self._tools = tools
         self._policy = policy
         self._worker = worker
+        self._execution_context = worker_execution_context(worker)
         self._output_root = output_root
-        self._candidate_producer = candidate_producer
         self._kill_switch = kill_switch or KillSwitch()
         self._kill_after_tool_calls = kill_after_tool_calls
         self._observed_tool_calls = 0
         self._secrets = secrets or SecretBroker()
-        self._max_parallel_specialists = max_parallel_specialists
         self._execution_cancellation: ExecutionCancellationContext | None = None
+        self._run_guard = Lock()
+        self._scheduler = MultiAgentExecutionScheduler(
+            host=self,
+            planner=planner,
+            validator=validator,
+            reporter=reporter,
+            tools=tools,
+            max_parallel_specialists=max_parallel_specialists,
+        )
+        self._projector = MultiAgentResultProjector(
+            host=self,
+            scheduler=self._scheduler,
+            validator=validator,
+            reporter=reporter,
+            candidate_producer=candidate_producer,
+            execution_context=self._execution_context,
+            safe_exception_type=_audit_safe_exception_type,
+        )
 
     async def run(
         self,
@@ -143,7 +210,39 @@ class MultiAgentCampaignRunner:
         budget: BudgetController | None = None,
         rate_limits: RequestRateLimitLedger | None = None,
     ) -> MultiAgentRunOutcome:
+        if not self._run_guard.acquire(blocking=False):
+            raise RuntimeError("MultiAgentCampaignRunner does not allow concurrent runs")
+        try:
+            authoritative_campaign = CampaignManifest.model_validate(
+                campaign.model_dump(mode="python", by_alias=True)
+            )
+            if budget is not None and budget.budgets != authoritative_campaign.spec.budgets:
+                raise ValueError("shared budget does not match the Campaign budget contract")
+            if cancellation is not None and cancellation.binding is not None:
+                raise ValueError("execution cancellation context is already bound to another Run")
+            return await self._run_once(
+                authoritative_campaign,
+                cancellation=cancellation,
+                budget=budget or BudgetController(authoritative_campaign.spec.budgets),
+                rate_limits=rate_limits or RequestRateLimitLedger(),
+            )
+        finally:
+            self._execution_cancellation = None
+            self._run_guard.release()
+
+    async def _run_once(
+        self,
+        campaign: CampaignManifest,
+        *,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        rate_limits: RequestRateLimitLedger,
+    ) -> MultiAgentRunOutcome:
         store = RunStore.create(self._output_root, campaign.metadata.name)
+        store.write_json(
+            "execution-context.json",
+            self._execution_context.model_dump(mode="json", by_alias=True),
+        )
         self._execution_cancellation = cancellation
         if cancellation is not None:
             cancellation.bind_run(
@@ -154,41 +253,146 @@ class MultiAgentCampaignRunner:
         store.write_json("campaign.json", campaign.model_dump(mode="json", by_alias=True))
         store.append_event(
             "campaign.started",
-            {"campaign": campaign.metadata.name, "engine": "multi-agent"},
+            {
+                "campaign": campaign.metadata.name,
+                "engine": "multi-agent",
+                "workerBackend": self._execution_context.backend,
+                "simulated": self._execution_context.simulated,
+            },
         )
-        if budget is not None and budget.budgets != campaign.spec.budgets:
-            raise ValueError("shared budget does not match the Campaign budget contract")
-        budget = budget or BudgetController(campaign.spec.budgets)
-        rate_limits = rate_limits or RequestRateLimitLedger()
         ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
-        graph = TaskGraph()
-        agents: dict[str, AgentNode] = {}
-        results: list[ToolResult] = []
-        findings: list[Finding] = []
-        validation = FindingValidationSet(
-            candidates=[],
-            decisions=[],
-            confirmed_findings=[],
-        )
-        plan: AgentPlan | None = None
-        admitted_candidates: list[CandidateFinding] = []
-        authoritative_request_ids: set[str] = set()
-        authoritative_claim_keys: set[tuple[str, str]] = set()
-        candidate_production_attempted = False
-        validation_snapshot_finalized = False
-        validator_agent_id = "agent:validator:unavailable"
-        self._observed_tool_calls = 0
-        propagate_cancel = False
+        try:
+            return await self._run_initialized(
+                campaign,
+                store=store,
+                cancellation=cancellation,
+                budget=budget,
+                rate_limits=rate_limits,
+                ledger=ledger,
+            )
+        except BaseException as exc:
+            try:
+                verify_run_integrity(store.path)
+            except RunIntegrityError:
+                try:
+                    store.append_event(
+                        "campaign.failed",
+                        {
+                            "stage": "initialization-or-finalization",
+                            "role": AgentRole.SUPERVISOR.value,
+                            "errorType": _audit_safe_exception_type(exc),
+                        },
+                    )
+                    store.write_json(
+                        "run.json",
+                        {
+                            "runId": store.run_id,
+                            "status": RunStatus.FAILED.value,
+                            "stage": "initialization-or-finalization",
+                            "role": AgentRole.SUPERVISOR.value,
+                            "errorType": _audit_safe_exception_type(exc),
+                            **self._execution_context.run_summary(),
+                        },
+                    )
+                    store.write_json("capabilities.json", ledger.snapshot())
+                    store.write_json("budget.json", budget.snapshot())
+                    store.write_json("rate-limits.json", rate_limits.snapshot())
+                    store.seal()
+                except Exception as terminal_error:
+                    exc.add_note(
+                        "multi-agent Run terminalization failed: "
+                        + _audit_safe_exception_diagnostic(
+                            terminal_error,
+                            stage="terminalization",
+                            role=AgentRole.SUPERVISOR.value,
+                        )
+                    )
+            raise
 
+    async def _run_initialized(
+        self,
+        campaign: CampaignManifest,
+        *,
+        store: RunStore,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        rate_limits: RequestRateLimitLedger,
+        ledger: CapabilityLedger,
+    ) -> MultiAgentRunOutcome:
+        state = _RunState()
+        self._observed_tool_calls = 0
+        execution = self._initialize_execution(
+            campaign,
+            store=store,
+            budget=budget,
+            ledger=ledger,
+            rate_limits=rate_limits,
+            state=state,
+        )
+        try:
+            terminal = await self._execute_campaign(
+                campaign,
+                store=store,
+                cancellation=cancellation,
+                budget=budget,
+                ledger=ledger,
+                state=state,
+                execution=execution,
+            )
+        except asyncio.CancelledError:
+            terminal = self._terminalize_caller_cancellation(
+                campaign,
+                store=store,
+                cancellation=cancellation,
+                budget=budget,
+                ledger=ledger,
+                state=state,
+                execution=execution,
+            )
+        except (BudgetExceeded, CapabilityError) as exc:
+            terminal = self._terminalize_control_stop(
+                campaign,
+                exc,
+                store=store,
+                cancellation=cancellation,
+                budget=budget,
+                ledger=ledger,
+                state=state,
+                execution=execution,
+            )
+        except Exception as exc:
+            terminal = self._terminalize_failure(
+                campaign,
+                exc,
+                store=store,
+                cancellation=cancellation,
+                budget=budget,
+                ledger=ledger,
+                state=state,
+                execution=execution,
+            )
+        return self._finalize_run(
+            store=store,
+            budget=budget,
+            rate_limits=rate_limits,
+            ledger=ledger,
+            state=state,
+            terminal=terminal,
+        )
+
+    def _initialize_execution(
+        self,
+        campaign: CampaignManifest,
+        *,
+        store: RunStore,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        rate_limits: RequestRateLimitLedger,
+        state: _RunState,
+    ) -> _InitializedExecution:
         supervisor_id = self._agent_id(AgentRole.SUPERVISOR)
         budget.reserve_agent(depth=0)
-        model_endpoints = {
-            access.endpoint
-            for runtime in (self._planner, self._validator, self._reporter)
-            if runtime is not None
-            for access in [self._model_access(runtime)]
-            if access is not None
-        }
+        model_endpoints = {access.endpoint for access in self._scheduler.reasoning_model_accesses()}
         root_grant = ledger.issue_root(
             campaign,
             subject=supervisor_id,
@@ -197,7 +401,7 @@ class MultiAgentCampaignRunner:
         )
         supervisor = self._add_agent(
             store,
-            agents,
+            state.agents,
             role=AgentRole.SUPERVISOR,
             agent_id=supervisor_id,
             parent_agent_id=None,
@@ -212,714 +416,366 @@ class MultiAgentCampaignRunner:
             secrets=self._secrets,
             rate_limits=rate_limits,
         )
+        return _InitializedExecution(
+            root_grant=root_grant,
+            supervisor=supervisor,
+            gateway=gateway,
+        )
 
-        def ensure_candidate_production() -> None:
-            nonlocal candidate_production_attempted
-            nonlocal admitted_candidates
-            nonlocal authoritative_request_ids
-            nonlocal authoritative_claim_keys
-            if candidate_production_attempted or self._candidate_producer is None or plan is None:
-                return
-            candidate_production_attempted = True
-            try:
-                production = self._candidate_producer.produce(campaign, plan, results)
-            except Exception as exc:
-                store.append_event(
-                    "candidate-set.production-failed",
-                    {
-                        "producerId": self._candidate_producer.producer_id,
-                        "errorType": type(exc).__name__,
-                    },
-                )
-                raise
-            admitted_candidates = list(production.candidates)
-            authoritative_request_ids = set(production.authoritative_request_ids)
-            authoritative_claim_keys = set(production.authoritative_claim_keys)
-            store.append_event(
-                "candidate-set.produced",
-                {
-                    "producerId": self._candidate_producer.producer_id,
-                    "candidateCount": len(admitted_candidates),
-                    "authoritativeRequestCount": len(authoritative_request_ids),
-                    "authoritativeClaimCount": len(authoritative_claim_keys),
-                    "candidateIds": [candidate.candidate_id for candidate in admitted_candidates],
-                },
-            )
+    async def _execute_campaign(
+        self,
+        campaign: CampaignManifest,
+        *,
+        store: RunStore,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        execution: _InitializedExecution,
+    ) -> _TerminalRun:
+        plan_task = await self._scheduler.run_planning_phase(
+            campaign,
+            store=store,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+        )
+        tasks = self._scheduler.prepare_execution_tasks(
+            campaign,
+            plan_task=plan_task,
+            store=store,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+        )
+        await self._scheduler.run_specialist_tasks(
+            campaign,
+            store,
+            state.graph,
+            budget,
+            ledger,
+            execution.gateway,
+            tasks.specialist_tasks,
+            tasks.specialist_agents,
+            tasks.specialist_grants,
+            tasks.specialist_parallel_contracts,
+            state.results,
+        )
+        if self._check_control(budget, raise_on_cancel=False):
+            raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
+        self._projector.ensure_candidate_production(
+            campaign,
+            store=store,
+            state=state,
+        )
+        await self._projector.run_validation_phase(
+            campaign,
+            tasks=tasks,
+            store=store,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+        )
+        return await self._projector.run_reporting_phase(
+            campaign,
+            tasks=tasks,
+            store=store,
+            cancellation=cancellation,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+        )
 
-        def finalize_unvalidated_candidates(reason: ValidationReasonCode) -> None:
-            nonlocal validation
-            nonlocal findings
-            nonlocal validation_snapshot_finalized
-            if validation_snapshot_finalized:
-                return
-            try:
-                ensure_candidate_production()
-            except Exception:
-                return
-            if not admitted_candidates:
-                return
-            try:
-                validation = validate_findings(
-                    campaign,
-                    results,
-                    [],
-                    store,
-                    validator_id=validator_agent_id,
-                    admitted_candidates=admitted_candidates,
-                    producer_authoritative_request_ids=authoritative_request_ids,
-                    producer_authoritative_claim_keys=authoritative_claim_keys,
-                    validator_unavailable_reason=reason,
-                )
-            except Exception as exc:
-                store.append_event(
-                    "validation.snapshot.failed",
-                    {"errorType": type(exc).__name__},
-                )
-                return
-            findings = []
-            validation_snapshot_finalized = True
-
-        try:
-            self._check_control(budget)
-            planner_access = self._model_access(self._planner)
-            planner_agent = self._spawn_child(
-                store,
-                agents,
-                budget,
-                ledger,
-                parent=supervisor,
-                parent_grant=root_grant,
-                role=AgentRole.PLANNER,
-                tools={planner_access.tool_id} if planner_access else set(),
-                targets={planner_access.endpoint} if planner_access else set(),
-                max_calls=planner_access.max_attempts if planner_access else 0,
-                max_risk_tier=planner_access.risk_tier if planner_access else ToolRiskTier.T0,
-            )
-            if planner_access:
-                self._bind_model_runtime(
-                    self._planner,
-                    planner_access,
-                    campaign,
-                    planner_agent,
-                    ledger,
-                    budget,
-                    gateway,
-                    store,
-                )
-            plan_task = TaskNode(
-                title="Create authorized campaign plan",
-                assigned_agent_id=planner_agent.agent_id,
-            )
-            graph.add(plan_task)
-            self._task_transition(store, graph, plan_task.task_id, TaskStatus.RUNNING)
-            self._set_agent(store, planner_agent, AgentStatus.RUNNING)
-            proposed_plan = await self._within_budget(self._planner.plan(campaign), budget)
-            plan = AgentPlan.model_validate(proposed_plan.model_dump())
-            self._check_control(budget)
-            self._validate_plan_boundary(campaign, plan)
-            self._task_transition(store, graph, plan_task.task_id, TaskStatus.SUCCEEDED)
-            self._set_agent(store, planner_agent, AgentStatus.COMPLETED)
-            store.write_json("plan.json", plan.model_dump(mode="json"))
-            store.append_event("agent.plan.created", {"steps": len(plan.steps)})
-
-            required_agents = len(plan.steps) + 2
-            if budget.agent_count + required_agents > campaign.spec.budgets.max_agents:
-                raise BudgetExceeded("plan requires more agents than the campaign budget allows")
-
-            specialist_risk_tiers: list[ToolRiskTier] = []
-            specialist_parallel_safe: list[bool] = []
-            for step in plan.steps:
-                try:
-                    spec = self._tools.spec(step.request.tool_id)
-                except KeyError as exc:
-                    raise CapabilityError(
-                        f"planner requested unregistered tool: {step.request.tool_id}"
-                    ) from exc
-                specialist_risk_tiers.append(spec.risk_tier)
-                specialist_parallel_safe.append(spec.parallel_safe)
-
-            validator_access = self._model_access(self._validator)
-            reporter_access = self._model_access(self._reporter) if self._reporter else None
-            reserved_control_calls = sum(
-                access.max_attempts
-                for access in (validator_access, reporter_access)
-                if access is not None
-            )
-            root_remaining_calls = ledger.record(root_grant.grant_id).remaining_calls
-            specialist_call_capacity = root_remaining_calls - reserved_control_calls
-            specialist_attempts = self._allocate_specialist_attempts(
-                specialist_risk_tiers,
-                available_calls=specialist_call_capacity,
-            )
-            store.append_event(
-                "specialist.call-budget.allocated",
-                {
-                    "rootRemainingCalls": root_remaining_calls,
-                    "reservedControlCalls": reserved_control_calls,
-                    "unallocatedCalls": (specialist_call_capacity - sum(specialist_attempts)),
-                    "allocations": [
-                        {
-                            "requestId": step.request.request_id,
-                            "toolId": step.request.tool_id,
-                            "target": step.request.target,
-                            "maxAttempts": max_attempts,
-                            "parallelSafe": parallel_safe,
-                        }
-                        for step, max_attempts, parallel_safe in zip(
-                            plan.steps,
-                            specialist_attempts,
-                            specialist_parallel_safe,
-                            strict=True,
-                        )
-                    ],
-                },
-            )
-
-            specialist_tasks: list[TaskNode] = []
-            specialist_agents: dict[str, AgentNode] = {}
-            specialist_grants: dict[str, CapabilityGrant] = {}
-            specialist_parallel_contracts: dict[str, bool] = {}
-            for step, risk_tier, max_attempts, parallel_safe in zip(
-                plan.steps,
-                specialist_risk_tiers,
-                specialist_attempts,
-                specialist_parallel_safe,
-                strict=True,
-            ):
-                specialist = self._spawn_child(
-                    store,
-                    agents,
-                    budget,
-                    ledger,
-                    parent=supervisor,
-                    parent_grant=root_grant,
-                    role=AgentRole.SPECIALIST,
-                    tools={step.request.tool_id},
-                    targets={step.request.target},
-                    max_calls=max_attempts,
-                    max_risk_tier=risk_tier,
-                )
-                bound_request = step.request.model_copy(update={"agent_id": specialist.agent_id})
-                task = TaskNode(
-                    title=step.title,
-                    assigned_agent_id=specialist.agent_id,
-                    depends_on={plan_task.task_id},
-                    request=bound_request,
-                    max_attempts=max_attempts,
-                )
-                graph.add(task)
-                specialist_tasks.append(task)
-                specialist_agents[task.task_id] = specialist
-                specialist_grants[task.task_id] = ledger.record(
-                    specialist.capability_grant_id
-                ).grant
-                specialist_parallel_contracts[task.task_id] = parallel_safe
-
-            validation_task = TaskNode(
-                title="Independently validate candidate findings",
-                depends_on={task.task_id for task in specialist_tasks},
-            )
-            graph.add(validation_task)
-            report_task = TaskNode(
-                title="Render campaign report",
-                depends_on={validation_task.task_id},
-            )
-            graph.add(report_task)
-
-            await self._run_specialist_tasks(
-                campaign,
+    @staticmethod
+    def _mark_phase_failed(
+        store: RunStore,
+        graph: TaskGraph,
+        task: TaskNode,
+        agent: AgentNode,
+        exc: Exception,
+        *,
+        stage: str,
+    ) -> None:
+        error = _audit_safe_exception_diagnostic(
+            exc,
+            stage=stage,
+            role=agent.role.value,
+        )
+        if task.status is TaskStatus.RUNNING:
+            MultiAgentCampaignRunner._task_transition(
                 store,
                 graph,
-                budget,
-                ledger,
-                gateway,
-                specialist_tasks,
-                specialist_agents,
-                specialist_grants,
-                specialist_parallel_contracts,
-                results,
+                task.task_id,
+                TaskStatus.FAILED,
+                error=error,
             )
-
-            if self._check_control(budget, raise_on_cancel=False):
-                raise BudgetExceeded(self._kill_switch.reason or "campaign cancelled")
-
-            ensure_candidate_production()
-
-            validator_agent = self._spawn_child(
+        if agent.status is AgentStatus.RUNNING:
+            MultiAgentCampaignRunner._set_agent(
                 store,
-                agents,
-                budget,
-                ledger,
-                parent=supervisor,
-                parent_grant=root_grant,
-                role=AgentRole.VALIDATOR,
-                tools={validator_access.tool_id} if validator_access else set(),
-                targets={validator_access.endpoint} if validator_access else set(),
-                max_calls=validator_access.max_attempts if validator_access else 0,
-                max_risk_tier=(validator_access.risk_tier if validator_access else ToolRiskTier.T0),
-            )
-            if validator_access:
-                self._bind_model_runtime(
-                    self._validator,
-                    validator_access,
-                    campaign,
-                    validator_agent,
-                    ledger,
-                    budget,
-                    gateway,
-                    store,
-                )
-            validation_task.assigned_agent_id = validator_agent.agent_id
-            validator_agent_id = validator_agent.agent_id
-            self._task_transition(store, graph, validation_task.task_id, TaskStatus.RUNNING)
-            self._set_agent(store, validator_agent, AgentStatus.RUNNING)
-            candidates = await self._within_budget(
-                self._validator.validate(campaign, plan, results), budget
-            )
-            validation = validate_findings(
-                campaign,
-                results,
-                candidates,
-                store,
-                validator_id=validator_agent.agent_id,
-                admitted_candidates=admitted_candidates,
-                producer_authoritative_request_ids=authoritative_request_ids,
-                producer_authoritative_claim_keys=authoritative_claim_keys,
-            )
-            validation_snapshot_finalized = True
-            findings = validation.confirmed_findings
-            self._task_transition(store, graph, validation_task.task_id, TaskStatus.SUCCEEDED)
-            self._set_agent(store, validator_agent, AgentStatus.COMPLETED)
-            store.write_json(
-                "findings.json", [finding.model_dump(mode="json") for finding in findings]
+                agent,
+                AgentStatus.FAILED,
+                error=error,
             )
 
-            reporter_agent = self._spawn_child(
-                store,
-                agents,
-                budget,
-                ledger,
-                parent=supervisor,
-                parent_grant=root_grant,
-                role=AgentRole.REPORTER,
-                tools={reporter_access.tool_id} if reporter_access else set(),
-                targets={reporter_access.endpoint} if reporter_access else set(),
-                max_calls=reporter_access.max_attempts if reporter_access else 0,
-                max_risk_tier=(reporter_access.risk_tier if reporter_access else ToolRiskTier.T0),
-            )
-            if reporter_access and self._reporter is not None:
-                self._bind_model_runtime(
-                    self._reporter,
-                    reporter_access,
-                    campaign,
-                    reporter_agent,
-                    ledger,
-                    budget,
-                    gateway,
-                    store,
-                )
-            report_task.assigned_agent_id = reporter_agent.agent_id
-            self._task_transition(store, graph, report_task.task_id, TaskStatus.RUNNING)
-            self._set_agent(store, reporter_agent, AgentStatus.RUNNING)
-            narrative: AgentReportNarrative | None = None
-            if self._reporter is not None:
-                narrative = await self._within_budget(
-                    self._reporter.report(campaign, plan, results, findings),
-                    budget,
-                )
-                store.write_json("model-narrative.json", narrative.model_dump(mode="json"))
-            final_status = (
-                RunStatus.FAILED
-                if any(task.status is TaskStatus.FAILED for task in specialist_tasks)
-                else RunStatus.COMPLETED
-            )
-            report_agents = {
-                agent_id: agent.model_copy(deep=True) for agent_id, agent in agents.items()
-            }
-            report_agents[reporter_agent.agent_id].status = AgentStatus.COMPLETED
-            report_agents[supervisor.agent_id].status = AgentStatus.COMPLETED
-            report_graph = graph.model_copy(deep=True)
-            report_graph.transition(report_task.task_id, TaskStatus.SUCCEEDED)
-            report = self._render_report(
-                campaign,
-                store.run_id,
-                plan,
-                results,
-                findings,
-                report_agents,
-                report_graph,
-                budget,
-                final_status,
-                narrative=narrative,
-                validation=validation,
-            )
-            report_relative = store.write_text("report.md", report)
-            self._task_transition(store, graph, report_task.task_id, TaskStatus.SUCCEEDED)
-            self._set_agent(store, reporter_agent, AgentStatus.COMPLETED)
-            self._set_agent(store, supervisor, AgentStatus.COMPLETED)
-            store.append_event(
-                "campaign.completed",
-                {"status": final_status.value, "report": report_relative},
-            )
-        except asyncio.CancelledError:
-            context = ensure_cancellation_context(
-                cancellation,
-                engine="multi-agent",
-                store=store,
-            )
-            cancellation = context
-            self._execution_cancellation = context
-            self._kill_switch.activate(
-                context.snapshot().reason,
-                source=context.snapshot().kind.value,
-            )
-            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_CANCELLED)
-            self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
-            final_status = RunStatus.CANCELLED
-            report = self._render_cancelled_report(
-                campaign,
-                store.run_id,
-                final_status,
-                plan,
-                results,
-                findings,
-                validation,
-                agents,
-                graph,
-                budget,
-            )
-            report_relative = store.write_text("report.md", report)
-            store.append_event(
-                "campaign.cancelled",
-                {"reason": self._kill_switch.reason, "report": report_relative},
-            )
-            propagate_cancel = True
-        except (BudgetExceeded, CapabilityError, TimeoutError) as exc:
-            self._kill_switch.activate(str(exc), source="runtime-control")
-            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_CANCELLED)
-            self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
-            final_status = RunStatus.CANCELLED
-            report = self._render_cancelled_report(
-                campaign,
-                store.run_id,
-                final_status,
-                plan,
-                results,
-                findings,
-                validation,
-                agents,
-                graph,
-                budget,
-            )
-            report_relative = store.write_text("report.md", report)
-            store.append_event(
-                "campaign.cancelled",
-                {"reason": self._kill_switch.reason, "report": report_relative},
-            )
-        except Exception as exc:
-            self._kill_switch.activate(
-                f"unhandled orchestration failure: {type(exc).__name__}: {exc}",
-                source="supervisor",
-            )
-            finalize_unvalidated_candidates(ValidationReasonCode.VALIDATOR_UNAVAILABLE)
-            self._cancel_execution(store, graph, agents, ledger, root_grant.grant_id)
-            self._set_agent(store, supervisor, AgentStatus.FAILED, error=str(exc))
-            final_status = RunStatus.FAILED
-            report = self._render_cancelled_report(
-                campaign,
-                store.run_id,
-                final_status,
-                plan,
-                results,
-                findings,
-                validation,
-                agents,
-                graph,
-                budget,
-            )
-            report_relative = store.write_text("report.md", report)
-            store.append_event(
-                "campaign.failed",
-                {"error": str(exc), "report": report_relative},
-            )
+    def _terminalize_caller_cancellation(
+        self,
+        campaign: CampaignManifest,
+        *,
+        store: RunStore,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        execution: _InitializedExecution,
+    ) -> _TerminalRun:
+        context = ensure_cancellation_context(
+            cancellation,
+            engine="multi-agent",
+            store=store,
+        )
+        self._execution_cancellation = context
+        snapshot = context.snapshot()
+        self._kill_switch.activate(snapshot.reason, source=snapshot.kind.value)
+        self._projector.finalize_unvalidated_candidates(
+            campaign,
+            store=store,
+            state=state,
+            reason=ValidationReasonCode.VALIDATOR_CANCELLED,
+        )
+        return self._terminalize_stopped_run(
+            campaign,
+            store=store,
+            status=RunStatus.CANCELLED,
+            cancellation=context,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+            propagate_cancel=True,
+        )
 
-        write_validation_artifacts(store, validation)
-        store.write_json("findings.json", [finding.model_dump(mode="json") for finding in findings])
+    def _terminalize_control_stop(
+        self,
+        campaign: CampaignManifest,
+        exc: Exception,
+        *,
+        store: RunStore,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        execution: _InitializedExecution,
+    ) -> _TerminalRun:
+        self._kill_switch.activate(
+            _audit_safe_exception_diagnostic(
+                exc,
+                stage="runtime-control",
+                role=AgentRole.SUPERVISOR.value,
+            ),
+            source="runtime-control",
+        )
+        self._projector.finalize_unvalidated_candidates(
+            campaign,
+            store=store,
+            state=state,
+            reason=ValidationReasonCode.VALIDATOR_CANCELLED,
+        )
+        return self._terminalize_stopped_run(
+            campaign,
+            store=store,
+            status=RunStatus.CANCELLED,
+            cancellation=cancellation,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+        )
+
+    def _terminalize_failure(
+        self,
+        campaign: CampaignManifest,
+        exc: Exception,
+        *,
+        store: RunStore,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        execution: _InitializedExecution,
+    ) -> _TerminalRun:
+        failure_detail = _audit_safe_exception_diagnostic(
+            exc,
+            stage="campaign-execution",
+            role=AgentRole.SUPERVISOR.value,
+        )
+        self._kill_switch.activate(
+            failure_detail,
+            source="supervisor",
+        )
+        self._projector.finalize_unvalidated_candidates(
+            campaign,
+            store=store,
+            state=state,
+            reason=ValidationReasonCode.VALIDATOR_UNAVAILABLE,
+        )
+        if execution.supervisor.status in {AgentStatus.SPAWNED, AgentStatus.RUNNING}:
+            self._set_agent(
+                store,
+                execution.supervisor,
+                AgentStatus.FAILED,
+                error=failure_detail,
+            )
+        return self._terminalize_stopped_run(
+            campaign,
+            store=store,
+            status=RunStatus.FAILED,
+            cancellation=cancellation,
+            budget=budget,
+            ledger=ledger,
+            state=state,
+            execution=execution,
+            failure_detail=failure_detail,
+        )
+
+    def _terminalize_stopped_run(
+        self,
+        campaign: CampaignManifest,
+        *,
+        store: RunStore,
+        status: RunStatus,
+        cancellation: ExecutionCancellationContext | None,
+        budget: BudgetController,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        execution: _InitializedExecution,
+        failure_detail: str | None = None,
+        propagate_cancel: bool = False,
+    ) -> _TerminalRun:
+        if status not in {RunStatus.CANCELLED, RunStatus.FAILED}:
+            raise ValueError("stopped Run must be cancelled or failed")
+        if (status is RunStatus.FAILED) != (failure_detail is not None):
+            raise ValueError("failed Run terminalization requires its causal exception")
+        self._cancel_execution(
+            store,
+            state.graph,
+            state.agents,
+            ledger,
+            execution.root_grant.grant_id,
+        )
+        report = self._render_cancelled_report(
+            campaign,
+            store.run_id,
+            status,
+            state.plan,
+            state.results,
+            state.findings,
+            state.validation,
+            state.agents,
+            state.graph,
+            budget,
+        )
+        report_relative = store.write_text("report.md", report)
+        return _TerminalRun(
+            status=status,
+            report_relative=report_relative,
+            cancellation=cancellation,
+            event_kind="failed" if failure_detail is not None else "cancelled",
+            failure_detail=failure_detail,
+            propagate_cancel=propagate_cancel,
+        )
+
+    def _finalize_run(
+        self,
+        *,
+        store: RunStore,
+        budget: BudgetController,
+        rate_limits: RequestRateLimitLedger,
+        ledger: CapabilityLedger,
+        state: _RunState,
+        terminal: _TerminalRun,
+    ) -> MultiAgentRunOutcome:
+        write_validation_artifacts(
+            store,
+            state.validation,
+            validator_output=state.validator_output,
+        )
+        store.write_json(
+            "findings.json",
+            [finding.model_dump(mode="json") for finding in state.findings],
+        )
         store.write_json(
             "run.json",
             {
                 "runId": store.run_id,
-                "status": final_status.value,
+                "status": terminal.status.value,
                 "cancellationReason": self._kill_switch.reason,
+                **self._execution_context.run_summary(),
             },
         )
-        self._write_state(store, agents, graph, ledger, budget, rate_limits)
-        if cancellation is not None and cancellation.active:
-            record_engine_cleanup(store, cancellation)
+        self._write_state(
+            store,
+            state.agents,
+            state.graph,
+            ledger,
+            budget,
+            rate_limits,
+        )
+        if terminal.cancellation is not None and terminal.cancellation.active:
+            record_engine_cleanup(store, terminal.cancellation)
+        self._append_terminal_event(store, terminal)
         store.seal()
-        if cancellation is not None and cancellation.active:
-            seal_executor_quiescence(cancellation)
+        if terminal.cancellation is not None and terminal.cancellation.active:
+            seal_executor_quiescence(terminal.cancellation)
         outcome = MultiAgentRunOutcome(
             run_id=store.run_id,
             run_path=store.path,
-            status=final_status,
-            plan=plan,
-            agents=list(agents.values()),
-            task_graph=graph,
-            tool_results=results,
-            findings=findings,
-            validation=validation,
-            report_path=store.path / report_relative,
+            status=terminal.status,
+            plan=state.plan,
+            agents=list(state.agents.values()),
+            task_graph=state.graph,
+            tool_results=state.results,
+            findings=state.findings,
+            validation=state.validation,
+            report_path=store.path / terminal.report_relative,
             cancellation_reason=self._kill_switch.reason,
         )
         self._execution_cancellation = None
-        if propagate_cancel:
+        if terminal.propagate_cancel:
             raise asyncio.CancelledError(outcome.cancellation_reason)
         return outcome
 
-    async def _run_specialist_tasks(
-        self,
-        campaign: CampaignManifest,
-        store: RunStore,
-        graph: TaskGraph,
-        budget: BudgetController,
-        ledger: CapabilityLedger,
-        gateway: ToolGateway,
-        tasks: list[TaskNode],
-        agents: dict[str, AgentNode],
-        grants: dict[str, CapabilityGrant],
-        parallel_contracts: dict[str, bool],
-        results: list[ToolResult],
-    ) -> None:
-        semaphore = asyncio.Semaphore(self._max_parallel_specialists)
-        waves = self._specialist_execution_waves(tasks, parallel_contracts)
-        for wave_index, wave in enumerate(waves, start=1):
-            parallel_safe = all(parallel_contracts[task.task_id] for task in wave)
+    def _append_terminal_event(self, store: RunStore, terminal: _TerminalRun) -> None:
+        if terminal.event_kind == "completed":
             store.append_event(
-                "specialist.wave.started",
+                "campaign.completed",
                 {
-                    "wave": wave_index,
-                    "taskIds": [task.task_id for task in wave],
-                    "parallelSafe": parallel_safe,
-                    "maxConcurrency": (
-                        min(len(wave), self._max_parallel_specialists) if parallel_safe else 1
-                    ),
+                    "status": terminal.status.value,
+                    "report": terminal.report_relative,
                 },
             )
-            task_results: dict[str, list[ToolResult]] = {task.task_id: [] for task in wave}
-
-            async def execute(
-                task: TaskNode,
-                result_buffer: dict[str, list[ToolResult]],
-            ) -> None:
-                async with semaphore:
-                    if self._check_control(budget, raise_on_cancel=False):
-                        return
-                    await self._run_specialist_task(
-                        campaign,
-                        store,
-                        graph,
-                        budget,
-                        ledger,
-                        gateway,
-                        task,
-                        agents[task.task_id],
-                        grants[task.task_id],
-                        result_buffer[task.task_id],
-                    )
-
-            outcomes = await asyncio.gather(
-                *(execute(task, task_results) for task in wave),
-                return_exceptions=True,
-            )
-            for task in wave:
-                results.extend(task_results[task.task_id])
-            for outcome in outcomes:
-                if isinstance(outcome, BaseException):
-                    raise outcome
+            return
+        if terminal.event_kind == "cancelled":
             store.append_event(
-                "specialist.wave.completed",
+                "campaign.cancelled",
                 {
-                    "wave": wave_index,
-                    "taskStatuses": {task.task_id: task.status.value for task in wave},
+                    "reason": self._kill_switch.reason,
+                    "report": terminal.report_relative,
                 },
             )
-
-    @staticmethod
-    def _specialist_execution_waves(
-        tasks: list[TaskNode],
-        parallel_contracts: dict[str, bool],
-    ) -> list[list[TaskNode]]:
-        waves: list[list[TaskNode]] = []
-        parallel_wave: list[TaskNode] = []
-        for task in tasks:
-            if parallel_contracts[task.task_id]:
-                parallel_wave.append(task)
-                continue
-            if parallel_wave:
-                waves.append(parallel_wave)
-                parallel_wave = []
-            waves.append([task])
-        if parallel_wave:
-            waves.append(parallel_wave)
-        return waves
-
-    async def _run_specialist_task(
-        self,
-        campaign: CampaignManifest,
-        store: RunStore,
-        graph: TaskGraph,
-        budget: BudgetController,
-        ledger: CapabilityLedger,
-        gateway: ToolGateway,
-        task: TaskNode,
-        agent: AgentNode,
-        grant: CapabilityGrant,
-        results: list[ToolResult],
-    ) -> None:
-        assert task.request is not None
-        self._set_agent(store, agent, AgentStatus.RUNNING)
-        while task.attempts < task.max_attempts:
-            self._task_transition(store, graph, task.task_id, TaskStatus.RUNNING)
-            task.attempts += 1
-            budget.check_tool_call()
-            if not ledger.can_consume(grant.grant_id):
-                raise CapabilityError("specialist capability has no remaining call")
-            request = task.request.model_copy(
-                update={
-                    "request_id": (
-                        task.request.request_id
-                        if task.attempts == 1
-                        else f"{task.request.request_id}_attempt{task.attempts}"
-                    )
-                }
-            )
-            used_calls = grant.max_calls - ledger.record(grant.grant_id).remaining_calls
-            outcome = await self._within_budget(
-                gateway.execute(
-                    campaign,
-                    grant,
-                    request,
-                    used_calls=used_calls,
-                ),
-                budget,
-            )
-            results.append(outcome.result)
-            if outcome.executed:
-                ledger.consume(grant.grant_id)
-                budget.record_tool_call()
-            self._evaluate_stop_conditions(campaign, outcome)
-            if outcome.result.success:
-                self._task_transition(store, graph, task.task_id, TaskStatus.SUCCEEDED)
-                self._set_agent(store, agent, AgentStatus.COMPLETED)
-                return
-            if not outcome.executed or task.attempts >= task.max_attempts:
-                self._task_transition(
-                    store,
-                    graph,
-                    task.task_id,
-                    TaskStatus.FAILED,
-                    error=outcome.result.error,
-                )
-                self._set_agent(
-                    store,
-                    agent,
-                    AgentStatus.FAILED,
-                    error=outcome.result.error,
-                )
-                return
-            self._task_transition(store, graph, task.task_id, TaskStatus.WAITING)
-            store.append_event(
-                "task.retry_scheduled",
-                {"taskId": task.task_id, "attempt": task.attempts + 1},
-            )
-
-    @staticmethod
-    def _allocate_specialist_attempts(
-        risk_tiers: list[ToolRiskTier],
-        *,
-        available_calls: int,
-    ) -> list[int]:
-        """Reserve one call per Specialist before assigning bounded retry slots."""
-
-        if available_calls < len(risk_tiers):
-            raise BudgetExceeded("plan requires more tool calls than the campaign budget allows")
-        allocations = [1 for _ in risk_tiers]
-        retry_slots = available_calls - len(allocations)
-        for index, risk_tier in enumerate(risk_tiers):
-            if retry_slots == 0:
-                break
-            if risk_tier.value <= ToolRiskTier.T1.value:
-                allocations[index] += 1
-                retry_slots -= 1
-        return allocations
-
-    def _model_access(self, runtime: object) -> _ModelAccess | None:
-        if not isinstance(runtime, ModelBoundRuntime):
-            return None
-        registration = ProviderRegistration.model_validate(runtime.model_provider_registration)
-        tool_id = f"provider.{registration.provider_id}.chat"
-        endpoint = str(registration.endpoint)
-        if runtime.model_provider_tool_id != tool_id:
-            raise ValueError("model runtime tool ID differs from provider registration")
-        if runtime.model_provider_endpoint != endpoint:
-            raise ValueError("model runtime endpoint differs from provider registration")
-        if not 1 <= runtime.model_max_attempts <= 3:
-            raise ValueError("model runtime attempts must be between one and three")
-        spec = self._tools.spec(tool_id)
-        if "model-provider" not in spec.categories:
-            raise ValueError("model runtime tool is not registered as a provider")
-        return _ModelAccess(
-            registration=registration,
-            tool_id=tool_id,
-            endpoint=endpoint,
-            max_attempts=runtime.model_max_attempts,
-            risk_tier=spec.risk_tier,
+            return
+        if terminal.failure_detail is None:
+            raise ValueError("failed terminal event requires its causal exception")
+        store.append_event(
+            "campaign.failed",
+            {
+                "error": terminal.failure_detail,
+                "report": terminal.report_relative,
+            },
         )
-
-    @staticmethod
-    def _bind_model_runtime(
-        runtime: object,
-        access: _ModelAccess,
-        campaign: CampaignManifest,
-        agent: AgentNode,
-        ledger: CapabilityLedger,
-        budget: BudgetController,
-        gateway: ToolGateway,
-        store: RunStore,
-    ) -> None:
-        if not isinstance(runtime, ModelBoundRuntime):
-            raise TypeError("runtime does not support a policy-bound model port")
-        grant = ledger.record(agent.capability_grant_id).grant
-        runtime.bind_model_port(
-            PolicyBoundProviderPort(
-                registration=access.registration,
-                campaign=campaign,
-                grant=grant,
-                ledger=ledger,
-                budget=budget,
-                gateway=gateway,
-                store=store,
-            )
-        )
-
-    def _validate_plan_boundary(
-        self,
-        campaign: CampaignManifest,
-        plan: AgentPlan,
-    ) -> None:
-        declared_targets = {target.endpoint for target in campaign.spec.targets}
-        for step in plan.steps:
-            if step.request.target not in declared_targets:
-                raise CapabilityError("planner selected an undeclared campaign target")
-            try:
-                spec = self._tools.spec(step.request.tool_id)
-            except KeyError as exc:
-                raise CapabilityError(
-                    f"planner requested unregistered tool: {step.request.tool_id}"
-                ) from exc
-            if "model-provider" in spec.categories:
-                raise CapabilityError("planner cannot assign the control-plane provider tool")
 
     def _spawn_child(
         self,
@@ -995,12 +851,26 @@ class MultiAgentCampaignRunner:
         *,
         error: str | None = None,
     ) -> None:
-        agent.status = status
-        agent.error = error
+        allowed = {
+            AgentStatus.SPAWNED: {
+                AgentStatus.RUNNING,
+                AgentStatus.FAILED,
+                AgentStatus.CANCELLED,
+            },
+            AgentStatus.RUNNING: {
+                AgentStatus.COMPLETED,
+                AgentStatus.FAILED,
+                AgentStatus.CANCELLED,
+            },
+        }
+        if status not in allowed.get(agent.status, set()):
+            raise ValueError(f"invalid agent transition: {agent.status} -> {status}")
         store.append_event(
             f"agent.{status.value}",
             {"agentId": agent.agent_id, "role": agent.role.value, "error": error},
         )
+        agent.status = status
+        agent.error = error
 
     @staticmethod
     def _task_transition(
@@ -1101,7 +971,14 @@ class MultiAgentCampaignRunner:
         try:
             budget.check_duration()
         except BudgetExceeded as exc:
-            self._kill_switch.activate(str(exc), source="budget")
+            self._kill_switch.activate(
+                _audit_safe_exception_diagnostic(
+                    exc,
+                    stage="budget-control",
+                    role=AgentRole.SUPERVISOR.value,
+                ),
+                source="budget",
+            )
             if raise_on_cancel:
                 raise
             return True
@@ -1151,17 +1028,52 @@ class MultiAgentCampaignRunner:
         for agent in agents.values():
             if agent.status in {AgentStatus.SPAWNED, AgentStatus.RUNNING}:
                 self._set_agent(store, agent, AgentStatus.CANCELLED, error=reason)
-        revoked = ledger.revoke(root_grant_id, reason, cascade=True)
-        store.append_event(
-            "capability.revoked",
-            {"rootGrantId": root_grant_id, "revokedGrantIds": revoked, "reason": reason},
+        self._revoke_execution_authority(
+            store,
+            ledger,
+            root_grant_id,
+            reason=reason,
         )
-        secret_leases = self._secrets.revoke_all(reason)
+
+    def _revoke_execution_authority(
+        self,
+        store: RunStore,
+        ledger: CapabilityLedger,
+        root_grant_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        self._revoke_capability_tree(
+            store,
+            ledger,
+            root_grant_id,
+            reason=reason,
+        )
+        secret_leases = self._secrets.revoke_scope(store.run_id, reason)
         if secret_leases:
             store.append_event(
                 "secret.leases.revoked",
                 {
                     "leaseIds": [lease.lease_id for lease in secret_leases],
+                    "reason": reason,
+                },
+            )
+
+    @staticmethod
+    def _revoke_capability_tree(
+        store: RunStore,
+        ledger: CapabilityLedger,
+        root_grant_id: str,
+        *,
+        reason: str,
+    ) -> None:
+        if not ledger.record(root_grant_id).revoked:
+            revoked = ledger.revoke(root_grant_id, reason, cascade=True)
+            store.append_event(
+                "capability.revoked",
+                {
+                    "rootGrantId": root_grant_id,
+                    "revokedGrantIds": revoked,
                     "reason": reason,
                 },
             )
@@ -1183,7 +1095,7 @@ class MultiAgentCampaignRunner:
         store.write_json("budget.json", budget.snapshot())
         store.write_json("rate-limits.json", rate_limits.snapshot())
         store.write_json("control.json", self._kill_switch.snapshot().model_dump(mode="json"))
-        store.write_json("secrets.json", self._secrets.snapshot())
+        store.write_json("secrets.json", self._secrets.snapshot_scope(store.run_id))
 
     @staticmethod
     def _render_report(
@@ -1198,6 +1110,7 @@ class MultiAgentCampaignRunner:
         status: RunStatus,
         narrative: AgentReportNarrative | None = None,
         validation: FindingValidationSet | None = None,
+        execution_context: WorkerExecutionContext | None = None,
     ) -> str:
         base = render_markdown_report(
             campaign,
@@ -1206,13 +1119,14 @@ class MultiAgentCampaignRunner:
             results,
             findings,
             validation,
+            execution_context=execution_context,
         ).rstrip()
         lines = [base, "", "## Multi-Agent Execution", ""]
         lines.extend(
             [
-                f"- Run status: `{status.value}`",
-                f"- Agents spawned: `{len(agents)}`",
-                f"- Tool calls dispatched: `{budget.tool_calls}`",
+                f"- Run status: {markdown_code_span(status.value)}",
+                f"- Agents spawned: {markdown_code_span(str(len(agents)))}",
+                f"- Tool calls dispatched: {markdown_code_span(str(budget.tool_calls))}",
                 "",
                 "| Agent | Role | Parent | Depth | Status |",
                 "| --- | --- | --- | ---: | --- |",
@@ -1220,15 +1134,19 @@ class MultiAgentCampaignRunner:
         )
         for agent in agents.values():
             lines.append(
-                f"| `{agent.agent_id}` | `{agent.role.value}` | "
-                f"`{agent.parent_agent_id or '-'}` | {agent.depth} | `{agent.status.value}` |"
+                f"| {escape_markdown_text(agent.agent_id)} | "
+                f"{escape_markdown_text(agent.role.value)} | "
+                f"{escape_markdown_text(agent.parent_agent_id or '-')} | "
+                f"{agent.depth} | {escape_markdown_text(agent.status.value)} |"
             )
         lines.extend(["", "### Task graph", ""])
         for task in graph.tasks.values():
             dependencies = ", ".join(sorted(task.depends_on)) or "none"
             lines.append(
-                f"- `{task.task_id}` — **{task.status.value}** — {task.title} "
-                f"(depends on: {dependencies})"
+                f"- {markdown_code_span(task.task_id)} — "
+                f"**{escape_markdown_text(task.status.value)}** — "
+                f"{escape_markdown_text(task.title)} "
+                f"(depends on: {escape_markdown_text(dependencies)})"
             )
         if narrative is not None:
             lines.extend(
@@ -1236,17 +1154,17 @@ class MultiAgentCampaignRunner:
                     "",
                     "## Model-generated Narrative",
                     "",
-                    narrative.summary,
+                    escape_markdown_text(narrative.summary),
                     "",
-                    f"Risk overview: {narrative.risk_overview}",
+                    f"Risk overview: {escape_markdown_text(narrative.risk_overview)}",
                     "",
                     "### Recommendations",
                     "",
-                    *[f"- {item}" for item in narrative.recommendations],
+                    *[f"- {escape_markdown_text(item)}" for item in narrative.recommendations],
                     "",
                     "### Narrative limitations",
                     "",
-                    *[f"- {item}" for item in narrative.limitations],
+                    *[f"- {escape_markdown_text(item)}" for item in narrative.limitations],
                 ]
             )
         return "\n".join(lines) + "\n"
@@ -1264,6 +1182,11 @@ class MultiAgentCampaignRunner:
         graph: TaskGraph,
         budget: BudgetController,
     ) -> str:
+        execution_context = getattr(self, "_execution_context", None)
+        if execution_context is not None and not isinstance(
+            execution_context, WorkerExecutionContext
+        ):
+            raise TypeError("multi-agent execution context has an invalid type")
         if plan is not None:
             return (
                 self._render_report(
@@ -1277,16 +1200,35 @@ class MultiAgentCampaignRunner:
                     budget,
                     status,
                     validation=validation,
+                    execution_context=execution_context,
                 )
-                + f"\nTermination reason: `{self._kill_switch.reason}`\n"
+                + "\nTermination reason: "
+                + markdown_code_span(self._kill_switch.reason or "not provided")
+                + "\n"
             )
+        simulated_warning = (
+            f"> **{SIMULATED_EVIDENCE_LABEL}.** "
+            f"{escape_markdown_text(execution_context.warning or '')}\n\n"
+            if execution_context is not None and execution_context.simulated
+            else ""
+        )
+        execution_lines = (
+            f"- Worker backend: {markdown_code_span(execution_context.backend)}\n"
+            "- Evidence scope: "
+            f"{markdown_code_span(execution_context.evidence_scope.value)}\n"
+            if execution_context is not None
+            else ""
+        )
         return (
-            f"# PAJIN Campaign Report: {campaign.metadata.name}\n\n"
-            f"- Run ID: `{run_id}`\n"
-            f"- Run status: `{status.value}`\n"
-            f"- Termination reason: `{self._kill_switch.reason}`\n"
-            f"- Agents spawned: `{len(agents)}`\n"
-            f"- Tasks created: `{len(graph.tasks)}`\n"
+            f"# PAJIN Campaign Report: {escape_markdown_text(campaign.metadata.name)}\n\n"
+            f"{simulated_warning}"
+            f"- Run ID: {markdown_code_span(run_id)}\n"
+            f"- Run status: {markdown_code_span(status.value)}\n"
+            f"{execution_lines}"
+            "- Termination reason: "
+            f"{markdown_code_span(self._kill_switch.reason or 'not provided')}\n"
+            f"- Agents spawned: {markdown_code_span(str(len(agents)))}\n"
+            f"- Tasks created: {markdown_code_span(str(len(graph.tasks)))}\n"
         )
 
     @staticmethod

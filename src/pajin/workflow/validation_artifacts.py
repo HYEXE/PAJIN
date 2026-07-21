@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -15,21 +14,43 @@ from pajin.domain.validation import (
     FindingValidationSet,
     ValidationDecision,
     ValidationMethod,
+    ValidatorOutputArtifact,
     VersionedConfirmedFindingSet,
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
 )
-from pajin.runtime.store import RunIntegritySeal, RunStore, verify_run_integrity
+from pajin.runtime.store import (
+    RunIntegritySeal,
+    RunStore,
+    VerifiedRunSnapshot,
+    load_verified_run_artifacts,
+    load_verified_run_snapshot,
+)
+from pajin.runtime.verified_snapshot import require_same_authority, strict_json
 
 VERSIONED_VALIDATION_ROOT = "validation/v1alpha1"
 VERSIONED_VALIDATION_INDEX_PATH = f"{VERSIONED_VALIDATION_ROOT}/index.json"
 VERSIONED_VALIDATION_DECISIONS_PATH = f"{VERSIONED_VALIDATION_ROOT}/decisions.json"
 VERSIONED_VALIDATION_FINDINGS_PATH = f"{VERSIONED_VALIDATION_ROOT}/findings.json"
 VERSIONED_VALIDATION_REPORT_PATH = f"{VERSIONED_VALIDATION_ROOT}/report.md"
+VALIDATOR_OUTPUT_PATH = "validator-output.json"
+_MAX_VALIDATION_ARTIFACT_BYTES = 64 * 1024 * 1024
+_SOURCE_VALIDATION_PATHS = (
+    "candidate-findings.json",
+    "validation-decisions.json",
+    "findings.json",
+)
+_VERSIONED_VALIDATION_PATHS = (
+    VERSIONED_VALIDATION_INDEX_PATH,
+    VERSIONED_VALIDATION_DECISIONS_PATH,
+    VERSIONED_VALIDATION_FINDINGS_PATH,
+    VERSIONED_VALIDATION_REPORT_PATH,
+)
 
 
 class ValidationSnapshotSemantics(StrEnum):
     LEGACY_UNVERSIONED = "legacy-unversioned"
+    VERIFIED_REPLAY_EVIDENCE = "verified-replay-evidence"
     VERIFIED_INDEPENDENT_REPLAY = "verified-independent-replay"
 
 
@@ -49,6 +70,8 @@ class LoadedValidationSnapshot:
 def write_validation_artifacts(
     store: RunStore,
     validation: FindingValidationSet,
+    *,
+    validator_output: ValidatorOutputArtifact | None = None,
 ) -> None:
     """Write the immutable pre-replay source snapshot used by legacy consumers."""
 
@@ -70,22 +93,59 @@ def write_validation_artifacts(
             ],
         },
     )
+    if validator_output is not None:
+        if validator_output.source_run_id != store.run_id:
+            raise ValueError("Validator output belongs to another source Run")
+        store.write_json(
+            VALIDATOR_OUTPUT_PATH,
+            validator_output.model_dump(mode="json", by_alias=True),
+        )
 
 
-def load_source_validation_artifacts(run_path: Path) -> FindingValidationSet:
+def load_source_validation_artifacts(
+    run_path: Path,
+    *,
+    verified_snapshot: VerifiedRunSnapshot | None = None,
+    expected_run_id: str | None = None,
+    expected_root_digest: str | None = None,
+) -> FindingValidationSet:
     """Reload the sealed, pre-replay source snapshot without reinterpreting it."""
 
     root = run_path.resolve()
-    verify_run_integrity(root)
+    authority = _validation_authority(
+        root,
+        verified_snapshot=verified_snapshot,
+        expected_run_id=expected_run_id,
+        expected_root_digest=expected_root_digest,
+    )
+    snapshot = load_verified_run_artifacts(
+        root,
+        requests={path: _MAX_VALIDATION_ARTIFACT_BYTES for path in _SOURCE_VALIDATION_PATHS},
+        expected_run_id=authority.verification.run_id if authority is not None else None,
+    )
+    if authority is not None:
+        require_same_authority(
+            authority,
+            snapshot,
+            message="sealed validation Run changed while artifacts were loaded",
+        )
+    return load_source_validation_artifacts_from_snapshot(snapshot)
+
+
+def load_source_validation_artifacts_from_snapshot(
+    snapshot: VerifiedRunSnapshot,
+) -> FindingValidationSet:
+    """Interpret source validation artifacts already pinned to one verified snapshot."""
+
     candidates = [
         CandidateFinding.model_validate(item)
-        for item in _read_json_list(root / "candidate-findings.json")
+        for item in _read_json_list(snapshot, "candidate-findings.json")
     ]
     decisions = [
         ValidationDecision.model_validate(item)
-        for item in _read_json_list(root / "validation-decisions.json")
+        for item in _read_json_list(snapshot, "validation-decisions.json")
     ]
-    findings = [Finding.model_validate(item) for item in _read_json_list(root / "findings.json")]
+    findings = [Finding.model_validate(item) for item in _read_json_list(snapshot, "findings.json")]
     return FindingValidationSet(
         candidates=candidates,
         decisions=decisions,
@@ -93,51 +153,179 @@ def load_source_validation_artifacts(run_path: Path) -> FindingValidationSet:
     )
 
 
-def load_validation_snapshot(run_path: Path) -> LoadedValidationSnapshot:
+def load_validation_snapshot(
+    run_path: Path,
+    *,
+    verified_snapshot: VerifiedRunSnapshot | None = None,
+    expected_run_id: str | None = None,
+    expected_root_digest: str | None = None,
+) -> LoadedValidationSnapshot:
     """Load the newest supported projection, failing closed if versioned data is invalid."""
 
     root = run_path.resolve()
-    verification = verify_run_integrity(root)
-    index_path = root / VERSIONED_VALIDATION_INDEX_PATH
-    if not index_path.is_file():
-        versioned_root = root / VERSIONED_VALIDATION_ROOT
-        if versioned_root.exists():
+    initial = _validation_authority(
+        root,
+        verified_snapshot=verified_snapshot,
+        expected_run_id=expected_run_id,
+        expected_root_digest=expected_root_digest,
+    ) or load_verified_run_snapshot(root)
+    sealed_paths = {artifact.path for seal in initial.seals for artifact in seal.artifacts}
+    if VERSIONED_VALIDATION_INDEX_PATH not in sealed_paths:
+        if any(path.startswith(f"{VERSIONED_VALIDATION_ROOT}/") for path in sealed_paths):
             raise ValueError("versioned validation artifacts exist without their index")
+        source_snapshot = load_verified_run_artifacts(
+            root,
+            requests={path: _MAX_VALIDATION_ARTIFACT_BYTES for path in _SOURCE_VALIDATION_PATHS},
+            expected_run_id=initial.verification.run_id,
+        )
+        require_same_authority(
+            initial,
+            source_snapshot,
+            message="sealed validation Run changed while artifacts were loaded",
+        )
         return LoadedValidationSnapshot(
-            validation=load_source_validation_artifacts(root),
+            validation=load_source_validation_artifacts_from_snapshot(source_snapshot),
             semantics=ValidationSnapshotSemantics.LEGACY_UNVERSIONED,
         )
 
-    try:
-        index = VersionedValidationIndex.model_validate_json(index_path.read_bytes())
-        decision_set = VersionedValidationDecisionSet.model_validate_json(
-            (root / VERSIONED_VALIDATION_DECISIONS_PATH).read_bytes()
+    preliminary_requests = {
+        path: _MAX_VALIDATION_ARTIFACT_BYTES
+        for path in (*_SOURCE_VALIDATION_PATHS, *_VERSIONED_VALIDATION_PATHS)
+    }
+    preliminary = load_verified_run_artifacts(
+        root,
+        requests=preliminary_requests,
+        expected_run_id=initial.verification.run_id,
+    )
+    require_same_authority(
+        initial,
+        preliminary,
+        message="sealed validation Run changed while artifacts were loaded",
+    )
+    index = VersionedValidationIndex.model_validate(
+        strict_json(
+            preliminary,
+            VERSIONED_VALIDATION_INDEX_PATH,
+            label="versioned validation index",
+            max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+            missing_or_invalid_message="versioned validation index could not be loaded",
         )
-        finding_set = VersionedConfirmedFindingSet.model_validate_json(
-            (root / VERSIONED_VALIDATION_FINDINGS_PATH).read_bytes()
+    )
+    final_requests = dict(preliminary_requests)
+    final_requests[index.candidate_findings_path] = _MAX_VALIDATION_ARTIFACT_BYTES
+    snapshot = load_verified_run_artifacts(
+        root,
+        requests=final_requests,
+        expected_run_id=initial.verification.run_id,
+    )
+    require_same_authority(
+        preliminary,
+        snapshot,
+        message="sealed validation Run changed while artifacts were loaded",
+    )
+    index, validation, source_run_ids = _load_versioned_projection(snapshot)
+    _validate_projection_run_identity(source_run_ids, snapshot.verification.run_id)
+    source_validation = load_source_validation_artifacts_from_snapshot(snapshot)
+    _validate_projection_content(index, validation, source_validation)
+    _validate_projection_seal_binding(index, list(snapshot.seals))
+    _validate_projection_lineage(index, validation)
+
+    return LoadedValidationSnapshot(
+        validation=validation,
+        semantics=ValidationSnapshotSemantics(index.confirmation_semantics),
+        index=index,
+    )
+
+
+def _validation_authority(
+    root: Path,
+    *,
+    verified_snapshot: VerifiedRunSnapshot | None,
+    expected_run_id: str | None,
+    expected_root_digest: str | None,
+) -> VerifiedRunSnapshot | None:
+    if verified_snapshot is not None:
+        if expected_run_id is not None or expected_root_digest is not None:
+            raise ValueError(
+                "verified validation snapshot cannot be combined with expected Run identity"
+            )
+        if verified_snapshot.run_path.resolve() != root:
+            raise ValueError("verified validation snapshot belongs to another Run path")
+        return verified_snapshot
+    if (expected_run_id is None) != (expected_root_digest is None):
+        raise ValueError("expected validation Run ID and root digest must be provided together")
+    if expected_run_id is None:
+        return None
+    snapshot = load_verified_run_snapshot(root, expected_run_id=expected_run_id)
+    if snapshot.verification.root_digest != expected_root_digest:
+        raise ValueError("sealed validation Run root digest differs from the expected Run")
+    return snapshot
+
+
+def _load_versioned_projection(
+    snapshot: VerifiedRunSnapshot,
+) -> tuple[VersionedValidationIndex, FindingValidationSet, tuple[str, str, str]]:
+    try:
+        index = VersionedValidationIndex.model_validate(
+            strict_json(
+                snapshot,
+                VERSIONED_VALIDATION_INDEX_PATH,
+                label="versioned validation index",
+                max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+                missing_or_invalid_message="versioned validation index could not be loaded",
+            )
+        )
+        decision_set = VersionedValidationDecisionSet.model_validate(
+            strict_json(
+                snapshot,
+                VERSIONED_VALIDATION_DECISIONS_PATH,
+                label="versioned validation decisions",
+                max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+                missing_or_invalid_message="versioned validation decisions could not be loaded",
+            )
+        )
+        finding_set = VersionedConfirmedFindingSet.model_validate(
+            strict_json(
+                snapshot,
+                VERSIONED_VALIDATION_FINDINGS_PATH,
+                label="versioned confirmed findings",
+                max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+                missing_or_invalid_message="versioned confirmed findings could not be loaded",
+            )
         )
         candidates = [
             CandidateFinding.model_validate(item)
-            for item in _read_json_list(root / index.candidate_findings_path)
+            for item in _read_json_list(snapshot, index.candidate_findings_path)
         ]
-    except (OSError, UnicodeError, ValueError) as exc:
+    except ValueError as exc:
         raise ValueError("versioned validation projection could not be loaded") from exc
+    if index.confirmation_semantics != finding_set.confirmation_semantics:
+        raise ValueError("versioned validation projection semantics differ across artifacts")
 
-    if (
-        index.source_run_id != verification.run_id
-        or decision_set.source_run_id != verification.run_id
-        or finding_set.source_run_id != verification.run_id
-    ):
-        raise ValueError("versioned validation projection belongs to another source Run")
-    if not (root / VERSIONED_VALIDATION_REPORT_PATH).is_file():
-        raise ValueError("versioned validation projection report is missing")
-
-    validation = FindingValidationSet(
-        candidates=candidates,
-        decisions=decision_set.decisions,
-        confirmed_findings=finding_set.findings,
+    return (
+        index,
+        FindingValidationSet(
+            candidates=candidates,
+            decisions=decision_set.decisions,
+            confirmed_findings=finding_set.findings,
+        ),
+        (index.source_run_id, decision_set.source_run_id, finding_set.source_run_id),
     )
-    source_validation = load_source_validation_artifacts(root)
+
+
+def _validate_projection_run_identity(
+    source_run_ids: tuple[str, str, str],
+    verified_run_id: str,
+) -> None:
+    if any(source_run_id != verified_run_id for source_run_id in source_run_ids):
+        raise ValueError("versioned validation projection belongs to another source Run")
+
+
+def _validate_projection_content(
+    index: VersionedValidationIndex,
+    validation: FindingValidationSet,
+    source_validation: FindingValidationSet,
+) -> None:
     if validation.candidates != source_validation.candidates:
         raise ValueError("versioned validation Candidates differ from the sealed source snapshot")
     _validate_source_supersession(validation, source_validation)
@@ -154,6 +342,10 @@ def load_validation_snapshot(run_path: Path) -> LoadedValidationSnapshot:
     ]
     if index.confirmed_candidate_ids != confirmed_candidate_ids:
         raise ValueError("versioned validation index confirmed Candidates differ")
+    if index.confirmation_semantics == "verified-replay-evidence" and (
+        confirmed_candidate_ids or validation.confirmed_findings
+    ):
+        raise ValueError("replay-evidence projection cannot contain product Confirmed findings")
     if any(
         decision.confirmation_basis is not ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
         for decision in validation.decisions
@@ -161,7 +353,11 @@ def load_validation_snapshot(run_path: Path) -> LoadedValidationSnapshot:
     ):
         raise ValueError("versioned confirmed Decisions require verified replay semantics")
 
-    seals = _read_seals(root)
+
+def _validate_projection_seal_binding(
+    index: VersionedValidationIndex,
+    seals: list[RunIntegritySeal],
+) -> None:
     source_seal_index = next(
         (
             position
@@ -210,6 +406,11 @@ def load_validation_snapshot(run_path: Path) -> LoadedValidationSnapshot:
     ):
         raise ValueError("versioned projection does not follow its Candidate source seal")
 
+
+def _validate_projection_lineage(
+    index: VersionedValidationIndex,
+    validation: FindingValidationSet,
+) -> None:
     replay_run_ids: list[str] = []
     replay_outcome_ids: list[str] = []
     for decision in validation.decisions:
@@ -224,12 +425,6 @@ def load_validation_snapshot(run_path: Path) -> LoadedValidationSnapshot:
         raise ValueError("versioned validation projection reuses a replay Run")
     if len(replay_outcome_ids) != len(set(replay_outcome_ids)):
         raise ValueError("versioned validation projection reuses a ReplayOutcome")
-
-    return LoadedValidationSnapshot(
-        validation=validation,
-        semantics=ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY,
-        index=index,
-    )
 
 
 def _validate_source_supersession(
@@ -277,22 +472,14 @@ def _candidates_by_disposition(
     }
 
 
-def _read_json_list(path: Path) -> list[object]:
-    try:
-        payload: object = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-        raise ValueError(f"validation artifact could not be loaded: {path.name}") from exc
-    if not isinstance(payload, list):
-        raise ValueError(f"validation artifact must contain a list: {path.name}")
-    return payload
-
-
-def _read_seals(root: Path) -> list[RunIntegritySeal]:
-    try:
-        return [
-            RunIntegritySeal.model_validate_json(line)
-            for line in (root / "run-integrity.jsonl").read_text(encoding="utf-8").splitlines()
-            if line.strip()
-        ]
-    except (OSError, UnicodeError, ValueError) as exc:
-        raise ValueError("Run seal chain could not be loaded") from exc
+def _read_json_list(snapshot: VerifiedRunSnapshot, relative_path: str) -> list[object]:
+    name = Path(relative_path).name
+    return strict_json(
+        snapshot,
+        relative_path,
+        label=f"validation artifact {name}",
+        max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+        expected_type=list,
+        missing_or_invalid_message=f"validation artifact {name} could not be loaded",
+        type_message=f"validation artifact must contain a list: {name}",
+    )

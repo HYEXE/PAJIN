@@ -9,6 +9,7 @@ from threading import Barrier, Event
 
 import pytest
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
 
 from pajin.control_plane.artifacts import (
     ManagedArtifactRepository,
@@ -34,6 +35,8 @@ from pajin.control_plane.models import (
     JobKind,
     JobState,
     RunState,
+    job_submission_authority_digest,
+    non_replayable_submission_authority_digest,
 )
 from pajin.control_plane.security import CheckpointSigner
 from pajin.control_plane.service import ControlPlaneService, StateConflict
@@ -107,6 +110,12 @@ class _BlockingManagedArtifactRepository(ManagedArtifactRepository):
     def resolve(self, ref: ArtifactRef) -> ManagedArtifactSnapshot:
         return self._delegate.resolve(ref)
 
+    def consume_staged_run(self, *, staging_id: str, expected_ref: ArtifactRef) -> bool:
+        return self._delegate.consume_staged_run(
+            staging_id=staging_id,
+            expected_ref=expected_ref,
+        )
+
 
 def _identity(label: str) -> str:
     return sha256(label.encode()).hexdigest()
@@ -172,6 +181,10 @@ def _seed_producer(
             state=run_state.value,
             input={"source": label},
             submission_key=f"submission-{identity}",
+            submission_authority_digest=non_replayable_submission_authority_digest(
+                run_id=run_id,
+                authority_kind="artifact-admission-fixture",
+            ),
             current_checkpoint_id=None,
             created_at=now,
             updated_at=now,
@@ -185,6 +198,10 @@ def _seed_producer(
                 state=RunState.COMPLETED.value,
                 input={"source": job_owner_label},
                 submission_key=f"submission-owner-{owner_identity}",
+                submission_authority_digest=non_replayable_submission_authority_digest(
+                    run_id=job_owner_run_id,
+                    authority_kind="artifact-admission-owner-fixture",
+                ),
                 current_checkpoint_id=None,
                 created_at=now,
                 updated_at=now,
@@ -208,6 +225,14 @@ def _seed_producer(
                 attempts=1,
                 max_attempts=3,
                 idempotency_key=f"producer-job-{identity}",
+                submission_authority_digest=job_submission_authority_digest(
+                    job_id=job_id,
+                    run_id=job_owner_run_id,
+                    job_kind=job_kind,
+                    payload={"input": {}},
+                    max_attempts=3,
+                    idempotency_key=f"producer-job-{identity}",
+                ),
                 available_at=now,
                 lease_owner=None,
                 lease_token_hash=None,
@@ -436,7 +461,7 @@ def test_artifact_admission_idempotency_rejects_staging_and_input_drift(
 
 
 @pytest.mark.parametrize("drift", ["attempt", "result"])
-def test_artifact_admission_rechecks_producer_after_import(
+def test_artifact_admission_producer_authority_cannot_drift_after_import(
     tmp_path: Path,
     drift: str,
 ) -> None:
@@ -463,24 +488,20 @@ def test_artifact_admission_rechecks_producer_after_import(
             values: dict[str, object]
             if drift == "attempt":
                 values = {"attempts": 2}
-                message = "attempt changed"
             else:
                 values = {"result": {"engineRunId": "engine_changed_during_import"}}
-                message = "does not match producer Job result"
-            with harness.repository.transaction() as session:
+            with (
+                pytest.raises(IntegrityError, match="lease authority"),
+                harness.repository.transaction() as session,
+            ):
                 session.execute(
                     update(JobRecord).where(JobRecord.job_id == producer.job_id).values(**values)
                 )
             blocking.release.set()
-            with pytest.raises(StateConflict, match=message) as raised:
-                future.result(timeout=10)
+            admitted = future.result(timeout=10)
 
-        assert _artifact_authority_counts(harness.repository) == (0, 0)
-        _assert_no_location_leaks(
-            raised.value,
-            harness=harness,
-            staging_id=producer.staging_id,
-        )
+        assert _artifact_authority_counts(harness.repository) == (1, 1)
+        assert admitted.producer_run_id == producer.run_id
     finally:
         blocking.release.set()
         harness.repository.close()

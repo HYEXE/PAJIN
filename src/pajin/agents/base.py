@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
 from pajin.domain.models import AgentPlan, CampaignManifest, Finding, StrictModel, ToolResult
-from pajin.domain.validation import CandidateFinding
+from pajin.domain.validation import CandidateAssessment, CandidateFinding
 
 
 class ModelCallFailure(RuntimeError):
@@ -43,13 +43,52 @@ class ValidatorRuntime(Protocol):
         """Validate observations independently from the executing specialist."""
 
 
+class CandidateValidation(StrictModel):
+    """One validator call's legacy findings and explicit Candidate-bound assessments."""
+
+    findings: list[Finding]
+    assessments: list[CandidateAssessment]
+
+
+@runtime_checkable
+class CandidateAwareValidatorRuntime(Protocol):
+    async def validate_candidates(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+        candidates: list[CandidateFinding],
+    ) -> CandidateValidation:
+        """Assess each supplied Candidate by ID and exact canonical claim digest."""
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateAuthority:
+    """One request's exact authority to support one target and threat class."""
+
+    request_id: str
+    target: str
+    threat_class: str
+
+    @property
+    def claim_key(self) -> tuple[str, str]:
+        return (self.target, self.threat_class)
+
+
 @dataclass(frozen=True)
 class CandidateProduction:
     """Atomic trusted-candidate output and the confirmation space it owns."""
 
     candidates: tuple[CandidateFinding, ...]
-    authoritative_request_ids: frozenset[str] = frozenset()
-    authoritative_claim_keys: frozenset[tuple[str, str]] = frozenset()
+    authoritative_request_claims: frozenset[CandidateAuthority] = frozenset()
+
+    @property
+    def authoritative_request_ids(self) -> frozenset[str]:
+        return frozenset(authority.request_id for authority in self.authoritative_request_claims)
+
+    @property
+    def authoritative_claim_keys(self) -> frozenset[tuple[str, str]]:
+        return frozenset(authority.claim_key for authority in self.authoritative_request_claims)
 
     def __post_init__(self) -> None:
         candidate_ids = [candidate.candidate_id for candidate in self.candidates]
@@ -58,11 +97,18 @@ class CandidateProduction:
         for candidate in self.candidates:
             if candidate.claim.validated:
                 raise ValueError("candidate production claims must have validated=False")
-            if not set(candidate.source_request_ids) <= self.authoritative_request_ids:
-                raise ValueError("candidate source requests must be inside producer authority")
-            claim_key = (candidate.claim.target, candidate.claim.threat_class)
-            if claim_key not in self.authoritative_claim_keys:
-                raise ValueError("candidate claim must be inside producer authority")
+            if not candidate.source_request_ids:
+                raise ValueError("candidate source requests must not be empty")
+            required_authority = {
+                CandidateAuthority(
+                    request_id=request_id,
+                    target=candidate.claim.target,
+                    threat_class=candidate.claim.threat_class,
+                )
+                for request_id in candidate.source_request_ids
+            }
+            if not required_authority <= self.authoritative_request_claims:
+                raise ValueError("candidate requires exact request-to-claim authority")
 
 
 class CandidateProducerRuntime(Protocol):

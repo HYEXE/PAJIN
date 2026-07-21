@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from pajin.agents.base import CandidateAuthority
 from pajin.domain.models import (
     CampaignManifest,
     Finding,
@@ -109,6 +110,20 @@ def _admitted_candidate(
     )
 
 
+def _candidate_authorities(
+    candidates: list[CandidateFinding],
+) -> set[CandidateAuthority]:
+    return {
+        CandidateAuthority(
+            request_id=request_id,
+            target=candidate.claim.target,
+            threat_class=candidate.claim.threat_class,
+        )
+        for candidate in candidates
+        for request_id in candidate.source_request_ids
+    }
+
+
 def _event_records(store: RunStore) -> list[dict[str, object]]:
     return [json.loads(line) for line in store.events_path.read_text(encoding="utf-8").splitlines()]
 
@@ -198,6 +213,74 @@ def test_gate_preserves_candidates_but_blocks_semantic_only_confirmation(
     }
 
 
+@pytest.mark.parametrize(
+    ("outcome", "expected_disposition", "expected_reason"),
+    [
+        (
+            "objective-failure",
+            FindingDisposition.REJECTED_OBJECTIVE,
+            ValidationReasonCode.EVIDENCE_MISSING,
+        ),
+        (
+            "execution-failure",
+            FindingDisposition.INCONCLUSIVE,
+            ValidationReasonCode.EXECUTION_FAILED,
+        ),
+        (
+            "semantic-disagreement",
+            FindingDisposition.NEEDS_REVIEW,
+            ValidationReasonCode.VALIDATOR_DISAGREED,
+        ),
+    ],
+)
+def test_gate_terminal_events_match_typed_decision_after_each_evaluation_stage(
+    outcome: str,
+    expected_disposition: FindingDisposition,
+    expected_reason: ValidationReasonCode,
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0].endpoint
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    if outcome == "objective-failure":
+        results: list[ToolResult] = []
+        finding = _finding(target=target, evidence=[], validated=True)
+    else:
+        result, evidence = _gateway_result(
+            store,
+            target=target,
+            success=outcome != "execution-failure",
+        )
+        results = [result]
+        finding = _finding(
+            target=target,
+            evidence=[evidence],
+            validated=outcome != "semantic-disagreement",
+        )
+
+    validation = validate_findings(
+        sample_campaign,
+        results,
+        [finding],
+        store,
+        "agent:validator:1",
+    )
+
+    decision = validation.decisions[0]
+    assert decision.disposition is expected_disposition
+    assert expected_reason in decision.reason_codes
+    events = _event_records(store)
+    assert [event["event_type"] for event in events[-3:]] == [
+        f"validation.{expected_disposition.value}",
+        "finding.rejected",
+        "findings.validated",
+    ]
+    assert events[-3]["payload"] == events[-2]["payload"]
+    assert events[-3]["payload"]["reasonCodes"] == [
+        reason.value for reason in decision.reason_codes
+    ]
+
+
 def test_gate_preserves_duplicate_finding_ids_with_ordered_unique_candidate_ids(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -240,8 +323,7 @@ def test_gate_preserves_duplicate_finding_ids_with_ordered_unique_candidate_ids(
     assert not validation.confirmed_findings
     assert all(
         decision.disposition is FindingDisposition.NEEDS_REVIEW
-        and decision.reason_codes
-        == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
+        and decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING]
         for decision in validation.decisions
     )
 
@@ -268,6 +350,7 @@ def test_gate_preserves_validator_omitted_admitted_candidate_for_review(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     assert validation.candidates == [candidate]
@@ -308,6 +391,7 @@ def test_gate_keeps_candidate_inconclusive_when_validator_does_not_complete(
         store,
         "agent:validator:unavailable",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
         validator_unavailable_reason=unavailable_reason,
     )
 
@@ -341,6 +425,7 @@ def test_gate_rejects_admitted_candidate_with_mismatched_source_requests(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     decision = validation.decisions[0]
@@ -353,9 +438,46 @@ def test_gate_rejects_admitted_candidate_with_mismatched_source_requests(
     assert not validation.confirmed_findings
 
 
-@pytest.mark.parametrize("authority_kind", ["request", "claim"])
+def test_gate_rejects_cross_paired_candidate_authority_snapshot(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0].endpoint
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    result, evidence = _gateway_result(store, target=target)
+    candidate = _admitted_candidate(
+        _finding(
+            target=target,
+            evidence=[evidence],
+            finding_id="producer_finding_cross_paired",
+            validated=False,
+        )
+    )
+
+    with pytest.raises(ValueError, match="exact request-to-claim authority"):
+        validate_findings(
+            sample_campaign,
+            [result],
+            [],
+            store,
+            "agent:validator:1",
+            admitted_candidates=[candidate],
+            producer_authoritative_request_claims={
+                CandidateAuthority(
+                    request_id=result.request_id,
+                    target="https://other.example/api/chat",
+                    threat_class="M03",
+                ),
+                CandidateAuthority(
+                    request_id="other_request",
+                    target=target,
+                    threat_class=candidate.claim.threat_class,
+                ),
+            },
+        )
+
+
 def test_gate_blocks_validator_only_confirmation_inside_producer_authority(
-    authority_kind: str,
     tmp_path: Path,
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -365,7 +487,7 @@ def test_gate_blocks_validator_only_confirmation_inside_producer_authority(
     validator_finding = _finding(
         target=target,
         evidence=[evidence],
-        finding_id=f"validator_only_{authority_kind}",
+        finding_id="validator_only_exact_authority",
         validated=True,
     )
 
@@ -375,12 +497,13 @@ def test_gate_blocks_validator_only_confirmation_inside_producer_authority(
         [validator_finding],
         store,
         "agent:validator:1",
-        producer_authoritative_request_ids=(
-            {result.request_id} if authority_kind == "request" else set()
-        ),
-        producer_authoritative_claim_keys=(
-            {(target, validator_finding.threat_class)} if authority_kind == "claim" else set()
-        ),
+        producer_authoritative_request_claims={
+            CandidateAuthority(
+                request_id=result.request_id,
+                target=target,
+                threat_class=validator_finding.threat_class,
+            )
+        },
     )
 
     assert len(validation.candidates) == 1
@@ -394,6 +517,51 @@ def test_gate_blocks_validator_only_confirmation_inside_producer_authority(
         if event["event_type"] == "validation.output.unmatched"
     ]
     assert unmatched[0]["payload"]["reason"] == "candidate-producer-not-admitted"
+
+
+def test_gate_does_not_cross_pair_request_and_claim_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    target = sample_campaign.spec.targets[0].endpoint
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    result, evidence = _gateway_result(store, target=target)
+    validator_finding = _finding(
+        target=target,
+        evidence=[evidence],
+        finding_id="validator_only_cross_paired_authority",
+        validated=True,
+    )
+
+    validation = validate_findings(
+        sample_campaign,
+        [result],
+        [validator_finding],
+        store,
+        "agent:validator:1",
+        producer_authoritative_request_claims={
+            CandidateAuthority(
+                request_id=result.request_id,
+                target="https://other.example/api/chat",
+                threat_class="M03",
+            ),
+            CandidateAuthority(
+                request_id="other_request",
+                target=target,
+                threat_class=validator_finding.threat_class,
+            ),
+        },
+    )
+
+    assert len(validation.candidates) == 1
+    decision = validation.decisions[0]
+    assert ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED not in decision.reason_codes
+    assert not validation.confirmed_findings
+    assert not [
+        event
+        for event in _event_records(store)
+        if event["event_type"] == "validation.output.unmatched"
+    ]
 
 
 def test_gate_rejects_finding_with_undeclared_threat_class(
@@ -452,6 +620,7 @@ def test_gate_rejects_invalid_admitted_candidate_contracts(
             store,
             "agent:validator:1",
             admitted_candidates=admitted_candidates,
+            producer_authoritative_request_claims=_candidate_authorities(admitted_candidates),
         )
 
 
@@ -484,6 +653,7 @@ def test_gate_reconciles_rephrased_validator_signal_to_admitted_candidate(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     assert validation.candidates == [candidate]
@@ -525,6 +695,7 @@ def test_gate_blocks_mismatched_validator_output_from_legacy_confirmation(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     assert validation.candidates[0] == candidate
@@ -574,6 +745,7 @@ def test_gate_treats_ambiguous_validator_outputs_as_candidate_omission(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     assert validation.candidates[0] == candidate
@@ -628,6 +800,7 @@ def test_gate_still_applies_objective_checks_to_matched_admitted_candidate(
         store,
         "agent:validator:1",
         admitted_candidates=[candidate],
+        producer_authoritative_request_claims=_candidate_authorities([candidate]),
     )
 
     assert validation.decisions[0].disposition is FindingDisposition.REJECTED_OBJECTIVE
@@ -744,6 +917,8 @@ def test_gate_rejects_untrusted_evidence_references(
     "tamper",
     [
         "invalid-json",
+        "duplicate-key",
+        "nonfinite-number",
         "request-id-mismatch",
         "tool-id-mismatch",
         "target-mismatch",
@@ -761,6 +936,12 @@ def test_gate_rejects_evidence_with_invalid_gateway_provenance(
     evidence_path = store.path / reference
     if tamper == "invalid-json":
         evidence_path.write_text("{not-json", encoding="utf-8")
+    elif tamper == "duplicate-key":
+        original = evidence_path.read_text(encoding="utf-8").lstrip()
+        evidence_path.write_text('{"request":{},' + original[1:], encoding="utf-8")
+    elif tamper == "nonfinite-number":
+        original = evidence_path.read_text(encoding="utf-8").lstrip()
+        evidence_path.write_text('{"ignored":NaN,' + original[1:], encoding="utf-8")
     elif tamper == "result-mismatch":
         payload = json.loads(evidence_path.read_text(encoding="utf-8"))
         payload["result"]["success"] = False

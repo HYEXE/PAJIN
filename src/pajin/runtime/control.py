@@ -3,19 +3,39 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+from math import isfinite
 from pathlib import Path
 from time import monotonic
+from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from pajin.domain.models import Budgets
+from pajin.runtime.safe_files import read_bounded_regular_bytes
+
+_KILL_SWITCH_SIGNAL_MAX_BYTES = 2_048
+_KILL_SWITCH_REASON_MAX_CHARS = 500
+_KILL_SWITCH_FALLBACK_REASON = "kill-switch signal file detected"
 
 
 class BudgetExceeded(RuntimeError):
     """Raised before an operation would exceed a campaign budget."""
+
+
+@dataclass(frozen=True)
+class ModelUsageReservation:
+    """One conservative in-flight model call, Tool call, token, and cost reservation."""
+
+    reservation_id: str
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    tool_calls: int
+    model_calls: int
 
 
 class CancellationKind(StrEnum):
@@ -150,6 +170,9 @@ class ExecutionCancellationContext:
         self._require_active()
         if self._forced_at is None:
             self._forced_at = datetime.now(UTC)
+        for child in tuple(self._children):
+            if child.active:
+                child.mark_forced()
 
     def mark_cleanup_completed(self) -> None:
         self._require_active()
@@ -222,7 +245,9 @@ class KillSwitch:
     """One-way cancellation signal that can also be driven by a local signal file."""
 
     def __init__(self, signal_path: Path | None = None) -> None:
-        self._signal_path = signal_path.resolve() if signal_path else None
+        self._signal_path = (
+            Path(os.path.abspath(os.fspath(signal_path.expanduser()))) if signal_path else None
+        )
         self._active = False
         self._reason: str | None = None
         self._source: str | None = None
@@ -239,18 +264,33 @@ class KillSwitch:
         if self._active:
             return False
         self._active = True
-        self._reason = reason[:500]
+        self._reason = reason[:_KILL_SWITCH_REASON_MAX_CHARS]
         self._source = source[:100]
         return True
 
     def poll(self) -> bool:
-        if self._active or self._signal_path is None or not self._signal_path.is_file():
+        if self._active or self._signal_path is None:
             return self._active
         try:
-            reason = self._signal_path.read_text(encoding="utf-8")[:500].strip()
+            self._signal_path.lstat()
+        except FileNotFoundError:
+            return False
         except OSError:
-            reason = "kill-switch signal file detected"
-        self.activate(reason or "kill-switch signal file detected", source="signal-file")
+            self.activate(_KILL_SWITCH_FALLBACK_REASON, source="signal-file")
+            return True
+        try:
+            reason = read_bounded_regular_bytes(
+                self._signal_path,
+                max_bytes=_KILL_SWITCH_SIGNAL_MAX_BYTES,
+                label="kill-switch signal",
+                require_single_link=True,
+            ).decode("utf-8")
+        except (OSError, UnicodeError, ValueError):
+            reason = _KILL_SWITCH_FALLBACK_REASON
+        self.activate(
+            reason[:_KILL_SWITCH_REASON_MAX_CHARS].strip() or _KILL_SWITCH_FALLBACK_REASON,
+            source="signal-file",
+        )
         return True
 
     def snapshot(self) -> ControlSnapshot:
@@ -277,6 +317,11 @@ class BudgetController:
     model_completion_tokens: int = field(init=False, default=0)
     cost_usd: float = field(init=False, default=0.0)
     _elapsed_offset_seconds: float = field(init=False, default=0.0)
+    _model_usage_reservations: dict[str, ModelUsageReservation] = field(
+        init=False,
+        default_factory=dict,
+        repr=False,
+    )
 
     def __post_init__(self) -> None:
         self._started = monotonic()
@@ -287,6 +332,7 @@ class BudgetController:
         self.model_completion_tokens = 0
         self.cost_usd = 0.0
         self._elapsed_offset_seconds = 0.0
+        self._model_usage_reservations = {}
 
     @property
     def elapsed_seconds(self) -> float:
@@ -315,8 +361,8 @@ class BudgetController:
         self.tool_calls += 1
 
     def record_cost(self, amount_usd: float) -> None:
-        if amount_usd < 0:
-            raise ValueError("cost cannot be negative")
+        if not isfinite(amount_usd) or amount_usd < 0:
+            raise ValueError("cost must be finite and non-negative")
         if self.cost_usd + amount_usd > self.budgets.max_cost_usd:
             raise BudgetExceeded("maximum campaign cost exceeded")
         self.cost_usd += amount_usd
@@ -337,19 +383,117 @@ class BudgetController:
         completion_tokens: int,
         cost_usd: float,
     ) -> None:
+        self._check_model_usage_capacity(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )
+        self.model_prompt_tokens += prompt_tokens
+        self.model_completion_tokens += completion_tokens
+        self.cost_usd += cost_usd
+
+    def _check_model_usage_capacity(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+    ) -> None:
         if prompt_tokens < 0 or completion_tokens < 0:
             raise ValueError("model token usage cannot be negative")
         total = prompt_tokens + completion_tokens
         used = self.model_prompt_tokens + self.model_completion_tokens
         if used + total > self.budgets.max_model_tokens:
             raise BudgetExceeded("maximum model-token budget exceeded")
-        if cost_usd < 0:
-            raise ValueError("cost cannot be negative")
+        if not isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("cost must be finite and non-negative")
         if self.cost_usd + cost_usd > self.budgets.max_cost_usd:
             raise BudgetExceeded("maximum campaign cost exceeded")
+
+    def reserve_model_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+    ) -> ModelUsageReservation:
+        """Atomically charge one model/Tool call and its bound before dispatch."""
+
+        self.check_tool_call()
+        self.check_model_call()
+        self._check_model_usage_capacity(
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+        )
+        reservation = ModelUsageReservation(
+            reservation_id=f"model-reservation_{uuid4().hex}",
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cost_usd=cost_usd,
+            tool_calls=1,
+            model_calls=1,
+        )
+        self.tool_calls += reservation.tool_calls
+        self.model_calls += reservation.model_calls
         self.model_prompt_tokens += prompt_tokens
         self.model_completion_tokens += completion_tokens
         self.cost_usd += cost_usd
+        self._model_usage_reservations[reservation.reservation_id] = reservation
+        return reservation
+
+    def settle_model_usage(
+        self,
+        reservation: ModelUsageReservation,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+    ) -> None:
+        """Replace one active conservative reservation with trusted actual usage."""
+
+        self._require_model_usage_reservation(reservation)
+        if prompt_tokens < 0 or completion_tokens < 0:
+            raise ValueError("model token usage cannot be negative")
+        if not isfinite(cost_usd) or cost_usd < 0:
+            raise ValueError("cost must be finite and non-negative")
+        if (
+            prompt_tokens > reservation.prompt_tokens
+            or completion_tokens > reservation.completion_tokens
+            or cost_usd > reservation.cost_usd
+        ):
+            self.commit_model_usage_reservation(reservation)
+            raise BudgetExceeded("model usage exceeded its conservative reservation")
+
+        del self._model_usage_reservations[reservation.reservation_id]
+        self.model_prompt_tokens -= reservation.prompt_tokens - prompt_tokens
+        self.model_completion_tokens -= reservation.completion_tokens - completion_tokens
+        self.cost_usd = max(0.0, self.cost_usd - (reservation.cost_usd - cost_usd))
+
+    def commit_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
+        """Consume an active reservation at its bound when actual usage is unknowable."""
+
+        self._require_model_usage_reservation(reservation)
+        del self._model_usage_reservations[reservation.reservation_id]
+
+    def release_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
+        """Release a reservation only when the model request provably was not dispatched."""
+
+        self._require_model_usage_reservation(reservation)
+        del self._model_usage_reservations[reservation.reservation_id]
+        self.tool_calls -= reservation.tool_calls
+        self.model_calls -= reservation.model_calls
+        self.model_prompt_tokens -= reservation.prompt_tokens
+        self.model_completion_tokens -= reservation.completion_tokens
+        self.cost_usd = max(0.0, self.cost_usd - reservation.cost_usd)
+
+    def _require_model_usage_reservation(
+        self,
+        reservation: ModelUsageReservation,
+    ) -> None:
+        active = self._model_usage_reservations.get(reservation.reservation_id)
+        if active is not reservation:
+            raise ValueError("model usage reservation is not active on this budget")
 
     def restore_usage(
         self,
@@ -362,7 +506,7 @@ class BudgetController:
         cost_usd: float,
         elapsed_seconds: float,
     ) -> None:
-        if any(
+        if self._model_usage_reservations or any(
             value != 0
             for value in (
                 self.tool_calls,
@@ -386,7 +530,7 @@ class BudgetController:
             raise ValueError("restored model token usage cannot be negative")
         if total_tokens > self.budgets.max_model_tokens:
             raise BudgetExceeded("restored model-token usage exceeds campaign budget")
-        if not 0 <= cost_usd <= self.budgets.max_cost_usd:
+        if not isfinite(cost_usd) or not 0 <= cost_usd <= self.budgets.max_cost_usd:
             raise BudgetExceeded("restored cost exceeds campaign budget")
         if not 0 <= elapsed_seconds < self.budgets.duration_seconds:
             raise BudgetExceeded("restored duration exceeds campaign budget")

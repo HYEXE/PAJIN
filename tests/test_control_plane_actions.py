@@ -287,9 +287,7 @@ def test_current_approval_and_decision_reject_unsigned_field_drift(tmp_path: Pat
         assert decision.status_code == 409
         with app.state.repository.transaction() as session:
             approval = session.scalar(
-                select(ApprovalRecord).where(
-                    ApprovalRecord.approval_id == workflow.approval_id
-                )
+                select(ApprovalRecord).where(ApprovalRecord.approval_id == workflow.approval_id)
             )
             assert approval is not None and approval.state == "pending"
 
@@ -527,9 +525,7 @@ def test_cancel_after_approval_revokes_approval_and_blocks_resume(tmp_path: Path
 
         with app.state.repository.transaction() as session:
             approval_record = session.scalar(
-                select(ApprovalRecord).where(
-                    ApprovalRecord.approval_id == workflow.approval_id
-                )
+                select(ApprovalRecord).where(ApprovalRecord.approval_id == workflow.approval_id)
             )
             checkpoint = session.scalar(
                 select(CheckpointRecord).where(
@@ -559,9 +555,7 @@ def test_denial_cancels_run_and_cannot_be_resumed(tmp_path: Path) -> None:
         )
         assert denied.status_code == 200, denied.text
         assert denied.json()["state"] == "denied"
-        assert denied.json()["decision_reason"] == (
-            "target is outside the approved change window"
-        )
+        assert denied.json()["decision_reason"] == ("target is outside the approved change window")
 
         run = client.get(f"/v1/runs/{workflow.run_id}", headers=_auth(AUDITOR_TOKEN))
         assert run.status_code == 200
@@ -615,15 +609,11 @@ def test_approval_decision_requires_current_awaiting_checkpoint(
     with TestClient(app) as client:
         workflow = _awaiting_approval(client, f"decision-invariant-{invalid_run_field}")
         values = (
-            {"state": "queued"}
-            if invalid_run_field == "state"
-            else {"current_checkpoint_id": None}
+            {"state": "queued"} if invalid_run_field == "state" else {"current_checkpoint_id": None}
         )
         with app.state.repository.transaction() as session:
             session.execute(
-                update(RunRecord)
-                .where(RunRecord.run_id == workflow.run_id)
-                .values(**values)
+                update(RunRecord).where(RunRecord.run_id == workflow.run_id).values(**values)
             )
 
         current = client.get(
@@ -640,9 +630,7 @@ def test_approval_decision_requires_current_awaiting_checkpoint(
         assert decision.status_code == 409
         with app.state.repository.transaction() as session:
             approval = session.scalar(
-                select(ApprovalRecord).where(
-                    ApprovalRecord.approval_id == workflow.approval_id
-                )
+                select(ApprovalRecord).where(ApprovalRecord.approval_id == workflow.approval_id)
             )
             assert approval is not None and approval.state == "pending"
 
@@ -663,15 +651,11 @@ def test_resume_requires_current_awaiting_checkpoint(
         )
         assert decision.status_code == 200
         values = (
-            {"state": "queued"}
-            if invalid_run_field == "state"
-            else {"current_checkpoint_id": None}
+            {"state": "queued"} if invalid_run_field == "state" else {"current_checkpoint_id": None}
         )
         with app.state.repository.transaction() as session:
             session.execute(
-                update(RunRecord)
-                .where(RunRecord.run_id == workflow.run_id)
-                .values(**values)
+                update(RunRecord).where(RunRecord.run_id == workflow.run_id).values(**values)
             )
 
         resume = client.post(
@@ -682,9 +666,7 @@ def test_resume_requires_current_awaiting_checkpoint(
         assert resume.status_code == 409
         with app.state.repository.transaction() as session:
             approval = session.scalar(
-                select(ApprovalRecord).where(
-                    ApprovalRecord.approval_id == workflow.approval_id
-                )
+                select(ApprovalRecord).where(ApprovalRecord.approval_id == workflow.approval_id)
             )
             checkpoint = session.scalar(
                 select(CheckpointRecord).where(
@@ -777,9 +759,7 @@ def test_expired_approval_is_persisted_and_cannot_resume(
         assert current.json()["state"] == "expired"
         with app.state.repository.transaction() as session:
             approval = session.scalar(
-                select(ApprovalRecord).where(
-                    ApprovalRecord.approval_id == workflow.approval_id
-                )
+                select(ApprovalRecord).where(ApprovalRecord.approval_id == workflow.approval_id)
             )
             checkpoint = session.scalar(
                 select(CheckpointRecord).where(
@@ -818,6 +798,68 @@ def test_pending_approval_expiry_is_committed_before_decision_conflict(
                 reason="decision arrived after expiry",
             )
             assert decision.status_code == 409
+
+        current = client.get(
+            f"/v1/runs/{workflow.run_id}/approval",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+        assert current.status_code == 200
+        assert current.json()["state"] == "expired"
+        run = client.get(f"/v1/runs/{workflow.run_id}", headers=_auth(AUDITOR_TOKEN))
+        assert run.json()["state"] == "cancelled"
+        event_types = [event["event_type"] for event in _events(client, workflow.run_id)]
+        assert event_types.count("approval.expired") == 1
+        assert event_types.count("run.cancelled") == 1
+
+
+def test_pending_approval_expiry_is_atomically_committed_by_current_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(_settings(tmp_path / "expired-pending-approval-read.db"))
+    with TestClient(app) as client:
+        workflow = _awaiting_approval(client, "expired-pending-approval-read")
+        future = workflow.expires_at + timedelta(minutes=1)
+        monkeypatch.setattr("pajin.control_plane.service.utc_now", lambda: future)
+
+        for _attempt in range(2):
+            current = client.get(
+                f"/v1/runs/{workflow.run_id}/approval",
+                headers=_auth(AUDITOR_TOKEN),
+            )
+            assert current.status_code == 200
+            assert current.json()["state"] == "expired"
+
+        run = client.get(f"/v1/runs/{workflow.run_id}", headers=_auth(AUDITOR_TOKEN))
+        assert run.json()["state"] == "cancelled"
+        event_types = [event["event_type"] for event in _events(client, workflow.run_id)]
+        assert event_types.count("approval.expired") == 1
+        assert event_types.count("run.cancelled") == 1
+        with app.state.repository.transaction() as session:
+            approval = session.get(ApprovalRecord, workflow.approval_id)
+            checkpoint = session.get(CheckpointRecord, workflow.checkpoint_id)
+            assert approval is not None and approval.state == "expired"
+            assert checkpoint is not None and checkpoint.claimed_at is None
+            assert checkpoint.continuation_job_id is None
+
+
+def test_pending_approval_expiry_is_atomically_committed_by_maintenance_reaper(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(_settings(tmp_path / "expired-pending-approval-reaper.db"))
+    with TestClient(app) as client:
+        workflow = _awaiting_approval(client, "expired-pending-approval-reaper")
+        future = workflow.expires_at + timedelta(minutes=1)
+        monkeypatch.setattr("pajin.control_plane.service.utc_now", lambda: future)
+
+        for _attempt in range(2):
+            swept = client.post(
+                "/v1/maintenance/requeue-expired",
+                headers=_auth(OPERATOR_TOKEN),
+            )
+            assert swept.status_code == 200
+            assert swept.json()["requeuedOrDeadLettered"] == 0
 
         current = client.get(
             f"/v1/runs/{workflow.run_id}/approval",

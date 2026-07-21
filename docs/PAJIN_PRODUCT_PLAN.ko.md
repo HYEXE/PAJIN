@@ -8,7 +8,7 @@
 | --- | --- |
 | 문서 상태 | Product Baseline v0.3 |
 | 작성일 | 2026-07-12 |
-| 최종 최신화 | 2026-07-18 |
+| 최종 최신화 | 2026-07-19 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -38,17 +38,20 @@ ADR은 제품 기획서의 불변 원칙을 구체화할 수 있지만 암묵적
 - 기존 증거를 다시 읽고 의미를 판정하는 Semantic Validator는 증거 심사자이지 독립
   재현 실행자가 아니다.
 - Candidate는 별도의 제한된 Reproducer가 새 요청과 새 증적 계보로 동일 주장을 재현하고,
-  Mode 소유의 Oracle과 객관적 증적 게이트가 이를 지지해야만 `confirmed`가 될 수 있다.
+  Mode 소유의 Oracle과 객관적 증적 게이트가 이를 지지하며, source/replay Worker trust domain
+  밖의 authority가 의도한 target 실행을 독립적으로 attest해야만 `confirmed`가 될 수 있다.
 - LLM은 공격 Tool, 임의 명령, URL 또는 Capability Grant를 직접 생성·실행하지 않는다.
   LLM이 제안한 비실행형 `ReplayIntent`는 신뢰 경계 안의 컴파일러와 정책 검사를 거쳐야 한다.
-- 독립 재현이 아직 실행되지 않았거나 자동 재현 대상이 아니면 최대 `needs-review`, 실행
-  장애·취소·시간 초과로 결론을 내리지 못하면 `inconclusive`다.
+- 독립 재현이 아직 실행되지 않았거나 자동 재현 대상이 아니거나 독립 execution attestation이
+  없으면 최대 `needs-review`, 실행 장애·취소·시간 초과로 결론을 내리지 못하면
+  `inconclusive`다. 별도 Run·request·process·backend instance와 로컬 hash·seal은 일관성
+  증거이지 독립 trust domain의 attestation이 아니다.
 - 기존에 봉인된 Run은 다시 쓰지 않는다. 과거의 재현 없는 `confirmed`는 legacy 판정으로
   식별하며 이 기준선의 `confirmed`로 재해석하지 않는다.
-- 수정 완료(`fixed`)는 봉인된 `validation/v1alpha1`의 reproduction-backed Confirmed Finding에
-  정확히 결박된 별도 Restricted Replay와 canonical receipt가 있을 때만 주장한다. 모든 기대
-  반복에서 trusted negative Oracle이 원 취약점 주장을 명시적으로 반증해야 하며, 단순 신호
-  부재나 Worker 판정은 증명이 아니다.
+- 수정 완료(`fixed`)는 봉인된 `validation/v1alpha1`의 independently attested Confirmed Finding,
+  정확히 결박된 Restricted Replay, 외부에서 검증 가능한 remediation attestation이 모두 있을
+  때만 주장한다. negative Worker transcript, 공개 deterministic-lab response tuple, 단순 신호
+  부재와 Worker 판정은 proof가 아니며 현재 구현에서는 `inconclusive`다.
 - 정상 기능 회귀는 취약점의 `fixed` 상태와 분리해 기록한다. 개별 Finding이 수정됐더라도
   포괄적인 release-level 재검증 성공은 별도의 fresh discovery에서 신규 Finding이 없고 정상
   기능 회귀가 통과해야 한다.
@@ -76,7 +79,7 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 
 ### 1.1 현재 구현 기준선
 
-2026-07-18 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
+2026-07-19 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
 Phase 0과 1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
 Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
 Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
@@ -118,7 +121,8 @@ budget/rate를 consumed로 옮기며 event를 append한다. 실행이 불확실�
 M6-07B-2E는 strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist와
 Replay claim·heartbeat·Tool-permit 발급 전용 WORKER-role endpoint, 대응 async client를 추가했다.
 설정이 없으면 allowlist는 비어 fail closed하며, 예시는
-`{"worker-service":["kisa-exact-v1"]}`이다. claim/heartbeat envelope는 서버가 검증한 canonical
+`{"replay-worker-service":["kisa-exact-v1"]}`이며 별도로 인증된 Replay Worker subject에만 해당
+profile을 허용한다. claim/heartbeat envelope는 서버가 검증한 canonical
 `ReplayCompilation`을 포함하고 exact compilation·Candidate·contract·Grant·Run binding을 다시
 검사한다. permit은 발급 시 이미 unit을 소비한 non-bearer proof이며 별도 redeem mutation은 없다.
 M6-07B-2F는 schema v7 append-only `cp_replay_execution_contexts` 권위를 추가한다. 발급 시 fresh
@@ -128,13 +132,24 @@ component digest와 전체 context digest를 가진 canonical context를 하나�
 할당한다. Job payload, claim/heartbeat envelope, required profile과 모든 permit 발급은 같은 context를
 전이적으로 다시 검증한다. v6→v7 migration은 non-dispatchable v6 권위에만 빈 append-only context
 table을 만들고, dispatchable ticket·permit·Job·reservation 또는 진행된 batch/item 상태를 정직하게
-backfill할 수 없으면 fail closed한다. public Replay admission/read API, 실제 executor와 pre-dispatch
-permit-use 집행, Worker execute/seal 분리, output import와 typed finalization, 새 identity retry, Gate와
-negative Control Plane retest가 남아 있어 M6-07B 전체는 미완료이며 Compose는 전용 Replay executor
-daemon을 계속 비활성화한다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는 후속
-과제다.
-Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 Control
-Plane의 첫 수직 조각까지 구현되었다.
+backfill할 수 없으면 fail closed한다. 2026-07-19 schema-v9 slice는 별도 credential의 전용
+`kisa-exact-v1` daemon, dispatch 직전 server-authorized permit, opaque staging slot의 이중 봉인 output,
+server-owned Artifact import·검증, append-only typed finalization과 one-item 공통 Gate를 구현한다.
+Permit/finalize의 정확한 retry는 응답 유실만 다루고 Tool을 재dispatch하지 않으며, permit 뒤 failure는
+그 ticket에 terminal이다. Compose는 managed repository를 API에만 mount한 채 일반 Worker와 전용 Replay
+daemon을 함께 활성화한다. 2026-07-19 schema-v10 hardening은 canonical public-submission
+authority digest와 immutable Job dispatch tuple digest, 정확한 v9→v10 forward migration과
+fail-closed legacy fencing, 늦은 구 writer·row replacement·identity drift·허용되지 않은 state
+transition·terminal history 변경을 막는 database guard를 추가했다. mutation request에는 4 MiB wire ceiling,
+operation별 canonical JSON byte/depth/node/key/string 한도, 모든 depth의 duplicate-key 거부와
+소유권이 분리된 input/result/checkpoint snapshot을 적용한다. 일반 및 Replay lease는 최대 24시간이고
+Replay specification/Grant expiry가 더 짧게 줄일 수 있는 절대 deadline을 영속화한다. heartbeat는 그
+안에서만 갱신하며 audit heartbeat event는 60초당 하나로 coalesce하고 reclaim은 rolling/absolute
+expiry를 모두 검사한다. Public Replay admission/read API, 자동 fresh-identity retry 발행, multi-item
+versioned projection publication, negative Control Plane retest, portable/off-host 서명 proof, 다른 Mode의
+materializer·Oracle과 구조화 협업 메모리는 후속 과제다.
+Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 일반 Control
+Plane 수직 조각과 전용 exact-KISA one-item Replay slice를 함께 포함한다.
 
 | 영역 | 구현 상태 | 현재 경계 |
 | --- | --- | --- |
@@ -144,7 +159,7 @@ Plane의 첫 수직 조각까지 구현되었다.
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, lease·heartbeat, 단일 Worker daemon; ADR-0029 Replay 권위 상태, M6-07B-2A managed Artifact admission, M6-07B-2B exact KISA 파생, M6-07B-2C schema-v5 durable reservation·내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장·내부 서비스 발급, M6-07B-2E fail-closed 전용 Worker HTTP transport, M6-07B-2F schema-v7 append-only exact execution-context 권위는 구현했으며 public Replay admission/read API, 실제 executor/pre-dispatch permit use, execute/seal 분리, output import/typed finalization, 재시도, Gate와 negative Control Plane retest는 미완료이고 Compose는 Replay executor daemon을 활성화하지 않음 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, schema-v10 exact submission identity·bounded JSON ingress·absolute lease deadline·heartbeat coalescing, 일반 Worker daemon과 durable reservation·일회성 pre-dispatch permit·schema-v7 execution context·sealed opaque staging·schema-v9 server-owned Artifact import/finalization·one-item 공통 Gate의 전용 exact-KISA Replay 경로를 구현했고 Compose는 distinct credential로 두 daemon을 모두 활성화함; public Replay admission/read API, 자동 fresh-identity retry 발행, multi-item versioned projection publication과 negative Control Plane retest는 미완료 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -936,8 +951,8 @@ MVP는 CLI와 YAML Campaign·Mode Pack Manifest를 우선한다. 현재 구현�
 | KISA AI Red Team | `pajin kisa-run`, `pajin kisa-plan-remediation`, `pajin kisa-retest` |
 | Bug Bounty | `pajin bug-bounty-review`, `pajin bug-bounty-compile`, `pajin bug-bounty-report`, `pajin bug-bounty-run` |
 | CTF | `pajin ctf-run`, `pajin ctf-web-run`, `pajin ctf-suite-run` |
-| 증적·인프라 점검 | `pajin evidence-verify`, `pajin worker-check`, `pajin egress-check`, `pajin mcp-check` |
-| 서버 프로세스 | `pajin-control-plane`, `pajin-worker-daemon` |
+| 증적·인프라 점검 | `pajin evidence-verify`, `pajin replay-verify`, `pajin worker-check`, `pajin egress-check`, `pajin mcp-check` |
+| 서버 프로세스 | `pajin-control-plane`, `pajin-worker-daemon`, `pajin-replay-worker-daemon` |
 
 초기 기획에 있던 범용 `authorize`, `status`, `findings`, `report`, `stop` CLI는 아직 별도
 명령으로 구현하지 않았다. 지속 실행의 제출·조회·승인·재개·취소는 현재 선택적 Control
@@ -950,7 +965,7 @@ Plane API가 담당하며, 동일 오리진 Web Console이 선택 Run의 동일 
 - 메모리 전용 Bearer 인증과 역할 확인
 - Operator의 멱등 Run 제출
 - 상태 필터·제한된 offset pagination 기반 Run 목록
-- 선택 Run의 승인된 입력과 append-only 이벤트 조회
+- 선택 Run의 승인된 입력과 제한된 최신/이전 append-only 이벤트 페이지 조회
 - 현재 체크포인트에 연결된 최소화된 승인 intent 조회
 - Approver의 승인·거절과 Operator의 1회성 재개
 - Operator의 사유 기반 멱등 취소와 active lease 폐기
@@ -1112,9 +1127,11 @@ PAJIN은 공격 도구를 다루기 때문에 일반 SaaS보다 강한 내부 �
 | 관측성 | Audit Event·Evidence Seal → OpenTelemetry | 현재 로컬 재현성과 무결성 우선, 운영 텔레메트리는 후속 확장 |
 | 외부 도구 | MCP Adapter + Canonical ToolSpec | 프로토콜 종속성 최소화 |
 
-핵심 원칙은 PydanticAI가 모델 기반 계획·검증을 담당하고, Campaign 상태·Capability·정책
-판정·도구 실행·증적은 PAJIN Core가 소유하는 것이다. 초기 Workflow Backend는 로컬 구현을
-사용하며 장기 실행과 분산 워커가 필요한 단계에서 Temporal Adapter를 추가한다.
+핵심 원칙은 `ProviderAgentRuntime`이 PAJIN의 governed Provider 경계를 통해 network-backed
+계획·검증을 담당하고, Campaign 상태·Capability·정책 판정·도구 실행·증적은 PAJIN Core가
+소유하는 것이다. `PydanticAIAgentRuntime`은 결정론적 test를 위한 정확한 로컬 `TestModel`로
+제한한다. 초기 Workflow Backend는 로컬 구현을 사용하며 장기 실행과 분산 워커가 필요한
+단계에서 Temporal Adapter를 추가한다.
 
 ### 19.1 현재 저장소 구조
 
@@ -1165,7 +1182,7 @@ PAJIN/
 - 후보/확정 Finding 분리, KISA trusted Candidate admission과 버전된 Confirmed 호환 출력
 - Markdown 및 JSON 보고서
 - 동일 입력 기반 재검증
-- 선택적 FastAPI·PostgreSQL Control Plane과 단일 Worker daemon
+- 선택적 FastAPI·PostgreSQL Control Plane, 일반 Worker daemon과 전용 exact-KISA Replay Worker daemon
 
 #### 제외
 
@@ -1178,11 +1195,12 @@ PAJIN/
 
 현재 구현의 기능 범위는 최초 최소 MVP를 넘어 세 Mode Pack, Replay 계약·Compiler·Grant,
 stateless Restricted Reproducer, exact KISA fresh-session 실행·live transcript Oracle·runner
-coordinator, receipt 재로딩 공통 Gate와 지속성 Control Plane의 초기 조각까지 포함한다. 지원
-KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는 Finding 확정 기준을
-충족한다. 일반 Local 경로도 명시적 `--kisa-replay`일 때만 exact KISA 계약에 연결되며, 기본
-Local 실행과 Control Plane·다른 Mode 경로는 계속 자동 replay 없이 fail closed다.
-지원 시나리오의 폭과 운영 배포 수준은 Phase 3-4의 후속 범위다.
+coordinator, receipt 재로딩 공통 Gate와 지속성 Control Plane exact-KISA one-item positive-confirmation
+slice까지 포함한다. 지원 KISA 수직 경로는 독립 ReplayOutcome 없이는 Confirmed가 될 수 없는 Finding
+확정 기준을 충족한다. 일반 Local 경로는 명시적 `--kisa-replay`일 때만 exact KISA 계약에 연결되고,
+내부 Control Plane issuance는 전용 daemon으로 같은 exact-KISA allowlist를 실행할 수 있다. Public
+Control Plane admission과 다른 Mode 경로는 자동 replay 없이 계속 fail closed다. 지원 시나리오의 폭과
+운영 배포 수준은 Phase 3-4의 후속 범위다.
 
 ### 20.3 MVP 완료 기준
 
@@ -1197,7 +1215,7 @@ Local 실행과 Control Plane·다른 Mode 경로는 계속 자동 replay 없이
 - 캠페인 중단 시 워커와 Secret Lease가 회수된다.
 - 동일 캠페인을 재실행했을 때 비교 가능한 결과가 생성된다.
 
-2026-07-18 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
+2026-07-19 현재 Candidate admission, Semantic Validator, objective gate, Replay 계약·Compiler·
 단일 사용 ticket·Restricted Reproducer와 exact KISA fresh-session materializer·live Oracle·
 runner coordinator, 공통 Gate의 verified receipt 재로딩과 append-only disposition 투영이
 구현됐다. M6-05는 같은 receipt 경계를 KISA hardened retest에 연결해 baseline-bound negative
@@ -1215,33 +1233,31 @@ M6-07B-2E는 fail-closed subject→profile 설정, WORKER-only claim/heartbeat/p
 canonical `ReplayCompilation` claim envelope를 연결한다. M6-07B-2F는 schema-v7 append-only exact
 execution context, 발급 시 Campaign/KISA Scenario/canonical ToolSpec component digest, 고정
 `kisa-exact-v1`, secret 금지, opaque output-staging slot과 payload/claim/profile/permit 전이 결박을
-추가한다. public Replay admission/read API, 실제 executor/pre-dispatch permit use, Worker execute/seal,
-output import/typed finalization, 새 identity retry와 end-to-end Control Plane Replay, Gate, negative Control
-Plane retest와 portable/off-host proof는 별도 완료 기준으로 남아 있으며 Compose의 Replay executor는
-비활성 상태다.
+추가한다. Schema-v9 slice는 전용 `kisa-exact-v1` daemon, permit-before-dispatch 집행, opaque staging
+slot execute/seal, server-owned import·typed finalization과 one-item 공통 Gate를 제공하며 Compose는 일반
+Worker와 다른 credential로 이 daemon을 활성화한다. Public Replay admission/read API, 자동
+fresh-identity retry, multi-item versioned projection publication, negative Control Plane retest와
+portable/off-host proof는 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 강화된 KISA 재테스트 완료 기준
 
 M6-05는 다음 조건을 모두 만족해야 완료된 것으로 본다.
 
-- baseline loader는 봉인된 `validation/v1alpha1`의 reproduction-backed Confirmed Finding만
+- baseline loader는 봉인된 `validation/v1alpha1`의 independently attested Confirmed Finding만
   허용하고 legacy flat·semantic-only·미확정 baseline은 거부한다.
 - 각 retest 증명은 Candidate, source Decision, versioned Finding, remediation action,
   baseline/retest Run과 seal root, original/replay request, scenario, threat, Tool, target을
   정확히 결박한다. ID·digest·receipt·seal 불일치는 `inconclusive`로 축소하지 않고 hard fail한다.
 - normal parent retest는 정상 기능 probe와 regression만 담당하며, 취약점 상태는 별도의
   baseline-bound Restricted Replay 공격 결과로 판정한다.
-- 모든 기대 반복이 성공하고 verified canonical receipt의 trusted negative Oracle verdict가
-  `ReplayOracleVerdict.CONTRADICTS`일 때만 `fixed`다. `ReplayOracleVerdict.SUPPORTS`는
-  `still-vulnerable`로 판정하고, 혼합 결과·terminal outcome·반복 부족·명시적 방어 증적 부재는
-  `inconclusive`로 판정한다.
+- 외부 remediation attestation이 없으면 negative Worker replay는 공개 deterministic-lab 응답과
+  모든 반복이 일치해도 `inconclusive`다. `ReplayOracleVerdict.SUPPORTS`는 이미 신뢰된 baseline을
+  `still-vulnerable`로 남긴다.
 - positive confirmation Oracle의 zero-support 판정은 계속 `inconclusive`다. Worker가 제공한
   `vulnerable=false`나 공격 신호 부재만으로 negative 증명을 만들 수 없다.
-- trusted core는 결정론 KISA Lab에 등록된 정확한 방어 응답과 전 턴 marker·`toolCalls`·
-  `memoryWrites` 부재를 바탕으로 M03·M06·A04 negative predicate를 재계산한다. A04는 쓰기 거부와
-  후속 조회에서 쓰기가 지속되지 않았음을 확인한 결과를 구분하며, `safety.blocked`·reason
-  메타데이터만으로는 반증을 만들 수 없다. 등록 응답과
-  메타데이터가 불일치하거나 방어 문구·target이 미등록이면 `inconclusive`다.
+- M03·M06·A04의 등록 방어 응답은 공개 lab fixture이며 remediation authority가 아니다. 문자열,
+  marker, `toolCalls`, `memoryWrites`, `safety.blocked` 메타데이터가 모두 기대값과 일치해도 외부
+  attestation 없이는 `inconclusive`다.
 - remediation plan은 versioned baseline projection과 기존 seal entry를 덮어쓰지 않고 append한
   뒤 새 current root를 만든다. retest receipt는 그 root를 결박하며 이후 baseline 변경은 hard
   fail한다. ReplayOutcome·request·evidence·Oracle·receipt는 각각 별도 replay Run에 봉인하고,
@@ -1299,8 +1315,9 @@ M6-07은 실행 권한과 영속성 경계가 다른 두 범위로 분리한다.
   recovery, distributed Worker 또는 portable attestation을 제공한다고 주장하지 않는다.
 
 **M6-07B Control Plane replay orchestration**은 미완료다. 기존 Campaign Job의 임의 result와
-로컬 절대 경로를 replay authority로 재해석하지 않는다. ADR-0029는 2026-07-17에 승인되었고 그
-결정의 세 가지 제한된 조각을 구현했다. 첫 조각은 버전형 Replay 집합체, 저장소 관리형 v1→v2
+로컬 절대 경로를 replay authority로 재해석하지 않는다. ADR-0029는 2026-07-17에 승인되었고
+구현은 schema v9의 첫 complete one-item positive-confirmation slice까지 도달했다. 그 기반은 버전형
+Replay 집합체, 저장소 관리형 v1→v2
 마이그레이션, 엄격한 내부 payload, lease fencing과 burn-on-claim 수명주기를 도입했다.
 M6-07B-2A는 소유자가 통제하는 managed filesystem repository, immutable `cp_artifacts` metadata,
 schema v3와 완료·봉인된 source의 신뢰된 내부 admission을 추가한다. admission은 producer Control
@@ -1345,10 +1362,14 @@ source/policy/Replay identity, 고정 `kisa-exact-v1`, 빈 lease-ID 집합을 �
 output-staging slot을 canonical하게 포함한다. payload와 claim은 context identity/digest를 반복하고,
 claim profile은 context와 일치해야 하며, permit 발급은 exact authority graph를 통해 context를 다시
 검증한다. v6 migration은 context byte가 없는 dispatchable authority를 가짜로 backfill하지 않고 fail
-closed한다. public Replay admission/read API, 실제 executor와 pre-dispatch permit-use 집행, Worker
-execute/seal, output import/typed finalization, 새 identity retry, Gate와 negative Control Plane retest가 남아
-있어 전체 완료를 주장할 수 없고 Compose에는 Replay executor daemon이 활성화되지 않는다.
-승인된 ADR은 최소한 다음을 정의한다.
+closed한다. Schema v9는 별도 Replay Worker principal로 claim하고 fenced lease를 heartbeat하며 각 Tool
+dispatch 직전에 durable permit을 발급받고 opaque staging slot에 output을 seal한 뒤 발행된 authority
+identity만으로 finalize하는 전용 exact-KISA daemon을 구현한다. Control Plane이 Artifact, 두 seal과
+permit lineage를 import·재검증하고 typed finalization과 one-item 공통 Gate를 원자적으로 기록한다.
+동일 permit/finalize의 bounded response-loss retry는 Tool을 재dispatch하지 않으며 permit 뒤 failure는
+해당 ticket에 terminal이다. Compose는 이 daemon을 활성화한다. Public Replay admission/read API, 자동
+fresh-identity retry, multi-item versioned projection publication과 negative Control Plane retest는 남아
+있으므로 전체 완료를 주장할 수 없다. 승인된 ADR은 최소한 다음을 정의한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
 - Worker lease·retry와 충돌하지 않는 fencing, claim/finalize 및 crash 정책;
@@ -1360,13 +1381,13 @@ execute/seal, output import/typed finalization, 새 identity retry, Gate와 nega
 
 ## 21. 단계별 로드맵
 
-| 단계 | 상태 | 2026-07-18 기준 판단 |
+| 단계 | 상태 | 2026-07-19 기준 판단 |
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA 영속형 SQLite ticket 및 명시적 Local orchestration, 권한 감쇠, 예산·취소·승인, Control Plane Replay 권위 상태 조각, M6-07B-2A managed Artifact, M6-07B-2B exact KISA planned proof, M6-07B-2C durable first-attempt issuance, M6-07B-2D 내부 일회성 호출별 permit ledger/issuance, M6-07B-2E 내부 Worker HTTP transport와 M6-07B-2F exact execution-context 권위는 구현; public admission/read API, executor/pre-dispatch permit use, execute/seal, output import/finalization 등 나머지 Control Plane replay·portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인과 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate slice를 구현; public admission/read API, 자동 fresh-identity retry, multi-item projection publication, negative Control Plane retest, portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
-| Phase 4 | 초기 구현 | PostgreSQL Control Plane, Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
+| Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
 ### Phase 0 — 기반과 거버넌스 (완료)
 
@@ -1397,8 +1418,9 @@ execute/seal, output import/typed finalization, 새 identity retry, Gate와 nega
   Secret Lease 요청 차단, 새 evidence 검증과 이중 seal verified loader
 - exact KISA M03·M06·A04 fresh-session materializer, raw transcript Oracle, Multi-Agent runner
   coordinator와 source/replay 분리 index
-- verified receipt를 내부에서 재로딩하는 공통 Confirmed Gate, reason matrix, 원 seal을 보존하는
-  `validation/v1alpha1` Decision·Finding·Markdown 투영과 KISA report 연결
+- verified receipt를 내부에서 재로딩하는 공통 replay-evidence Gate, reason matrix, 원 seal을
+  보존하는 `verified-replay-evidence` Decision·Markdown 투영. 독립 실행 attestation이 없으면
+  disposition은 `needs-review`로 제한
 - reproduction-backed baseline의 exact Candidate·Decision·Finding·remediation·Run/root 계보에
   결박된 KISA negative ReplayOutcome, hardened retest Gate와 별도 정상 기능 regression
 - 로컬 KISA positive/negative replay의 stable SQLite ticket 원장, 원자적 상태 전이·event journal,
@@ -1431,14 +1453,17 @@ execute/seal, output import/typed finalization, 새 identity retry, Gate와 nega
 - M6-07B-2E 내부 Worker HTTP transport: strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`
   subject→profile-array allowlist(unset은 empty/fail-closed), WORKER-only 전용 claim·heartbeat·Tool-permit
   endpoint, 대응 async client, 서버 검증 canonical `ReplayCompilation`을 포함하고 exact digest/identity를
-  다시 확인하는 claim/heartbeat envelope; 실제 executor가 없으므로 compose 기본 활성화 안 함
+  다시 확인하는 claim/heartbeat envelope
 - M6-07B-2F exact execution context: schema v7 append-only `cp_replay_execution_contexts`, fresh
   compilation별 exact Campaign/KISA Scenario/canonical ToolSpec byte와 component digest, 고정
   `kisa-exact-v1`, secret 금지, opaque output-staging slot, payload/claim/profile/permit 전이 결박,
   dispatchable authority를 정직하게 context로 backfill할 수 없는 v6 migration의 fail-closed 처리
-- 남은 ADR-0029 범위: public Replay admission/read API, actual executor와 pre-dispatch permit-use 집행,
-  Worker execute/seal, output import와 typed finalization, 새 identity retry 발행, Gate, negative Control Plane retest,
-  portable/off-host 서명 proof, KISA 외
+- Schema-v9 exact-KISA 실행/finalization: 전용 Replay Worker principal·daemon, dispatch 직전 동일 permit
+  response-loss의 bounded retry, opaque staging 이중 봉인, server-owned Artifact import·lineage 검증,
+  append-only typed finalization과 one-item 공통 Gate; Compose daemon 활성화와 permit 뒤 같은 ticket의
+  terminal failure
+- 남은 ADR-0029 범위: public Replay admission/read API, 자동 fresh-identity retry 발행, multi-item
+  versioned projection publication, negative Control Plane retest, portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
@@ -1452,7 +1477,7 @@ execute/seal, output import/typed finalization, 새 identity retry, Gate와 nega
 
 ### Phase 4 — 플랫폼과 생태계 (초기 구현)
 
-- FastAPI·PostgreSQL 기반 Job queue와 lease-aware Worker daemon은 초기 구현 완료
+- FastAPI·PostgreSQL 기반 Job queue, lease-aware 일반 Worker와 전용 exact-KISA Replay Worker daemon은 초기 구현 완료
 - 동일 오리진 Web Console의 Run 제출·조회·승인·재개·취소는 초기 구현 완료
 - typed 취소 전파, bounded cooperative grace·forced fallback, 로컬 정리·quiescence seal은 초기 구현 완료
 - 남은 취소 범위: `cancelling` 전이, Worker별 신뢰 ID, fenced cleanup acknowledgement와 중앙 영수증 검증
@@ -1517,10 +1542,11 @@ managed Artifact admission, M6-07B-2B 서버 파생 exact KISA planned proof, M6
 durable reservation 및 fresh authority-bound 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6
 append-only 일회성 호출별 permit 원장과 내부 서비스 발급, M6-07B-2E fail-closed 내부 Worker HTTP
 transport와 canonical compilation claim envelope, M6-07B-2F schema-v7 exact execution-context 권위는
-구현됐다. 다만 public Replay admission/read API, actual executor/pre-dispatch permit-use 집행, Worker
-execute/seal, output import와 typed finalization, 새 identity retry 발행, Gate 연결과 negative Control Plane
-retest가 남아 있어 M6-07B 전체는 미완료다. Compose는 Replay executor daemon을 계속 비활성화한다.
-다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
+구현됐다. Schema-v9 전용 exact-KISA daemon, pre-dispatch permit, opaque staging 이중 봉인,
+server-owned import·typed finalization과 one-item 공통 Gate도 구현됐고 Compose는 별도 Replay Worker
+credential로 daemon을 활성화한다. Public Replay admission/read API, 자동 fresh-identity retry 발행,
+multi-item versioned projection publication과 negative Control Plane retest가 남아 있어 M6-07B 전체는
+미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
 2. Web UI의 인증, 세션, 조직·프로젝트 격리와 멀티테넌시 경계
@@ -1540,7 +1566,7 @@ retest가 남아 있어 M6-07B 전체는 미완료다. Compose는 Replay executo
 - **첫 보고 형식**: Markdown + JSON
 - **첫 격리 방식**: 캠페인별 Docker Worker
 - **Finding 확정 경계**: 별도 제한 재현의 성공 증적과 objective gate 없이는 Confirmed 금지
-- **에이전트 런타임**: PAJIN Core가 상태·정책·실행을 소유하고 PydanticAI는 Agent Runtime Adapter로 제한
+- **에이전트 런타임**: PAJIN Core가 상태·정책·실행을 소유하고 `ProviderAgentRuntime`은 governed 운영 경로로 사용하며 PydanticAI는 결정론적 test를 위한 정확한 로컬 `TestModel`로 제한
 - **첫 Provider 계약**: 등록된 OpenAI-compatible endpoint와 일회용 Secret Lease
 
 첫 `mock-agent` 시나리오는 PAJIN의 멀티 에이전트, MCP/도구 권한, KISA A01·A02,

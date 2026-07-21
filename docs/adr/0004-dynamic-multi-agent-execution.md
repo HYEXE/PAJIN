@@ -99,10 +99,13 @@ boundary.
 
 ## Verification
 
+The normal command uses Docker by default. Simulated execution is an explicit development-only
+contract and its CLI, sealed Run context, and report state that it is not real-target evidence.
+
 ```powershell
+.venv\Scripts\pajin multi-run examples\multi-agent.yaml
 .venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker simulated
-.venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker docker
-.venv\Scripts\pajin multi-cancel-check --worker docker
+.venv\Scripts\pajin multi-cancel-check examples\multi-agent-cancel.yaml --worker docker
 .venv\Scripts\pytest -q
 .venv\Scripts\ruff check src tests containers
 .venv\Scripts\mypy src

@@ -1,5 +1,7 @@
 import json
 from datetime import UTC, datetime
+from hashlib import sha256
+from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from pydantic import ValidationError
@@ -8,6 +10,7 @@ from pajin.domain.models import ToolRequest
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.runtime.worker import WorkerResult, WorkerStatus
 from pajin.tools.ai import (
+    AI_CHAT_PROXY_RECEIPT_VERSION,
     AIChatProbeInput,
     AIChatProbeOutput,
     AIChatProbeTool,
@@ -20,6 +23,7 @@ from pajin.tools.ai import (
     ProbePurpose,
     ProbeTurn,
     evaluate_trusted_regression,
+    verify_ai_chat_proxy_receipts,
 )
 
 
@@ -131,6 +135,145 @@ def _worker_result(raw: dict[str, object]) -> WorkerResult:
         started_at=now,
         finished_at=now,
     )
+
+
+def _regression_contract() -> tuple[
+    AIChatRegressionTool,
+    ToolRequest,
+    dict[str, object],
+    WorkerResult,
+]:
+    regression = AIChatRegressionInput(
+        session_id="pajin:test:receipt-validation",
+        turns=[
+            ProbeTurn(
+                name="first",
+                messages=[ChatMessage(role=ChatRole.USER, content="Say hello.")],
+            ),
+            ProbeTurn(
+                name="second",
+                messages=[ChatMessage(role=ChatRole.USER, content="Say goodbye.")],
+            ),
+        ],
+        checks=[
+            ProbeCheck(
+                check_id="normal-response",
+                kind=ProbeCheckKind.RESPONSE_CONTAINS,
+                turn=0,
+                value="hello",
+            )
+        ],
+    )
+    tool = AIChatRegressionTool()
+    request = ToolRequest(
+        request_id="tool_regression_receipt_validation",
+        agent_id="agent:test",
+        tool_id=tool.spec.tool_id,
+        target="http://ai.example.test/v1/chat",
+        method="POST",
+        arguments=regression.model_dump(mode="json"),
+    )
+    raw = _output(
+        target=request.target,
+        scenario_id="retest.normal-chat-function",
+        threat_class="A00",
+        session_id=regression.session_id,
+        turns=regression.turns,
+        checks=regression.checks,
+        purpose=ProbePurpose.REGRESSION,
+    )
+    worker_result = _worker_result(raw).model_copy(
+        update={"backend": "docker", "network_log": _proxy_receipts(request, raw)}
+    )
+    return tool, request, raw, worker_result
+
+
+def test_ai_probe_trusted_execution_requires_and_accepts_host_receipts() -> None:
+    tool, request, raw = _attack_contract()
+    worker_result = _worker_result(raw).model_copy(
+        update={
+            "backend": "docker",
+            "network_log": _proxy_receipts(request, raw),
+        }
+    )
+    result = tool.interpret(request, worker_result)
+    assert result.success
+
+    with pytest.raises(ValueError, match="requires complete host-observed"):
+        tool.validate_trusted_execution(
+            request,
+            result,
+            worker_result,
+            network_log_trusted=False,
+        )
+
+    tool.validate_trusted_execution(
+        request,
+        result,
+        worker_result,
+        network_log_trusted=True,
+    )
+
+
+def _canonical_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _proxy_receipts(request: ToolRequest, raw: dict[str, object]) -> str:
+    if request.tool_id == AIChatProbeTool.spec.tool_id:
+        probe = AIChatProbeInput.model_validate(request.arguments)
+        scenario_id = probe.scenario_id
+    else:
+        probe = AIChatRegressionInput.model_validate(request.arguments)
+        scenario_id = "retest.normal-chat-function"
+    raw_turns = raw["turns"]
+    assert isinstance(raw_turns, list)
+    parsed_target = urlsplit(request.target)
+    target = urlunsplit(
+        (
+            parsed_target.scheme,
+            parsed_target.netloc,
+            parsed_target.path,
+            "<redacted>" if parsed_target.query else "",
+            "",
+        )
+    )
+    events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
+    for index, (turn, raw_turn) in enumerate(zip(probe.turns, raw_turns, strict=True)):
+        assert isinstance(raw_turn, dict)
+        response = raw_turn["response"]
+        request_body = {
+            "sessionId": probe.session_id,
+            "messages": [message.model_dump(mode="json") for message in turn.messages],
+            "metadata": {"scenarioId": scenario_id, "turn": index},
+        }
+        events.append(
+            json.dumps(
+                {
+                    "event": "allow",
+                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                    "sequence": index + 1,
+                    "method": "POST",
+                    "target": target,
+                    "targetSha256": sha256(request.target.encode("utf-8")).hexdigest(),
+                    "address": "203.0.113.10",
+                    "status": 200,
+                    "requestJsonSha256": _canonical_digest(request_body),
+                    "responseBodySha256": _canonical_digest(response),
+                    "responseJsonSha256": _canonical_digest(response),
+                },
+                separators=(",", ":"),
+            )
+        )
+    return "\n".join(events)
 
 
 def test_ai_chat_probe_output_has_strict_nested_wire_contract() -> None:
@@ -292,9 +435,169 @@ def test_trusted_regression_ignores_forged_worker_verdict_and_check_flags() -> N
     assert isinstance(message, dict)
     message["content"] = "normal response without the expected marker"
     worker_result = _worker_result(raw)
+    worker_result = worker_result.model_copy(
+        update={
+            "backend": "docker",
+            "network_log": _proxy_receipts(request, raw),
+        }
+    )
     tool_result = tool.interpret(request, worker_result)
 
     assert tool_result.success is True
     assert tool_result.data["regressionPassed"] is True
     assert tool_result.data["checks"][0]["matched"] is True
-    assert evaluate_trusted_regression(request, tool_result, worker_result) is False
+    assert (
+        evaluate_trusted_regression(
+            request,
+            tool_result,
+            worker_result,
+            network_log_trusted=True,
+        )
+        is False
+    )
+
+
+def test_trusted_regression_is_not_measured_without_host_proxy_provenance() -> None:
+    regression = AIChatRegressionInput(
+        session_id="pajin:test:regression:untrusted",
+        turns=[
+            ProbeTurn(
+                name="normal-use",
+                messages=[ChatMessage(role=ChatRole.USER, content="Say hello.")],
+            )
+        ],
+        checks=[
+            ProbeCheck(
+                check_id="normal-response",
+                kind=ProbeCheckKind.RESPONSE_CONTAINS,
+                turn=0,
+                value="hello",
+            )
+        ],
+    )
+    tool = AIChatRegressionTool()
+    request = ToolRequest(
+        request_id="tool_regression_untrusted",
+        agent_id="agent:test",
+        tool_id=tool.spec.tool_id,
+        target="http://ai.example.test/v1/chat",
+        method="POST",
+        arguments=regression.model_dump(mode="json"),
+    )
+    raw = _output(
+        target=request.target,
+        scenario_id="retest.normal-chat-function",
+        threat_class="A00",
+        session_id=regression.session_id,
+        turns=regression.turns,
+        checks=regression.checks,
+        purpose=ProbePurpose.REGRESSION,
+    )
+    raw["vulnerable"] = False
+    worker_result = _worker_result(raw).model_copy(
+        update={
+            "backend": "docker",
+            "network_log": _proxy_receipts(request, raw),
+        }
+    )
+    tool_result = tool.interpret(request, worker_result)
+
+    assert tool_result.success is True
+    assert (
+        evaluate_trusted_regression(
+            request,
+            tool_result,
+            worker_result,
+            network_log_trusted=False,
+        )
+        is None
+    )
+
+
+def test_trusted_proxy_receipts_require_complete_ordered_non_error_log() -> None:
+    _tool, request, raw, worker_result = _regression_contract()
+    output = AIChatProbeOutput.model_validate(raw)
+    lines = worker_result.network_log.splitlines()
+    assert verify_ai_chat_proxy_receipts(
+        request,
+        worker_result,
+        output,
+        network_log_trusted=True,
+    )
+
+    malformed_logs = {
+        "missing its initial ready": "\n".join(lines[1:]),
+        "do not cover every": "\n".join(lines[:-1]),
+        "duplicate or incomplete": "\n".join([lines[0], lines[1], lines[1]]),
+        "denied or failed": "\n".join(
+            [lines[0], json.dumps({"event": "error", "error": "upstream failed"})]
+        ),
+        "duplicate or late ready": "\n".join([lines[0], lines[0], *lines[1:]]),
+    }
+    for message, network_log in malformed_logs.items():
+        malformed = worker_result.model_copy(update={"network_log": network_log})
+        with pytest.raises(ValueError, match=message):
+            verify_ai_chat_proxy_receipts(
+                request,
+                malformed,
+                output,
+                network_log_trusted=True,
+            )
+
+    wrong_target_digest = json.loads(lines[1])
+    wrong_target_digest["targetSha256"] = "0" * 64
+    mismatched = worker_result.model_copy(
+        update={"network_log": "\n".join([lines[0], json.dumps(wrong_target_digest), *lines[2:]])}
+    )
+    with pytest.raises(ValueError, match="differs from its host-observed"):
+        verify_ai_chat_proxy_receipts(
+            request,
+            mismatched,
+            output,
+            network_log_trusted=True,
+        )
+
+    missing_body_digest = json.loads(lines[1])
+    missing_body_digest.pop("responseBodySha256")
+    malformed = worker_result.model_copy(
+        update={"network_log": "\n".join([lines[0], json.dumps(missing_body_digest), *lines[2:]])}
+    )
+    with pytest.raises(ValueError, match="receipt is invalid"):
+        verify_ai_chat_proxy_receipts(
+            request,
+            malformed,
+            output,
+            network_log_trusted=True,
+        )
+
+    empty = worker_result.model_copy(update={"network_log": ""})
+    assert not verify_ai_chat_proxy_receipts(
+        request,
+        empty,
+        output,
+        network_log_trusted=True,
+    )
+
+
+def test_trusted_ai_transcript_rechecks_reject_duplicate_worker_json() -> None:
+    tool, request, raw, worker_result = _regression_contract()
+    output = AIChatProbeOutput.model_validate(raw)
+    tool_result = tool.interpret(request, worker_result)
+    assert tool_result.success
+    encoded = json.dumps(raw, separators=(",", ":"))
+    ambiguous = worker_result.model_copy(update={"stdout": '{"turns":[],' + encoded[1:]})
+
+    with pytest.raises(ValueError, match="cannot be bound"):
+        verify_ai_chat_proxy_receipts(
+            request,
+            ambiguous,
+            output,
+            network_log_trusted=True,
+        )
+    with pytest.raises(ValueError, match="invalid raw AI regression transcript"):
+        evaluate_trusted_regression(
+            request,
+            tool_result,
+            ambiguous,
+            network_log_trusted=True,
+        )

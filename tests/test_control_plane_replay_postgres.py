@@ -27,14 +27,17 @@ from pajin.control_plane.database import (
     _V2_METADATA,
     _V3_METADATA,
     _V4_METADATA,
+    _V9_METADATA,
+    CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
+    SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
     ArtifactRecord,
-    Base,
     ControlPlaneRepository,
+    EventRecord,
     JobRecord,
     ReplayBatchRecord,
     ReplayBudgetAccountRecord,
@@ -50,8 +53,10 @@ from pajin.control_plane.database import (
     SchemaInitializationError,
     SchemaVersionRecord,
     _install_append_only_trigger,
+    _install_complete_append_only_guard,
     _validate_append_only_trigger,
     _validate_current_schema,
+    _validate_v9_schema,
 )
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
@@ -66,6 +71,9 @@ from pajin.control_plane.models import (
     ReplayTicketState,
     ReplayToolPermitRequest,
     RunState,
+    job_submission_authority_digest,
+    non_replayable_submission_authority_digest,
+    submission_authority_digest,
 )
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.service import ControlPlaneService, StateConflict
@@ -79,6 +87,24 @@ pytestmark = pytest.mark.skipif(
     reason="set PAJIN_TEST_POSTGRES_URL to an isolated PAJIN PostgreSQL test database",
 )
 _POSTGRES_ARTIFACT_ROOT = Path(tempfile.gettempdir()) / f"pajin-pg-artifacts-{os.getpid()}"
+
+
+@pytest.fixture(autouse=True)
+def _reset_isolated_postgres_database() -> Iterator[None]:
+    """Keep default-schema Replay tests independent across tests and reruns."""
+
+    assert POSTGRES_URL is not None
+    engine = create_engine(POSTGRES_URL, pool_pre_ping=True)
+    try:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        yield
+    finally:
+        with engine.begin() as connection:
+            connection.exec_driver_sql("DROP SCHEMA IF EXISTS public CASCADE")
+            connection.exec_driver_sql("CREATE SCHEMA public")
+        engine.dispose()
 
 
 @pytest.fixture
@@ -167,7 +193,7 @@ def _create_postgres_legacy_schema(repository: ControlPlaneRepository) -> None:
 
     pending = set(LEGACY_CONTROL_PLANE_TABLES)
     with repository.engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
+        for table in _V9_METADATA.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -255,6 +281,48 @@ def _create_postgres_v4_schema(repository: ControlPlaneRepository) -> None:
                 },
             ],
         )
+
+
+def _create_postgres_v9_schema(repository: ControlPlaneRepository) -> None:
+    """Create exact v9 metadata and guards without invoking the v10 migration."""
+
+    pending = set(CURRENT_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V9_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in (
+            "cp_events",
+            "cp_artifacts",
+            "cp_replay_compilations",
+            "cp_replay_execution_contexts",
+            "cp_replay_events",
+            "cp_replay_tool_permits",
+            "cp_replay_finalizations",
+        ):
+            _install_append_only_trigger(connection, table_name)
+            _install_complete_append_only_guard(connection, table_name)
+        now = datetime.now(UTC)
+        connection.execute(
+            _V9_METADATA.tables["cp_schema_version"].insert(),
+            [
+                {"version": version, "description": description, "applied_at": now}
+                for version, description in (
+                    (1, "legacy-control-plane-core"),
+                    (2, "replay-authority"),
+                    (3, "artifact-authority"),
+                    (4, "trusted-replay-compilation-authority"),
+                    (5, "durable-replay-permit-authority"),
+                    (6, "replay-tool-call-permit-authority"),
+                    (7, "replay-execution-context-authority"),
+                    (8, "complete-append-only-guards"),
+                    (9, "server-derived-replay-finalization"),
+                )
+            ],
+        )
+        _validate_v9_schema(connection)
 
 
 def _v2_run_values(suffix: str) -> dict[str, object]:
@@ -418,6 +486,10 @@ def _admit_kisa_source(
             state=RunState.COMPLETED.value,
             input={"sealedSource": True, "suffix": suffix},
             submission_key=f"postgres-replay-source-{suffix}",
+            submission_authority_digest=non_replayable_submission_authority_digest(
+                run_id=source_run_id,
+                authority_kind="postgres-test-fixture",
+            ),
             current_checkpoint_id=None,
             created_at=now,
             updated_at=now,
@@ -435,11 +507,21 @@ def _admit_kisa_source(
                 attempts=1,
                 max_attempts=3,
                 idempotency_key=f"postgres-source-job-{suffix}",
+                submission_authority_digest=job_submission_authority_digest(
+                    job_id=producer_job_id,
+                    run_id=source_run_id,
+                    job_kind="campaign",
+                    payload={"input": {}},
+                    max_attempts=3,
+                    idempotency_key=f"postgres-source-job-{suffix}",
+                ),
                 available_at=now,
                 lease_owner=None,
                 lease_token_hash=None,
                 lease_expires_at=None,
                 heartbeat_at=None,
+                lease_deadline_at=None,
+                heartbeat_event_at=None,
                 result={"engineRunId": fixture.artifact_ref.run_id},
                 error=None,
                 created_at=now,
@@ -467,22 +549,51 @@ def _plan_v4_batch(
     *,
     item_count: int = 1,
 ) -> tuple[ControlPlaneService, str]:
-    """Create valid planned authority without initializing the v4 repository."""
+    """Create valid v4 authority with a compatibility shim for the current ORM.
 
-    service = _service_for_repository(repository)
-    source = _admit_kisa_source(
-        repository,
-        service,
-        suffix,
-        item_count=item_count,
-    )
-    batch = service.create_replay_batch(
-        CreateReplayBatchRequest(
-            source=source,
-            idempotency_key=f"postgres-v4-replay-batch-{suffix}",
-        ),
-        actor="postgres-v4-replay-admission",
-    )
+    The current binary cannot normally run before repository initialization.  These
+    tests need its canonical planners only to author an old-schema fixture, so expose
+    the three later core columns temporarily and remove them before migration starts.
+    """
+
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql(
+            "ALTER TABLE cp_runs ADD COLUMN submission_authority_digest VARCHAR(64)"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE cp_jobs ADD COLUMN submission_authority_digest VARCHAR(64)"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE cp_jobs ADD COLUMN lease_deadline_at TIMESTAMP WITH TIME ZONE"
+        )
+        connection.exec_driver_sql(
+            "ALTER TABLE cp_jobs ADD COLUMN heartbeat_event_at TIMESTAMP WITH TIME ZONE"
+        )
+    try:
+        service = _service_for_repository(repository)
+        source = _admit_kisa_source(
+            repository,
+            service,
+            suffix,
+            item_count=item_count,
+        )
+        batch = service.create_replay_batch(
+            CreateReplayBatchRequest(
+                source=source,
+                idempotency_key=f"postgres-v4-replay-batch-{suffix}",
+            ),
+            actor="postgres-v4-replay-admission",
+        )
+    finally:
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("ALTER TABLE cp_jobs DROP COLUMN heartbeat_event_at")
+            connection.exec_driver_sql("ALTER TABLE cp_jobs DROP COLUMN lease_deadline_at")
+            connection.exec_driver_sql(
+                "ALTER TABLE cp_jobs DROP COLUMN submission_authority_digest"
+            )
+            connection.exec_driver_sql(
+                "ALTER TABLE cp_runs DROP COLUMN submission_authority_digest"
+            )
     return service, batch.batch_id
 
 
@@ -708,6 +819,321 @@ def test_postgres_reinitialize_rejects_stale_artifact_check_drift(
             ),
         ):
             repository.initialize()
+    finally:
+        repository.close()
+
+
+def test_postgres_exact_v9_migration_backfills_v10_authority(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    run_id = f"run_{suffix}"
+    job_id = f"job_{sha256(f'v9-job:{suffix}'.encode()).hexdigest()[:32]}"
+    submission_key = f"postgres-v9-{suffix}"
+    input_value = {"objective": "preserve postgres v9 authority"}
+    actor = "postgres-v9-operator"
+    heartbeat_at = datetime(2026, 1, 1, tzinfo=UTC)
+    lease_expires_at = heartbeat_at + timedelta(seconds=30)
+    try:
+        _create_postgres_v9_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.execute(
+                _V9_METADATA.tables["cp_runs"]
+                .insert()
+                .values(
+                    run_id=run_id,
+                    campaign_name="postgres-v9",
+                    state="running",
+                    input=input_value,
+                    submission_key=submission_key,
+                    current_checkpoint_id=None,
+                    created_at=heartbeat_at,
+                    updated_at=heartbeat_at,
+                )
+            )
+            connection.execute(
+                _V9_METADATA.tables["cp_jobs"]
+                .insert()
+                .values(
+                    job_id=job_id,
+                    run_id=run_id,
+                    kind="campaign",
+                    state="leased",
+                    payload={"input": input_value},
+                    priority=0,
+                    attempts=1,
+                    max_attempts=3,
+                    idempotency_key=f"submission:{submission_key}",
+                    available_at=heartbeat_at,
+                    lease_owner="postgres-v9-worker",
+                    lease_token_hash="a" * 64,
+                    lease_expires_at=lease_expires_at,
+                    heartbeat_at=heartbeat_at,
+                    result=None,
+                    error=None,
+                    created_at=heartbeat_at,
+                    updated_at=heartbeat_at,
+                )
+            )
+            connection.execute(
+                _V9_METADATA.tables[EventRecord.__tablename__]
+                .insert()
+                .values(
+                    event_id=f"event_{suffix}",
+                    run_id=run_id,
+                    sequence=1,
+                    event_type="run.submitted",
+                    actor=actor,
+                    payload={
+                        "campaignName": "postgres-v9",
+                        "jobId": job_id,
+                        "jobKind": "campaign",
+                    },
+                    occurred_at=heartbeat_at,
+                )
+            )
+
+        repository.initialize()
+
+        with repository.transaction() as session:
+            run = session.get(RunRecord, run_id)
+            job = session.get(JobRecord, job_id)
+            assert run is not None
+            assert job is not None
+            assert run.submission_authority_digest == submission_authority_digest(
+                actor=actor,
+                campaign_name="postgres-v9",
+                input_value=input_value,
+                idempotency_key=submission_key,
+                job_kind="campaign",
+                max_attempts=3,
+            )
+            assert job.submission_authority_digest == job_submission_authority_digest(
+                job_id=job_id,
+                run_id=run_id,
+                job_kind="campaign",
+                payload={"input": input_value},
+                max_attempts=3,
+                idempotency_key=f"submission:{submission_key}",
+            )
+            assert job.lease_deadline_at == lease_expires_at
+            assert job.heartbeat_event_at == heartbeat_at
+        assert repository.schema_version() == SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION
+    finally:
+        repository.close()
+
+
+def test_postgres_concurrent_v9_initializers_serialize_one_v10_migration(
+    isolated_postgres_schema_url: str,
+) -> None:
+    fixture_repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    _create_postgres_v9_schema(fixture_repository)
+    fixture_repository.close()
+    barrier = Barrier(3)
+    versions: list[int] = []
+    failures: list[BaseException] = []
+
+    def initialize() -> None:
+        repository = ControlPlaneRepository(isolated_postgres_schema_url)
+        try:
+            barrier.wait(timeout=10)
+            repository.initialize()
+            versions.append(repository.schema_version())
+        except BaseException as error:  # pragma: no cover - asserted below
+            failures.append(error)
+        finally:
+            repository.close()
+
+    workers = [Thread(target=initialize, daemon=True) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=10)
+    for worker in workers:
+        worker.join(timeout=20)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert failures == []
+    assert sorted(versions) == [CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION]
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    try:
+        with repository.engine.connect() as connection:
+            assert (
+                connection.scalar(text("SELECT count(*) FROM cp_schema_version WHERE version = 10"))
+                == 1
+            )
+    finally:
+        repository.close()
+
+
+def test_postgres_v10_guard_rejects_late_v9_submission_writer(
+    isolated_postgres_schema_url: str,
+) -> None:
+    migration_repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    writer_repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    migration_locked = ThreadEvent()
+    release_migration = ThreadEvent()
+    writer_started = ThreadEvent()
+    writer_finished = ThreadEvent()
+    migration_errors: list[BaseException] = []
+    writer_errors: list[BaseException] = []
+
+    def pause_after_lock(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if not " ".join(statement.split()).startswith(
+            "LOCK TABLE cp_runs, cp_jobs, cp_events, cp_schema_version"
+        ):
+            return
+        migration_locked.set()
+        if not release_migration.wait(timeout=10):
+            raise RuntimeError("timed out waiting to release PostgreSQL v10 migration")
+
+    def migrate() -> None:
+        try:
+            migration_repository.initialize()
+        except BaseException as error:
+            migration_errors.append(error)
+
+    def late_v9_write() -> None:
+        try:
+            with writer_repository.engine.begin() as connection:
+                connection.execute(text("SET LOCAL lock_timeout = '5s'"))
+                writer_started.set()
+                connection.execute(
+                    _V9_METADATA.tables["cp_runs"].insert().values(**_v2_run_values(suffix))
+                )
+        except BaseException as error:
+            writer_errors.append(error)
+        finally:
+            writer_finished.set()
+
+    migration_thread = Thread(target=migrate, daemon=True)
+    writer_thread = Thread(target=late_v9_write, daemon=True)
+    listener_installed = False
+    migration_thread_started = False
+    writer_thread_started = False
+    try:
+        _create_postgres_v9_schema(migration_repository)
+        sqlalchemy_event.listen(
+            migration_repository.engine,
+            "after_cursor_execute",
+            pause_after_lock,
+        )
+        listener_installed = True
+        migration_thread.start()
+        migration_thread_started = True
+        assert migration_locked.wait(timeout=10)
+        writer_thread.start()
+        writer_thread_started = True
+        assert writer_started.wait(timeout=10)
+        assert not writer_finished.wait(timeout=0.25)
+
+        release_migration.set()
+        migration_thread.join(timeout=20)
+        writer_thread.join(timeout=20)
+        assert not migration_thread.is_alive()
+        assert not writer_thread.is_alive()
+        assert migration_errors == []
+        assert len(writer_errors) == 1
+        assert isinstance(writer_errors[0], DatabaseError)
+        assert "cp_runs submission authority is invalid" in str(writer_errors[0])
+        assert "lock timeout" not in str(writer_errors[0]).lower()
+        assert migration_repository.schema_version() == CURRENT_SCHEMA_VERSION
+        with migration_repository.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    select(func.count())
+                    .select_from(RunRecord)
+                    .where(RunRecord.run_id == f"run_{suffix}")
+                )
+                == 0
+            )
+    finally:
+        release_migration.set()
+        if migration_thread_started:
+            migration_thread.join(timeout=10)
+        if writer_thread_started:
+            writer_thread.join(timeout=10)
+        if listener_installed:
+            sqlalchemy_event.remove(
+                migration_repository.engine,
+                "after_cursor_execute",
+                pause_after_lock,
+            )
+        writer_repository.close()
+        migration_repository.close()
+
+
+def test_postgres_v10_guard_rejects_late_v9_job_writer(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    repository.initialize()
+    suffix = uuid4().hex
+    run_id = f"run_{suffix}"
+    job_id = f"job_{sha256(f'late-job:{suffix}'.encode()).hexdigest()[:32]}"
+    now = datetime.now(UTC)
+    try:
+        with repository.transaction() as session:
+            session.add(
+                RunRecord(
+                    run_id=run_id,
+                    campaign_name="late-v9-job-writer",
+                    state="queued",
+                    input={},
+                    submission_key=f"late-v9-job-run-{suffix}",
+                    submission_authority_digest=non_replayable_submission_authority_digest(
+                        run_id=run_id,
+                        authority_kind="postgres-late-v9-job-test",
+                    ),
+                    current_checkpoint_id=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        with (
+            pytest.raises(DatabaseError, match="cp_jobs lease authority is invalid"),
+            repository.engine.begin() as connection,
+        ):
+            connection.execute(
+                _V9_METADATA.tables[JobRecord.__tablename__]
+                .insert()
+                .values(
+                    job_id=job_id,
+                    run_id=run_id,
+                    kind="campaign",
+                    state="queued",
+                    payload={},
+                    priority=0,
+                    attempts=0,
+                    max_attempts=1,
+                    idempotency_key=f"late-v9-job-{suffix}",
+                    available_at=now,
+                    lease_owner=None,
+                    lease_token_hash=None,
+                    lease_expires_at=None,
+                    heartbeat_at=None,
+                    result=None,
+                    error=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+        with repository.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    select(func.count()).select_from(JobRecord).where(JobRecord.job_id == job_id)
+                )
+                == 0
+            )
     finally:
         repository.close()
 
@@ -1328,7 +1754,6 @@ def test_postgres_v4_migration_serializes_with_inflight_batch_writer(
 ) -> None:
     migration_repository = ControlPlaneRepository(isolated_postgres_schema_url)
     writer_repository = ControlPlaneRepository(isolated_postgres_schema_url)
-    writer_service = _service_for_repository(writer_repository)
     suffix = uuid4().hex
     writer_locked = ThreadEvent()
     migration_conflicted = ThreadEvent()
@@ -1371,26 +1796,48 @@ def test_postgres_v4_migration_serializes_with_inflight_batch_writer(
         except BaseException as error:
             migration_errors.append(error)
 
-    def write_batch(source: ArtifactLocator) -> None:
+    def write_batch(batch_id: str) -> None:
         try:
-            batch = writer_service.create_replay_batch(
-                CreateReplayBatchRequest(
-                    source=source,
-                    idempotency_key=f"postgres-v4-inflight-writer-{writer_phase}-{suffix}",
-                ),
-                actor="postgres-v4-inflight-writer",
-            )
-            writer_batch_ids.append(batch.batch_id)
+            batch_table = _V4_METADATA.tables["cp_replay_batches"]
+            with writer_repository.engine.begin() as connection:
+                batch = (
+                    connection.execute(
+                        select(batch_table).where(batch_table.c.batch_id == batch_id)
+                    )
+                    .mappings()
+                    .one()
+                )
+                if writer_phase == "artifact":
+                    artifact_table = _V4_METADATA.tables["cp_artifacts"]
+                    locked = connection.execute(
+                        select(artifact_table)
+                        .where(
+                            artifact_table.c.artifact_id == batch["source_artifact_id"],
+                            artifact_table.c.repository_version
+                            == batch["source_repository_version"],
+                        )
+                        .with_for_update()
+                    ).first()
+                else:
+                    run_table = _V4_METADATA.tables["cp_runs"]
+                    locked = connection.execute(
+                        select(run_table)
+                        .where(run_table.c.run_id == batch["source_run_id"])
+                        .with_for_update()
+                    ).first()
+                assert locked is not None
+                connection.execute(
+                    update(batch_table)
+                    .where(batch_table.c.batch_id == batch_id)
+                    .values(updated_at=datetime.now(UTC))
+                )
+            writer_batch_ids.append(batch_id)
         except BaseException as error:
             writer_errors.append(error)
 
     try:
         _create_postgres_v4_schema(migration_repository)
-        source = _admit_kisa_source(
-            migration_repository,
-            _service_for_repository(migration_repository),
-            suffix,
-        )
+        _service_instance, batch_id = _plan_v4_batch(migration_repository, suffix)
         sqlalchemy_event.listen(
             writer_repository.engine,
             "after_cursor_execute",
@@ -1404,7 +1851,7 @@ def test_postgres_v4_migration_serializes_with_inflight_batch_writer(
         )
         migration_listener_installed = True
 
-        writer_thread = Thread(target=write_batch, args=(source,), daemon=True)
+        writer_thread = Thread(target=write_batch, args=(batch_id,), daemon=True)
         writer_thread.start()
         assert writer_locked.wait(timeout=10)
 
@@ -2467,11 +2914,19 @@ def test_postgres_shared_accounts_concurrent_tool_permits_stay_within_capacity(
 
         def derive_with_exact_rate_cap(**kwargs):
             derived = real_derive(**kwargs)
+            rate_cap = derived.observed_campaign_request_units + derived.required_request_units
+            rules = derived.campaign.spec.rules_of_engagement.model_copy(
+                update={"max_requests_per_minute": rate_cap}
+            )
+            campaign = derived.campaign.model_copy(
+                update={
+                    "spec": derived.campaign.spec.model_copy(update={"rules_of_engagement": rules})
+                }
+            )
             return replace(
                 derived,
-                max_requests_per_minute=(
-                    derived.observed_campaign_request_units + derived.required_request_units
-                ),
+                campaign=campaign,
+                max_requests_per_minute=rate_cap,
             )
 
         monkeypatch.setattr(
@@ -2945,3 +3400,32 @@ def test_postgres_schema_fence_rejects_unmanaged_check_catalog_flags(
                 transaction.rollback()
     finally:
         repository.close()
+
+
+def test_postgres_schema_fence_rejects_unmanaged_job_digest_default(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository = ControlPlaneRepository(isolated_postgres_schema_url)
+    repository.initialize()
+    default_digest = "a" * 64
+    with repository.engine.begin() as connection:
+        connection.execute(
+            text(
+                "ALTER TABLE cp_jobs ALTER COLUMN submission_authority_digest "
+                f"SET DEFAULT '{default_digest}'"
+            )
+        )
+    repository.close()
+
+    restarted = ControlPlaneRepository(isolated_postgres_schema_url)
+    try:
+        with pytest.raises(SchemaInitializationError, match="unmanaged server default"):
+            restarted.initialize()
+        digest_column = next(
+            column
+            for column in inspect(restarted.engine).get_columns("cp_jobs")
+            if column["name"] == "submission_authority_digest"
+        )
+        assert default_digest in str(digest_column["default"])
+    finally:
+        restarted.close()

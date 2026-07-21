@@ -4,22 +4,45 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from hashlib import sha256
-from hmac import compare_digest
-from re import fullmatch
 from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator, model_validator
 
+from pajin.domain.ctf import (
+    CTF_CRYPTO_ARTIFACT_HOST,
+    CTF_MAX_INLINE_ARTIFACT_BYTES,
+    CTF_WEB_BACKUP_PATH,
+    CTF_WEB_LAB_HOST,
+    CTF_WEB_LAB_PORT,
+    CTFInlineArtifact,
+    CTFScenario,
+)
 from pajin.domain.models import Authorization, Budgets, StrictModel
 from pajin.policy.scope import normalize_target_url
 
-CTF_WEB_BACKUP_PATH = "/backup/config.json.bak"
-CTF_WEB_LAB_HOST = "host.docker.internal"
-CTF_WEB_LAB_PORT = 8780
-CTF_CRYPTO_ARTIFACT_HOST = "artifact.invalid"
-CTF_MAX_INLINE_ARTIFACT_BYTES = 4_096
+__all__ = [
+    "CTF_CRYPTO_ARTIFACT_HOST",
+    "CTF_MAX_INLINE_ARTIFACT_BYTES",
+    "CTF_WEB_BACKUP_PATH",
+    "CTF_WEB_LAB_HOST",
+    "CTF_WEB_LAB_PORT",
+    "CTFCategory",
+    "CTFChallengeManifest",
+    "CTFChallengeMetadata",
+    "CTFChallengeScope",
+    "CTFChallengeSpec",
+    "CTFEnvironment",
+    "CTFEnvironmentType",
+    "CTFFlagSpec",
+    "CTFInlineArtifact",
+    "CTFRunResult",
+    "CTFScenario",
+    "CTFSolveStatus",
+    "CTFSuiteResult",
+    "CTFSuiteSummary",
+    "default_ctf_budgets",
+]
 
 
 class CTFCategory(StrEnum):
@@ -29,11 +52,6 @@ class CTFCategory(StrEnum):
 
 class CTFEnvironmentType(StrEnum):
     LOCAL_DOCKER = "local-docker"
-
-
-class CTFScenario(StrEnum):
-    WEB_EXPOSED_BACKUP_CONFIG = "web.exposed-backup-config"
-    CRYPTO_SINGLE_BYTE_XOR = "crypto.single-byte-xor"
 
 
 class CTFSolveStatus(StrEnum):
@@ -79,33 +97,6 @@ class CTFChallengeScope(StrictModel):
         if parsed.path != CTF_WEB_BACKUP_PATH or parsed.query:
             raise ValueError(f"CTF Web MVP entry point must be {CTF_WEB_BACKUP_PATH}")
         return normalized
-
-
-class CTFInlineArtifact(StrictModel):
-    encoding: Literal["hex"] = "hex"
-    data: str = Field(min_length=2, max_length=CTF_MAX_INLINE_ARTIFACT_BYTES * 2)
-    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
-    media_type: Literal["application/octet-stream"] = Field(
-        default="application/octet-stream",
-        alias="mediaType",
-    )
-
-    @model_validator(mode="after")
-    def verify_content_address(self) -> CTFInlineArtifact:
-        if fullmatch(r"[a-f0-9]+", self.data) is None:
-            raise ValueError("CTF inline artifact data must be lowercase hexadecimal")
-        if len(self.data) % 2:
-            raise ValueError("CTF inline artifact hex must contain complete bytes")
-        try:
-            decoded = bytes.fromhex(self.data)
-        except ValueError as exc:
-            raise ValueError("CTF inline artifact data must be lowercase hexadecimal") from exc
-        if not 1 <= len(decoded) <= CTF_MAX_INLINE_ARTIFACT_BYTES:
-            raise ValueError("CTF inline artifact exceeds the bounded size")
-        observed = sha256(decoded).hexdigest()
-        if not compare_digest(observed, self.sha256):
-            raise ValueError("CTF inline artifact SHA-256 does not match its decoded bytes")
-        return self
 
 
 class CTFFlagSpec(StrictModel):

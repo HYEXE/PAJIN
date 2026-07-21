@@ -30,6 +30,12 @@ OpenAI Chat Completions는 `POST /chat/completions`에서 메시지 목록을 �
 필드, endpoint/model 재정의, 미등록 함수, POST 외 메서드, 표적 불일치는 Worker dispatch 전에
 실패한다.
 
+결정론적 `provider-check` planner는 Campaign 표적을 정확히 하나만 허용하고, 표적 type이
+`openai-compatible-provider`인지 확인하며, endpoint를 등록 정보와 결합한다. 함수 및 구조화
+출력 스키마는 호출자 컨테이너와 분리된 불변 JSON snapshot이다. 객체 key는 문자열, 숫자는
+유한값이어야 하며, 최대 중첩 깊이는 32, node 수는 20,000, 정규 UTF-8 JSON 크기는 256 KiB다.
+JSON Schema `$ref` 문자열은 정상 허용하지만 Python 컨테이너 cycle은 거부한다.
+
 초기 Adapter는 의도적으로 최소 OpenAI 호환 Chat Completions 표면만 대상으로 한다.
 Responses API와 공급자별 확장을 지원하려면 별도의 Adapter와 ADR이 필요하다.
 
@@ -57,6 +63,11 @@ Supervisor 측 `SecretBroker`는 평문 값을 메모리에 저장하고 PAJIN�
 순서로 정렬한다. 인자 fragment는 원본 JSON으로 보존하고, 명시적인 유효성 flag와 함께 별도로
 dictionary로 parse한다. Adapter는 tool-call intent만 반환하며 이를 실행하지 않는다.
 
+지원 dialect에서는 모든 비스트리밍 응답과 각 SSE identity chunk에 제한된 `model` 문자열이
+있어야 한다. 정규화된 model은 등록·요청한 model과 정확히 같아야 한다. 누락 또는 불일치는
+거부한다. PAJIN은 응답에서 확인하지 못한 값을 관측한 값처럼 보이게 만들 수 있으므로, 누락된
+응답 identity를 자체 요청 값으로 채우지 않는다.
+
 ## 결과
 
 ### 장점
@@ -77,7 +88,8 @@ dictionary로 parse한다. Adapter는 tool-call intent만 반환하며 이를 �
 - 정확한 값 일치에 의존하는 마스킹은 변환·인코딩·해싱되거나 일부만 노출된 secret을 찾지
   못한다. 따라서 공급자 자격증명은 범위를 좁게 유지하고 빠르게 교체할 수 있어야 한다.
 - 공급자마다 Chat Completions 호환성이 다르다. 지원하지 않는 확장은 그대로 전달하지 않고
-  거부하며, 새로운 dialect마다 적합성 테스트가 필요하다.
+  거부하며, 새로운 dialect마다 적합성 테스트가 필요하다. 응답 `model` identity를 생략하는
+  공급자는 이 Adapter와 호환되지 않는다.
 - proxy는 네트워크 경계에서 범위 밖 redirect를 차단하지만, 공급자 신뢰, 보존, 지역별 처리와
   계약상 데이터 통제는 여전히 배포 책임이다.
 - 공급자 함수 호출은 정규화만 한다. 향후 실행 loop는 함수를 실행하기 전에 독립적인 PAJIN

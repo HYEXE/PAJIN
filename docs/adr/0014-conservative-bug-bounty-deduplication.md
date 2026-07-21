@@ -4,9 +4,10 @@
 - Date: 2026-07-13
 - Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 
-> The current reporter can consume legacy validation Findings. They are local review drafts, not
-> reproduction-backed Confirmed submissions. After ADR 0027 migration, only a Finding with a
-> successful Candidate-bound ReplayOutcome can become submission-ready.
+> The reporter consumes the sealed Candidate/Decision validation snapshot, not the flat legacy
+> Finding list as confirmation authority. An exactly supported Candidate without independent
+> reproduction may produce only a `semantic-review-only` draft. Only a Finding in a verified
+> independent-replay projection can become submission-ready.
 
 ## Context
 
@@ -29,10 +30,13 @@ Bug Bounty reporter loads only a completed Run and performs these checks before 
 2. its authorization evidence contains the current canonical program scope digest;
 3. compiled targets, allow/deny scope, risk, methods, tool categories, prohibitions, stop
    conditions, rate, time windows, and budgets still match the reviewed program;
-4. each Finding passes the current validation compatibility gate and targets a declared, allowed
-   endpoint; after ADR 0027 migration, submission-ready additionally requires a successful
-   Candidate-bound ReplayOutcome;
-5. every evidence path resolves to a real file under the same Run's `evidence/` directory.
+4. the complete sealed Candidate/Decision snapshot loads without partial projection, ID,
+   supersession, seal-chain, or authority substitution;
+5. each reportable claim targets a declared, allowed endpoint and every cited evidence path is a
+   sealed file under the same Run's `evidence/` directory;
+6. `ready` and `submission_eligible` require a product Confirmed Finding from a
+   `verified-independent-replay` projection. A Candidate with exact objective and semantic support
+   but no independent reproduction is forced to `needs-review` and `submission_eligible=false`.
 
 The optional `BugBountyFindingIndex` is a strict, program-bound snapshot of known external findings.
 It does not grant execution authority.
@@ -73,6 +77,11 @@ Finding. Exact duplicates receive no draft. Re-running the identical input fails
 overwriting the first report set. A completion event records only artifact paths and aggregate
 counts.
 
+Each triage item records its validation authority. `semantic-review-only` items also record
+`independent-reproduction-not-confirmed`; the model rejects any attempt to combine that authority
+with `ready` or submission eligibility. Unsupported, inconclusive, rejected, or authority-mismatched
+Candidates are not reportable drafts.
+
 Markdown content is HTML- and Markdown-escaped. The output remains a draft and is never submitted
 externally by this workflow.
 
@@ -84,13 +93,15 @@ may leave more work for the operator than a semantic deduplicator, which is inte
 The known-finding index is currently a local snapshot; there is no HackerOne, Bugcrowd, Jira, or
 GitHub synchronization. Local Run artifacts are not yet signed by a durable evidence service, so
 same-Run path validation detects substitution boundaries but not privileged filesystem tampering.
-The reporter does not calculate CVSS, prove business impact, or submit reports. A draft sourced from
-legacy validation also does not prove product-level confirmation. Those remain future validated
-integrations.
+The reporter does not calculate CVSS, prove business impact, independently attest target execution,
+or submit reports. Semantic-review drafts do not prove product-level confirmation. Those remain
+future validated integrations.
 
 ## Validation
 
 Tests cover exact same-Run suppression, unresolved and resolved known matches, same-cause
 multi-endpoint review, incomplete-field TODO drafts, HTML escaping, stale digest rejection, compiled
 policy tampering, missing evidence, typed index loading, content-derived report IDs, repeat-write
-protection, event emission, and CLI artifact generation.
+protection, event emission, semantic Candidate draft generation, independent-replay eligibility,
+forged authority rejection, hardened/no-Candidate behavior, untrusted Markdown escaping, and CLI
+artifact generation.

@@ -29,6 +29,12 @@ contains only canonical messages, the stream flag, bounded completion settings, 
 function schemas. Unknown fields, endpoint/model overrides, unregistered functions, non-POST
 methods, and target mismatches fail before Worker dispatch.
 
+The deterministic `provider-check` planner accepts exactly one Campaign target, requires its type
+to be `openai-compatible-provider`, and binds its endpoint to the registration. Function and
+structured-output schemas are detached immutable JSON snapshots: object keys must be strings,
+numbers finite, nesting at most 32 levels, node count at most 20,000, and canonical UTF-8 JSON at
+most 256 KiB. JSON Schema `$ref` strings remain valid; Python container cycles do not.
+
 The initial adapter intentionally targets the minimal OpenAI-compatible Chat Completions surface.
 Support for the Responses API and provider-specific extensions requires a separate adapter and ADR.
 
@@ -58,6 +64,11 @@ calls are ordered by index; their argument fragments are preserved as raw JSON a
 parsed to a dictionary with an explicit validity flag. The adapter returns tool-call intent only
 and does not execute it.
 
+The supported dialect requires every non-stream response and every SSE identity chunk to contain a
+bounded `model` string. The normalized model must exactly equal the registered/requested model.
+Missing or mismatched values are rejected; PAJIN never fills a missing response identity from its
+own request because doing so would turn an unverified claim into an apparently observed value.
+
 ## Consequences
 
 ### Positive
@@ -79,7 +90,8 @@ and does not execute it.
 - Exact-value redaction cannot catch transformed, encoded, hashed, or partially disclosed secrets.
   Provider credentials should therefore remain narrowly scoped and rapidly rotatable.
 - Chat Completions compatibility varies across vendors. Unsupported extensions are rejected rather
-  than passed through, and each new dialect requires conformance tests.
+  than passed through, and each new dialect requires conformance tests. Providers that omit the
+  response `model` identity are not compatible with this adapter.
 - The proxy prevents out-of-scope redirects at the network boundary, but provider trust, retention,
   regional processing, and contractual data controls remain deployment responsibilities.
 - Provider function calls are only normalized. A future execution loop must perform an independent

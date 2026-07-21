@@ -49,10 +49,14 @@ class Handler(BaseHTTPRequestHandler):
         try:
             status, payload = read_backup(profile=profile)
             self._json(status, payload)
-        except ValueError as exc:
+        except ValueError:
             self._json(
                 HTTPStatus.INTERNAL_SERVER_ERROR,
-                {"challengeId": CHALLENGE_ID, "synthetic": True, "error": str(exc)},
+                {
+                    "challengeId": CHALLENGE_ID,
+                    "synthetic": True,
+                    "error": "lab configuration is invalid",
+                },
             )
 
     def log_message(self, format: str, *args: object) -> None:

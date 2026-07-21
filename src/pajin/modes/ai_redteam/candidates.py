@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from hashlib import sha256
 
-from pajin.agents.base import CandidateProduction
+from pajin.agents.base import CandidateAuthority, CandidateProduction
 from pajin.domain.models import (
     AgentPlan,
     CampaignManifest,
@@ -62,7 +61,7 @@ class KISACandidateProducer:
         }
         scenarios = self._supported_scenarios()
         grouped: dict[tuple[str, str, str], _CandidateObservation] = {}
-        authoritative_request_ids: set[str] = set()
+        authoritative_request_claims: set[CandidateAuthority] = set()
 
         for step in plan.steps:
             scenario = scenarios.get(step.scenario_id or "")
@@ -75,7 +74,14 @@ class KISACandidateProducer:
             )
             if probe is None:
                 continue
-            authoritative_request_ids.add(step.request.request_id)
+            threat_class = next(iter(scenario.threat_classes))
+            authoritative_request_claims.add(
+                CandidateAuthority(
+                    request_id=step.request.request_id,
+                    target=step.request.target,
+                    threat_class=threat_class,
+                )
+            )
             result = results_by_request.get(step.request.request_id)
             if result is None or not self._is_trusted_observation(
                 step=step,
@@ -84,7 +90,6 @@ class KISACandidateProducer:
             ):
                 continue
 
-            threat_class = next(iter(scenario.threat_classes))
             key = (scenario.scenario_id, threat_class, step.request.target)
             observation = grouped.setdefault(
                 key,
@@ -99,11 +104,7 @@ class KISACandidateProducer:
                 self._to_candidate(observation, created_at=created_at)
                 for observation in grouped.values()
             ),
-            authoritative_request_ids=frozenset(authoritative_request_ids),
-            authoritative_claim_keys=self._authoritative_claim_keys(
-                campaign,
-                scenarios.values(),
-            ),
+            authoritative_request_claims=frozenset(authoritative_request_claims),
         )
 
     def _supported_scenarios(self) -> dict[str, KISAScenarioDefinition]:
@@ -114,21 +115,6 @@ class KISACandidateProducer:
             and scenario.probe is not None
             and len(scenario.threat_classes) == 1
         }
-
-    @staticmethod
-    def _authoritative_claim_keys(
-        campaign: CampaignManifest,
-        scenarios: Iterable[KISAScenarioDefinition],
-    ) -> frozenset[tuple[str, str]]:
-        scenario_items = list(scenarios)
-        return frozenset(
-            (target.endpoint, threat_class)
-            for scenario in scenario_items
-            for threat_class in scenario.threat_classes
-            for target in campaign.spec.targets
-            if (not campaign.spec.threat_classes or threat_class in campaign.spec.threat_classes)
-            and target.type in scenario.target_types
-        )
 
     @staticmethod
     def _trusted_probe(

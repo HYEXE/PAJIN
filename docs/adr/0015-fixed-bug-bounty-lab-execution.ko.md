@@ -51,10 +51,13 @@ Tool은 요청 비용을 3으로 선언한다.
 4. 모든 관찰 결과의 합성 마커
 5. 연결된 Specialist 결과가 생성한 증거
 
-Validator는 Worker의 `vulnerable` 값과 파생된 검사 불리언을 의도적으로 무시한다. Validator가
-다시 계산한 결과만 검증된 `CWE-89` Finding이 된다. 그런 다음 일반 다중 에이전트 러너가 증거와
-대상의 결합을 강제한 후, Bug Bounty 리포터가 현재 정책 다이제스트를 검사하고 보수적인 로컬
-초안을 생성한다.
+Validator는 Worker의 `vulnerable` 값과 파생된 검사 불리언을 의도적으로 무시한다. 다시 계산한
+양성 결과는 정확한 `CWE-89` Candidate로 일반 validation gate에 들어간다. Gate는 request,
+evidence provenance, target, scope 및 semantic 결합을 강제한 뒤
+`independent-reproduction-missing` 사유의 `needs-review`를 기록한다. 이 원래 control-set 실행은
+제품 Confirmed Finding projection을 채우지 않는다. Bug Bounty 리포터는 봉인된 이
+Candidate/Decision 쌍을 사용하여 `submission_eligible=false`인 명확한
+`semantic-review-only` 초안 하나를 만든다. 강화 결과는 Candidate도 초안도 만들지 않는다.
 
 `bug-bounty-run`은 Docker 전용이다. 모의 실행 옵션이 없으며 외부로 제출하지 않는다. 일반적인
 공개 Bug Bounty 프로그램도 검토하고 컴파일할 수는 있지만, 별도로 제한된 프로브 프로필이
@@ -74,5 +77,6 @@ Validator는 Worker의 `vulnerable` 값과 파생된 검사 불리언을 의도�
 
 테스트는 프로필 컴파일 및 사설 네트워크 제한, 고정 Tool 입력, Gateway 전용 이그레스, 3단위
 요청 한도 예약, 독립적인 관찰 결과 재계산, 강화 프로필의 거부, 5개 역할의 다중 에이전트 실행,
-증거에 결합된 초안 생성, Docker 전용 CLI 선택 및 합성 대상의 동작을 다룬다. Docker 통합
+봉인된 Candidate/Decision authority, 취약한 경우의 review-only 초안 생성, 강화된 경우의
+무-Candidate/무-초안 동작, Docker 전용 CLI 선택 및 합성 대상의 동작을 다룬다. Docker 통합
 시퀀스는 동일한 다이제스트 승인 Campaign을 통해 취약 프로필과 강화 프로필을 모두 실행한다.

@@ -4,11 +4,14 @@ from pathlib import Path
 
 import pytest
 
+from pajin.agents.base import CandidateAuthority
+from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
-from pajin.domain.models import AgentPlan, CampaignManifest, ToolResult
+from pajin.domain.models import AgentPlan, CampaignManifest, Finding, ToolResult
+from pajin.domain.validation import ValidationReasonCode
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import EvaluationThresholds
-from pajin.modes.ai_redteam.runtime import KISAPlannerRuntime
+from pajin.modes.ai_redteam.runtime import KISAPlannerRuntime, KISAValidatorRuntime
 from pajin.tools.ai import AIChatProbeInput
 
 
@@ -82,6 +85,20 @@ def _result_for_step(plan: AgentPlan, index: int) -> ToolResult:
     )
 
 
+class _StaticFindingValidator:
+    def __init__(self, findings: list[Finding]) -> None:
+        self._findings = findings
+
+    async def validate(
+        self,
+        campaign: CampaignManifest,
+        plan: AgentPlan,
+        results: list[ToolResult],
+    ) -> list[Finding]:
+        del campaign, plan, results
+        return [finding.model_copy(deep=True) for finding in self._findings]
+
+
 def test_producer_rechecks_all_catalog_transcripts_and_groups_repetitions() -> None:
     campaign = _campaign()
     plan = _plan(campaign)
@@ -117,6 +134,88 @@ def test_producer_rechecks_all_catalog_transcripts_and_groups_repetitions() -> N
     assert production.authoritative_claim_keys == frozenset(
         (campaign.spec.targets[0].endpoint, threat_class) for threat_class in ("M03", "M06", "A04")
     )
+    assert production.authoritative_request_claims == frozenset(
+        CandidateAuthority(
+            request_id=step.request.request_id,
+            target=step.request.target,
+            threat_class=next(iter(step.threat_classes)),
+        )
+        for step in plan.steps
+    )
+
+
+@pytest.mark.parametrize(
+    ("field_name", "foreign_value"),
+    [
+        ("summary", "A different security behavior was observed."),
+        ("impact", "A delegate-only impact statement."),
+        ("affected_component", "delegate-only-component"),
+        ("root_cause", "A delegate-only root cause."),
+        ("reproduction", ["Use a different reproduction procedure."]),
+        ("remediation", ["Apply a delegate-only remediation."]),
+        ("confidence", 0.5),
+    ],
+)
+def test_validator_adapter_requires_every_candidate_claim_field(
+    field_name: str,
+    foreign_value: object,
+) -> None:
+    campaign = _campaign()
+    full_plan = _plan(campaign, repetitions=1)
+    plan = full_plan.model_copy(update={"steps": [full_plan.steps[0]]})
+    result = _result_for_step(plan, 0)
+    candidate = KISACandidateProducer().produce(campaign, plan, [result]).candidates[0]
+    exact_finding = asyncio.run(DeterministicAgentRuntime().validate(campaign, plan, [result]))[0]
+
+    exact = asyncio.run(
+        KISAValidatorRuntime(_StaticFindingValidator([exact_finding])).validate_candidates(
+            campaign,
+            plan,
+            [result],
+            [candidate],
+        )
+    ).assessments[0]
+    assert exact.supports_claim
+    assert exact.supporting_evidence == candidate.claim.evidence
+
+    partial_finding = exact_finding.model_copy(update={field_name: foreign_value})
+    partial = asyncio.run(
+        KISAValidatorRuntime(_StaticFindingValidator([partial_finding])).validate_candidates(
+            campaign,
+            plan,
+            [result],
+            [candidate],
+        )
+    ).assessments[0]
+    assert not partial.supports_claim
+    assert partial.reason_code is ValidationReasonCode.VALIDATOR_OMITTED
+    assert partial.supporting_evidence == []
+
+
+def test_validator_adapter_rejects_conflicting_repetition_claims() -> None:
+    campaign = _campaign()
+    full_plan = _plan(campaign, repetitions=2)
+    plan = full_plan.model_copy(update={"steps": full_plan.steps[:2]})
+    results = [_result_for_step(plan, index) for index in range(2)]
+    candidate = KISACandidateProducer().produce(campaign, plan, results).candidates[0]
+    findings = asyncio.run(DeterministicAgentRuntime().validate(campaign, plan, results))
+    assert len(findings) == 2
+    findings[1] = findings[1].model_copy(
+        update={"summary": "A conflicting repeated-observation claim."}
+    )
+
+    assessment = asyncio.run(
+        KISAValidatorRuntime(_StaticFindingValidator(findings)).validate_candidates(
+            campaign,
+            plan,
+            results,
+            [candidate],
+        )
+    ).assessments[0]
+
+    assert not assessment.supports_claim
+    assert assessment.reason_code is ValidationReasonCode.VALIDATOR_OMITTED
+    assert assessment.supporting_evidence == []
 
 
 def test_producer_treats_empty_campaign_threat_list_as_unconstrained() -> None:

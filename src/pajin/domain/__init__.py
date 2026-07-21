@@ -29,6 +29,7 @@ from pajin.domain.replay import (
     ReplayOracleVerdict,
     ReplayOutcome,
     ReplaySessionPolicy,
+    ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
 )
@@ -70,6 +71,7 @@ __all__ = [
     "ReplayOracleVerdict",
     "ReplayOutcome",
     "ReplaySessionPolicy",
+    "ReplaySourceCapabilityReceipt",
     "ToolRequest",
     "ToolResult",
     "ToolRiskTier",

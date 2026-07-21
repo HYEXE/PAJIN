@@ -9,6 +9,8 @@ from pydantic import Field
 
 from pajin.domain.models import StrictModel
 from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
     CancellationKind,
     ExecutionCancellationContext,
     ExecutionCancellationSnapshot,
@@ -69,6 +71,36 @@ async def await_with_cancellation[T](
                 task.cancel()
         await asyncio.gather(operation_task, cancellation_task, return_exceptions=True)
         raise
+
+
+async def await_with_campaign_deadline[T](
+    operation: Awaitable[T],
+    budget: BudgetController,
+    cancellation: ExecutionCancellationContext | None = None,
+) -> T:
+    """Bound and drain one owned operation by both cancellation and Campaign time.
+
+    ``BudgetController`` checks performed before dispatch do not stop an operation that
+    blocks after dispatch.  The timeout context cancels ``await_with_cancellation``;
+    that helper in turn cancels and drains the owned operation and cancellation waiter
+    before this function reports the Campaign budget failure.
+    """
+
+    operation_task = asyncio.ensure_future(operation)
+    try:
+        budget.check_duration()
+    except BudgetExceeded:
+        operation_task.cancel()
+        await asyncio.gather(operation_task, return_exceptions=True)
+        raise
+    timeout = asyncio.timeout(budget.remaining_seconds)
+    try:
+        async with timeout:
+            return await await_with_cancellation(operation_task, cancellation)
+    except TimeoutError as exc:
+        if not timeout.expired():
+            raise
+        raise BudgetExceeded("maximum campaign duration exceeded") from exc
 
 
 def ensure_cancellation_context(

@@ -9,11 +9,24 @@
 - Implementation: In progress; restricted replay, the receipt-reloading common confirmation/retest
   gates, append-only versioned validation projections, exact KISA fresh-session integration,
   baseline-bound negative KISA retest, durable Local SQLite ticket verification, and explicit
-  single-process Local KISA orchestration are implemented, while Control Plane orchestration and
-  additional Modes remain planned
+  single-process Local KISA orchestration are implemented. The dedicated exact-KISA Control Plane
+  claim → permit → execute/seal → server import/finalize → one-item common Gate slice is also
+  implemented. Public Replay admission/read APIs, automatic fresh-identity retry issuance,
+  negative Control Plane retest, and additional Modes remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.en.md), [ADR 0026](0026-trusted-kisa-candidate-admission.en.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.en.md)
 - Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.en.md)
+
+> **Normative security correction (2026-07-19):** A typed transcript, Worker/proxy receipt,
+> ticket finalization, hash, and local seal establish internal consistency and lineage only. They
+> do not establish that the intended target executed outside the source/replay Worker trust domain.
+> Product confirmation therefore also requires independently verifiable execution/target
+> attestation. Because no such verifier exists in the repository today, every Local, CLI, and
+> Control Plane Worker-only supporting replay is capped at `needs-review` with
+> `independent-execution-attestation-missing` and `verified-replay-evidence` semantics. Likewise,
+> negative target transcripts—including the public deterministic-lab response tuple—cannot prove
+> remediation and remain `inconclusive`. This correction supersedes any `CONFIRMED` or `FIXED`
+> promotion rule described below; those passages record the earlier design.
 
 ## Context
 
@@ -45,9 +58,13 @@ A Candidate can become product-level `confirmed` only when all applicable condit
 5. a Mode-owned typed Oracle supports the precise claim from the reproduction observation; and
 6. when the Mode declares semantic interpretation necessary, the Semantic Validator also supports
    the claim.
+7. an authority outside the source/replay Worker trust domain independently attests execution by
+   the intended target.
 
 Semantic support, original evidence strength, producer admission, repeated Specialist observations,
-or human confidence cannot replace the successful independent `ReplayOutcome`.
+or human confidence cannot replace the successful `ReplayOutcome` and independent execution
+attestation. A separate Run, request ID, process, backend instance, or locally sealed receipt is not
+by itself a separate trust domain.
 
 ### Validator is a pipeline, not one LLM agent
 
@@ -191,6 +208,19 @@ executable intent fields and cross-artifact substitution; and give `ValidationDe
 ReplayOutcome reference. `ai.chat-probe` Tool interpretation, trusted Candidate production, and
 deterministic validation share the same strict `AIChatProbeOutput` contract while recomputing rather
 than trusting Worker verdict fields.
+
+The semantic authority boundary is durable as well as in-memory. Each validation phase writes its
+exact Validator Agent and Task identity, Findings, and Candidate assessments to
+`validator-output.json` in the same sealed source Run. Every assessment binds the exact canonical
+Candidate claim digest, and positive support must cite non-empty evidence. For CP-eligible KISA
+output adapted from legacy Findings, positive support must cite the Candidate's complete evidence
+list and reconcile one-to-one with a validated Validator Finding whose every semantic field is
+identical; only the legacy Finding's opaque ID and validation-state field are normalized by the
+trusted Candidate-aware adapter. A durable consumer, including Control Plane replay derivation,
+must reload those bytes and replay the deterministic Gate; it must not infer or synthesize Validator
+support from the Candidate or a stored lifecycle state. This binding proves only what the Validator
+assessed. It does not provide independent execution attestation, a successful `ReplayOutcome`,
+product `confirmed`, or remediation evidence for `fixed`.
 
 PAJIN also implements a pure deterministic `ReplayCompiler`. It checks the trusted Plan, the actual
 Specialist-bound `ToolRequest`, the original Specialist Grant, Candidate evidence, trusted request

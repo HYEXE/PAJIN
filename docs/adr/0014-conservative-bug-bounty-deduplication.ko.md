@@ -6,9 +6,10 @@
 - 날짜: 2026-07-13
 - 확인 의미 체계 개정: [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md)
 
-> 현재 리포터는 레거시 검증 Finding을 사용할 수 있다. 이들은 재현으로 뒷받침된 Confirmed
-> 제출물이 아니라 로컬 검토 초안이다. ADR 0027 마이그레이션 이후에는 Candidate에 결합된
-> ReplayOutcome이 성공한 Finding만 제출 준비 상태가 될 수 있다.
+> 리포터는 평면 레거시 Finding 목록을 확인 권위로 사용하지 않고 봉인된 Candidate/Decision
+> validation snapshot을 사용한다. 정확히 지원되었지만 독립 재현이 없는 Candidate는
+> `semantic-review-only` 초안만 만들 수 있다. 검증된 독립 재현 projection의 Finding만 제출
+> 준비 상태가 될 수 있다.
 
 ## 배경
 
@@ -31,10 +32,13 @@ Bug Bounty 리포터는 완료된 Run만 로드하고 트리아지 전에 다음
 2. 권한 부여 증거에 현재 정규 프로그램 범위 다이제스트가 포함되어 있다.
 3. 컴파일된 대상, 허용/거부 범위, 위험, 메서드, Tool 범주, 금지 사항, 중지 조건, 속도,
    테스트 시간대 및 예산이 검토한 프로그램과 여전히 일치한다.
-4. 각 Finding이 현재 검증 호환성 게이트를 통과하고 선언된 허용 엔드포인트를 대상으로 한다.
-   ADR 0027 마이그레이션 이후 제출 준비 상태가 되려면 Candidate에 결합된 ReplayOutcome의
-   성공도 필요하다.
-5. 모든 증거 경로가 동일한 Run의 `evidence/` 디렉터리 아래에 있는 실제 파일로 해석된다.
+4. 완전하게 봉인된 Candidate/Decision snapshot을 로드하며 일부 projection, ID, supersession,
+   seal chain 또는 authority 대체가 없어야 한다.
+5. 보고 가능한 각 주장은 선언된 허용 endpoint를 대상으로 하고 인용한 모든 evidence path가
+   동일 Run의 `evidence/` directory 아래에 봉인된 파일이어야 한다.
+6. `ready`와 `submission_eligible`에는 `verified-independent-replay` projection의 제품 Confirmed
+   Finding이 필요하다. 정확한 objective 및 semantic 지원은 있지만 독립 재현이 없는 Candidate는
+   강제로 `needs-review`, `submission_eligible=false`가 된다.
 
 선택적 `BugBountyFindingIndex`는 알려진 외부 Finding을 프로그램에 엄격히 결합한 스냅샷이다.
 실행 권한을 부여하지 않는다.
@@ -76,6 +80,11 @@ Finding의 제출 초안 하나가 포함된다. 정확한 중복에는 초안�
 실행하면 첫 번째 보고서 세트를 덮어쓰는 대신 실패한다. 완료 이벤트에는 아티팩트 경로와 집계
 개수만 기록한다.
 
+각 triage item은 validation authority를 기록한다. `semantic-review-only` item에는
+`independent-reproduction-not-confirmed`도 기록하며, 모델은 이 authority를 `ready` 또는 제출
+자격과 결합하려는 시도를 거부한다. 지원되지 않거나 inconclusive/rejected 상태이거나 authority가
+일치하지 않는 Candidate는 보고 가능한 초안이 되지 않는다.
+
 Markdown 콘텐츠에는 HTML 및 Markdown 이스케이프를 적용한다. 출력은 초안으로 남으며 이
 워크플로를 통해 외부에 제출되지 않는다.
 
@@ -87,12 +96,14 @@ Markdown 콘텐츠에는 HTML 및 Markdown 이스케이프를 적용한다. 출�
 알려진 Finding 인덱스는 현재 로컬 스냅샷이며 HackerOne, Bugcrowd, Jira 또는 GitHub와 동기화되지
 않는다. 로컬 Run 아티팩트는 아직 영속 증거 서비스가 서명하지 않으므로 동일 Run 내 경로 검증은
 대체 경계를 탐지하지만 권한이 있는 파일 시스템 변조는 탐지하지 못한다. 리포터는 CVSS를
-계산하거나 비즈니스 영향을 입증하거나 보고서를 제출하지 않는다. 레거시 검증에서 유래한 초안
-또한 제품 수준 확인을 입증하지 못한다. 이러한 기능은 향후 검증된 통합으로 남는다.
+계산하거나 비즈니스 영향을 입증하거나 target 실행을 독립적으로 attest하거나 보고서를 제출하지
+않는다. semantic-review 초안은 제품 수준 확인을 입증하지 못한다. 이러한 기능은 향후 검증된
+통합으로 남는다.
 
 ## 검증
 
 테스트는 정확히 일치하는 동일 Run 내 억제, 미해결 및 해결된 알려진 항목과의 일치, 동일 원인의
 다중 엔드포인트 검토, 필드가 불완전한 TODO 초안, HTML 이스케이프, 오래된 다이제스트 거부,
 컴파일된 정책 변조, 증거 누락, 타입 지정 인덱스 로딩, 콘텐츠에서 파생한 보고서 ID, 반복 쓰기
-방지, 이벤트 방출 및 CLI 아티팩트 생성을 다룬다.
+방지, 이벤트 방출, semantic Candidate 초안 생성, 독립 재현 제출 자격, 위조 authority 거부,
+강화/무-Candidate 동작, 신뢰할 수 없는 Markdown escape 및 CLI 아티팩트 생성을 다룬다.

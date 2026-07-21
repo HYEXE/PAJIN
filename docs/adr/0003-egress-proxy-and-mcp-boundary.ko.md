@@ -33,11 +33,16 @@ stdio 인자를 제공할 수 있다면 겉보기에 유효한 MCP 호출이 무
    금지된 주소가 하나라도 있으면 전체 결과를 거부한 뒤 검증된 리터럴 주소에 연결한다.
 6. 사설, loopback, link-local, multicast, unspecified 및 reserved 주소는 기본적으로 거부된다.
    사설 대상에는 명시적인 캠페인 교전 규칙이 필요하다.
-7. 프록시의 허용, 거부 및 오류 이벤트는 Worker 증적에 첨부된다. 쿼리 값은 마스킹된다.
-8. HTTP 요청에는 메서드, authority, 경로, 쿼리 정책 및 대상 IP 전체 검사가 적용된다.
-   HTTPS는 종단 간 암호화를 유지한다. CONNECT는 호스트 전체에 적용되는 `/*` 또는 `/**`
-   규칙으로만 허용되며, 해당 authority에 대한 거부 규칙이 하나라도 있으면 터널 전체를
-   거부한다. PAJIN은 TLS를 가로채지 않는다.
+7. 프록시의 허용, 거부 및 타입이 정해진 오류 이벤트는 Worker 증적에 첨부된다. 쿼리 값과
+   raw exception text는 보관하지 않는다.
+8. 평문 HTTP 요청에는 메서드, authority, 경로, 쿼리 정책 및 대상 IP 전체 검사가 적용된다.
+   HTTPS는 종단 간 암호화를 유지하므로 프록시는 CONNECT authority만 집행할 수 있다.
+   호스트 전체에 적용되는 `/*` 또는 `/**` allow rule만 허용하고, 해당 authority를 대상으로
+   하는 deny rule이 하나라도 있으면 전체 authority를 거부한다. 정확한 HTTPS method와 path는
+   proxy inspection이 아니라 Gateway에 결박된 고정 Worker action에서 온다. CONNECT event는
+   `receiptEligible=false`이며 `methodEnforcement=trusted-worker-only`와
+   `pathEnforcement=authority-only`를 명시하므로 request/response receipt가 아니다. PAJIN은
+   TLS를 가로채지 않는다.
 
 ### MCP 실행
 
@@ -49,16 +54,24 @@ stdio 인자를 제공할 수 있다면 겉보기에 유효한 MCP 호출이 무
    카탈로그를 소유한다. 알 수 없는 서버와 도구는 fail closed 방식으로 거부한다.
 4. Worker bridge는 공식 MCP Python SDK v1을 사용하고 stdio 세션을 초기화한 뒤
    `list_tools`를 확인하며, 서버가 해당 도구를 알릴 때만 등록된 도구를 호출한다.
-5. MCP SDK 의존성은 Python 3.12 Linux 환경을 기준으로 해석되고, SDK 버전은 v2 미만으로
-   고정되며 전이 의존성과 함께 해시로 잠긴다. 준비 스크립트는 호스트 신뢰 저장소를 사용해
-   로컬 번들을 구성한다. Docker 빌드는 패키지 인덱스에 접근하지 않으며 TLS 검증을
-   비활성화하지 않는다.
+5. MCP SDK 의존성은 Python 3.12를 기준으로 해석되고, SDK 버전은 v2 미만으로 고정되며
+   platform marker와 전이 의존성을 포함해 hash-lock된다. Docker build는 설정된 package
+   index 또는 cache에서 binary wheel을 내려받고 선택된 모든 distribution hash의 일치를
+   요구하며 TLS 검증을 비활성화하지 않는다. lock 기준으로 재현 가능하지만 offline build는
+   아니다.
+6. Worker는 bridge의 stdout과 stderr를 동시에 끝까지 비우되 각 스트림에서 고정 크기
+   prefix만 보관한다. 어느 한쪽이라도 상한을 넘으면 fail closed로 처리하고, timeout이나
+   취소가 발생하면 action을 반환하기 전에 bridge 프로세스 그룹을 종료한다.
+7. 호스트 Adapter는 엄격한 bridge envelope만 수용한다. `isError`는 실제 boolean이어야
+   하고 content는 타입과 크기가 제한된다. 중복 JSON key와 예약된 식별자 필드는 거부하며,
+   target·server·tool 식별자는 요청과 봉인된 등록 정보에서만 생성한다.
 
 ## 결과
 
 ### 장점
 
-- 캠페인 범위가 Tool Gateway와 네트워크 경계 모두에서 강제된다.
+- destination authority, DNS 결과, 평문 HTTP 범위는 Tool Gateway와 네트워크 경계 모두에서
+  강제된다. 정확한 HTTPS request는 신뢰된 고정 Worker action에 계속 결박된다.
 - Worker의 직접 소켓은 내부 Docker 네트워크를 통해 프록시를 우회할 수 없다.
 - 금지된 주소를 향하는 DNS rebinding은 연결 전에 거부된다.
 - 에이전트가 MCP 등록을 임의 프로세스 실행으로 바꿀 수 없다.
@@ -66,8 +79,13 @@ stdio 인자를 제공할 수 있다면 겉보기에 유효한 MCP 호출이 무
 
 ### 절충점과 잔여 위험
 
-- 프록시에는 HTTPS 메서드와 경로 세부 정보가 보이지 않는다. 따라서 호스트 전체 승인이
-  필요하며, 경로별 HTTPS 거부 규칙은 전체 authority에 대해 fail closed 방식으로 작동한다.
+- 프록시에는 HTTPS method와 path 세부 정보가 보이지 않는다. 따라서 host-wide 승인이
+  필요하고 path별 HTTPS deny rule은 전체 authority에 대해 fail closed하며, CONNECT event는
+  암호화된 어떤 request가 전송됐는지 attest할 수 없다. 신뢰된 고정 Worker action의 침해는
+  이 proxy의 method/path 집행 경계 밖이다.
+- Proxy policy JSON, response buffering, JSON receipt parsing은 크기가 제한된다. 고정 64 MiB
+  proxy container가 허용하는 response 상한은 8 MiB이며, 더 큰 설정은 eventual OOM kill에
+  의존하지 않고 validation에서 거부된다.
 - 로컬 Docker daemon과 외부 Docker 네트워크는 계속 신뢰 인프라로 남는다. 운영 배포에는
   강화된 원격 Worker plane, 이미지 digest와 서명, 호스트 방화벽 통제가 필요하다.
 - 호스트와 Worker의 MCP 카탈로그는 서로 달라질 수 있다. 런타임 `list_tools` 검증은 누락된
@@ -89,5 +107,6 @@ stdio 인자를 제공할 수 있다면 겉보기에 유효한 MCP 호출이 무
 ```
 
 Docker 검증에서는 허용 목록의 요청이 성공하고, 거부된 authority가 차단되며, 직접 소켓
-우회가 막히고, 등록된 MCP 도구가 검증된 Finding 하나를 생성하며, 잔여 PAJIN 컨테이너나
-실행별 네트워크가 없어야 한다.
+우회가 막히고, CONNECT evidence가 request receipt로 명시적으로 부적격 상태를 유지하며,
+등록된 MCP 도구가 검증된 Finding 하나를 생성하고, 잔여 PAJIN 컨테이너나 실행별 네트워크가
+없어야 한다.

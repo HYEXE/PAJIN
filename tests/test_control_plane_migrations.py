@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from threading import Barrier, Thread
 from threading import Event as ThreadEvent
-from threading import Thread
 from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import MetaData, inspect, select, text, update
 from sqlalchemy import event as sqlalchemy_event
-from sqlalchemy import inspect, select, text, update
-from sqlalchemy.exc import DatabaseError, IntegrityError
+from sqlalchemy.exc import DatabaseError, DBAPIError, IntegrityError
+from sqlalchemy.orm import Session
+from sqlalchemy.pool import StaticPool
 
+from pajin.control_plane import database as database_module
+from pajin.control_plane import database_dialect, database_migrations, database_schema
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.database import (
     _V2_METADATA,
@@ -24,22 +30,32 @@ from pajin.control_plane.database import (
     _V5_MIGRATION_WRITE_LOCK_TABLES,
     _V6_METADATA,
     _V6_MIGRATION_WRITE_LOCK_TABLES,
+    _V7_MIGRATION_WRITE_LOCK_TABLES,
+    _V9_METADATA,
+    _V9_MIGRATION_WRITE_LOCK_TABLES,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
+    COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
     CURRENT_CONTROL_PLANE_TABLES,
     CURRENT_SCHEMA_VERSION,
     DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
+    REPLAY_FINALIZATION_SCHEMA_VERSION,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
+    SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
     V5_CONTROL_PLANE_TABLES,
     V6_CONTROL_PLANE_TABLES,
+    V7_CONTROL_PLANE_TABLES,
+    V8_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
+    EventRecord,
     JobRecord,
     ReplayBatchRecord,
     ReplayBudgetAccountRecord,
@@ -47,6 +63,7 @@ from pajin.control_plane.database import (
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayExecutionContextRecord,
+    ReplayFinalizationRecord,
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
@@ -55,25 +72,75 @@ from pajin.control_plane.database import (
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
+    _install_append_only_trigger,
+    _install_complete_append_only_guard,
+    _json_object_is_valid_sql,
     _lock_v2_migration_writes,
     _lock_v3_migration_writes,
     _lock_v4_migration_writes,
     _lock_v5_migration_writes,
     _lock_v6_migration_writes,
+    _lock_v7_migration_writes,
+    _lock_v9_migration_writes,
+    _migrate_v7_schema,
     _postgres_append_only_trigger_is_valid,
     _postgres_check_signature,
+    _postgres_truncate_trigger_is_valid,
+    _validate_v9_schema,
 )
-from pajin.control_plane.models import Principal, PrincipalRole
+from pajin.control_plane.models import (
+    Principal,
+    PrincipalRole,
+    job_submission_authority_digest,
+    non_replayable_submission_authority_digest,
+    submission_authority_digest,
+)
 
 
 def _repository(path: Path) -> ControlPlaneRepository:
     return ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
 
 
+def test_database_compatibility_surface_reexports_owned_objects_by_identity() -> None:
+    """Module extraction must not fork authority objects or break legacy imports."""
+
+    exported_names = (
+        "Base",
+        "RunRecord",
+        "JobRecord",
+        "ReplayTicketRecord",
+        "ReplayFinalizationRecord",
+        "_V2_METADATA",
+        "_V9_METADATA",
+    )
+    for name in exported_names:
+        assert getattr(database_module, name) is getattr(database_schema, name)
+    migration_exports = (
+        "_V2_MIGRATION_WRITE_LOCK_TABLES",
+        "_install_append_only_trigger",
+        "_lock_v4_migration_writes",
+        "_postgres_check_signature",
+        "_validate_current_schema",
+        "utc_now",
+    )
+    for name in migration_exports:
+        assert getattr(database_module, name) is getattr(database_migrations, name)
+    dialect_exports = (
+        "_json_object_is_valid_sql",
+        "_postgres_append_only_trigger_is_valid",
+        "_postgres_check_signature",
+        "_postgres_truncate_trigger_is_valid",
+        "_validate_append_only_trigger",
+    )
+    for name in dialect_exports:
+        assert getattr(database_migrations, name) is getattr(database_dialect, name)
+    assert database_schema.Base.__module__ == "pajin.control_plane.database_schema"
+
+
 def _create_legacy_schema(repository: ControlPlaneRepository) -> None:
     pending = set(LEGACY_CONTROL_PLANE_TABLES)
     with repository.engine.begin() as connection:
-        for table in Base.metadata.sorted_tables:
+        for table in _V9_METADATA.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -305,6 +372,79 @@ def _create_v6_schema(repository: ControlPlaneRepository) -> None:
         )
 
 
+def _create_v7_schema(repository: ControlPlaneRepository) -> None:
+    pending = set(V7_CONTROL_PLANE_TABLES)
+    with repository.engine.begin() as connection:
+        for table in _V9_METADATA.sorted_tables:
+            if table.name in pending:
+                table.create(connection, checkfirst=False)
+                pending.remove(table.name)
+        assert not pending
+        for table_name in (
+            "cp_events",
+            "cp_artifacts",
+            "cp_replay_events",
+            "cp_replay_compilations",
+            "cp_replay_tool_permits",
+            "cp_replay_execution_contexts",
+        ):
+            for operation in ("UPDATE", "DELETE"):
+                connection.exec_driver_sql(
+                    f"""
+                    CREATE TRIGGER {table_name}_no_{operation.lower()}
+                    BEFORE {operation} ON {table_name}
+                    BEGIN SELECT RAISE(ABORT, '{table_name} is append-only'); END
+                    """
+                )
+        schema_version = _V9_METADATA.tables["cp_schema_version"]
+        now = datetime.now(UTC)
+        connection.execute(
+            schema_version.insert(),
+            [
+                {
+                    "version": version,
+                    "description": description,
+                    "applied_at": now,
+                }
+                for version, description in (
+                    (1, "legacy-control-plane-core"),
+                    (2, "replay-authority"),
+                    (3, "artifact-authority"),
+                    (4, "trusted-replay-compilation-authority"),
+                    (5, "durable-replay-permit-authority"),
+                    (6, "replay-tool-call-permit-authority"),
+                    (7, "replay-execution-context-authority"),
+                )
+            ],
+        )
+
+
+def _create_v8_schema(repository: ControlPlaneRepository) -> None:
+    _create_v7_schema(repository)
+    with repository.engine.begin() as connection:
+        _migrate_v7_schema(connection)
+
+
+def _create_v9_schema(repository: ControlPlaneRepository) -> None:
+    """Create an exact parser-safe v9 fixture without invoking the v10 chain."""
+
+    _create_v8_schema(repository)
+    with repository.engine.begin() as connection:
+        finalization_table = _V9_METADATA.tables[ReplayFinalizationRecord.__tablename__]
+        finalization_table.create(connection, checkfirst=False)
+        _install_append_only_trigger(connection, finalization_table.name)
+        _install_complete_append_only_guard(connection, finalization_table.name)
+        schema_version = _V9_METADATA.tables[SchemaVersionRecord.__tablename__]
+        connection.execute(
+            schema_version.insert().values(
+                version=REPLAY_FINALIZATION_SCHEMA_VERSION,
+                description="server-derived-replay-finalization",
+                applied_at=datetime.now(UTC),
+            )
+        )
+        _validate_v9_schema(connection)
+
+
 def test_postgres_v2_migration_locks_all_legacy_write_surfaces_in_fixed_order() -> None:
     statements: list[str] = []
     connection = SimpleNamespace(
@@ -461,6 +601,130 @@ def test_postgres_v6_migration_locks_every_context_writer_atomically() -> None:
     )
 
 
+def test_postgres_v7_migration_locks_the_complete_table_set_atomically() -> None:
+    statements: list[str] = []
+    savepoint_actions: list[str] = []
+    savepoint = SimpleNamespace(
+        commit=lambda: savepoint_actions.append("commit"),
+        rollback=lambda: savepoint_actions.append("rollback"),
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+        begin_nested=lambda: savepoint,
+    )
+
+    _lock_v7_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE "
+        + ", ".join(_V7_MIGRATION_WRITE_LOCK_TABLES)
+        + " IN ACCESS EXCLUSIVE MODE NOWAIT"
+    ]
+    assert savepoint_actions == ["commit"]
+    assert set(_V7_MIGRATION_WRITE_LOCK_TABLES) == V8_CONTROL_PLANE_TABLES
+    assert len(_V7_MIGRATION_WRITE_LOCK_TABLES) == len(V8_CONTROL_PLANE_TABLES)
+
+
+def test_postgres_v9_migration_locks_submission_and_lease_writers_atomically() -> None:
+    statements: list[str] = []
+    savepoint_actions: list[str] = []
+    savepoint = SimpleNamespace(
+        commit=lambda: savepoint_actions.append("commit"),
+        rollback=lambda: savepoint_actions.append("rollback"),
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=statements.append,
+        begin_nested=lambda: savepoint,
+    )
+
+    _lock_v9_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert statements == [
+        "LOCK TABLE "
+        + ", ".join(_V9_MIGRATION_WRITE_LOCK_TABLES)
+        + " IN ACCESS EXCLUSIVE MODE NOWAIT"
+    ]
+    assert savepoint_actions == ["commit"]
+    assert _V9_MIGRATION_WRITE_LOCK_TABLES == (
+        "cp_runs",
+        "cp_jobs",
+        "cp_events",
+        "cp_schema_version",
+    )
+
+
+def test_atomic_migration_lock_releases_partial_set_before_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LockNotAvailable(RuntimeError):
+        sqlstate = "55P03"
+
+    lock_error = DBAPIError("LOCK TABLE", None, LockNotAvailable())
+    statements: list[str] = []
+    savepoint_actions: list[str] = []
+    sleeps: list[float] = []
+
+    def execute(statement: str) -> None:
+        statements.append(statement)
+        if len(statements) == 1:
+            raise lock_error
+
+    def begin_nested() -> SimpleNamespace:
+        attempt = len(statements) + 1
+        return SimpleNamespace(
+            commit=lambda: savepoint_actions.append(f"commit:{attempt}"),
+            rollback=lambda: savepoint_actions.append(f"rollback:{attempt}"),
+        )
+
+    monkeypatch.setattr("pajin.control_plane.database.time.sleep", sleeps.append)
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=execute,
+        begin_nested=begin_nested,
+    )
+
+    _lock_v4_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert len(statements) == 2
+    assert statements[0] == statements[1]
+    assert savepoint_actions == ["rollback:1", "commit:2"]
+    assert sleeps == [0.05]
+
+
+def test_atomic_migration_lock_timeout_keeps_versioned_typed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class LockNotAvailable(RuntimeError):
+        sqlstate = "55P03"
+
+    lock_error = DBAPIError("LOCK TABLE", None, LockNotAvailable())
+    savepoint_actions: list[str] = []
+    monotonic_values = iter([100.0, 105.0])
+    monkeypatch.setattr(
+        "pajin.control_plane.database.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+    connection = SimpleNamespace(
+        dialect=SimpleNamespace(name="postgresql"),
+        exec_driver_sql=lambda _statement: (_ for _ in ()).throw(lock_error),
+        begin_nested=lambda: SimpleNamespace(
+            commit=lambda: savepoint_actions.append("commit"),
+            rollback=lambda: savepoint_actions.append("rollback"),
+        ),
+    )
+
+    with pytest.raises(
+        SchemaInitializationError,
+        match="schema v9 migration could not exclude active writers",
+    ) as raised:
+        _lock_v9_migration_writes(connection)  # type: ignore[arg-type]
+
+    assert raised.value.__cause__ is lock_error
+    assert savepoint_actions == ["rollback"]
+
+
 def test_sqlite_initialization_begins_with_immediate_write_reservation(
     tmp_path: Path,
 ) -> None:
@@ -485,6 +749,96 @@ def test_sqlite_initialization_begins_with_immediate_write_reservation(
         repository.close()
 
 
+def test_sqlite_safety_pragmas_are_reapplied_on_pool_checkout(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "sqlite-pragmas.db")
+    try:
+        repository.initialize()
+        with repository.engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA ignore_check_constraints").scalar_one() == 0
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30_000
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+            connection.exec_driver_sql("PRAGMA recursive_triggers=OFF")
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints=ON")
+            connection.exec_driver_sql("PRAGMA busy_timeout=1")
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 0
+            assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 0
+            assert connection.exec_driver_sql("PRAGMA ignore_check_constraints").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 1
+
+        with repository.engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA recursive_triggers").scalar_one() == 1
+            assert connection.exec_driver_sql("PRAGMA ignore_check_constraints").scalar_one() == 0
+            assert connection.exec_driver_sql("PRAGMA busy_timeout").scalar_one() == 30_000
+    finally:
+        repository.close()
+
+
+def test_in_memory_sqlite_uses_one_database_across_threads() -> None:
+    repository = ControlPlaneRepository("sqlite:///:memory:")
+    run_id = "run_in_memory_thread"
+    observed: list[str | None] = []
+    failures: list[BaseException] = []
+    try:
+        repository.initialize()
+        assert isinstance(repository.engine.pool, StaticPool)
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+
+        def read_from_worker_thread() -> None:
+            try:
+                with repository.transaction() as session:
+                    record = session.get(RunRecord, run_id)
+                    observed.append(None if record is None else record.run_id)
+            except BaseException as exc:  # pragma: no cover - asserted below
+                failures.append(exc)
+
+        worker = Thread(target=read_from_worker_thread)
+        worker.start()
+        worker.join(timeout=5)
+
+        assert not worker.is_alive()
+        assert failures == []
+        assert observed == [run_id]
+    finally:
+        repository.close()
+
+
+def test_in_memory_sqlite_serializes_concurrent_initializers() -> None:
+    repository = ControlPlaneRepository("sqlite:///:memory:")
+    barrier = Barrier(9)
+    versions: list[int] = []
+    failures: list[BaseException] = []
+
+    def initialize() -> None:
+        try:
+            barrier.wait(timeout=5)
+            repository.initialize()
+            versions.append(repository.schema_version())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+
+    workers = [Thread(target=initialize) for _ in range(8)]
+    try:
+        for worker in workers:
+            worker.start()
+        barrier.wait(timeout=5)
+        for worker in workers:
+            worker.join(timeout=10)
+
+        assert all(not worker.is_alive() for worker in workers)
+        assert failures == []
+        assert versions == [CURRENT_SCHEMA_VERSION] * len(workers)
+        with repository.transaction() as session:
+            assert session.scalars(
+                select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+            ).all() == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+    finally:
+        repository.close()
+
+
 def _run(run_id: str) -> RunRecord:
     now = datetime.now(UTC)
     return RunRecord(
@@ -493,6 +847,10 @@ def _run(run_id: str) -> RunRecord:
         state="queued",
         input={"preserve": True},
         submission_key=f"submission-{run_id}",
+        submission_authority_digest=non_replayable_submission_authority_digest(
+            run_id=run_id,
+            authority_kind="migration-test-fixture",
+        ),
         current_checkpoint_id=None,
         created_at=now,
         updated_at=now,
@@ -501,16 +859,26 @@ def _run(run_id: str) -> RunRecord:
 
 def _job(run_id: str, job_id: str) -> JobRecord:
     now = datetime.now(UTC)
+    payload = {"preserve": True}
+    idempotency_key = f"idempotency-{job_id}"
     return JobRecord(
         job_id=job_id,
         run_id=run_id,
         kind="campaign",
         state="succeeded",
-        payload={"preserve": True},
+        payload=payload,
         priority=0,
         attempts=1,
         max_attempts=1,
-        idempotency_key=f"idempotency-{job_id}",
+        idempotency_key=idempotency_key,
+        submission_authority_digest=job_submission_authority_digest(
+            job_id=job_id,
+            run_id=run_id,
+            job_kind="campaign",
+            payload=payload,
+            max_attempts=1,
+            idempotency_key=idempotency_key,
+        ),
         available_at=now,
         lease_owner=None,
         lease_token_hash=None,
@@ -521,6 +889,39 @@ def _job(run_id: str, job_id: str) -> JobRecord:
         created_at=now,
         updated_at=now,
     )
+
+
+def _insert_frozen_record(
+    session: Session,
+    record: RunRecord | JobRecord,
+    *,
+    metadata: MetaData,
+) -> None:
+    """Insert a core row without making the current ORM reference future columns."""
+
+    table = metadata.tables[record.__tablename__]
+    session.execute(
+        table.insert().values(
+            {column.name: getattr(record, column.name) for column in table.columns}
+        )
+    )
+
+
+def _add_versioned_record(
+    session: Session,
+    record: RunRecord | JobRecord,
+) -> None:
+    """Use current ORM only when the fixture database has its future columns."""
+
+    table_name = record.__tablename__
+    actual_columns = {
+        str(column["name"]) for column in inspect(session.connection()).get_columns(table_name)
+    }
+    frozen_columns = set(_V9_METADATA.tables[table_name].c.keys())
+    if actual_columns == frozen_columns:
+        _insert_frozen_record(session, record, metadata=_V9_METADATA)
+        return
+    session.add(record)
 
 
 def _artifact(run_id: str, job_id: str) -> ArtifactRecord:
@@ -638,10 +1039,10 @@ def _seed_replay_item_authority(
     source_job_id = f"job_{'3' * 32}"
     replay_run_id = f"run_{'4' * 32}"
     with repository.transaction() as session:
-        session.add(_run(source_run_id))
-        session.add(_run(replay_run_id))
+        _add_versioned_record(session, _run(source_run_id))
+        _add_versioned_record(session, _run(replay_run_id))
         session.flush()
-        session.add(_job(source_run_id, source_job_id))
+        _add_versioned_record(session, _job(source_run_id, source_job_id))
         session.flush()
         session.add(_artifact(source_run_id, source_job_id))
         session.flush()
@@ -665,7 +1066,7 @@ def _seed_v5_issuance_prerequisites(
     now = datetime.now(UTC)
     with repository.transaction() as session:
         session.add(_compilation(replay_run_id=planned_replay_run_id))
-        session.add(_run(fresh_replay_run_id))
+        _add_versioned_record(session, _run(fresh_replay_run_id))
         session.flush()
         session.add(
             _compilation(
@@ -746,7 +1147,8 @@ def _seed_v5_issuance_prerequisites(
                 released_at=None,
             )
         )
-        session.add(
+        _add_versioned_record(
+            session,
             JobRecord(
                 job_id=replay_job_id,
                 run_id=fresh_replay_run_id,
@@ -757,6 +1159,14 @@ def _seed_v5_issuance_prerequisites(
                 attempts=0,
                 max_attempts=1,
                 idempotency_key="v5-replay-ticket-authority",
+                submission_authority_digest=job_submission_authority_digest(
+                    job_id=replay_job_id,
+                    run_id=fresh_replay_run_id,
+                    job_kind="internal-replay",
+                    payload={"authority": "v5"},
+                    max_attempts=1,
+                    idempotency_key="v5-replay-ticket-authority",
+                ),
                 available_at=now,
                 lease_owner=None,
                 lease_token_hash=None,
@@ -766,7 +1176,7 @@ def _seed_v5_issuance_prerequisites(
                 error=None,
                 created_at=now,
                 updated_at=now,
-            )
+            ),
         )
 
     return {
@@ -806,15 +1216,19 @@ def _activate_v5_ticket_graph(
     with repository.transaction() as session:
         batch = session.get(ReplayBatchRecord, ticket_values["batch_id"])
         item = session.get(ReplayItemRecord, ticket_values["item_id"])
-        replay_run = session.get(RunRecord, ticket_values["replay_run_id"])
-        assert batch is not None and item is not None and replay_run is not None
+        assert batch is not None and item is not None
         batch.state = "running"
         item.replay_run_id = str(ticket_values["replay_run_id"])
         item.compilation_digest = str(ticket_values["compilation_digest"])
         item.grant_digest = str(ticket_values["grant_digest"])
         item.state = "queued"
         item.attempts = int(ticket_values["attempt_number"])
-        replay_run.state = "queued"
+        run_table = _V9_METADATA.tables[RunRecord.__tablename__]
+        session.execute(
+            run_table.update()
+            .where(run_table.c.run_id == ticket_values["replay_run_id"])
+            .values(state="queued")
+        )
         session.add(ReplayTicketRecord(**ticket_values))
 
 
@@ -943,6 +1357,9 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
             DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
             REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
+            REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
+            COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
+            REPLAY_FINALIZATION_SCHEMA_VERSION,
             CURRENT_SCHEMA_VERSION,
         ]
 
@@ -951,6 +1368,1281 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             assert (
                 session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord))
                 == CURRENT_SCHEMA_VERSION
+            )
+    finally:
+        repository.close()
+
+
+def test_exact_v9_migration_backfills_submission_and_lease_authority_idempotently(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v9-submission-lease-authority.db")
+    run_id = "run_v9_public_submission"
+    ambiguous_run_id = "run_v9_ambiguous_submission"
+    job_id = "job_v9_public_submission"
+    submission_key = "v9-public-submission-key"
+    actor = "v9-operator"
+    input_value = {"objective": "preserve exact v9 authority"}
+    heartbeat_at = datetime(2026, 1, 1, tzinfo=UTC)
+    lease_expires_at = heartbeat_at + timedelta(seconds=30)
+    try:
+        _create_v9_schema(repository)
+        with repository.transaction() as session:
+            public_run = _run(run_id)
+            public_run.campaign_name = "v9-campaign"
+            public_run.input = input_value
+            public_run.submission_key = submission_key
+            _insert_frozen_record(session, public_run, metadata=_V9_METADATA)
+
+            ambiguous_run = _run(ambiguous_run_id)
+            ambiguous_run.submission_key = "v9-ambiguous-key"
+            _insert_frozen_record(session, ambiguous_run, metadata=_V9_METADATA)
+
+            job = _job(run_id, job_id)
+            job.kind = "campaign"
+            job.state = "leased"
+            job.payload = {"input": input_value}
+            job.attempts = 1
+            job.max_attempts = 3
+            job.idempotency_key = f"submission:{submission_key}"
+            job.lease_owner = "v9-worker"
+            job.lease_token_hash = "a" * 64
+            job.lease_expires_at = lease_expires_at
+            job.heartbeat_at = heartbeat_at
+            job.result = None
+            _insert_frozen_record(session, job, metadata=_V9_METADATA)
+
+            event_table = _V9_METADATA.tables[EventRecord.__tablename__]
+            session.execute(
+                event_table.insert().values(
+                    event_id="event_v9_public_submission",
+                    run_id=run_id,
+                    sequence=1,
+                    event_type="run.submitted",
+                    actor=actor,
+                    payload={
+                        "campaignName": "v9-campaign",
+                        "jobId": job_id,
+                        "jobKind": "campaign",
+                    },
+                    occurred_at=heartbeat_at,
+                )
+            )
+
+        repository.initialize()
+
+        with repository.transaction() as session:
+            public_run = session.get(RunRecord, run_id)
+            ambiguous_run = session.get(RunRecord, ambiguous_run_id)
+            migrated_job = session.get(JobRecord, job_id)
+            assert public_run is not None
+            assert ambiguous_run is not None
+            assert migrated_job is not None
+            assert public_run.submission_authority_digest == submission_authority_digest(
+                actor=actor,
+                campaign_name="v9-campaign",
+                input_value=input_value,
+                idempotency_key=submission_key,
+                job_kind="campaign",
+                max_attempts=3,
+            )
+            assert ambiguous_run.submission_authority_digest == (
+                non_replayable_submission_authority_digest(
+                    run_id=ambiguous_run_id,
+                    authority_kind="legacy-unproven-v9",
+                )
+            )
+            assert migrated_job.submission_authority_digest == (
+                job_submission_authority_digest(
+                    job_id=job_id,
+                    run_id=run_id,
+                    job_kind="campaign",
+                    payload={"input": input_value},
+                    max_attempts=3,
+                    idempotency_key=f"submission:{submission_key}",
+                )
+            )
+            assert migrated_job.lease_deadline_at == migrated_job.lease_expires_at
+            assert migrated_job.heartbeat_event_at == migrated_job.heartbeat_at
+
+        assert repository.schema_version() == SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION
+        repository.initialize()
+        with repository.transaction() as session:
+            versions = session.scalars(
+                select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+            ).all()
+            assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+    finally:
+        repository.close()
+
+
+def test_partial_v10_authority_migration_is_rejected_without_history_repair(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "partial-v10-authority.db")
+    try:
+        _create_v9_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql(
+                "ALTER TABLE cp_runs ADD COLUMN submission_authority_digest VARCHAR(64)"
+            )
+
+        with pytest.raises(SchemaInitializationError, match="cp_runs"):
+            repository.initialize()
+
+        with repository.engine.connect() as connection:
+            assert connection.scalar(text("SELECT max(version) FROM cp_schema_version")) == 9
+            assert "lease_deadline_at" not in {
+                column["name"] for column in inspect(connection).get_columns("cp_jobs")
+            }
+    finally:
+        repository.close()
+
+
+@pytest.mark.parametrize(
+    ("column_name", "invalid_json"),
+    [("input", "{"), ("payload", "[]")],
+)
+def test_v9_migration_rejects_malformed_or_non_object_core_json_before_hydration(
+    tmp_path: Path,
+    column_name: str,
+    invalid_json: str,
+) -> None:
+    path = tmp_path / f"v9-invalid-{column_name}.db"
+    repository = _repository(path)
+    _create_v9_schema(repository)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    with repository.engine.begin() as connection:
+        if column_name == "input":
+            connection.exec_driver_sql(
+                """
+                INSERT INTO cp_runs (
+                    run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at
+                ) VALUES (?, 'invalid-json', 'queued', ?, ?, NULL, ?, ?)
+                """,
+                (
+                    "run_v9_invalid_json",
+                    invalid_json,
+                    "v9-invalid-json-run",
+                    now,
+                    now,
+                ),
+            )
+        else:
+            run = _run("run_v9_invalid_job_json")
+            run_table = _V9_METADATA.tables[RunRecord.__tablename__]
+            connection.execute(
+                run_table.insert().values(
+                    {column.name: getattr(run, column.name) for column in run_table.columns}
+                )
+            )
+            connection.exec_driver_sql(
+                """
+                INSERT INTO cp_jobs (
+                    job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at
+                ) VALUES (?, ?, 'campaign', 'queued', ?, 0, 0, 1, ?, ?,
+                    NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+                """,
+                (
+                    "job_v9_invalid_json",
+                    run.run_id,
+                    invalid_json,
+                    "v9-invalid-json-job",
+                    now,
+                    now,
+                    now,
+                ),
+            )
+
+    with pytest.raises(SchemaInitializationError, match="JSON authority"):
+        repository.initialize()
+    with repository.engine.connect() as connection:
+        assert connection.scalar(text("SELECT max(version) FROM cp_schema_version")) == 9
+        assert "submission_authority_digest" not in {
+            column["name"] for column in inspect(connection).get_columns("cp_runs")
+        }
+    repository.close()
+
+
+def test_v9_migration_rejects_malformed_event_payload_before_hydration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v9-invalid-event-payload.db"
+    repository = _repository(path)
+    _create_v9_schema(repository)
+    run = _run("run_v9_invalid_event_json")
+    run_table = _V9_METADATA.tables[RunRecord.__tablename__]
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    with repository.engine.begin() as connection:
+        connection.execute(
+            run_table.insert().values(
+                {column.name: getattr(run, column.name) for column in run_table.columns}
+            )
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO cp_events (
+                event_id, run_id, sequence, event_type, actor, payload, occurred_at
+            ) VALUES (?, ?, 1, 'invalid-json', 'migration-test', ?, ?)
+            """,
+            ("event_v9_invalid_json", run.run_id, "{", now),
+        )
+
+    with pytest.raises(SchemaInitializationError, match=r"cp_events\.payload"):
+        repository.initialize()
+    with repository.engine.connect() as connection:
+        assert connection.scalar(text("SELECT max(version) FROM cp_schema_version")) == 9
+        assert "submission_authority_digest" not in {
+            column["name"] for column in inspect(connection).get_columns("cp_runs")
+        }
+    repository.close()
+
+
+def test_v9_migration_rejects_noncanonical_job_datetime_before_hydration(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v9-invalid-job-datetime.db"
+    repository = _repository(path)
+    _create_v9_schema(repository)
+    run = _run("run_v9_invalid_job_datetime")
+    run_table = _V9_METADATA.tables[RunRecord.__tablename__]
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    with repository.engine.begin() as connection:
+        connection.execute(
+            run_table.insert().values(
+                {column.name: getattr(run, column.name) for column in run_table.columns}
+            )
+        )
+        connection.exec_driver_sql(
+            """
+            INSERT INTO cp_jobs (
+                job_id, run_id, kind, state, payload, priority, attempts,
+                max_attempts, idempotency_key, available_at, lease_owner,
+                lease_token_hash, lease_expires_at, heartbeat_at, result,
+                error, created_at, updated_at
+            ) VALUES (?, ?, 'campaign', 'queued', '{}', 0, 0, 1, ?, ?,
+                NULL, NULL, NULL, NULL, NULL, NULL, ?, ?)
+            """,
+            (
+                "job_v9_invalid_datetime",
+                run.run_id,
+                "v9-invalid-job-datetime",
+                "2026-01-01T00:00:00+00:00",
+                now,
+                now,
+            ),
+        )
+
+    with pytest.raises(
+        SchemaInitializationError,
+        match=r"available_at.*datetime authority",
+    ):
+        repository.initialize()
+    with repository.engine.connect() as connection:
+        assert connection.scalar(text("SELECT max(version) FROM cp_schema_version")) == 9
+        assert "lease_deadline_at" not in {
+            column["name"] for column in inspect(connection).get_columns("cp_jobs")
+        }
+    repository.close()
+
+
+def test_concurrent_sqlite_v9_initializers_serialize_one_v10_migration(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "concurrent-v10-migration.db"
+    fixture_repository = _repository(database_path)
+    try:
+        _create_v9_schema(fixture_repository)
+    finally:
+        fixture_repository.close()
+
+    barrier = Barrier(3)
+    versions: list[int] = []
+    failures: list[BaseException] = []
+
+    def initialize() -> None:
+        repository = _repository(database_path)
+        try:
+            barrier.wait(timeout=5)
+            repository.initialize()
+            versions.append(repository.schema_version())
+        except BaseException as exc:  # pragma: no cover - asserted below
+            failures.append(exc)
+        finally:
+            repository.close()
+
+    workers = [Thread(target=initialize) for _ in range(2)]
+    for worker in workers:
+        worker.start()
+    barrier.wait(timeout=5)
+    for worker in workers:
+        worker.join(timeout=10)
+
+    assert all(not worker.is_alive() for worker in workers)
+    assert failures == []
+    assert sorted(versions) == [CURRENT_SCHEMA_VERSION, CURRENT_SCHEMA_VERSION]
+    repository = _repository(database_path)
+    try:
+        with repository.transaction() as session:
+            assert session.scalars(
+                select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+            ).all() == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+    finally:
+        repository.close()
+
+
+def test_v10_authority_migration_rolls_back_columns_guards_and_history_on_failure(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v10-authority-rollback.db")
+    run_id = "run_v10_rollback_preserved"
+    _create_v9_schema(repository)
+    with repository.transaction() as session:
+        _insert_frozen_record(session, _run(run_id), metadata=_V9_METADATA)
+
+    def fail_during_guard_install(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "CREATE TRIGGER cp_runs_submission_authority_guard_insert" in statement:
+            raise RuntimeError("simulated v10 authority guard failure")
+
+    sqlalchemy_event.listen(repository.engine, "before_cursor_execute", fail_during_guard_install)
+    try:
+        with pytest.raises(RuntimeError, match="simulated v10"):
+            repository.initialize()
+    finally:
+        sqlalchemy_event.remove(
+            repository.engine,
+            "before_cursor_execute",
+            fail_during_guard_install,
+        )
+
+    with repository.engine.connect() as connection:
+        assert connection.scalar(text("SELECT max(version) FROM cp_schema_version")) == 9
+        assert "submission_authority_digest" not in {
+            column["name"] for column in inspect(connection).get_columns("cp_runs")
+        }
+        assert {
+            "submission_authority_digest",
+            "lease_deadline_at",
+            "heartbeat_event_at",
+        }.isdisjoint(column["name"] for column in inspect(connection).get_columns("cp_jobs"))
+        assert (
+            connection.scalar(
+                text(
+                    "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                    "AND name LIKE '%_authority_guard_%'"
+                )
+            )
+            == 0
+        )
+        preserved = (
+            connection.execute(
+                select(_V9_METADATA.tables["cp_runs"]).where(
+                    _V9_METADATA.tables["cp_runs"].c.run_id == run_id
+                )
+            )
+            .mappings()
+            .one()
+        )
+        assert preserved["input"] == {"preserve": True}
+
+    repository.initialize()
+    assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+    repository.close()
+
+
+def test_sqlite_v10_guards_reject_late_v9_writes_and_identity_drift(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-late-v9-writer.db"
+    repository = _repository(path)
+    run_id = "run_v10_guard"
+    job_id = "job_v10_guard"
+    try:
+        repository.initialize()
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            session.add(_job(run_id, job_id))
+    finally:
+        repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).isoformat()
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="submission authority"):
+            direct.execute(
+                """
+                INSERT INTO cp_runs (
+                    run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "run_late_v9_writer",
+                    "late-v9",
+                    "queued",
+                    '{"legacy":true}',
+                    "late-v9-key",
+                    None,
+                    now,
+                    now,
+                ),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                INSERT INTO cp_jobs (
+                    job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at, lease_deadline_at,
+                    heartbeat_event_at
+                ) VALUES (?, ?, 'campaign', 'queued', '{}', 0, 0, 1, ?, ?,
+                    NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL)
+                """,
+                (
+                    "job_late_v9_writer",
+                    run_id,
+                    "late-v9-job-key",
+                    now,
+                    now,
+                    now,
+                ),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                UPDATE cp_jobs SET state = 'leased', lease_owner = 'old-worker',
+                    lease_token_hash = ?, lease_expires_at = ?, heartbeat_at = ?
+                WHERE job_id = ?
+                """,
+                ("a" * 64, now, now, job_id),
+            )
+        direct.rollback()
+
+        for statement in (
+            "UPDATE cp_runs SET run_id = 'run_v10_guard_renamed' WHERE run_id = ?",
+            "UPDATE cp_runs SET campaign_name = 'drifted' WHERE run_id = ?",
+            "UPDATE cp_runs SET input = '{\"drifted\":true}' WHERE run_id = ?",
+            "UPDATE cp_jobs SET job_id = 'job_v10_guard_renamed' WHERE job_id = ?",
+            "UPDATE cp_jobs SET payload = '{\"drifted\":true}' WHERE job_id = ?",
+            "UPDATE cp_jobs SET max_attempts = 2 WHERE job_id = ?",
+            f"UPDATE cp_jobs SET submission_authority_digest = '{'f' * 64}' WHERE job_id = ?",
+            "UPDATE cp_jobs SET result = '{\"tampered\":true}' WHERE job_id = ?",
+            "UPDATE cp_jobs SET state = 'queued' WHERE job_id = ?",
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="authority"):
+                direct.execute(statement, (run_id if "cp_runs" in statement else job_id,))
+            direct.rollback()
+
+        for statement, identifier in (
+            ("UPDATE cp_runs SET state = 'unknown' WHERE run_id = ?", run_id),
+            ("DELETE FROM cp_jobs WHERE job_id = ?", job_id),
+            ("DELETE FROM cp_runs WHERE run_id = ?", run_id),
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match=r"authority|identity"):
+                direct.execute(statement, (identifier,))
+            direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="submission authority"):
+            direct.execute(
+                """
+                INSERT INTO cp_runs (
+                    run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at,
+                    submission_authority_digest
+                ) VALUES (?, 'invalid-json', 'queued', '[]', ?, NULL, ?, ?, ?)
+                """,
+                ("run_invalid_json", "invalid-json-run", now, now, "a" * 64),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                INSERT INTO cp_jobs (
+                    job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at, lease_deadline_at,
+                    heartbeat_event_at, submission_authority_digest
+                ) VALUES (?, ?, 'campaign', 'queued', '[]', 0, 0, 1, ?, ?,
+                    NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, ?)
+                """,
+                (
+                    "job_invalid_json",
+                    run_id,
+                    "invalid-json-job",
+                    now,
+                    now,
+                    now,
+                    "b" * 64,
+                ),
+            )
+        direct.rollback()
+
+        assert direct.execute(
+            "SELECT campaign_name, input FROM cp_runs WHERE run_id = ?",
+            (run_id,),
+        ).fetchone() == ("migration-test", '{"preserve": true}')
+        assert direct.execute(
+            "SELECT state, max_attempts FROM cp_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone() == ("succeeded", 1)
+    finally:
+        direct.close()
+
+
+def test_sqlite_v10_run_guard_rejects_nested_escaped_duplicate_json_keys(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-duplicate-json-key.db"
+    repository = _repository(path)
+    repository.initialize()
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="submission authority"):
+            direct.execute(
+                """
+                INSERT INTO cp_runs (
+                    run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at,
+                    submission_authority_digest
+                ) VALUES (?, 'duplicate-json-key', 'queued', ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "run_v10_duplicate_json_key",
+                    r'{"nested":{"name":1,"\u006eame":2}}',
+                    "v10-duplicate-json-key",
+                    now,
+                    now,
+                    "a" * 64,
+                ),
+            )
+    finally:
+        direct.close()
+
+
+def test_v10_startup_rejects_run_input_beyond_public_resource_contract(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-oversized-run-input.db"
+    repository = _repository(path)
+    repository.initialize()
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    oversized_input = json.dumps(
+        {"blob": "x" * 1_000_000},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    try:
+        direct.execute(
+            """
+            INSERT INTO cp_runs (
+                run_id, campaign_name, state, input, submission_key,
+                current_checkpoint_id, created_at, updated_at,
+                submission_authority_digest
+            ) VALUES (?, 'oversized-input', 'queued', ?, ?, NULL, ?, ?, ?)
+            """,
+            (
+                "run_v10_oversized_input",
+                oversized_input,
+                "v10-oversized-input",
+                now,
+                now,
+                "a" * 64,
+            ),
+        )
+        direct.commit()
+    finally:
+        direct.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match=r"input.*resource contract"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM cp_runs WHERE run_id = 'run_v10_oversized_input'")
+                )
+                == 1
+            )
+    finally:
+        restarted.close()
+
+
+def test_v10_startup_recomputes_job_submission_authority_binding(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-false-job-digest.db"
+    repository = _repository(path)
+    run_id = "run_false_job_digest"
+    repository.initialize()
+    with repository.transaction() as session:
+        session.add(_run(run_id))
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    try:
+        direct.execute(
+            """
+            INSERT INTO cp_jobs (
+                job_id, run_id, kind, state, payload, priority, attempts,
+                max_attempts, idempotency_key, available_at, lease_owner,
+                lease_token_hash, lease_expires_at, heartbeat_at, result,
+                error, created_at, updated_at, lease_deadline_at,
+                heartbeat_event_at, submission_authority_digest
+            ) VALUES (?, ?, 'campaign', 'queued', '{}', 0, 0, 1, ?, ?,
+                NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, ?)
+            """,
+            (
+                "job_false_submission_digest",
+                run_id,
+                "false-job-digest",
+                now,
+                now,
+                now,
+                "a" * 64,
+            ),
+        )
+        direct.commit()
+    finally:
+        direct.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="job bindings=1"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM cp_jobs WHERE job_id = 'job_false_submission_digest'"
+                    )
+                )
+                == 1
+            )
+    finally:
+        restarted.close()
+
+
+def test_sqlite_v10_guards_reject_replace_and_lease_deadline_extension(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-replace-guard.db"
+    repository = _repository(path)
+    run_id = "run_v10_replace_guard"
+    job_id = "job_v10_replace_guard"
+    try:
+        repository.initialize()
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            job = _job(run_id, job_id)
+            job.state = "queued"
+            job.attempts = 0
+            job.result = None
+            session.add(job)
+    finally:
+        repository.close()
+
+    direct = sqlite3.connect(path)
+    heartbeat = datetime(2026, 1, 1, tzinfo=UTC)
+    expiry = heartbeat + timedelta(seconds=30)
+    deadline = heartbeat + timedelta(hours=1)
+    extended_deadline = deadline + timedelta(hours=1)
+    extended_deadline_value = extended_deadline.strftime("%Y-%m-%d %H:%M:%S.%f")
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="submission authority"):
+            direct.execute(
+                """
+                INSERT OR REPLACE INTO cp_runs (
+                    run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at,
+                    submission_authority_digest
+                )
+                SELECT run_id, 'replaced', state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at,
+                    submission_authority_digest
+                FROM cp_runs WHERE run_id = ?
+                """,
+                (run_id,),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                INSERT OR REPLACE INTO cp_jobs (
+                    job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at, lease_deadline_at,
+                    heartbeat_event_at, submission_authority_digest
+                )
+                SELECT job_id, run_id, kind, state, '{"replaced":true}', priority,
+                    attempts, max_attempts, idempotency_key, available_at,
+                    lease_owner, lease_token_hash, lease_expires_at, heartbeat_at,
+                    result, error, created_at, updated_at, lease_deadline_at,
+                    heartbeat_event_at, submission_authority_digest
+                FROM cp_jobs WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="authority"):
+            direct.execute(
+                "UPDATE cp_jobs SET state = 'succeeded', result = '{}' WHERE job_id = ?",
+                (job_id,),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="authority"):
+            direct.execute(
+                "UPDATE cp_runs SET state = 'completed' WHERE run_id = ?",
+                (run_id,),
+            )
+        direct.rollback()
+
+        claim_sql = """
+            UPDATE cp_jobs SET state = 'leased', result = NULL,
+                attempts = attempts + 1,
+                lease_owner = ?, lease_token_hash = ?, lease_expires_at = ?,
+                heartbeat_at = ?, lease_deadline_at = ?, heartbeat_event_at = NULL
+            WHERE job_id = ?
+        """
+        valid_token = "a" * 64
+        valid_expiry = expiry.strftime("%Y-%m-%d %H:%M:%S.%f")
+        valid_heartbeat = heartbeat.strftime("%Y-%m-%d %H:%M:%S.%f")
+        valid_deadline = deadline.strftime("%Y-%m-%d %H:%M:%S.%f")
+        invalid_lease_values = (
+            (None, valid_token, valid_expiry, valid_heartbeat, valid_deadline),
+            ("v10-worker", None, valid_expiry, valid_heartbeat, valid_deadline),
+            (
+                "v10-worker",
+                sqlite3.Binary(valid_token.encode()),
+                valid_expiry,
+                valid_heartbeat,
+                valid_deadline,
+            ),
+            ("v10-worker", valid_token, 2_460_000.5, valid_heartbeat, valid_deadline),
+            ("v10-worker", valid_token, "12:00:00", valid_heartbeat, valid_deadline),
+            (
+                "v10-worker",
+                valid_token,
+                "2026-01-01 24:00:00.000000",
+                valid_heartbeat,
+                valid_deadline,
+            ),
+            (
+                "v10-worker",
+                valid_token,
+                "2026-02-29 00:00:00.000000",
+                valid_heartbeat,
+                valid_deadline,
+            ),
+            (
+                "v10-worker",
+                valid_token,
+                "2026-01-01 01:00:00.000400",
+                valid_heartbeat,
+                "2026-01-01 01:00:00.000100",
+            ),
+            (
+                "v10-worker",
+                valid_token,
+                "2026-01-01 00:00:01.000000",
+                "2026-01-01 00:00:00.000100",
+                "2026-01-02 00:00:00.000400",
+            ),
+        )
+        for invalid_values in invalid_lease_values:
+            with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+                direct.execute(claim_sql, (*invalid_values, job_id))
+            direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                claim_sql.replace("attempts = attempts + 1,", "attempts = attempts,"),
+                (
+                    "v10-worker",
+                    valid_token,
+                    valid_expiry,
+                    valid_heartbeat,
+                    valid_deadline,
+                    job_id,
+                ),
+            )
+        direct.rollback()
+
+        direct.execute(
+            """
+            UPDATE cp_jobs SET state = 'leased', result = NULL,
+                attempts = attempts + 1,
+                lease_owner = 'v10-worker', lease_token_hash = ?,
+                lease_expires_at = ?, heartbeat_at = ?, lease_deadline_at = ?,
+                heartbeat_event_at = ?
+            WHERE job_id = ?
+            """,
+            (
+                "a" * 64,
+                valid_expiry,
+                valid_heartbeat,
+                valid_deadline,
+                valid_heartbeat,
+                job_id,
+            ),
+        )
+        direct.commit()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                UPDATE cp_jobs SET state = 'queued', attempts = 0,
+                    lease_owner = NULL, lease_token_hash = NULL,
+                    lease_expires_at = NULL, heartbeat_at = NULL,
+                    lease_deadline_at = NULL, heartbeat_event_at = NULL
+                WHERE job_id = ?
+                """,
+                (job_id,),
+            )
+        direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                "UPDATE cp_jobs SET lease_owner = 'other-worker' WHERE job_id = ?",
+                (job_id,),
+            )
+        direct.rollback()
+
+        for invalid_deadline in (
+            (deadline + timedelta(microseconds=1)).strftime("%Y-%m-%d %H:%M:%S.%f"),
+            extended_deadline_value,
+        ):
+            with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+                direct.execute(
+                    "UPDATE cp_jobs SET lease_deadline_at = ? WHERE job_id = ?",
+                    (invalid_deadline, job_id),
+                )
+            direct.rollback()
+
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                """
+                INSERT OR REPLACE INTO cp_jobs (
+                    job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at, lease_deadline_at,
+                    heartbeat_event_at, submission_authority_digest
+                )
+                SELECT job_id, run_id, kind, state, payload, priority, attempts,
+                    max_attempts, idempotency_key, available_at, lease_owner,
+                    lease_token_hash, lease_expires_at, heartbeat_at, result,
+                    error, created_at, updated_at, ?, heartbeat_event_at,
+                    submission_authority_digest
+                FROM cp_jobs WHERE job_id = ?
+                """,
+                (extended_deadline_value, job_id),
+            )
+        direct.rollback()
+
+        assert direct.execute(
+            "SELECT state, payload, lease_deadline_at FROM cp_jobs WHERE job_id = ?",
+            (job_id,),
+        ).fetchone() == ("leased", '{"preserve": true}', valid_deadline)
+    finally:
+        direct.close()
+
+
+def test_sqlite_v10_authority_rowids_cannot_create_replace_bypass_or_false_positive(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "v10-rowid-guard.db"
+    repository = _repository(path)
+    try:
+        repository.initialize()
+        with repository.transaction() as session:
+            parent_run_id = "run_rowid_replace_parent"
+            session.add(_run(parent_run_id))
+            session.flush()
+            session.add_all(
+                [
+                    _job(parent_run_id, "job_rowid_replace_attacker"),
+                    _job(parent_run_id, "job_rowid_replace_victim"),
+                ]
+            )
+    finally:
+        repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).isoformat()
+    try:
+        assert direct.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+        victim_rowid = direct.execute(
+            "SELECT rowid FROM cp_jobs WHERE job_id = 'job_rowid_replace_victim'"
+        ).fetchone()
+        assert victim_rowid is not None
+        with pytest.raises(sqlite3.IntegrityError, match="lease authority"):
+            direct.execute(
+                "UPDATE OR REPLACE cp_jobs SET rowid = ? WHERE job_id = ?",
+                (int(victim_rowid[0]), "job_rowid_replace_attacker"),
+            )
+        direct.rollback()
+        assert direct.execute(
+            "SELECT count(*) FROM cp_jobs WHERE job_id LIKE 'job_rowid_replace_%'"
+        ).fetchone() == (2,)
+
+        with pytest.raises(sqlite3.IntegrityError, match="authority rowid"):
+            direct.execute(
+                """
+                INSERT INTO cp_runs (
+                    rowid, run_id, campaign_name, state, input, submission_key,
+                    current_checkpoint_id, created_at, updated_at,
+                    submission_authority_digest
+                ) VALUES (-1, ?, ?, ?, ?, ?, NULL, ?, ?, ?)
+                """,
+                (
+                    "run_negative_rowid",
+                    "rowid-guard",
+                    "queued",
+                    '{"rowid":-1}',
+                    "negative-rowid-key",
+                    now,
+                    now,
+                    "a" * 64,
+                ),
+            )
+        direct.rollback()
+
+        # SQLite exposes NEW.rowid as -1 for an ordinary auto-rowid BEFORE INSERT.
+        # The AFTER guard must reject explicit non-positive rowids without turning
+        # that sentinel into a false positive for normal managed inserts.
+        direct.execute(
+            """
+            INSERT INTO cp_runs (
+                run_id, campaign_name, state, input, submission_key,
+                current_checkpoint_id, created_at, updated_at,
+                submission_authority_digest
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)
+            """,
+            (
+                "run_automatic_rowid",
+                "rowid-guard",
+                "queued",
+                '{"rowid":"automatic"}',
+                "automatic-rowid-key",
+                now,
+                now,
+                "b" * 64,
+            ),
+        )
+        direct.commit()
+        rowid = direct.execute(
+            "SELECT rowid FROM cp_runs WHERE run_id = 'run_automatic_rowid'"
+        ).fetchone()
+        assert rowid is not None and int(rowid[0]) > 0
+    finally:
+        direct.close()
+
+
+@pytest.mark.parametrize("table_name", ["cp_runs", "cp_jobs"])
+def test_missing_v10_authority_guard_is_rejected_without_repair(
+    tmp_path: Path,
+    table_name: str,
+) -> None:
+    path = tmp_path / f"missing-v10-guard-{table_name}.db"
+    repository = _repository(path)
+    repository.initialize()
+    trigger_name = (
+        "cp_runs_submission_authority_guard_update"
+        if table_name == "cp_runs"
+        else "cp_jobs_lease_authority_guard_update"
+    )
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql(f"DROP TRIGGER {trigger_name}")
+    repository.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match=r"authority.*trigger"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name = :trigger_name"
+                    ),
+                    {"trigger_name": trigger_name},
+                )
+                == 0
+            )
+    finally:
+        restarted.close()
+
+
+def test_exact_v7_migration_is_additive_preserves_data_and_is_idempotent(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "v7-append-only-guards.db")
+    run_id = "run_v7_guard_preserved"
+    event_id = "event_v7_guard_preserved"
+    try:
+        _create_v7_schema(repository)
+        with repository.transaction() as session:
+            _insert_frozen_record(session, _run(run_id), metadata=_V9_METADATA)
+            session.flush()
+            session.add(
+                EventRecord(
+                    event_id=event_id,
+                    run_id=run_id,
+                    sequence=1,
+                    event_type="migration.preserved",
+                    actor="migration-test",
+                    payload={"preserve": True},
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+        with repository.engine.connect() as connection:
+            v7_definitions = dict(
+                connection.execute(
+                    text(
+                        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name IN ('cp_events_no_update', 'cp_events_no_delete')"
+                    )
+                ).all()
+            )
+
+        repository.initialize()
+
+        with repository.transaction() as session:
+            preserved = session.get(EventRecord, event_id)
+            assert preserved is not None
+            assert preserved.payload == {"preserve": True}
+            versions = list(
+                session.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+        with repository.engine.connect() as connection:
+            migrated_definitions = dict(
+                connection.execute(
+                    text(
+                        "SELECT name, sql FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name IN ('cp_events_no_update', 'cp_events_no_delete')"
+                    )
+                ).all()
+            )
+            trigger_names = set(
+                connection.scalars(
+                    text("SELECT name FROM sqlite_master WHERE type = 'trigger'")
+                ).all()
+            )
+        assert migrated_definitions == v7_definitions
+        assert {
+            f"{table_name}_no_replace"
+            for table_name in (
+                "cp_events",
+                "cp_artifacts",
+                "cp_replay_compilations",
+                "cp_replay_execution_contexts",
+                "cp_replay_events",
+                "cp_replay_tool_permits",
+            )
+        }.issubset(trigger_names)
+
+        repository.initialize()
+        with repository.transaction() as session:
+            assert (
+                session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord))
+                == CURRENT_SCHEMA_VERSION
+            )
+            assert session.get(EventRecord, event_id) is not None
+    finally:
+        repository.close()
+
+
+def test_exact_v8_migration_adds_replay_finalization_and_current_authority(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v8-replay-finalization.db")
+    try:
+        _create_v8_schema(repository)
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V8_CONTROL_PLANE_TABLES
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == CURRENT_CONTROL_PLANE_TABLES
+        with repository.engine.connect() as connection:
+            trigger_names = set(
+                connection.scalars(
+                    text(
+                        "SELECT name FROM sqlite_master WHERE type = 'trigger' "
+                        "AND tbl_name = 'cp_replay_finalizations'"
+                    )
+                ).all()
+            )
+            versions = list(
+                connection.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert trigger_names == {
+            "cp_replay_finalizations_no_update",
+            "cp_replay_finalizations_no_delete",
+            "cp_replay_finalizations_no_replace",
+        }
+        assert versions == list(range(1, CURRENT_SCHEMA_VERSION + 1))
+        assert ReplayFinalizationRecord.__tablename__ == "cp_replay_finalizations"
+
+        repository.initialize()
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+    finally:
+        repository.close()
+
+
+def test_v8_finalization_migration_rolls_back_table_guards_and_history_on_failure(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v8-replay-finalization-rollback.db")
+    _create_v8_schema(repository)
+
+    def fail_mid_migration(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "CREATE TRIGGER cp_replay_finalizations_no_delete" in statement:
+            raise RuntimeError("simulated v9 finalization guard failure")
+
+    sqlalchemy_event.listen(repository.engine, "before_cursor_execute", fail_mid_migration)
+    try:
+        with pytest.raises(RuntimeError, match="simulated v9"):
+            repository.initialize()
+    finally:
+        sqlalchemy_event.remove(repository.engine, "before_cursor_execute", fail_mid_migration)
+
+    try:
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V8_CONTROL_PLANE_TABLES
+        with repository.engine.connect() as connection:
+            versions = list(
+                connection.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            )
+        assert versions == list(range(1, COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION + 1))
+
+        repository.initialize()
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+    finally:
+        repository.close()
+
+
+def test_v7_guard_migration_rolls_back_all_triggers_and_history_on_failure(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v7-guard-rollback.db")
+    _create_v7_schema(repository)
+
+    def fail_mid_migration(
+        _connection: object,
+        _cursor: object,
+        statement: str,
+        _parameters: object,
+        _context: object,
+        _executemany: bool,
+    ) -> None:
+        if "CREATE TRIGGER cp_replay_compilations_no_replace" in statement:
+            raise RuntimeError("simulated v8 trigger installation failure")
+
+    sqlalchemy_event.listen(repository.engine, "before_cursor_execute", fail_mid_migration)
+    try:
+        with pytest.raises(RuntimeError, match="simulated v8"):
+            repository.initialize()
+    finally:
+        sqlalchemy_event.remove(repository.engine, "before_cursor_execute", fail_mid_migration)
+
+    try:
+        with repository.engine.connect() as connection:
+            assert list(
+                connection.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            ) == list(range(1, REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION + 1))
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name LIKE '%_no_replace'"
+                    )
+                )
+                == 0
+            )
+
+        repository.initialize()
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+    finally:
+        repository.close()
+
+
+def test_tampered_v7_trigger_is_rejected_without_v8_repair(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "tampered-v7-trigger.db")
+    try:
+        _create_v7_schema(repository)
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TRIGGER cp_events_no_delete")
+
+        with pytest.raises(SchemaInitializationError, match="append-only delete trigger"):
+            repository.initialize()
+
+        with repository.engine.connect() as connection:
+            assert list(
+                connection.scalars(
+                    select(SchemaVersionRecord.version).order_by(SchemaVersionRecord.version)
+                ).all()
+            ) == list(range(1, REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION + 1))
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name LIKE '%_no_replace'"
+                    )
+                )
+                == 0
             )
     finally:
         repository.close()
@@ -981,7 +2673,7 @@ def test_exact_legacy_database_migrates_forward_without_losing_rows(tmp_path: Pa
     try:
         _create_legacy_schema(repository)
         with repository.transaction() as session:
-            session.add(_run("run_legacy"))
+            _insert_frozen_record(session, _run("run_legacy"), metadata=_V9_METADATA)
 
         repository.initialize()
 
@@ -1003,20 +2695,24 @@ def test_legacy_internal_replay_job_is_rejected_before_schema_history_is_created
     try:
         _create_legacy_schema(repository)
         with repository.transaction() as session:
-            session.add(_run(run_id))
+            _insert_frozen_record(session, _run(run_id), metadata=_V9_METADATA)
             session.flush()
             job = _job(run_id, job_id)
             job.kind = "internal-replay"
-            session.add(job)
+            _insert_frozen_record(session, job, metadata=_V9_METADATA)
 
         with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
             repository.initialize()
 
         assert "cp_schema_version" not in inspect(repository.engine).get_table_names()
         with repository.transaction() as session:
-            preserved = session.get(JobRecord, job_id)
-            assert preserved is not None
-            assert preserved.kind == "internal-replay"
+            job_table = _V9_METADATA.tables[JobRecord.__tablename__]
+            preserved = (
+                session.execute(select(job_table).where(job_table.c.job_id == job_id))
+                .mappings()
+                .one()
+            )
+            assert preserved["kind"] == "internal-replay"
     finally:
         repository.close()
 
@@ -1028,7 +2724,7 @@ def test_empty_v2_database_migrates_forward_without_losing_core_rows(
     try:
         _create_v2_schema(repository)
         with repository.transaction() as session:
-            session.add(_run("run_v2_preserved"))
+            _add_versioned_record(session, _run("run_v2_preserved"))
 
         repository.initialize()
 
@@ -1057,9 +2753,9 @@ def test_empty_v3_database_migrates_forward_without_losing_core_or_artifact_rows
     try:
         _create_v3_schema(repository)
         with repository.transaction() as session:
-            session.add(_run(run_id))
+            _add_versioned_record(session, _run(run_id))
             session.flush()
-            session.add(_job(run_id, job_id))
+            _add_versioned_record(session, _job(run_id, job_id))
             session.flush()
             session.add(_artifact(run_id, job_id))
 
@@ -1175,7 +2871,14 @@ def test_v5_active_ticket_refuses_execution_context_migration_without_data_loss(
         assert "cp_replay_execution_contexts" not in table_names
         with repository.transaction() as session:
             ticket = session.get(ReplayTicketRecord, ticket_values["ticket_id"])
-            job = session.get(JobRecord, ticket_values["job_id"])
+            job_table = _V9_METADATA.tables[JobRecord.__tablename__]
+            job = (
+                session.execute(
+                    select(job_table).where(job_table.c.job_id == ticket_values["job_id"])
+                )
+                .mappings()
+                .one()
+            )
             budget_reservation = session.get(
                 ReplayBudgetReservationRecord,
                 ticket_values["budget_reservation_id"],
@@ -1191,7 +2894,7 @@ def test_v5_active_ticket_refuses_execution_context_migration_without_data_loss(
             )
         assert ticket is not None
         assert ticket.state == "issued"
-        assert job is not None and job.state == "queued"
+        assert job["state"] == "queued"
         assert budget_reservation is not None and budget_reservation.state == "active"
         assert rate_reservation is not None and rate_reservation.state == "active"
         assert versions == [1, 2, 3, 4, 5]
@@ -1288,7 +2991,7 @@ def test_v6_dispatch_authority_refuses_context_migration_without_data_loss(
                         job.state = "queued"
                         job.attempts = 0
                         job.result = None
-                    session.add(job)
+                    _add_versioned_record(session, job)
                 elif unsafe_authority == "non-planned-batch":
                     batch = session.get(ReplayBatchRecord, "batch_migration")
                     assert batch is not None
@@ -1581,9 +3284,9 @@ def test_v3_replay_rows_are_rejected_without_inventing_canonical_compilations(
     try:
         _create_v3_schema(repository)
         with repository.transaction() as session:
-            session.add(_run(run_id))
+            _add_versioned_record(session, _run(run_id))
             session.flush()
-            session.add(_job(run_id, job_id))
+            _add_versioned_record(session, _job(run_id, job_id))
             session.flush()
             session.add(_artifact(run_id, job_id))
             session.flush()
@@ -1609,9 +3312,10 @@ def test_v3_internal_replay_job_is_rejected_without_aggregate_rows(tmp_path: Pat
         _create_v3_schema(repository)
         now = datetime.now(UTC)
         with repository.transaction() as session:
-            session.add(_run(run_id))
+            _add_versioned_record(session, _run(run_id))
             session.flush()
-            session.add(
+            _add_versioned_record(
+                session,
                 JobRecord(
                     job_id=f"job_{'c' * 32}",
                     run_id=run_id,
@@ -1622,6 +3326,14 @@ def test_v3_internal_replay_job_is_rejected_without_aggregate_rows(tmp_path: Pat
                     attempts=0,
                     max_attempts=1,
                     idempotency_key="idempotency-v3-internal-replay",
+                    submission_authority_digest=job_submission_authority_digest(
+                        job_id=f"job_{'c' * 32}",
+                        run_id=run_id,
+                        job_kind="internal-replay",
+                        payload={},
+                        max_attempts=1,
+                        idempotency_key="idempotency-v3-internal-replay",
+                    ),
                     available_at=now,
                     lease_owner=None,
                     lease_token_hash=None,
@@ -1631,7 +3343,7 @@ def test_v3_internal_replay_job_is_rejected_without_aggregate_rows(tmp_path: Pat
                     error=None,
                     created_at=now,
                     updated_at=now,
-                )
+                ),
             )
 
         with pytest.raises(SchemaInitializationError, match="internal-replay Jobs: 1"):
@@ -1932,6 +3644,196 @@ def test_missing_required_column_is_rejected_without_automatic_repair(tmp_path: 
         restarted.close()
 
 
+def test_unmanaged_authority_column_default_is_rejected_without_repair(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unmanaged-authority-default.db"
+    repository = _repository(path)
+    repository.initialize()
+    with repository.engine.begin() as connection:
+        definition = connection.scalar(text("SELECT sql FROM sqlite_master WHERE name = 'cp_runs'"))
+        assert isinstance(definition, str)
+        original = "submission_authority_digest VARCHAR(64)"
+        replacement = f"{original} DEFAULT '{'a' * 64}'"
+        assert original in definition
+        connection.exec_driver_sql("PRAGMA writable_schema=ON")
+        connection.execute(
+            text("UPDATE sqlite_master SET sql = :sql WHERE name = 'cp_runs'"),
+            {"sql": definition.replace(original, replacement, 1)},
+        )
+        connection.exec_driver_sql("PRAGMA writable_schema=OFF")
+        schema_version = int(connection.scalar(text("PRAGMA schema_version")) or 0)
+        connection.exec_driver_sql(f"PRAGMA schema_version={schema_version + 1}")
+    repository.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="unmanaged server default"):
+            restarted.initialize()
+        digest_column = next(
+            column
+            for column in inspect(restarted.engine).get_columns("cp_runs")
+            if column["name"] == "submission_authority_digest"
+        )
+        assert digest_column["default"] == f"'{'a' * 64}'"
+    finally:
+        restarted.close()
+
+
+def test_sqlite_existing_foreign_key_violation_is_rejected_without_repair(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "foreign-key-row-drift.db"
+    repository = _repository(path)
+    repository.initialize()
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    now = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S.%f")
+    job_id = "job_orphaned_authority"
+    run_id = "run_missing_authority"
+    idempotency_key = "orphaned-authority"
+    authority_digest = job_submission_authority_digest(
+        job_id=job_id,
+        run_id=run_id,
+        job_kind="campaign",
+        payload={},
+        max_attempts=1,
+        idempotency_key=idempotency_key,
+    )
+    try:
+        assert direct.execute("PRAGMA foreign_keys").fetchone() == (0,)
+        direct.execute(
+            """
+            INSERT INTO cp_jobs (
+                job_id, run_id, kind, state, payload, priority, attempts,
+                max_attempts, idempotency_key, available_at, lease_owner,
+                lease_token_hash, lease_expires_at, heartbeat_at, result,
+                error, created_at, updated_at, lease_deadline_at,
+                heartbeat_event_at, submission_authority_digest
+            ) VALUES (?, ?, 'campaign', 'queued', '{}', 0, 0, 1, ?, ?,
+                NULL, NULL, NULL, NULL, NULL, NULL, ?, ?, NULL, NULL, ?)
+            """,
+            (
+                job_id,
+                run_id,
+                idempotency_key,
+                now,
+                now,
+                now,
+                authority_digest,
+            ),
+        )
+        direct.commit()
+        assert direct.execute("PRAGMA foreign_key_check").fetchall()
+    finally:
+        direct.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="foreign-key authority"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text("SELECT count(*) FROM cp_jobs WHERE job_id = 'job_orphaned_authority'")
+                )
+                == 1
+            )
+    finally:
+        restarted.close()
+
+
+def test_sqlite_existing_check_violation_is_rejected_without_repair(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "check-row-drift.db"
+    repository = _repository(path)
+    run_id = f"run_{'1' * 32}"
+    job_id = f"job_{'2' * 32}"
+    repository.initialize()
+    with repository.transaction() as session:
+        session.add(_run(run_id))
+        session.flush()
+        session.add(_job(run_id, job_id))
+        session.flush()
+        session.add(_artifact(run_id, job_id))
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    try:
+        direct.execute("PRAGMA ignore_check_constraints=ON")
+        direct.execute(
+            """
+            INSERT INTO cp_artifacts (
+                artifact_id, repository_version, producer_run_id,
+                producer_job_id, producer_attempt, sealed_run_id, media_type,
+                schema_kind, byte_length, content_digest, root_digest,
+                created_by, storage_key, idempotency_key, admission_digest,
+                created_at
+            )
+            SELECT ?, repository_version, producer_run_id, producer_job_id,
+                producer_attempt, sealed_run_id, media_type, schema_kind, 0,
+                content_digest, root_digest, created_by, ?, ?, admission_digest,
+                created_at
+            FROM cp_artifacts WHERE artifact_id = ?
+            """,
+            (
+                f"artifact_{'2' * 32}",
+                "objects/artifact-invalid-check-v1",
+                "artifact-invalid-check-admission-v1",
+                f"artifact_{'1' * 32}",
+            ),
+        )
+        direct.commit()
+        direct.execute("PRAGMA ignore_check_constraints=OFF")
+        assert direct.execute("PRAGMA quick_check('cp_artifacts')").fetchone() != ("ok",)
+    finally:
+        direct.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="integrity check"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM cp_artifacts "
+                        f"WHERE artifact_id = 'artifact_{'2' * 32}'"
+                    )
+                )
+                == 1
+            )
+    finally:
+        restarted.close()
+
+
+def test_sqlite_integrity_checks_ignore_unmanaged_coexisting_tables(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "unmanaged-table-check-drift.db"
+    repository = _repository(path)
+    repository.initialize()
+    repository.close()
+
+    direct = sqlite3.connect(path)
+    try:
+        direct.execute("CREATE TABLE unrelated_rows (value INTEGER CHECK (value > 0))")
+        direct.execute("PRAGMA ignore_check_constraints=ON")
+        direct.execute("INSERT INTO unrelated_rows (value) VALUES (-1)")
+        direct.commit()
+    finally:
+        direct.close()
+
+    restarted = _repository(path)
+    try:
+        restarted.initialize()
+        assert restarted.schema_version() == CURRENT_SCHEMA_VERSION
+    finally:
+        restarted.close()
+
+
 @pytest.mark.parametrize(
     "table_name",
     [
@@ -1939,6 +3841,7 @@ def test_missing_required_column_is_rejected_without_automatic_repair(tmp_path: 
         "cp_replay_compilations",
         "cp_replay_execution_contexts",
         "cp_replay_events",
+        "cp_replay_finalizations",
     ],
 )
 def test_missing_append_only_trigger_is_rejected_without_repair(
@@ -2107,6 +4010,29 @@ def test_unexpected_index_is_rejected_without_automatic_repair(tmp_path: Path) -
         restarted.close()
 
 
+def test_same_named_sqlite_partial_index_is_rejected_without_automatic_repair(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "partial-claim-index.db"
+    repository = _repository(path)
+    repository.initialize()
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql("DROP INDEX ix_cp_jobs_claim")
+        connection.exec_driver_sql(
+            "CREATE INDEX ix_cp_jobs_claim "
+            "ON cp_jobs (state, available_at, priority, created_at) "
+            "WHERE state = 'leased'"
+        )
+    repository.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="unmanaged options"):
+            restarted.initialize()
+    finally:
+        restarted.close()
+
+
 def test_postgres_check_signature_accepts_repository_checks_and_pg_rendering() -> None:
     for table in Base.metadata.sorted_tables:
         for constraint in table.constraints:
@@ -2148,6 +4074,29 @@ def test_postgres_check_signature_accepts_repository_checks_and_pg_rendering() -
         "((cancelled_at IS NOT NULL) AND (cancellation_reason IS NOT NULL))))"
     )
     assert _postgres_check_signature(rendered_nulls, expected_nulls, table)
+
+
+def test_postgres_json_authority_sql_preserves_duplicates_and_bounds_the_walk() -> None:
+    rendered = _json_object_is_valid_sql(
+        "NEW.input",
+        dialect_name="postgresql",
+        max_storage_bytes=4_096,
+        max_depth=3,
+        max_nodes=4,
+        max_keys=2,
+    )
+
+    assert "WITH RECURSIVE pajin_json_walk" in rendered
+    assert "json_each(" in rendered
+    assert "json_array_elements(" in rendered
+    assert "::jsonb" not in rendered
+    assert "LIMIT 5" in rendered
+    assert "LIMIT 3" in rendered
+    assert "depth > 3" in rendered
+    assert "count(*) <= 4 FROM pajin_json_nodes" in rendered
+    assert "count(*) <= 2 FROM pajin_json_members" in rendered
+    assert "GROUP BY path, key" in rendered
+    assert "HAVING count(*) > 1" in rendered
 
 
 @pytest.mark.parametrize(
@@ -2268,6 +4217,107 @@ def test_postgres_append_only_trigger_rejects_disabled_scoped_or_mutated_definit
     row = _valid_postgres_trigger_row("cp_replay_events")
     setattr(row, field, value)
     assert not _postgres_append_only_trigger_is_valid(row, "cp_replay_events")
+
+
+def test_postgres_truncate_trigger_accepts_only_statement_level_truncate() -> None:
+    row = _valid_postgres_trigger_row("cp_replay_events")
+    row.trigger_type = 2 | 32
+    assert _postgres_truncate_trigger_is_valid(row, "cp_replay_events")
+
+    row.trigger_type = 1 | 2 | 32
+    assert not _postgres_truncate_trigger_is_valid(row, "cp_replay_events")
+
+
+@pytest.mark.parametrize("conflict_kind", ["rowid", "primary-key", "unique-key"])
+def test_sqlite_direct_connection_cannot_replace_append_only_rows(
+    tmp_path: Path,
+    conflict_kind: str,
+) -> None:
+    path = tmp_path / f"direct-replace-{conflict_kind}.db"
+    repository = _repository(path)
+    run_id = f"run_direct_replace_{conflict_kind}"
+    event_id = f"event_direct_replace_{conflict_kind}"
+    try:
+        repository.initialize()
+        with repository.transaction() as session:
+            session.add(_run(run_id))
+            session.flush()
+            session.add(
+                EventRecord(
+                    event_id=event_id,
+                    run_id=run_id,
+                    sequence=1,
+                    event_type="original",
+                    actor="migration-test",
+                    payload={"original": True},
+                    occurred_at=datetime.now(UTC),
+                )
+            )
+    finally:
+        repository.close()
+
+    direct = sqlite3.connect(path)
+    try:
+        direct.execute("PRAGMA recursive_triggers=OFF")
+        assert direct.execute("PRAGMA recursive_triggers").fetchone() == (0,)
+        original_rowid = direct.execute(
+            "SELECT rowid FROM cp_events WHERE event_id = ?", (event_id,)
+        ).fetchone()
+        assert original_rowid is not None
+        replacement_event_id = event_id if conflict_kind == "primary-key" else f"{event_id}_new"
+        replacement_sequence = 1 if conflict_kind == "unique-key" else 2
+        columns = "event_id, run_id, sequence, event_type, actor, payload, occurred_at"
+        values: tuple[object, ...] = (
+            replacement_event_id,
+            run_id,
+            replacement_sequence,
+            "replaced",
+            "migration-test",
+            '{"original":false}',
+            datetime.now(UTC).isoformat(),
+        )
+        if conflict_kind == "rowid":
+            columns = "rowid, " + columns
+            values = (int(original_rowid[0]), *values)
+        placeholders = ", ".join("?" for _ in values)
+        with pytest.raises(sqlite3.IntegrityError, match="append-only"):
+            direct.execute(
+                f"INSERT OR REPLACE INTO cp_events ({columns}) VALUES ({placeholders})",
+                values,
+            )
+        direct.rollback()
+        assert direct.execute(
+            "SELECT event_type, payload FROM cp_events WHERE event_id = ?", (event_id,)
+        ).fetchone() == ("original", '{"original": true}')
+        assert direct.execute("SELECT count(*) FROM cp_events").fetchone() == (1,)
+    finally:
+        direct.close()
+
+
+def test_missing_sqlite_no_replace_trigger_is_rejected_without_repair(tmp_path: Path) -> None:
+    path = tmp_path / "missing-no-replace-trigger.db"
+    repository = _repository(path)
+    repository.initialize()
+    with repository.engine.begin() as connection:
+        connection.exec_driver_sql("DROP TRIGGER cp_events_no_replace")
+    repository.close()
+
+    restarted = _repository(path)
+    try:
+        with pytest.raises(SchemaInitializationError, match="append-only insert trigger"):
+            restarted.initialize()
+        with restarted.engine.connect() as connection:
+            assert (
+                connection.scalar(
+                    text(
+                        "SELECT count(*) FROM sqlite_master WHERE type = 'trigger' "
+                        "AND name = 'cp_events_no_replace'"
+                    )
+                )
+                == 0
+            )
+    finally:
+        restarted.close()
 
 
 def test_replay_events_are_append_only_and_replay_checks_are_enforced(tmp_path: Path) -> None:

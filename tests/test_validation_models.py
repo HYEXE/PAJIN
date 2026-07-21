@@ -3,9 +3,10 @@ from datetime import UTC, datetime, timedelta, timezone
 import pytest
 from pydantic import ValidationError
 
-from pajin.agents.base import CandidateProduction
+from pajin.agents.base import CandidateAuthority, CandidateProduction
 from pajin.domain.models import Finding, FindingSeverity
 from pajin.domain.validation import (
+    CandidateAssessment,
     CandidateFinding,
     FindingDisposition,
     FindingValidationSet,
@@ -14,6 +15,7 @@ from pajin.domain.validation import (
     ValidationDecision,
     ValidationMethod,
     ValidationReasonCode,
+    ValidatorOutputArtifact,
 )
 
 
@@ -100,6 +102,7 @@ def test_validation_enum_wire_values_are_stable() -> None:
     assert {item.value for item in ValidationReasonCode} == {
         "validator-confirmed",
         "independent-reproduction-missing",
+        "independent-execution-attestation-missing",
         "independent-reproduction-confirmed",
         "replay-not-eligible",
         "replay-approval-required",
@@ -127,25 +130,34 @@ def test_validation_enum_wire_values_are_stable() -> None:
 
 
 def test_candidate_production_requires_atomic_request_and_claim_authority() -> None:
-    candidate = _candidate("candidate_1", finding_id="finding_1")
-    claim_key = (candidate.claim.target, candidate.claim.threat_class)
+    candidate = _candidate("candidate_1", finding_id="finding_1").model_copy(
+        update={"source_request_ids": ["tool_request_1", "tool_request_2"]}
+    )
+    authorities = frozenset(
+        CandidateAuthority(
+            request_id=request_id,
+            target=candidate.claim.target,
+            threat_class=candidate.claim.threat_class,
+        )
+        for request_id in candidate.source_request_ids
+    )
 
     production = CandidateProduction(
         candidates=(candidate,),
-        authoritative_request_ids=frozenset(candidate.source_request_ids),
-        authoritative_claim_keys=frozenset({claim_key}),
+        authoritative_request_claims=authorities,
     )
 
     assert production.candidates == (candidate,)
-    with pytest.raises(ValueError, match="source requests"):
+    assert production.authoritative_request_ids == frozenset(candidate.source_request_ids)
+    assert production.authoritative_claim_keys == frozenset(
+        {(candidate.claim.target, candidate.claim.threat_class)}
+    )
+    with pytest.raises(ValueError, match="exact request-to-claim authority"):
         CandidateProduction(
             candidates=(candidate,),
-            authoritative_claim_keys=frozenset({claim_key}),
-        )
-    with pytest.raises(ValueError, match="claim must be inside"):
-        CandidateProduction(
-            candidates=(candidate,),
-            authoritative_request_ids=frozenset(candidate.source_request_ids),
+            authoritative_request_claims=frozenset(
+                authority for authority in authorities if authority.request_id == "tool_request_1"
+            ),
         )
     with pytest.raises(ValueError, match="validated=False"):
         CandidateProduction(
@@ -154,8 +166,88 @@ def test_candidate_production_requires_atomic_request_and_claim_authority() -> N
                     update={"claim": candidate.claim.model_copy(update={"validated": True})}
                 ),
             ),
-            authoritative_request_ids=frozenset(candidate.source_request_ids),
-            authoritative_claim_keys=frozenset({claim_key}),
+            authoritative_request_claims=authorities,
+        )
+
+
+def test_candidate_production_rejects_cross_paired_request_and_claim_authority() -> None:
+    claim_a = _finding(finding_id="finding_a")
+    claim_b = claim_a.model_copy(
+        update={
+            "finding_id": "finding_b",
+            "target": "https://other.example/api/chat",
+            "threat_class": "M03",
+        }
+    )
+    cross_paired = _candidate(
+        "candidate_cross_paired",
+        finding_id="finding_b",
+        claim=claim_b,
+    ).model_copy(update={"source_request_ids": ["tool_request_a"]})
+
+    with pytest.raises(ValueError, match="exact request-to-claim authority"):
+        CandidateProduction(
+            candidates=(cross_paired,),
+            authoritative_request_claims=frozenset(
+                {
+                    CandidateAuthority(
+                        request_id="tool_request_a",
+                        target=claim_a.target,
+                        threat_class=claim_a.threat_class,
+                    ),
+                    CandidateAuthority(
+                        request_id="tool_request_b",
+                        target=claim_b.target,
+                        threat_class=claim_b.threat_class,
+                    ),
+                }
+            ),
+        )
+
+
+def test_candidate_production_rejects_candidate_without_source_requests() -> None:
+    candidate = _candidate("candidate_without_source", finding_id="finding_without_source")
+    candidate = candidate.model_copy(update={"source_request_ids": []})
+
+    with pytest.raises(ValueError, match="source requests must not be empty"):
+        CandidateProduction(
+            candidates=(candidate,),
+            authoritative_request_claims=frozenset(
+                {
+                    CandidateAuthority(
+                        request_id="tool_request_1",
+                        target=candidate.claim.target,
+                        threat_class=candidate.claim.threat_class,
+                    )
+                }
+            ),
+        )
+
+
+def test_supporting_validator_output_requires_evidence_and_a_validated_finding() -> None:
+    candidate = _candidate("candidate_supported", finding_id="finding_supported")
+    assessment_fields = {
+        "candidate_id": candidate.candidate_id,
+        "claim_digest": "a" * 64,
+        "supports_claim": True,
+        "reason_code": ValidationReasonCode.VALIDATOR_CONFIRMED,
+        "rationale": "The Validator independently supported the exact claim.",
+    }
+
+    with pytest.raises(ValidationError, match="requires evidence"):
+        CandidateAssessment(**assessment_fields)
+
+    assessment = CandidateAssessment(
+        **assessment_fields,
+        supporting_evidence=candidate.claim.evidence,
+    )
+    with pytest.raises(ValidationError, match="requires a validated Finding"):
+        ValidatorOutputArtifact(
+            sourceRunId="run_supported",
+            validatorId="agent:validator:supported",
+            validationTaskId="task_supported",
+            findings=[],
+            assessments=[assessment],
         )
 
 

@@ -8,12 +8,20 @@ from typing import Literal
 
 from fastapi.responses import HTMLResponse, Response
 
-type ConsoleAsset = Literal["index.html", "app.css", "app.js"]
+type ConsoleAsset = Literal[
+    "index.html",
+    "app.css",
+    "app.js",
+    "protocol.js",
+    "render.js",
+]
+type ConsolePublicAsset = Literal["app.css", "app.js", "protocol.js", "render.js"]
 
-_ASSET_MEDIA_TYPES: dict[ConsoleAsset, str] = {
-    "index.html": "text/html",
+_PUBLIC_ASSET_MEDIA_TYPES: dict[ConsolePublicAsset, str] = {
     "app.css": "text/css",
     "app.js": "text/javascript",
+    "protocol.js": "text/javascript",
+    "render.js": "text/javascript",
 }
 _BASE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
@@ -46,7 +54,7 @@ _CONTENT_SECURITY_POLICY = "; ".join(
 )
 
 
-@lru_cache(maxsize=3)
+@lru_cache(maxsize=5)
 def _asset_text(name: ConsoleAsset) -> str:
     return files("pajin.control_plane.web").joinpath(name).read_text(encoding="utf-8")
 
@@ -58,9 +66,10 @@ def console_index_response() -> HTMLResponse:
     )
 
 
-def console_asset_response(name: Literal["app.css", "app.js"]) -> Response:
+def console_asset_response(name: ConsolePublicAsset) -> Response:
+    media_type = _PUBLIC_ASSET_MEDIA_TYPES[name]
     return Response(
         _asset_text(name),
-        media_type=_ASSET_MEDIA_TYPES[name],
+        media_type=media_type,
         headers=_BASE_HEADERS,
     )

@@ -25,7 +25,38 @@ from pajin.domain.models import (
     ToolResult,
 )
 from pajin.providers.models import ProviderChatResult, ProviderMessage, ProviderRegistration
+from pajin.runtime.error_safety import audit_safe_exception_diagnostic
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.tools.ai import ChatRole
+
+_MAX_PROVIDER_STRUCTURED_OUTPUT_BYTES = 4_000_000
+_MAX_PROVIDER_TOOL_ARGUMENTS_BYTES = 400_000
+_MAX_PROVIDER_JSON_DEPTH = 32
+_MAX_PROVIDER_JSON_NODES = 100_000
+
+
+def _parse_strict_provider_json_object(
+    content: str,
+    *,
+    label: str,
+    max_bytes: int,
+) -> dict[str, object]:
+    """Decode one bounded provider-controlled JSON object without ambiguity."""
+
+    try:
+        encoded = content.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+    decoded = parse_strict_json_bytes(
+        encoded,
+        label=label,
+        max_bytes=max_bytes,
+        max_depth=_MAX_PROVIDER_JSON_DEPTH,
+        max_nodes=_MAX_PROVIDER_JSON_NODES,
+    )
+    if not isinstance(decoded, dict):
+        raise TypeError(f"{label} must decode to an object")
+    return decoded
 
 
 class ModelToolDescriptor(StrictModel):
@@ -202,10 +233,20 @@ class ProviderAgentRuntime:
                     raise ValueError(f"provider refused {role} output")
                 if result.content is None:
                     raise ValueError(f"provider returned no {role} content")
-                return output_type.model_validate_json(result.content)
+                decoded = _parse_strict_provider_json_object(
+                    result.content,
+                    label=f"provider {role} output",
+                    max_bytes=_MAX_PROVIDER_STRUCTURED_OUTPUT_BYTES,
+                )
+                return output_type.model_validate(decoded)
             except (ModelCallFailure, ValueError, TypeError, json.JSONDecodeError) as exc:
                 last_error = exc
-        raise ModelCallFailure(f"provider {role} output failed validation: {last_error}")
+        if last_error is None:  # pragma: no cover - bounded loop always attempts at least once
+            raise ModelCallFailure(f"provider {role} output failed validation")
+        raise ModelCallFailure(
+            f"provider {role} output failed validation; "
+            f"{audit_safe_exception_diagnostic(last_error, stage='provider-output-validation')}"
+        )
 
     def _to_plan(self, campaign: CampaignManifest, draft: PlannerDraft) -> AgentPlan:
         declared_targets = {target.endpoint for target in campaign.spec.targets}
@@ -218,9 +259,11 @@ class ProviderAgentRuntime:
             method = item.method.upper()
             if methods is None or method not in methods:
                 raise ValueError("provider planner selected an unregistered tool or method")
-            arguments = json.loads(item.arguments_json)
-            if not isinstance(arguments, dict):
-                raise TypeError("provider planner tool arguments must decode to an object")
+            arguments = _parse_strict_provider_json_object(
+                item.arguments_json,
+                label="provider planner tool arguments",
+                max_bytes=_MAX_PROVIDER_TOOL_ARGUMENTS_BYTES,
+            )
             steps.append(
                 PlannedStep(
                     title=item.title,
@@ -244,7 +287,10 @@ class ProviderAgentRuntime:
         if self._port is not None:
             self._port.record_fallback(
                 role=role,
-                reason=f"{type(exc).__name__}: {exc}"[:500],
+                reason=audit_safe_exception_diagnostic(
+                    exc,
+                    stage=f"provider-{role}-fallback",
+                ),
             )
 
     @staticmethod

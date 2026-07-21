@@ -21,6 +21,9 @@ is retained for connection pooling. Connect, read, write, and pool timeouts are 
 a server-side long poll bounded to 20 seconds. Transport and 5xx failures back off; 401/403 is fatal.
 A 409 is a terminal Worker state or ownership fence: structured codes distinguish a cancelled Run
 from lease rejection, while an older or untyped 409 fails closed as `lease-lost`.
+The authenticated client accepts only an origin-only HTTPS base URL. Plaintext HTTP is rejected
+unless `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` is the literal `true`, and even then is limited to
+loopback or the bundled `control-plane` Compose service name.
 
 The daemon processes one Job at a time. It starts a heartbeat task before dispatch and keeps it alive
 through completion, failure, or checkpoint finalization. Temporary finalization failures are retried
@@ -30,6 +33,23 @@ first-write-wins execution cancellation context. It gives the executor a bounded
 grace period before forced async task cancellation, and no stale result is submitted. After the
 executor has returned, a heartbeat or finalization conflict cancels result submission immediately;
 it does not reopen the engine or claim that runner cleanup occurred.
+
+Each claim and renewal maps the server heartbeat/expiry interval onto the event loop's monotonic
+clock. The mapping is anchored at request start, so network and server latency consume rather than
+extend the lease window. A heartbeat call is bounded by that deadline. If it stalls until expiry,
+the daemon cancels the I/O, skips the cooperative grace, forces executor cancellation, and rejects
+even a concurrently arriving completion response before another Worker can reclaim the Job.
+
+Control Plane schema v10 persists a separate absolute `lease_deadline_at`. Claim sets it to no more
+than 24 hours after the server claim time; Replay may narrow it to the compiled specification or
+Grant expiry, but neither a heartbeat nor a late schema-v9 writer may extend it. The database
+requires every leased row to have canonical expiry, heartbeat, owner, token, attempt, and deadline
+authority within that horizon. A Job submission digest binds the immutable dispatch tuple and is
+recomputed during migration, startup, and claim. Managed triggers also enforce the Run/Job state
+machines, reject late old-writer inserts and row replacement/deletion, and make terminal history
+immutable. Heartbeat transitions remain durable on every accepted renewal, while `job.heartbeat`
+audit events are emitted at most once per 60 seconds. Lease expiry/reclaim checks both the rolling
+expiry and the absolute deadline.
 
 SIGTERM/SIGINT stops new claims and signals an active execution with `daemon-shutdown` rather than
 waiting for an unbounded drain. The same cooperative grace and forced fallback apply. An abrupt
@@ -54,6 +74,12 @@ profile uses a no-network deterministic Provider fixture and the T3 `mock.approv
 safe integration fixture, not a production model backend. It still exercises the real Tool Loop,
 Provider Tool, Secret Lease, Capability, policy re-entry, and checkpoint code.
 
+Both built-in profiles bind the canonical Worker execution context into the sealed Run and copy the
+verified value into the optional completed-Job result fields `executionProfile` and
+`executionContext`. The defaults are explicitly `simulated-development-only`; Docker-backed
+adapters are `worker-observed-execution`, and other custom backends remain
+`custom-backend-unclassified`.
+
 When Tool Loop execution reaches `awaiting-approval`, the adapter uploads its complete typed
 checkpoint and exact pending intent. The Control Plane adds source Job kind and retry bounds to the
 signed payload. Resume consumes an approval once, preserves the source kind, and includes a trusted
@@ -72,8 +98,21 @@ systems transactional with PostgreSQL.
 ## Operations and security
 
 - Worker bearer credentials are never written to status, Job, event, checkpoint, or artifact data.
+- Worker bearer credentials are sent only to a validated HTTPS origin. The explicit plaintext flag
+  exists solely for the isolated bundled Compose/loopback lab and must remain disabled remotely.
 - A status file contains only Worker ID, state, active Job ID, count, timestamp, bounded error, and
   the last secret-free typed cancellation snapshot.
+- Both Worker daemons replace status through one directory-descriptor-anchored writer. It creates a
+  private random temporary leaf with `O_EXCL`/`O_NOFOLLOW`, fsyncs it, atomically replaces the
+  destination without following symlinks, and fsyncs the parent directory.
+- Host defaults live below `~/.pajin/status`, not a predictable leaf in shared `/tmp`. A custom
+  parent must be owned by the daemon effective UID and not writable by group or others. Compose's
+  explicit `/tmp` is a container-private UID-owned mode-0750 tmpfs. Health readers accept only a
+  no-follow regular UTF-8 file of at most 64 KiB.
+- That status guarantee and Tool Loop continuation-checkpoint isolation require POSIX dirfd,
+  `O_NOFOLLOW`, effective-UID, and sticky-directory semantics. A native Windows daemon fails closed
+  before either write with a clear error; use the Linux container or WSL. PowerShell-driven Docker
+  Compose remains supported.
 - `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS` defaults to 2 seconds and
   `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS` defaults to 5 seconds; each accepts 0.05 through 30.
 - The daemon may consume one grace window and two forced windows before it abandons a still-pending
@@ -86,6 +125,8 @@ systems transactional with PostgreSQL.
   and lab artifacts.
 - Compose uses a six-second lease only to make crash tests fast. Production should size lease and
   heartbeat intervals for its latency and recovery objectives.
+- The absolute server lease horizon is 24 hours regardless of configured rolling lease duration;
+  long-running work must reach a new fenced Job rather than renew one authority indefinitely.
 - Production execution adapters must retain the existing isolated Worker and egress boundaries. The
   deterministic in-process adapters are local verification profiles.
 - Artifact tmpfs in Compose is ephemeral. Production needs a durable evidence store with retention,

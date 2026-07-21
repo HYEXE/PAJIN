@@ -20,7 +20,7 @@ from pajin.domain.validation import (
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
 )
-from pajin.runtime.store import RunIntegritySeal, RunStore
+from pajin.runtime.store import RunIntegritySeal, RunStore, load_verified_run_snapshot
 from pajin.workflow.validation_artifacts import (
     VERSIONED_VALIDATION_DECISIONS_PATH,
     VERSIONED_VALIDATION_FINDINGS_PATH,
@@ -176,6 +176,7 @@ def _write_versioned_projection(
     index = VersionedValidationIndex(
         source_run_id=store.run_id,
         candidate_source_root_digest=source_root_digest,
+        confirmation_semantics="verified-independent-replay",
         dispositions={
             FindingDisposition.CONFIRMED: [candidate.candidate_id],
             FindingDisposition.NEEDS_REVIEW: [],
@@ -191,6 +192,7 @@ def _write_versioned_projection(
     )
     finding_set = VersionedConfirmedFindingSet(
         source_run_id=store.run_id,
+        confirmation_semantics="verified-independent-replay",
         findings=[confirmed_finding],
     )
 
@@ -232,6 +234,34 @@ def test_sealed_flat_legacy_confirmation_is_not_product_confirmation(
     assert loaded.validation == raw
     assert loaded.semantics is ValidationSnapshotSemantics.LEGACY_UNVERSIONED
     assert loaded.product_confirmed_findings == []
+
+
+def test_validation_loaders_reject_a_later_run_phase_than_the_authority_snapshot(
+    tmp_path: Path,
+) -> None:
+    store, *_ = _sealed_source_run(tmp_path, legacy_confirmed=False)
+    authority = load_verified_run_snapshot(store.path)
+    store.write_json("later-phase.json", {"phase": "later"})
+    store.append_event("test.later-phase.created", {"phase": "later"})
+    store.seal()
+
+    with pytest.raises(ValueError, match="validation Run changed"):
+        load_source_validation_artifacts(
+            store.path,
+            verified_snapshot=authority,
+        )
+    with pytest.raises(ValueError, match="validation Run changed"):
+        load_validation_snapshot(
+            store.path,
+            verified_snapshot=authority,
+        )
+    for loader in (load_source_validation_artifacts, load_validation_snapshot):
+        with pytest.raises(ValueError, match="root digest differs"):
+            loader(
+                store.path,
+                expected_run_id=authority.verification.run_id,
+                expected_root_digest=authority.verification.root_digest,
+            )
 
 
 def test_partial_versioned_projection_without_index_fails_closed(
@@ -327,6 +357,7 @@ def test_versioned_projection_rejects_substituted_source_supersession(
     index = VersionedValidationIndex(
         source_run_id=store.run_id,
         candidate_source_root_digest=source_seal.root_digest,
+        confirmation_semantics="verified-independent-replay",
         dispositions={
             FindingDisposition.CONFIRMED: [candidate.candidate_id],
             FindingDisposition.NEEDS_REVIEW: [],
@@ -347,6 +378,7 @@ def test_versioned_projection_rejects_substituted_source_supersession(
         VERSIONED_VALIDATION_FINDINGS_PATH,
         VersionedConfirmedFindingSet(
             source_run_id=store.run_id,
+            confirmation_semantics="verified-independent-replay",
             findings=[confirmed_finding],
         ).model_dump(mode="json", by_alias=True),
     )

@@ -20,7 +20,6 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import (
     CandidateFinding,
-    ConfirmationBasis,
     FindingDisposition,
     ReplayConfirmationLineage,
     ValidationCheckResult,
@@ -100,7 +99,7 @@ def _source_decision(
         replay_request_ids=[],
         checks=[
             ValidationCheckResult(
-                check_id="legacy-validator-signal",
+                check_id="candidate-bound-validator-assessment",
                 status=(
                     ValidationCheckStatus.PASS if semantic_supported else ValidationCheckStatus.FAIL
                 ),
@@ -134,6 +133,7 @@ def _artifact_set(
     semantic_support_required: bool = True,
 ) -> ReplayArtifactSet:
     binding = _binding(candidate)
+    required_contradictions = 1 if oracle_verdict is ReplayOracleVerdict.CONTRADICTS else 0
     contract = ModeReplayContract(
         contract_id="replay-contract:test-confirmation:v1",
         mode=CampaignMode.AI_REDTEAM,
@@ -148,6 +148,7 @@ def _artifact_set(
         session_policy=ReplaySessionPolicy.STATELESS,
         repetitions=1,
         required_successes=1,
+        required_contradictions=required_contradictions,
         oracle_id="test.confirmation-oracle",
         oracle_version="1.0.0",
         observation_schema="pajin.test/confirmation-observation/v1",
@@ -186,12 +187,14 @@ def _artifact_set(
         argument_digest=replay_argument_digest(arguments),
         original_request_digest="b" * 64,
         original_evidence_digest="c" * 64,
+        source_capability_digest="9" * 64,
         risk_tier=contract.risk_tier,
         replay_safe=True,
         idempotent=True,
         session_policy=contract.session_policy,
         repetitions=contract.repetitions,
         required_successes=contract.required_successes,
+        required_contradictions=contract.required_contradictions,
         oracle_id=contract.oracle_id,
         oracle_version=contract.oracle_version,
         observation_schema=contract.observation_schema,
@@ -242,6 +245,7 @@ def _artifact_set(
     oracle = None
     if execution_status is ReplayExecutionStatus.SUCCEEDED:
         supports = oracle_verdict is ReplayOracleVerdict.SUPPORTS
+        contradicts = oracle_verdict is ReplayOracleVerdict.CONTRADICTS
         oracle = ReplayOracleResult(
             oracle_result_id="replay-oracle_confirmation_1",
             spec_id=spec.spec_id,
@@ -252,8 +256,11 @@ def _artifact_set(
             verdict=oracle_verdict,
             attempt_ids=[attempt.attempt_id for attempt in attempts],
             supporting_evidence=[REPLAY_EVIDENCE] if supports else [],
+            contradicting_evidence=[REPLAY_EVIDENCE] if contradicts else [],
             support_count=1 if supports else 0,
             required_support_count=1,
+            contradiction_count=1 if contradicts else 0,
+            required_contradiction_count=required_contradictions,
             summary="The typed Mode Oracle evaluated the replay observation.",
             evaluated_at=NOW + timedelta(seconds=6),
         )
@@ -323,12 +330,12 @@ def _decide(
     )
 
 
-def test_supporting_replay_confirms_and_preserves_receipt_lineage() -> None:
+def test_supporting_replay_needs_independent_execution_attestation() -> None:
     decision = _decide()
 
-    assert decision.disposition is FindingDisposition.CONFIRMED
-    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
-    assert decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+    assert decision.disposition is FindingDisposition.NEEDS_REVIEW
+    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING]
+    assert decision.confirmation_basis is None
     assert decision.method is ValidationMethod.RESTRICTED_REPLAY_GATE
     assert decision.supersedes_decision_id == "decision_source_1"
     assert decision.replay_request_ids == [REPLAY_REQUEST_ID]
@@ -372,6 +379,35 @@ def test_successful_replay_uses_typed_oracle_reason_matrix(
     assert decision.disposition is expected_disposition
     assert decision.reason_codes == [expected_reason]
     assert decision.confirmation_basis is None
+
+
+def test_confirmation_rejects_unthresholded_contradiction_copy() -> None:
+    candidate = _candidate()
+    artifact_set = _artifact_set(
+        candidate,
+        oracle_verdict=ReplayOracleVerdict.CONTRADICTS,
+    )
+    oracle = artifact_set.outcome.oracle_result
+    assert oracle is not None
+    unthresholded = oracle.model_copy(
+        update={
+            "contradiction_count": 0,
+            "required_contradiction_count": 0,
+            "contradicting_evidence": [],
+        }
+    )
+    unsafe_artifact_set = artifact_set.model_copy(
+        update={"outcome": artifact_set.outcome.model_copy(update={"oracle_result": unthresholded})}
+    )
+
+    with pytest.raises(ValueError, match="explicit threshold and exact evidence"):
+        decide_replay_confirmation(
+            candidate=candidate,
+            source_decision=_source_decision(candidate),
+            artifact_set=unsafe_artifact_set,
+            lineage=_lineage(unsafe_artifact_set),
+            decided_at=NOW + timedelta(seconds=9),
+        )
 
 
 @pytest.mark.parametrize(

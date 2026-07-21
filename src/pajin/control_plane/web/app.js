@@ -1,18 +1,71 @@
 "use strict";
 
-const PAGE_SIZE = 25;
-const MAX_RENDERED_EVENTS = 200;
+import {
+  ApiProtocolError,
+  MAX_RENDERED_EVENTS,
+  PAGE_SIZE,
+  errorDetail,
+  formatJson,
+  isJsonMediaType,
+  isRunState,
+  parseJsonPayload,
+  protocolFailure,
+  runSubmissionBody,
+  validateApproval,
+  validateApprovalDecision,
+  validateCancellation,
+  validateEvents,
+  validatePrincipal,
+  validateResume,
+  validateRun,
+  validateRunList,
+  validateSubmission,
+} from "./protocol.js";
+import {
+  createEventNodes,
+  createRunRows,
+  eventCountLabel,
+  formatTime,
+  shortId,
+} from "./render.js";
+
+const MAX_EXECUTOR_INPUT_BYTES = 1_000_000;
+
+class StaleRequestError extends Error {
+  constructor() {
+    super("The request belongs to an inactive console session.");
+    this.name = "StaleRequestError";
+  }
+}
 
 const session = {
   token: "",
+  connected: false,
+  authEpoch: 0,
+  requestControllers: new Set(),
   selectedRunId: null,
+  selectionEpoch: 0,
+  listRequestId: 0,
+  detailRequestId: 0,
+  detailLoading: false,
+  eventRequestId: 0,
+  eventPageRunId: null,
+  eventPageBefore: null,
+  eventOldestSequence: null,
+  eventAtLatest: true,
+  eventHasOlder: false,
+  eventLoading: false,
   offset: 0,
   total: 0,
   pageItems: 0,
   refreshTimer: null,
-  refreshing: false,
+  refreshTask: null,
   actionBusy: false,
+  actionSequence: 0,
+  submissionBusy: false,
+  submissionSequence: 0,
   roles: new Set(),
+  subject: null,
   currentRun: null,
   currentApproval: null,
   canSubmit: false,
@@ -28,6 +81,8 @@ const elements = {
   connectionLabel: document.querySelector("#connection-label"),
   statusMessage: document.querySelector("#status-message"),
   runForm: document.querySelector("#run-form"),
+  runsPanel: document.querySelector("#runs-panel"),
+  detailPanel: document.querySelector("#detail-panel"),
   campaignName: document.querySelector("#campaign-name"),
   jobKind: document.querySelector("#job-kind"),
   idempotencyKey: document.querySelector("#idempotency-key"),
@@ -57,13 +112,29 @@ const elements = {
   approvalDecision: document.querySelector("#approval-decision"),
   workflowReason: document.querySelector("#workflow-reason"),
   workflowHelp: document.querySelector("#workflow-help"),
+  workflowControl: document.querySelector("#workflow-control"),
   approveButton: document.querySelector("#approve-button"),
   denyButton: document.querySelector("#deny-button"),
   resumeButton: document.querySelector("#resume-button"),
   cancelButton: document.querySelector("#cancel-button"),
   eventCount: document.querySelector("#event-count"),
   eventList: document.querySelector("#event-list"),
+  latestEventsButton: document.querySelector("#latest-events-button"),
+  olderEventsButton: document.querySelector("#older-events-button"),
 };
+
+function setBusy(element, busy) {
+  element.setAttribute("aria-busy", busy ? "true" : "false");
+}
+
+function resetBusyIndicators() {
+  setBusy(elements.tokenForm, false);
+  setBusy(elements.runForm, false);
+  setBusy(elements.runsPanel, false);
+  setBusy(elements.detailPanel, false);
+  setBusy(elements.workflowControl, false);
+  setBusy(elements.eventList, false);
+}
 
 function announce(message, tone = "neutral") {
   elements.statusMessage.textContent = message;
@@ -80,8 +151,10 @@ function newIdempotencyKey() {
   elements.idempotencyKey.value = `web-console-${randomPart}`;
 }
 
-function setConnected(connected, roles = []) {
+function setConnected(connected, roles = [], subject = null) {
+  session.connected = connected;
   session.roles = new Set(connected ? roles : []);
+  session.subject = connected ? subject : null;
   session.canOperate = connected && session.roles.has("operator");
   session.canApprove = connected && session.roles.has("approver");
   session.canSubmit = session.canOperate;
@@ -89,16 +162,37 @@ function setConnected(connected, roles = []) {
   elements.connectionLabel.textContent = connected
     ? roles.map((role) => role.replace("-", " ")).join(" · ")
     : "Locked";
-  elements.lockButton.disabled = !connected;
+  elements.lockButton.disabled = !session.token;
   elements.submitButton.disabled = !session.canSubmit;
   elements.refreshButton.disabled = !connected;
   elements.stateFilter.disabled = !connected;
   elements.autoRefresh.disabled = !connected;
   updateWorkflowControls();
+  updateEventPaginationControls();
+}
+
+function updateEventPaginationControls() {
+  const unavailable = !session.connected
+    || session.eventLoading
+    || session.eventPageRunId !== session.selectedRunId;
+  elements.latestEventsButton.disabled = unavailable || session.eventAtLatest;
+  elements.olderEventsButton.disabled = unavailable || !session.eventHasOlder;
+}
+
+function resetEventPagination(runId = null, { loading = false } = {}) {
+  session.eventPageRunId = runId;
+  session.eventPageBefore = null;
+  session.eventOldestSequence = null;
+  session.eventAtLatest = true;
+  session.eventHasOlder = false;
+  session.eventLoading = loading;
+  setBusy(elements.eventList, loading);
+  updateEventPaginationControls();
 }
 
 function clearDetail() {
   session.selectedRunId = null;
+  session.selectionEpoch += 1;
   session.currentRun = null;
   session.currentApproval = null;
   elements.detailState.textContent = "No Run selected";
@@ -109,12 +203,52 @@ function clearDetail() {
   elements.detailUpdated.textContent = "—";
   elements.detailCheckpoint.textContent = "—";
   elements.detailInput.textContent = "Select a Run to inspect its authorized input.";
+  elements.workflowReason.value = "";
   elements.eventCount.textContent = "0 events";
+  resetEventPagination();
   renderApproval(null);
   const empty = document.createElement("li");
   empty.className = "empty-event";
   empty.textContent = "No events loaded.";
   elements.eventList.replaceChildren(empty);
+}
+
+function prepareDetailLoading(runId) {
+  session.currentRun = null;
+  session.currentApproval = null;
+  setDetailState("Loading");
+  elements.detailRunId.textContent = runId;
+  elements.detailCampaign.textContent = "—";
+  elements.detailCreated.textContent = "—";
+  elements.detailUpdated.textContent = "—";
+  elements.detailCheckpoint.textContent = "—";
+  elements.detailInput.textContent = "Loading authorized input…";
+  elements.eventCount.textContent = "0 events";
+  resetEventPagination(runId, { loading: true });
+  renderApproval(null);
+  const loading = document.createElement("li");
+  loading.className = "empty-event";
+  loading.textContent = "Loading events…";
+  elements.eventList.replaceChildren(loading);
+}
+
+function renderDetailFailure(runId) {
+  session.currentRun = null;
+  session.currentApproval = null;
+  setDetailState("Unavailable");
+  elements.detailRunId.textContent = runId;
+  elements.detailCampaign.textContent = "—";
+  elements.detailCreated.textContent = "—";
+  elements.detailUpdated.textContent = "—";
+  elements.detailCheckpoint.textContent = "—";
+  elements.detailInput.textContent = "Current Run detail is unavailable. Refresh to retry.";
+  elements.eventCount.textContent = "0 events";
+  resetEventPagination(runId);
+  renderApproval(null);
+  const unavailable = document.createElement("li");
+  unavailable.className = "empty-event";
+  unavailable.textContent = "Audit events are unavailable. Refresh to retry.";
+  elements.eventList.replaceChildren(unavailable);
 }
 
 function clearRuns() {
@@ -131,6 +265,20 @@ function clearRuns() {
   updatePagination();
 }
 
+function renderRunsUnavailable() {
+  const row = document.createElement("tr");
+  const cell = document.createElement("td");
+  cell.colSpan = 4;
+  cell.className = "empty-cell";
+  cell.textContent = "Runs are unavailable. Use Refresh to retry.";
+  row.append(cell);
+  elements.runsBody.replaceChildren(row);
+  session.offset = 0;
+  session.total = 0;
+  session.pageItems = 0;
+  updatePagination();
+}
+
 function stopAutoRefresh() {
   if (session.refreshTimer !== null) {
     globalThis.clearInterval(session.refreshTimer);
@@ -139,157 +287,169 @@ function stopAutoRefresh() {
   elements.autoRefresh.checked = false;
 }
 
-function lockConsole(message = "Console locked. The in-memory credential was cleared.") {
-  session.token = "";
+function replaceCredential(token) {
+  session.authEpoch += 1;
+  session.token = token;
+  for (const controller of session.requestControllers) {
+    controller.abort();
+  }
+  session.requestControllers.clear();
+  session.listRequestId += 1;
+  session.detailRequestId += 1;
+  session.detailLoading = false;
+  session.eventRequestId += 1;
+  session.selectionEpoch += 1;
+  session.actionSequence += 1;
   session.actionBusy = false;
-  session.canSubmit = false;
+  session.submissionSequence += 1;
+  session.submissionBusy = false;
+  session.refreshTask = null;
+  resetBusyIndicators();
+}
+
+function lockConsole(
+  message = "Console locked. The in-memory credential was cleared.",
+  tone = "neutral",
+  { focusToken = true } = {},
+) {
+  replaceCredential("");
   elements.tokenInput.value = "";
   stopAutoRefresh();
   setConnected(false);
   clearRuns();
   clearDetail();
-  announce(message);
+  announce(message, tone);
+  if (focusToken) {
+    elements.tokenInput.focus();
+  }
 }
 
-function errorDetail(payload, status) {
-  if (payload && typeof payload === "object" && "detail" in payload) {
-    return typeof payload.detail === "string"
-      ? payload.detail
-      : JSON.stringify(payload.detail);
-  }
-  return `Control Plane request failed with HTTP ${status}.`;
+function requestIsCurrent(epoch, token) {
+  return session.authEpoch === epoch && session.token === token && token !== "";
+}
+
+function isStaleRequest(error) {
+  return error instanceof StaleRequestError;
 }
 
 async function apiRequest(path, options = {}) {
   if (!session.token) {
     throw new Error("Connect before calling the Control Plane API.");
   }
+  const token = session.token;
+  const epoch = session.authEpoch;
+  const controller = new AbortController();
   const headers = new Headers(options.headers || {});
-  headers.set("Authorization", `Bearer ${session.token}`);
+  headers.set("Authorization", `Bearer ${token}`);
   if (options.body !== undefined) {
     headers.set("Content-Type", "application/json");
   }
-  const response = await fetch(path, {
-    ...options,
-    headers,
-    cache: "no-store",
-    credentials: "omit",
-    redirect: "error",
-    referrerPolicy: "no-referrer",
-  });
-  const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json") ? await response.json() : null;
-  if (response.status === 401) {
-    lockConsole("Authentication failed. The in-memory credential was cleared.");
-  }
-  if (!response.ok) {
-    throw new Error(errorDetail(payload, response.status));
-  }
-  return payload;
-}
+  session.requestControllers.add(controller);
+  try {
+    const response = await fetch(path, {
+      ...options,
+      headers,
+      cache: "no-store",
+      credentials: "omit",
+      redirect: "error",
+      referrerPolicy: "no-referrer",
+      signal: controller.signal,
+    });
+    if (!requestIsCurrent(epoch, token)) {
+      throw new StaleRequestError();
+    }
+    if (response.status === 401) {
+      lockConsole("Authentication failed. The in-memory credential was cleared.", "error");
+      throw new StaleRequestError();
+    }
 
-function formatTime(value) {
-  if (!value) {
-    return "—";
+    const contentType = response.headers.get("content-type") || "";
+    let payload = null;
+    if (isJsonMediaType(contentType) && response.status !== 204 && response.status !== 205) {
+      payload = parseJsonPayload(await response.text(), response.status);
+    }
+    if (!requestIsCurrent(epoch, token)) {
+      throw new StaleRequestError();
+    }
+    if (!response.ok) {
+      throw new Error(errorDetail(payload, response.status));
+    }
+    if (response.status === 204 || response.status === 205 || !isJsonMediaType(contentType)) {
+      throw new ApiProtocolError(
+        `Control Plane returned an empty or non-JSON success response (HTTP ${response.status}).`,
+      );
+    }
+    return payload;
+  } catch (error) {
+    if (!requestIsCurrent(epoch, token)) {
+      throw new StaleRequestError();
+    }
+    throw error;
+  } finally {
+    session.requestControllers.delete(controller);
   }
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString();
-}
-
-function shortId(value) {
-  return value.length > 22 ? `${value.slice(0, 13)}…${value.slice(-6)}` : value;
-}
-
-function stateBadge(value) {
-  const badge = document.createElement("span");
-  badge.className = `state-badge state-${value}`;
-  badge.textContent = value;
-  return badge;
-}
-
-function textCell(value, className = "") {
-  const cell = document.createElement("td");
-  cell.textContent = value;
-  if (className) {
-    cell.className = className;
-  }
-  return cell;
 }
 
 function renderRuns(items) {
-  if (items.length === 0) {
-    const row = document.createElement("tr");
-    const cell = document.createElement("td");
-    cell.colSpan = 4;
-    cell.className = "empty-cell";
-    cell.textContent = "No Runs match this filter.";
-    row.append(cell);
-    elements.runsBody.replaceChildren(row);
-    return;
-  }
-
-  const rows = items.map((run) => {
-    const row = document.createElement("tr");
-    row.classList.toggle("selected", run.run_id === session.selectedRunId);
-
-    const campaignCell = document.createElement("td");
-    const runName = document.createElement("span");
-    runName.className = "run-name";
-    const campaign = document.createElement("strong");
-    campaign.textContent = run.campaign_name;
-    const identifier = document.createElement("code");
-    identifier.textContent = shortId(run.run_id);
-    identifier.title = run.run_id;
-    runName.append(campaign, identifier);
-    campaignCell.append(runName);
-
-    const stateCell = document.createElement("td");
-    stateCell.append(stateBadge(run.state));
-
-    const actionCell = document.createElement("td");
-    const open = document.createElement("button");
-    open.type = "button";
-    open.className = "button button-quiet open-run";
-    open.textContent = "Inspect";
-    open.setAttribute("aria-label", `Inspect ${run.campaign_name}`);
-    if (run.run_id === session.selectedRunId) {
-      open.setAttribute("aria-current", "true");
-    }
-    open.addEventListener("click", () => selectRun(run.run_id));
-    actionCell.append(open);
-
-    row.append(campaignCell, stateCell, textCell(formatTime(run.updated_at)), actionCell);
-    return row;
-  });
-  elements.runsBody.replaceChildren(...rows);
+  elements.runsBody.replaceChildren(
+    ...createRunRows(document, items, session.selectedRunId, selectRun),
+  );
 }
 
 function updatePagination() {
   const first = session.total === 0 ? 0 : session.offset + 1;
   const last = Math.min(session.offset + session.pageItems, session.total);
   elements.pageSummary.textContent = `${first}–${last} of ${session.total} Runs`;
-  elements.previousPage.disabled = !session.token || session.offset === 0;
-  elements.nextPage.disabled = !session.token || session.offset + session.pageItems >= session.total;
+  elements.previousPage.disabled = !session.connected || session.offset === 0;
+  elements.nextPage.disabled = !session.connected
+    || session.offset + session.pageItems >= session.total;
 }
 
 async function loadRuns() {
+  const requestId = ++session.listRequestId;
+  const requestedOffset = session.offset;
+  const requestedState = elements.stateFilter.value;
   const params = new URLSearchParams({
     limit: String(PAGE_SIZE),
-    offset: String(session.offset),
+    offset: String(requestedOffset),
   });
-  if (elements.stateFilter.value) {
-    params.set("state", elements.stateFilter.value);
+  if (requestedState) {
+    params.set("state", requestedState);
   }
-  const data = await apiRequest(`/v1/runs?${params.toString()}`);
-  session.total = data.total;
-  session.pageItems = data.items.length;
-  renderRuns(data.items);
-  updatePagination();
+  setBusy(elements.runsPanel, true);
+  try {
+    const data = validateRunList(
+      await apiRequest(`/v1/runs?${params.toString()}`),
+      requestedOffset,
+    );
+    if (requestId !== session.listRequestId
+      || requestedOffset !== session.offset
+      || requestedState !== elements.stateFilter.value) {
+      return false;
+    }
+    if (data.total === 0 && requestedOffset !== 0) {
+      session.offset = 0;
+    } else if (data.total > 0 && requestedOffset >= data.total) {
+      session.offset = Math.floor((data.total - 1) / PAGE_SIZE) * PAGE_SIZE;
+      return loadRuns();
+    }
+    session.total = data.total;
+    session.pageItems = data.items.length;
+    renderRuns(data.items);
+    updatePagination();
+    return true;
+  } finally {
+    if (requestId === session.listRequestId) {
+      setBusy(elements.runsPanel, false);
+    }
+  }
 }
 
 function setDetailState(value) {
   elements.detailState.textContent = value;
-  elements.detailState.className = `state-badge state-${value}`;
+  elements.detailState.className = isRunState(value)
+    ? `state-badge state-${value}`
+    : "state-badge state-neutral";
 }
 
 function isCancellableRun(run) {
@@ -299,24 +459,30 @@ function isCancellableRun(run) {
 function updateWorkflowControls() {
   const run = session.currentRun;
   const approval = session.currentApproval;
-  const pendingApproval = approval !== null && approval.state === "pending";
-  const resumableApproval = approval !== null
-    && approval.state === "approved"
+  const approvalMatchesCurrentCheckpoint = approval !== null
     && run !== null
     && run.state === "awaiting-approval"
     && run.current_checkpoint_id === approval.checkpoint_id;
+  const pendingApproval = approvalMatchesCurrentCheckpoint && approval.state === "pending";
+  const selfRequestedApproval = pendingApproval
+    && approval.requested_by === session.subject;
+  const canDecide = session.canApprove && pendingApproval && !selfRequestedApproval;
+  const resumableApproval = approvalMatchesCurrentCheckpoint && approval.state === "approved";
   const cancellable = isCancellableRun(run);
-  const busy = session.actionBusy;
+  const busy = session.actionBusy || session.detailLoading;
 
-  elements.approveButton.disabled = busy || !session.canApprove || !pendingApproval;
-  elements.denyButton.disabled = busy || !session.canApprove || !pendingApproval;
+  setBusy(elements.workflowControl, busy);
+  elements.approveButton.disabled = busy || !canDecide;
+  elements.denyButton.disabled = busy || !canDecide;
   elements.resumeButton.disabled = busy || !session.canOperate || !resumableApproval;
   elements.cancelButton.disabled = busy || !session.canOperate || !cancellable;
   elements.workflowReason.disabled = busy
-    || !(session.canApprove && pendingApproval || session.canOperate && cancellable);
+    || !(canDecide || session.canOperate && cancellable);
 
   if (run === null) {
     elements.workflowHelp.textContent = "Select a Run to load its current approval boundary.";
+  } else if (selfRequestedApproval && session.canApprove) {
+    elements.workflowHelp.textContent = "The approval requester cannot decide their own request.";
   } else if (pendingApproval && session.canApprove) {
     elements.workflowHelp.textContent = "Review the signed intent summary and record a decision reason.";
   } else if (resumableApproval && session.canOperate) {
@@ -352,93 +518,217 @@ function renderApproval(approval) {
   updateWorkflowControls();
 }
 
-function renderEvents(events) {
-  const visible = events.slice(-MAX_RENDERED_EVENTS);
-  const omitted = events.length - visible.length;
-  elements.eventCount.textContent = omitted > 0
-    ? `${events.length} events · ${omitted} older hidden`
-    : `${events.length} ${events.length === 1 ? "event" : "events"}`;
+function renderEvents(events, runId, { atLatest = true, before = null } = {}) {
+  session.eventPageRunId = runId;
+  session.eventPageBefore = before;
+  session.eventOldestSequence = events.length > 0 ? events[0].sequence : null;
+  session.eventAtLatest = atLatest;
+  session.eventHasOlder = session.eventOldestSequence !== null
+    && session.eventOldestSequence > 1;
+  elements.eventCount.textContent = eventCountLabel(events);
+  updateEventPaginationControls();
+  elements.eventList.replaceChildren(...createEventNodes(document, events));
+}
 
-  if (visible.length === 0) {
-    const empty = document.createElement("li");
-    empty.className = "empty-event";
-    empty.textContent = "No events recorded.";
-    elements.eventList.replaceChildren(empty);
-    return;
+function eventPagePath(runId, before = null) {
+  const params = new URLSearchParams({ limit: String(MAX_RENDERED_EVENTS) });
+  if (before !== null) {
+    params.set("before", String(before));
   }
-
-  const nodes = visible.map((event) => {
-    const item = document.createElement("li");
-    item.className = "event-item";
-    const heading = document.createElement("div");
-    heading.className = "event-title";
-    const title = document.createElement("strong");
-    title.textContent = event.event_type;
-    const sequence = document.createElement("span");
-    sequence.className = "event-sequence";
-    sequence.textContent = `#${event.sequence}`;
-    heading.append(title, sequence);
-    const meta = document.createElement("div");
-    meta.className = "event-meta";
-    meta.textContent = `${formatTime(event.occurred_at)} · ${event.actor}`;
-    const payload = document.createElement("pre");
-    payload.textContent = JSON.stringify(event.payload, null, 2);
-    item.append(heading, meta, payload);
-    return item;
-  });
-  elements.eventList.replaceChildren(...nodes);
+  return `/v1/runs/${encodeURIComponent(runId)}/events?${params.toString()}`;
 }
 
 async function loadDetail(runId) {
-  const [run, events, approval] = await Promise.all([
-    apiRequest(`/v1/runs/${encodeURIComponent(runId)}`),
-    apiRequest(`/v1/runs/${encodeURIComponent(runId)}/events`),
-    apiRequest(`/v1/runs/${encodeURIComponent(runId)}/approval`),
-  ]);
-  if (session.selectedRunId !== runId) {
+  const requestId = ++session.detailRequestId;
+  const eventRequestId = ++session.eventRequestId;
+  const eventBefore = session.eventPageRunId === runId && !session.eventAtLatest
+    ? session.eventPageBefore
+    : null;
+  session.detailLoading = true;
+  session.eventLoading = true;
+  setBusy(elements.detailPanel, true);
+  setBusy(elements.eventList, true);
+  updateWorkflowControls();
+  updateEventPaginationControls();
+  try {
+    const [run, events, approval] = await Promise.all([
+      apiRequest(`/v1/runs/${encodeURIComponent(runId)}`),
+      apiRequest(eventPagePath(runId, eventBefore)),
+      apiRequest(`/v1/runs/${encodeURIComponent(runId)}/approval`),
+    ]);
+    const checkedRun = validateRun(run, { detail: true });
+    if (checkedRun.run_id !== runId) {
+      protocolFailure("Run detail");
+    }
+    const checkedEvents = validateEvents(events, runId, eventBefore);
+    const checkedApproval = validateApproval(approval, runId);
+    if (checkedApproval !== null
+      && ["pending", "approved"].includes(checkedApproval.state)
+      && (checkedRun.state !== "awaiting-approval"
+        || checkedRun.current_checkpoint_id !== checkedApproval.checkpoint_id)) {
+      protocolFailure("Run approval graph");
+    }
+    if (session.selectedRunId !== runId
+      || requestId !== session.detailRequestId
+      || eventRequestId !== session.eventRequestId) {
+      return false;
+    }
+    session.currentRun = checkedRun;
+    setDetailState(checkedRun.state);
+    elements.detailRunId.textContent = checkedRun.run_id;
+    elements.detailCampaign.textContent = checkedRun.campaign_name;
+    elements.detailCreated.textContent = formatTime(checkedRun.created_at);
+    elements.detailUpdated.textContent = formatTime(checkedRun.updated_at);
+    elements.detailCheckpoint.textContent = checkedRun.current_checkpoint_id || "—";
+    elements.detailInput.textContent = formatJson(checkedRun.input);
+    renderApproval(checkedApproval);
+    renderEvents(checkedEvents, runId, {
+      atLatest: eventBefore === null,
+      before: eventBefore,
+    });
+    return true;
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.selectedRunId === runId
+      && requestId === session.detailRequestId
+      && eventRequestId === session.eventRequestId) {
+      renderDetailFailure(runId);
+    }
+    throw error;
+  } finally {
+    if (requestId === session.detailRequestId) {
+      session.detailLoading = false;
+      setBusy(elements.detailPanel, false);
+      updateWorkflowControls();
+    }
+    if (eventRequestId === session.eventRequestId) {
+      session.eventLoading = false;
+      setBusy(elements.eventList, false);
+      updateEventPaginationControls();
+    }
+  }
+}
+
+async function loadEventPage(before = null) {
+  const runId = session.selectedRunId;
+  if (runId === null || session.eventLoading) {
     return;
   }
-  session.currentRun = run;
-  setDetailState(run.state);
-  elements.detailRunId.textContent = run.run_id;
-  elements.detailCampaign.textContent = run.campaign_name;
-  elements.detailCreated.textContent = formatTime(run.created_at);
-  elements.detailUpdated.textContent = formatTime(run.updated_at);
-  elements.detailCheckpoint.textContent = run.current_checkpoint_id || "—";
-  elements.detailInput.textContent = JSON.stringify(run.input, null, 2);
-  renderApproval(approval);
-  renderEvents(events);
+  const requestId = ++session.eventRequestId;
+  session.eventLoading = true;
+  setBusy(elements.eventList, true);
+  updateEventPaginationControls();
+  announce(before === null ? "Loading latest audit events…" : "Loading older audit events…");
+  try {
+    const events = validateEvents(
+      await apiRequest(eventPagePath(runId, before)),
+      runId,
+      before,
+    );
+    if (requestId !== session.eventRequestId || session.selectedRunId !== runId) {
+      return;
+    }
+    renderEvents(events, runId, { atLatest: before === null, before });
+    announce(before === null ? "Latest audit events loaded." : "Older audit events loaded.", "success");
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && requestId === session.eventRequestId
+      && session.selectedRunId === runId) {
+      announce(error instanceof Error ? error.message : "Unable to load audit events.", "error");
+    }
+  } finally {
+    if (requestId === session.eventRequestId) {
+      session.eventLoading = false;
+      setBusy(elements.eventList, false);
+      updateEventPaginationControls();
+    }
+  }
 }
 
 async function selectRun(runId) {
+  if (session.selectedRunId !== runId) {
+    elements.workflowReason.value = "";
+  }
   session.selectedRunId = runId;
+  const selectionEpoch = ++session.selectionEpoch;
+  prepareDetailLoading(runId);
   announce(`Loading ${shortId(runId)}…`);
   try {
-    await Promise.all([loadRuns(), loadDetail(runId)]);
-    announce(`Loaded ${shortId(runId)}.`, "success");
+    const [, detailLoaded] = await Promise.all([loadRuns(), loadDetail(runId)]);
+    if (detailLoaded
+      && session.selectedRunId === runId
+      && session.selectionEpoch === selectionEpoch) {
+      announce(`Loaded ${shortId(runId)}.`, "success");
+      elements.detailPanel.focus();
+    }
   } catch (error) {
-    announce(error instanceof Error ? error.message : "Unable to load Run detail.", "error");
+    if (!isStaleRequest(error)
+      && session.selectedRunId === runId
+      && session.selectionEpoch === selectionEpoch) {
+      announce(error instanceof Error ? error.message : "Unable to load Run detail.", "error");
+    }
   }
 }
 
-async function refreshCurrent({ quiet = false } = {}) {
-  if (!session.token || session.refreshing) {
-    return;
+function refreshCurrent({ quiet = false } = {}) {
+  if (!session.token || !session.connected) {
+    return Promise.resolve();
   }
-  session.refreshing = true;
-  try {
-    await loadRuns();
-    if (session.selectedRunId) {
-      await loadDetail(session.selectedRunId);
-    }
+  const epoch = session.authEpoch;
+  const token = session.token;
+  if (session.refreshTask !== null && session.refreshTask.epoch === epoch) {
     if (!quiet) {
-      announce("Run state refreshed.", "success");
+      session.refreshTask.requested = true;
+      session.refreshTask.announceOnSuccess = true;
     }
-  } catch (error) {
-    announce(error instanceof Error ? error.message : "Refresh failed.", "error");
-  } finally {
-    session.refreshing = false;
+    return session.refreshTask.promise;
   }
+
+  const task = {
+    epoch,
+    requested: true,
+    announceOnSuccess: !quiet,
+    promise: null,
+  };
+  task.promise = (async () => {
+    while (task.requested && requestIsCurrent(epoch, token) && session.connected) {
+      task.requested = false;
+      const announceOnSuccess = task.announceOnSuccess;
+      task.announceOnSuccess = false;
+      let refreshError = null;
+      try {
+        const selectedRunId = session.selectedRunId;
+        await Promise.all([
+          loadRuns(),
+          selectedRunId === null ? Promise.resolve() : loadDetail(selectedRunId),
+        ]);
+      } catch (error) {
+        if (isStaleRequest(error)) {
+          return;
+        }
+        refreshError = error;
+      }
+
+      if (task.requested) {
+        task.announceOnSuccess ||= announceOnSuccess;
+        continue;
+      }
+      if (refreshError !== null) {
+        announce(
+          refreshError instanceof Error ? refreshError.message : "Refresh failed.",
+          "error",
+        );
+      } else if (announceOnSuccess) {
+        announce("Run state refreshed.", "success");
+      }
+    }
+  })().finally(() => {
+    if (session.refreshTask === task) {
+      session.refreshTask = null;
+    }
+  });
+  session.refreshTask = task;
+  return task.promise;
 }
 
 function requiredWorkflowReason() {
@@ -452,38 +742,69 @@ function requiredWorkflowReason() {
 }
 
 async function refreshActionState(runId) {
-  if (!session.token) {
+  if (!session.token || !session.connected) {
     return;
   }
-  await loadRuns();
-  if (session.selectedRunId === runId) {
-    await loadDetail(runId);
-  }
+  await Promise.all([
+    loadRuns(),
+    session.selectedRunId === runId ? loadDetail(runId) : Promise.resolve(),
+  ]);
 }
 
 async function performWorkflowAction(runId, pendingMessage, successMessage, operation) {
   if (session.actionBusy) {
     return;
   }
+  const actionId = ++session.actionSequence;
   session.actionBusy = true;
   updateWorkflowControls();
   announce(pendingMessage);
+  let result;
   try {
-    await operation();
-    elements.workflowReason.value = "";
-    await refreshActionState(runId);
-    announce(successMessage, "success");
+    result = await operation();
   } catch (error) {
+    if (isStaleRequest(error) || session.actionSequence !== actionId) {
+      return;
+    }
     const message = error instanceof Error ? error.message : "Workflow action failed.";
     try {
       await refreshActionState(runId);
     } catch {
       // Preserve the authoritative action error; the next manual refresh can retry state loading.
     }
+    if (session.actionSequence !== actionId) {
+      return;
+    }
     announce(message, "error");
-  } finally {
     session.actionBusy = false;
     updateWorkflowControls();
+    return;
+  }
+
+  elements.workflowReason.value = "";
+  try {
+    await refreshActionState(runId);
+  } catch (error) {
+    if (!isStaleRequest(error) && session.actionSequence === actionId) {
+      announce(
+        "The action response was validated, but refreshed state could not be loaded. "
+          + "Use Refresh before taking another action.",
+        "error",
+      );
+    }
+    return;
+  } finally {
+    if (session.actionSequence === actionId) {
+      session.actionBusy = false;
+      updateWorkflowControls();
+    }
+  }
+
+  if (session.actionSequence === actionId) {
+    announce(
+      typeof successMessage === "function" ? successMessage(result) : successMessage,
+      "success",
+    );
   }
 }
 
@@ -497,11 +818,16 @@ async function decideCurrentApproval(approve) {
   await performWorkflowAction(
     run.run_id,
     approve ? "Recording approval decision…" : "Recording denial decision…",
-    approve ? "Approval recorded." : "Approval denied and Run cancelled.",
-    () => apiRequest(`/v1/approvals/${encodeURIComponent(approval.approval_id)}/decision`, {
-      method: "POST",
-      body: JSON.stringify({ approve, reason }),
-    }),
+    approve ? "Approval recorded." : "Denial recorded; refreshed Run state loaded.",
+    async () => validateApprovalDecision(
+      await apiRequest(`/v1/approvals/${encodeURIComponent(approval.approval_id)}/decision`, {
+        method: "POST",
+        body: JSON.stringify({ approve, reason }),
+      }),
+      run.run_id,
+      approval.approval_id,
+      approve,
+    ),
   );
 }
 
@@ -515,10 +841,15 @@ async function resumeCurrentCheckpoint() {
     run.run_id,
     "Claiming the approved checkpoint…",
     "Checkpoint consumed and continuation Job queued.",
-    () => apiRequest(`/v1/checkpoints/${encodeURIComponent(approval.checkpoint_id)}/resume`, {
-      method: "POST",
-      body: JSON.stringify({ approval_id: approval.approval_id }),
-    }),
+    async () => validateResume(
+      await apiRequest(`/v1/checkpoints/${encodeURIComponent(approval.checkpoint_id)}/resume`, {
+        method: "POST",
+        body: JSON.stringify({ approval_id: approval.approval_id }),
+      }),
+      run.run_id,
+      approval.checkpoint_id,
+      approval.approval_id,
+    ),
   );
 }
 
@@ -531,38 +862,72 @@ async function cancelCurrentRun() {
   await performWorkflowAction(
     run.run_id,
     "Fencing Run dispatch and result commit…",
-    "Run cancellation recorded.",
-    () => apiRequest(`/v1/runs/${encodeURIComponent(run.run_id)}/cancel`, {
-      method: "POST",
-      body: JSON.stringify({ reason }),
-    }),
+    (cancellation) => cancellation.applied
+      ? "Run cancellation recorded."
+      : "Run was already cancelled; current state loaded.",
+    async () => validateCancellation(
+      await apiRequest(`/v1/runs/${encodeURIComponent(run.run_id)}/cancel`, {
+        method: "POST",
+        body: JSON.stringify({ reason }),
+      }),
+      run.run_id,
+    ),
   );
 }
 
 elements.tokenForm.addEventListener("submit", async (event) => {
   event.preventDefault();
-  const candidate = elements.tokenInput.value.trim();
-  if (candidate.length < 32) {
-    announce("A Control Plane bearer token must contain at least 32 characters.", "error");
+  const candidate = elements.tokenInput.value;
+  if (candidate.length < 32 || candidate.length > 4_096) {
+    announce(
+      "A Control Plane bearer token must contain between 32 and 4096 characters.",
+      "error",
+    );
     elements.tokenInput.focus();
     return;
   }
-  session.token = candidate;
+  replaceCredential(candidate);
+  const authEpoch = session.authEpoch;
+  setBusy(elements.tokenForm, true);
+  stopAutoRefresh();
+  setConnected(false);
+  clearRuns();
+  clearDetail();
   elements.tokenInput.value = "";
   announce("Authenticating and loading Runs…");
   try {
-    const principal = await apiRequest("/v1/session");
+    let principal;
+    try {
+      principal = validatePrincipal(await apiRequest("/v1/session"));
+    } catch (error) {
+      if (!isStaleRequest(error) && session.authEpoch === authEpoch && session.token) {
+        lockConsole(error instanceof Error ? error.message : "Connection failed.", "error");
+      }
+      return;
+    }
+
     const roles = [...principal.roles].sort();
-    setConnected(true, roles);
-    await loadRuns();
-    announce(
-      `Connected as ${principal.subject} (${roles.join(", ")}).`,
-      "success",
-    );
-  } catch (error) {
-    if (session.token) {
-      lockConsole(error instanceof Error ? error.message : "Connection failed.");
-      elements.statusMessage.classList.add("error");
+    setConnected(true, roles, principal.subject);
+    announce(`Authenticated as ${principal.subject}; loading Runs…`);
+    try {
+      await loadRuns();
+    } catch (error) {
+      if (!isStaleRequest(error) && session.authEpoch === authEpoch && session.connected) {
+        const message = error instanceof Error ? error.message : "Unable to load Runs.";
+        renderRunsUnavailable();
+        announce(`Connected as ${principal.subject}, but Runs could not be loaded: ${message}`, "error");
+      }
+      return;
+    }
+    if (session.authEpoch === authEpoch) {
+      announce(
+        `Connected as ${principal.subject} (${roles.join(", ")}).`,
+        "success",
+      );
+    }
+  } finally {
+    if (session.authEpoch === authEpoch) {
+      setBusy(elements.tokenForm, false);
     }
   }
 });
@@ -573,9 +938,23 @@ elements.approveButton.addEventListener("click", () => decideCurrentApproval(tru
 elements.denyButton.addEventListener("click", () => decideCurrentApproval(false));
 elements.resumeButton.addEventListener("click", resumeCurrentCheckpoint);
 elements.cancelButton.addEventListener("click", cancelCurrentRun);
+elements.latestEventsButton.addEventListener("click", () => loadEventPage());
+elements.olderEventsButton.addEventListener("click", () => {
+  if (session.eventOldestSequence !== null) {
+    return loadEventPage(session.eventOldestSequence);
+  }
+});
 
 elements.runForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (!session.canSubmit || session.submissionBusy) {
+    return;
+  }
+  if (new TextEncoder().encode(elements.runInput.value).byteLength > MAX_EXECUTOR_INPUT_BYTES) {
+    announce("Executor input exceeds the 1,000,000-byte JSON limit.", "error");
+    elements.runInput.focus();
+    return;
+  }
   let input;
   try {
     input = JSON.parse(elements.runInput.value);
@@ -589,32 +968,94 @@ elements.runForm.addEventListener("submit", async (event) => {
     elements.runInput.focus();
     return;
   }
+  input = null;
 
-  const request = {
-    campaign_name: elements.campaignName.value,
-    input,
-    idempotency_key: elements.idempotencyKey.value,
-    max_attempts: Number(elements.maxAttempts.value),
-    job_kind: elements.jobKind.value,
-  };
+  const campaignName = elements.campaignName.value;
+  const idempotencyKey = elements.idempotencyKey.value;
+  const maxAttempts = Number(elements.maxAttempts.value);
+  const jobKind = elements.jobKind.value;
+  if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(campaignName)
+    || idempotencyKey.length < 8
+    || idempotencyKey.length > 200
+    || !Number.isInteger(maxAttempts)
+    || maxAttempts < 1
+    || maxAttempts > 20
+    || !["campaign", "tool-loop"].includes(jobKind)) {
+    announce("Run fields do not satisfy the bounded Control Plane contract.", "error");
+    return;
+  }
+
+  const requestBody = runSubmissionBody({
+    campaignName,
+    rawInput: elements.runInput.value,
+    idempotencyKey,
+    maxAttempts,
+    jobKind,
+  });
+  const submissionId = ++session.submissionSequence;
+  session.submissionBusy = true;
+  setBusy(elements.runForm, true);
   elements.submitButton.disabled = true;
   announce("Submitting the idempotent Run request…");
   try {
-    const submission = await apiRequest("/v1/runs", {
-      method: "POST",
-      body: JSON.stringify(request),
-    });
+    let submission;
+    try {
+      submission = validateSubmission(
+        await apiRequest("/v1/runs", {
+          method: "POST",
+          body: requestBody,
+        }),
+        { campaignName, jobKind },
+      );
+    } catch (error) {
+      if (!isStaleRequest(error) && session.submissionSequence === submissionId) {
+        announce(error instanceof Error ? error.message : "Run submission failed.", "error");
+      }
+      return;
+    }
+
+    if (session.submissionSequence !== submissionId) {
+      return;
+    }
+    const successMessage = submission.created
+      ? "Run submitted and queued."
+      : "Existing idempotent Run loaded.";
     session.offset = 0;
     session.selectedRunId = submission.run.run_id;
-    await Promise.all([loadRuns(), loadDetail(submission.run.run_id)]);
-    announce(
-      submission.created ? "Run submitted and queued." : "Existing idempotent Run loaded.",
-      "success",
-    );
-  } catch (error) {
-    announce(error instanceof Error ? error.message : "Run submission failed.", "error");
+    elements.workflowReason.value = "";
+    const selectionEpoch = ++session.selectionEpoch;
+    prepareDetailLoading(submission.run.run_id);
+    announce(successMessage, "success");
+
+    const [listResult, detailResult] = await Promise.allSettled([
+      loadRuns(),
+      loadDetail(submission.run.run_id),
+    ]);
+    if (session.submissionSequence !== submissionId
+      || session.selectedRunId !== submission.run.run_id
+      || session.selectionEpoch !== selectionEpoch) {
+      return;
+    }
+    const refreshFailure = [listResult, detailResult]
+      .find((result) => result.status === "rejected");
+    if (detailResult.status === "fulfilled" && detailResult.value) {
+      elements.detailPanel.focus();
+    }
+    if (refreshFailure !== undefined) {
+      if (!isStaleRequest(refreshFailure.reason)) {
+        announce(
+          `${successMessage} Current state could not be fully loaded; use Refresh to retry.`,
+          "error",
+        );
+      }
+      return;
+    }
   } finally {
-    elements.submitButton.disabled = !session.canSubmit;
+    if (session.submissionSequence === submissionId) {
+      session.submissionBusy = false;
+      setBusy(elements.runForm, false);
+      elements.submitButton.disabled = !session.canSubmit;
+    }
   }
 });
 
@@ -636,15 +1077,14 @@ elements.nextPage.addEventListener("click", () => {
 elements.autoRefresh.addEventListener("change", () => {
   const enabled = elements.autoRefresh.checked;
   stopAutoRefresh();
-  if (enabled && session.token) {
+  if (enabled && session.connected) {
     elements.autoRefresh.checked = true;
     session.refreshTimer = globalThis.setInterval(() => refreshCurrent({ quiet: true }), 5_000);
   }
 });
 
 globalThis.addEventListener("pagehide", () => {
-  session.token = "";
-  stopAutoRefresh();
+  lockConsole(undefined, undefined, { focusToken: false });
 });
 
 newIdempotencyKey();

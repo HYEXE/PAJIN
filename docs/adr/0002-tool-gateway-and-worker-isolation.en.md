@@ -39,6 +39,16 @@ by a model are also untrusted input.
    in a single evidence file.
 8. The Simulated Worker is for development and unit testing only and is not considered a security
    isolation boundary.
+9. General `pajin run` and `pajin multi-run` commands default to the Docker Worker. Selecting the
+   Simulated Worker requires an explicit `--worker simulated` option.
+10. Every Local and Multi-Agent Run derives its Worker identity from the actual backend instance,
+    seals it in `execution-context.json`, duplicates its key fields in `run.json` and the
+    `campaign.started` event, and renders it in the report. A simulated Run is always labeled
+    `SIMULATED / NOT REAL TARGET EVIDENCE`; a CLI completion line alone is not its authority.
+11. A Tool Adapter interprets successful Worker stdout only as one complete strict JSON object.
+    Truncated stdout or stderr, duplicate object keys, non-finite numbers, and excessive tree depth
+    or node count fail closed, preventing last-wins differences between raw evidence and the
+    normalized ToolResult.
 
 ## Verification
 
@@ -52,6 +62,10 @@ by a model are also untrusted input.
 - `no-new-privileges`
 - Observed cgroup memory, PID, and CPU limits
 - Forced termination on timeout
+- Docker defaults for the general Run commands and explicit simulated opt-in
+- Matching backend identity in the sealed execution context, Run summary, start event, and report
+- Unmistakable development-only warnings on simulated CLI and report output
+- Common Adapter decoder rejection of duplicate keys, truncated transcripts, and excessive JSON trees
 
 ## Consequences
 

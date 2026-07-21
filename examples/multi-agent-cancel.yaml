@@ -23,7 +23,7 @@ spec:
     deny: []
   accessProfile: whitebox
   objectives:
-    - Verify immediate Kill Switch propagation and Worker cleanup.
+    - Verify immediate cancellation propagation and sealed owned execution-stack quiescence without claiming physical external cleanup attestation.
   threatClasses: [A04]
   rulesOfEngagement:
     maxToolRiskTier: T0

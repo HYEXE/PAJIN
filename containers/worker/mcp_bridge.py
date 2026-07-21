@@ -8,6 +8,8 @@ from typing import Any
 from mcp import ClientSession, StdioServerParameters, types
 from mcp.client.stdio import stdio_client
 
+MAX_BRIDGE_INPUT_BYTES = 1_000_000
+
 SERVER_CATALOG: dict[str, dict[str, Any]] = {
     "demo-security": {
         "command": "/usr/local/bin/python",
@@ -17,15 +19,64 @@ SERVER_CATALOG: dict[str, dict[str, Any]] = {
 }
 
 
+class MCPRegistrationRejection(ValueError):
+    """One stable catalog rejection that is safe to return as typed data."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-finite JSON constant is forbidden: {value}")
+
+
+def _reject_duplicate_json_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    value: dict[str, Any] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate JSON field: {key}")
+        value[key] = item
+    return value
+
+
+def _read_payload() -> dict[str, Any]:
+    raw = sys.stdin.buffer.read(MAX_BRIDGE_INPUT_BYTES + 1)
+    if len(raw) > MAX_BRIDGE_INPUT_BYTES:
+        raise ValueError("MCP bridge input exceeded byte limit")
+    try:
+        payload = json.loads(
+            raw,
+            object_pairs_hook=_reject_duplicate_json_keys,
+            parse_constant=_reject_json_constant,
+        )
+    except (UnicodeError, json.JSONDecodeError, RecursionError, ValueError) as exc:
+        raise ValueError("MCP bridge input is not strict JSON") from exc
+    if not isinstance(payload, dict):
+        raise TypeError("MCP bridge input must be an object")
+    if set(payload) != {"serverId", "toolName", "arguments"}:
+        raise ValueError("MCP bridge input fields do not match the registered call envelope")
+    return payload
+
+
+def _required_identifier(payload: dict[str, Any], key: str) -> str:
+    value = payload[key]
+    if not isinstance(value, str) or not 1 <= len(value) <= 200:
+        raise TypeError(f"MCP bridge {key} must be a bounded string")
+    return value
+
+
 async def call_registered_tool(payload: dict[str, Any]) -> dict[str, Any]:
-    server_id = str(payload["serverId"])
-    tool_name = str(payload["toolName"])
-    arguments = payload.get("arguments", {})
+    server_id = _required_identifier(payload, "serverId")
+    tool_name = _required_identifier(payload, "toolName")
+    arguments = payload["arguments"]
+    if not isinstance(arguments, dict):
+        raise TypeError("MCP bridge arguments must be an object")
     registration = SERVER_CATALOG.get(server_id)
     if registration is None:
-        raise ValueError("MCP server ID is not registered")
+        raise MCPRegistrationRejection("server-not-registered")
     if tool_name not in registration["tools"]:
-        raise ValueError("MCP tool is not registered for this server")
+        raise MCPRegistrationRejection("tool-not-registered")
     parameters = StdioServerParameters(
         command=registration["command"],
         args=registration["args"],
@@ -58,9 +109,16 @@ async def call_registered_tool(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 async def main() -> None:
-    payload = json.load(sys.stdin)
-    result = await call_registered_tool(payload)
-    json.dump(result, sys.stdout, separators=(",", ":"))
+    payload = _read_payload()
+    try:
+        result = await call_registered_tool(payload)
+    except MCPRegistrationRejection as rejection:
+        result = {
+            "isError": True,
+            "structuredContent": {"rejectionCode": rejection.code},
+            "content": [],
+        }
+    json.dump(result, sys.stdout, separators=(",", ":"), allow_nan=False)
     sys.stdout.write("\n")
 
 

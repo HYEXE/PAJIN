@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
 from pathlib import Path
+from re import fullmatch
 from typing import Any, Literal, Protocol
 
 from pydantic import Field, model_validator
@@ -20,7 +23,15 @@ from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.models import NormalizedToolCall, ProviderChatResult, ProviderUsage
 from pajin.runtime.control import ExecutionCancellationContext
+from pajin.runtime.error_safety import audit_safe_exception_diagnostic
+from pajin.runtime.execution_context import (
+    WorkerEvidenceScope,
+    WorkerExecutionContext,
+    worker_execution_context,
+)
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.secrets import SecretBroker, SecretMaterial
+from pajin.runtime.store import RunIntegrityError, load_verified_run_artifacts
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
     WorkerBackend,
@@ -31,14 +42,19 @@ from pajin.runtime.worker import (
 from pajin.tools.base import ToolRegistry
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
 from pajin.workflow.cancellation import seal_executor_quiescence
-from pajin.workflow.local import LocalCampaignRunner
+from pajin.workflow.local import LocalCampaignRunner, LocalToolExecutionError
 from pajin.workflow.tool_loop import (
     PolicyToolLoopRunner,
     ToolLoopApproval,
     ToolLoopBinding,
     ToolLoopCheckpoint,
+    ToolLoopOutcome,
     ToolLoopStatus,
 )
+
+_MAX_TOOL_LOOP_CHECKPOINT_BYTES = 64 * 1024 * 1024
+_MAX_TOOL_LOOP_RUN_SUMMARY_BYTES = 1 * 1024 * 1024
+_MAX_EXECUTION_CONTEXT_BYTES = 16 * 1024
 
 
 class ExecutionError(RuntimeError):
@@ -63,6 +79,28 @@ class ApprovalCheckpointExecution(StrictModel):
 
 
 type ExecutionOutcome = CompletedExecution | ApprovalCheckpointExecution
+
+
+def _secure_resume_platform_available(*, platform_name: str | None = None) -> bool:
+    """Return whether checkpoint leaves can be anchored without path re-resolution."""
+
+    required_dir_fd_operations = (os.open, os.mkdir, os.unlink)
+    return bool(
+        (os.name if platform_name is None else platform_name) == "posix"
+        and hasattr(os, "fchmod")
+        and hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and all(operation in os.supports_dir_fd for operation in required_dir_fd_operations)
+    )
+
+
+def _require_secure_resume_platform() -> None:
+    if _secure_resume_platform_available():
+        return
+    raise PermanentExecutionError(
+        "continuation checkpoints require a POSIX dirfd platform; "
+        "run the Worker in the Linux container or WSL"
+    )
 
 
 class JobExecutor(Protocol):
@@ -104,6 +142,29 @@ class ToolLoopJobInput(StrictModel):
         return self
 
 
+class _ToolLoopRunSummary(StrictModel):
+    run_id: str = Field(alias="runId")
+    loop_id: str = Field(alias="loopId")
+    status: ToolLoopStatus
+    error: str | None = Field(default=None, max_length=2_000)
+    checkpoint: str
+    execution_context: Literal["execution-context.json"] = Field(alias="executionContext")
+    worker_backend: Literal["docker", "simulated", "custom"] = Field(alias="workerBackend")
+    simulated: bool
+    evidence_scope: WorkerEvidenceScope = Field(alias="evidenceScope")
+
+
+class _CampaignRunSummary(StrictModel):
+    run_id: str = Field(alias="runId")
+    status: Literal["completed"]
+    stage: Literal["finalization"]
+    execution_context: Literal["execution-context.json"] = Field(alias="executionContext")
+    worker_backend: Literal["docker", "simulated", "custom"] = Field(alias="workerBackend")
+    simulated: bool
+    evidence_scope: WorkerEvidenceScope = Field(alias="evidenceScope")
+    report: str
+
+
 class ToolLoopResumeState(StrictModel):
     job_input: ToolLoopJobInput
     tool_loop_checkpoint: ToolLoopCheckpoint
@@ -125,9 +186,7 @@ class ExecutorRegistry:
     def __init__(self, executors: list[JobExecutor]) -> None:
         self._executors: dict[str, JobExecutor] = {}
         for executor in executors:
-            cancellation_parameter = signature(executor.execute).parameters.get(
-                "cancellation"
-            )
+            cancellation_parameter = signature(executor.execute).parameters.get("cancellation")
             if cancellation_parameter is None or cancellation_parameter.kind not in {
                 Parameter.POSITIONAL_OR_KEYWORD,
                 Parameter.KEYWORD_ONLY,
@@ -154,7 +213,10 @@ class ExecutorRegistry:
         executor = self._executors.get(job.kind)
         if executor is None:
             raise PermanentExecutionError(f"unregistered Job kind: {job.kind}")
-        return await executor.execute(job, cancellation=cancellation)
+        # Keep the daemon's claimed Job identity private.  Executors are pluggable
+        # components and may retain or mutate their input; finalization must always
+        # remain bound to the original claim and lease held by the daemon.
+        return await executor.execute(job.model_copy(deep=True), cancellation=cancellation)
 
 
 class CampaignJobExecutor:
@@ -192,24 +254,81 @@ class CampaignJobExecutor:
             if cancellation is not None and cancellation.active:
                 seal_executor_quiescence(cancellation)
             raise
-        failed = sum(not result.success for result in outcome.tool_results)
+        except LocalToolExecutionError as exc:
+            raise PermanentExecutionError("local campaign Tool execution failed") from exc
         needs_review = sum(
             decision.disposition is FindingDisposition.NEEDS_REVIEW
             for decision in outcome.validation.decisions
         )
+        execution_context = self._verified_execution_context(
+            outcome.run_path,
+            run_id=outcome.run_id,
+            expected=worker_execution_context(self._worker),
+        )
         return CompletedExecution(
             result={
                 "engine": "local-campaign",
+                "executionProfile": job_input.profile,
+                "executionContext": execution_context.model_dump(mode="json", by_alias=True),
                 "engineRunId": outcome.run_id,
                 "runPath": str(outcome.run_path.resolve()),
                 "reportPath": str(outcome.report_path.resolve()),
                 "toolCalls": len(outcome.tool_results),
-                "failedToolCalls": failed,
+                "failedToolCalls": 0,
                 "validatedFindings": len(outcome.findings),
                 "confirmedFindings": len(outcome.findings),
                 "needsReviewCandidates": needs_review,
             }
         )
+
+    @staticmethod
+    def _verified_execution_context(
+        run_path: Path,
+        *,
+        run_id: str,
+        expected: WorkerExecutionContext,
+    ) -> WorkerExecutionContext:
+        """Reload the context that the completed sealed Run actually attests."""
+
+        try:
+            snapshot = load_verified_run_artifacts(
+                run_path,
+                requests={
+                    "execution-context.json": _MAX_EXECUTION_CONTEXT_BYTES,
+                    "run.json": _MAX_TOOL_LOOP_RUN_SUMMARY_BYTES,
+                },
+                expected_run_id=run_id,
+            )
+            context = WorkerExecutionContext.model_validate(
+                parse_strict_json_bytes(
+                    snapshot.artifact_bytes("execution-context.json"),
+                    label="sealed campaign execution context",
+                    max_bytes=_MAX_EXECUTION_CONTEXT_BYTES,
+                )
+            )
+            summary = _CampaignRunSummary.model_validate(
+                parse_strict_json_bytes(
+                    snapshot.artifact_bytes("run.json"),
+                    label="sealed campaign run summary",
+                    max_bytes=_MAX_TOOL_LOOP_RUN_SUMMARY_BYTES,
+                )
+            )
+        except (KeyError, OSError, RunIntegrityError, TypeError, UnicodeError, ValueError) as exc:
+            raise PermanentExecutionError(
+                "campaign execution context is not bound to an exact sealed Run"
+            ) from exc
+        if (
+            summary.run_id != run_id
+            or summary.execution_context != "execution-context.json"
+            or summary.worker_backend != context.backend
+            or summary.simulated is not context.simulated
+            or summary.evidence_scope is not context.evidence_scope
+            or context != expected
+        ):
+            raise PermanentExecutionError(
+                "campaign execution context differs from its sealed Run summary"
+            )
+        return context
 
     @staticmethod
     def _input(job: JobView) -> dict[str, Any]:
@@ -285,36 +404,126 @@ class ToolLoopJobExecutor:
             approved_at=approval.approved_at,
             expires_at=approval.expires_at,
         )
-        resume_dir = self._output_root / "_control-plane-resume" / job.job_id
-        resume_dir.mkdir(parents=True, exist_ok=True)
-        checkpoint_path = resume_dir / f"attempt-{job.attempts}.json"
-        checkpoint_path.write_text(state.tool_loop_checkpoint.model_dump_json(), encoding="utf-8")
-        runner = self._runner_factory(state.job_input.manifest)
+        resume_dir, resume_dir_fd = self._open_resume_directory(job.job_id)
+        checkpoint_name = f"attempt-{job.attempts}.json"
+        checkpoint_path = resume_dir / checkpoint_name
         try:
-            outcome = await runner.resume(
-                state.job_input.manifest,
-                checkpoint_path=checkpoint_path,
-                approvals=[tool_approval],
-                cancellation=cancellation,
+            self._write_resume_checkpoint(
+                resume_dir_fd,
+                checkpoint_name,
+                state.tool_loop_checkpoint.model_dump_json(),
             )
-        except asyncio.CancelledError:
-            if cancellation is not None and cancellation.active:
-                seal_executor_quiescence(cancellation)
-            raise
+            runner = self._runner_factory(state.job_input.manifest)
+            try:
+                outcome = await runner.resume(
+                    state.job_input.manifest,
+                    checkpoint_path=checkpoint_path,
+                    approvals=[tool_approval],
+                    cancellation=cancellation,
+                )
+            except asyncio.CancelledError:
+                if cancellation is not None and cancellation.active:
+                    seal_executor_quiescence(cancellation)
+                raise
+        finally:
+            os.close(resume_dir_fd)
         return self._translate_outcome(outcome, job_input=state.job_input)
+
+    def _safe_resume_directory(self, job_id: str) -> Path:
+        if fullmatch(r"job_[0-9a-f]{32}", job_id) is None:
+            raise PermanentExecutionError("continuation Job ID escapes the resume output root")
+        base = (self._output_root / "_control-plane-resume").absolute()
+        return base / job_id
+
+    def _open_resume_directory(self, job_id: str) -> tuple[Path, int]:
+        _require_secure_resume_platform()
+        resume_dir = self._safe_resume_directory(job_id)
+        base = resume_dir.parent
+        try:
+            base.mkdir(parents=True, mode=0o700, exist_ok=True)
+        except OSError as exc:
+            raise PermanentExecutionError(
+                "continuation resume root could not be created safely"
+            ) from exc
+        directory_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        base_fd = -1
+        resume_fd = -1
+        try:
+            base_fd = os.open(base, directory_flags)
+            os.fchmod(base_fd, 0o700)
+            try:
+                os.mkdir(job_id, mode=0o700, dir_fd=base_fd)
+                os.fsync(base_fd)
+            except FileExistsError:
+                pass
+            resume_fd = os.open(job_id, directory_flags, dir_fd=base_fd)
+            os.fchmod(resume_fd, 0o700)
+            return resume_dir, resume_fd
+        except OSError as exc:
+            if resume_fd >= 0:
+                os.close(resume_fd)
+            raise PermanentExecutionError(
+                "continuation resume directory could not be opened safely"
+            ) from exc
+        finally:
+            if base_fd >= 0:
+                os.close(base_fd)
+
+    @staticmethod
+    def _write_resume_checkpoint(directory_fd: int, filename: str, payload: str) -> None:
+        _require_secure_resume_platform()
+        if fullmatch(r"attempt-[0-9]+\.json", filename) is None:
+            raise PermanentExecutionError("continuation checkpoint filename is invalid")
+        descriptor = -1
+        created = False
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+        )
+        try:
+            descriptor = os.open(filename, flags, 0o600, dir_fd=directory_fd)
+            created = True
+            os.fchmod(descriptor, 0o600)
+            handle = os.fdopen(descriptor, "w", encoding="utf-8", newline="\n")
+            descriptor = -1
+            with handle:
+                handle.write(payload)
+                handle.write("\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.fsync(directory_fd)
+        except FileExistsError as exc:
+            raise PermanentExecutionError("continuation checkpoint leaf already exists") from exc
+        except OSError as exc:
+            if created:
+                with suppress(OSError):
+                    os.unlink(filename, dir_fd=directory_fd)
+                    os.fsync(directory_fd)
+            raise PermanentExecutionError(
+                "continuation checkpoint could not be written safely"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
 
     def _translate_outcome(
         self,
-        outcome: Any,
+        outcome: ToolLoopOutcome,
         *,
         job_input: ToolLoopJobInput,
     ) -> ExecutionOutcome:
         if outcome.status is ToolLoopStatus.AWAITING_APPROVAL:
             if outcome.pending_call is None:
                 raise PermanentExecutionError("approval outcome lacks a pending Tool intent")
-            checkpoint = ToolLoopCheckpoint.model_validate_json(
-                outcome.checkpoint_path.read_text(encoding="utf-8")
-            )
+            checkpoint = self._verified_outcome_checkpoint(outcome)
             return ApprovalCheckpointExecution(
                 state=ToolLoopResumeState(
                     job_input=job_input,
@@ -332,9 +541,14 @@ class ToolLoopJobExecutor:
             raise PermanentExecutionError(
                 f"tool-loop engine ended with {outcome.status.value}: {outcome.error}"
             )
+        self._verified_outcome_checkpoint(outcome)
         return CompletedExecution(
             result={
                 "engine": "policy-tool-loop",
+                "executionProfile": job_input.profile,
+                "executionContext": outcome.execution_context.model_dump(
+                    mode="json", by_alias=True
+                ),
                 "engineRunId": outcome.run_id,
                 "runPath": str(outcome.run_path.resolve()),
                 "checkpointPath": str(outcome.checkpoint_path.resolve()),
@@ -342,6 +556,70 @@ class ToolLoopJobExecutor:
                 "finalContent": outcome.final_content,
             }
         )
+
+    @staticmethod
+    def _verified_outcome_checkpoint(outcome: ToolLoopOutcome) -> ToolLoopCheckpoint:
+        """Bind a returned checkpoint to the exact sealed terminal Run snapshot."""
+
+        try:
+            relative = outcome.checkpoint_path.relative_to(outcome.run_path).as_posix()
+            snapshot = load_verified_run_artifacts(
+                outcome.run_path,
+                requests={
+                    relative: _MAX_TOOL_LOOP_CHECKPOINT_BYTES,
+                    "run.json": _MAX_TOOL_LOOP_RUN_SUMMARY_BYTES,
+                    "execution-context.json": _MAX_EXECUTION_CONTEXT_BYTES,
+                },
+                expected_run_id=outcome.run_id,
+            )
+            checkpoint = ToolLoopCheckpoint.model_validate(
+                parse_strict_json_bytes(
+                    snapshot.artifact_bytes(relative),
+                    label="sealed Tool Loop approval checkpoint",
+                    max_bytes=_MAX_TOOL_LOOP_CHECKPOINT_BYTES,
+                )
+            )
+            summary = _ToolLoopRunSummary.model_validate(
+                parse_strict_json_bytes(
+                    snapshot.artifact_bytes("run.json"),
+                    label="sealed Tool Loop run summary",
+                    max_bytes=_MAX_TOOL_LOOP_RUN_SUMMARY_BYTES,
+                )
+            )
+            execution_context = WorkerExecutionContext.model_validate(
+                parse_strict_json_bytes(
+                    snapshot.artifact_bytes("execution-context.json"),
+                    label="sealed Tool Loop execution context",
+                    max_bytes=_MAX_EXECUTION_CONTEXT_BYTES,
+                )
+            )
+        except (KeyError, OSError, RunIntegrityError, TypeError, UnicodeError, ValueError) as exc:
+            raise PermanentExecutionError(
+                "tool-loop approval checkpoint is not an exact sealed Run artifact"
+            ) from exc
+
+        if (
+            summary.run_id != outcome.run_id
+            or summary.loop_id != checkpoint.loop_id
+            or summary.status is not outcome.status
+            or summary.error != outcome.error
+            or summary.checkpoint != relative
+            or summary.execution_context != "execution-context.json"
+            or summary.worker_backend != execution_context.backend
+            or summary.simulated is not execution_context.simulated
+            or summary.evidence_scope is not execution_context.evidence_scope
+            or execution_context != outcome.execution_context
+            or checkpoint.run_id != outcome.run_id
+            or checkpoint.status is not outcome.status
+            or checkpoint.pending_call != outcome.pending_call
+            or checkpoint.tool_results != outcome.tool_results
+            or checkpoint.final_content != outcome.final_content
+            or checkpoint.error != outcome.error
+        ):
+            raise PermanentExecutionError(
+                "tool-loop approval checkpoint differs from its terminal Run outcome"
+            )
+        return checkpoint
 
     def _deterministic_runner(self, campaign: CampaignManifest) -> PolicyToolLoopRunner:
         registration = ProviderRegistration.model_validate(
@@ -390,8 +668,16 @@ class ToolLoopJobExecutor:
         )
 
 
-class DeterministicToolLoopBackend:
+class DeterministicToolLoopBackend(SimulatedWorkerBackend):
     """No-network lab backend that still exercises the real Provider and Tool gateways."""
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return {
+            "implementationVersion": "pajin.deterministic-tool-loop-worker/v1",
+            "providerId": "daemon-lab",
+            "providerModel": "pajin-daemon-deterministic",
+            "supportedCommands": ["mock-agent-probe", "openai-chat-completion"],
+        }
 
     async def run(
         self,
@@ -436,7 +722,13 @@ class DeterministicToolLoopBackend:
                 backend="deterministic-tool-loop",
                 status=WorkerStatus.FAILED,
                 exit_code=2,
-                stderr=f"invalid deterministic worker input: {exc}",
+                stderr=(
+                    "invalid deterministic worker input: "
+                    + audit_safe_exception_diagnostic(
+                        exc,
+                        stage="deterministic-worker-input",
+                    )
+                ),
                 started_at=now,
                 finished_at=datetime.now(UTC),
             )

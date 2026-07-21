@@ -2,13 +2,178 @@
 
 from __future__ import annotations
 
+import json
+import math
+from collections.abc import Iterable
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, time
 from enum import IntEnum, StrEnum
-from typing import Any
+from typing import Annotated, Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
+
+_SAFE_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
+_SAFE_PORTABLE_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
+_MAX_CAMPAIGN_TARGETS = 100
+_MAX_CAMPAIGN_SCOPE_RULES = 500
+_MAX_CAMPAIGN_OBJECTIVES = 100
+_MAX_CAMPAIGN_THREAT_CLASSES = 100
+_MAX_CAMPAIGN_POLICY_LABELS = 100
+_MAX_CAMPAIGN_TESTING_WINDOWS = 100
+_MAX_CAMPAIGN_OUTPUTS = 100
+_MAX_CAMPAIGN_CANONICAL_BYTES = 1_048_576
+_MAX_SIMULATION_DEPTH = 32
+_MAX_SIMULATION_NODES = 20_000
+_MAX_SIMULATION_BYTES = 65_536
+
+_ScopeRule = Annotated[str, Field(min_length=1, max_length=2_000)]
+_CampaignText = Annotated[str, Field(min_length=1, max_length=5_000)]
+_PolicyLabel = Annotated[str, Field(min_length=1, max_length=200)]
+_HTTPMethod = Annotated[str, Field(min_length=1, max_length=20)]
+_ThreatClass = Annotated[str, Field(min_length=2, max_length=20)]
+
+
+def _require_json_utf8_text(value: str, *, label: str) -> None:
+    if len(value) > _MAX_SIMULATION_BYTES:
+        raise ValueError(f"{label} text exceeds the canonical byte limit")
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise ValueError(f"{label} contains invalid UTF-8 text") from exc
+    if len(encoded) > _MAX_SIMULATION_BYTES:
+        raise ValueError(f"{label} text exceeds the canonical byte limit")
+
+
+@dataclass(slots=True)
+class _BoundedSimulationWalker:
+    """Validate a decoded simulation graph before Pydantic can coerce it."""
+
+    active_containers: set[int] = dataclass_field(default_factory=set)
+    node_count: int = 0
+
+    def visit(self, item: object, *, depth: int = 0) -> None:
+        self._count_node(depth)
+        if item is None or type(item) is bool:
+            return
+        if isinstance(item, str):
+            _require_json_utf8_text(item, label="target simulation")
+            return
+        if isinstance(item, int):
+            self._require_bounded_integer(item)
+            return
+        if isinstance(item, float):
+            self._require_finite_number(item)
+            return
+        if type(item) is list:
+            self._visit_list(cast(list[object], item), depth=depth)
+            return
+        if type(item) is dict:
+            self._visit_object(cast(dict[object, object], item), depth=depth)
+            return
+        raise ValueError("target simulation contains a non-JSON value")
+
+    def _count_node(self, depth: int) -> None:
+        self.node_count += 1
+        if self.node_count > _MAX_SIMULATION_NODES:
+            raise ValueError("target simulation exceeds the JSON node-count limit")
+        if depth > _MAX_SIMULATION_DEPTH:
+            raise ValueError("target simulation exceeds the JSON nesting-depth limit")
+
+    def _visit_list(self, item: list[object], *, depth: int) -> None:
+        self._visit_container(item, values=item, depth=depth)
+
+    def _visit_object(self, item: dict[object, object], *, depth: int) -> None:
+        for key in item:
+            self._count_node(depth + 1)
+            if not isinstance(key, str):
+                raise ValueError("target simulation object keys must be strings")
+            _require_json_utf8_text(key, label="target simulation")
+        self._visit_container(item, values=item.values(), depth=depth)
+
+    def _visit_container(
+        self,
+        item: list[object] | dict[object, object],
+        *,
+        values: Iterable[object],
+        depth: int,
+    ) -> None:
+        identity = id(item)
+        if identity in self.active_containers:
+            raise ValueError("target simulation cannot contain cycles")
+        self.active_containers.add(identity)
+        try:
+            for nested in values:
+                self.visit(nested, depth=depth + 1)
+        finally:
+            self.active_containers.remove(identity)
+
+    @staticmethod
+    def _require_bounded_integer(value: int) -> None:
+        if not -(2**63) <= value <= 2**63 - 1:
+            raise ValueError("target simulation integer is outside the signed 64-bit range")
+
+    @staticmethod
+    def _require_finite_number(value: float) -> None:
+        if not math.isfinite(value):
+            raise ValueError("target simulation numbers must be finite")
+
+
+def _canonical_json_bytes(value: object, *, label: str) -> bytes:
+    try:
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise ValueError(f"{label} is not canonical UTF-8 JSON") from exc
+
+
+def _validate_bounded_simulation(value: object) -> dict[str, Any]:
+    if type(value) is not dict:
+        raise ValueError("target simulation must be a JSON object")
+    _BoundedSimulationWalker().visit(value)
+    if len(_canonical_json_bytes(value, label="target simulation")) > _MAX_SIMULATION_BYTES:
+        raise ValueError("target simulation exceeds the canonical byte limit")
+    return cast(dict[str, Any], value)
+
+
+_BoundedSimulation = Annotated[
+    dict[str, JsonValue],
+    BeforeValidator(_validate_bounded_simulation),
+]
+
+
+def _require_bounded_collection(
+    value: object,
+    *,
+    label: str,
+    max_items: int,
+) -> list[object] | tuple[object, ...] | set[object] | frozenset[object]:
+    if not isinstance(value, (list, tuple, set, frozenset)):
+        raise ValueError(f"{label} must be a collection")
+    if len(value) > max_items:
+        raise ValueError(f"{label} exceeds the {max_items}-item limit")
+    return value
+
+
+def _authority_timestamp(value: datetime, *, label: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{label} must include an explicit UTC offset or Z")
+    return value.astimezone(UTC)
 
 
 class StrictModel(BaseModel):
@@ -78,20 +243,25 @@ class CampaignMetadata(StrictModel):
 class Target(StrictModel):
     type: str = Field(min_length=1, max_length=50)
     id: str = Field(min_length=1, max_length=100)
-    endpoint: str
-    simulation: dict[str, Any] = Field(default_factory=dict)
+    endpoint: str = Field(min_length=1, max_length=2_000)
+    simulation: _BoundedSimulation = Field(default_factory=dict, max_length=100)
 
 
 class Scope(StrictModel):
-    allow: list[str] = Field(min_length=1)
-    deny: list[str] = Field(default_factory=list)
+    allow: list[_ScopeRule] = Field(min_length=1, max_length=_MAX_CAMPAIGN_SCOPE_RULES)
+    deny: list[_ScopeRule] = Field(default_factory=list, max_length=_MAX_CAMPAIGN_SCOPE_RULES)
 
 
 class Authorization(StrictModel):
-    approved_by: str = Field(alias="approvedBy", min_length=1)
+    approved_by: str = Field(alias="approvedBy", min_length=1, max_length=200)
     approved_at: datetime = Field(alias="approvedAt")
     expires_at: datetime = Field(alias="expiresAt")
-    evidence: str = Field(min_length=1)
+    evidence: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("approved_at", "expires_at")
+    @classmethod
+    def require_explicit_timezone(cls, value: datetime) -> datetime:
+        return _authority_timestamp(value, label="authorization timestamp")
 
     @model_validator(mode="after")
     def validate_window(self) -> Authorization:
@@ -100,23 +270,25 @@ class Authorization(StrictModel):
         return self
 
     def is_active(self, at: datetime | None = None) -> bool:
-        now = at or datetime.now(UTC)
-        approved_at = self.approved_at
-        expires_at = self.expires_at
-        if approved_at.tzinfo is None:
-            approved_at = approved_at.replace(tzinfo=UTC)
-        if expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=UTC)
-        return approved_at <= now < expires_at
+        now = _authority_timestamp(
+            at or datetime.now(UTC),
+            label="authorization evaluation timestamp",
+        )
+        return self.approved_at <= now < self.expires_at
 
 
 class WeeklyTestingWindow(StrictModel):
     """An enforceable recurring testing window in an IANA time zone."""
 
-    days: set[Weekday] = Field(min_length=1)
+    days: set[Weekday] = Field(min_length=1, max_length=7)
     start_time: time = Field(alias="startTime")
     end_time: time = Field(alias="endTime")
     timezone: str = Field(min_length=1, max_length=100)
+
+    @field_validator("days", mode="before")
+    @classmethod
+    def require_bounded_days(cls, value: object) -> object:
+        return _require_bounded_collection(value, label="testing window days", max_items=7)
 
     @model_validator(mode="after")
     def validate_window(self) -> WeeklyTestingWindow:
@@ -152,15 +324,25 @@ class WeeklyTestingWindow(StrictModel):
 
 class RulesOfEngagement(StrictModel):
     max_tool_risk_tier: ToolRiskTier = Field(alias="maxToolRiskTier")
-    allowed_methods: set[str] = Field(
-        default_factory=lambda: {"GET", "HEAD", "POST"}, alias="allowedMethods"
+    allowed_methods: set[_HTTPMethod] = Field(
+        default_factory=lambda: {"GET", "HEAD", "POST"},
+        alias="allowedMethods",
+        max_length=20,
     )
-    allowed_tool_categories: set[str] = Field(
+    allowed_tool_categories: set[_PolicyLabel] = Field(
         default_factory=set,
         alias="allowedToolCategories",
+        max_length=_MAX_CAMPAIGN_POLICY_LABELS,
     )
-    prohibit: set[str] = Field(default_factory=set)
-    stop_on: set[str] = Field(default_factory=set, alias="stopOn")
+    prohibit: set[_PolicyLabel] = Field(
+        default_factory=set,
+        max_length=_MAX_CAMPAIGN_POLICY_LABELS,
+    )
+    stop_on: set[_PolicyLabel] = Field(
+        default_factory=set,
+        alias="stopOn",
+        max_length=_MAX_CAMPAIGN_POLICY_LABELS,
+    )
     allow_private_networks: bool = Field(default=False, alias="allowPrivateNetworks")
     max_requests_per_minute: int | None = Field(
         default=None,
@@ -171,6 +353,7 @@ class RulesOfEngagement(StrictModel):
     testing_windows: list[WeeklyTestingWindow] = Field(
         default_factory=list,
         alias="testingWindows",
+        max_length=_MAX_CAMPAIGN_TESTING_WINDOWS,
     )
 
     @field_validator("max_tool_risk_tier", mode="before")
@@ -180,8 +363,20 @@ class RulesOfEngagement(StrictModel):
 
     @field_validator("allowed_methods", mode="before")
     @classmethod
-    def normalize_methods(cls, value: list[str] | set[str]) -> set[str]:
-        return {item.upper() for item in value}
+    def normalize_methods(cls, value: object) -> set[str]:
+        items = _require_bounded_collection(value, label="allowedMethods", max_items=20)
+        if any(not isinstance(item, str) for item in items):
+            raise ValueError("allowedMethods values must be strings")
+        return {item.upper() for item in items if isinstance(item, str)}
+
+    @field_validator("allowed_tool_categories", "prohibit", "stop_on", mode="before")
+    @classmethod
+    def require_bounded_policy_labels(cls, value: object) -> object:
+        return _require_bounded_collection(
+            value,
+            label="campaign policy labels",
+            max_items=_MAX_CAMPAIGN_POLICY_LABELS,
+        )
 
 
 class Budgets(StrictModel):
@@ -203,14 +398,21 @@ class CampaignSpec(StrictModel):
     mode: CampaignMode
     autonomy: AutonomyLevel = AutonomyLevel.SUPERVISED
     authorization: Authorization
-    targets: list[Target] = Field(min_length=1)
+    targets: list[Target] = Field(min_length=1, max_length=_MAX_CAMPAIGN_TARGETS)
     scope: Scope
-    access_profile: str = Field(default="blackbox", alias="accessProfile")
-    objectives: list[str] = Field(min_length=1)
-    threat_classes: list[str] = Field(default_factory=list, alias="threatClasses")
+    access_profile: _PolicyLabel = Field(default="blackbox", alias="accessProfile")
+    objectives: list[_CampaignText] = Field(min_length=1, max_length=_MAX_CAMPAIGN_OBJECTIVES)
+    threat_classes: list[_ThreatClass] = Field(
+        default_factory=list,
+        alias="threatClasses",
+        max_length=_MAX_CAMPAIGN_THREAT_CLASSES,
+    )
     rules_of_engagement: RulesOfEngagement = Field(alias="rulesOfEngagement")
     budgets: Budgets = Field(default_factory=Budgets)
-    outputs: list[str] = Field(default_factory=lambda: ["markdown-report", "json-findings"])
+    outputs: list[_PolicyLabel] = Field(
+        default_factory=lambda: ["markdown-report", "json-findings"],
+        max_length=_MAX_CAMPAIGN_OUTPUTS,
+    )
 
     @field_validator("threat_classes")
     @classmethod
@@ -222,10 +424,24 @@ class CampaignSpec(StrictModel):
 
 
 class CampaignManifest(StrictModel):
-    api_version: str = Field(alias="apiVersion", pattern=r"^pajin\.dev/v\d+(alpha\d+|beta\d+)?$")
-    kind: str = Field(pattern=r"^Campaign$")
+    api_version: str = Field(
+        alias="apiVersion",
+        max_length=50,
+        pattern=r"^pajin\.dev/v\d+(alpha\d+|beta\d+)?$",
+    )
+    kind: str = Field(max_length=20, pattern=r"^Campaign$")
     metadata: CampaignMetadata
     spec: CampaignSpec
+
+    @model_validator(mode="after")
+    def require_bounded_canonical_size(self) -> CampaignManifest:
+        canonical = _canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="campaign manifest",
+        )
+        if len(canonical) > _MAX_CAMPAIGN_CANONICAL_BYTES:
+            raise ValueError("campaign manifest exceeds the canonical byte limit")
+        return self
 
 
 class CapabilityGrant(StrictModel):
@@ -247,19 +463,14 @@ class CapabilityGrant(StrictModel):
     def parse_risk_tier(cls, value: ToolRiskTier | str | int) -> ToolRiskTier:
         return ToolRiskTier.parse(value)
 
+    @field_validator("issued_at", "expires_at")
+    @classmethod
+    def require_explicit_timezone(cls, value: datetime) -> datetime:
+        return _authority_timestamp(value, label="capability timestamp")
+
     @model_validator(mode="after")
     def validate_lineage_shape(self) -> CapabilityGrant:
-        expires_at = (
-            self.expires_at
-            if self.expires_at.tzinfo is not None
-            else self.expires_at.replace(tzinfo=UTC)
-        )
-        issued_at = (
-            self.issued_at
-            if self.issued_at.tzinfo is not None
-            else self.issued_at.replace(tzinfo=UTC)
-        )
-        if expires_at <= issued_at:
+        if self.expires_at <= self.issued_at:
             raise ValueError("capability must expire after it is issued")
         if self.parent_grant_id is None and self.depth != 0:
             raise ValueError("root capability depth must be zero")
@@ -270,15 +481,15 @@ class CapabilityGrant(StrictModel):
     def attenuates(self, parent: CapabilityGrant) -> bool:
         """Return whether this grant is a strict subset of its parent authority."""
 
-        child_expiry = (
-            self.expires_at
-            if self.expires_at.tzinfo is not None
-            else self.expires_at.replace(tzinfo=UTC)
+        child_expiry = _authority_timestamp(self.expires_at, label="child capability expiry")
+        parent_expiry = _authority_timestamp(parent.expires_at, label="parent capability expiry")
+        child_issued_at = _authority_timestamp(
+            self.issued_at,
+            label="child capability issuance",
         )
-        parent_expiry = (
-            parent.expires_at
-            if parent.expires_at.tzinfo is not None
-            else parent.expires_at.replace(tzinfo=UTC)
+        parent_issued_at = _authority_timestamp(
+            parent.issued_at,
+            label="parent capability issuance",
         )
         return (
             self.campaign == parent.campaign
@@ -287,6 +498,7 @@ class CapabilityGrant(StrictModel):
             and self.targets <= parent.targets
             and self.max_risk_tier <= parent.max_risk_tier
             and self.max_calls <= parent.max_calls
+            and parent_issued_at <= child_issued_at
             and child_expiry <= parent_expiry
             and self.depth == parent.depth + 1
             and self.parent_grant_id == parent.grant_id
@@ -295,10 +507,13 @@ class CapabilityGrant(StrictModel):
 
 
 class ToolRequest(StrictModel):
-    request_id: str = Field(default_factory=lambda: f"tool_{uuid4().hex}")
-    agent_id: str
-    tool_id: str
-    target: str
+    request_id: str = Field(
+        default_factory=lambda: f"tool_{uuid4().hex}",
+        pattern=_SAFE_PORTABLE_IDENTIFIER_PATTERN,
+    )
+    agent_id: str = Field(pattern=_SAFE_IDENTIFIER_PATTERN)
+    tool_id: str = Field(pattern=_SAFE_IDENTIFIER_PATTERN)
+    target: str = Field(min_length=1, max_length=2_000)
     method: str = "GET"
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -309,8 +524,8 @@ class ToolRequest(StrictModel):
 
 
 class ToolResult(StrictModel):
-    request_id: str
-    tool_id: str
+    request_id: str = Field(pattern=_SAFE_PORTABLE_IDENTIFIER_PATTERN)
+    tool_id: str = Field(pattern=_SAFE_IDENTIFIER_PATTERN)
     success: bool
     started_at: datetime
     finished_at: datetime

@@ -8,7 +8,10 @@ import json
 from dataclasses import dataclass
 from typing import Any
 
-from pajin.control_plane.models import Principal
+from pajin.control_plane.models import Principal, validate_bounded_json_object
+
+_MIN_BEARER_TOKEN_BYTES = 32
+_MAX_BEARER_TOKEN_BYTES = 4 * 1024
 
 
 class AuthenticationError(RuntimeError):
@@ -23,20 +26,45 @@ def token_digest(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def validate_bearer_token(token: str, *, label: str = "Control Plane bearer token") -> str:
+    """Require one bounded header-safe opaque credential without exposing it."""
+
+    if not isinstance(token, str):
+        raise ValueError(f"{label} must be a string")
+    if not _MIN_BEARER_TOKEN_BYTES <= len(token) <= _MAX_BEARER_TOKEN_BYTES:
+        raise ValueError(
+            f"{label} must contain between {_MIN_BEARER_TOKEN_BYTES} and "
+            f"{_MAX_BEARER_TOKEN_BYTES} visible ASCII characters"
+        )
+    if any(not 0x21 <= ord(character) <= 0x7E for character in token):
+        raise ValueError(f"{label} must contain only visible ASCII without spaces or controls")
+    return token
+
+
 class TokenAuthenticator:
     """Authenticate opaque bearer tokens without retaining their plaintext values."""
 
     def __init__(self, credentials: dict[str, Principal]) -> None:
         if not credentials:
             raise ValueError("at least one Control Plane credential is required")
-        if any(len(token) < 32 for token in credentials):
-            raise ValueError("Control Plane bearer credentials must contain at least 32 characters")
         self._principals = [
-            (token_digest(token), principal) for token, principal in credentials.items()
+            (
+                token_digest(
+                    validate_bearer_token(
+                        token,
+                        label="Control Plane bearer credential",
+                    )
+                ),
+                principal,
+            )
+            for token, principal in credentials.items()
         ]
 
     def authenticate(self, token: str) -> Principal:
-        candidate = token_digest(token)
+        try:
+            candidate = token_digest(validate_bearer_token(token))
+        except ValueError as exc:
+            raise AuthenticationError("invalid bearer credential") from exc
         matched: Principal | None = None
         for digest, principal in self._principals:
             if hmac.compare_digest(candidate, digest):
@@ -66,12 +94,14 @@ class CheckpointSigner:
 
     @staticmethod
     def canonical_json(value: Any) -> bytes:
+        validate_bounded_json_object(value)
         return json.dumps(
             value,
             ensure_ascii=False,
             sort_keys=True,
             separators=(",", ":"),
-        ).encode()
+            allow_nan=False,
+        ).encode("utf-8")
 
     def sign(
         self,

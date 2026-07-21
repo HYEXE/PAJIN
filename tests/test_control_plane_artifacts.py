@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from concurrent.futures import ThreadPoolExecutor
 from hashlib import sha256
 from pathlib import Path
@@ -34,10 +35,11 @@ def _sealed_run(
     staging_id: str = _stage_id(),
     result: str = "sealed-result",
     result_path: str = "result.txt",
+    run_id: str = "engine_run_1",
 ) -> RunStore:
     path = staging_root / staging_id
     path.mkdir(parents=True)
-    store = RunStore(run_id="engine_run_1", path=path)
+    store = RunStore(run_id=run_id, path=path)
     store.evidence_path.mkdir()
     store.append_event("run.started", {"source": "artifact-test"})
     store.write_text(result_path, result)
@@ -126,6 +128,45 @@ def test_import_copies_and_binds_the_complete_sealed_run_tree(tmp_path: Path) ->
     assert (snapshot.path / "result.txt").read_text(encoding="utf-8") == "sealed-result\n"
 
 
+@pytest.mark.parametrize("mutation", ["empty", "directory", "hard-link", "oversized"])
+def test_import_rejects_a_malformed_transient_run_lock(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    lock_path = staged.path / ".pajin-run.lock"
+    if mutation == "empty":
+        lock_path.write_bytes(b"")
+    elif mutation == "directory":
+        lock_path.mkdir()
+    elif mutation == "hard-link":
+        outside = tmp_path / "outside-lock"
+        outside.write_bytes(b"")
+        os.link(outside, lock_path)
+    else:
+        lock_path.write_bytes(b"invalid")
+
+    with pytest.raises(ArtifactValidationError, match="mutation lock metadata"):
+        _import(repository)
+
+
+def test_import_normalizes_empty_directories_and_resolve_rejects_new_ones(
+    tmp_path: Path,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    (staged.path / "unused" / "nested").mkdir(parents=True)
+
+    snapshot = _import(repository)
+
+    assert not (snapshot.path / "evidence").exists()
+    assert not (snapshot.path / "unused").exists()
+    (snapshot.path / "untracked-empty").mkdir()
+    with pytest.raises(ArtifactValidationError, match="canonical file tree"):
+        repository.resolve(snapshot.ref)
+
+
 @pytest.mark.parametrize(
     "staging_id",
     [
@@ -146,6 +187,286 @@ def test_import_accepts_only_an_opaque_strict_staging_id(tmp_path: Path, staging
 
     with pytest.raises(ArtifactNotFound, match="staged Run is missing"):
         _import(repository, staging_id=_stage_id("2"))
+
+
+def test_staging_reservation_release_is_empty_only_and_idempotent(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    released_id = _stage_id("2")
+    occupied_id = _stage_id("3")
+
+    repository.reserve_staging(released_id)
+    assert repository.release_staging_reservation(released_id)
+    assert not (staging_root / released_id).exists()
+    assert not repository.release_staging_reservation(released_id)
+
+    repository.reserve_staging(occupied_id)
+    output = staging_root / occupied_id / "worker-output.txt"
+    output.write_text("preserve me", encoding="utf-8")
+    with pytest.raises(ArtifactConflict, match="contains output"):
+        repository.release_staging_reservation(occupied_id)
+    assert output.read_text(encoding="utf-8") == "preserve me"
+
+
+def test_staging_reservation_release_rejects_invalid_or_linked_capabilities(
+    tmp_path: Path,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+
+    with pytest.raises(ArtifactValidationError, match="staging_id must match"):
+        repository.release_staging_reservation("../outside")
+
+    outside = tmp_path / "outside-staging"
+    outside.mkdir(mode=0o700)
+    linked_id = _stage_id("4")
+    (staging_root / linked_id).symlink_to(outside, target_is_directory=True)
+    with pytest.raises(ArtifactValidationError, match="real directory"):
+        repository.release_staging_reservation(linked_id)
+    assert outside.is_dir()
+    assert staging_root.joinpath(linked_id).is_symlink()
+
+
+def test_committed_staged_run_consumption_is_exact_and_idempotent(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+
+    assert repository.consume_staged_run(
+        staging_id=_stage_id(),
+        expected_ref=snapshot.ref,
+    )
+    assert not staged.path.exists()
+    assert repository.resolve(snapshot.ref) == snapshot
+    assert not repository.consume_staged_run(
+        staging_id=_stage_id(),
+        expected_ref=snapshot.ref,
+    )
+
+
+def test_staged_run_consumption_requires_the_exact_managed_reference(
+    tmp_path: Path,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    first = _sealed_run(staging_root)
+    first_snapshot = _import(repository)
+    second_id = _stage_id("2")
+    _sealed_run(
+        staging_root,
+        staging_id=second_id,
+        result="different sealed result",
+        run_id="engine_run_2",
+    )
+    second_snapshot = _import(
+        repository,
+        staging_id=second_id,
+        producer_run_id=f"run_{'b' * 32}",
+    )
+
+    with pytest.raises(ArtifactConflict, match="committed Artifact authority"):
+        repository.consume_staged_run(
+            staging_id=_stage_id(),
+            expected_ref=second_snapshot.ref,
+        )
+
+    assert first.path.is_dir()
+    assert repository.resolve(first_snapshot.ref) == first_snapshot
+
+
+def test_staged_run_consumption_preserves_content_drift(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+    staged_result = staged.path / "result.txt"
+    staged_result.write_text("changed after managed import\n", encoding="utf-8")
+
+    with pytest.raises(ArtifactValidationError, match="integrity verification"):
+        repository.consume_staged_run(
+            staging_id=_stage_id(),
+            expected_ref=snapshot.ref,
+        )
+
+    assert staged.path.is_dir()
+    assert staged_result.read_text(encoding="utf-8") == "changed after managed import\n"
+
+
+@pytest.mark.parametrize("mutation", ["symlink", "hard-link"])
+def test_staged_run_consumption_never_follows_external_links(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("must survive\n", encoding="utf-8")
+    if mutation == "symlink":
+        (staged.path / "outside-link").symlink_to(outside)
+        message = "symbolic links"
+    else:
+        os.link(outside, staged.path / "outside-hard-link")
+        message = "hard-linked"
+
+    with pytest.raises(ArtifactValidationError, match=message):
+        repository.consume_staged_run(
+            staging_id=_stage_id(),
+            expected_ref=snapshot.ref,
+        )
+
+    assert outside.read_text(encoding="utf-8") == "must survive\n"
+    assert staged.path.is_dir()
+
+
+def test_concurrent_staged_run_consumption_deletes_exactly_once(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(
+            executor.map(
+                lambda _: repository.consume_staged_run(
+                    staging_id=_stage_id(),
+                    expected_ref=snapshot.ref,
+                ),
+                range(8),
+            )
+        )
+
+    assert results.count(True) == 1
+    assert results.count(False) == 7
+    assert not staged.path.exists()
+
+
+def test_cross_instance_advisory_lock_serializes_staged_run_consumption(
+    tmp_path: Path,
+) -> None:
+    repository, staging_root, repository_root = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+    peer = ManagedArtifactRepository(
+        staging_root=staging_root,
+        repository_root=repository_root,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda current: current.consume_staged_run(
+                    staging_id=_stage_id(),
+                    expected_ref=snapshot.ref,
+                ),
+                (repository, peer),
+            )
+        )
+
+    assert sorted(results) == [False, True]
+    assert not staged.path.exists()
+
+
+def test_staged_run_consumption_recovers_a_durable_interrupted_claim(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+    tombstone = staging_root / f".consuming-{_stage_id()}"
+    staged.path.rename(tombstone)
+
+    assert repository.consume_staged_run(
+        staging_id=_stage_id(),
+        expected_ref=snapshot.ref,
+    )
+    assert not tombstone.exists()
+    assert not staged.path.exists()
+
+
+def test_staged_run_consumption_detects_path_swap_without_external_deletion(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    snapshot = _import(repository)
+    moved = staging_root / "original-before-race"
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    sentinel = outside / "sentinel.txt"
+    sentinel.write_text("must survive\n", encoding="utf-8")
+    real_rename = artifact_module.os.rename
+    swapped = False
+
+    def racing_rename(
+        source: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        destination: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        nonlocal swapped
+        if not swapped and source == _stage_id() and src_dir_fd is not None:
+            swapped = True
+            real_rename(staged.path, moved)
+            staged.path.symlink_to(outside, target_is_directory=True)
+        real_rename(
+            source,
+            destination,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+        )
+
+    monkeypatch.setattr(artifact_module.os, "rename", racing_rename)
+
+    with pytest.raises(ArtifactValidationError, match="staged Run root changed"):
+        repository.consume_staged_run(
+            staging_id=_stage_id(),
+            expected_ref=snapshot.ref,
+        )
+
+    assert swapped
+    assert staged.path.is_symlink()
+    assert moved.is_dir()
+    assert sentinel.read_text(encoding="utf-8") == "must survive\n"
+
+
+def test_staged_run_consumption_rebinds_the_verified_inode_before_removal(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    _sealed_run(staging_root)
+    snapshot = _import(repository)
+    tombstone_name = f".consuming-{_stage_id()}"
+    tombstone = staging_root / tombstone_name
+    moved = staging_root / "verified-before-removal-race"
+    substituted = staging_root / _stage_id("2")
+    substituted.mkdir(mode=0o700)
+    sentinel = substituted / "sentinel.txt"
+    sentinel.write_text("must survive\n", encoding="utf-8")
+    real_open = artifact_module.os.open
+    swapped = False
+
+    def racing_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and path == tombstone_name and dir_fd is not None:
+            swapped = True
+            tombstone.rename(moved)
+            substituted.rename(tombstone)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(artifact_module.os, "open", racing_open)
+
+    with pytest.raises(ArtifactValidationError, match="filesystem entry changed"):
+        repository.consume_staged_run(
+            staging_id=_stage_id(),
+            expected_ref=snapshot.ref,
+        )
+
+    assert swapped
+    assert moved.is_dir()
+    assert (tombstone / sentinel.name).read_text(encoding="utf-8") == "must survive\n"
 
 
 def test_import_rejects_a_symlinked_staging_run_and_nested_symlink(tmp_path: Path) -> None:
@@ -174,6 +495,32 @@ def test_import_rejects_hard_links_and_special_files(tmp_path: Path) -> None:
     os.mkfifo(special_store.path / "unexpected.fifo")
     with pytest.raises(ArtifactValidationError, match="special files"):
         _import(special_repository)
+
+
+def test_import_normalizes_overlong_tree_path_as_repository_error(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    staged = _sealed_run(staging_root)
+    current_fd = os.open(staged.path, os.O_RDONLY)
+    try:
+        for index in range(17):
+            component = f"d{index:02d}-" + "x" * 246
+            os.mkdir(component, mode=0o700, dir_fd=current_fd)
+            child_fd = os.open(component, os.O_RDONLY, dir_fd=current_fd)
+            os.close(current_fd)
+            current_fd = child_fd
+        file_descriptor = os.open(
+            "overlong.txt",
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            0o600,
+            dir_fd=current_fd,
+        )
+        os.write(file_descriptor, b"bounded failure\n")
+        os.close(file_descriptor)
+    finally:
+        os.close(current_fd)
+
+    with pytest.raises(ArtifactValidationError, match="entry metadata is invalid"):
+        _import(repository)
 
 
 def test_import_rejects_an_integrity_invalid_run_after_private_copy(tmp_path: Path) -> None:
@@ -374,6 +721,71 @@ def test_resolve_fails_closed_on_manifest_tree_and_root_substitution(tmp_path: P
         link_repository.resolve(link_snapshot.ref)
 
 
+def test_resolve_requires_canonical_and_metadata_bound_manifests(tmp_path: Path) -> None:
+    repository, staging_root, repository_root = _repository(tmp_path)
+    _sealed_run(staging_root)
+    snapshot = _import(repository)
+    index_path = repository_root / snapshot.storage_key
+    object_manifest_path = snapshot.path.parent / "manifest.json"
+
+    manifest = json.loads(index_path.read_bytes())
+    noncanonical = (json.dumps(manifest, ensure_ascii=False, indent=2) + "\n").encode()
+    index_path.write_bytes(noncanonical)
+    object_manifest_path.write_bytes(noncanonical)
+    with pytest.raises(ArtifactValidationError, match="not canonically encoded"):
+        repository.resolve(snapshot.ref)
+
+    manifest["ref"]["created_by"] = "worker:forged"
+    forged = (
+        json.dumps(
+            manifest,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+    )
+    index_path.write_bytes(forged)
+    object_manifest_path.write_bytes(forged)
+    forged_ref = snapshot.ref.model_copy(update={"created_by": "worker:forged"})
+    with pytest.raises(ArtifactValidationError, match="manifest is invalid"):
+        repository.resolve(forged_ref)
+
+    unsupported_ref = snapshot.ref.model_copy(update={"repository_version": 2})
+    with pytest.raises(ArtifactValidationError, match="unsupported repository version"):
+        repository.resolve(unsupported_ref)
+
+
+def test_manifest_reader_detects_atomic_leaf_replacement(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    _sealed_run(staging_root)
+    snapshot = _import(repository)
+    real_inspect_final = artifact_module._BoundedRegularFileReader._inspect_final
+    replaced = False
+
+    def replacing_inspect(path: Path, *, label: str) -> os.stat_result:
+        nonlocal replaced
+        if label == "artifact index" and not replaced:
+            replaced = True
+            replacement = path.with_name(f".{path.name}.replacement")
+            replacement.write_bytes(path.read_bytes())
+            replacement.replace(path)
+        return real_inspect_final(path, label=label)
+
+    monkeypatch.setattr(
+        artifact_module._BoundedRegularFileReader,
+        "_inspect_final",
+        staticmethod(replacing_inspect),
+    )
+
+    with pytest.raises(ArtifactValidationError, match="file content changed"):
+        repository.resolve(snapshot.ref)
+    assert replaced
+
+
 def test_constructor_rejects_symlinked_or_overlapping_owner_roots(tmp_path: Path) -> None:
     real_staging = tmp_path / "real-staging"
     real_staging.mkdir(mode=0o700)
@@ -391,6 +803,34 @@ def test_constructor_rejects_symlinked_or_overlapping_owner_roots(tmp_path: Path
             staging_root=real_staging,
             repository_root=real_staging / "repository",
         )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX owner and mode policy")
+def test_constructor_creates_every_missing_root_component_privately(
+    tmp_path: Path,
+) -> None:
+    staging_parent = tmp_path / "staging-parent"
+    staging_root = staging_parent / "nested" / "staging"
+    repository_parent = tmp_path / "repository-parent"
+    repository_root = repository_parent / "nested" / "repository"
+    previous_umask = os.umask(0)
+    try:
+        ManagedArtifactRepository(
+            staging_root=staging_root,
+            repository_root=repository_root,
+        )
+    finally:
+        os.umask(previous_umask)
+
+    for path in (
+        staging_parent,
+        staging_parent / "nested",
+        staging_root,
+        repository_parent,
+        repository_parent / "nested",
+        repository_root,
+    ):
+        assert stat.S_IMODE(path.stat().st_mode) == 0o700
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owner and mode policy")

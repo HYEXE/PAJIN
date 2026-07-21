@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from collections import Counter
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -36,6 +39,7 @@ class ConfirmationBasis(StrEnum):
 class ValidationReasonCode(StrEnum):
     VALIDATOR_CONFIRMED = "validator-confirmed"
     INDEPENDENT_REPRODUCTION_MISSING = "independent-reproduction-missing"
+    INDEPENDENT_EXECUTION_ATTESTATION_MISSING = "independent-execution-attestation-missing"
     INDEPENDENT_REPRODUCTION_CONFIRMED = "independent-reproduction-confirmed"
     REPLAY_NOT_ELIGIBLE = "replay-not-eligible"
     REPLAY_APPROVAL_REQUIRED = "replay-approval-required"
@@ -95,6 +99,104 @@ class CandidateFinding(StrictModel):
         return self
 
 
+class CandidateAssessment(StrictModel):
+    """Validator-owned semantic decision bound to one exact trusted Candidate claim."""
+
+    candidate_id: _Identifier
+    claim_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    supports_claim: bool
+    reason_code: ValidationReasonCode
+    rationale: str = Field(min_length=1, max_length=5_000)
+    supporting_evidence: list[_EvidenceReference] = Field(default_factory=list, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_unique_evidence(self) -> CandidateAssessment:
+        if len(self.supporting_evidence) != len(set(self.supporting_evidence)):
+            raise ValueError("Candidate assessment evidence references must be unique")
+        if self.supports_claim and not self.supporting_evidence:
+            raise ValueError("supporting Candidate assessment requires evidence")
+        if not self.supports_claim and self.supporting_evidence:
+            raise ValueError("unsupported Candidate assessment cannot cite supporting evidence")
+        if self.supports_claim and self.reason_code is not ValidationReasonCode.VALIDATOR_CONFIRMED:
+            raise ValueError("supporting Candidate assessment requires validator-confirmed")
+        if not self.supports_claim and self.reason_code not in {
+            ValidationReasonCode.VALIDATOR_DISAGREED,
+            ValidationReasonCode.VALIDATOR_OMITTED,
+        }:
+            raise ValueError(
+                "unsupported Candidate assessment requires validator-disagreed or omitted"
+            )
+        return self
+
+
+class ValidatorOutputArtifact(StrictModel):
+    """One validator phase's exact output, sealed with its source Run.
+
+    The deterministic gate consumes this output in memory.  Durable consumers must
+    reload the same typed bytes instead of recreating semantic approval from the
+    Candidate they are supposed to assess.
+    """
+
+    api_version: Literal["pajin.dev/validator-output/v1alpha1"] = Field(
+        default="pajin.dev/validator-output/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["ValidatorOutput"] = "ValidatorOutput"
+    source_run_id: _Identifier = Field(alias="sourceRunId")
+    validator_id: _Identifier = Field(alias="validatorId")
+    validation_task_id: _Identifier = Field(alias="validationTaskId")
+    findings: list[Finding] = Field(default_factory=list, max_length=1_000)
+    assessments: list[CandidateAssessment] = Field(default_factory=list, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_unique_output_identities(self) -> ValidatorOutputArtifact:
+        finding_ids = [finding.finding_id for finding in self.findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError("Validator output Finding IDs must be unique")
+        candidate_ids = [assessment.candidate_id for assessment in self.assessments]
+        if len(candidate_ids) != len(set(candidate_ids)):
+            raise ValueError("Validator output Candidate assessment IDs must be unique")
+        if any(assessment.supports_claim for assessment in self.assessments) and not any(
+            finding.validated for finding in self.findings
+        ):
+            raise ValueError("supporting Validator output requires a validated Finding")
+        return self
+
+
+def candidate_claim_digest(candidate: CandidateFinding) -> str:
+    """Return the canonical identity a semantic assessment must explicitly authorize."""
+
+    claim = candidate.claim.model_dump(mode="json", by_alias=True)
+    claim["validated"] = False
+    canonical = json.dumps(
+        claim,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return sha256(canonical).hexdigest()
+
+
+def validator_finding_matches_candidate_claim(
+    candidate_claim: Finding,
+    finding: Finding,
+) -> bool:
+    """Compare every claim field while normalizing only opaque identity and review state.
+
+    A legacy Validator does not receive the trusted Candidate and therefore creates its
+    own ``finding_id``.  The Candidate-aware adapter owns the one-to-one identity binding,
+    while every semantic field, including evidence order, must be identical.
+    """
+
+    candidate_payload = candidate_claim.model_dump(mode="json")
+    validator_claim = finding.model_dump(mode="json")
+    for normalized_field in ("finding_id", "validated"):
+        candidate_payload.pop(normalized_field)
+        validator_claim.pop(normalized_field)
+    return candidate_payload == validator_claim
+
+
 class ReplayConfirmationLineage(StrictModel):
     replay_run_id: _Identifier
     replay_outcome_id: _Identifier
@@ -147,49 +249,69 @@ class ValidationDecision(StrictModel):
 
     @model_validator(mode="after")
     def require_unique_decision_entries(self) -> ValidationDecision:
-        if len(self.reason_codes) != len(set(self.reason_codes)):
-            raise ValueError("reason_codes must be unique")
-        if len(self.supporting_evidence) != len(set(self.supporting_evidence)):
-            raise ValueError("supporting_evidence must be unique")
-        if len(self.contradicting_evidence) != len(set(self.contradicting_evidence)):
-            raise ValueError("contradicting_evidence must be unique")
-        if len(self.replay_request_ids) != len(set(self.replay_request_ids)):
-            raise ValueError("replay_request_ids must be unique")
-        if len(self.replay_outcome_ids) != len(set(self.replay_outcome_ids)):
-            raise ValueError("replay_outcome_ids must be unique")
-        replay_run_ids = [item.replay_run_id for item in self.replay_lineage]
-        if len(replay_run_ids) != len(set(replay_run_ids)):
-            raise ValueError("replay lineage Run IDs must be unique")
-        lineage_request_ids = [
-            request_id for item in self.replay_lineage for request_id in item.replay_request_ids
-        ]
-        lineage_outcome_ids = [item.replay_outcome_id for item in self.replay_lineage]
-        if self.replay_lineage and self.replay_request_ids != lineage_request_ids:
-            raise ValueError("decision replay request IDs must exactly match replay lineage")
-        if self.replay_lineage and self.replay_outcome_ids != lineage_outcome_ids:
-            raise ValueError("decision replay outcome IDs must exactly match replay lineage")
-        if self.replay_lineage and self.method is not ValidationMethod.RESTRICTED_REPLAY_GATE:
-            raise ValueError("replay lineage requires the restricted replay gate")
-        if self.method is ValidationMethod.RESTRICTED_REPLAY_GATE:
-            if self.supersedes_decision_id is None:
-                raise ValueError("restricted replay gate must supersede a source decision")
-            if not self.replay_lineage:
-                raise ValueError("restricted replay gate requires receipt lineage")
-        if self.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY:
-            if self.disposition is not FindingDisposition.CONFIRMED:
-                raise ValueError(
-                    "verified replay confirmation basis requires confirmed disposition"
-                )
-            if self.method is not ValidationMethod.RESTRICTED_REPLAY_GATE:
-                raise ValueError("verified replay confirmation requires the restricted replay gate")
-            if self.reason_codes != [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]:
-                raise ValueError("verified replay confirmation requires its canonical reason")
-        elif self.disposition is FindingDisposition.CONFIRMED and self.replay_lineage:
-            raise ValueError("replay-backed confirmed decision requires a confirmation basis")
-        check_ids = [check.check_id for check in self.checks]
-        if len(check_ids) != len(set(check_ids)):
-            raise ValueError("validation check IDs must be unique within a decision")
+        _validate_decision_unique_collections(self)
+        _validate_decision_replay_lineage(self)
+        _validate_decision_replay_gate(self)
+        _validate_decision_confirmation(self)
+        _require_unique(
+            [check.check_id for check in self.checks],
+            "validation check IDs must be unique within a decision",
+        )
         return self
+
+
+def _require_unique(values: Sequence[object], message: str) -> None:
+    if len(values) != len(set(values)):
+        raise ValueError(message)
+
+
+def _validate_decision_unique_collections(decision: ValidationDecision) -> None:
+    for values, message in (
+        (decision.reason_codes, "reason_codes must be unique"),
+        (decision.supporting_evidence, "supporting_evidence must be unique"),
+        (decision.contradicting_evidence, "contradicting_evidence must be unique"),
+        (decision.replay_request_ids, "replay_request_ids must be unique"),
+        (decision.replay_outcome_ids, "replay_outcome_ids must be unique"),
+    ):
+        _require_unique(list(values), message)
+
+
+def _validate_decision_replay_lineage(decision: ValidationDecision) -> None:
+    replay_run_ids = [item.replay_run_id for item in decision.replay_lineage]
+    _require_unique(replay_run_ids, "replay lineage Run IDs must be unique")
+    if not decision.replay_lineage:
+        return
+    lineage_request_ids = [
+        request_id for item in decision.replay_lineage for request_id in item.replay_request_ids
+    ]
+    lineage_outcome_ids = [item.replay_outcome_id for item in decision.replay_lineage]
+    if decision.replay_request_ids != lineage_request_ids:
+        raise ValueError("decision replay request IDs must exactly match replay lineage")
+    if decision.replay_outcome_ids != lineage_outcome_ids:
+        raise ValueError("decision replay outcome IDs must exactly match replay lineage")
+    if decision.method is not ValidationMethod.RESTRICTED_REPLAY_GATE:
+        raise ValueError("replay lineage requires the restricted replay gate")
+
+
+def _validate_decision_replay_gate(decision: ValidationDecision) -> None:
+    if decision.method is not ValidationMethod.RESTRICTED_REPLAY_GATE:
+        return
+    if decision.supersedes_decision_id is None:
+        raise ValueError("restricted replay gate must supersede a source decision")
+    if not decision.replay_lineage:
+        raise ValueError("restricted replay gate requires receipt lineage")
+
+
+def _validate_decision_confirmation(decision: ValidationDecision) -> None:
+    if decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY:
+        if decision.disposition is not FindingDisposition.CONFIRMED:
+            raise ValueError("verified replay confirmation basis requires confirmed disposition")
+        if decision.method is not ValidationMethod.RESTRICTED_REPLAY_GATE:
+            raise ValueError("verified replay confirmation requires the restricted replay gate")
+        if decision.reason_codes != [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]:
+            raise ValueError("verified replay confirmation requires its canonical reason")
+    elif decision.disposition is FindingDisposition.CONFIRMED and decision.replay_lineage:
+        raise ValueError("replay-backed confirmed decision requires a confirmation basis")
 
 
 class VersionedValidationDecisionSet(StrictModel):
@@ -209,9 +331,11 @@ class VersionedConfirmedFindingSet(StrictModel):
     )
     kind: Literal["ConfirmedFindingSet"] = "ConfirmedFindingSet"
     source_run_id: _Identifier = Field(alias="sourceRunId")
-    confirmation_semantics: Literal["verified-independent-replay"] = Field(
-        default="verified-independent-replay",
-        alias="confirmationSemantics",
+    confirmation_semantics: Literal["verified-replay-evidence", "verified-independent-replay"] = (
+        Field(
+            default="verified-replay-evidence",
+            alias="confirmationSemantics",
+        )
     )
     findings: list[Finding]
 
@@ -227,9 +351,11 @@ class VersionedValidationIndex(StrictModel):
         alias="candidateSourceRootDigest",
         pattern=r"^[a-f0-9]{64}$",
     )
-    confirmation_semantics: Literal["verified-independent-replay"] = Field(
-        default="verified-independent-replay",
-        alias="confirmationSemantics",
+    confirmation_semantics: Literal["verified-replay-evidence", "verified-independent-replay"] = (
+        Field(
+            default="verified-replay-evidence",
+            alias="confirmationSemantics",
+        )
     )
     candidate_findings_path: Literal["candidate-findings.json"] = Field(
         default="candidate-findings.json",

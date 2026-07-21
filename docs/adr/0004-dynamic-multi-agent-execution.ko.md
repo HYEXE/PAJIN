@@ -103,10 +103,13 @@ PAJIN에는 에이전트 생성이 권한 생성으로 바뀌지 않는 여러 �
 
 ## 검증
 
+일반 명령은 Docker를 기본값으로 사용합니다. simulated 실행은 명시적인 개발 전용 계약이며,
+CLI, 봉인된 Run context, report 모두 실제 target evidence가 아님을 표시합니다.
+
 ```powershell
+.venv\Scripts\pajin multi-run examples\multi-agent.yaml
 .venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker simulated
-.venv\Scripts\pajin multi-run examples\multi-agent.yaml --worker docker
-.venv\Scripts\pajin multi-cancel-check --worker docker
+.venv\Scripts\pajin multi-cancel-check examples\multi-agent-cancel.yaml --worker docker
 .venv\Scripts\pytest -q
 .venv\Scripts\ruff check src tests containers
 .venv\Scripts\mypy src

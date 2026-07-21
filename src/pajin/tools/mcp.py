@@ -1,47 +1,191 @@
 """Registered MCP tool adapters executed only inside the PAJIN Worker."""
 
+from __future__ import annotations
+
 import json
+import math
+from dataclasses import dataclass
+from typing import cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import ConfigDict, Field, JsonValue, StrictBool, model_validator
 
-from pajin.domain.models import ToolRequest, ToolResult, ToolRiskTier
+from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
 from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.base import Tool, ToolSpec
+from pajin.tools.base import (
+    Tool,
+    ToolSpec,
+    audit_safe_tool_interpretation_failure,
+    audit_safe_worker_failure,
+)
+
+_MAX_MCP_BRIDGE_OUTPUT_BYTES = 1_000_000
+_MAX_MCP_JSON_DEPTH = 32
+_MAX_MCP_JSON_NODES = 20_000
+_MAX_MCP_CONTENT_ITEMS = 1_000
+_RESERVED_RESULT_KEYS = frozenset({"target", "mcpServerId", "mcpToolName", "mcpContent"})
 
 
-class MCPToolRegistration(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+class MCPToolRegistration(StrictModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
 
-    tool_id: str
-    server_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
-    remote_tool_name: str = Field(pattern=r"^[A-Za-z0-9_.-]+$")
-    description: str
+    tool_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    server_id: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    remote_tool_name: str = Field(
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_.-]+$",
+    )
+    description: str = Field(min_length=1, max_length=5_000)
     risk_tier: ToolRiskTier
-    categories: set[str] = Field(default_factory=lambda: {"mcp"})
+    categories: set[str] = Field(default_factory=lambda: {"mcp"}, max_length=100)
+
+
+class _MCPBridgeContent(StrictModel):
+    """Bounded content shape emitted by the fixed Worker bridge."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
+
+    type: str = Field(min_length=1, max_length=100)
+    text: str | None = Field(default=None, max_length=_MAX_MCP_BRIDGE_OUTPUT_BYTES)
+    mime_type: str | None = Field(
+        default=None,
+        alias="mimeType",
+        min_length=1,
+        max_length=1_000,
+    )
+    byte_count: int | None = Field(default=None, alias="bytes", strict=True, ge=0)
+
+    @model_validator(mode="after")
+    def validate_content_shape(self) -> _MCPBridgeContent:
+        if self.type == "text":
+            if self.text is None or self.mime_type is not None or self.byte_count is not None:
+                raise ValueError("text MCP content requires only a text field")
+            return self
+        if self.type == "image":
+            if self.text is not None or self.mime_type is None or self.byte_count is None:
+                raise ValueError("image MCP content requires mimeType and bytes fields")
+            return self
+        if self.text is not None or self.mime_type is not None or self.byte_count is not None:
+            raise ValueError("opaque MCP content may contain only its type")
+        return self
+
+
+class _MCPBridgeResponse(StrictModel):
+    """Exact response envelope shared by the Worker entry point and host adapter."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
+
+    is_error: StrictBool = Field(alias="isError")
+    structured_content: dict[str, JsonValue] | None = Field(
+        alias="structuredContent",
+        max_length=1_000,
+    )
+    content: list[_MCPBridgeContent] = Field(max_length=_MAX_MCP_CONTENT_ITEMS)
+
+    @model_validator(mode="after")
+    def reject_reserved_structured_keys(self) -> _MCPBridgeResponse:
+        collisions = _RESERVED_RESULT_KEYS.intersection(self.structured_content or {})
+        if collisions:
+            names = ", ".join(sorted(collisions))
+            raise ValueError(f"structuredContent contains reserved identity fields: {names}")
+        return self
+
+
+@dataclass(slots=True)
+class _MCPJSONBudget:
+    nodes: int = 0
+
+
+def _validate_mcp_json(value: object, *, budget: _MCPJSONBudget, depth: int = 0) -> None:
+    """Reject coercible or resource-exhausting JSON before Pydantic normalization."""
+
+    budget.nodes += 1
+    if budget.nodes > _MAX_MCP_JSON_NODES:
+        raise ValueError("MCP bridge output exceeds the JSON node-count limit")
+    if depth > _MAX_MCP_JSON_DEPTH:
+        raise ValueError("MCP bridge output exceeds the JSON nesting-depth limit")
+    if value is None or type(value) is bool or type(value) is str:
+        return
+    if type(value) is int:
+        if not -(2**63) <= value <= 2**63 - 1:
+            raise ValueError("MCP bridge output integer is outside the signed 64-bit range")
+        return
+    if type(value) is float:
+        if not math.isfinite(value):
+            raise ValueError("MCP bridge output numbers must be finite")
+        return
+    if type(value) is list:
+        for item in cast(list[object], value):
+            _validate_mcp_json(item, budget=budget, depth=depth + 1)
+        return
+    if type(value) is dict:
+        for key, item in cast(dict[object, object], value).items():
+            if type(key) is not str:
+                raise ValueError("MCP bridge output object keys must be strings")
+            budget.nodes += 1
+            if budget.nodes > _MAX_MCP_JSON_NODES:
+                raise ValueError("MCP bridge output exceeds the JSON node-count limit")
+            _validate_mcp_json(item, budget=budget, depth=depth + 1)
+        return
+    raise ValueError("MCP bridge output contains a non-JSON value")
+
+
+def _reject_duplicate_mcp_keys(
+    pairs: list[tuple[str, object]],
+) -> dict[str, object]:
+    value: dict[str, object] = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate MCP bridge output field: {key}")
+        value[key] = item
+    return value
+
+
+def _reject_nonfinite_mcp_constant(value: str) -> None:
+    raise ValueError(f"non-finite MCP bridge output constant is forbidden: {value}")
 
 
 class RegisteredMCPTool(Tool):
     """Call one pre-registered MCP tool without exposing its process command."""
 
     def __init__(self, registration: MCPToolRegistration) -> None:
-        self.registration = registration
+        self._registration = MCPToolRegistration.model_validate(
+            registration.model_dump(mode="python")
+        )
         self.spec = ToolSpec(
-            tool_id=registration.tool_id,
+            tool_id=self._registration.tool_id,
             version="1.0.0",
-            description=registration.description,
-            risk_tier=registration.risk_tier,
-            categories=registration.categories | {"mcp"},
+            description=self._registration.description,
+            risk_tier=self._registration.risk_tier,
+            categories=frozenset(self._registration.categories | {"mcp"}),
             network_access=False,
         )
 
+    @property
+    def registration(self) -> MCPToolRegistration:
+        """Return a detached observation of the sealed MCP registration."""
+
+        return self._registration.model_copy(deep=True)
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return {
+            **self._stable_spec_context(),
+            "registration": self._registration.model_dump(mode="python"),
+        }
+
     def prepare(self, request: ToolRequest) -> WorkerJob:
+        self._validate_request_identity(request)
         return WorkerJob(
             image="pajin-worker:dev",
             command=["mcp-call"],
             stdin=json.dumps(
                 {
-                    "serverId": self.registration.server_id,
-                    "toolName": self.registration.remote_tool_name,
+                    "serverId": self._registration.server_id,
+                    "toolName": self._registration.remote_tool_name,
                     "arguments": request.arguments,
                 }
             ),
@@ -55,32 +199,43 @@ class RegisteredMCPTool(Tool):
                 success=False,
                 started_at=result.started_at,
                 finished_at=result.finished_at,
-                error=f"worker {result.status.value}: {result.stderr or 'no error detail'}",
+                error=audit_safe_worker_failure(result),
             )
         try:
-            response = json.loads(result.stdout)
-            if not isinstance(response, dict):
-                raise TypeError("MCP bridge output must be a JSON object")
-            structured = response.get("structuredContent")
-            data = dict(structured) if isinstance(structured, dict) else {}
+            self._validate_request_identity(request)
+            if result.stdout_truncated or result.stderr_truncated:
+                raise ValueError("successful Worker output was truncated")
+            try:
+                encoded = result.stdout.encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise ValueError("MCP bridge output is not valid UTF-8 text") from exc
+            if len(encoded) > _MAX_MCP_BRIDGE_OUTPUT_BYTES:
+                raise ValueError("MCP bridge output exceeded byte limit")
+            try:
+                raw_response = json.loads(
+                    result.stdout,
+                    object_pairs_hook=_reject_duplicate_mcp_keys,
+                    parse_constant=_reject_nonfinite_mcp_constant,
+                )
+            except (json.JSONDecodeError, RecursionError, ValueError) as exc:
+                raise ValueError("MCP bridge output is not valid JSON") from exc
+            _validate_mcp_json(raw_response, budget=_MCPJSONBudget())
+            response = _MCPBridgeResponse.model_validate(raw_response)
+            data = dict(response.structured_content or {})
             data.update(
                 {
                     "target": request.target,
-                    "mcpServerId": self.registration.server_id,
-                    "mcpToolName": self.registration.remote_tool_name,
-                    "mcpContent": response.get("content", []),
+                    "mcpServerId": self._registration.server_id,
+                    "mcpToolName": self._registration.remote_tool_name,
+                    "mcpContent": [
+                        item.model_dump(mode="json", by_alias=True, exclude_none=True)
+                        for item in response.content
+                    ],
                 }
             )
-            is_error = bool(response.get("isError", False))
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            return ToolResult(
-                request_id=request.request_id,
-                tool_id=request.tool_id,
-                success=False,
-                started_at=result.started_at,
-                finished_at=result.finished_at,
-                error=f"invalid MCP bridge output: {exc}",
-            )
+            is_error = response.is_error
+        except ValueError as exc:
+            return self._invalid_bridge_output(request, result, exc)
         return ToolResult(
             request_id=request.request_id,
             tool_id=request.tool_id,
@@ -89,6 +244,30 @@ class RegisteredMCPTool(Tool):
             finished_at=result.finished_at,
             data=data,
             error="MCP tool returned isError=true" if is_error else None,
+        )
+
+    def _validate_request_identity(self, request: ToolRequest) -> None:
+        if request.tool_id != self._registration.tool_id:
+            raise ValueError("request tool ID differs from the sealed MCP registration")
+        if request.method != "POST":
+            raise ValueError("registered MCP tools require POST")
+
+    @staticmethod
+    def _invalid_bridge_output(
+        request: ToolRequest,
+        result: WorkerResult,
+        error: BaseException,
+    ) -> ToolResult:
+        return ToolResult(
+            request_id=request.request_id,
+            tool_id=request.tool_id,
+            success=False,
+            started_at=result.started_at,
+            finished_at=result.finished_at,
+            error=audit_safe_tool_interpretation_failure(
+                "invalid MCP bridge output",
+                error,
+            ),
         )
 
 
