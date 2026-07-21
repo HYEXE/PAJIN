@@ -4653,7 +4653,7 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
     repository, service = _service(database_path)
     actor = "replay-worker-a"
     try:
-        request = _create_batch(
+        _create_batch(
             repository,
             service,
             "multi-item-projection",
@@ -4669,6 +4669,7 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
         )
 
         first_claim = _claim(service, actor=actor)
+        batch_id = first_claim.batch.batch_id
         first_request = asyncio.run(executor.execute(first_claim))
         first_finalization = service.finalize_replay_job(
             first_claim.job.job_id,
@@ -4677,7 +4678,7 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
         )
         assert first_finalization.item.state is ReplayItemState.VERIFIED
         assert first_finalization.batch.state is ReplayBatchState.RUNNING
-        assert service.get_replay_projection(request.batch_id) is None
+        assert service.get_replay_projection(batch_id) is None
 
         second_claim = _claim(service, actor=actor)
         second_request = asyncio.run(executor.execute(second_claim))
@@ -4690,7 +4691,7 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
         assert second_finalization.batch.state is ReplayBatchState.COMPLETED
         assert service.get_replay_item(first_claim.item.item_id).state is ReplayItemState.GATED
 
-        projection = service.get_replay_projection(request.batch_id)
+        projection = service.get_replay_projection(batch_id)
         assert projection is not None
         assert projection.batch.state is ReplayBatchState.COMPLETED
         assert projection.input_authority.source == first_claim.batch.source
@@ -4727,7 +4728,7 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
             actor=actor,
         )
         assert repeated == second_finalization
-        assert service.get_replay_projection(request.batch_id) == projection
+        assert service.get_replay_projection(batch_id) == projection
         with repository.read_transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
     finally:
@@ -4742,7 +4743,7 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
     repository, service = _service(database_path)
     actor = "replay-worker-a"
     try:
-        request = _create_batch(
+        _create_batch(
             repository,
             service,
             "projection-cas-drift",
@@ -4757,6 +4758,7 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
             worker=_trusted_replay_backend(),
         )
         first_claim = _claim(service, actor=actor)
+        batch_id = first_claim.batch.batch_id
         first_finalize = asyncio.run(executor.execute(first_claim))
         service.finalize_replay_job(first_claim.job.job_id, first_finalize, actor=actor)
 
@@ -4770,7 +4772,7 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
             projection = original_gate(**kwargs)
             if not drifted:
                 with repository.transaction() as session:
-                    batch = session.get(ReplayBatchRecord, request.batch_id)
+                    batch = session.get(ReplayBatchRecord, batch_id)
                     assert batch is not None
                     batch.cas_version += 1
                 drifted = True
@@ -4789,14 +4791,14 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
             )
 
         with repository.read_transaction() as session:
-            batch = session.get(ReplayBatchRecord, request.batch_id)
+            batch = session.get(ReplayBatchRecord, batch_id)
             assert batch is not None
             assert batch.state == ReplayBatchState.GATING.value
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 0
             states = set(
                 session.scalars(
                     select(ReplayItemRecord.state).where(
-                        ReplayItemRecord.batch_id == request.batch_id
+                        ReplayItemRecord.batch_id == batch_id
                     )
                 ).all()
             )
@@ -4814,7 +4816,7 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
         )
         assert recovered.batch.state is ReplayBatchState.COMPLETED
         assert recovered.item.state is ReplayItemState.GATED
-        assert service.get_replay_projection(request.batch_id) is not None
+        assert service.get_replay_projection(batch_id) is not None
     finally:
         repository.close()
 
@@ -4864,7 +4866,8 @@ def test_replay_finalization_rollback_preserves_staging_until_a_committed_retry(
         assert not stage.exists()
         with repository.transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
-            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 3
+            assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
     finally:
         repository.close()
 
@@ -4921,7 +4924,8 @@ def test_replay_finalization_ambiguous_commit_is_recovered_by_exact_retry(
         assert not stage.exists()
         with real_transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayFinalizationRecord)) == 1
-            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 2
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 3
+            assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
     finally:
         repository.close()
 
