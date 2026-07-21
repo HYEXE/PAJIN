@@ -589,7 +589,7 @@ def test_write_json_serializes_strictly_before_replacing_existing_artifact(
         store.write_json("state.json", {"notFinite": float("nan")})
 
     assert artifact.read_bytes() == original
-    assert not list(store.path.glob(".state.json.*.tmp"))
+    assert not list(store.path.glob(".pajin-write.*.tmp"))
 
 
 def test_write_json_create_only_never_replaces_installed_bytes(tmp_path: Path) -> None:
@@ -607,7 +607,31 @@ def test_write_json_create_only_never_replaces_installed_bytes(tmp_path: Path) -
         )
 
     assert artifact.read_bytes() == original
-    assert not list((store.path / "requests").glob(".tool_once.json.*.create"))
+    assert not list((store.path / "requests").glob(".pajin-create.*.create"))
+
+
+def test_atomic_temp_names_do_not_repeat_long_destination_names(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = RunStore.create(tmp_path, "bounded-temp-prefix")
+    real_mkstemp = store_module.tempfile.mkstemp
+    observed_prefixes: list[str] = []
+
+    def record_prefix(*args: object, **kwargs: object) -> tuple[int, str]:
+        prefix = kwargs.get("prefix")
+        assert isinstance(prefix, str)
+        observed_prefixes.append(prefix)
+        return real_mkstemp(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(store_module.tempfile, "mkstemp", record_prefix)
+    long_name = f"{'artifact-' * 5}.json"
+
+    store.write_json(long_name, {"replace": True})
+    store.write_json_create_only(f"requests/{long_name}", {"create": True})
+
+    assert observed_prefixes == [".pajin-write.", ".pajin-create."]
+    assert all(long_name not in prefix for prefix in observed_prefixes)
 
 
 def test_write_json_create_only_arbitrates_across_processes(tmp_path: Path) -> None:
@@ -644,7 +668,7 @@ else:
     ]
     payload = json.loads((store.path / "requests/tool_process.json").read_text())
     assert payload["winner"] in {"first", "second"}
-    assert not list((store.path / "requests").glob(".tool_process.json.*.create"))
+    assert not list((store.path / "requests").glob(".pajin-create.*.create"))
 
 
 def test_cross_instance_append_rebases_stale_event_and_terminal_state(
@@ -931,7 +955,7 @@ def test_atomic_artifact_replace_failure_preserves_previous_complete_file(
         store.write_json("state.json", {"new": "complete"})
 
     assert artifact.read_bytes() == original
-    assert not list(store.path.glob(".state.json.*.tmp"))
+    assert not list(store.path.glob(".pajin-write.*.tmp"))
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owner-only mode policy")

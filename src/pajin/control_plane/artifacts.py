@@ -243,12 +243,31 @@ def _require_same_inode(before: os.stat_result, after: os.stat_result) -> None:
         raise ArtifactValidationError("filesystem directory was substituted")
 
 
+def _is_link_or_junction(path: Path) -> bool:
+    if path.is_symlink():
+        return True
+    is_junction = getattr(path, "is_junction", None)
+    return bool(is_junction is not None and is_junction())
+
+
 def _create_private_directory(path: Path, *, label: str) -> None:
-    """Create one root component and set 0700 through its bound descriptor."""
+    """Create and rebind one root component within the available platform boundary."""
 
     try:
         path.mkdir(mode=0o700, exist_ok=False)
         observed = path.lstat()
+    except OSError as exc:
+        raise ValueError(f"{label} root ancestry cannot be created safely") from exc
+    if os.name != "posix":
+        try:
+            current = path.lstat()
+            if _is_link_or_junction(path) or not stat.S_ISDIR(current.st_mode):
+                raise ValueError(f"{label} root ancestry must remain a real directory")
+            _require_same_inode(observed, current)
+        except (OSError, ArtifactValidationError) as exc:
+            raise ValueError(f"{label} root ancestry cannot be secured") from exc
+        return
+    try:
         flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
     except OSError as exc:
@@ -258,11 +277,13 @@ def _create_private_directory(path: Path, *, label: str) -> None:
         _require_same_inode(observed, opened)
         if not stat.S_ISDIR(opened.st_mode):
             raise ValueError(f"{label} root ancestry must remain a directory")
-        if os.name == "posix":
-            os.fchmod(descriptor, 0o700)
+        fchmod = getattr(os, "fchmod", None)
+        if fchmod is None:
+            raise ValueError(f"{label} root ancestry cannot enforce private ownership")
+        fchmod(descriptor, 0o700)
         final = os.fstat(descriptor)
         _require_same_inode(opened, final)
-        if os.name == "posix" and hasattr(os, "geteuid") and final.st_uid != os.geteuid():
+        if hasattr(os, "geteuid") and final.st_uid != os.geteuid():
             raise ValueError(f"{label} root ancestry must be owned by the current process user")
         current = path.lstat()
         _require_same_inode(final, current)
@@ -1736,8 +1757,8 @@ class ManagedArtifactRepository:
     @staticmethod
     def _prepare_owner_root(path: Path, *, label: str) -> tuple[Path, tuple[Path, ...]]:
         raw = Path(path).expanduser().absolute()
-        if raw.is_symlink():
-            raise ValueError(f"{label} root cannot be a symbolic link")
+        if _is_link_or_junction(raw):
+            raise ValueError(f"{label} root cannot be a symbolic link or junction")
         missing_paths: list[Path] = []
         cursor = raw
         while not os.path.lexists(cursor):

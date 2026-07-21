@@ -1375,7 +1375,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
 | Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate 및 fresh-identity retry slice를 구현; multi-item projection publication, negative Control Plane retest, portable proof와 구조화 협업 메모리는 후속 |
-| Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하나 시나리오 범위와 CI 연동은 제한적 |
+| Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
 ### Phase 0 — Foundation & Governance (완료)
@@ -1466,7 +1466,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 - Bug Bounty: Scope Parser, 보수적 중복 판정, 신고서 초안, 고정 로컬 SQLi 랩
 - CTF: Web·Crypto Specialist와 제한된 병렬 Suite
 - KISA 체크리스트, 완료 보고서, 완화 계획, baseline-bound hardened 재검증·정상 기능 회귀
-- 남은 범위: KISA 14개 위협 실행 시나리오, 추가 Bug Bounty·CTF 시나리오, CI/CD 워크플로
+- 남은 범위: KISA 14개 위협 실행 시나리오, 추가 Bug Bounty·CTF 시나리오, CI/CD-triggered Campaign 실행과 live infrastructure workflow
 
 ### Phase 4 — Platform & Ecosystem (초기 구현)
 

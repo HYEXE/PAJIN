@@ -1339,6 +1339,10 @@ root digest는 결정론적 로컬 변조 탐지를 제공하지만 signer ident
 .venv\Scripts\mypy src
 ```
 
+SHA로 고정한 [Linux CI workflow](.github/workflows/ci.yml)는 모든 pull request와 `main` push에서
+Ubuntu 24.04와 Python 3.12를 사용해 잠금 dependency 설치, Ruff, mypy, 전체 기본 pytest suite를
+실행합니다.
+
 기본 suite는 live infrastructure test를 environment-gated 상태로 유지합니다. Control Plane 및
 Worker-daemon live test에는 `PAJIN_TEST_CONTROL_PLANE_URL`을, 격리된 PostgreSQL integration
 test에는 `PAJIN_TEST_POSTGRES_URL`을 설정합니다. Worker crash-recovery test에는 격리된 test

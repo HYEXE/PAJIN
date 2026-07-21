@@ -1365,6 +1365,10 @@ record.
 .venv\Scripts\mypy src
 ```
 
+The SHA-pinned [Linux CI workflow](.github/workflows/ci.yml) installs the locked dependency set and
+runs Ruff, mypy, and the complete default pytest suite on Ubuntu 24.04 with Python 3.12 for every
+pull request and push to `main`.
+
 The default suite keeps live infrastructure tests environment-gated. Set
 `PAJIN_TEST_CONTROL_PLANE_URL` for the Control Plane and Worker-daemon live tests, and
 `PAJIN_TEST_POSTGRES_URL` for the isolated PostgreSQL integration test. The Worker crash-recovery

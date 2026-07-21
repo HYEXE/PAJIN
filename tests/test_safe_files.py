@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import stat
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -107,3 +109,35 @@ def test_bounded_read_limits_require_positive_plain_integers(tmp_path: Path) -> 
     for invalid in (0, -1, True):
         with pytest.raises(ValueError, match="positive integer"):
             read_bounded_regular_bytes(source, max_bytes=invalid, label="artifact")
+
+
+def test_revision_guard_can_ignore_only_cross_view_change_time() -> None:
+    expected = SimpleNamespace(
+        st_mode=stat.S_IFREG | 0o600,
+        st_dev=1,
+        st_ino=2,
+        st_size=3,
+        st_mtime_ns=4,
+        st_ctime_ns=5,
+    )
+    cross_view_values = vars(expected) | {"st_ctime_ns": 6}
+    cross_view = SimpleNamespace(**cross_view_values)
+
+    safe_files._require_same_revision(
+        expected,
+        cross_view,
+        label="artifact",
+        compare_change_time=False,
+    )
+    with pytest.raises(ValueError, match="changed while being read"):
+        safe_files._require_same_revision(expected, cross_view, label="artifact")
+
+    changed_content_values = vars(cross_view) | {"st_mtime_ns": 7}
+    changed_content = SimpleNamespace(**changed_content_values)
+    with pytest.raises(ValueError, match="changed while being read"):
+        safe_files._require_same_revision(
+            expected,
+            changed_content,
+            label="artifact",
+            compare_change_time=False,
+        )

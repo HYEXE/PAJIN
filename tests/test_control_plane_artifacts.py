@@ -805,7 +805,6 @@ def test_constructor_rejects_symlinked_or_overlapping_owner_roots(tmp_path: Path
         )
 
 
-@pytest.mark.skipif(os.name != "posix", reason="POSIX owner and mode policy")
 def test_constructor_creates_every_missing_root_component_privately(
     tmp_path: Path,
 ) -> None:
@@ -830,7 +829,9 @@ def test_constructor_creates_every_missing_root_component_privately(
         repository_parent / "nested",
         repository_root,
     ):
-        assert stat.S_IMODE(path.stat().st_mode) == 0o700
+        assert path.is_dir()
+        if os.name == "posix":
+            assert stat.S_IMODE(path.stat().st_mode) == 0o700
 
 
 @pytest.mark.skipif(os.name != "posix", reason="POSIX owner and mode policy")

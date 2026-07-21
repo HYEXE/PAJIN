@@ -759,7 +759,9 @@ def _make_private_directories(path: Path, *, stop: Path) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    # Windows requires a writable file descriptor for FlushFileBuffers/os.fsync.
+    # No bytes are changed; the handle only makes the preceding append durable.
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
 
 

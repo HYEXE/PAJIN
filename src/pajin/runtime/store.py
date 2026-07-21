@@ -348,7 +348,7 @@ def locked_run_snapshot(run_path: Path) -> Iterator[Path]:
 
 def _atomic_write_private(destination: Path, content: bytes) -> None:
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
+        prefix=".pajin-write.",
         suffix=".tmp",
         dir=destination.parent,
     )
@@ -376,7 +376,7 @@ def _atomic_create_private(destination: Path, content: bytes) -> None:
     """Install a complete private file exactly once without a replace window."""
 
     descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{destination.name}.",
+        prefix=".pajin-create.",
         suffix=".create",
         dir=destination.parent,
     )

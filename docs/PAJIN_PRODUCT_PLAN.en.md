@@ -1390,7 +1390,7 @@ defines at least the following.
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
 | Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate plus fresh-identity retry slice are implemented; multi-item projection publication, negative Control Plane retest, portable proof, and structured collaboration memory are follow-on work |
-| Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
+| Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
 ### Phase 0 - Foundation & Governance (Complete)
@@ -1480,7 +1480,7 @@ defines at least the following.
 - Bug Bounty: Scope Parser, conservative duplicate judgment, report drafts, and a fixed local SQLi lab
 - CTF: Web and Crypto Specialists and a restricted parallel Suite
 - KISA checklist, completion report, mitigation plan, baseline-bound hardened revalidation, and normal-functionality regression
-- Remaining scope: execution scenarios for 14 additional KISA threats, more Bug Bounty and CTF scenarios, and CI/CD workflows
+- Remaining scope: execution scenarios for 14 additional KISA threats, more Bug Bounty and CTF scenarios, CI/CD-triggered Campaign execution, and live-infrastructure workflows
 
 ### Phase 4 - Platform & Ecosystem (Initial implementation)
 

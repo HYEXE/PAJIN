@@ -398,7 +398,17 @@ def _read_bounded_portable(
         final_path = source.lstat()
         if _is_link_or_junction(source):
             raise ValueError(f"{label} path changed while being read")
-        _require_same_revision(opened, final_path, label=label)
+        # Keep both stable views bound across the read. On Windows, CPython can expose
+        # slightly different change-time precision for fstat(handle) and lstat(path),
+        # so ctime is authoritative only within the same view. Identity, size, and
+        # mtime remain required across the descriptor/path boundary.
+        _require_same_revision(observed, final_path, label=label)
+        _require_same_revision(
+            opened,
+            final_path,
+            label=label,
+            compare_change_time=os.name != "nt",
+        )
         return content
     finally:
         os.close(descriptor)
@@ -477,20 +487,24 @@ def _require_same_revision(
     observed: os.stat_result,
     *,
     label: str,
+    compare_change_time: bool = True,
 ) -> None:
-    if not stat.S_ISREG(observed.st_mode) or (
-        observed.st_dev,
-        observed.st_ino,
-        observed.st_size,
-        observed.st_mtime_ns,
-        observed.st_ctime_ns,
-    ) != (
+    expected_revision = (
         expected.st_dev,
         expected.st_ino,
         expected.st_size,
         expected.st_mtime_ns,
-        expected.st_ctime_ns,
-    ):
+    )
+    observed_revision = (
+        observed.st_dev,
+        observed.st_ino,
+        observed.st_size,
+        observed.st_mtime_ns,
+    )
+    same_revision = observed_revision == expected_revision
+    if compare_change_time:
+        same_revision = same_revision and observed.st_ctime_ns == expected.st_ctime_ns
+    if not stat.S_ISREG(observed.st_mode) or not same_revision:
         raise ValueError(f"{label} changed while being read")
 
 
