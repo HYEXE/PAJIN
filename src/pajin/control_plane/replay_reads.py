@@ -8,6 +8,7 @@ from pajin.control_plane.models import (
     ReplayBatchView,
     ReplayFinalizationView,
     ReplayItemView,
+    ReplayProjectionView,
     ReplayTicketView,
 )
 from pajin.control_plane.records import ControlPlaneRecords
@@ -63,5 +64,26 @@ class ReplayReadService:
                 batch=batch,
                 item=item,
                 ticket=ticket,
+                artifact=artifact,
+            )
+
+    def get_projection(self, batch_id: str) -> ReplayProjectionView | None:
+        """Return the immutable aggregate projection published for one batch."""
+
+        with self._repository.read_transaction() as session:
+            batch = self._records.replay_batch(session, batch_id)
+            projection = self._records.replay_projection_for_batch(session, batch_id)
+            if projection is None:
+                return None
+            artifact = self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=projection.artifact_id,
+                    repository_version=projection.repository_version,
+                ),
+            )
+            return self._views.replay_projection(
+                projection,
+                batch=batch,
                 artifact=artifact,
             )

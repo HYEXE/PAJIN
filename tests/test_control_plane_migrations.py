@@ -52,6 +52,7 @@ from pajin.control_plane.database import (
     V6_CONTROL_PLANE_TABLES,
     V7_CONTROL_PLANE_TABLES,
     V8_CONTROL_PLANE_TABLES,
+    V10_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
@@ -65,6 +66,7 @@ from pajin.control_plane.database import (
     ReplayExecutionContextRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
@@ -1365,6 +1367,7 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
             COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
             REPLAY_FINALIZATION_SCHEMA_VERSION,
+            SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
             CURRENT_SCHEMA_VERSION,
         ]
 
@@ -1374,6 +1377,45 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
                 session.scalar(select(text("count(*)")).select_from(SchemaVersionRecord))
                 == CURRENT_SCHEMA_VERSION
             )
+    finally:
+        repository.close()
+
+
+def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "v10-projection-authority.db")
+    try:
+        repository.initialize()
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_projections")
+            connection.execute(
+                text("DELETE FROM cp_schema_version WHERE version = :version"),
+                {"version": CURRENT_SCHEMA_VERSION},
+            )
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V10_CONTROL_PLANE_TABLES
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert ReplayProjectionRecord.__tablename__ in inspect(
+            repository.engine
+        ).get_table_names()
+        with repository.engine.connect() as connection:
+            triggers = {
+                str(name)
+                for name in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND tbl_name = 'cp_replay_projections'"
+                    )
+                ).scalars()
+            }
+        assert triggers == {
+            "cp_replay_projections_no_delete",
+            "cp_replay_projections_no_replace",
+            "cp_replay_projections_no_update",
+        }
     finally:
         repository.close()
 
@@ -1470,7 +1512,7 @@ def test_exact_v9_migration_backfills_submission_and_lease_authority_idempotentl
             assert migrated_job.lease_deadline_at == migrated_job.lease_expires_at
             assert migrated_job.heartbeat_event_at == migrated_job.heartbeat_at
 
-        assert repository.schema_version() == SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
         repository.initialize()
         with repository.transaction() as session:
             versions = session.scalars(

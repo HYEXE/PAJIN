@@ -46,6 +46,7 @@ from pajin.control_plane.database import (
     ReplayExecutionContextRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
@@ -115,6 +116,12 @@ from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_cont
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
 from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
+from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_DECISIONS_PATH,
+    VERSIONED_VALIDATION_FINDINGS_PATH,
+    VERSIONED_VALIDATION_INDEX_PATH,
+    load_validation_snapshot,
+)
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
 APPROVER_TOKEN = "replay-approver-token-that-is-long-and-distinct"
@@ -749,9 +756,10 @@ def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_rout
         paths = app.openapi()["paths"]
         assert {path for path in paths if path.startswith("/v1/replay")} == {
             "/v1/replay/source-artifacts",
-            "/v1/replay/batches",
-            "/v1/replay/batches/{batch_id}",
-            "/v1/replay/items/{item_id}",
+                "/v1/replay/batches",
+                "/v1/replay/batches/{batch_id}",
+                "/v1/replay/batches/{batch_id}/projection",
+                "/v1/replay/items/{item_id}",
             "/v1/replay/tickets/{ticket_id}",
             "/v1/replay/tickets/{ticket_id}/finalization",
         }
@@ -4634,6 +4642,179 @@ def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
             )
             assert replay_event_types.count("replay.output.verified") == 1
             assert replay_event_types.count("replay.confirmation.gated") == 1
+    finally:
+        repository.close()
+
+
+def test_multi_item_finalization_publishes_one_versioned_projection(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "multi-item-projection.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        request = _create_batch(
+            repository,
+            service,
+            "multi-item-projection",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+            item_count=2,
+        )
+        staging_root, artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+
+        first_claim = _claim(service, actor=actor)
+        first_request = asyncio.run(executor.execute(first_claim))
+        first_finalization = service.finalize_replay_job(
+            first_claim.job.job_id,
+            first_request,
+            actor=actor,
+        )
+        assert first_finalization.item.state is ReplayItemState.VERIFIED
+        assert first_finalization.batch.state is ReplayBatchState.RUNNING
+        assert service.get_replay_projection(request.batch_id) is None
+
+        second_claim = _claim(service, actor=actor)
+        second_request = asyncio.run(executor.execute(second_claim))
+        second_finalization = service.finalize_replay_job(
+            second_claim.job.job_id,
+            second_request,
+            actor=actor,
+        )
+        assert second_finalization.item.state is ReplayItemState.GATED
+        assert second_finalization.batch.state is ReplayBatchState.COMPLETED
+        assert service.get_replay_item(first_claim.item.item_id).state is ReplayItemState.GATED
+
+        projection = service.get_replay_projection(request.batch_id)
+        assert projection is not None
+        assert projection.batch.state is ReplayBatchState.COMPLETED
+        assert projection.input_authority.source == first_claim.batch.source
+        assert [item.ordinal for item in projection.input_authority.items] == [0, 1]
+        assert {item.finalization_id for item in projection.input_authority.items} == {
+            first_finalization.finalization_id,
+            second_finalization.finalization_id,
+        }
+        assert {item.replay_run_id for item in projection.input_authority.items} == {
+            first_claim.item.replay_run_id,
+            second_claim.item.replay_run_id,
+        }
+
+        managed = ManagedArtifactRepository(
+            staging_root=staging_root,
+            repository_root=artifact_root,
+        )
+        source_snapshot = managed.resolve(projection.input_authority.source)
+        projection_snapshot = managed.resolve(projection.artifact)
+        assert not (source_snapshot.path / VERSIONED_VALIDATION_INDEX_PATH).exists()
+        assert projection.artifact.integrity_root_digest != (
+            projection.input_authority.source.integrity_root_digest
+        )
+        assert (projection_snapshot.path / VERSIONED_VALIDATION_INDEX_PATH).is_file()
+        assert (projection_snapshot.path / VERSIONED_VALIDATION_FINDINGS_PATH).is_file()
+        assert (projection_snapshot.path / VERSIONED_VALIDATION_DECISIONS_PATH).is_file()
+        validation = load_validation_snapshot(projection_snapshot.path)
+        assert validation.index is not None
+        assert len(validation.validation.decisions) == 2
+
+        repeated = service.finalize_replay_job(
+            second_claim.job.job_id,
+            second_request,
+            actor=actor,
+        )
+        assert repeated == second_finalization
+        assert service.get_replay_projection(request.batch_id) == projection
+        with repository.read_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
+    finally:
+        repository.close()
+
+
+def test_projection_cas_drift_prevents_publication_until_exact_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "projection-cas-drift.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        request = _create_batch(
+            repository,
+            service,
+            "projection-cas-drift",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+            item_count=2,
+        )
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        first_claim = _claim(service, actor=actor)
+        first_finalize = asyncio.run(executor.execute(first_claim))
+        service.finalize_replay_job(first_claim.job.job_id, first_finalize, actor=actor)
+
+        second_claim = _claim(service, actor=actor)
+        second_finalize = asyncio.run(executor.execute(second_claim))
+        original_gate = control_plane_service_module.apply_confirmed_gate
+        drifted = False
+
+        def drift_batch_cas(**kwargs):
+            nonlocal drifted
+            projection = original_gate(**kwargs)
+            if not drifted:
+                with repository.transaction() as session:
+                    batch = session.get(ReplayBatchRecord, request.batch_id)
+                    assert batch is not None
+                    batch.cas_version += 1
+                drifted = True
+            return projection
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "apply_confirmed_gate",
+            drift_batch_cas,
+        )
+        with pytest.raises(StateConflict, match="authority changed before publication"):
+            service.finalize_replay_job(
+                second_claim.job.job_id,
+                second_finalize,
+                actor=actor,
+            )
+
+        with repository.read_transaction() as session:
+            batch = session.get(ReplayBatchRecord, request.batch_id)
+            assert batch is not None
+            assert batch.state == ReplayBatchState.GATING.value
+            assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 0
+            states = set(
+                session.scalars(
+                    select(ReplayItemRecord.state).where(
+                        ReplayItemRecord.batch_id == request.batch_id
+                    )
+                ).all()
+            )
+            assert states == {ReplayItemState.VERIFIED.value}
+
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "apply_confirmed_gate",
+            original_gate,
+        )
+        recovered = service.finalize_replay_job(
+            second_claim.job.job_id,
+            second_finalize,
+            actor=actor,
+        )
+        assert recovered.batch.state is ReplayBatchState.COMPLETED
+        assert recovered.item.state is ReplayItemState.GATED
+        assert service.get_replay_projection(request.batch_id) is not None
     finally:
         repository.close()
 

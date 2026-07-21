@@ -2361,9 +2361,10 @@ def test_replay_worker_routes_are_role_protected_typed_and_fail_closed(
     assert all("409" in paths[path]["post"]["responses"] for path in replay_paths)
     assert {path for path in paths if path.startswith("/v1/replay")} == {
         "/v1/replay/source-artifacts",
-        "/v1/replay/batches",
-        "/v1/replay/batches/{batch_id}",
-        "/v1/replay/items/{item_id}",
+            "/v1/replay/batches",
+            "/v1/replay/batches/{batch_id}",
+            "/v1/replay/batches/{batch_id}/projection",
+            "/v1/replay/items/{item_id}",
         "/v1/replay/tickets/{ticket_id}",
         "/v1/replay/tickets/{ticket_id}/finalization",
     }

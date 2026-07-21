@@ -1256,10 +1256,11 @@ class ReplayFinalizationView(StrictModel):
         if (
             self.job.state is not JobState.SUCCEEDED
             or self.ticket.state is not ReplayTicketState.FINALIZED
-            or self.item.state is not ReplayItemState.GATED
+            or self.item.state not in {ReplayItemState.VERIFIED, ReplayItemState.GATED}
             or self.batch.state
             not in {
                 ReplayBatchState.RUNNING,
+                ReplayBatchState.GATING,
                 ReplayBatchState.COMPLETED,
             }
             or self.job.job_id != self.ticket.job_id
@@ -1270,6 +1271,92 @@ class ReplayFinalizationView(StrictModel):
             or self.gate_decision.candidate_id != self.item.candidate_id
         ):
             raise ValueError("Replay finalization view authority binding is inconsistent")
+        return self
+
+
+class ReplayProjectionItemAuthority(StrictModel):
+    """Exact finalized Replay input snapshotted for one projection publication."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    ordinal: int = Field(strict=True, ge=0, le=999)
+    item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    finalization_id: str = Field(pattern=r"^replay-finalization_[0-9a-f]{32}$")
+    replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    output: ArtifactRef
+    artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    gate_decision_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    result_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    finalized_at: datetime
+
+    @model_validator(mode="after")
+    def require_aware_finalization_time(self) -> ReplayProjectionItemAuthority:
+        if self.finalized_at.tzinfo is None or self.finalized_at.utcoffset() is None:
+            raise ValueError("Replay projection finalization time must be timezone-aware")
+        if self.output.run_id != self.replay_run_id:
+            raise ValueError("Replay projection output belongs to another Replay Run")
+        return self
+
+
+class ReplayProjectionInputAuthority(StrictModel):
+    """Canonical immutable input set evaluated outside the database transaction."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.control-plane.replay-projection-inputs/v1"] = (
+        "pajin.control-plane.replay-projection-inputs/v1"
+    )
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    source: ArtifactRef
+    batch_cas_version: int = Field(strict=True, ge=1, le=2_147_483_647)
+    items: list[ReplayProjectionItemAuthority] = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_sorted_unique_items(self) -> ReplayProjectionInputAuthority:
+        order = [(item.ordinal, item.item_id) for item in self.items]
+        if order != sorted(order) or len(order) != len(set(order)):
+            raise ValueError("Replay projection items must be uniquely sorted by ordinal")
+        for attribute in ("ticket_id", "finalization_id", "replay_run_id"):
+            values = [getattr(item, attribute) for item in self.items]
+            if len(values) != len(set(values)):
+                raise ValueError(f"Replay projection {attribute} values must be unique")
+        return self
+
+
+class ReplayProjectionView(StrictModel):
+    """Published immutable validation projection for one complete Replay batch."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    projection_id: str = Field(pattern=r"^replay-projection_[0-9a-f]{32}$")
+    batch: ReplayBatchView
+    artifact: ArtifactRef
+    input_authority: ReplayProjectionInputAuthority
+    input_authority_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    published_by: str = Field(min_length=1, max_length=200)
+    published_at: datetime
+
+    @model_validator(mode="after")
+    def require_publication_binding(self) -> ReplayProjectionView:
+        authority_digest = replay_context_digest(
+            self.input_authority.model_dump(mode="json", by_alias=True)
+        )
+        if (
+            self.batch.state is not ReplayBatchState.COMPLETED
+            or self.input_authority.batch_id != self.batch.batch_id
+            or self.input_authority.source != self.batch.source
+            or self.batch.cas_version != self.input_authority.batch_cas_version + 1
+            or self.input_authority_digest != authority_digest
+            or self.artifact.producer_run_id != self.batch.source.producer_run_id
+            or self.artifact.run_id != self.batch.source.run_id
+            or self.artifact.created_by != self.published_by
+            or self.published_at.tzinfo is None
+            or self.published_at.utcoffset() is None
+        ):
+            raise ValueError("Replay projection publication binding is inconsistent")
         return self
 
 

@@ -99,6 +99,7 @@ _ACTIVE_REPLAY_TICKET_STATES = frozenset(
 )
 _TERMINAL_REPLAY_ITEM_STATES = frozenset(
     {
+        ReplayItemState.VERIFIED.value,
         ReplayItemState.GATED.value,
         ReplayItemState.FAILED.value,
         ReplayItemState.CANCELLED.value,
@@ -1328,7 +1329,7 @@ class ControlPlaneClaimService:
         *,
         now: datetime,
     ) -> str | None:
-        """Resolve a terminal batch solely from its final item-state set.
+        """Resolve a failed/cancelled batch from its no-longer-runnable item set.
 
         Cancellation has precedence over failure so the same terminal item set
         always produces the same aggregate regardless of transition order.
@@ -1346,8 +1347,12 @@ class ControlPlaneClaimService:
                 batch.cancelled_at = now
         elif ReplayItemState.FAILED.value in item_states:
             resolved = ReplayBatchState.FAILED.value
-        else:
+        elif ReplayItemState.GATED.value in item_states:
             resolved = ReplayBatchState.COMPLETED.value
+        else:
+            # An all-verified set belongs to the projection publisher and must not
+            # bypass its source-root/item-set CAS commit.
+            return None
         batch.state = resolved
         batch.updated_at = now
         return resolved

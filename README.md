@@ -12,7 +12,7 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-21 is:
+The implementation baseline as of 2026-07-22 is:
 
 | Area | Current scope |
 | --- | --- |
@@ -20,8 +20,8 @@ The implementation baseline as of 2026-07-21 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization after sealed-output import and permit-lineage verification; it does not independently attest target execution. |
-| Primary gaps | Negative Control Plane retest, multi-item versioned-projection publication, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization; schema v11 adds CAS-fenced, append-only multi-item versioned-projection publication after every finalized output is independently reopened and verified. Neither independently attests target execution. |
+| Primary gaps | Negative Control Plane retest, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -1055,8 +1055,11 @@ register the generic Campaign or Tool Loop executors. Its authority flow is deli
 4. finalize with only profile, lease token, ticket, fence, and staging ID. The Control Plane imports
    that slot, reopens the immutable copy, verifies both seals and every permit/request binding,
    derives the common confirmation Gate, and atomically commits the Artifact and schema-v9
-   append-only finalization with the Job/ticket/item/batch/Run transitions after revalidating the
-   permit-backed authority whose budget/rate units were already consumed at issuance.
+   append-only finalization after revalidating the permit-backed authority whose budget/rate units
+   were already consumed at issuance. Finalized items remain `verified` until every batch item is
+   ready; the server then copies—not mutates—the managed source, reopens all Replay Artifacts,
+   creates a sealed `validation/v1alpha1` projection, and publishes schema-v11 projection authority
+   only if the source root, batch CAS, and sorted finalization set are unchanged.
 
 The Worker cannot submit a filesystem path, `ArtifactRef`, result, digest, Oracle verdict, or
 `confirmed` disposition. A permit is durably consumed before dispatch and is not a bearer token. If

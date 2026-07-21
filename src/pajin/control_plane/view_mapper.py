@@ -15,6 +15,7 @@ from pajin.control_plane.database import (
     ReplayBatchRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
@@ -38,6 +39,8 @@ from pajin.control_plane.models import (
     ReplayFinalizationView,
     ReplayItemState,
     ReplayItemView,
+    ReplayProjectionInputAuthority,
+    ReplayProjectionView,
     ReplayTicketState,
     ReplayTicketView,
     ReplayToolPermitView,
@@ -281,6 +284,40 @@ class ControlPlaneViewMapper:
             result_digest=record.result_digest,
             finalized_by=record.finalized_by,
             finalized_at=_aware(record.finalized_at),
+        )
+
+    @classmethod
+    def replay_projection(
+        cls,
+        record: ReplayProjectionRecord,
+        *,
+        batch: ReplayBatchRecord,
+        artifact: ArtifactRecord,
+    ) -> ReplayProjectionView:
+        try:
+            authority = ReplayProjectionInputAuthority.model_validate(record.input_authority)
+        except ValueError as exc:
+            raise StateConflict("durable Replay projection inputs are invalid") from exc
+        authority_digest = replay_context_digest(
+            authority.model_dump(mode="json", by_alias=True)
+        )
+        if not (
+            record.batch_id == batch.batch_id
+            and record.source_root_digest == batch.source_root_digest
+            and record.artifact_id == artifact.artifact_id
+            and record.repository_version == artifact.repository_version
+            and record.batch_cas_version == authority.batch_cas_version
+            and record.input_authority_digest == authority_digest
+        ):
+            raise StateConflict("durable Replay projection graph is inconsistent")
+        return ReplayProjectionView(
+            projection_id=record.projection_id,
+            batch=cls.replay_batch(batch),
+            artifact=cls.artifact(artifact),
+            input_authority=authority,
+            input_authority_digest=record.input_authority_digest,
+            published_by=record.published_by,
+            published_at=_aware(record.published_at),
         )
 
     @classmethod

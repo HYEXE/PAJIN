@@ -128,6 +128,28 @@ def test_import_copies_and_binds_the_complete_sealed_run_tree(tmp_path: Path) ->
     assert (snapshot.path / "result.txt").read_text(encoding="utf-8") == "sealed-result\n"
 
 
+def test_managed_run_copy_stages_an_independent_server_mutation_root(tmp_path: Path) -> None:
+    repository, staging_root, _ = _repository(tmp_path)
+    _sealed_run(staging_root)
+    source = _import(repository)
+    copy_id = _stage_id("2")
+
+    copied_path = repository.stage_managed_run_copy(
+        staging_id=copy_id,
+        source=source.ref,
+    )
+
+    assert copied_path == staging_root / copy_id
+    assert copied_path != source.path
+    assert _canonical_tree_digest(copied_path) == _canonical_tree_digest(source.path)
+    (copied_path / "server-extension.txt").write_text("projection\n", encoding="utf-8")
+    assert not (source.path / "server-extension.txt").exists()
+    assert repository.resolve(source.ref) == source
+
+    with pytest.raises(ArtifactConflict, match="already exists"):
+        repository.stage_managed_run_copy(staging_id=copy_id, source=source.ref)
+
+
 @pytest.mark.parametrize("mutation", ["empty", "directory", "hard-link", "oversized"])
 def test_import_rejects_a_malformed_transient_run_lock(
     tmp_path: Path,

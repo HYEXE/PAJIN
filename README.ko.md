@@ -14,7 +14,7 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 
 ## 현재 구현 상태
 
-2026-07-21 기준 구현 범위는 다음과 같습니다.
+2026-07-22 기준 구현 범위는 다음과 같습니다.
 
 | 영역 | 현재 범위 |
 | --- | --- |
@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 sealed output import와 permit lineage 검증 뒤 서버 파생 append-only finalization을 추가하지만 target 실행을 독립적으로 attest하지는 않습니다. |
-| 주요 공백 | negative Control Plane retest, multi-item versioned projection publication, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 서버 파생 append-only finalization을 추가하고 schema v11은 모든 finalized output을 다시 검증한 뒤 CAS-fenced append-only multi-item versioned projection을 발행합니다. 두 경로 모두 target 실행을 독립적으로 attest하지는 않습니다. |
+| 주요 공백 | negative Control Plane retest, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -1034,8 +1034,11 @@ Campaign 또는 Tool Loop executor를 등록하지 않습니다. 권위 흐름�
 4. profile, lease token, ticket, fence와 staging ID만 finalize합니다. Control Plane은 해당 slot을
    import하고 immutable copy를 다시 열어 두 seal과 모든 permit/request 결박을 검증하며, 공통
    confirmation Gate를 파생하고 Artifact와 schema-v9 append-only finalization을
-   Job/ticket/item/batch/Run 전이와 함께 원자적으로 commit합니다. 이때 permit 발급에서
-   budget/rate unit을 이미 소비한 authority를 다시 검증합니다.
+   commit합니다. Finalized item은 batch 전체가 준비될 때까지 `verified`에 머뭅니다. 이후 서버는
+   managed source를 수정하지 않고 복사해 전체 Replay Artifact를 다시 열고 봉인된
+   `validation/v1alpha1` projection을 만든 뒤, source root·batch CAS·정렬된 finalization 집합이
+   그대로일 때만 schema-v11 projection authority와 item/batch의 `gated`/`completed` 전이를
+   commit합니다. 이때 permit 발급에서 budget/rate unit을 이미 소비한 authority를 다시 검증합니다.
 
 Worker는 filesystem path, `ArtifactRef`, result, digest, Oracle verdict 또는 `confirmed`
 disposition을 제출할 수 없습니다. Permit은 dispatch 전에 durable하게 소비되는 non-bearer

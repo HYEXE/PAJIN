@@ -4,7 +4,7 @@
 
 - Status: Accepted
 - Date: 2026-07-17
-- Implementation update: 2026-07-19 (dedicated exact-KISA executor and schema-v9 server finalization)
+- Implementation update: 2026-07-22 (schema-v11 multi-item versioned-projection publication)
 - Scope: M6-07B Control Plane vertical slice
 - Extends: [ADR 0011](0011-durable-control-plane.en.md), [ADR 0012](0012-lease-aware-worker-daemon.en.md)
 - Depends on: [ADR 0024](0024-cooperative-execution-cancellation.en.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.en.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.en.md)
@@ -101,7 +101,10 @@ The server imports and reopens the sealed output, verifies the exact source/comp
 lineage, derives the ADR 0027 common Gate decision, and atomically commits finalization and terminal
 authority state. Compose now wires that daemon and its owner-only staging handoff. Opaque public
 source/batch admission, role-scoped state reads, and automatic fresh-identity retry issuance are also
-implemented. Negative Control Plane retest and multi-host/object-store handoff remain outstanding.
+implemented. The 2026-07-22 schema-v11 slice adds append-only `cp_replay_projections`, server-owned
+copy-on-project materialization, aggregate receipt re-verification outside database locks, a final
+source-root/batch-CAS/sorted-finalization-set commit, and a role-scoped projection read. Negative
+Control Plane retest and multi-host/object-store handoff remain outstanding.
 
 ## Context
 
@@ -509,11 +512,10 @@ permit and its capacity was fully released.
 
 ### Source-root CAS confirmation Gate
 
-The implemented one-item vertical slice invokes the pure ADR 0027 common Gate while finalizing the
-freshly reloaded source and output and stores its decision in `cp_replay_finalizations`. It then
-atomically moves the item to `gated` and a terminal one-item batch to `completed`. The broader
-multi-item versioned-projection publication design below remains the intended extension and is not
-claimed by this first slice.
+Each finalization invokes the pure ADR 0027 common Gate over the freshly reloaded source and output
+and stores its server-derived decision in `cp_replay_finalizations`. The item remains `verified`.
+When every item is verified, the batch enters `gating` and the schema-v11 publisher implements the
+multi-item versioned-projection flow below. One-item batches use the same aggregate path.
 
 The Worker neither runs the confirmation Gate nor submits `confirmed`. Control Plane authority
 runs the Gate after every required item has an exact finalized receipt.
@@ -530,9 +532,9 @@ runs the Gate after every required item has an exact finalized receipt.
 
 If the source has been substituted with another object/version/root, or the item set, ticket
 finalization, cancellation, or policy state has changed, compare-and-set fails and does not publish
-the confirmation projection. A Gate retry performs the entire verification again from a new
-snapshot. Only a Gate retry for the exact `result_digest` of an already completed result is
-idempotent; it neither reinterprets nor modifies the existing sealed source.
+Control Plane authority for the projection. A Gate retry performs the entire verification again
+from a new snapshot. An exact retry of an already published input set reopens the existing immutable
+projection and returns it idempotently; it neither reinterprets nor modifies the sealed source.
 
 ### Cancellation, abandonment, and lock ordering
 
@@ -623,10 +625,10 @@ The following are outside the first vertical slice of this ADR:
 
 The currently implemented slice includes the dedicated exact-KISA Worker, per-dispatch durable
 permit seam, twice-sealed opaque staging handoff, schema-v9 server-derived Artifact finalization,
-one-item common Gate, opaque public admission/read APIs, and automatic zero-permit fresh-identity
-retry issuance. Multi-item versioned projection publication and negative Control Plane retest remain
-follow-up exit criteria. Because a permit is not a bearer credential, a separate redeem mutation is
-not added.
+schema-v11 multi-item versioned-projection publication, opaque public admission/read APIs, and
+automatic zero-permit fresh-identity retry issuance. Negative Control Plane retest remains a
+follow-up exit criterion. Because a permit is not a bearer credential, a separate redeem mutation
+is not added.
 
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
@@ -650,12 +652,11 @@ cross-service authentication.
 
 ## Acceptance and validation
 
-As of 2026-07-21, source admission/derivation, public admission/read APIs, durable reservation and permit authority, exact
+As of 2026-07-22, source admission/derivation, public admission/read APIs, durable reservation and permit authority, exact
 execution contexts, dedicated Worker transport/execution, opaque staging, schema-v9 server-derived
 finalization, exact response-loss idempotency, automatic zero-permit fresh-identity retry, and the
-one-item common Gate cover the first complete positive-confirmation execution slice. Multi-item
-projection publication and negative Control Plane retest continue to be exit criteria for the broader
-M6-07B scope.
+schema-v11 multi-item versioned-projection publisher cover the positive-confirmation execution path.
+Negative Control Plane retest continues to be an exit criterion for the broader M6-07B scope.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 

@@ -483,7 +483,7 @@ class ReplayWorkerDaemon:
         )
         expected_item = claim.item.model_copy(
             update={
-                "state": ReplayItemState.GATED,
+                "state": result.item.state,
                 "updated_at": result.item.updated_at,
             }
         )
@@ -526,13 +526,23 @@ class ReplayWorkerDaemon:
             and result.batch == expected_batch
             and result.item == expected_item
             and result.ticket == expected_ticket
-            and result.batch.state in {ReplayBatchState.RUNNING, ReplayBatchState.COMPLETED}
+            and result.item.state in {ReplayItemState.VERIFIED, ReplayItemState.GATED}
+            and result.batch.state
+            in {
+                ReplayBatchState.RUNNING,
+                ReplayBatchState.GATING,
+                ReplayBatchState.COMPLETED,
+            }
+            and (
+                result.item.state is not ReplayItemState.GATED
+                or result.batch.state is ReplayBatchState.COMPLETED
+            )
             and result.batch.cas_version > claim.batch.cas_version
             and result.job.lease_expires_at == result.ticket.lease_expires_at
             and result_lease_expiry >= claim_lease_expiry
             and result_heartbeat >= claim_heartbeat
             and result.job.updated_at == result.finalized_at
-            and result.item.updated_at == result.finalized_at
+            and result.item.updated_at >= result.finalized_at
             and result.ticket.updated_at == result.finalized_at
             and result.batch.updated_at >= result.finalized_at
             and result.gate_decision.decided_at <= result.finalized_at

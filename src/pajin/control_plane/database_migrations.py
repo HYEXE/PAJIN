@@ -74,6 +74,7 @@ from pajin.control_plane.database_schema import (
     _V6_METADATA,
     _V7_METADATA,
     _V9_METADATA,
+    _V10_METADATA,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     ARTIFACT_AUTHORITY_TABLES,
     COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
@@ -90,6 +91,8 @@ from pajin.control_plane.database_schema import (
     REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
     REPLAY_FINALIZATION_AUTHORITY_TABLES,
     REPLAY_FINALIZATION_SCHEMA_VERSION,
+    REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_PROJECTION_AUTHORITY_TABLES,
     REPLAY_TOOL_PERMIT_AUTHORITY_TABLES,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
@@ -100,6 +103,7 @@ from pajin.control_plane.database_schema import (
     V6_CONTROL_PLANE_TABLES,
     V7_CONTROL_PLANE_TABLES,
     V8_CONTROL_PLANE_TABLES,
+    V10_CONTROL_PLANE_TABLES,
     Base,
     EventRecord,
     JobRecord,
@@ -111,6 +115,7 @@ from pajin.control_plane.database_schema import (
     ReplayExecutionContextRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
     ReplayTicketRecord,
@@ -147,10 +152,11 @@ _MIGRATIONS = {
     COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION: "complete-append-only-guards",
     REPLAY_FINALIZATION_SCHEMA_VERSION: "server-derived-replay-finalization",
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION: "submission-and-lease-authority",
+    REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION: "versioned-replay-projection-authority",
 }
 
 
-def _initialize_schema(connection: Connection) -> None:
+def _initialize_schema(connection: Connection) -> None:  # noqa: C901
     inspector = inspect(connection)
     cp_tables = {
         table_name for table_name in inspector.get_table_names() if table_name.startswith("cp_")
@@ -208,8 +214,15 @@ def _initialize_schema(connection: Connection) -> None:
         _migrate_v8_schema(connection)
         _validate_current_schema(connection)
         return
+    if cp_tables == V10_CONTROL_PLANE_TABLES:
+        _initialize_v10_table_set(connection)
+        return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
-        _initialize_current_table_set(connection)
+        if _latest_schema_version(connection) != CURRENT_SCHEMA_VERSION:
+            raise SchemaInitializationError(
+                "unknown migration history for current Control Plane table set"
+            )
+        _validate_current_schema(connection)
         return
 
     unknown = sorted(cp_tables - CURRENT_CONTROL_PLANE_TABLES)
@@ -224,8 +237,8 @@ def _initialize_schema(connection: Connection) -> None:
     )
 
 
-def _initialize_current_table_set(connection: Connection) -> None:
-    """Validate or advance the unchanged v9/v10 Control Plane table set."""
+def _initialize_v10_table_set(connection: Connection) -> None:
+    """Validate and advance either v9 or v10 from their shared table set."""
 
     latest = _latest_schema_version(connection)
     if latest == REPLAY_FINALIZATION_SCHEMA_VERSION:
@@ -233,11 +246,13 @@ def _initialize_current_table_set(connection: Connection) -> None:
         _migrate_v9_schema(connection)
         _validate_current_schema(connection)
         return
-    if latest == CURRENT_SCHEMA_VERSION:
+    if latest == SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION:
+        _validate_v10_schema(connection)
+        _migrate_v10_schema(connection)
         _validate_current_schema(connection)
         return
     raise SchemaInitializationError(
-        f"unknown migration history for current Control Plane table set: {latest!r}"
+        f"unknown migration history for schema-v10 table set: {latest!r}"
     )
 
 
@@ -525,6 +540,17 @@ def _migrate_v9_schema(connection: Connection) -> None:
     _backfill_lease_authority(connection)
     _install_submission_and_lease_authority_guards(connection)
     _record_migration(connection, SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION)
+    _migrate_v10_schema(connection)
+
+
+def _migrate_v10_schema(connection: Connection) -> None:
+    """Add append-only authority for one immutable projection per Replay batch."""
+
+    _lock_v9_migration_writes(connection)
+    _create_tables(connection, REPLAY_PROJECTION_AUTHORITY_TABLES)
+    _install_append_only_trigger(connection, ReplayProjectionRecord.__tablename__)
+    _install_complete_append_only_guard(connection, ReplayProjectionRecord.__tablename__)
+    _record_migration(connection, REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION)
 
 
 def _validate_migrating_core_json_rows(connection: Connection) -> None:
@@ -1296,7 +1322,7 @@ def _validate_v8_schema(connection: Connection) -> None:
 def _validate_v9_schema(connection: Connection) -> None:
     _validate_tables(
         connection,
-        CURRENT_CONTROL_PLANE_TABLES,
+        V10_CONTROL_PLANE_TABLES,
         metadata=_V9_METADATA,
         append_only_guard_version=COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
     )
@@ -1316,6 +1342,36 @@ def _validate_v9_schema(connection: Connection) -> None:
         raise SchemaInitializationError(
             f"unknown or incomplete schema v9 migration history: {actual!r}"
         )
+
+
+def _validate_v10_schema(connection: Connection) -> None:
+    _validate_tables(
+        connection,
+        V10_CONTROL_PLANE_TABLES,
+        metadata=_V10_METADATA,
+        append_only_guard_version=COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
+        require_submission_and_lease_guards=True,
+    )
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in range(
+            LEGACY_SCHEMA_VERSION,
+            SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION + 1,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v10 migration history: {actual!r}"
+        )
+    _validate_v10_authority_rows(connection)
 
 
 def _validate_v10_authority_rows(connection: Connection) -> None:

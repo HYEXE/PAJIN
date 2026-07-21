@@ -42,6 +42,7 @@ from pajin.control_plane.models import (
     ReplayFinalizeRequest,
     ReplayItemView,
     ReplayLeaseRequest,
+    ReplayProjectionView,
     ReplayTicketView,
     ReplayToolPermitRequest,
     ReplayToolPermitView,
@@ -334,6 +335,16 @@ def register_public_replay_routes(
         _principal: Annotated[Principal, Depends(require_reader)],
     ) -> ReplayBatchView:
         return service.get_replay_batch(batch_id)
+
+    @app.get(
+        "/v1/replay/batches/{batch_id}/projection",
+        response_model=ReplayProjectionView | None,
+    )
+    def get_replay_projection(
+        batch_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayProjectionView | None:
+        return service.get_replay_projection(batch_id)
 
     @app.get("/v1/replay/items/{item_id}", response_model=ReplayItemView)
     def get_replay_item(

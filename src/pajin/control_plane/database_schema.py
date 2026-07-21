@@ -34,7 +34,8 @@ REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION = 7
 COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION = 8
 REPLAY_FINALIZATION_SCHEMA_VERSION = 9
 SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION = 10
-CURRENT_SCHEMA_VERSION = SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION
+REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION = 11
+CURRENT_SCHEMA_VERSION = REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -83,8 +84,12 @@ V7_CONTROL_PLANE_TABLES = frozenset(
 )
 V8_CONTROL_PLANE_TABLES = V7_CONTROL_PLANE_TABLES
 REPLAY_FINALIZATION_AUTHORITY_TABLES = frozenset({"cp_replay_finalizations"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V10_CONTROL_PLANE_TABLES = frozenset(
     {*V8_CONTROL_PLANE_TABLES, *REPLAY_FINALIZATION_AUTHORITY_TABLES}
+)
+REPLAY_PROJECTION_AUTHORITY_TABLES = frozenset({"cp_replay_projections"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V10_CONTROL_PLANE_TABLES, *REPLAY_PROJECTION_AUTHORITY_TABLES}
 )
 
 
@@ -1996,7 +2001,7 @@ def _build_v9_metadata() -> MetaData:
 
     metadata = MetaData()
     for table in Base.metadata.sorted_tables:
-        if table.name in CURRENT_CONTROL_PLANE_TABLES:
+        if table.name in V10_CONTROL_PLANE_TABLES:
             table.to_metadata(metadata)
     return metadata
 
@@ -2007,3 +2012,80 @@ RunRecord.submission_authority_digest = mapped_column(String(64))
 JobRecord.submission_authority_digest = mapped_column(String(64))
 JobRecord.lease_deadline_at = mapped_column(DateTime(timezone=True))
 JobRecord.heartbeat_event_at = mapped_column(DateTime(timezone=True))
+
+
+def _build_v10_metadata() -> MetaData:
+    """Freeze schema v10 before the projection publication authority is added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V10_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V10_METADATA = _build_v10_metadata()
+
+
+class ReplayProjectionRecord(Base):
+    """Append-only publication authority for one versioned batch projection."""
+
+    __tablename__ = "cp_replay_projections"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["batch_id", "source_root_digest"],
+            ["cp_replay_batches.batch_id", "cp_replay_batches.source_root_digest"],
+            name="fk_cp_replay_projections_batch_root",
+            ondelete="RESTRICT",
+        ),
+        ForeignKeyConstraint(
+            ["artifact_id", "repository_version"],
+            ["cp_artifacts.artifact_id", "cp_artifacts.repository_version"],
+            name="fk_cp_replay_projections_artifact",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(projection_id) = 50 "
+            "AND substr(projection_id, 1, 18) = 'replay-projection_' AND "
+            + _lower_hex_check("substr(projection_id, 19, 32)", 32),
+            name="ck_cp_replay_projections_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("source_root_digest", 64),
+            name="ck_cp_replay_projections_source_root",
+        ),
+        CheckConstraint(
+            "batch_cas_version > 0",
+            name="ck_cp_replay_projections_batch_cas",
+        ),
+        CheckConstraint(
+            _lower_hex_check("input_authority_digest", 64),
+            name="ck_cp_replay_projections_input_digest",
+        ),
+        CheckConstraint(
+            "length(published_by) > 0 AND length(published_by) <= 200",
+            name="ck_cp_replay_projections_actor",
+        ),
+        UniqueConstraint("batch_id", name="uq_cp_replay_projections_batch"),
+        UniqueConstraint(
+            "artifact_id",
+            "repository_version",
+            name="uq_cp_replay_projections_artifact",
+        ),
+        UniqueConstraint(
+            "input_authority_digest",
+            name="uq_cp_replay_projections_input_digest",
+        ),
+        Index("ix_cp_replay_projections_time", "published_at"),
+    )
+
+    projection_id: Mapped[str] = mapped_column(String(50), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_root_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    artifact_id: Mapped[str] = mapped_column(String(41), nullable=False)
+    repository_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    batch_cas_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    input_authority: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    input_authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    published_by: Mapped[str] = mapped_column(String(200), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

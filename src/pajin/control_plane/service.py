@@ -5,7 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 from collections.abc import Callable, Iterator, Mapping
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -54,6 +54,7 @@ from pajin.control_plane.database import (
     ReplayEventRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
@@ -110,6 +111,9 @@ from pajin.control_plane.models import (
     ReplayItemState,
     ReplayItemView,
     ReplayLeaseRequest,
+    ReplayProjectionInputAuthority,
+    ReplayProjectionItemAuthority,
+    ReplayProjectionView,
     ReplayTicketState,
     ReplayTicketView,
     ReplayToolPermitRequest,
@@ -146,7 +150,7 @@ from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_res
 from pajin.replay.tickets import replay_context_digest
 from pajin.runtime.store import VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.tools.ai import AIChatProbeTool
-from pajin.workflow.confirmation import decide_replay_confirmation
+from pajin.workflow.confirmation import apply_confirmed_gate, decide_replay_confirmation
 from pajin.workflow.validation_artifacts import load_source_validation_artifacts
 
 MAX_AUDIT_EVENT_PAGE_SIZE = 200
@@ -167,18 +171,11 @@ _REPLAY_RETRY_ISSUER_ACTOR = "control-plane:replay-retry"
 _SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
 _SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 _REPLAY_OUTPUT_ARTIFACT_SCHEMA_KIND = "pajin.replay.output.sealed.v1"
+_REPLAY_PROJECTION_ARTIFACT_SCHEMA_KIND = "pajin.validation.projection.sealed.v1"
+_REPLAY_PROJECTION_ACTOR = "control-plane:replay-projection"
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
     {ReplayTicketState.ISSUED.value, ReplayTicketState.CLAIMED.value}
 )
-_TERMINAL_REPLAY_ITEM_STATES = frozenset(
-    {
-        ReplayItemState.GATED.value,
-        ReplayItemState.FAILED.value,
-        ReplayItemState.CANCELLED.value,
-    }
-)
-
-
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
@@ -188,6 +185,49 @@ class _ReplayFinalizationPreflight:
     attempt: _LockedReplayAttempt
     source_ref: ArtifactRef
     source_storage_key: str
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayProjectionSnapshot:
+    authority: ReplayProjectionInputAuthority
+    authority_digest: str
+    source_storage_key: str
+    output_storage_keys: tuple[str, ...]
+    decided_at: datetime
+
+
+class _ReplayProjectionTicketVerifier:
+    """Read-only verifier backed only by the immutable publication snapshot."""
+
+    def __init__(self, authority: ReplayProjectionInputAuthority) -> None:
+        self._items = {item.ticket_id: item for item in authority.items}
+        self._source_root_digest = authority.source.integrity_root_digest
+
+    def verify_finalized(
+        self,
+        ticket_id: str,
+        *,
+        final_seal_root_digest: str,
+        artifact_set_digest: str,
+        compilation_digest: str,
+        candidate_source_root_digest: str,
+        replay_run_id: str,
+    ) -> None:
+        item = self._items.get(ticket_id)
+        if item is None or (
+            final_seal_root_digest,
+            artifact_set_digest,
+            compilation_digest,
+            candidate_source_root_digest,
+            replay_run_id,
+        ) != (
+            item.receipt_seal_root_digest,
+            item.artifact_set_digest,
+            item.compilation_digest,
+            self._source_root_digest,
+            item.replay_run_id,
+        ):
+            raise ValueError("Replay receipt differs from projection finalization authority")
 
 
 @dataclass(frozen=True, slots=True)
@@ -658,6 +698,9 @@ class ControlPlaneService:
 
     def get_replay_finalization(self, ticket_id: str) -> ReplayFinalizationView | None:
         return self._replay_reads.get_finalization(ticket_id)
+
+    def get_replay_projection(self, batch_id: str) -> ReplayProjectionView | None:
+        return self._replay_reads.get_projection(batch_id)
 
     def get_run(self, run_id: str) -> RunView:
         with self.repository.read_transaction() as session:
@@ -1321,6 +1364,8 @@ class ControlPlaneService:
 
         # Do not hold database locks across a bounded filesystem copy and typed seal
         # verification. The write transaction below rechecks the complete authority.
+        existing_view: ReplayFinalizationView | None = None
+        preflight: _ReplayFinalizationPreflight | None = None
         with self._artifact_commit_transaction(
             artifact_repository,
             staging_id=request.output_staging_id,
@@ -1339,13 +1384,22 @@ class ControlPlaneService:
                     artifact_repository=artifact_repository,
                 )
                 consume_after_commit(existing_view.artifact)
-                return existing_view
-            preflight = self._prepare_replay_finalization(
-                session,
-                job_id=job_id,
-                request=request,
-                actor=actor,
-            )
+            else:
+                preflight = self._prepare_replay_finalization(
+                    session,
+                    job_id=job_id,
+                    request=request,
+                    actor=actor,
+                )
+
+        if existing_view is not None:
+            self._publish_ready_replay_projection(existing_view.batch.batch_id)
+            refreshed = self.get_replay_finalization(request.ticket_id)
+            if refreshed is None:
+                raise StateConflict("Replay finalization authority disappeared")
+            return refreshed
+        if preflight is None:
+            raise StateConflict("Replay finalization preflight was not established")
 
         attempt = preflight.attempt
         job = attempt.job
@@ -1520,22 +1574,6 @@ class ControlPlaneService:
                     job=locked_job,
                     run_id=locked_run.run_id,
                 )
-                locked_item.state = ReplayItemState.GATED.value
-                self._replay_event(
-                    session,
-                    locked_batch,
-                    "replay.confirmation.gated",
-                    actor,
-                    {
-                        "decisionId": gate_decision.decision_id,
-                        "disposition": gate_decision.disposition.value,
-                        "resultDigest": result_digest,
-                    },
-                    item=locked_item,
-                    ticket=locked_ticket,
-                    job=locked_job,
-                    run_id=locked_run.run_id,
-                )
                 locked_batch.cas_version += 1
                 batch_items = list(
                     session.scalars(
@@ -1545,14 +1583,10 @@ class ControlPlaneService:
                     ).all()
                 )
                 if all(
-                    item_record.state in _TERMINAL_REPLAY_ITEM_STATES for item_record in batch_items
+                    item_record.state == ReplayItemState.VERIFIED.value
+                    for item_record in batch_items
                 ):
                     locked_batch.state = ReplayBatchState.GATING.value
-                    self._claims.refresh_terminal_replay_batch_state(
-                        locked_batch,
-                        batch_items,
-                        now=finalized_at,
-                    )
                 locked_batch.updated_at = finalized_at
                 self._event(
                     session,
@@ -1568,7 +1602,7 @@ class ControlPlaneService:
                 )
                 session.flush()
                 consume_after_commit(self._views.artifact(artifact))
-                return self._views.replay_finalization(
+                committed_view = self._views.replay_finalization(
                     finalization,
                     job=locked_job,
                     batch=locked_batch,
@@ -1576,6 +1610,11 @@ class ControlPlaneService:
                     ticket=locked_ticket,
                     artifact=artifact,
                 )
+            self._publish_ready_replay_projection(committed_view.batch.batch_id)
+            refreshed = self.get_replay_finalization(request.ticket_id)
+            if refreshed is None:
+                raise StateConflict("Replay finalization authority disappeared")
+            return refreshed
         except IntegrityError as exc:
             with self._artifact_commit_transaction(
                 artifact_repository,
@@ -1596,7 +1635,381 @@ class ControlPlaneService:
                     artifact_repository=artifact_repository,
                 )
                 consume_after_commit(existing_view.artifact)
+            self._publish_ready_replay_projection(existing_view.batch.batch_id)
+            refreshed = self.get_replay_finalization(request.ticket_id)
+            if refreshed is None:
+                raise StateConflict("Replay finalization authority disappeared") from exc
+            return refreshed
+
+    def _publish_ready_replay_projection(
+        self,
+        batch_id: str,
+    ) -> ReplayProjectionView | None:
+        """Publish one immutable aggregate projection when every item is verified."""
+
+        artifact_repository = self._require_artifact_repository()
+        with self.repository.transaction() as session:
+            batch = self._records.replay_batch(session, batch_id, lock=True)
+            existing = self._records.replay_projection_for_batch(
+                session,
+                batch_id,
+                lock=True,
+            )
+            if existing is not None:
+                artifact = self._records.artifact(
+                    session,
+                    ArtifactLocator(
+                        artifact_id=existing.artifact_id,
+                        repository_version=existing.repository_version,
+                    ),
+                )
+                existing_view = self._views.replay_projection(
+                    existing,
+                    batch=batch,
+                    artifact=artifact,
+                )
+                existing_storage_key = artifact.storage_key
+                snapshot = None
+            elif batch.state != ReplayBatchState.GATING.value:
+                return None
+            else:
+                snapshot = self._replay_projection_snapshot(session, batch, lock=True)
+                existing_view = None
+                existing_storage_key = None
+
+        if existing_view is not None:
+            assert existing_storage_key is not None
+            self._resolve_managed_artifact(
+                artifact_repository,
+                existing_view.artifact,
+                expected_storage_key=existing_storage_key,
+            )
+            return existing_view
+        if snapshot is None:
+            return None
+
+        source_snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            snapshot.authority.source,
+            expected_storage_key=snapshot.source_storage_key,
+        )
+        output_snapshots = [
+            self._resolve_managed_artifact(
+                artifact_repository,
+                item.output,
+                expected_storage_key=storage_key,
+            )
+            for item, storage_key in zip(
+                snapshot.authority.items,
+                snapshot.output_storage_keys,
+                strict=True,
+            )
+        ]
+        projection_staging_id = f"stage_{uuid4().hex}"
+        try:
+            staged_projection_path = artifact_repository.stage_managed_run_copy(
+                staging_id=projection_staging_id,
+                source=source_snapshot.ref,
+            )
+            apply_confirmed_gate(
+                source_run_path=staged_projection_path,
+                replay_run_paths=[output.path for output in output_snapshots],
+                tickets=_ReplayProjectionTicketVerifier(snapshot.authority),
+                decided_at=snapshot.decided_at,
+            )
+            projection_snapshot = artifact_repository.import_run(
+                staging_id=projection_staging_id,
+                producer_run_id=snapshot.authority.source.producer_run_id,
+                media_type=_SOURCE_ARTIFACT_MEDIA_TYPE,
+                schema_kind=_REPLAY_PROJECTION_ARTIFACT_SCHEMA_KIND,
+                created_by=_REPLAY_PROJECTION_ACTOR,
+            )
+        except (ArtifactRepositoryError, OSError, ValueError) as exc:
+            raise StateConflict("Replay projection failed authoritative derivation") from exc
+
+        admission_digest = replay_context_digest(
+            {
+                "artifact": projection_snapshot.ref.model_dump(mode="json"),
+                "batchId": batch_id,
+                "domain": "pajin.control-plane.replay-projection-admission/v1",
+                "inputAuthorityDigest": snapshot.authority_digest,
+            }
+        )
+        idempotency_key = f"replay-projection:{batch_id}:{snapshot.authority_digest}"
+        with self._projection_artifact_commit_transaction(
+            artifact_repository,
+            staging_id=projection_staging_id,
+            expected_ref=projection_snapshot.ref,
+        ) as (session, consume_after_commit):
+            locked_batch = self._records.replay_batch(session, batch_id, lock=True)
+            existing = self._records.replay_projection_for_batch(
+                session,
+                batch_id,
+                lock=True,
+            )
+            if existing is not None:
+                artifact = self._records.artifact(
+                    session,
+                    ArtifactLocator(
+                        artifact_id=existing.artifact_id,
+                        repository_version=existing.repository_version,
+                    ),
+                )
+                existing_view = self._views.replay_projection(
+                    existing,
+                    batch=locked_batch,
+                    artifact=artifact,
+                )
+                if (
+                    existing_view.input_authority != snapshot.authority
+                    or existing_view.artifact != projection_snapshot.ref
+                ):
+                    raise StateConflict("Replay projection retry differs from publication")
+                consume_after_commit(existing_view.artifact)
                 return existing_view
+
+            current_snapshot = self._replay_projection_snapshot(
+                session,
+                locked_batch,
+                lock=True,
+            )
+            if (
+                locked_batch.state != ReplayBatchState.GATING.value
+                or current_snapshot.authority != snapshot.authority
+                or current_snapshot.authority_digest != snapshot.authority_digest
+                or current_snapshot.source_storage_key != snapshot.source_storage_key
+                or current_snapshot.output_storage_keys != snapshot.output_storage_keys
+            ):
+                raise StateConflict("Replay projection authority changed before publication")
+
+            published_at = utc_now()
+            source_artifact = self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=locked_batch.source_artifact_id,
+                    repository_version=locked_batch.source_repository_version,
+                ),
+            )
+            artifact = self._admit_replay_projection_artifact(
+                session,
+                snapshot=projection_snapshot,
+                source_artifact=source_artifact,
+                idempotency_key=idempotency_key,
+                admission_digest=admission_digest,
+                now=published_at,
+            )
+            projection = ReplayProjectionRecord(
+                projection_id=f"replay-projection_{uuid4().hex}",
+                batch_id=locked_batch.batch_id,
+                source_root_digest=locked_batch.source_root_digest,
+                artifact_id=artifact.artifact_id,
+                repository_version=artifact.repository_version,
+                batch_cas_version=snapshot.authority.batch_cas_version,
+                input_authority=snapshot.authority.model_dump(mode="json", by_alias=True),
+                input_authority_digest=snapshot.authority_digest,
+                published_by=_REPLAY_PROJECTION_ACTOR,
+                published_at=published_at,
+            )
+            session.add(projection)
+
+            locked_batch.state = ReplayBatchState.COMPLETED.value
+            locked_batch.cas_version += 1
+            locked_batch.updated_at = published_at
+            for authority_item in snapshot.authority.items:
+                item = self._records.replay_item(session, authority_item.item_id, lock=True)
+                if item.state != ReplayItemState.VERIFIED.value:
+                    raise StateConflict("Replay item changed before projection publication")
+                ticket = self._records.replay_ticket(
+                    session,
+                    authority_item.ticket_id,
+                    lock=True,
+                )
+                job = self._records.job(session, ticket.job_id, lock=True)
+                item.state = ReplayItemState.GATED.value
+                item.updated_at = published_at
+                self._replay_event(
+                    session,
+                    locked_batch,
+                    "replay.confirmation.gated",
+                    _REPLAY_PROJECTION_ACTOR,
+                    {
+                        "finalizationId": authority_item.finalization_id,
+                        "projectionId": projection.projection_id,
+                        "projectionArtifactId": artifact.artifact_id,
+                        "resultDigest": authority_item.result_digest,
+                    },
+                    item=item,
+                    ticket=ticket,
+                    job=job,
+                    run_id=item.replay_run_id,
+                )
+            self._replay_event(
+                session,
+                locked_batch,
+                "replay.projection.published",
+                _REPLAY_PROJECTION_ACTOR,
+                {
+                    "artifactId": artifact.artifact_id,
+                    "inputAuthorityDigest": snapshot.authority_digest,
+                    "itemCount": len(snapshot.authority.items),
+                    "projectionId": projection.projection_id,
+                    "repositoryVersion": artifact.repository_version,
+                },
+            )
+            session.flush()
+            consume_after_commit(self._views.artifact(artifact))
+            return self._views.replay_projection(
+                projection,
+                batch=locked_batch,
+                artifact=artifact,
+            )
+
+    def _replay_projection_snapshot(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+        *,
+        lock: bool,
+    ) -> _ReplayProjectionSnapshot:
+        if batch.state != ReplayBatchState.GATING.value:
+            raise StateConflict("Replay batch is not ready for projection publication")
+        source_artifact = self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=batch.source_artifact_id,
+                repository_version=batch.source_repository_version,
+            ),
+            lock=lock,
+        )
+        source_ref = self._views.artifact(source_artifact)
+        if source_ref != self._views.replay_batch(batch).source:
+            raise StateConflict("Replay projection source authority is inconsistent")
+
+        item_statement = (
+            select(ReplayItemRecord)
+            .where(ReplayItemRecord.batch_id == batch.batch_id)
+            .order_by(ReplayItemRecord.ordinal, ReplayItemRecord.item_id)
+        )
+        finalization_statement = select(ReplayFinalizationRecord).where(
+            ReplayFinalizationRecord.batch_id == batch.batch_id
+        )
+        if lock:
+            item_statement = item_statement.with_for_update()
+            finalization_statement = finalization_statement.with_for_update()
+        items = list(session.scalars(item_statement).all())
+        finalizations = list(session.scalars(finalization_statement).all())
+        if not items or any(item.state != ReplayItemState.VERIFIED.value for item in items):
+            raise StateConflict("Replay projection requires every item to be verified")
+        finalizations_by_item = {record.item_id: record for record in finalizations}
+        if len(finalizations_by_item) != len(items) or len(finalizations) != len(items):
+            raise StateConflict("Replay projection finalization set is incomplete")
+
+        authority_items: list[ReplayProjectionItemAuthority] = []
+        output_storage_keys: list[str] = []
+        for item in items:
+            finalization = finalizations_by_item.get(item.item_id)
+            if finalization is None:
+                raise StateConflict("Replay projection item has no finalization")
+            ticket = self._records.replay_ticket(session, finalization.ticket_id, lock=lock)
+            output_artifact = self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=finalization.artifact_id,
+                    repository_version=finalization.repository_version,
+                ),
+                lock=lock,
+            )
+            output_ref = self._views.artifact(output_artifact)
+            if not (
+                finalization.batch_id == batch.batch_id
+                and finalization.item_id == item.item_id
+                and finalization.replay_run_id == item.replay_run_id
+                and ticket.item_id == item.item_id
+                and ticket.batch_id == batch.batch_id
+                and ticket.state == ReplayTicketState.FINALIZED.value
+                and ticket.result_digest == finalization.result_digest
+                and output_ref.run_id == item.replay_run_id
+            ):
+                raise StateConflict("Replay projection finalization graph is inconsistent")
+            authority_items.append(
+                ReplayProjectionItemAuthority(
+                    ordinal=item.ordinal,
+                    item_id=item.item_id,
+                    ticket_id=ticket.ticket_id,
+                    finalization_id=finalization.finalization_id,
+                    replay_run_id=item.replay_run_id,
+                    compilation_digest=item.compilation_digest,
+                    output=output_ref,
+                    artifact_set_digest=finalization.artifact_set_digest,
+                    receipt_seal_root_digest=finalization.receipt_seal_root_digest,
+                    gate_decision_digest=finalization.gate_decision_digest,
+                    result_digest=finalization.result_digest,
+                    finalized_at=_aware(finalization.finalized_at),
+                )
+            )
+            output_storage_keys.append(output_artifact.storage_key)
+
+        authority = ReplayProjectionInputAuthority(
+            batch_id=batch.batch_id,
+            source=source_ref,
+            batch_cas_version=batch.cas_version,
+            items=authority_items,
+        )
+        return _ReplayProjectionSnapshot(
+            authority=authority,
+            authority_digest=replay_context_digest(
+                authority.model_dump(mode="json", by_alias=True)
+            ),
+            source_storage_key=source_artifact.storage_key,
+            output_storage_keys=tuple(output_storage_keys),
+            decided_at=_aware(batch.updated_at),
+        )
+
+    @staticmethod
+    def _admit_replay_projection_artifact(
+        session: Session,
+        *,
+        snapshot: ManagedArtifactSnapshot,
+        source_artifact: ArtifactRecord,
+        idempotency_key: str,
+        admission_digest: str,
+        now: datetime,
+    ) -> ArtifactRecord:
+        ref = snapshot.ref
+        existing = session.scalar(
+            select(ArtifactRecord).where(ArtifactRecord.idempotency_key == idempotency_key)
+        )
+        if existing is None:
+            artifact = ArtifactRecord(
+                artifact_id=ref.artifact_id,
+                repository_version=ref.repository_version,
+                producer_run_id=ref.producer_run_id,
+                producer_job_id=source_artifact.producer_job_id,
+                producer_attempt=source_artifact.producer_attempt,
+                sealed_run_id=ref.run_id,
+                media_type=ref.media_type,
+                schema_kind=ref.schema_kind,
+                byte_length=ref.byte_length,
+                content_digest=ref.content_digest,
+                root_digest=ref.integrity_root_digest,
+                created_by=ref.created_by,
+                storage_key=snapshot.storage_key,
+                idempotency_key=idempotency_key,
+                admission_digest=admission_digest,
+                created_at=now,
+            )
+            session.add(artifact)
+            session.flush()
+            return artifact
+        if not (
+            ControlPlaneViewMapper.artifact(existing) == ref
+            and existing.storage_key == snapshot.storage_key
+            and existing.admission_digest == admission_digest
+            and existing.producer_job_id == source_artifact.producer_job_id
+            and existing.producer_attempt == source_artifact.producer_attempt
+        ):
+            raise StateConflict("Replay projection Artifact authority is already different")
+        return existing
 
     def heartbeat(self, job_id: str, request: LeaseRequest, *, actor: str) -> JobView:
         return self._claims.heartbeat(job_id, request, actor=actor)
@@ -2240,6 +2653,32 @@ class ControlPlaneService:
             self.repository.transaction() as session,
         ):
             yield session, consume_after_commit
+
+    @contextmanager
+    def _projection_artifact_commit_transaction(
+        self,
+        repository: ManagedArtifactRepository,
+        *,
+        staging_id: str,
+        expected_ref: ArtifactRef,
+    ) -> Iterator[tuple[Session, Callable[[ArtifactRef], None]]]:
+        """Discard server-owned projection staging after a rejected CAS commit."""
+
+        try:
+            with self._artifact_commit_transaction(
+                repository,
+                staging_id=staging_id,
+            ) as transaction:
+                yield transaction
+        except BaseException:
+            # Preserve the authoritative database/CAS failure. A failed cleanup
+            # leaves only an opaque server staging directory, never publication.
+            with suppress(ArtifactRepositoryError):
+                repository.consume_staged_run(
+                    staging_id=staging_id,
+                    expected_ref=expected_ref,
+                )
+            raise
 
     def _reconfirm_source_artifact_admission(
         self,

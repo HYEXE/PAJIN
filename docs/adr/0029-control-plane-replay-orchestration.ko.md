@@ -4,7 +4,7 @@
 
 - 상태: 승인됨
 - 날짜: 2026-07-17
-- 구현 최신화: 2026-07-19 (전용 exact-KISA executor와 schema-v9 서버 finalization)
+- 구현 최신화: 2026-07-22 (schema-v11 multi-item versioned projection 발행)
 - 범위: M6-07B Control Plane 수직 조각
 - 확장 대상: [ADR 0011](0011-durable-control-plane.ko.md), [ADR 0012](0012-lease-aware-worker-daemon.ko.md)
 - 의존 문서: [ADR 0024](0024-cooperative-execution-cancellation.ko.md), [ADR 0027](0027-independent-reproduction-confirmation-boundary.ko.md), [ADR 0028](0028-durable-local-replay-ticket-ledger.ko.md)
@@ -92,8 +92,10 @@ verdict를 제출하지 않는다. 서버는 sealed output을 import해 다시 �
 source/compilation/ticket/permit lineage를 검증하며 ADR 0027 공통 Gate를 파생한 뒤 finalization과
 terminal authority state를 원자적으로 commit한다. Compose도 이 daemon과 owner-only staging handoff를
 활성화한다. 2026-07-21에는 opaque public source/batch admission, 역할 기반 상태 조회 API와 자동
-fresh-identity retry 발행도 추가했다. Negative Control Plane retest와 multi-host/object-store handoff는
-아직 남아 있다.
+fresh-identity retry 발행도 추가했다. 2026-07-22 schema-v11 조각은 append-only
+`cp_replay_projections`, 서버 소유 copy-on-project materialization, DB lock 밖의 aggregate receipt
+재검증, 최종 source-root/batch-CAS/정렬된 finalization 집합 commit과 역할 기반 projection 조회를
+추가했다. Negative Control Plane retest와 multi-host/object-store handoff는 아직 남아 있다.
 
 ## 맥락
 
@@ -471,10 +473,10 @@ attempt를 만든다.
 
 ### 소스 루트 CAS 확인 Gate
 
-구현된 one-item 수직 조각은 새로 reload한 source와 output을 finalization할 때 pure ADR 0027 공통
-Gate를 호출하고 결정을 `cp_replay_finalizations`에 저장한다. Item을 `gated`로, terminal one-item
-batch를 `completed`로 원자적으로 전이한다. 아래의 더 넓은 multi-item versioned projection publish
-설계는 intended extension이며 이 첫 조각이 구현했다고 주장하지 않는다.
+각 finalization은 새로 reload한 source와 output에 pure ADR 0027 공통 Gate를 호출하고 서버 파생
+결정을 `cp_replay_finalizations`에 저장한다. Item은 `verified`에 머문다. 모든 item이 verified가 되면
+batch가 `gating`에 진입하고 schema-v11 publisher가 아래 multi-item versioned projection 흐름을
+실행한다. one-item batch도 같은 aggregate 경로를 사용한다.
 
 Worker는 confirmation Gate를 실행하거나 `confirmed`를 제출하지 않는다. 모든 required item이
 exact finalized receipt를 가진 뒤 Control Plane authority가 Gate를 수행한다.
@@ -490,7 +492,9 @@ exact finalized receipt를 가진 뒤 Control Plane authority가 Gate를 수행�
    reference를 기록한다.
 
 source가 다른 object/version/root로 치환되었거나 item set, ticket finalization, cancellation 또는
-policy state가 달라졌다면 compare-and-set은 실패하고 confirmation projection을 publish하지 않는다.
+policy state가 달라졌다면 compare-and-set은 실패하고 projection의 Control Plane authority를
+publish하지 않는다. 새 snapshot의 Gate retry는 전체 검증을 다시 수행한다. 이미 발행된 exact input
+집합의 retry는 기존 immutable projection을 다시 열어 멱등하게 반환하며 sealed source를 수정하지 않는다.
 Gate retry는 새 snapshot에서 전체 verification을 다시 수행한다. 이미 completed인 exact
 `result_digest`의 Gate retry만 idempotent하며, 기존 sealed source를 재해석하거나 수정하지 않는다.
 
@@ -576,9 +580,9 @@ service attachment를 분리하지만 outbound deny 경계는 아니므로 produ
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
 현재 구현 조각은 전용 exact-KISA Worker, 호출별 durable permit seam, twice-sealed opaque staging
-handoff, schema-v9 server-derived Artifact finalization과 one-item 공통 Gate, opaque public
-admission/read API, permit 0개 자동 fresh-identity retry issuance까지 구현됐다. Multi-item versioned
-projection publication과 negative Control Plane retest는 후속 exit criteria다. Permit은 bearer
+handoff, schema-v9 server-derived Artifact finalization, schema-v11 multi-item versioned projection
+publication, opaque public admission/read API, permit 0개 자동 fresh-identity retry issuance까지
+구현됐다. Negative Control Plane retest는 후속 exit criteria다. Permit은 bearer
 credential이 아니므로 별도 redeem mutation을 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
@@ -602,11 +606,11 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## 승인 및 검증
 
-2026-07-21 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
+2026-07-22 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
 context, 전용 Worker transport/execution, opaque staging, schema-v9 server-derived finalization, exact
-response-loss idempotency, permit 0개 자동 fresh-identity retry와 one-item 공통 Gate가 첫 complete
-positive-confirmation 실행 조각을 구성한다. Multi-item projection publication과 negative Control Plane
-retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
+response-loss idempotency, permit 0개 자동 fresh-identity retry와 schema-v11 multi-item versioned
+projection publisher가 positive-confirmation 실행 경로를 구성한다. Negative Control Plane retest는
+더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 

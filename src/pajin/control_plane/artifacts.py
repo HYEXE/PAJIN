@@ -1038,6 +1038,50 @@ class ManagedArtifactRepository:
         self._fsync_directory(destination, label="reserved staging directory")
         self._fsync_directory(self.staging_root, label="staging root")
 
+    def stage_managed_run_copy(self, *, staging_id: str, source: ArtifactRef) -> Path:
+        """Atomically stage a private mutable copy of one verified managed Run.
+
+        This server-only path is used to derive a new immutable Artifact without
+        ever extending the admitted source object in place.
+        """
+
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            raise ArtifactRepositoryError(
+                "durable artifact staging requires POSIX directory fsync support"
+            )
+        self._require_repository_layout()
+        self._require_directory(self.staging_root, label="staging root")
+        self._require_private_owner_directory(self.staging_root, label="staging root")
+        self._validate_staging_id(staging_id)
+        snapshot = self.resolve(source)
+        destination = self.staging_root / staging_id
+        if self._lexists(destination):
+            raise ArtifactConflict("projection staging capability already exists")
+
+        temporary_root = Path(mkdtemp(prefix=".managed-copy-", dir=self.staging_root))
+        copied_run = temporary_root / "run"
+        copied_run.mkdir(mode=0o700)
+        try:
+            copied_tree = self._scan_tree(snapshot.path, copy_to=copied_run)
+            if (
+                copied_tree.byte_length != source.byte_length
+                or copied_tree.digest != source.content_digest
+            ):
+                raise ArtifactValidationError("managed source changed while being copied")
+            self._verify_managed_run_integrity(copied_run, ref=source)
+            if self._scan_tree(copied_run) != copied_tree:
+                raise ArtifactValidationError("staged managed copy changed during verification")
+            try:
+                os.rename(copied_run, destination)
+            except OSError as exc:
+                raise ArtifactRepositoryError("managed copy staging publish failed") from exc
+            self._fsync_directory(destination, label="staged managed Run copy")
+            self._fsync_directory(self.staging_root, label="staging root")
+            return destination
+        finally:
+            if self._lexists(temporary_root):
+                shutil.rmtree(temporary_root)
+
     def release_staging_reservation(self, staging_id: str) -> bool:
         """Remove one empty staging reservation without deleting Worker output.
 

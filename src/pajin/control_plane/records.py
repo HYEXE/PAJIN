@@ -13,6 +13,7 @@ from pajin.control_plane.database import (
     ReplayBatchRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
+    ReplayProjectionRecord,
     ReplayTicketRecord,
     RunRecord,
 )
@@ -142,6 +143,20 @@ class ControlPlaneRecords:
     ) -> ReplayFinalizationRecord | None:
         statement = select(ReplayFinalizationRecord).where(
             ReplayFinalizationRecord.ticket_id == ticket_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return session.scalar(statement)
+
+    @staticmethod
+    def replay_projection_for_batch(
+        session: Session,
+        batch_id: str,
+        *,
+        lock: bool = False,
+    ) -> ReplayProjectionRecord | None:
+        statement = select(ReplayProjectionRecord).where(
+            ReplayProjectionRecord.batch_id == batch_id
         )
         if lock:
             statement = statement.with_for_update()

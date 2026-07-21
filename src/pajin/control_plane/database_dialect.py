@@ -1291,6 +1291,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_replay_events": "replay_event",
     "cp_replay_tool_permits": "replay_tool_permit",
     "cp_replay_finalizations": "replay_finalization",
+    "cp_replay_projections": "replay_projection",
 }
 
 
