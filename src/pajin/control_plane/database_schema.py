@@ -1808,8 +1808,8 @@ def _build_v7_metadata() -> MetaData:
 _V7_METADATA = _build_v7_metadata()
 
 
-def _install_parser_safe_current_checks() -> None:
-    """Keep frozen v1-v8 metadata exact while making fresh v9 DDL parser-safe."""
+def _install_parser_safe_checks(metadata: MetaData) -> None:
+    """Install equivalent character checks with bounded SQLite parser depth."""
 
     replacements = {
         "ck_cp_artifacts_sealed_run_id": (
@@ -1868,13 +1868,26 @@ def _install_parser_safe_current_checks() -> None:
         ),
     }
     for table_name in ("cp_artifacts", "cp_replay_execution_contexts"):
-        for constraint in Base.metadata.tables[table_name].constraints:
+        table = metadata.tables.get(table_name)
+        if table is None:
+            continue
+        for constraint in table.constraints:
             replacement = replacements.get(str(constraint.name))
             if replacement is not None and isinstance(constraint, CheckConstraint):
                 constraint.sqltext = text(replacement)
 
 
-_install_parser_safe_current_checks()
+def _parser_safe_metadata_copy(metadata: MetaData) -> MetaData:
+    """Copy historical metadata without emitting parser-deep SQLite checks."""
+
+    parser_safe = MetaData()
+    for table in metadata.sorted_tables:
+        table.to_metadata(parser_safe)
+    _install_parser_safe_checks(parser_safe)
+    return parser_safe
+
+
+_install_parser_safe_checks(Base.metadata)
 
 
 class ReplayFinalizationRecord(Base):

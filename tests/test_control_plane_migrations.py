@@ -158,8 +158,9 @@ def _create_legacy_schema(repository: ControlPlaneRepository) -> None:
 
 def _create_v2_schema(repository: ControlPlaneRepository) -> None:
     pending = set(V2_CONTROL_PLANE_TABLES)
+    parser_safe_metadata = database_schema._parser_safe_metadata_copy(_V2_METADATA)
     with repository.engine.begin() as connection:
-        for table in _V2_METADATA.sorted_tables:
+        for table in parser_safe_metadata.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -194,8 +195,9 @@ def _create_v2_schema(repository: ControlPlaneRepository) -> None:
 
 def _create_v3_schema(repository: ControlPlaneRepository) -> None:
     pending = set(V3_CONTROL_PLANE_TABLES)
+    parser_safe_metadata = database_schema._parser_safe_metadata_copy(_V3_METADATA)
     with repository.engine.begin() as connection:
-        for table in _V3_METADATA.sorted_tables:
+        for table in parser_safe_metadata.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -235,8 +237,9 @@ def _create_v3_schema(repository: ControlPlaneRepository) -> None:
 
 def _create_v4_schema(repository: ControlPlaneRepository) -> None:
     pending = set(V4_CONTROL_PLANE_TABLES)
+    parser_safe_metadata = database_schema._parser_safe_metadata_copy(_V4_METADATA)
     with repository.engine.begin() as connection:
-        for table in _V4_METADATA.sorted_tables:
+        for table in parser_safe_metadata.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -286,8 +289,9 @@ def _create_v4_schema(repository: ControlPlaneRepository) -> None:
 
 def _create_v5_schema(repository: ControlPlaneRepository) -> None:
     pending = set(V5_CONTROL_PLANE_TABLES)
+    parser_safe_metadata = database_schema._parser_safe_metadata_copy(_V5_METADATA)
     with repository.engine.begin() as connection:
-        for table in _V5_METADATA.sorted_tables:
+        for table in parser_safe_metadata.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)
@@ -329,8 +333,9 @@ def _create_v5_schema(repository: ControlPlaneRepository) -> None:
 
 def _create_v6_schema(repository: ControlPlaneRepository) -> None:
     pending = set(V6_CONTROL_PLANE_TABLES)
+    parser_safe_metadata = database_schema._parser_safe_metadata_copy(_V6_METADATA)
     with repository.engine.begin() as connection:
-        for table in _V6_METADATA.sorted_tables:
+        for table in parser_safe_metadata.sorted_tables:
             if table.name in pending:
                 table.create(connection, checkfirst=False)
                 pending.remove(table.name)

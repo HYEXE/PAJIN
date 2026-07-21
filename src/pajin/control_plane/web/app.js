@@ -1071,8 +1071,9 @@ elements.previousPage.addEventListener("click", () => {
 elements.nextPage.addEventListener("click", () => {
   if (session.offset + session.pageItems < session.total) {
     session.offset += PAGE_SIZE;
-    refreshCurrent();
+    return refreshCurrent();
   }
+  return undefined;
 });
 elements.autoRefresh.addEventListener("change", () => {
   const enabled = elements.autoRefresh.checked;
