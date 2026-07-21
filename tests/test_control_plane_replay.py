@@ -117,6 +117,8 @@ from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
 from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
 
 OPERATOR_TOKEN = "replay-operator-token-that-is-long-and-distinct"
+APPROVER_TOKEN = "replay-approver-token-that-is-long-and-distinct"
+AUDITOR_TOKEN = "replay-auditor-token-that-is-long-and-distinct"
 WORKER_TOKEN = "replay-worker-token-that-is-long-and-distinct"
 OTHER_WORKER_TOKEN = "other-replay-worker-token-that-is-long-and-distinct"
 EXECUTOR_PROFILE = "kisa-exact-v1"
@@ -415,6 +417,21 @@ def _seed_completed_source(
     *,
     item_count: int = 1,
 ) -> ArtifactRef:
+    request = _stage_completed_source(repository, suffix, item_count=item_count)
+    return service.admit_source_artifact(
+        request,
+        actor="trusted-source-admission",
+    )
+
+
+def _stage_completed_source(
+    repository: ControlPlaneRepository,
+    suffix: str,
+    *,
+    item_count: int = 1,
+) -> AdmitSourceArtifactRequest:
+    """Create one server-staged, completed producer fixture without admitting it."""
+
     identity = sha256(suffix.encode()).hexdigest()
     run_id = f"run_{identity[:32]}"
     job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
@@ -479,14 +496,11 @@ def _seed_completed_source(
                 updated_at=now,
             )
         )
-    return service.admit_source_artifact(
-        AdmitSourceArtifactRequest(
-            staging_id=stage_id,
-            producer_run_id=run_id,
-            producer_job_id=job_id,
-            idempotency_key=f"artifact-admission-{suffix}",
-        ),
-        actor="trusted-source-admission",
+    return AdmitSourceArtifactRequest(
+        staging_id=stage_id,
+        producer_run_id=run_id,
+        producer_job_id=job_id,
+        idempotency_key=f"artifact-admission-{suffix}",
     )
 
 
@@ -705,7 +719,7 @@ def test_artifact_admission_and_batch_fail_closed_without_managed_repository(
 
 
 @pytest.mark.parametrize("job_kind", ["replay", InternalJobKind.REPLAY.value])
-def test_public_api_rejects_replay_submission_and_exposes_only_internal_worker_routes(
+def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_routes(
     tmp_path: Path,
     job_kind: str,
 ) -> None:
@@ -733,7 +747,14 @@ def test_public_api_rejects_replay_submission_and_exposes_only_internal_worker_r
         )
         assert generic_claim.status_code == 422
         paths = app.openapi()["paths"]
-        assert all(not path.startswith("/v1/replay") for path in paths)
+        assert {path for path in paths if path.startswith("/v1/replay")} == {
+            "/v1/replay/source-artifacts",
+            "/v1/replay/batches",
+            "/v1/replay/batches/{batch_id}",
+            "/v1/replay/items/{item_id}",
+            "/v1/replay/tickets/{ticket_id}",
+            "/v1/replay/tickets/{ticket_id}/finalization",
+        }
         assert set(path for path in paths if path.startswith("/v1/worker/replay/")) == {
             "/v1/worker/replay/jobs/claim",
             "/v1/worker/replay/jobs/{job_id}/heartbeat",
@@ -745,6 +766,175 @@ def test_public_api_rejects_replay_submission_and_exposes_only_internal_worker_r
             assert session.scalar(select(func.count()).select_from(RunRecord)) == 0
             assert session.scalar(select(func.count()).select_from(JobRecord)) == 0
             assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 0
+
+
+def test_public_replay_admission_and_reads_are_opaque_role_scoped_and_idempotent(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "public-replay-admission.db"
+    staging_root, artifact_root = _artifact_roots(database_path)
+    base = _settings(database_path)
+    settings = replace(
+        base,
+        credentials={
+            **base.credentials,
+            APPROVER_TOKEN: Principal(
+                subject="replay-approver",
+                roles=frozenset({PrincipalRole.APPROVER}),
+            ),
+            AUDITOR_TOKEN: Principal(
+                subject="replay-auditor",
+                roles=frozenset({PrincipalRole.AUDITOR}),
+            ),
+        },
+        artifact_staging_root=staging_root,
+        artifact_repository_root=artifact_root,
+    )
+    app = create_app(settings)
+
+    with TestClient(app) as client:
+        admission_request = _stage_completed_source(
+            app.state.repository,
+            "public-replay-admission",
+        )
+        admission_body = admission_request.model_dump(mode="json")
+        admitted = client.post(
+            "/v1/replay/source-artifacts",
+            headers=_auth(OPERATOR_TOKEN),
+            json=admission_body,
+        )
+        repeated_admission = client.post(
+            "/v1/replay/source-artifacts",
+            headers=_auth(OPERATOR_TOKEN),
+            json=admission_body,
+        )
+        rejected_worker_admission = client.post(
+            "/v1/replay/source-artifacts",
+            headers=_auth(WORKER_TOKEN),
+            json=admission_body,
+        )
+        rejected_auditor_admission = client.post(
+            "/v1/replay/source-artifacts",
+            headers=_auth(AUDITOR_TOKEN),
+            json=admission_body,
+        )
+        injected_admission = client.post(
+            "/v1/replay/source-artifacts",
+            headers=_auth(OPERATOR_TOKEN),
+            json={**admission_body, "runPath": "/tmp/untrusted"},
+        )
+
+        assert admitted.status_code == 200, admitted.text
+        assert repeated_admission.status_code == 200
+        assert repeated_admission.json() == admitted.json()
+        assert rejected_worker_admission.status_code == 403
+        assert rejected_auditor_admission.status_code == 403
+        assert injected_admission.status_code == 422
+        serialized_admission = admitted.text
+        assert admission_request.staging_id not in serialized_admission
+        assert "runPath" not in serialized_admission
+        assert "storageKey" not in serialized_admission
+
+        source = ArtifactRef.model_validate(admitted.json())
+        batch_request = CreateReplayBatchRequest(
+            source=ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            ),
+            idempotency_key="public-replay-batch-admission",
+        )
+        batch_body = batch_request.model_dump(mode="json")
+        created = client.post(
+            "/v1/replay/batches",
+            headers=_auth(OPERATOR_TOKEN),
+            json=batch_body,
+        )
+        repeated_batch = client.post(
+            "/v1/replay/batches",
+            headers=_auth(OPERATOR_TOKEN),
+            json=batch_body,
+        )
+        injected_batch = client.post(
+            "/v1/replay/batches",
+            headers=_auth(OPERATOR_TOKEN),
+            json={
+                **batch_body,
+                "candidate": {"id": "caller-authored"},
+                "target": "https://attacker.invalid",
+            },
+        )
+        rejected_auditor_batch = client.post(
+            "/v1/replay/batches",
+            headers=_auth(AUDITOR_TOKEN),
+            json=batch_body,
+        )
+
+        assert created.status_code == 200, created.text
+        assert repeated_batch.status_code == 200
+        assert repeated_batch.json() == created.json()
+        assert created.json()["state"] == ReplayBatchState.PLANNED.value
+        assert created.json()["created_by"] == "replay-operator"
+        assert injected_batch.status_code == 422
+        assert rejected_auditor_batch.status_code == 403
+
+        batch_id = created.json()["batch_id"]
+        operator_read = client.get(
+            f"/v1/replay/batches/{batch_id}",
+            headers=_auth(OPERATOR_TOKEN),
+        )
+        auditor_read = client.get(
+            f"/v1/replay/batches/{batch_id}",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+        approver_read = client.get(
+            f"/v1/replay/batches/{batch_id}",
+            headers=_auth(APPROVER_TOKEN),
+        )
+        worker_read = client.get(
+            f"/v1/replay/batches/{batch_id}",
+            headers=_auth(WORKER_TOKEN),
+        )
+        assert operator_read.status_code == 200
+        assert auditor_read.status_code == 200
+        assert approver_read.status_code == 200
+        assert approver_read.json() == auditor_read.json() == operator_read.json() == created.json()
+        assert worker_read.status_code == 403
+
+        issued = app.state.control_plane.issue_replay_batch(
+            batch_id,
+            actor="trusted-replay-issuer",
+        )
+        item = issued.items[0]
+        ticket = issued.tickets[0]
+        item_read = client.get(
+            f"/v1/replay/items/{item.item_id}",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+        ticket_read = client.get(
+            f"/v1/replay/tickets/{ticket.ticket_id}",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+        pending_finalization = client.get(
+            f"/v1/replay/tickets/{ticket.ticket_id}/finalization",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+        unknown_ticket = client.get(
+            f"/v1/replay/tickets/replay-ticket_{'f' * 32}",
+            headers=_auth(AUDITOR_TOKEN),
+        )
+
+        assert item_read.status_code == 200
+        assert item_read.json() == item.model_dump(mode="json")
+        assert ticket_read.status_code == 200
+        assert ticket_read.json() == ticket.model_dump(mode="json")
+        assert "lease_token" not in ticket_read.text
+        assert pending_finalization.status_code == 200
+        assert pending_finalization.json() is None
+        assert unknown_ticket.status_code == 404
+
+        with app.state.repository.read_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ArtifactRecord)) == 1
+            assert session.scalar(select(func.count()).select_from(ReplayBatchRecord)) == 1
 
 
 def test_internal_replay_http_transport_is_worker_only_exact_and_idempotent(
@@ -3120,6 +3310,13 @@ def test_expired_replay_lease_keeps_issued_permit_consumed_and_releases_only_rem
         )
         assert service.get_replay_item(claimed.item.item_id).state is ReplayItemState.FAILED
         assert service.get_replay_batch(claimed.batch.batch_id).state is ReplayBatchState.FAILED
+        assert (
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replacement-worker",
+            )
+            is None
+        )
         with repository.transaction() as session:
             permits = list(session.scalars(select(ReplayToolPermitRecord)))
             budget_account = session.scalar(select(ReplayBudgetAccountRecord))
@@ -3151,6 +3348,15 @@ def test_expired_replay_lease_keeps_issued_permit_consumed_and_releases_only_rem
             assert terminal_event.payload["retryPending"] is False
             assert terminal_event.payload["issuedPermitCount"] == 1
             assert terminal_event.payload["sideEffectsUncertain"] is True
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                == 1
+            )
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
     finally:
         repository.close()
 
@@ -3639,13 +3845,23 @@ def test_replay_expiry_prelocks_complete_capacity_graph_in_global_order() -> Non
     assert all(statement.endswith("FOR UPDATE") for statement in statements[2:])
 
 
-def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_fail(
+def test_expired_replay_claim_gets_fresh_retry_and_stale_mutations_fail(
     tmp_path: Path,
 ) -> None:
-    repository, service = _service(tmp_path / "expiry.db")
+    database_path = tmp_path / "expiry.db"
+    repository, service = _service(database_path)
     try:
-        _create_batch(repository, service, "expiry", required_attempts=2, max_attempts=3)
+        _create_batch(
+            repository,
+            service,
+            "expiry",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
         claimed = _claim(service, actor="expired-worker")
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        prior_staging = staging_root / claimed.execution_context.output_staging_id
+        assert prior_staging.is_dir()
         expired_at = datetime.now(UTC) - timedelta(seconds=1)
         with repository.transaction() as session:
             session.execute(
@@ -3670,13 +3886,30 @@ def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_f
             ReplayItemState.RETRY_PENDING
         )
         assert service.get_replay_batch(claimed.batch.batch_id).state is (ReplayBatchState.RUNNING)
-        assert (
-            service.claim_replay_job(
-                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
-                actor="replacement-worker",
-            )
-            is None
+        replacement = service.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+            actor="replacement-worker",
         )
+        assert replacement is not None
+        assert replacement.item.item_id == claimed.item.item_id
+        assert replacement.item.candidate_id == claimed.item.candidate_id
+        assert replacement.item.candidate_digest == claimed.item.candidate_digest
+        assert replacement.item.contract_digest == claimed.item.contract_digest
+        assert replacement.item.attempts == replacement.ticket.attempt == 2
+        assert replacement.ticket.fencing_value == 2
+        assert replacement.job.job_id != claimed.job.job_id
+        assert replacement.job.run_id != claimed.job.run_id
+        assert replacement.ticket.ticket_id != claimed.ticket.ticket_id
+        assert replacement.ticket.compilation_id != claimed.ticket.compilation_id
+        assert replacement.item.compilation_digest != claimed.item.compilation_digest
+        assert replacement.item.grant_digest != claimed.item.grant_digest
+        assert replacement.execution_context.context_id != claimed.execution_context.context_id
+        assert (
+            replacement.execution_context.output_staging_id
+            != claimed.execution_context.output_staging_id
+        )
+        assert not prior_staging.exists()
+        assert (staging_root / replacement.execution_context.output_staging_id).is_dir()
 
         stale = ReplayLeaseRequest(
             executor_profile=EXECUTOR_PROFILE,
@@ -3702,6 +3935,257 @@ def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_f
             )
 
         with repository.transaction() as session:
+            jobs = list(
+                session.scalars(
+                    select(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                    .order_by(JobRecord.created_at, JobRecord.job_id)
+                ).all()
+            )
+            tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord).order_by(ReplayTicketRecord.attempt_number)
+                ).all()
+            )
+            budget_reservations = list(
+                session.scalars(
+                    select(ReplayBudgetReservationRecord).order_by(
+                        ReplayBudgetReservationRecord.attempt_number
+                    )
+                ).all()
+            )
+            rate_reservations = list(
+                session.scalars(
+                    select(ReplayRateReservationRecord).order_by(
+                        ReplayRateReservationRecord.attempt_number
+                    )
+                ).all()
+            )
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            events = list(
+                session.scalars(
+                    select(ReplayEventRecord)
+                    .where(ReplayEventRecord.batch_id == claimed.batch.batch_id)
+                    .order_by(ReplayEventRecord.sequence)
+                ).all()
+            )
+            assert len(jobs) == len(tickets) == 2
+            assert [ticket.attempt_number for ticket in tickets] == [1, 2]
+            assert [ticket.fencing_value for ticket in tickets] == [1, 2]
+            assert [reservation.state for reservation in budget_reservations] == [
+                "released",
+                "active",
+            ]
+            assert [reservation.state for reservation in rate_reservations] == [
+                "released",
+                "active",
+            ]
+            assert budget_account is not None
+            assert budget_account.reserved_calls == budget_reservations[1].total_calls
+            assert budget_account.consumed_calls == 0
+            assert budget_account.released_calls == budget_reservations[0].total_calls
+            assert [event.sequence for event in events] == list(range(1, len(events) + 1))
+            assert sum(event.event_type == "replay.retry-issued" for event in events) == 1
+    finally:
+        repository.close()
+
+
+def test_replay_retry_mints_fresh_authority_until_max_attempts(tmp_path: Path) -> None:
+    database_path = tmp_path / "retry-max-attempts.db"
+    repository, service = _service(database_path)
+    try:
+        _create_batch(
+            repository,
+            service,
+            "retry-max-attempts",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claims = [_claim(service, actor="expired-worker")]
+        for expected_attempt in (2, 3):
+            previous = claims[-1]
+            _force_replay_lease_expired(
+                repository,
+                job_id=previous.job.job_id,
+                ticket_id=previous.ticket.ticket_id,
+            )
+            assert service.requeue_expired(actor="lease-reaper") == 1
+            current = _claim(service, actor="replacement-worker")
+            assert current.ticket.attempt == current.item.attempts == expected_attempt
+            assert current.ticket.fencing_value == expected_attempt
+            assert current.item.item_id == previous.item.item_id
+            assert current.item.candidate_digest == previous.item.candidate_digest
+            assert current.item.contract_digest == previous.item.contract_digest
+            claims.append(current)
+
+        final_attempt = claims[-1]
+        _force_replay_lease_expired(
+            repository,
+            job_id=final_attempt.job.job_id,
+            ticket_id=final_attempt.ticket.ticket_id,
+        )
+        assert service.requeue_expired(actor="lease-reaper") == 1
+        assert service.get_replay_item(final_attempt.item.item_id).state is ReplayItemState.FAILED
+        assert service.get_replay_batch(final_attempt.batch.batch_id).state is (
+            ReplayBatchState.FAILED
+        )
+        assert (
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replacement-worker",
+            )
+            is None
+        )
+
+        assert len({claim.job.job_id for claim in claims}) == 3
+        assert len({claim.job.run_id for claim in claims}) == 3
+        assert len({claim.ticket.ticket_id for claim in claims}) == 3
+        assert len({claim.ticket.compilation_id for claim in claims}) == 3
+        assert len({claim.execution_context.context_id for claim in claims}) == 3
+        assert len({claim.execution_context.output_staging_id for claim in claims}) == 3
+        assert len({claim.item.compilation_digest for claim in claims}) == 3
+        assert len({claim.item.grant_digest for claim in claims}) == 3
+
+        with repository.transaction() as session:
+            tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord).order_by(ReplayTicketRecord.attempt_number)
+                ).all()
+            )
+            jobs = list(
+                session.scalars(
+                    select(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                    .order_by(JobRecord.created_at, JobRecord.job_id)
+                ).all()
+            )
+            contexts = list(session.scalars(select(ReplayExecutionContextRecord)).all())
+            budget_reservations = list(
+                session.scalars(
+                    select(ReplayBudgetReservationRecord).order_by(
+                        ReplayBudgetReservationRecord.attempt_number
+                    )
+                ).all()
+            )
+            rate_reservations = list(
+                session.scalars(
+                    select(ReplayRateReservationRecord).order_by(
+                        ReplayRateReservationRecord.attempt_number
+                    )
+                ).all()
+            )
+            retry_events = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(ReplayEventRecord.event_type == "replay.retry-issued")
+                )
+                or 0
+            )
+            assert len(tickets) == len(jobs) == len(contexts) == 3
+            assert [ticket.attempt_number for ticket in tickets] == [1, 2, 3]
+            assert [ticket.fencing_value for ticket in tickets] == [1, 2, 3]
+            assert {ticket.state for ticket in tickets} == {ReplayTicketState.ABANDONED.value}
+            assert [reservation.state for reservation in budget_reservations] == [
+                "released",
+                "released",
+                "released",
+            ]
+            assert [reservation.state for reservation in rate_reservations] == [
+                "released",
+                "released",
+                "released",
+            ]
+            assert retry_events == 2
+    finally:
+        repository.close()
+
+
+def test_replay_retry_rejects_abandoned_staging_that_contains_output(tmp_path: Path) -> None:
+    database_path = tmp_path / "retry-staging-output.db"
+    repository, service = _service(database_path)
+    try:
+        _create_batch(
+            repository,
+            service,
+            "retry-staging-output",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        first = _claim(service, actor="expired-worker")
+        _force_replay_lease_expired(
+            repository,
+            job_id=first.job.job_id,
+            ticket_id=first.ticket.ticket_id,
+        )
+        assert service.requeue_expired(actor="lease-reaper") == 1
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        old_staging = staging_root / first.execution_context.output_staging_id
+        unexpected_output = old_staging / "untrusted-output.bin"
+        unexpected_output.write_bytes(b"side effect may have happened")
+
+        with pytest.raises(StateConflict, match="staging contains output"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replacement-worker",
+            )
+
+        assert unexpected_output.read_bytes() == b"side effect may have happened"
+        assert service.get_replay_item(first.item.item_id).state is (ReplayItemState.RETRY_PENDING)
+        with repository.transaction() as session:
+            replay_jobs = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(JobRecord)
+                    .where(JobRecord.kind == InternalJobKind.REPLAY.value)
+                )
+                or 0
+            )
+            assert replay_jobs == 1
+            assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+    finally:
+        repository.close()
+
+
+def test_replay_retry_rollback_restores_empty_prior_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    database_path = tmp_path / "retry-rollback.db"
+    repository, service = _service(database_path)
+    try:
+        _create_batch(
+            repository,
+            service,
+            "retry-rollback",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        first = _claim(service, actor="expired-worker")
+        _force_replay_lease_expired(
+            repository,
+            job_id=first.job.job_id,
+            ticket_id=first.ticket.ticket_id,
+        )
+        assert service.requeue_expired(actor="lease-reaper") == 1
+        staging_root, _artifact_root = _artifact_roots(database_path)
+        old_staging = staging_root / first.execution_context.output_staging_id
+        original_issue = service._replay_issuance._issue_replay_attempt
+
+        def reject_retry(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("forced Replay retry rollback")
+
+        monkeypatch.setattr(service._replay_issuance, "_issue_replay_attempt", reject_retry)
+        with pytest.raises(RuntimeError, match="forced Replay retry rollback"):
+            service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor="replacement-worker",
+            )
+
+        assert old_staging.is_dir()
+        assert not any(old_staging.iterdir())
+        assert service.get_replay_item(first.item.item_id).state is (ReplayItemState.RETRY_PENDING)
+        with repository.transaction() as session:
             assert (
                 session.scalar(
                     select(func.count())
@@ -3711,8 +4195,78 @@ def test_expired_replay_claim_is_abandoned_without_requeue_and_stale_mutations_f
                 == 1
             )
             assert session.scalar(select(func.count()).select_from(ReplayTicketRecord)) == 1
+
+        monkeypatch.setattr(
+            service._replay_issuance,
+            "_issue_replay_attempt",
+            original_issue,
+        )
+        replacement = _claim(service, actor="replacement-worker")
+        assert replacement.ticket.attempt == 2
+        assert not old_staging.exists()
     finally:
         repository.close()
+
+
+def test_two_sqlite_workers_issue_and_burn_one_fresh_replay_retry(tmp_path: Path) -> None:
+    database_path = tmp_path / "retry-race.db"
+    repository_a, service_a = _service(database_path)
+    repository_b: ControlPlaneRepository | None = None
+    try:
+        _create_batch(
+            repository_a,
+            service_a,
+            "retry-race",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        first = _claim(service_a, actor="expired-worker")
+        _force_replay_lease_expired(
+            repository_a,
+            job_id=first.job.job_id,
+            ticket_id=first.ticket.ticket_id,
+        )
+        assert service_a.requeue_expired(actor="lease-reaper") == 1
+        repository_b, service_b = _service(database_path)
+        barrier = Barrier(2)
+
+        def claim(service: ControlPlaneService, actor: str):
+            barrier.wait()
+            return service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE),
+                actor=actor,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_a = pool.submit(claim, service_a, "race-worker-a")
+            future_b = pool.submit(claim, service_b, "race-worker-b")
+            results = [future_a.result(timeout=30), future_b.result(timeout=30)]
+
+        winners = [result for result in results if result is not None]
+        assert len(winners) == 1
+        assert winners[0].ticket.attempt == 2
+        assert winners[0].ticket.fencing_value == 2
+        with repository_a.transaction() as session:
+            tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord).order_by(ReplayTicketRecord.attempt_number)
+                ).all()
+            )
+            assert [ticket.attempt_number for ticket in tickets] == [1, 2]
+            assert [ticket.fencing_value for ticket in tickets] == [1, 2]
+            assert sum(ticket.state == ReplayTicketState.CLAIMED.value for ticket in tickets) == 1
+            assert (
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(ReplayEventRecord.event_type == "replay.retry-issued")
+                )
+                == 1
+            )
+    finally:
+        if repository_b is not None:
+            repository_b.close()
+        repository_a.close()
 
 
 def test_cancelling_single_replay_run_abandons_ticket_and_cancels_item_and_batch(
@@ -4014,6 +4568,11 @@ def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
             actor=actor,
         )
         assert repeated == finalized
+        assert service.get_replay_finalization(claim.ticket.ticket_id) == finalized
+        serialized_finalization = finalized.model_dump_json(by_alias=True)
+        assert finalize_request.output_staging_id not in serialized_finalization
+        assert "lease_token" not in serialized_finalization
+        assert "storage_key" not in serialized_finalization
         assert finalized.job.state is JobState.SUCCEEDED
         assert finalized.ticket.state is ReplayTicketState.FINALIZED
         assert finalized.item.state is ReplayItemState.GATED

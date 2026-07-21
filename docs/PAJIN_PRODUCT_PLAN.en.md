@@ -84,7 +84,7 @@ product values.
 
 ### 1.1 Current Implementation Baseline
 
-As of 2026-07-19, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
+As of 2026-07-21, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
 Phases 0 and 1 are complete, and Phase 2 has implemented the execution core, Replay contract, Compiler, single-use ticket,
 Restricted Reproducer, exact KISA M03, M06, A04 fresh-session materializer, live transcript Oracle, runner coordinator,
 verified receipt reload common Gate, append-only `validation/v1alpha1` projection, and the baseline Candidate-bound
@@ -149,9 +149,14 @@ input/result/checkpoint snapshots. Generic and Replay leases now persist an abso
 at 24 hours (and narrowed by Replay specification/Grant expiry); heartbeat may renew only within it,
 audit heartbeat events are coalesced to one per 60 seconds, and reclaim checks both rolling and
 absolute expiry.
-A public Replay admission/read API, automatic fresh-identity retry issuance, multi-item versioned-projection
-publication, negative Control Plane retest, portable/off-host signed proof, materializers and Oracles for other
-Modes, and structured collaboration memory are follow-on work.
+On 2026-07-21, PAJIN added Operator-only opaque source/batch admission,
+Operator/Approver/Auditor batch, item, ticket, and finalization reads, and automatic fresh-identity retry
+issuance from `retry-pending`. Retry rereads the immutable source and requires an unchanged item plan, zero
+permits, fully released capacity, an existing empty prior staging capability, and a remaining attempt. It preserves
+the terminal authority graph and appends a fresh Run, compilation, context, reservations, Job, ticket, staging
+capability, attempt, and fence. Multi-item versioned-projection publication, negative Control Plane retest,
+portable/off-host signed proof, materializers and Oracles for other Modes, and structured collaboration memory are
+follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
 Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
@@ -163,7 +168,7 @@ Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, and a one-item common Gate; Compose enables both daemons with distinct credentials. Public Replay admission/read APIs, automatic fresh-identity retry issuance, multi-item versioned-projection publication, and negative Control Plane retest remain incomplete |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, opaque Operator Replay source/batch admission with role-scoped state reads, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, a one-item common Gate, and automatic fresh-identity retry issuance; Compose enables both daemons with distinct credentials. Multi-item versioned-projection publication and negative Control Plane retest remain incomplete |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -1235,9 +1240,9 @@ Scenario/canonical ToolSpec component digests, fixed `kisa-exact-v1`, forbidden 
 slot, and payload/claim/profile/permit transitive binding. The schema-v9 slice now provides the dedicated
 `kisa-exact-v1` daemon, permit-before-dispatch enforcement, execute/seal into the opaque staging slot,
 server-owned import and typed finalization, and the one-item common Gate; Compose enables that daemon with a
-credential distinct from the generic Worker. A public Replay admission/read API, automatic fresh-identity retry,
-multi-item versioned-projection publication, negative Control Plane retest, and portable/off-host proof remain
-separate completion criteria.
+credential distinct from the generic Worker. Opaque public source/batch admission, role-scoped state reads, and
+zero-permit fresh-identity retry issuance are also implemented. Multi-item versioned-projection publication,
+negative Control Plane retest, and portable/off-host proof remain separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1365,8 +1370,9 @@ seals output into the opaque staging slot, and finalizes using only issued autho
 Plane imports and re-verifies the Artifact, both seals, and permit lineage, then atomically records typed
 finalization and the one-item common Gate. Bounded identical permit/finalize response-loss retries do not
 redispatch a Tool, and any failure after permit issuance is terminal for that ticket. Compose enables the daemon.
-A public Replay admission/read API, automatic fresh-identity retry, multi-item versioned-projection publication,
-and negative Control Plane retest remain outstanding, so full completion cannot be claimed. The Accepted ADR
+Opaque public source/batch admission, role-scoped state reads, and zero-permit fresh-identity retry issuance are
+also implemented. Multi-item versioned-projection publication and negative Control Plane retest remain
+outstanding, so full completion cannot be claimed. The Accepted ADR
 defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
@@ -1379,11 +1385,11 @@ defines at least the following.
 
 ## 21. Phase-by-Phase Roadmap
 
-| Phase | Status | Assessment as of 2026-07-19 |
+| Phase | Status | Assessment as of 2026-07-21 |
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate slice are implemented; public admission/read APIs, automatic fresh-identity retry, multi-item projection publication, negative Control Plane retest, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate plus fresh-identity retry slice are implemented; multi-item projection publication, negative Control Plane retest, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable, but scenario breadth and CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1458,8 +1464,12 @@ defines at least the following.
   response-loss retry for a permit immediately before dispatch, twice-sealed opaque staging, server-owned Artifact
   import and lineage verification, append-only typed finalization, and a one-item common Gate; Compose enables the
   daemon, and permit issuance makes same-ticket execution failure terminal
-- Remaining ADR-0029 scope: a public Replay admission/read API, automatic fresh-identity retry issuance,
-  multi-item versioned-projection publication, negative Control Plane retest, portable or off-host signed proof,
+- Automatic fresh-identity retry issuance: Worker claim polling issues `retry-pending` items only below the maximum
+  attempt count and only after immutable-source rederivation, stable Candidate/contract verification, zero permits,
+  fully released budget/rate reservations, and empty prior-staging removal; it preserves terminal history and appends
+  fresh Run/compilation/context/reservation/Job/ticket/staging identities with incremented attempt and fence, while
+  concurrent PostgreSQL or SQLite issuers converge on one authority graph
+- Remaining ADR-0029 scope: multi-item versioned-projection publication, negative Control Plane retest, portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
   Facts, Hypotheses, and Agent Working Memory
@@ -1541,9 +1551,10 @@ append-only one-use per-call permit ledger/internal service issuance, and M6-07B
 transport with a canonical-compilation claim envelope, and M6-07B-2F schema-v7 exact execution-context authority
 are implemented. The schema-v9 dedicated exact-KISA daemon, pre-dispatch permits, twice-sealed opaque staging,
 server-owned import/typed finalization, and one-item common Gate are also implemented and enabled in Compose with a
-distinct Replay Worker credential. M6-07B remains incomplete pending a public Replay admission/read API,
-automatic fresh-identity retry issuance, multi-item versioned-projection publication, and negative Control Plane
-retest. The following items need additional decisions before further Phase 3-4 work proceeds.
+distinct Replay Worker credential. Opaque public source/batch admission, role-scoped state reads, and automatic
+fresh-identity retry issuance are also implemented. M6-07B remains incomplete pending multi-item
+versioned-projection publication and negative Control Plane retest. The following items need additional decisions
+before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
 2. Authentication, sessions, organization and project isolation, and multi-tenancy boundary for the Web UI

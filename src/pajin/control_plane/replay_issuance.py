@@ -1,4 +1,4 @@
-"""Replay batch planning and first-attempt issuance transactions."""
+"""Replay batch planning and fresh one-shot attempt issuance transactions."""
 
 from __future__ import annotations
 
@@ -72,6 +72,7 @@ from pajin.control_plane.replay_authority import (
     require_exact_replay_account_permit_consumption,
     require_exact_replay_budget_ledger,
     require_fresh_issuance_derivation,
+    require_fresh_retry_derivation,
     trusted_fresh_issuance_compilation,
     trusted_replay_compilation,
 )
@@ -83,6 +84,11 @@ from pajin.tools.ai import AIChatProbeTool
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
     {ReplayTicketState.ISSUED.value, ReplayTicketState.CLAIMED.value}
 )
+
+
+class _ReplayIssuanceGraphChanged(StateConflict):
+    """A concurrent issuer appended authority after lock discovery."""
+
 
 type ReplayBindingVerifier = Callable[
     [Session, JobRecord, ReplayTicketRecord, ReplayItemRecord, ReplayBatchRecord],
@@ -121,12 +127,33 @@ class _ReplayIssuanceGraph:
     runs_by_id: dict[str, RunRecord]
 
 
+@dataclass(frozen=True, slots=True)
+class _ReplayRetryDerivation:
+    """Fresh source derivation paired with the pending set it was derived for."""
+
+    pending_item_ids: frozenset[str]
+    source: ArtifactRef
+    locator: ArtifactLocator
+    snapshot: ManagedArtifactSnapshot
+    derived: DerivedKISAReplayBatch
+
+
+@dataclass(slots=True)
+class _ReplayRetryAttempt:
+    """Validated inputs for one fresh retry authority graph."""
+
+    item: ReplayItemRecord
+    admitted: DerivedKISAReplayItem
+    trusted: ReplayCompilation
+    previous_ticket: ReplayTicketRecord
+
+
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
 
 class ReplayIssuanceService:
-    """Own Replay planning and atomic first-attempt issuance."""
+    """Own Replay planning and atomic fresh-attempt issuance."""
 
     def __init__(
         self,
@@ -426,7 +453,7 @@ class ReplayIssuanceService:
         """Atomically reserve and issue every first attempt of one planned batch."""
 
         artifact_repository = self._require_artifact_repository()
-        with self.repository.transaction() as session:
+        with self.repository.read_transaction() as session:
             batch = self._records.replay_batch(session, batch_id)
             if batch.state != ReplayBatchState.PLANNED.value:
                 return self._existing_replay_issuance(session, batch)
@@ -560,6 +587,8 @@ class ReplayIssuanceService:
                 session,
                 batch=batch,
                 derived=derived,
+                required_tool_calls=derived.required_tool_calls,
+                required_request_units=derived.required_request_units,
                 observed_at=_aware(artifact.created_at),
                 now=now,
             )
@@ -567,7 +596,7 @@ class ReplayIssuanceService:
             issued_tickets: list[ReplayTicketRecord] = []
             for item, admitted, trusted in zip(items, derived.items, trusted_fresh, strict=True):
                 issued_tickets.append(
-                    self._issue_first_replay_attempt(
+                    self._issue_replay_attempt(
                         session,
                         artifact_repository=artifact_repository,
                         reserved_staging_ids=reserved_staging_ids,
@@ -579,6 +608,8 @@ class ReplayIssuanceService:
                         derived=derived,
                         budget_account=budget_account,
                         rate_account=rate_account,
+                        attempt=1,
+                        fencing_value=1,
                         actor=actor,
                         now=now,
                     )
@@ -608,7 +639,358 @@ class ReplayIssuanceService:
                 tickets=[self._views.replay_ticket(ticket) for ticket in issued_tickets],
             )
 
-    def _issue_first_replay_attempt(
+    def issue_pending_replay_retries(self, *, actor: str) -> int:
+        """Issue fresh authority for every currently retry-pending batch.
+
+        Discovery is intentionally lock-free and bounded to batch identities. Each
+        batch is rederived from its immutable source outside the write transaction,
+        then the complete current attempt graph is locked and revalidated before a
+        new one-shot authority graph is committed.
+        """
+
+        with self.repository.read_transaction() as session:
+            batch_ids = list(
+                session.scalars(
+                    select(ReplayItemRecord.batch_id)
+                    .where(ReplayItemRecord.state == ReplayItemState.RETRY_PENDING.value)
+                    .distinct()
+                    .order_by(ReplayItemRecord.batch_id)
+                ).all()
+            )
+        return sum(
+            self._issue_pending_replay_batch_retries(batch_id, actor=actor)
+            for batch_id in batch_ids
+        )
+
+    def _issue_pending_replay_batch_retries(self, batch_id: str, *, actor: str) -> int:
+        artifact_repository = self._require_artifact_repository()
+        retry = self._derive_pending_replay_retry(batch_id, artifact_repository)
+        if retry is None:
+            return 0
+        try:
+            return self._commit_pending_replay_retries(
+                batch_id,
+                retry=retry,
+                artifact_repository=artifact_repository,
+                actor=actor,
+            )
+        except _ReplayIssuanceGraphChanged:
+            with self.repository.read_transaction() as session:
+                still_pending = session.scalar(
+                    select(func.count())
+                    .select_from(ReplayItemRecord)
+                    .where(
+                        ReplayItemRecord.item_id.in_(retry.pending_item_ids),
+                        ReplayItemRecord.state == ReplayItemState.RETRY_PENDING.value,
+                    )
+                )
+            if still_pending:
+                raise
+            return 0
+
+    def _commit_pending_replay_retries(
+        self,
+        batch_id: str,
+        *,
+        retry: _ReplayRetryDerivation,
+        artifact_repository: ManagedArtifactRepository,
+        actor: str,
+    ) -> int:
+        with self.retry_transaction(artifact_repository) as (
+            session,
+            reserved_staging_ids,
+            released_staging_ids,
+        ):
+            if self.repository.dialect_name == "sqlite":
+                session.execute(
+                    update(ReplayBatchRecord)
+                    .where(
+                        ReplayBatchRecord.batch_id == batch_id,
+                        ReplayBatchRecord.state == ReplayBatchState.RUNNING.value,
+                    )
+                    .values(updated_at=ReplayBatchRecord.updated_at)
+                )
+            graph = self._lock_replay_issuance_graph(session, batch_id)
+            retry_items = self._current_pending_retry_items(graph, retry.pending_item_ids)
+            if not retry_items:
+                return 0
+            now = self._hooks.transaction.clock()
+            artifact = self._require_retry_source_authority(session, graph, retry)
+            attempts = self._prepare_replay_retry_attempts(
+                session,
+                graph=graph,
+                retry=retry,
+                retry_items=retry_items,
+                artifact_repository=artifact_repository,
+                released_staging_ids=released_staging_ids,
+                now=now,
+            )
+            required_tool_calls = sum(attempt.admitted.contract.repetitions for attempt in attempts)
+            required_request_units = sum(
+                attempt.admitted.required_request_units for attempt in attempts
+            )
+            budget_account, rate_account = self._reserve_replay_capacity(
+                session,
+                batch=graph.batch,
+                derived=retry.derived,
+                required_tool_calls=required_tool_calls,
+                required_request_units=required_request_units,
+                observed_at=_aware(artifact.created_at),
+                now=now,
+            )
+
+            issued_tickets: list[ReplayTicketRecord] = []
+            for attempt in attempts:
+                issued_tickets.append(
+                    self._issue_replay_attempt(
+                        session,
+                        artifact_repository=artifact_repository,
+                        reserved_staging_ids=reserved_staging_ids,
+                        batch=graph.batch,
+                        item=attempt.item,
+                        admitted=attempt.admitted,
+                        trusted=attempt.trusted,
+                        source=retry.source,
+                        derived=retry.derived,
+                        budget_account=budget_account,
+                        rate_account=rate_account,
+                        attempt=attempt.item.attempts + 1,
+                        fencing_value=attempt.previous_ticket.fencing_value + 1,
+                        actor=actor,
+                        now=now,
+                    )
+                )
+
+            graph.batch.cas_version += 1
+            graph.batch.updated_at = now
+            self._hooks.transaction.replay_event_writer(
+                session,
+                graph.batch,
+                "replay.retry-issued",
+                actor,
+                {
+                    "itemCount": len(attempts),
+                    "itemIds": [attempt.item.item_id for attempt in attempts],
+                    "reservedToolCalls": required_tool_calls,
+                    "reservedRequestUnits": required_request_units,
+                },
+                run_id=graph.batch.source_run_id,
+            )
+            return len(issued_tickets)
+
+    def _derive_pending_replay_retry(
+        self,
+        batch_id: str,
+        artifact_repository: ManagedArtifactRepository,
+    ) -> _ReplayRetryDerivation | None:
+        with self.repository.read_transaction() as session:
+            batch = self._records.replay_batch(session, batch_id)
+            pending_item_ids = frozenset(
+                session.scalars(
+                    select(ReplayItemRecord.item_id).where(
+                        ReplayItemRecord.batch_id == batch_id,
+                        ReplayItemRecord.state == ReplayItemState.RETRY_PENDING.value,
+                    )
+                ).all()
+            )
+            if not pending_item_ids:
+                return None
+            if batch.state != ReplayBatchState.RUNNING.value:
+                raise StateConflict("retry-pending Replay item belongs to a non-running batch")
+            source = self._views.replay_source(batch)
+            locator = ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            )
+            artifact = self._records.artifact(session, locator)
+            self._require_artifact_snapshot(
+                artifact,
+                source,
+                storage_key=artifact.storage_key,
+            )
+            storage_key = artifact.storage_key
+
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            source,
+            expected_storage_key=storage_key,
+        )
+        try:
+            derived = self._hooks.deriver(
+                source_root=snapshot.path,
+                artifact_ref=source,
+            )
+        except (OSError, ValueError) as exc:
+            raise StateConflict(
+                "managed source is not eligible for fresh Replay retry issuance"
+            ) from exc
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            source,
+            expected_storage_key=storage_key,
+        )
+        return _ReplayRetryDerivation(
+            pending_item_ids=pending_item_ids,
+            source=source,
+            locator=locator,
+            snapshot=snapshot,
+            derived=derived,
+        )
+
+    @staticmethod
+    def _current_pending_retry_items(
+        graph: _ReplayIssuanceGraph,
+        expected_item_ids: frozenset[str],
+    ) -> list[ReplayItemRecord]:
+        matching_pending = [
+            item
+            for item in graph.items
+            if item.item_id in expected_item_ids
+            and item.state == ReplayItemState.RETRY_PENDING.value
+        ]
+        if graph.batch.state != ReplayBatchState.RUNNING.value:
+            if matching_pending:
+                raise StateConflict("retry-pending Replay item belongs to a non-running batch")
+            return []
+        if expected_item_ids.difference(item.item_id for item in graph.items):
+            raise StateConflict("retry-pending Replay item disappeared during issuance")
+        return matching_pending
+
+    def _require_retry_source_authority(
+        self,
+        session: Session,
+        graph: _ReplayIssuanceGraph,
+        retry: _ReplayRetryDerivation,
+    ) -> ArtifactRecord:
+        source_run = self._records.run(session, graph.batch.source_run_id, lock=True)
+        self._require_run_state(source_run, RunState.COMPLETED)
+        artifact = self._records.artifact(session, retry.locator)
+        self._require_artifact_snapshot(
+            artifact,
+            retry.source,
+            storage_key=retry.snapshot.storage_key,
+        )
+        require_fresh_retry_derivation(
+            graph.batch,
+            graph.items,
+            derived=retry.derived,
+            source=retry.source,
+        )
+        return artifact
+
+    def _prepare_replay_retry_attempts(
+        self,
+        session: Session,
+        *,
+        graph: _ReplayIssuanceGraph,
+        retry: _ReplayRetryDerivation,
+        retry_items: list[ReplayItemRecord],
+        artifact_repository: ManagedArtifactRepository,
+        released_staging_ids: list[str],
+        now: datetime,
+    ) -> list[_ReplayRetryAttempt]:
+        derived_by_candidate = {admitted.candidate_id: admitted for admitted in retry.derived.items}
+        admitted_items = [derived_by_candidate[item.candidate_id] for item in retry_items]
+        replay_run_ids = [admitted.replay_run_id for admitted in admitted_items]
+        if session.scalar(
+            select(func.count())
+            .select_from(ReplayCompilationRecord)
+            .where(ReplayCompilationRecord.replay_run_id.in_(replay_run_ids))
+        ):
+            raise StateConflict("fresh Replay retry reused durable Run authority")
+
+        tickets_by_item: dict[str, list[ReplayTicketRecord]] = {}
+        for ticket in graph.tickets:
+            tickets_by_item.setdefault(ticket.item_id, []).append(ticket)
+        return [
+            self._prepare_replay_retry_attempt(
+                session,
+                graph=graph,
+                item=item,
+                admitted=admitted,
+                history=tickets_by_item.get(item.item_id, []),
+                artifact_repository=artifact_repository,
+                released_staging_ids=released_staging_ids,
+                now=now,
+            )
+            for item, admitted in zip(retry_items, admitted_items, strict=True)
+        ]
+
+    def _prepare_replay_retry_attempt(
+        self,
+        session: Session,
+        *,
+        graph: _ReplayIssuanceGraph,
+        item: ReplayItemRecord,
+        admitted: DerivedKISAReplayItem,
+        history: list[ReplayTicketRecord],
+        artifact_repository: ManagedArtifactRepository,
+        released_staging_ids: list[str],
+        now: datetime,
+    ) -> _ReplayRetryAttempt:
+        ordered_history = sorted(history, key=lambda ticket: ticket.attempt_number)
+        expected_sequence = list(range(1, item.attempts + 1))
+        if (
+            not ordered_history
+            or item.attempts < 1
+            or [ticket.attempt_number for ticket in ordered_history] != expected_sequence
+            or [ticket.fencing_value for ticket in ordered_history] != expected_sequence
+            or item.attempts >= item.max_attempts
+        ):
+            raise StateConflict("Replay retry attempt history is incomplete or exhausted")
+        for historical_ticket in ordered_history:
+            historical_job = graph.jobs_by_id.get(historical_ticket.job_id)
+            historical_run = graph.runs_by_id.get(historical_ticket.replay_run_id)
+            if not (
+                historical_ticket.state == ReplayTicketState.ABANDONED.value
+                and historical_job is not None
+                and historical_job.state == JobState.FAILED.value
+                and historical_run is not None
+                and historical_run.state == RunState.FAILED.value
+            ):
+                raise StateConflict("Replay retry history is not terminal and abandoned")
+
+        current_ticket = ordered_history[-1]
+        current_job = graph.jobs_by_id[current_ticket.job_id]
+        authority = self._hooks.binding_verifier(
+            session,
+            current_job,
+            current_ticket,
+            item,
+            graph.batch,
+        )
+        budget = authority.budget_reservation
+        rate = authority.rate_reservation
+        if not (
+            not authority.permits
+            and budget.state == "released"
+            and budget.consumed_calls == 0
+            and budget.released_calls == budget.total_calls
+            and rate.state == "released"
+            and rate.consumed_request_units == 0
+            and rate.released_request_units == rate.total_request_units
+        ):
+            raise StateConflict(
+                "Replay retry requires a fully released attempt with no Tool permit"
+            )
+        staging_id = authority.execution_context.output_staging_id
+        try:
+            released = artifact_repository.release_staging_reservation(staging_id)
+        except ArtifactRepositoryError as exc:
+            raise StateConflict(
+                "abandoned Replay staging contains output or cannot be released"
+            ) from exc
+        if not released:
+            raise StateConflict("abandoned Replay staging reservation is missing")
+        released_staging_ids.append(staging_id)
+        return _ReplayRetryAttempt(
+            item=item,
+            admitted=admitted,
+            trusted=trusted_fresh_issuance_compilation(admitted, now=now),
+            previous_ticket=current_ticket,
+        )
+
+    def _issue_replay_attempt(
         self,
         session: Session,
         *,
@@ -622,10 +1004,12 @@ class ReplayIssuanceService:
         derived: DerivedKISAReplayBatch,
         budget_account: ReplayBudgetAccountRecord,
         rate_account: ReplayRateAccountRecord,
+        attempt: int,
+        fencing_value: int,
         actor: str,
         now: datetime,
     ) -> ReplayTicketRecord:
-        """Create one first-attempt authority graph in the issuance transaction."""
+        """Create one fresh, one-shot attempt authority graph."""
 
         compilation_id = f"replay-compilation_{uuid4().hex}"
         execution_context_id = f"replay-context_{uuid4().hex}"
@@ -636,8 +1020,6 @@ class ReplayIssuanceService:
         rate_reservation_id = f"rate-reservation_{uuid4().hex}"
         ticket_id = f"replay-ticket_{uuid4().hex}"
         job_id = f"job_{uuid4().hex}"
-        attempt = 1
-        fencing_value = 1
         rate_expires_at = now + timedelta(seconds=rate_account.window_seconds)
         ticket_expires_at = min(
             _aware(trusted.spec.expires_at),
@@ -938,6 +1320,29 @@ class ReplayIssuanceService:
                         artifact_repository.release_staging_reservation(staging_id)
             raise
 
+    @contextmanager
+    def retry_transaction(
+        self,
+        artifact_repository: ManagedArtifactRepository,
+    ) -> Iterator[tuple[Session, list[str], list[str]]]:
+        """Restore released empty prior-attempt staging if retry commit fails."""
+
+        released_staging_ids: list[str] = []
+        try:
+            with self.transaction(artifact_repository) as (
+                session,
+                reserved_staging_ids,
+            ):
+                yield session, reserved_staging_ids, released_staging_ids
+        except BaseException:
+            for staging_id in reversed(released_staging_ids):
+                # Recreating an empty reservation is safe even when commit outcome
+                # is unknown. If output appeared concurrently, reserve_staging
+                # fails closed and the original transaction error is preserved.
+                with suppress(ArtifactRepositoryError):
+                    artifact_repository.reserve_staging(staging_id)
+            raise
+
     def _existing_replay_batch(
         self,
         session: Session,
@@ -1060,7 +1465,9 @@ class ReplayIssuanceService:
             ).all()
         )
         if [job.job_id for job in jobs] != discovered_job_ids:
-            raise StateConflict("issued Replay Job authority graph changed concurrently")
+            raise _ReplayIssuanceGraphChanged(
+                "issued Replay Job authority graph changed concurrently"
+            )
         tickets = list(
             session.scalars(
                 select(ReplayTicketRecord)
@@ -1070,7 +1477,9 @@ class ReplayIssuanceService:
             ).all()
         )
         if sorted(ticket.job_id for ticket in tickets) != discovered_job_ids:
-            raise StateConflict("issued Replay ticket authority graph changed concurrently")
+            raise _ReplayIssuanceGraphChanged(
+                "issued Replay ticket authority graph changed concurrently"
+            )
         item_rows = list(
             session.scalars(
                 select(ReplayItemRecord)
@@ -1190,15 +1599,20 @@ class ReplayIssuanceService:
         *,
         batch: ReplayBatchRecord,
         derived: DerivedKISAReplayBatch,
+        required_tool_calls: int,
+        required_request_units: int,
         observed_at: datetime,
         now: datetime,
     ) -> tuple[ReplayBudgetAccountRecord, ReplayRateAccountRecord]:
-        """Lock accounts before reservations and reserve the complete first attempt.
+        """Lock accounts before reserving one complete issuance set.
 
         Every writer follows the same capacity-layer order: budget account, rate
         account, budget reservations, then rate reservations. The earlier Replay
         graph is locked Job -> ticket -> item -> batch -> Run when those rows exist.
         """
+
+        if required_tool_calls < 1 or required_request_units < 1:
+            raise StateConflict("Replay issuance requires positive reserved capacity")
 
         budget_account = session.scalar(
             select(ReplayBudgetAccountRecord)
@@ -1286,7 +1700,7 @@ class ReplayIssuanceService:
             budget_account.baseline_used_calls
             + budget_account.reserved_calls
             + budget_account.consumed_calls
-            + derived.required_tool_calls
+            + required_tool_calls
         )
         if total_after_reservation > budget_account.max_tool_calls:
             raise StateConflict("durable Replay budget reservation exceeds Campaign capacity")
@@ -1339,15 +1753,12 @@ class ReplayIssuanceService:
                 or 0
             )
             if (
-                baseline_units
-                + reserved_units
-                + active_permit_units
-                + derived.required_request_units
+                baseline_units + reserved_units + active_permit_units + required_request_units
                 > rate_account.max_requests_per_minute
             ):
                 raise StateConflict("durable Replay rate reservation exceeds Campaign capacity")
 
-        budget_account.reserved_calls += derived.required_tool_calls
+        budget_account.reserved_calls += required_tool_calls
         budget_account.cas_version += 1
         budget_account.updated_at = now
         rate_account.cas_version += 1

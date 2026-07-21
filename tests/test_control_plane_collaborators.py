@@ -21,6 +21,7 @@ from pajin.control_plane.models import (
     ReplayLeaseRequest,
 )
 from pajin.control_plane.records import ControlPlaneRecords
+from pajin.control_plane.replay_issuance import ReplayIssuanceService
 from pajin.control_plane.replay_reads import ReplayReadService
 from pajin.control_plane.security import CheckpointSigner
 from pajin.control_plane.service import ControlPlaneService
@@ -92,11 +93,13 @@ def test_replay_read_collaborator_owns_one_read_transaction_per_view() -> None:
 def test_public_replay_read_facade_delegates_without_changing_results() -> None:
     expected = {
         "batch": object(),
+        "finalization": object(),
         "item": object(),
         "ticket": object(),
     }
     reads = SimpleNamespace(
         get_batch=lambda _record_id: expected["batch"],
+        get_finalization=lambda _record_id: expected["finalization"],
         get_item=lambda _record_id: expected["item"],
         get_ticket=lambda _record_id: expected["ticket"],
     )
@@ -104,6 +107,7 @@ def test_public_replay_read_facade_delegates_without_changing_results() -> None:
     service._replay_reads = cast(ReplayReadService, reads)
 
     assert service.get_replay_batch("batch-1") is expected["batch"]
+    assert service.get_replay_finalization("ticket-1") is expected["finalization"]
     assert service.get_replay_item("item-1") is expected["item"]
     assert service.get_replay_ticket("ticket-1") is expected["ticket"]
 
@@ -152,6 +156,37 @@ def test_public_claim_facade_delegates_without_changing_results() -> None:
     assert replay_claim == ("replay-worker", expected["replay-claim"])
     assert replay_heartbeat == ("job-1", "replay-worker", expected["replay-heartbeat"])
     assert heartbeat == ("job-2", "worker", expected["heartbeat"])
+
+
+def test_replay_claim_facade_issues_pending_retry_before_second_claim() -> None:
+    expected_claim = object()
+    claim_results = iter([None, expected_claim])
+    claim_calls: list[str] = []
+    issuance_calls: list[str] = []
+    claims = SimpleNamespace(
+        claim_replay_job=lambda _request, *, actor: (
+            claim_calls.append(actor),
+            next(claim_results),
+        )[1]
+    )
+    issuance = SimpleNamespace(
+        issue_pending_replay_retries=lambda *, actor: (
+            issuance_calls.append(actor),
+            1,
+        )[1]
+    )
+    service = object.__new__(ControlPlaneService)
+    service._claims = cast(ControlPlaneClaimService, claims)
+    service._replay_issuance = cast(ReplayIssuanceService, issuance)
+
+    claimed = service.claim_replay_job(
+        cast(ReplayClaimRequest, object()),
+        actor="replay-worker",
+    )
+
+    assert claimed is expected_claim
+    assert claim_calls == ["replay-worker", "replay-worker"]
+    assert issuance_calls == ["control-plane:replay-retry"]
 
 
 def test_transaction_collaborators_share_clock_and_audit_hooks() -> None:

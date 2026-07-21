@@ -2157,6 +2157,109 @@ def test_postgres_expired_unclaimed_ticket_sweep_releases_exact_capacity(
         repository.close()
 
 
+def test_postgres_concurrent_workers_issue_and_burn_one_fresh_replay_retry(
+    isolated_postgres_schema_url: str,
+) -> None:
+    repository_a, service_a = _service(isolated_postgres_schema_url)
+    repository_b, service_b = _service(isolated_postgres_schema_url)
+    suffix = uuid4().hex
+    try:
+        batch_id = _seed_batch(repository_a, service_a, suffix)
+        first = service_a.claim_replay_job(
+            ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+            actor=WORKER_A,
+        )
+        assert first is not None
+        expired_at = datetime.now(UTC) - timedelta(seconds=1)
+        with repository_a.transaction() as session:
+            session.execute(
+                update(JobRecord)
+                .where(JobRecord.job_id == first.job.job_id)
+                .values(lease_expires_at=expired_at)
+            )
+            session.execute(
+                update(ReplayTicketRecord)
+                .where(ReplayTicketRecord.ticket_id == first.ticket.ticket_id)
+                .values(lease_expires_at=expired_at)
+            )
+        assert service_a.requeue_expired(actor="postgres-replay-reaper") == 1
+        barrier = Barrier(2)
+
+        def claim(service: ControlPlaneService, actor: str):
+            barrier.wait(timeout=10)
+            return service.claim_replay_job(
+                ReplayClaimRequest(executor_profile=EXECUTOR_PROFILE, lease_seconds=300),
+                actor=actor,
+            )
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            future_a = pool.submit(claim, service_a, WORKER_A)
+            future_b = pool.submit(claim, service_b, WORKER_B)
+            results = [future_a.result(timeout=30), future_b.result(timeout=30)]
+
+        winners = [result for result in results if result is not None]
+        assert len(winners) == 1
+        winner = winners[0]
+        assert winner.batch.batch_id == batch_id
+        assert winner.item.item_id == first.item.item_id
+        assert winner.ticket.attempt == winner.item.attempts == 2
+        assert winner.ticket.fencing_value == 2
+        assert winner.job.job_id != first.job.job_id
+        assert winner.job.run_id != first.job.run_id
+        assert winner.ticket.ticket_id != first.ticket.ticket_id
+        assert winner.ticket.compilation_id != first.ticket.compilation_id
+
+        with repository_a.transaction() as session:
+            tickets = list(
+                session.scalars(
+                    select(ReplayTicketRecord)
+                    .where(ReplayTicketRecord.batch_id == batch_id)
+                    .order_by(ReplayTicketRecord.attempt_number)
+                ).all()
+            )
+            jobs = list(
+                session.scalars(
+                    select(JobRecord)
+                    .join(ReplayTicketRecord, ReplayTicketRecord.job_id == JobRecord.job_id)
+                    .where(ReplayTicketRecord.batch_id == batch_id)
+                ).all()
+            )
+            budget_reservations = list(
+                session.scalars(
+                    select(ReplayBudgetReservationRecord)
+                    .where(ReplayBudgetReservationRecord.batch_id == batch_id)
+                    .order_by(ReplayBudgetReservationRecord.attempt_number)
+                ).all()
+            )
+            budget_account = session.scalar(select(ReplayBudgetAccountRecord))
+            retry_events = int(
+                session.scalar(
+                    select(func.count())
+                    .select_from(ReplayEventRecord)
+                    .where(
+                        ReplayEventRecord.batch_id == batch_id,
+                        ReplayEventRecord.event_type == "replay.retry-issued",
+                    )
+                )
+                or 0
+            )
+            assert len(tickets) == len(jobs) == len(budget_reservations) == 2
+            assert [ticket.attempt_number for ticket in tickets] == [1, 2]
+            assert [ticket.fencing_value for ticket in tickets] == [1, 2]
+            assert [reservation.state for reservation in budget_reservations] == [
+                "released",
+                "active",
+            ]
+            assert budget_account is not None
+            assert budget_account.reserved_calls == budget_reservations[1].total_calls
+            assert budget_account.consumed_calls == 0
+            assert budget_account.released_calls == budget_reservations[0].total_calls
+            assert retry_events == 1
+    finally:
+        repository_b.close()
+        repository_a.close()
+
+
 @pytest.mark.parametrize("release_kind", ["cancel", "expire"])
 def test_postgres_shared_source_issuance_and_release_do_not_deadlock_or_drift_ledgers(
     isolated_postgres_schema_url: str,

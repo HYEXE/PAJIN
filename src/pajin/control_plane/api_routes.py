@@ -16,7 +16,9 @@ from sqlalchemy import text
 
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.models import (
+    AdmitSourceArtifactRequest,
     ApprovalView,
+    ArtifactRef,
     AuditEventView,
     CancelRunRequest,
     CancelRunView,
@@ -26,17 +28,21 @@ from pajin.control_plane.models import (
     CompleteJobRequest,
     ControlPlaneConflictResponse,
     CreateCheckpointRequest,
+    CreateReplayBatchRequest,
     DecideApprovalRequest,
     FailJobRequest,
     JobView,
     LeaseRequest,
     Principal,
     PrincipalRole,
+    ReplayBatchView,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
     ReplayFinalizationView,
     ReplayFinalizeRequest,
+    ReplayItemView,
     ReplayLeaseRequest,
+    ReplayTicketView,
     ReplayToolPermitRequest,
     ReplayToolPermitView,
     ResumeCheckpointRequest,
@@ -69,6 +75,13 @@ _WORKER_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
         "description": (
             "The Control Plane state, Run fence, or Worker lease rejected the operation."
         ),
+    }
+}
+
+_PUBLIC_REPLAY_CONFLICT_RESPONSES: dict[int | str, dict[str, Any]] = {
+    status.HTTP_409_CONFLICT: {
+        "model": ControlPlaneConflictResponse,
+        "description": ("The managed Artifact or Replay authority graph rejected the admission."),
     }
 }
 
@@ -273,6 +286,80 @@ def register_generic_worker_claim_route(
             await asyncio.sleep(min(0.25, remaining))
 
 
+def register_public_replay_routes(
+    app: FastAPI,
+    *,
+    service: ControlPlaneService,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register opaque Operator admission and non-secret Replay reads.
+
+    These routes never accept a raw path, URL, Candidate, contract, Capability,
+    Tool request, verdict, or internal Job kind.  Replay issuance remains an
+    internal service operation after server-owned admission and derivation.
+    """
+
+    require_roles = dependencies.require_roles
+    require_reader = require_roles(
+        PrincipalRole.OPERATOR,
+        PrincipalRole.APPROVER,
+        PrincipalRole.AUDITOR,
+    )
+
+    @app.post(
+        "/v1/replay/source-artifacts",
+        response_model=ArtifactRef,
+        responses=_PUBLIC_REPLAY_CONFLICT_RESPONSES,
+    )
+    def admit_replay_source_artifact(
+        request: AdmitSourceArtifactRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.OPERATOR))],
+    ) -> ArtifactRef:
+        return service.admit_source_artifact(request, actor=principal.subject)
+
+    @app.post(
+        "/v1/replay/batches",
+        response_model=ReplayBatchView,
+        responses=_PUBLIC_REPLAY_CONFLICT_RESPONSES,
+    )
+    def admit_replay_batch(
+        request: CreateReplayBatchRequest,
+        principal: Annotated[Principal, Depends(require_roles(PrincipalRole.OPERATOR))],
+    ) -> ReplayBatchView:
+        return service.create_replay_batch(request, actor=principal.subject)
+
+    @app.get("/v1/replay/batches/{batch_id}", response_model=ReplayBatchView)
+    def get_replay_batch(
+        batch_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayBatchView:
+        return service.get_replay_batch(batch_id)
+
+    @app.get("/v1/replay/items/{item_id}", response_model=ReplayItemView)
+    def get_replay_item(
+        item_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayItemView:
+        return service.get_replay_item(item_id)
+
+    @app.get("/v1/replay/tickets/{ticket_id}", response_model=ReplayTicketView)
+    def get_replay_ticket(
+        ticket_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayTicketView:
+        return service.get_replay_ticket(ticket_id)
+
+    @app.get(
+        "/v1/replay/tickets/{ticket_id}/finalization",
+        response_model=ReplayFinalizationView | None,
+    )
+    def get_replay_finalization(
+        ticket_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayFinalizationView | None:
+        return service.get_replay_finalization(ticket_id)
+
+
 def register_replay_worker_routes(
     app: FastAPI,
     *,
@@ -446,6 +533,11 @@ def register_control_plane_routes(
 
     register_health_and_ui_routes(app, repository=repository)
     register_session_and_run_routes(
+        app,
+        service=service,
+        dependencies=dependencies,
+    )
+    register_public_replay_routes(
         app,
         service=service,
         dependencies=dependencies,

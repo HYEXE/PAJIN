@@ -598,7 +598,13 @@ def _canonical_replay_execution_context_value(value: object) -> object:
 
 
 class AdmitSourceArtifactRequest(StrictModel):
-    """Internal-only request to admit one producer-owned sealed Run snapshot."""
+    """Opaque request to admit one producer-owned sealed Run snapshot.
+
+    The caller cannot choose a filesystem path, Artifact identity, sealed Run
+    identity, digest, Candidate, or Replay authority.  The Control Plane derives
+    and verifies all of those values from the server-controlled staging handoff and
+    the completed producer Job.
+    """
 
     staging_id: str = Field(
         strict=True,

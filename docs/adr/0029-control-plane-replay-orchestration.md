@@ -90,8 +90,9 @@ permit을 받으며 서버가 예약한 opaque staging slot에만 쓴다. path, 
 verdict를 제출하지 않는다. 서버는 sealed output을 import해 다시 열고 exact
 source/compilation/ticket/permit lineage를 검증하며 ADR 0027 공통 Gate를 파생한 뒤 finalization과
 terminal authority state를 원자적으로 commit한다. Compose도 이 daemon과 owner-only staging handoff를
-활성화한다. Public Replay admission/read API, 자동 fresh-identity retry 발행, negative Control Plane
-retest와 multi-host/object-store handoff는 아직 남아 있다.
+활성화한다. 2026-07-21에는 opaque public source/batch admission, 역할 기반 상태 조회 API와 자동
+fresh-identity retry 발행도 추가했다. Negative Control Plane retest와 multi-host/object-store handoff는
+아직 남아 있다.
 
 ## Context
 
@@ -152,7 +153,8 @@ output-staging identity를 결박한다. Job payload, claim envelope, profile ad
 이 authority graph를 보존하거나 전이적으로 재검증한다. v6→v7 migration은 누락된 issuance-time
 bytes를 만들어 내지 않고 dispatch 가능한 legacy authority를 거부한다. 2026-07-19 구현은 아래의
 전용 executor, pre-dispatch permit seam, opaque staging handoff, 서버 import/finalization과 one-item
-공통 Gate를 추가한다. Public admission/read API, fresh-identity retry 발행과 negative Control Plane
+공통 Gate를 추가한다. 2026-07-21 구현은 opaque public source/batch admission, 역할 기반 상태 조회
+API와 permit 0개 terminal attempt의 자동 fresh-identity retry 발행을 추가했다. Negative Control Plane
 retest는 완료된 조각 밖에 남아 있다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
@@ -219,6 +221,21 @@ Worker가 보낸 Candidate, contract, comparison rule, Capability Grant, target,
 source root 또는 eligibility flag는 authority input이 아니다. planned record의 5분 Grant는 발행 전에
 만료될 수 있으며 Worker 실행 권한이 아니다. Worker claim envelope는 구현된 durable issuance
 transaction에서 서버가 결박한 fresh compilation과 짧은 수명의 non-delegable Capability만 전달한다.
+
+### 공개 Replay admission과 조회
+
+Operator만 `POST /v1/replay/source-artifacts`와 `POST /v1/replay/batches`를 호출할 수 있다. source
+admission은 opaque staging ID, 완료된 producer Run/Job ID와 idempotency key만 받고, batch admission은
+정확한 `(artifact_id, repository_version)` locator와 idempotency key만 받는다. 서버는 sealed source,
+Candidate, contract, compilation과 모든 digest를 직접 파생·검증한다. raw path/URL, caller-authored
+Candidate·contract·Capability·Tool request·verdict와 내부 Replay Job kind는 공개 계약에 존재하지 않는다.
+신뢰된 producer가 server-controlled staging handoff를 먼저 완료해야 하며 endpoint 자체는 byte를
+upload하거나 caller가 고른 path를 import하지 않는다.
+
+Operator, Approver, Auditor는 batch/item/ticket/finalization을 exact ID로 조회할 수 있다. 응답은 opaque
+Artifact identity와 server-derived authority만 포함하며 staging ID, repository storage key, lease token은
+노출하지 않는다. 공개 batch admission은 `planned` proof까지만 만들고 Tool을 dispatch하지 않는다.
+첫 시도 Job/ticket 발행은 source를 다시 검증하는 신뢰된 내부 service operation으로 남는다.
 
 ### PostgreSQL Replay aggregate와 forward migration
 
@@ -292,8 +309,12 @@ filesystem 위치, storage operation, upload, import 또는 finalization을 허�
 - heartbeat 또는 명시적 retryable failure 뒤 lease가 끝나면 기존 Job은 terminal 처리되고
   claimed ticket은 `abandoned`가 된다. `_expire_leases`가 그 Job/ticket을 다시 queued/issued로
   돌려서는 안 된다.
-- 재시도가 허용되면 서버가 source root, cancellation, policy, budget과 rate state를 다시
-  검사한 후 새 attempt number, 새 ticket ID, 새 Replay Run ID와 새 Job ID를 만든다.
+- 재시도가 허용되면 claim polling이 immutable source를 다시 읽고 complete stable item plan, source
+  root, cancellation, policy, 최대 시도 횟수, permit 0개 이력, 완전히 반환된 budget/rate reservation과
+  존재하며 비어 있는 이전 staging capability를 검사한다. Abandoned graph는 보존하고 빈 capability를
+  제거한 뒤 fresh attempt number, fence, Replay Run, compilation, execution context, reservation,
+  staging capability, ticket과 Job을 append한다. 동시 PostgreSQL·SQLite issuer는 하나의 committed
+  authority graph로 수렴한다.
 - claim 응답이 유실되어 Worker가 실행하지 못한 경우에도 claimed ticket을 되살리지 않는다.
   가용성 손실보다 같은 실행 권한의 중복 사용 방지를 우선한다.
 
@@ -443,8 +464,9 @@ Finalization transaction이 성공했지만 HTTP 응답이 유실된 경우, 같
 동일한 lease/ticket/fence/profile/staging identity로 재시도하면 서버 파생 결과를 idempotent하게
 반환한다. 하나라도 다른 retry는 conflict다. transaction commit 전에 lease/fence가 끝나면 attempt는
 abandoned되고 late finalization은 거부된다. Permit이 하나라도 발급되면 실행 failure는 terminal이며
-자동 retry가 같은 Job/ticket을 redispatch할 수 없다. 후속 fresh-identity issuance 설계만 새 attempt를
-만들 수 있다.
+자동 retry가 같은 Job/ticket을 redispatch할 수 없다. 구현된 fresh-identity issuer도 외부 side effect가
+불확실한 그 item을 거부하고, permit이 없으며 capacity가 완전히 반환된 abandoned attempt에만 새
+attempt를 만든다.
 
 ### Source-root CAS confirmation Gate
 
@@ -553,10 +575,10 @@ service attachment를 분리하지만 outbound deny 경계는 아니므로 produ
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
 현재 구현 조각은 전용 exact-KISA Worker, 호출별 durable permit seam, twice-sealed opaque staging
-handoff, schema-v9 server-derived Artifact finalization과 one-item 공통 Gate에서 끝난다. Public Replay
-admission/read API, 자동 new-identity retry issuance, multi-item versioned projection publication과
-negative Control Plane retest는 후속 exit criteria다. Permit은 bearer credential이 아니므로 별도
-redeem mutation을 추가하지 않는다.
+handoff, schema-v9 server-derived Artifact finalization과 one-item 공통 Gate, opaque public
+admission/read API, permit 0개 자동 fresh-identity retry issuance까지 구현됐다. Multi-item versioned
+projection publication과 negative Control Plane retest는 후속 exit criteria다. Permit은 bearer
+credential이 아니므로 별도 redeem mutation을 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -579,11 +601,11 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## Acceptance and validation
 
-2026-07-19 기준 source admission/derivation, durable reservation/permit authority, exact execution
+2026-07-21 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
 context, 전용 Worker transport/execution, opaque staging, schema-v9 server-derived finalization, exact
-response-loss idempotency와 one-item 공통 Gate가 첫 complete positive-confirmation 실행 조각을
-구성한다. Public admission/read API, 자동 fresh-identity retry, multi-item projection publication과
-negative Control Plane retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
+response-loss idempotency, permit 0개 자동 fresh-identity retry와 one-item 공통 Gate가 첫 complete
+positive-confirmation 실행 조각을 구성한다. Multi-item projection publication과 negative Control Plane
+retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
@@ -618,7 +640,10 @@ negative Control Plane retest는 더 넓은 M6-07B 범위의 exit criteria로 �
 - 두 Worker가 같은 queued Replay Job/ticket을 동시에 claim해 정확히 하나만 성공하고 principal,
   lease token, ticket과 fence가 같은 transaction에 결박된다;
 - claim된 Worker가 crash하거나 lease가 만료되면 이전 ticket과 Job은 재큐잉되지 않고 abandoned가
-  되며, retry는 새 attempt/ticket/Replay Run/Job ID를 사용한다;
+  된다. Permit 0개, capacity 완전 반환, 비어 있는 이전 staging capability와 남은 시도 횟수를 모두
+  만족할 때만 retry하며 fresh Run/compilation/context/reservation/staging/Job/ticket identity와 증가한
+  attempt/fence를 사용한다. Permit, staged output, 누락 capability, authority drift 또는 시도 소진은
+  fail closed하고 concurrent issuer는 새 authority graph를 하나만 append한다;
 - stale Worker가 heartbeat, permit, artifact import 완료와 finalization을 시도해도 거부되고 새
   attempt의 budget, rate state 또는 결과를 바꾸지 못한다;
 - 여러 Worker의 동시 permit 요청이 reserved Tool-call budget과 durable rate window를 초과하지 않고,

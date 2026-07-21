@@ -14,7 +14,7 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-19 is:
+The implementation baseline as of 2026-07-21 is:
 
 | Area | Current scope |
 | --- | --- |
@@ -22,8 +22,8 @@ The implementation baseline as of 2026-07-19 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, durable exact-KISA Replay finalization, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization after sealed-output import and permit-lineage verification; it does not independently attest target execution. |
-| Primary gaps | Public Replay admission/read APIs, automatic fresh-identity retry issuance after a terminal Replay attempt, negative Control Plane retest, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization after sealed-output import and permit-lineage verification; it does not independently attest target execution. |
+| Primary gaps | Negative Control Plane retest, multi-item versioned-projection publication, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -199,8 +199,15 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   any permit exists, execution failure is terminal and automatic same-ticket dispatch retry is
   forbidden. Exact response-loss retries of the identical ordinal-bound permit request and the
   identical server finalization request are idempotent; neither retries a Tool dispatch.
-  Public admission/read APIs, fresh-identity retry issuance, and negative Control Plane retest remain
-  incomplete.
+  Opaque public source/batch admission and role-scoped state-read APIs are implemented. When Replay
+  claim polling finds no issued Job, the Control Plane may issue a pending retry only after rereading
+  the immutable source, proving an unchanged Candidate/contract plan, finding no permit, confirming
+  fully released budget/rate reservations, removing an empty prior staging capability, and checking
+  the item remains below its maximum attempts. It preserves the abandoned Job/ticket/Run as history
+  and appends a fresh Replay Run, compilation, execution context, reservations, one-shot Job, ticket,
+  staging capability, attempt, and fence. Any permit, staged output, missing capability, authority
+  mismatch, or exhausted attempt count fails closed; the same Job or ticket is never redispatched.
+  Negative Control Plane retest remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -863,6 +870,24 @@ never accepted from an Artifact consumer. If the pair is omitted, managed Artifa
 Replay-batch source resolution remain unavailable and fail closed. Current durable admission also
 requires a POSIX filesystem/runtime with directory `fsync` support; unsupported environments fail
 closed.
+
+An Operator credential can use the public Replay admission surface:
+
+- `POST /v1/replay/source-artifacts` accepts only an opaque staging ID plus completed producer
+  Run/Job IDs and lets the server import the sealed source as a managed Artifact. A trusted producer
+  must already have placed the sealed Run in the configured server-controlled staging handoff; this
+  endpoint is not a file-upload or path-import API.
+- `POST /v1/replay/batches` accepts only the exact `(artifact_id, repository_version)` locator and
+  an idempotency key, then derives server-owned Candidate, contract, and Replay compilation
+  authority in the `planned` state.
+
+Operator, Approver, and Auditor credentials can read
+`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`, and
+`/tickets/{ticket_id}/finalization`. Responses omit staging IDs, repository storage keys, and lease
+tokens. This public surface never accepts a raw path or URL, caller-authored Candidate, contract,
+Capability, Tool request, verdict, or internal Replay Job kind. First-attempt Job/ticket issuance
+remains a trusted internal service operation, so public admission does not implicitly dispatch a
+Tool.
 
 SQLite is a local compatibility store, not a production multi-Worker queue. SQLite mutation
 transactions take an immediate writer reservation so claim and completion state machines remain

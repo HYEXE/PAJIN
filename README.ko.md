@@ -14,7 +14,7 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 
 ## 현재 구현 상태
 
-2026-07-19 기준 구현 범위는 다음과 같습니다.
+2026-07-21 기준 구현 범위는 다음과 같습니다.
 
 | 영역 | 현재 범위 |
 | --- | --- |
@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, durable exact-KISA Replay finalization, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 sealed output import와 permit lineage 검증 뒤 서버 파생 append-only finalization을 추가하지만 target 실행을 독립적으로 attest하지는 않습니다. |
-| 주요 공백 | Public Replay admission/read API, terminal Replay 시도 뒤의 자동 fresh-identity retry 발행, negative Control Plane retest, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 sealed output import와 permit lineage 검증 뒤 서버 파생 append-only finalization을 추가하지만 target 실행을 독립적으로 attest하지는 않습니다. |
+| 주요 공백 | negative Control Plane retest, multi-item versioned projection publication, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -189,8 +189,15 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   발급에서 budget/rate unit을 이미 소비한 authority를 다시 검증합니다.
   Permit이 하나라도 존재한 뒤 실행이 실패하면 terminal이며 같은 ticket의 자동 dispatch retry는
   금지됩니다. 동일한 ordinal-bound permit 요청과 동일한 서버 finalization 요청의 정확한
-  response-loss retry는 모두 멱등이며 어느 쪽도 Tool dispatch를 재시도하지 않습니다. Public admission/read
-  API, fresh-identity retry 발행과 negative Control Plane retest는 아직 완료되지 않았습니다.
+  response-loss retry는 모두 멱등이며 어느 쪽도 Tool dispatch를 재시도하지 않습니다. Opaque public
+  source/batch admission과 역할 기반 상태 조회 API도 구현됐습니다. Replay claim polling에서 발급된
+  Job이 없을 때 Control Plane은 immutable source 재로딩, Candidate/contract plan 불변, permit 0개,
+  budget/rate reservation 완전 반환, 이전 staging capability가 존재하고 비어 있음, 최대 시도 횟수
+  미만을 모두 검증한 경우에만 pending retry를 발행합니다. abandoned Job/ticket/Run은 이력으로
+  보존하고 fresh Replay Run, compilation, execution context, reservation, one-shot Job, ticket, staging
+  capability, attempt와 fence를 append합니다. Permit, staged output, 누락 capability, authority 불일치
+  또는 시도 소진이 하나라도 있으면 fail closed하며 같은 Job이나 ticket을 다시 dispatch하지
+  않습니다. Negative Control Plane retest는 아직 완료되지 않았습니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 
@@ -842,6 +849,22 @@ Control Plane service account만 접근할 수 있게 하고 Worker 또는 사�
 consumer에게서 입력받지 않습니다. 두 값을 생략하면 managed Artifact admission과 Replay-batch
 source resolution은 사용할 수 없으며 fail closed합니다. 현재 durable admission은 directory
 `fsync`를 지원하는 POSIX filesystem/runtime도 필요하며, 미지원 환경에서는 fail closed합니다.
+
+Operator credential은 다음 공개 Replay admission API를 사용할 수 있습니다.
+
+- `POST /v1/replay/source-artifacts`: opaque staging ID와 완료된 producer Run/Job ID만 받아
+  서버가 봉인된 source를 managed Artifact로 반입합니다. 신뢰된 producer가 봉인 Run을 설정된
+  server-controlled staging handoff에 먼저 배치해야 하며, 이 endpoint는 파일 upload나 path import
+  API가 아닙니다.
+- `POST /v1/replay/batches`: 정확한 `(artifact_id, repository_version)` locator와 idempotency key만
+  받아 서버 소유 Candidate/contract/Replay compilation을 `planned` 상태로 파생합니다.
+
+`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}` 및
+`/tickets/{ticket_id}/finalization` 조회는 Operator, Approver, Auditor가 사용할 수 있습니다.
+응답에는 staging ID, repository storage key, lease token이 포함되지 않습니다. 이 공개 표면은 raw
+path/URL, caller-authored Candidate·contract·Capability·Tool request·verdict 또는 내부 Replay Job kind를
+받지 않습니다. 첫 시도 Job/ticket 발행은 계속 신뢰된 내부 service operation이며 공개 admission이
+암시적으로 Tool을 dispatch하지 않습니다.
 
 SQLite는 로컬 compatibility store이며 production multi-Worker queue가 아닙니다. SQLite 변경
 transaction은 즉시 writer reservation을 획득해 프로세스 간 claim 및 completion state machine을

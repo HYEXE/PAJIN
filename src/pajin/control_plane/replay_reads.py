@@ -3,7 +3,13 @@
 from __future__ import annotations
 
 from pajin.control_plane.database import ControlPlaneRepository
-from pajin.control_plane.models import ReplayBatchView, ReplayItemView, ReplayTicketView
+from pajin.control_plane.models import (
+    ArtifactLocator,
+    ReplayBatchView,
+    ReplayFinalizationView,
+    ReplayItemView,
+    ReplayTicketView,
+)
 from pajin.control_plane.records import ControlPlaneRecords
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
 
@@ -32,3 +38,30 @@ class ReplayReadService:
     def get_ticket(self, ticket_id: str) -> ReplayTicketView:
         with self._repository.read_transaction() as session:
             return self._views.replay_ticket(self._records.replay_ticket(session, ticket_id))
+
+    def get_finalization(self, ticket_id: str) -> ReplayFinalizationView | None:
+        """Return one server-derived finalization without exposing Worker secrets."""
+
+        with self._repository.read_transaction() as session:
+            ticket = self._records.replay_ticket(session, ticket_id)
+            finalization = self._records.replay_finalization_for_ticket(session, ticket_id)
+            if finalization is None:
+                return None
+            job = self._records.job(session, ticket.job_id)
+            item = self._records.replay_item(session, ticket.item_id)
+            batch = self._records.replay_batch(session, ticket.batch_id)
+            artifact = self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=finalization.artifact_id,
+                    repository_version=finalization.repository_version,
+                ),
+            )
+            return self._views.replay_finalization(
+                finalization,
+                job=job,
+                batch=batch,
+                item=item,
+                ticket=ticket,
+                artifact=artifact,
+            )

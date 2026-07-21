@@ -99,9 +99,9 @@ fenced ticket, obtains a durable permit immediately before every Tool dispatch, 
 server-reserved opaque staging slot, and submits no path, ArtifactRef, result, digest, or verdict.
 The server imports and reopens the sealed output, verifies the exact source/compilation/ticket/permit
 lineage, derives the ADR 0027 common Gate decision, and atomically commits finalization and terminal
-authority state. Compose now wires that daemon and its owner-only staging handoff. Public Replay
-admission/read APIs, automatic fresh-identity retry issuance, negative Control Plane retest, and
-multi-host/object-store handoff remain outstanding.
+authority state. Compose now wires that daemon and its owner-only staging handoff. Opaque public
+source/batch admission, role-scoped state reads, and automatic fresh-identity retry issuance are also
+implemented. Negative Control Plane retest and multi-host/object-store handoff remain outstanding.
 
 ## Context
 
@@ -166,9 +166,10 @@ secrets, and opaque output-staging identity. The Job payload, claim envelope, pr
 permit issuance now preserve or transitively revalidate that authority graph. The v6→v7 migration
 refuses dispatchable legacy authority rather than inventing missing issuance-time bytes. The
 2026-07-19 implementation adds the dedicated executor, pre-dispatch permit seam, opaque staging
-handoff, server-side import/finalization, and one-item common Gate described below. Public
-admission/read APIs, fresh-identity retry issuance, and negative Control Plane retest remain outside
-the completed slice.
+handoff, server-side import/finalization, and one-item common Gate described below. The 2026-07-21
+implementation adds opaque public source/batch admission, role-scoped state reads, and automatic
+fresh-identity retry issuance for zero-permit terminal attempts. Negative Control Plane retest
+remains outside the completed slice.
 
 M6-07B therefore cannot be implemented merely by adding a public `JobKind.REPLAY`, or by storing a
 Worker-submitted Candidate, Capability Grant, contract, `runPath`, and verdict. The at-least-once
@@ -240,6 +241,23 @@ source root, or eligibility flag is not an authority input. The planned record's
 can expire before issuance and is never Worker execution authority. A Worker claim envelope carries
 only the fresh compilation and short-lived, non-delegable Capability that the server bound during
 the implemented durable issuance transaction.
+
+### Public Replay admission and reads
+
+Only an Operator may call `POST /v1/replay/source-artifacts` and `POST /v1/replay/batches`. Source
+admission accepts only an opaque staging ID, completed producer Run/Job IDs, and an idempotency key;
+batch admission accepts only the exact `(artifact_id, repository_version)` locator and an
+idempotency key. The server derives and verifies the sealed source, Candidate, contract,
+compilation, and all digests. Raw paths or URLs, caller-authored Candidates, contracts,
+Capabilities, Tool requests, verdicts, and the internal Replay Job kind do not exist in the public
+contract. A trusted producer must have completed the server-controlled staging handoff before source
+admission; the endpoint neither uploads bytes nor imports a caller-selected path.
+
+Operators, Approvers, and Auditors may read batches, items, tickets, and finalizations by exact ID.
+Responses contain opaque Artifact identities and server-derived authority, but no staging ID,
+repository storage key, or lease token. Public batch admission creates only the `planned` proof and
+does not dispatch a Tool. First-attempt Job/ticket issuance remains a trusted internal service
+operation that re-verifies the source.
 
 ### PostgreSQL Replay aggregate and forward migration
 
@@ -316,8 +334,12 @@ follows:
 - when the lease ends after a heartbeat failure or explicit retryable failure, the existing Job is
   made terminal and the claimed ticket becomes `abandoned`. `_expire_leases` must not return that
   Job/ticket to queued/issued.
-- if retry is allowed, the server rechecks source root, cancellation, policy, budget, and rate
-  state, then creates a new attempt number, ticket ID, Replay Run ID, and Job ID.
+- if retry is allowed, claim polling rereads the immutable source and rechecks the complete stable
+  item plan, source root, cancellation, policy, maximum attempt count, zero-permit history, fully
+  released budget/rate reservations, and an existing empty prior staging capability. It preserves
+  the abandoned graph, removes the empty capability, and appends a fresh attempt number, fence,
+  Replay Run, compilation, execution context, reservations, staging capability, ticket, and Job.
+  Concurrent PostgreSQL and SQLite issuers converge on one committed authority graph.
 - even when a claim response is lost and the Worker cannot execute, the claimed ticket is not
   revived. Preventing duplicate use of the same execution authority takes priority over the loss
   of availability.
@@ -481,8 +503,9 @@ authenticated principal with the same lease/ticket/fence/profile/staging identit
 returns the stored server-derived result. A retry differing in any value is a conflict. If the
 lease/fence ends before the transaction commits, the attempt is abandoned and late finalization is
 rejected. Once any permit has been issued, execution failure is terminal and automatic retry cannot
-redispatch the same Job/ticket; only a future fresh-identity issuance design may create another
-attempt.
+redispatch the same Job/ticket. The implemented fresh-identity issuer also refuses that item because
+external side effects are uncertain; it creates a new attempt only when the abandoned attempt has no
+permit and its capacity was fully released.
 
 ### Source-root CAS confirmation Gate
 
@@ -598,11 +621,12 @@ The following are outside the first vertical slice of this ADR:
 - a cancellation-acknowledgement protocol through which the Control Plane proves physical fleet
   quiescence.
 
-The currently implemented slice ends at the dedicated exact-KISA Worker, per-dispatch durable
-permit seam, twice-sealed opaque staging handoff, schema-v9 server-derived Artifact finalization, and
-one-item common Gate. Public Replay admission/read APIs, automatic new-identity retry issuance,
-multi-item versioned projection publication, and negative Control Plane retest remain follow-up exit
-criteria. Because a permit is not a bearer credential, a separate redeem mutation is not added.
+The currently implemented slice includes the dedicated exact-KISA Worker, per-dispatch durable
+permit seam, twice-sealed opaque staging handoff, schema-v9 server-derived Artifact finalization,
+one-item common Gate, opaque public admission/read APIs, and automatic zero-permit fresh-identity
+retry issuance. Multi-item versioned projection publication and negative Control Plane retest remain
+follow-up exit criteria. Because a permit is not a bearer credential, a separate redeem mutation is
+not added.
 
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
@@ -626,12 +650,12 @@ cross-service authentication.
 
 ## Acceptance and validation
 
-As of 2026-07-19, source admission/derivation, durable reservation and permit authority, exact
+As of 2026-07-21, source admission/derivation, public admission/read APIs, durable reservation and permit authority, exact
 execution contexts, dedicated Worker transport/execution, opaque staging, schema-v9 server-derived
-finalization, exact response-loss idempotency, and the one-item common Gate cover the first complete
-positive-confirmation execution slice. Public admission/read APIs, automatic fresh-identity retry,
-multi-item projection publication, and negative Control Plane retest continue to be exit criteria
-for the broader M6-07B scope.
+finalization, exact response-loss idempotency, automatic zero-permit fresh-identity retry, and the
+one-item common Gate cover the first complete positive-confirmation execution slice. Multi-item
+projection publication and negative Control Plane retest continue to be exit criteria for the broader
+M6-07B scope.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
@@ -668,7 +692,11 @@ Implementation of this ADR is complete when automated tests prove at least that:
 - when two Workers concurrently claim the same queued Replay Job/ticket, exactly one succeeds and
   the principal, lease token, ticket, and fence are bound in the same transaction;
 - when a claiming Worker crashes or its lease expires, the old ticket and Job are not requeued and
-  become abandoned, while retry uses a new attempt/ticket/Replay Run/Job ID;
+  become abandoned; only a zero-permit, fully released attempt with an empty prior staging capability
+  and remaining attempt count may retry, and it uses fresh Run/compilation/context/reservation/
+  staging/Job/ticket identities plus an incremented attempt and fence; any permit, staged output,
+  missing capability, authority drift, or exhausted count fails closed, and concurrent issuers append
+  only one new authority graph;
 - a stale Worker attempting heartbeat, permit, artifact-import completion, or finalization is
   rejected and cannot alter the new attempt's budget, rate state, or result;
 - concurrent permit requests from multiple Workers do not exceed reserved Tool-call budgets or the

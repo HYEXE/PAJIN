@@ -163,6 +163,7 @@ _CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.valu
 _REVOCABLE_APPROVAL_STATES = frozenset({ApprovalState.PENDING.value, ApprovalState.APPROVED.value})
 _INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
 _REPLAY_TOOL_PERMIT_TTL = timedelta(seconds=30)
+_REPLAY_RETRY_ISSUER_ACTOR = "control-plane:replay-retry"
 _SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
 _SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 _REPLAY_OUTPUT_ARTIFACT_SCHEMA_KIND = "pajin.replay.output.sealed.v1"
@@ -655,6 +656,9 @@ class ControlPlaneService:
     def get_replay_ticket(self, ticket_id: str) -> ReplayTicketView:
         return self._replay_reads.get_ticket(ticket_id)
 
+    def get_replay_finalization(self, ticket_id: str) -> ReplayFinalizationView | None:
+        return self._replay_reads.get_finalization(ticket_id)
+
     def get_run(self, run_id: str) -> RunView:
         with self.repository.read_transaction() as session:
             return self._views.run(self._records.run(session, run_id))
@@ -819,6 +823,11 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ReplayExecutionClaimView | None:
+        claimed = self._claims.claim_replay_job(request, actor=actor)
+        if claimed is not None:
+            return claimed
+        if not self._replay_issuance.issue_pending_replay_retries(actor=_REPLAY_RETRY_ISSUER_ACTOR):
+            return None
         return self._claims.claim_replay_job(request, actor=actor)
 
     def heartbeat_replay_job(

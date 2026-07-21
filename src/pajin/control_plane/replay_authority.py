@@ -475,6 +475,72 @@ def require_fresh_issuance_derivation(
             raise StateConflict("fresh Replay derivation changed the planned item set")
 
 
+def require_fresh_retry_derivation(
+    batch: ReplayBatchRecord,
+    items: list[ReplayItemRecord],
+    *,
+    derived: DerivedKISAReplayBatch,
+    source: ArtifactRef,
+) -> None:
+    """Require a fresh compilation set without rewriting the stable item plan.
+
+    Retry derivation rereads the immutable source and may mint only new execution
+    identities. Candidate, contract, required-attempt, and policy authority must
+    remain identical to the admitted batch plan.
+    """
+
+    if (
+        derived.artifact_ref != source
+        or derived.candidate_run_id != source.run_id
+        or derived.source_root_digest != source.integrity_root_digest
+        or derived.campaign.metadata.name != derived.campaign_name
+        or derived.campaign.spec.mode is not derived.mode
+        or derived.campaign_name != batch.campaign_name
+        or derived.mode.value != batch.mode
+        or derived.purpose.value != batch.purpose
+        or derived.policy_version != batch.policy_version
+        or derived.required_tool_calls
+        != sum(admitted.contract.repetitions for admitted in derived.items)
+        or derived.required_request_units
+        != sum(admitted.required_request_units for admitted in derived.items)
+        or len(items) != len(derived.items)
+        or not items
+    ):
+        raise StateConflict("fresh Replay retry derivation does not match the admitted batch")
+    if len({admitted.replay_run_id for admitted in derived.items}) != len(derived.items):
+        raise StateConflict("fresh Replay retry derivation reused a Run identity")
+
+    derived_by_candidate = {admitted.candidate_id: admitted for admitted in derived.items}
+    if len(derived_by_candidate) != len(derived.items):
+        raise StateConflict("fresh Replay retry derivation has duplicate Candidates")
+    for item in items:
+        admitted = derived_by_candidate.get(item.candidate_id)
+        if admitted is None:
+            raise StateConflict("fresh Replay retry derivation changed the admitted item set")
+        binding = admitted.compilation.spec.binding
+        if not (
+            item.candidate_digest == admitted.candidate_digest
+            and item.contract_digest == admitted.contract_digest
+            and item.required_attempts == admitted.required_attempts
+            and item.max_attempts == admitted.max_attempts
+            and item.replay_run_id != admitted.replay_run_id
+            and item.compilation_digest != admitted.compilation_digest
+            and item.grant_digest != admitted.grant_digest
+            and admitted.required_request_units > 0
+            and binding.candidate_id == admitted.candidate_id
+            and binding.candidate_run_id == batch.source_artifact_run_id
+            and binding.replay_run_id == admitted.replay_run_id
+            and binding.scenario_id == admitted.scenario.scenario_id
+            and binding.threat_class in admitted.scenario.threat_classes
+            and admitted.scenario.tool_id == binding.tool_id
+            and admitted.scenario.method.upper() == admitted.compilation.spec.method
+            and binding.tool_id == AIChatProbeTool.spec.tool_id
+            and binding.tool_version == AIChatProbeTool.spec.version
+            and admitted.compilation.spec.risk_tier == AIChatProbeTool.spec.risk_tier
+        ):
+            raise StateConflict("fresh Replay retry derivation changed admitted authority")
+
+
 def trusted_replay_compilation(record: ReplayCompilationRecord) -> ReplayCompilation:
     try:
         raw = parse_strict_json_bytes(
