@@ -304,13 +304,16 @@ class ControlPlaneViewMapper:
         retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayProjectionView:
         try:
-            authority_type = (
-                ReplayRetestProjectionInputAuthority
-                if record.input_authority.get("apiVersion")
-                == "pajin.control-plane.replay-projection-inputs/v2"
-                else ReplayProjectionInputAuthority
-            )
-            authority = authority_type.model_validate(record.input_authority)
+            authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
+            api_version = record.input_authority.get("api_version")
+            if api_version == "pajin.control-plane.replay-projection-inputs/v1":
+                authority = ReplayProjectionInputAuthority.model_validate(record.input_authority)
+            elif api_version == "pajin.control-plane.replay-projection-inputs/v2":
+                authority = ReplayRetestProjectionInputAuthority.model_validate(
+                    record.input_authority
+                )
+            else:
+                raise ValueError("unsupported Replay projection input authority version")
         except ValueError as exc:
             raise StateConflict("durable Replay projection inputs are invalid") from exc
         authority_digest = replay_context_digest(

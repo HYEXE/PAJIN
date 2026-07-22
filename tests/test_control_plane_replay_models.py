@@ -29,6 +29,8 @@ from pajin.control_plane.models import (
     ReplayItemView,
     ReplayJobPayload,
     ReplayLeaseRequest,
+    ReplayProjectionItemAuthority,
+    ReplayRetestProjectionInputAuthority,
     ReplayTicketState,
     ReplayTicketView,
     ReplayToolPermitRequest,
@@ -94,6 +96,52 @@ def _batch_request(**updates: object) -> CreateReplayBatchRequest:
     }
     values.update(updates)
     return CreateReplayBatchRequest.model_validate(values)
+
+
+def test_retest_projection_input_authority_round_trips_database_json_version() -> None:
+    replay_run_id = f"run_{'7' * 32}"
+    authority = ReplayRetestProjectionInputAuthority(
+        batch_id=f"replay-batch_{'1' * 32}",
+        source=_artifact(),
+        retest_source=_artifact(
+            artifact_id=f"artifact_{'2' * 32}",
+            content_digest="3" * 64,
+            producer_run_id=f"run_{'4' * 32}",
+            run_id=f"run_{'5' * 32}",
+            integrity_root_digest="6" * 64,
+            created_by="retest-operator",
+        ),
+        batch_cas_version=4,
+        items=[
+            ReplayProjectionItemAuthority(
+                ordinal=0,
+                item_id=f"replay-item_{'8' * 32}",
+                ticket_id=f"replay-ticket_{'9' * 32}",
+                finalization_id=f"replay-finalization_{'a' * 32}",
+                replay_run_id=replay_run_id,
+                compilation_digest="b" * 64,
+                output=_artifact(
+                    artifact_id=f"artifact_{'c' * 32}",
+                    content_digest="d" * 64,
+                    producer_run_id=replay_run_id,
+                    run_id=replay_run_id,
+                    integrity_root_digest="e" * 64,
+                    created_by="replay-projection-publisher",
+                ),
+                artifact_set_digest="f" * 64,
+                receipt_seal_root_digest="1" * 64,
+                gate_decision_digest="2" * 64,
+                result_digest="3" * 64,
+                finalized_at=NOW,
+            )
+        ],
+    )
+
+    stored = authority.model_dump(mode="json", by_alias=True)
+
+    assert stored["api_version"] == "pajin.control-plane.replay-projection-inputs/v2"
+    assert "apiVersion" not in stored
+    assert ReplayRetestProjectionInputAuthority.model_validate(stored) == authority
 
 
 def _claim_view_payload() -> dict[str, object]:
