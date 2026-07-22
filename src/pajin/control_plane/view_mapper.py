@@ -281,7 +281,7 @@ class ControlPlaneViewMapper:
         return ReplayFinalizationView(
             finalization_id=record.finalization_id,
             job=cls.job(job),
-            batch=cls.replay_batch(batch),
+            batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
             item=cls.replay_item(item),
             ticket=cls.replay_ticket(ticket),
             artifact=cls.artifact(artifact),

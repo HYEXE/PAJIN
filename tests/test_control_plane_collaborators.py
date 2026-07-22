@@ -41,8 +41,8 @@ class _ReadRepository:
 
 class _ReplayRecords:
     @staticmethod
-    def replay_batch(session: object, record_id: str) -> tuple[str, object, str]:
-        return ("batch", session, record_id)
+    def replay_batch(session: object, record_id: str) -> SimpleNamespace:
+        return SimpleNamespace(kind="batch", session=session, batch_id=record_id)
 
     @staticmethod
     def replay_item(session: object, record_id: str) -> tuple[str, object, str]:
@@ -52,10 +52,22 @@ class _ReplayRecords:
     def replay_ticket(session: object, record_id: str) -> tuple[str, object, str]:
         return ("ticket", session, record_id)
 
+    @staticmethod
+    def replay_retest_source(
+        session: object,
+        record_id: str,
+    ) -> None:
+        return None
+
 
 class _ReplayViews:
     @staticmethod
-    def replay_batch(record: object) -> tuple[str, object]:
+    def replay_batch(
+        record: object,
+        *,
+        retest_artifact: object | None = None,
+    ) -> tuple[str, object]:
+        assert retest_artifact is None
         return ("batch-view", record)
 
     @staticmethod
@@ -84,7 +96,10 @@ def test_replay_read_collaborator_owns_one_read_transaction_per_view() -> None:
     item = reads.get_item("item-1")
     ticket = reads.get_ticket("ticket-1")
 
-    assert batch == ("batch-view", ("batch", repository.sessions[0], "batch-1"))
+    assert batch == (
+        "batch-view",
+        SimpleNamespace(kind="batch", session=repository.sessions[0], batch_id="batch-1"),
+    )
     assert item == ("item-view", ("item", repository.sessions[1], "item-1"))
     assert ticket == ("ticket-view", ("ticket", repository.sessions[2], "ticket-1"))
     assert len(repository.sessions) == 3

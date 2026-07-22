@@ -1968,10 +1968,11 @@ class ControlPlaneService:
         *,
         batch: ReplayBatchRecord,
         item: ReplayItemRecord,
+        finalization: ReplayFinalizationRecord,
         lock: bool,
     ) -> ReplayRetestContext | None:
         statement = select(ReplayCompilationRecord).where(
-            ReplayCompilationRecord.item_id == item.item_id
+            ReplayCompilationRecord.compilation_id == finalization.compilation_id
         )
         if lock:
             statement = statement.with_for_update()
@@ -1982,7 +1983,15 @@ class ControlPlaneService:
         context = compilation.validation_packet.retest_context
         if not (
             record.batch_id == batch.batch_id
+            and record.item_id == item.item_id
+            and record.candidate_id == item.candidate_id
+            and record.candidate_digest == item.candidate_digest
+            and record.contract_digest == item.contract_digest
+            and record.replay_run_id == item.replay_run_id
+            and record.replay_run_id == finalization.replay_run_id
+            and record.compilation_id == finalization.compilation_id
             and record.compilation_digest == item.compilation_digest
+            and record.grant_digest == item.grant_digest
         ):
             raise StateConflict("Replay projection compilation graph is inconsistent")
         if batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value:
@@ -2058,6 +2067,9 @@ class ControlPlaneService:
                 and finalization.replay_run_id == item.replay_run_id
                 and ticket.item_id == item.item_id
                 and ticket.batch_id == batch.batch_id
+                and ticket.replay_run_id == item.replay_run_id
+                and ticket.compilation_id == finalization.compilation_id
+                and ticket.compilation_digest == item.compilation_digest
                 and ticket.state == ReplayTicketState.FINALIZED.value
                 and ticket.result_digest == finalization.result_digest
                 and output_ref.run_id == item.replay_run_id
@@ -2067,6 +2079,7 @@ class ControlPlaneService:
                 session,
                 batch=batch,
                 item=item,
+                finalization=finalization,
                 lock=lock,
             )
             if retest_context is not None:
