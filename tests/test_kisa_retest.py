@@ -19,6 +19,7 @@ from pajin.domain.replay import ReplayOracleVerdict, ReplayPurpose
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import EvaluationThresholds
 from pajin.modes.ai_redteam.replay import (
+    KISAReplayBatchOutcome,
     KISAReplayCoordinator,
     KISARetestReplayCoordinator,
 )
@@ -615,8 +616,16 @@ def test_hardened_worker_replay_remains_inconclusive_without_external_attestatio
         rate_limits=rate_limits,
         vulnerable=False,
     )
+    rebuilt = KISAReplayBatchOutcome.from_verified_retest_results(
+        baseline.run_path,
+        retest.run_path,
+        [result.run_path for result in batch.verified_results.values()],
+        tickets=batch.tickets,
+        contexts=batch.contexts,
+    )
+    assert rebuilt.records == batch.records
 
-    result = service.compare(baseline.run_path, retest.run_path, batch)
+    result = service.compare(baseline.run_path, retest.run_path, rebuilt)
 
     assert len(plan.actions) == 3
     assert result.assessment.summary.fixed == 0

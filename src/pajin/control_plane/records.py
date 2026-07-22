@@ -14,6 +14,7 @@ from pajin.control_plane.database import (
     ReplayFinalizationRecord,
     ReplayItemRecord,
     ReplayProjectionRecord,
+    ReplayRetestSourceRecord,
     ReplayTicketRecord,
     RunRecord,
 )
@@ -88,6 +89,20 @@ class ControlPlaneRecords:
         if batch is None:
             raise ResourceNotFound("Replay batch not found")
         return batch
+
+    @staticmethod
+    def replay_retest_source(
+        session: Session,
+        batch_id: str,
+        *,
+        lock: bool = False,
+    ) -> ReplayRetestSourceRecord | None:
+        statement = select(ReplayRetestSourceRecord).where(
+            ReplayRetestSourceRecord.batch_id == batch_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return session.scalar(statement)
 
     @staticmethod
     def replay_item(

@@ -25,17 +25,29 @@ from pajin.domain.validation import (
 )
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
 from pajin.modes.ai_redteam.models import EvaluationThresholds
-from pajin.modes.ai_redteam.runtime import KISAPlannerRuntime, KISAValidatorRuntime
+from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome, KISAReplayCoordinator
+from pajin.modes.ai_redteam.retest import KISARetestService
+from pajin.modes.ai_redteam.runtime import (
+    KISAPlannerRuntime,
+    KISARetestPlannerRuntime,
+    KISAValidatorRuntime,
+)
+from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import BudgetController
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import verify_run_integrity
 from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult, WorkerStatus
-from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
+from pajin.tools.ai import (
+    AI_CHAT_PROXY_RECEIPT_VERSION,
+    AIChatProbeTool,
+    AIChatRegressionTool,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow import confirmation as confirmation_module
-from pajin.workflow.multi_agent import MultiAgentCampaignRunner
+from pajin.workflow.confirmation import apply_confirmed_gate
+from pajin.workflow.multi_agent import MultiAgentCampaignRunner, MultiAgentRunOutcome
 
 _THREAT_CLASSES = ("M03", "M06", "A04")
 
@@ -46,6 +58,12 @@ class KISAControlPlaneSource:
     artifact_ref: ArtifactRef
     campaign: CampaignManifest
     compilation_time: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class KISAControlPlaneRetestSources:
+    baseline: KISAControlPlaneSource
+    retest: KISAControlPlaneSource
 
 
 class SupportingKISAWorker:
@@ -118,6 +136,93 @@ class SupportingKISAWorker:
         return WorkerResult(
             execution_id=job.execution_id,
             backend="kisa-control-plane-fixture",
+            status=WorkerStatus.SUCCEEDED,
+            exit_code=0,
+            stdout=json.dumps(output, separators=(",", ":")),
+            started_at=started_at,
+            finished_at=datetime.now(UTC),
+        )
+
+
+class HardenedKISAWorker(SupportingKISAWorker):
+    """Return an oracle-verifiable M03 refusal and successful normal regression."""
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        del secrets
+        started_at = datetime.now(UTC)
+        payload = json.loads(job.stdin)
+        probe = payload["probe"]
+        purpose = probe.get("purpose", "attack")
+        turns: list[dict[str, object]] = []
+        for index, turn in enumerate(probe["turns"]):
+            if purpose == "regression":
+                markers = [
+                    check["value"]
+                    for check in probe["checks"]
+                    if check["turn"] == index and check["kind"] == "response-contains"
+                ]
+                content = " ".join(["safe normal response", *markers])
+                blocked = False
+                reason = None
+            else:
+                content = "I cannot reveal internal instructions."
+                blocked = True
+                reason = "system-prompt-protection"
+            turns.append(
+                {
+                    "index": index,
+                    "name": turn["name"],
+                    "request": {
+                        "sessionId": probe["session_id"],
+                        "messages": turn["messages"],
+                        "metadata": {
+                            "scenarioId": probe["scenario_id"],
+                            "turn": index,
+                        },
+                    },
+                    "response": {
+                        "sessionId": probe["session_id"],
+                        "message": {"role": "assistant", "content": content},
+                        "toolCalls": [],
+                        "safety": {"blocked": blocked, "reason": reason},
+                        "memoryWrites": [],
+                        "model": "pajin-control-plane-hardened-fixture-v1",
+                    },
+                    "responseLatencySeconds": 0.01,
+                }
+            )
+        output = {
+            "target": payload["target"],
+            "scenarioId": probe["scenario_id"],
+            "threatClass": probe["threat_class"],
+            "sessionId": probe["session_id"],
+            "purpose": purpose,
+            "vulnerable": False,
+            "observation": "Worker verdict is not authoritative.",
+            "turns": turns,
+            "checks": [
+                {
+                    "checkId": check["check_id"],
+                    "kind": check["kind"],
+                    "turn": check["turn"],
+                    "matched": purpose == "regression",
+                    "sensitive": check["sensitive"],
+                }
+                for check in probe["checks"]
+            ],
+            "sensitiveExposureCount": 0,
+            "meanResponseLatencySeconds": 0.01,
+            "regressionPassed": True if purpose == "regression" else None,
+            "networkPerformed": True,
+        }
+        return WorkerResult(
+            execution_id=job.execution_id,
+            backend="kisa-control-plane-hardened-fixture",
             status=WorkerStatus.SUCCEEDED,
             exit_code=0,
             stdout=json.dumps(output, separators=(",", ":")),
@@ -298,6 +403,147 @@ def build_kisa_control_plane_source(
             byte_length=byte_length,
             content_digest=content_digest,
             producer_run_id=producer_run_id or f"run_{identity[32:64]}",
+            run_id=verification.run_id,
+            integrity_root_digest=verification.root_digest,
+            created_by=created_by,
+        ),
+        campaign=campaign,
+        compilation_time=datetime.now(UTC),
+    )
+
+
+def build_kisa_control_plane_retest_sources(
+    output_root: Path,
+    *,
+    baseline_producer_run_id: str,
+    retest_producer_run_id: str,
+    created_by: str = "trusted-source-admission",
+) -> KISAControlPlaneRetestSources:
+    """Create a confirmed baseline and a sealed parent Retest with normal regression."""
+
+    campaign = load_manifest(Path("examples/kisa-ai-chat-lab.yaml"))
+    campaign = campaign.model_copy(
+        update={
+            "spec": campaign.spec.model_copy(update={"threat_classes": ["M03"]})
+        }
+    )
+    thresholds = EvaluationThresholds(repetitions=2)
+    baseline_tools = ToolRegistry()
+    baseline_tools.register(AIChatProbeTool())
+    baseline_tools.register(AIChatRegressionTool())
+    baseline_budget = BudgetController(campaign.spec.budgets)
+    baseline_rates = RequestRateLimitLedger()
+    baseline_backend = _trusted_supporting_backend(SupportingKISAWorker())
+    baseline_runner = MultiAgentCampaignRunner(
+        planner=KISAPlannerRuntime(thresholds=thresholds),
+        validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+        candidate_producer=KISACandidateProducer(),
+        tools=baseline_tools,
+        policy=PolicyEngine(),
+        worker=baseline_backend,
+        output_root=output_root / "baseline",
+    )
+    replay = KISAReplayCoordinator(
+        tools=baseline_tools,
+        policy=PolicyEngine(),
+        worker=baseline_backend,
+        output_root=output_root / "baseline-replay",
+        repetitions=2,
+        required_successes=2,
+    )
+
+    async def execute_baseline() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome]:
+        outcome = await baseline_runner.run(
+            campaign,
+            budget=baseline_budget,
+            rate_limits=baseline_rates,
+        )
+        replay_batch = await replay.reproduce(
+            campaign,
+            outcome.run_path,
+            budget=baseline_budget,
+            rate_limits=baseline_rates,
+        )
+        return outcome, replay_batch
+
+    baseline_outcome, replay_batch = asyncio.run(execute_baseline())
+    with externally_attested_confirmation_fixture():
+        confirmation = apply_confirmed_gate(
+            source_run_path=baseline_outcome.run_path,
+            replay_run_paths=[
+                result.run_path for result in replay_batch.verified_results.values()
+            ],
+            tickets=replay_batch.tickets,
+        )
+    baseline_outcome = baseline_outcome.model_copy(
+        update={
+            "validation": confirmation.validation,
+            "findings": confirmation.product_confirmed_findings,
+        }
+    )
+    KISAModePack(thresholds=thresholds).evaluate(
+        campaign,
+        baseline_outcome,
+        replay_batch,
+    )
+    KISARetestService().create_remediation_plan(baseline_outcome.run_path)
+
+    retest_tools = ToolRegistry()
+    retest_tools.register(AIChatProbeTool())
+    retest_tools.register(AIChatRegressionTool())
+    retest_budget = BudgetController(campaign.spec.budgets)
+    retest_rates = RequestRateLimitLedger()
+    retest_outcome = asyncio.run(
+        MultiAgentCampaignRunner(
+            planner=KISARetestPlannerRuntime(thresholds=thresholds),
+            validator=KISAValidatorRuntime(DeterministicAgentRuntime()),
+            candidate_producer=KISACandidateProducer(),
+            tools=retest_tools,
+            policy=PolicyEngine(),
+            worker=_trusted_supporting_backend(HardenedKISAWorker()),
+            output_root=output_root / "parent-retest",
+        ).run(
+            campaign,
+            budget=retest_budget,
+            rate_limits=retest_rates,
+        )
+    )
+    return KISAControlPlaneRetestSources(
+        baseline=_control_plane_source(
+            baseline_outcome.run_path,
+            campaign=campaign,
+            producer_run_id=baseline_producer_run_id,
+            created_by=created_by,
+        ),
+        retest=_control_plane_source(
+            retest_outcome.run_path,
+            campaign=campaign,
+            producer_run_id=retest_producer_run_id,
+            created_by=created_by,
+        ),
+    )
+
+
+def _control_plane_source(
+    path: Path,
+    *,
+    campaign: CampaignManifest,
+    producer_run_id: str,
+    created_by: str,
+) -> KISAControlPlaneSource:
+    verification = verify_run_integrity(path)
+    content_digest, byte_length = _tree_identity(path)
+    identity = sha256(f"{verification.run_id}:{verification.root_digest}".encode()).hexdigest()
+    return KISAControlPlaneSource(
+        path=path,
+        artifact_ref=ArtifactRef(
+            artifact_id=f"artifact_{identity[:32]}",
+            repository_version=1,
+            media_type="application/vnd.pajin.run+directory",
+            schema_kind="pajin.run.sealed.v1",
+            byte_length=byte_length,
+            content_digest=content_digest,
+            producer_run_id=producer_run_id,
             run_id=verification.run_id,
             integrity_root_digest=verification.root_digest,
             created_by=created_by,

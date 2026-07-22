@@ -154,8 +154,13 @@ append한다. 2026-07-22 schema-v11은 append-only `cp_replay_projections`, 서�
 DB lock 밖의 전체 finalized receipt 재검증과 공통 Gate, source root·batch CAS·정렬된 finalization 집합을
 재확인하는 짧은 publication transaction, 역할 기반 projection 조회 API를 구현했다. Finalized item은
 배치 전체가 준비될 때까지 `verified`에 머물고, publication commit만 모든 item과 batch를
-`gated`/`completed`로 바꾼다. Negative Control Plane retest, portable/off-host 서명 proof, 다른 Mode의
-materializer·Oracle과 구조화 협업 메모리는 후속 과제다.
+`gated`/`completed`로 바꾼다. 같은 날 schema-v12는 append-only `cp_replay_retest_sources`로 confirmed
+baseline과 부모 Retest Artifact를 1:1 결박한다. 부모 locator가 있는 batch는 서버가
+`remediation-retest` 계약·context를 파생하고 부모 Retest의 budget/rate capacity를 사용하며, 모든 음성
+receipt와 부모 정상 기능 회귀를 다시 검증해 부모 Retest Run 기반 `kisa-retest.json` projection을
+발행한다. 독립 remediation attestation이 없으므로 방어 응답은 `fixed`가 아니라 fail-closed
+`inconclusive`다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는
+후속 과제다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 일반 Control
 Plane 수직 조각과 전용 exact-KISA one-item Replay slice를 함께 포함한다.
 
@@ -167,7 +172,7 @@ Plane 수직 조각과 전용 exact-KISA one-item Replay slice를 함께 포함�
 | AI Red Team | 진행 중 | KISA 19개 위협·52개 체크리스트를 카탈로그화하고 A01·A02·A04·M03·M06 실행; reproduction-backed baseline의 hardened retest와 정상 기능 회귀 연결 |
 | Bug Bounty | 진행 중 | 정책·Scope·중복·로컬 신고서와 고정 Boolean SQLi 로컬 랩 실행 |
 | CTF | 진행 중 | 로컬 Web 백업 노출, 오프라인 Single-byte XOR, Web + Crypto Suite 실행 |
-| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, schema-v10 exact submission identity·bounded JSON ingress·absolute lease deadline·heartbeat coalescing, 일반 Worker daemon, opaque Operator Replay source/batch admission·역할 기반 상태 조회와 durable reservation·일회성 pre-dispatch permit·schema-v7 execution context·sealed opaque staging·schema-v9 server-owned Artifact import/finalization·자동 fresh-identity retry·schema-v11 multi-item versioned projection publication의 전용 exact-KISA Replay 경로를 구현했고 Compose는 distinct credential로 두 daemon을 모두 활성화함; negative Control Plane retest는 미완료 |
+| Control Plane | 초기 구현 | FastAPI, PostgreSQL Job queue, 승인 체크포인트, fence형 취소, schema-v10 exact submission identity·bounded JSON ingress·absolute lease deadline·heartbeat coalescing, 일반 Worker daemon, opaque Operator Replay source/batch admission·역할 기반 상태 조회와 durable reservation·일회성 pre-dispatch permit·schema-v7 execution context·sealed opaque staging·schema-v9 server-owned Artifact import/finalization·자동 fresh-identity retry·schema-v11 multi-item projection·schema-v12 dual-source negative retest projection의 전용 exact-KISA Replay 경로를 구현했고 Compose는 distinct credential로 두 daemon을 모두 활성화함 |
 | 제품 UI·생태계 | 초기 구현 | 동일 오리진 Web Console의 제출·조회·승인·재개·취소; Agent Graph, Pack registry와 외부 연동은 후속 |
 
 현재 기본 인터페이스는 CLI + YAML이며, 외부 대상에 대한 범용 공격 자동화나 제출 자동화는
@@ -1399,7 +1404,7 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item versioned projection 및 fresh-identity retry slice를 구현; negative Control Plane retest, portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1481,12 +1486,16 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
   `validation/v1alpha1` 봉인, source root·batch CAS·정렬된 finalization input authority가 그대로일 때만
   projection Artifact와 모든 item/batch의 `gated`/`completed` 전이를 commit하는 멱등 publisher,
   `/v1/replay/batches/{batch_id}/projection` 역할 기반 조회
+- Schema-v12 negative Control Plane retest: append-only `cp_replay_retest_sources`의 baseline/부모
+  Retest 1:1 authority, 두 managed seal의 exact 재검증, 부모 Retest budget/rate capacity, compilation별
+  `ReplayRetestContext`, projection-input v2의 dual-source CAS, 전체 음성 receipt와 정상 기능 회귀를
+  `KISARetestService`로 다시 판정해 부모 Retest Run 위에 봉인하는 `kisa-retest.json` projection
 - 자동 fresh-identity retry 발행: Worker claim polling은 최대 시도 미만인 `retry-pending` item에 한해
   immutable source 재파생, Candidate/contract 불변, permit 0개, budget/rate reservation 완전 반환과 빈
   이전 staging 제거를 검증하고 terminal 이력을 보존한 채 fresh Run/compilation/context/reservation/
   Job/ticket/staging identity 및 증가한 attempt/fence를 append하며, 동시 PostgreSQL·SQLite issuer는 하나의
   authority graph로 수렴
-- 남은 ADR-0029 범위: negative Control Plane retest, portable/off-host 서명 proof, KISA 외
+- 남은 ADR-0029 범위: portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층
 
@@ -1568,8 +1577,8 @@ transport와 canonical compilation claim envelope, M6-07B-2F schema-v7 exact exe
 구현됐다. Schema-v9 전용 exact-KISA daemon, pre-dispatch permit, opaque staging 이중 봉인,
 server-owned import·typed finalization과 one-item 공통 Gate도 구현됐고 Compose는 별도 Replay Worker
 credential로 daemon을 활성화한다. Opaque public source/batch admission, 역할 기반 상태 조회 API와
-자동 fresh-identity retry 발행도 구현됐다. Schema-v11 multi-item versioned projection publication도
-구현됐으며 negative Control Plane retest가 남아 있어 M6-07B 전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에
+자동 fresh-identity retry 발행도 구현됐다. Schema-v11 multi-item projection과 schema-v12 dual-source
+negative Control Plane retest도 구현됐으며 portable/off-host proof가 남아 있어 M6-07B 전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에
 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책

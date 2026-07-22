@@ -33,6 +33,7 @@ from pajin.control_plane.database import (
     ReplayItemRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
+    ReplayRetestSourceRecord,
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
@@ -40,6 +41,7 @@ from pajin.control_plane.database import (
 from pajin.control_plane.errors import ResourceNotFound, StateConflict
 from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_POLICY_VERSION,
+    KISA_RETEST_POLICY_VERSION,
     DerivedKISAReplayBatch,
     DerivedKISAReplayItem,
 )
@@ -104,6 +106,8 @@ class ReplayBatchDeriver(Protocol):
         *,
         source_root: Path,
         artifact_ref: ArtifactRef,
+        retest_root: Path | None = None,
+        retest_artifact_ref: ArtifactRef | None = None,
     ) -> DerivedKISAReplayBatch: ...
 
 
@@ -135,6 +139,9 @@ class _ReplayRetryDerivation:
     source: ArtifactRef
     locator: ArtifactLocator
     snapshot: ManagedArtifactSnapshot
+    retest_source: ArtifactRef | None
+    retest_locator: ArtifactLocator | None
+    retest_snapshot: ManagedArtifactSnapshot | None
     derived: DerivedKISAReplayBatch
 
 
@@ -175,7 +182,7 @@ class ReplayIssuanceService:
         *,
         actor: str,
     ) -> ReplayBatchView:
-        """Derive a planned KISA confirmation batch from one managed sealed source."""
+        """Derive a planned KISA Replay batch from immutable managed source authority."""
 
         artifact_repository = self._require_artifact_repository()
         with self.repository.transaction() as session:
@@ -186,6 +193,7 @@ class ReplayIssuanceService:
             )
             if existing is not None:
                 source = self._views.replay_source(existing)
+                retest_source = self._retest_source_ref(session, existing)
                 self._existing_replay_batch(
                     session,
                     existing,
@@ -201,11 +209,22 @@ class ReplayIssuanceService:
             else:
                 artifact = self._records.artifact(session, request.source)
                 source = self._views.artifact(artifact)
+                retest_source = self._requested_retest_source(session, request)
             storage_key = artifact.storage_key
+            retest_storage_key = self._artifact_storage_key(session, retest_source)
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
             source,
             expected_storage_key=storage_key,
+        )
+        retest_snapshot = (
+            self._resolve_managed_artifact(
+                artifact_repository,
+                retest_source,
+                expected_storage_key=retest_storage_key,
+            )
+            if retest_source is not None and retest_storage_key is not None
+            else None
         )
         derived: DerivedKISAReplayBatch | None = None
         if existing is None:
@@ -213,6 +232,8 @@ class ReplayIssuanceService:
                 derived = self._hooks.deriver(
                     source_root=snapshot.path,
                     artifact_ref=source,
+                    retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
+                    retest_artifact_ref=retest_source,
                 )
             except (OSError, ValueError) as exc:
                 raise StateConflict("managed source is not eligible for KISA Replay") from exc
@@ -223,10 +244,20 @@ class ReplayIssuanceService:
                 source,
                 expected_storage_key=storage_key,
             )
+            if retest_source is not None and retest_storage_key is not None:
+                retest_snapshot = self._resolve_managed_artifact(
+                    artifact_repository,
+                    retest_source,
+                    expected_storage_key=retest_storage_key,
+                )
         return self._create_replay_batch_from_source(
             request,
             source=source,
             verified_storage_key=snapshot.storage_key,
+            retest_source=retest_source,
+            verified_retest_storage_key=(
+                retest_snapshot.storage_key if retest_snapshot is not None else None
+            ),
             derived=derived,
             actor=actor,
         )
@@ -237,6 +268,8 @@ class ReplayIssuanceService:
         *,
         source: ArtifactRef,
         verified_storage_key: str,
+        retest_source: ArtifactRef | None,
+        verified_retest_storage_key: str | None,
         derived: DerivedKISAReplayBatch | None,
         actor: str,
     ) -> ReplayBatchView:
@@ -245,11 +278,34 @@ class ReplayIssuanceService:
         try:
             with self.repository.transaction() as session:
                 artifact = self._records.artifact(session, request.source, lock=True)
+                retest_artifact: ArtifactRecord | None = None
                 self._require_artifact_snapshot(
                     artifact,
                     source,
                     storage_key=verified_storage_key,
                 )
+                if retest_source is not None:
+                    if verified_retest_storage_key is None:
+                        raise StateConflict("parent Retest Artifact verification is missing")
+                    retest_artifact = self._records.artifact(
+                        session,
+                        ArtifactLocator(
+                            artifact_id=retest_source.artifact_id,
+                            repository_version=retest_source.repository_version,
+                        ),
+                        lock=True,
+                    )
+                    self._require_artifact_snapshot(
+                        retest_artifact,
+                        retest_source,
+                        storage_key=verified_retest_storage_key,
+                    )
+                    retest_run = self._records.run(
+                        session,
+                        retest_source.producer_run_id,
+                        lock=True,
+                    )
+                    self._require_run_state(retest_run, RunState.COMPLETED)
                 existing = session.scalar(
                     select(ReplayBatchRecord).where(
                         ReplayBatchRecord.idempotency_key == request.idempotency_key
@@ -268,14 +324,25 @@ class ReplayIssuanceService:
                 self._require_run_state(source_run, RunState.COMPLETED)
                 if derived is None:
                     raise StateConflict("Replay batch derivation is missing")
+                expected_purpose = (
+                    ReplayPurpose.REMEDIATION_RETEST
+                    if retest_source is not None
+                    else ReplayPurpose.CONFIRMATION
+                )
+                expected_policy = (
+                    KISA_RETEST_POLICY_VERSION
+                    if retest_source is not None
+                    else KISA_CONFIRMATION_POLICY_VERSION
+                )
                 if (
                     derived.artifact_ref != source
                     or derived.candidate_run_id != source.run_id
                     or derived.source_root_digest != source.integrity_root_digest
                     or derived.campaign_name != source_run.campaign_name
                     or derived.mode is not CampaignMode.AI_REDTEAM
-                    or derived.purpose is not ReplayPurpose.CONFIRMATION
-                    or derived.policy_version != KISA_CONFIRMATION_POLICY_VERSION
+                    or derived.retest_artifact_ref != retest_source
+                    or derived.purpose is not expected_purpose
+                    or derived.policy_version != expected_policy
                     or not derived.items
                 ):
                     raise StateConflict(
@@ -309,6 +376,16 @@ class ReplayIssuanceService:
                 )
                 session.add(batch)
                 session.flush()
+                if retest_source is not None:
+                    session.add(
+                        ReplayRetestSourceRecord(
+                            batch_id=batch.batch_id,
+                            artifact_id=retest_source.artifact_id,
+                            repository_version=retest_source.repository_version,
+                            created_at=now,
+                        )
+                    )
+                    session.flush()
                 self._hooks.transaction.replay_event_writer(
                     session,
                     batch,
@@ -324,6 +401,11 @@ class ReplayIssuanceService:
                         "rateLimitsDigest": derived.rate_limits_digest,
                         "usedToolCalls": derived.used_tool_calls,
                         "requiredToolCalls": derived.required_tool_calls,
+                        "retestSource": (
+                            retest_source.model_dump(mode="json")
+                            if retest_source is not None
+                            else None
+                        ),
                     },
                     run_id=source_run.run_id,
                 )
@@ -426,7 +508,7 @@ class ReplayIssuanceService:
                         item=item,
                         run_id=replay_run.run_id,
                     )
-                return self._views.replay_batch(batch)
+                return self._views.replay_batch(batch, retest_artifact=retest_artifact)
         except IntegrityError:
             with self.repository.transaction() as session:
                 existing = session.scalar(
@@ -469,16 +551,37 @@ class ReplayIssuanceService:
                 storage_key=artifact.storage_key,
             )
             storage_key = artifact.storage_key
+            retest_source = self._retest_source_ref(session, batch)
+            retest_locator = (
+                ArtifactLocator(
+                    artifact_id=retest_source.artifact_id,
+                    repository_version=retest_source.repository_version,
+                )
+                if retest_source is not None
+                else None
+            )
+            retest_storage_key = self._artifact_storage_key(session, retest_source)
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
             source,
             expected_storage_key=storage_key,
         )
+        retest_snapshot = (
+            self._resolve_managed_artifact(
+                artifact_repository,
+                retest_source,
+                expected_storage_key=retest_storage_key,
+            )
+            if retest_source is not None and retest_storage_key is not None
+            else None
+        )
         try:
             derived = self._hooks.deriver(
                 source_root=snapshot.path,
                 artifact_ref=source,
+                retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
+                retest_artifact_ref=retest_source,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
@@ -487,6 +590,12 @@ class ReplayIssuanceService:
             source,
             expected_storage_key=storage_key,
         )
+        if retest_source is not None and retest_storage_key is not None:
+            retest_snapshot = self._resolve_managed_artifact(
+                artifact_repository,
+                retest_source,
+                expected_storage_key=retest_storage_key,
+            )
 
         with self.transaction(artifact_repository) as (session, reserved_staging_ids):
             if self.repository.dialect_name == "sqlite":
@@ -512,11 +621,29 @@ class ReplayIssuanceService:
             # layer follows budget account -> rate account -> budget reservations
             # -> rate reservations. Job/ticket rows do not exist before issuance.
             artifact = self._records.artifact(session, locator, lock=True)
+            retest_artifact: ArtifactRecord | None = None
             self._require_artifact_snapshot(
                 artifact,
                 source,
                 storage_key=snapshot.storage_key,
             )
+            if (
+                retest_source is not None
+                and retest_locator is not None
+                and retest_snapshot is not None
+            ):
+                retest_artifact = self._records.artifact(session, retest_locator, lock=True)
+                self._require_artifact_snapshot(
+                    retest_artifact,
+                    retest_source,
+                    storage_key=retest_snapshot.storage_key,
+                )
+                retest_run = self._records.run(
+                    session,
+                    retest_source.producer_run_id,
+                    lock=True,
+                )
+                self._require_run_state(retest_run, RunState.COMPLETED)
             locked_items = list(
                 session.scalars(
                     select(ReplayItemRecord)
@@ -543,6 +670,7 @@ class ReplayIssuanceService:
                 items,
                 derived=derived,
                 source=source,
+                retest_source=retest_source,
             )
 
             planning_compilations = list(
@@ -589,7 +717,7 @@ class ReplayIssuanceService:
                 derived=derived,
                 required_tool_calls=derived.required_tool_calls,
                 required_request_units=derived.required_request_units,
-                observed_at=_aware(artifact.created_at),
+                observed_at=_aware((retest_artifact or artifact).created_at),
                 now=now,
             )
 
@@ -634,7 +762,7 @@ class ReplayIssuanceService:
                 run_id=batch.source_run_id,
             )
             return ReplayBatchIssuanceView(
-                batch=self._views.replay_batch(batch),
+                batch=self._batch_view(session, batch),
                 items=[self._views.replay_item(item) for item in items],
                 tickets=[self._views.replay_ticket(ticket) for ticket in issued_tickets],
             )
@@ -809,16 +937,37 @@ class ReplayIssuanceService:
                 storage_key=artifact.storage_key,
             )
             storage_key = artifact.storage_key
+            retest_source = self._retest_source_ref(session, batch)
+            retest_locator = (
+                ArtifactLocator(
+                    artifact_id=retest_source.artifact_id,
+                    repository_version=retest_source.repository_version,
+                )
+                if retest_source is not None
+                else None
+            )
+            retest_storage_key = self._artifact_storage_key(session, retest_source)
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
             source,
             expected_storage_key=storage_key,
         )
+        retest_snapshot = (
+            self._resolve_managed_artifact(
+                artifact_repository,
+                retest_source,
+                expected_storage_key=retest_storage_key,
+            )
+            if retest_source is not None and retest_storage_key is not None
+            else None
+        )
         try:
             derived = self._hooks.deriver(
                 source_root=snapshot.path,
                 artifact_ref=source,
+                retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
+                retest_artifact_ref=retest_source,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict(
@@ -829,11 +978,20 @@ class ReplayIssuanceService:
             source,
             expected_storage_key=storage_key,
         )
+        if retest_source is not None and retest_storage_key is not None:
+            retest_snapshot = self._resolve_managed_artifact(
+                artifact_repository,
+                retest_source,
+                expected_storage_key=retest_storage_key,
+            )
         return _ReplayRetryDerivation(
             pending_item_ids=pending_item_ids,
             source=source,
             locator=locator,
             snapshot=snapshot,
+            retest_source=retest_source,
+            retest_locator=retest_locator,
+            retest_snapshot=retest_snapshot,
             derived=derived,
         )
 
@@ -870,13 +1028,32 @@ class ReplayIssuanceService:
             retry.source,
             storage_key=retry.snapshot.storage_key,
         )
+        retest_artifact: ArtifactRecord | None = None
+        if (
+            retry.retest_source is not None
+            and retry.retest_locator is not None
+            and retry.retest_snapshot is not None
+        ):
+            retest_artifact = self._records.artifact(session, retry.retest_locator, lock=True)
+            self._require_artifact_snapshot(
+                retest_artifact,
+                retry.retest_source,
+                storage_key=retry.retest_snapshot.storage_key,
+            )
+            retest_run = self._records.run(
+                session,
+                retry.retest_source.producer_run_id,
+                lock=True,
+            )
+            self._require_run_state(retest_run, RunState.COMPLETED)
         require_fresh_retry_derivation(
             graph.batch,
             graph.items,
             derived=retry.derived,
             source=retry.source,
+            retest_source=retry.retest_source,
         )
-        return artifact
+        return retest_artifact or artifact
 
     def _prepare_replay_retry_attempts(
         self,
@@ -1343,6 +1520,66 @@ class ReplayIssuanceService:
                     artifact_repository.reserve_staging(staging_id)
             raise
 
+    def _requested_retest_source(
+        self,
+        session: Session,
+        request: CreateReplayBatchRequest,
+    ) -> ArtifactRef | None:
+        if request.retest_source is None:
+            return None
+        return self._views.artifact(self._records.artifact(session, request.retest_source))
+
+    def _retest_source_ref(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+    ) -> ArtifactRef | None:
+        authority = self._records.replay_retest_source(session, batch.batch_id)
+        if authority is None:
+            if batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value:
+                raise StateConflict("negative Replay batch is missing parent Retest authority")
+            return None
+        artifact = self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=authority.artifact_id,
+                repository_version=authority.repository_version,
+            ),
+        )
+        if batch.purpose != ReplayPurpose.REMEDIATION_RETEST.value:
+            raise StateConflict("confirmation Replay batch contains parent Retest authority")
+        return self._views.artifact(artifact)
+
+    def _artifact_storage_key(
+        self,
+        session: Session,
+        source: ArtifactRef | None,
+    ) -> str | None:
+        if source is None:
+            return None
+        return self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            ),
+        ).storage_key
+
+    def _batch_view(self, session: Session, batch: ReplayBatchRecord) -> ReplayBatchView:
+        retest_source = self._retest_source_ref(session, batch)
+        retest_artifact = (
+            self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=retest_source.artifact_id,
+                    repository_version=retest_source.repository_version,
+                ),
+            )
+            if retest_source is not None
+            else None
+        )
+        return self._views.replay_batch(batch, retest_artifact=retest_artifact)
+
     def _existing_replay_batch(
         self,
         session: Session,
@@ -1367,6 +1604,17 @@ class ReplayIssuanceService:
             ).all()
         )
         source_run = self._records.run(session, source.producer_run_id)
+        retest_source = self._retest_source_ref(session, batch)
+        expected_purpose = (
+            ReplayPurpose.REMEDIATION_RETEST
+            if request.retest_source is not None
+            else ReplayPurpose.CONFIRMATION
+        )
+        expected_policy = (
+            KISA_RETEST_POLICY_VERSION
+            if request.retest_source is not None
+            else KISA_CONFIRMATION_POLICY_VERSION
+        )
         batch_matches = (
             batch.created_by == actor
             and batch.campaign_name == source_run.campaign_name
@@ -1374,8 +1622,18 @@ class ReplayIssuanceService:
             and request.source.repository_version == source.repository_version
             and self._views.replay_source(batch) == source
             and batch.mode == CampaignMode.AI_REDTEAM.value
-            and batch.purpose == ReplayPurpose.CONFIRMATION.value
-            and batch.policy_version == KISA_CONFIRMATION_POLICY_VERSION
+            and batch.purpose == expected_purpose.value
+            and batch.policy_version == expected_policy
+            and (
+                (request.retest_source is None and retest_source is None)
+                or (
+                    request.retest_source is not None
+                    and retest_source is not None
+                    and request.retest_source.artifact_id == retest_source.artifact_id
+                    and request.retest_source.repository_version
+                    == retest_source.repository_version
+                )
+            )
         )
         stored_item_ids = {item.item_id for item in items}
         compilation_item_ids = {compilation.item_id for compilation in compilations}
@@ -1402,7 +1660,7 @@ class ReplayIssuanceService:
             raise StateConflict(
                 "Replay batch idempotency key was already used for different authority input"
             )
-        return self._views.replay_batch(batch)
+        return self._batch_view(session, batch)
 
     def _existing_replay_issuance(
         self,
@@ -1420,7 +1678,7 @@ class ReplayIssuanceService:
         )
         current_tickets = self._require_exact_replay_issuance_graph(session, graph)
         return ReplayBatchIssuanceView(
-            batch=self._views.replay_batch(graph.batch),
+            batch=self._batch_view(session, graph.batch),
             items=[self._views.replay_item(item) for item in graph.items],
             tickets=[self._views.replay_ticket(ticket) for ticket in current_tickets],
         )
@@ -1613,17 +1871,20 @@ class ReplayIssuanceService:
 
         if required_tool_calls < 1 or required_request_units < 1:
             raise StateConflict("Replay issuance requires positive reserved capacity")
+        capacity_source = derived.capacity_artifact_ref
 
         budget_account = session.scalar(
             select(ReplayBudgetAccountRecord)
-            .where(ReplayBudgetAccountRecord.source_run_id == batch.source_run_id)
+            .where(
+                ReplayBudgetAccountRecord.source_run_id == capacity_source.producer_run_id
+            )
             .with_for_update()
         )
         if budget_account is None:
             budget_account = ReplayBudgetAccountRecord(
                 budget_account_id=f"replay-budget-account_{uuid4().hex}",
-                source_run_id=batch.source_run_id,
-                source_root_digest=batch.source_root_digest,
+                source_run_id=capacity_source.producer_run_id,
+                source_root_digest=capacity_source.integrity_root_digest,
                 campaign_name=batch.campaign_name,
                 budget_digest=derived.budget_digest,
                 baseline_used_calls=derived.used_tool_calls,
@@ -1638,7 +1899,8 @@ class ReplayIssuanceService:
             session.add(budget_account)
             session.flush()
         elif not (
-            budget_account.source_root_digest == batch.source_root_digest
+            budget_account.source_run_id == capacity_source.producer_run_id
+            and budget_account.source_root_digest == capacity_source.integrity_root_digest
             and budget_account.campaign_name == batch.campaign_name
             and budget_account.budget_digest == derived.budget_digest
             and budget_account.baseline_used_calls == derived.used_tool_calls
@@ -1648,14 +1910,14 @@ class ReplayIssuanceService:
 
         rate_account = session.scalar(
             select(ReplayRateAccountRecord)
-            .where(ReplayRateAccountRecord.source_run_id == batch.source_run_id)
+            .where(ReplayRateAccountRecord.source_run_id == capacity_source.producer_run_id)
             .with_for_update()
         )
         if rate_account is None:
             rate_account = ReplayRateAccountRecord(
                 rate_account_id=f"replay-rate-account_{uuid4().hex}",
-                source_run_id=batch.source_run_id,
-                source_root_digest=batch.source_root_digest,
+                source_run_id=capacity_source.producer_run_id,
+                source_root_digest=capacity_source.integrity_root_digest,
                 campaign_name=batch.campaign_name,
                 rate_limits_digest=derived.rate_limits_digest,
                 ledger_id=derived.rate_ledger_id,
@@ -1670,7 +1932,8 @@ class ReplayIssuanceService:
             session.add(rate_account)
             session.flush()
         elif not (
-            rate_account.source_root_digest == batch.source_root_digest
+            rate_account.source_run_id == capacity_source.producer_run_id
+            and rate_account.source_root_digest == capacity_source.integrity_root_digest
             and rate_account.campaign_name == batch.campaign_name
             and rate_account.rate_limits_digest == derived.rate_limits_digest
             and rate_account.ledger_id == derived.rate_ledger_id

@@ -22,8 +22,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v9은 서버 파생 append-only finalization을 추가하고 schema v11은 모든 finalized output을 다시 검증한 뒤 CAS-fenced append-only multi-item versioned projection을 발행합니다. 두 경로 모두 target 실행을 독립적으로 attest하지는 않습니다. |
-| 주요 공백 | negative Control Plane retest, multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을 발행하고 schema v12는 confirmed baseline과 부모 Retest Artifact를 1:1로 결박해 음성 replay receipt와 정상 기능 회귀를 서버가 다시 검증한 `kisa-retest.json` projection을 발행합니다. 독립 remediation attestation이 없으므로 방어 응답은 계속 `inconclusive`입니다. |
+| 주요 공백 | multi-host/object-store Artifact 전송, KISA 외 Local replay 오케스트레이션, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -856,11 +856,14 @@ Operator credential은 다음 공개 Replay admission API를 사용할 수 있�
   서버가 봉인된 source를 managed Artifact로 반입합니다. 신뢰된 producer가 봉인 Run을 설정된
   server-controlled staging handoff에 먼저 배치해야 하며, 이 endpoint는 파일 upload나 path import
   API가 아닙니다.
-- `POST /v1/replay/batches`: 정확한 `(artifact_id, repository_version)` locator와 idempotency key만
-  받아 서버 소유 Candidate/contract/Replay compilation을 `planned` 상태로 파생합니다.
+- `POST /v1/replay/batches`: confirmed baseline의 정확한 `(artifact_id, repository_version)` locator,
+  선택적인 부모 Retest locator와 idempotency key만 받습니다. 부모 Retest를 생략하면 confirmation,
+  제공하면 baseline-bound `remediation-retest` Candidate/contract/Replay compilation을 서버가
+  `planned` 상태로 파생합니다.
 
-`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}` 및
-`/tickets/{ticket_id}/finalization` 조회는 Operator, Approver, Auditor가 사용할 수 있습니다.
+`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
+`/tickets/{ticket_id}/finalization` 및 `/batches/{batch_id}/projection` 조회는 Operator, Approver,
+Auditor가 사용할 수 있습니다.
 응답에는 staging ID, repository storage key, lease token이 포함되지 않습니다. 이 공개 표면은 raw
 path/URL, caller-authored Candidate·contract·Capability·Tool request·verdict 또는 내부 Replay Job kind를
 받지 않습니다. 첫 시도 Job/ticket 발행은 계속 신뢰된 내부 service operation이며 공개 admission이

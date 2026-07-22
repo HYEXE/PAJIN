@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
@@ -16,7 +17,13 @@ from urllib.parse import urlsplit, urlunsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from kisa_control_plane_support import SupportingKISAWorker, build_kisa_control_plane_source
+from kisa_control_plane_support import (
+    HardenedKISAWorker,
+    KISAControlPlaneSource,
+    SupportingKISAWorker,
+    build_kisa_control_plane_retest_sources,
+    build_kisa_control_plane_source,
+)
 from pydantic import ValidationError
 from sqlalchemy import func, select, text, update
 from sqlalchemy.dialects import postgresql
@@ -49,6 +56,7 @@ from pajin.control_plane.database import (
     ReplayProjectionRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
+    ReplayRetestSourceRecord,
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
@@ -57,6 +65,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+    KISA_RETEST_POLICY_VERSION,
 )
 from pajin.control_plane.lease_deadline import MonotonicLeaseDeadline
 from pajin.control_plane.models import (
@@ -85,6 +94,7 @@ from pajin.control_plane.models import (
     ReplayItemState,
     ReplayJobPayload,
     ReplayLeaseRequest,
+    ReplayRetestProjectionInputAuthority,
     ReplayTicketState,
     ReplayToolPermitRequest,
     RunState,
@@ -110,8 +120,13 @@ from pajin.control_plane.service import (
     StateConflict,
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
-from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.replay import ReplayCompilation, ReplayOracleVerdict, ReplayPurpose
 from pajin.domain.validation import FindingDisposition, ValidationDecision, ValidationReasonCode
+from pajin.modes.ai_redteam.retest import (
+    KISARetestAssessment,
+    RegressionStatus,
+    RetestFindingStatus,
+)
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
@@ -323,8 +338,10 @@ def _host_proxy_receipt_log(job: WorkerJob, result: WorkerResult) -> str:
     return "\n".join(events)
 
 
-def _trusted_replay_backend() -> DockerWorkerBackend:
-    transcript_worker = SupportingKISAWorker()
+def _trusted_replay_backend(
+    transcript_worker: SupportingKISAWorker | None = None,
+) -> DockerWorkerBackend:
+    transcript_worker = transcript_worker or SupportingKISAWorker()
     backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
 
     async def run(job: WorkerJob, *, secrets: object = None) -> WorkerResult:
@@ -508,6 +525,79 @@ def _stage_completed_source(
         producer_run_id=run_id,
         producer_job_id=job_id,
         idempotency_key=f"artifact-admission-{suffix}",
+    )
+
+
+def _admit_built_source(
+    repository: ControlPlaneRepository,
+    service: ControlPlaneService,
+    source: KISAControlPlaneSource,
+    *,
+    suffix: str,
+) -> ArtifactRef:
+    identity = sha256(suffix.encode()).hexdigest()
+    job_id = f"job_{sha256(f'job:{suffix}'.encode()).hexdigest()[:32]}"
+    stage_id = f"stage_{sha256(f'stage:{suffix}'.encode()).hexdigest()[:32]}"
+    database_path = Path(str(repository.engine.url.database))
+    staging_root, _ = _artifact_roots(database_path)
+    shutil.copytree(source.path, staging_root / stage_id)
+    now = datetime.now(UTC)
+    with repository.transaction() as session:
+        session.add(
+            RunRecord(
+                run_id=source.artifact_ref.producer_run_id,
+                campaign_name=source.campaign.metadata.name,
+                state=RunState.COMPLETED.value,
+                input={"sealedSource": True},
+                submission_key=f"sealed-source-{identity}",
+                submission_authority_digest=non_replayable_submission_authority_digest(
+                    run_id=source.artifact_ref.producer_run_id,
+                    authority_kind="sealed-source-fixture",
+                ),
+                current_checkpoint_id=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        session.flush()
+        session.add(
+            JobRecord(
+                job_id=job_id,
+                run_id=source.artifact_ref.producer_run_id,
+                kind="campaign",
+                state=JobState.SUCCEEDED.value,
+                payload={"input": {}},
+                priority=0,
+                attempts=1,
+                max_attempts=3,
+                idempotency_key=f"sealed-source-job-{identity}",
+                submission_authority_digest=job_submission_authority_digest(
+                    job_id=job_id,
+                    run_id=source.artifact_ref.producer_run_id,
+                    job_kind="campaign",
+                    payload={"input": {}},
+                    max_attempts=3,
+                    idempotency_key=f"sealed-source-job-{identity}",
+                ),
+                available_at=now,
+                lease_owner=None,
+                lease_token_hash=None,
+                lease_expires_at=None,
+                heartbeat_at=None,
+                result={"engineRunId": source.artifact_ref.run_id},
+                error=None,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+    return service.admit_source_artifact(
+        AdmitSourceArtifactRequest(
+            staging_id=stage_id,
+            producer_run_id=source.artifact_ref.producer_run_id,
+            producer_job_id=job_id,
+            idempotency_key=f"artifact-admission-{suffix}",
+        ),
+        actor=source.artifact_ref.created_by,
     )
 
 
@@ -4731,6 +4821,136 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
         assert service.get_replay_projection(batch_id) == projection
         with repository.read_transaction() as session:
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
+    finally:
+        repository.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable Artifact repository requires POSIX fsync")
+def test_negative_retest_projection_is_server_derived_from_two_sealed_sources(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "negative-retest-projection.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    baseline_producer = f"run_{sha256(b'negative-baseline').hexdigest()[:32]}"
+    retest_producer = f"run_{sha256(b'negative-parent-retest').hexdigest()[:32]}"
+    try:
+        fixtures = build_kisa_control_plane_retest_sources(
+            tmp_path / "negative-retest-builds",
+            baseline_producer_run_id=baseline_producer,
+            retest_producer_run_id=retest_producer,
+        )
+        baseline = _admit_built_source(
+            repository,
+            service,
+            fixtures.baseline,
+            suffix="negative-baseline",
+        )
+        parent_retest = _admit_built_source(
+            repository,
+            service,
+            fixtures.retest,
+            suffix="negative-parent-retest",
+        )
+        request = CreateReplayBatchRequest(
+            source=ArtifactLocator(
+                artifact_id=baseline.artifact_id,
+                repository_version=baseline.repository_version,
+            ),
+            retest_source=ArtifactLocator(
+                artifact_id=parent_retest.artifact_id,
+                repository_version=parent_retest.repository_version,
+            ),
+            idempotency_key="negative-retest-projection",
+        )
+        planned = service.create_replay_batch(
+            request,
+            actor="trusted-replay-admission",
+        )
+        assert planned.purpose is ReplayPurpose.REMEDIATION_RETEST
+        assert planned.policy_version == KISA_RETEST_POLICY_VERSION
+        assert planned.source == baseline
+        assert planned.retest_source == parent_retest
+        issued = service.issue_replay_batch(
+            planned.batch_id,
+            actor="trusted-replay-admission",
+        )
+        assert len(issued.items) == 1
+
+        claim = _claim(service, actor=actor)
+        assert claim.batch.retest_source == parent_retest
+        context = claim.compilation.validation_packet.retest_context
+        assert context is not None
+        assert context.retest_run_id == parent_retest.run_id
+        assert context.retest_source_root_digest == parent_retest.integrity_root_digest
+        staging_root, artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(HardenedKISAWorker()),
+        )
+        finalize_request = asyncio.run(executor.execute(claim))
+        finalized = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+        assert finalized.batch.state is ReplayBatchState.COMPLETED
+        assert finalized.item.state is ReplayItemState.GATED
+        assert finalized.batch.retest_source == parent_retest
+
+        projection = service.get_replay_projection(planned.batch_id)
+        assert projection is not None
+        assert isinstance(
+            projection.input_authority,
+            ReplayRetestProjectionInputAuthority,
+        )
+        assert projection.input_authority.source == baseline
+        assert projection.input_authority.retest_source == parent_retest
+        assert projection.artifact.producer_run_id == parent_retest.producer_run_id
+        assert projection.artifact.run_id == parent_retest.run_id
+        managed = ManagedArtifactRepository(
+            staging_root=staging_root,
+            repository_root=artifact_root,
+        )
+        parent_snapshot = managed.resolve(parent_retest)
+        projection_snapshot = managed.resolve(projection.artifact)
+        assert not (parent_snapshot.path / "kisa-retest.json").exists()
+        assessment = KISARetestAssessment.model_validate_json(
+            (projection_snapshot.path / "kisa-retest.json").read_text(encoding="utf-8")
+        )
+        assert assessment.baseline_run_id == baseline.run_id
+        assert assessment.retest_run_id == parent_retest.run_id
+        assert assessment.summary.fixed == 0
+        assert assessment.summary.still_vulnerable == 0
+        assert assessment.summary.inconclusive == 1
+        assert assessment.summary.new_findings == 0
+        assert assessment.summary.regression is RegressionStatus.PASS
+        assert assessment.finding_results[0].status is RetestFindingStatus.INCONCLUSIVE
+        assert (
+            assessment.finding_results[0].oracle_verdict
+            is ReplayOracleVerdict.INCONCLUSIVE
+        )
+        assert assessment.finding_results[0].all_replay_attempts_succeeded
+
+        repeated = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+        assert repeated == finalized
+        assert service.get_replay_projection(planned.batch_id) == projection
+        with repository.read_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayRetestSourceRecord)) == 1
+            event_types = list(
+                session.scalars(
+                    select(ReplayEventRecord.event_type).where(
+                        ReplayEventRecord.batch_id == planned.batch_id
+                    )
+                ).all()
+            )
+            assert event_types.count("replay.retest.gated") == 1
+            assert event_types.count("replay.projection.published") == 1
     finally:
         repository.close()
 

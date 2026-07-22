@@ -85,6 +85,7 @@ from pajin.control_plane.replay_authority import (
 )
 from pajin.control_plane.security import token_digest
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
+from pajin.domain.replay import ReplayPurpose
 from pajin.replay.tickets import replay_context_digest
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import VerifiedRunSnapshot
@@ -551,6 +552,7 @@ class ControlPlaneClaimService:
             execution_context=attempt.authority.execution_context,
             execution_context_digest=attempt.authority.execution_context_record.context_digest,
             lease_token=lease_token,
+            retest_artifact=self._retest_artifact(session, attempt.batch),
         )
 
     def heartbeat_replay_job(
@@ -668,6 +670,7 @@ class ControlPlaneClaimService:
                     execution_context=authority.execution_context,
                     execution_context_digest=(authority.execution_context_record.context_digest),
                     lease_token=request.lease_token,
+                    retest_artifact=self._retest_artifact(session, batch),
                 )
         if expired:
             raise LeaseRejected("Replay job lease has expired")
@@ -824,6 +827,38 @@ class ControlPlaneClaimService:
             <= now
         )
 
+    def _retest_artifact(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+    ) -> ArtifactRecord | None:
+        authority = self._records.replay_retest_source(session, batch.batch_id)
+        if authority is None:
+            if batch.purpose != ReplayPurpose.CONFIRMATION.value:
+                raise StateConflict("negative Replay batch is missing parent Retest authority")
+            return None
+        if batch.purpose != ReplayPurpose.REMEDIATION_RETEST.value:
+            raise StateConflict("confirmation Replay batch contains parent Retest authority")
+        return self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=authority.artifact_id,
+                repository_version=authority.repository_version,
+            ),
+        )
+
+    def _capacity_source_ref(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+    ) -> ArtifactRef:
+        artifact = self._retest_artifact(session, batch)
+        return (
+            self._views.artifact(artifact)
+            if artifact is not None
+            else self._views.replay_source(batch)
+        )
+
     def _trusted_replay_rate_authority(
         self,
         session: Session,
@@ -840,7 +875,7 @@ class ControlPlaneClaimService:
         """
 
         repository = self._require_artifact_repository()
-        source = self._views.replay_source(batch)
+        source = self._capacity_source_ref(session, batch)
         locator = ArtifactLocator(
             artifact_id=source.artifact_id,
             repository_version=source.repository_version,
@@ -1001,12 +1036,18 @@ class ControlPlaneClaimService:
         )
         trusted = trusted_replay_compilation(compilation)
         execution_context = trusted_replay_execution_context(execution_context_record)
+        capacity_source = self._capacity_source_ref(session, batch)
         rate_authority = self._trusted_replay_rate_authority(
             session,
             batch=batch,
             execution_context=execution_context,
         )
-        require_exact_replay_rate_account(rate_account, batch, rate_authority)
+        require_exact_replay_rate_account(
+            rate_account,
+            batch,
+            rate_authority,
+            capacity_source=capacity_source,
+        )
         permits = list(
             session.scalars(
                 select(ReplayToolPermitRecord)
@@ -1047,6 +1088,7 @@ class ControlPlaneClaimService:
             batch,
             authority,
             source=self._views.replay_source(batch),
+            capacity_source=capacity_source,
         )
         return authority
 
@@ -1244,6 +1286,7 @@ class ControlPlaneClaimService:
         rate = capacity.rate_reservation
         budget_account = capacity.budget_account
         rate_account = capacity.rate_account
+        capacity_source = self._capacity_source_ref(session, batch)
         if not (
             ticket.batch_id == batch.batch_id
             and ticket.source_root_digest == batch.source_root_digest
@@ -1257,11 +1300,11 @@ class ControlPlaneClaimService:
             and rate.item_id == ticket.item_id
             and rate.attempt_number == ticket.attempt_number
             and rate.compilation_id == ticket.compilation_id
-            and budget_account.source_run_id == batch.source_run_id
-            and budget_account.source_root_digest == batch.source_root_digest
+            and budget_account.source_run_id == capacity_source.producer_run_id
+            and budget_account.source_root_digest == capacity_source.integrity_root_digest
             and budget_account.campaign_name == batch.campaign_name
-            and rate_account.source_run_id == batch.source_run_id
-            and rate_account.source_root_digest == batch.source_root_digest
+            and rate_account.source_run_id == capacity_source.producer_run_id
+            and rate_account.source_root_digest == capacity_source.integrity_root_digest
             and rate_account.campaign_name == batch.campaign_name
         ):
             raise StateConflict("Replay ticket reservation binding changed before release")

@@ -104,7 +104,12 @@ source/batch admission, role-scoped state reads, and automatic fresh-identity re
 implemented. The 2026-07-22 schema-v11 slice adds append-only `cp_replay_projections`, server-owned
 copy-on-project materialization, aggregate receipt re-verification outside database locks, a final
 source-root/batch-CAS/sorted-finalization-set commit, and a role-scoped projection read. Negative
-Control Plane retest and multi-host/object-store handoff remain outstanding.
+Control Plane retest is implemented by schema v12. An append-only `cp_replay_retest_sources` row
+binds one batch to its exact parent Retest Artifact; the baseline and parent seals are both reopened,
+capacity is charged to the parent Retest snapshot, and a v2 dual-source projection authority binds
+all negative receipts before `KISARetestService` writes and seals `kisa-retest.json` on a copy of the
+parent Retest Run. This does not elevate target-authored defensive responses to `fixed` without an
+independent remediation attestation. Multi-host/object-store handoff remains outstanding.
 
 ## Context
 
@@ -626,9 +631,9 @@ The following are outside the first vertical slice of this ADR:
 The currently implemented slice includes the dedicated exact-KISA Worker, per-dispatch durable
 permit seam, twice-sealed opaque staging handoff, schema-v9 server-derived Artifact finalization,
 schema-v11 multi-item versioned-projection publication, opaque public admission/read APIs, and
-automatic zero-permit fresh-identity retry issuance. Negative Control Plane retest remains a
-follow-up exit criterion. Because a permit is not a bearer credential, a separate redeem mutation
-is not added.
+automatic zero-permit fresh-identity retry issuance. Schema v12 dual-source negative-retest
+projection is also implemented. Because a permit is not a bearer credential, a separate redeem
+mutation is not added.
 
 Multi-host/object-store support is added only after a separate ADR designs an immutable
 `ArtifactRef` resolver, upload authorization, retention, encryption, tenant isolation, and
@@ -656,7 +661,8 @@ As of 2026-07-22, source admission/derivation, public admission/read APIs, durab
 execution contexts, dedicated Worker transport/execution, opaque staging, schema-v9 server-derived
 finalization, exact response-loss idempotency, automatic zero-permit fresh-identity retry, and the
 schema-v11 multi-item versioned-projection publisher cover the positive-confirmation execution path.
-Negative Control Plane retest continues to be an exit criterion for the broader M6-07B scope.
+Schema v12 covers the negative Control Plane retest path with exact baseline/parent-Retest authority,
+parent capacity accounting, aggregate receipt verification, and server-owned Retest projection.
 
 Implementation of this ADR is complete when automated tests prove at least that:
 
@@ -666,6 +672,8 @@ Implementation of this ADR is complete when automated tests prove at least that:
   rather than backfilling guessed context bytes, while non-dispatchable planned proof advances with
   no fabricated context row; v8 completes append-only guards and v9 adds an append-only, no-replace
   server-derived finalization table;
+- v11-to-v12 adds exactly one append-only parent Retest source authority per negative batch and
+  rejects missing, duplicate, same-as-baseline, or foreign Campaign/Run/root bindings;
 - public submission rejects injection of the internal Replay kind, a raw path/URL, Candidate,
   contract, Capability, or Worker verdict; only server-side sealed-source derivation creates exact
   KISA planned/pending non-dispatchable compilation proof; internal issuance re-verifies the source,

@@ -51,6 +51,7 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
@@ -70,6 +71,7 @@ from pajin.control_plane.errors import (
 from pajin.control_plane.kisa_derivation import (
     DerivedKISAReplayBatch,
     derive_kisa_confirmation_batch,
+    derive_kisa_retest_batch,
 )
 from pajin.control_plane.lifecycle_service import (
     ControlPlaneLifecycleService,
@@ -114,6 +116,7 @@ from pajin.control_plane.models import (
     ReplayProjectionInputAuthority,
     ReplayProjectionItemAuthority,
     ReplayProjectionView,
+    ReplayRetestProjectionInputAuthority,
     ReplayTicketState,
     ReplayTicketView,
     ReplayToolPermitRequest,
@@ -137,6 +140,7 @@ from pajin.control_plane.replay_authority import (
     require_exact_replay_account_permit_consumption,
     require_exact_replay_budget_ledger,
     require_replay_permit_rate_capacity,
+    trusted_replay_compilation,
 )
 from pajin.control_plane.replay_issuance import (
     ReplayIssuanceHooks,
@@ -145,7 +149,10 @@ from pajin.control_plane.replay_issuance import (
 from pajin.control_plane.replay_reads import ReplayReadService
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
+from pajin.domain.replay import ReplayPurpose, ReplayRetestContext
 from pajin.domain.validation import ReplayConfirmationLineage, ValidationDecision
+from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome
+from pajin.modes.ai_redteam.retest import KISARetestService
 from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_result
 from pajin.replay.tickets import replay_context_digest
 from pajin.runtime.store import VerifiedRunSnapshot, load_verified_run_artifacts
@@ -189,17 +196,22 @@ class _ReplayFinalizationPreflight:
 
 @dataclass(frozen=True, slots=True)
 class _ReplayProjectionSnapshot:
-    authority: ReplayProjectionInputAuthority
+    authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
     authority_digest: str
     source_storage_key: str
+    retest_source_storage_key: str | None
     output_storage_keys: tuple[str, ...]
+    retest_contexts: Mapping[str, ReplayRetestContext]
     decided_at: datetime
 
 
 class _ReplayProjectionTicketVerifier:
     """Read-only verifier backed only by the immutable publication snapshot."""
 
-    def __init__(self, authority: ReplayProjectionInputAuthority) -> None:
+    def __init__(
+        self,
+        authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority,
+    ) -> None:
         self._items = {item.ticket_id: item for item in authority.items}
         self._source_root_digest = authority.source.integrity_root_digest
 
@@ -302,7 +314,18 @@ class ControlPlaneService:
             *,
             source_root: Path,
             artifact_ref: ArtifactRef,
+            retest_root: Path | None = None,
+            retest_artifact_ref: ArtifactRef | None = None,
         ) -> DerivedKISAReplayBatch:
+            if retest_root is not None and retest_artifact_ref is not None:
+                return derive_kisa_retest_batch(
+                    source_root=source_root,
+                    artifact_ref=artifact_ref,
+                    retest_root=retest_root,
+                    retest_artifact_ref=retest_artifact_ref,
+                )
+            if retest_root is not None or retest_artifact_ref is not None:
+                raise ValueError("parent Retest path and ArtifactRef must be supplied together")
             return derive_kisa_confirmation_batch(
                 source_root=source_root,
                 artifact_ref=artifact_ref,
@@ -1602,6 +1625,11 @@ class ControlPlaneService:
                 )
                 session.flush()
                 consume_after_commit(self._views.artifact(artifact))
+                retest_artifact = self._replay_retest_artifact(
+                    session,
+                    locked_batch,
+                    lock=True,
+                )
                 committed_view = self._views.replay_finalization(
                     finalization,
                     job=locked_job,
@@ -1609,6 +1637,7 @@ class ControlPlaneService:
                     item=locked_item,
                     ticket=locked_ticket,
                     artifact=artifact,
+                    retest_artifact=retest_artifact,
                 )
             self._publish_ready_replay_projection(committed_view.batch.batch_id)
             refreshed = self.get_replay_finalization(request.ticket_id)
@@ -1641,6 +1670,29 @@ class ControlPlaneService:
                 raise StateConflict("Replay finalization authority disappeared") from exc
             return refreshed
 
+    def _replay_retest_artifact(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+        *,
+        lock: bool = False,
+    ) -> ArtifactRecord | None:
+        source = self._records.replay_retest_source(session, batch.batch_id, lock=lock)
+        if source is None:
+            if batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value:
+                raise StateConflict("Replay retest batch has no parent Retest authority")
+            return None
+        if batch.purpose != ReplayPurpose.REMEDIATION_RETEST.value:
+            raise StateConflict("Replay confirmation batch cannot have a parent Retest authority")
+        return self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=source.artifact_id,
+                repository_version=source.repository_version,
+            ),
+            lock=lock,
+        )
+
     def _publish_ready_replay_projection(
         self,
         batch_id: str,
@@ -1650,6 +1702,7 @@ class ControlPlaneService:
         artifact_repository = self._require_artifact_repository()
         with self.repository.transaction() as session:
             batch = self._records.replay_batch(session, batch_id, lock=True)
+            retest_artifact = self._replay_retest_artifact(session, batch, lock=True)
             existing = self._records.replay_projection_for_batch(
                 session,
                 batch_id,
@@ -1667,6 +1720,7 @@ class ControlPlaneService:
                     existing,
                     batch=batch,
                     artifact=artifact,
+                    retest_artifact=retest_artifact,
                 )
                 existing_storage_key = artifact.storage_key
                 snapshot = None
@@ -1693,6 +1747,17 @@ class ControlPlaneService:
             snapshot.authority.source,
             expected_storage_key=snapshot.source_storage_key,
         )
+        retest_source_snapshot: ManagedArtifactSnapshot | None = None
+        if isinstance(snapshot.authority, ReplayRetestProjectionInputAuthority):
+            if snapshot.retest_source_storage_key is None:
+                raise StateConflict("Replay retest projection source authority is incomplete")
+            retest_source_snapshot = self._resolve_managed_artifact(
+                artifact_repository,
+                snapshot.authority.retest_source,
+                expected_storage_key=snapshot.retest_source_storage_key,
+            )
+        elif snapshot.retest_source_storage_key is not None or snapshot.retest_contexts:
+            raise StateConflict("Replay confirmation projection contains Retest authority")
         output_snapshots = [
             self._resolve_managed_artifact(
                 artifact_repository,
@@ -1707,19 +1772,36 @@ class ControlPlaneService:
         ]
         projection_staging_id = f"stage_{uuid4().hex}"
         try:
+            projection_source = retest_source_snapshot or source_snapshot
             staged_projection_path = artifact_repository.stage_managed_run_copy(
                 staging_id=projection_staging_id,
-                source=source_snapshot.ref,
+                source=projection_source.ref,
             )
-            apply_confirmed_gate(
-                source_run_path=staged_projection_path,
-                replay_run_paths=[output.path for output in output_snapshots],
-                tickets=_ReplayProjectionTicketVerifier(snapshot.authority),
-                decided_at=snapshot.decided_at,
-            )
+            tickets = _ReplayProjectionTicketVerifier(snapshot.authority)
+            replay_run_paths = [output.path for output in output_snapshots]
+            if isinstance(snapshot.authority, ReplayRetestProjectionInputAuthority):
+                replay_batch = KISAReplayBatchOutcome.from_verified_retest_results(
+                    source_snapshot.path,
+                    staged_projection_path,
+                    replay_run_paths,
+                    tickets=tickets,
+                    contexts=snapshot.retest_contexts,
+                )
+                KISARetestService().compare(
+                    source_snapshot.path,
+                    staged_projection_path,
+                    replay_batch,
+                )
+            else:
+                apply_confirmed_gate(
+                    source_run_path=staged_projection_path,
+                    replay_run_paths=replay_run_paths,
+                    tickets=tickets,
+                    decided_at=snapshot.decided_at,
+                )
             projection_snapshot = artifact_repository.import_run(
                 staging_id=projection_staging_id,
-                producer_run_id=snapshot.authority.source.producer_run_id,
+                producer_run_id=projection_source.ref.producer_run_id,
                 media_type=_SOURCE_ARTIFACT_MEDIA_TYPE,
                 schema_kind=_REPLAY_PROJECTION_ARTIFACT_SCHEMA_KIND,
                 created_by=_REPLAY_PROJECTION_ACTOR,
@@ -1742,6 +1824,11 @@ class ControlPlaneService:
             expected_ref=projection_snapshot.ref,
         ) as (session, consume_after_commit):
             locked_batch = self._records.replay_batch(session, batch_id, lock=True)
+            locked_retest_artifact = self._replay_retest_artifact(
+                session,
+                locked_batch,
+                lock=True,
+            )
             existing = self._records.replay_projection_for_batch(
                 session,
                 batch_id,
@@ -1759,6 +1846,7 @@ class ControlPlaneService:
                     existing,
                     batch=locked_batch,
                     artifact=artifact,
+                    retest_artifact=locked_retest_artifact,
                 )
                 if (
                     existing_view.input_authority != snapshot.authority
@@ -1778,7 +1866,10 @@ class ControlPlaneService:
                 or current_snapshot.authority != snapshot.authority
                 or current_snapshot.authority_digest != snapshot.authority_digest
                 or current_snapshot.source_storage_key != snapshot.source_storage_key
+                or current_snapshot.retest_source_storage_key
+                != snapshot.retest_source_storage_key
                 or current_snapshot.output_storage_keys != snapshot.output_storage_keys
+                or current_snapshot.retest_contexts != snapshot.retest_contexts
             ):
                 raise StateConflict("Replay projection authority changed before publication")
 
@@ -1790,10 +1881,11 @@ class ControlPlaneService:
                     repository_version=locked_batch.source_repository_version,
                 ),
             )
+            projection_source_artifact = locked_retest_artifact or source_artifact
             artifact = self._admit_replay_projection_artifact(
                 session,
                 snapshot=projection_snapshot,
-                source_artifact=source_artifact,
+                source_artifact=projection_source_artifact,
                 idempotency_key=idempotency_key,
                 admission_digest=admission_digest,
                 now=published_at,
@@ -1827,10 +1919,15 @@ class ControlPlaneService:
                 job = self._records.job(session, ticket.job_id, lock=True)
                 item.state = ReplayItemState.GATED.value
                 item.updated_at = published_at
+                gated_event_type = (
+                    "replay.retest.gated"
+                    if locked_batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value
+                    else "replay.confirmation.gated"
+                )
                 self._replay_event(
                     session,
                     locked_batch,
-                    "replay.confirmation.gated",
+                    gated_event_type,
                     _REPLAY_PROJECTION_ACTOR,
                     {
                         "finalizationId": authority_item.finalization_id,
@@ -1862,7 +1959,39 @@ class ControlPlaneService:
                 projection,
                 batch=locked_batch,
                 artifact=artifact,
+                retest_artifact=locked_retest_artifact,
             )
+
+    @staticmethod
+    def _replay_projection_retest_context(
+        session: Session,
+        *,
+        batch: ReplayBatchRecord,
+        item: ReplayItemRecord,
+        lock: bool,
+    ) -> ReplayRetestContext | None:
+        statement = select(ReplayCompilationRecord).where(
+            ReplayCompilationRecord.item_id == item.item_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        record = session.scalar(statement)
+        if record is None:
+            raise StateConflict("Replay projection item has no compilation authority")
+        compilation = trusted_replay_compilation(record)
+        context = compilation.validation_packet.retest_context
+        if not (
+            record.batch_id == batch.batch_id
+            and record.compilation_digest == item.compilation_digest
+        ):
+            raise StateConflict("Replay projection compilation graph is inconsistent")
+        if batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value:
+            if context is None:
+                raise StateConflict("Replay retest projection context set is inconsistent")
+            return context
+        if context is not None:
+            raise StateConflict("Replay confirmation projection contains Retest context")
+        return None
 
     def _replay_projection_snapshot(
         self,
@@ -1882,7 +2011,9 @@ class ControlPlaneService:
             lock=lock,
         )
         source_ref = self._views.artifact(source_artifact)
-        if source_ref != self._views.replay_batch(batch).source:
+        retest_artifact = self._replay_retest_artifact(session, batch, lock=lock)
+        batch_view = self._views.replay_batch(batch, retest_artifact=retest_artifact)
+        if source_ref != batch_view.source:
             raise StateConflict("Replay projection source authority is inconsistent")
 
         item_statement = (
@@ -1906,6 +2037,7 @@ class ControlPlaneService:
 
         authority_items: list[ReplayProjectionItemAuthority] = []
         output_storage_keys: list[str] = []
+        retest_contexts: dict[str, ReplayRetestContext] = {}
         for item in items:
             finalization = finalizations_by_item.get(item.item_id)
             if finalization is None:
@@ -1931,6 +2063,16 @@ class ControlPlaneService:
                 and output_ref.run_id == item.replay_run_id
             ):
                 raise StateConflict("Replay projection finalization graph is inconsistent")
+            retest_context = self._replay_projection_retest_context(
+                session,
+                batch=batch,
+                item=item,
+                lock=lock,
+            )
+            if retest_context is not None:
+                if item.candidate_id in retest_contexts:
+                    raise StateConflict("Replay retest projection context set is ambiguous")
+                retest_contexts[item.candidate_id] = retest_context
             authority_items.append(
                 ReplayProjectionItemAuthority(
                     ordinal=item.ordinal,
@@ -1949,19 +2091,34 @@ class ControlPlaneService:
             )
             output_storage_keys.append(output_artifact.storage_key)
 
-        authority = ReplayProjectionInputAuthority(
-            batch_id=batch.batch_id,
-            source=source_ref,
-            batch_cas_version=batch.cas_version,
-            items=authority_items,
-        )
+        if retest_artifact is None:
+            authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority = (
+                ReplayProjectionInputAuthority(
+                    batch_id=batch.batch_id,
+                    source=source_ref,
+                    batch_cas_version=batch.cas_version,
+                    items=authority_items,
+                )
+            )
+            retest_source_storage_key = None
+        else:
+            authority = ReplayRetestProjectionInputAuthority(
+                batch_id=batch.batch_id,
+                source=source_ref,
+                retest_source=self._views.artifact(retest_artifact),
+                batch_cas_version=batch.cas_version,
+                items=authority_items,
+            )
+            retest_source_storage_key = retest_artifact.storage_key
         return _ReplayProjectionSnapshot(
             authority=authority,
             authority_digest=replay_context_digest(
                 authority.model_dump(mode="json", by_alias=True)
             ),
             source_storage_key=source_artifact.storage_key,
+            retest_source_storage_key=retest_source_storage_key,
             output_storage_keys=tuple(output_storage_keys),
+            retest_contexts=retest_contexts,
             decided_at=_aware(batch.updated_at),
         )
 
@@ -3008,6 +3165,7 @@ class ControlPlaneService:
             artifact_ref,
             expected_storage_key=artifact.storage_key,
         )
+        retest_artifact = self._replay_retest_artifact(session, batch)
         return self._views.replay_finalization(
             record,
             job=job,
@@ -3015,4 +3173,5 @@ class ControlPlaneService:
             item=item,
             ticket=ticket,
             artifact=artifact,
+            retest_artifact=retest_artifact,
         )

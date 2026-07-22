@@ -154,9 +154,11 @@ Operator/Approver/Auditor batch, item, ticket, and finalization reads, and autom
 issuance from `retry-pending`. Retry rereads the immutable source and requires an unchanged item plan, zero
 permits, fully released capacity, an existing empty prior staging capability, and a remaining attempt. It preserves
 the terminal authority graph and appends a fresh Run, compilation, context, reservations, Job, ticket, staging
-capability, attempt, and fence. Multi-item versioned-projection publication, negative Control Plane retest,
-portable/off-host signed proof, materializers and Oracles for other Modes, and structured collaboration memory are
-follow-on work.
+  capability, attempt, and fence. Schema v11 now publishes CAS-fenced multi-item projections. Schema v12 binds a
+  confirmed baseline to one parent Retest Artifact, charges the parent's budget/rate capacity, and publishes a
+  server-reverified `kisa-retest.json` projection from all negative receipts plus normal-function regression.
+  Defensive responses remain `inconclusive` without independent remediation attestation. Portable/off-host signed
+  proof, materializers and Oracles for other Modes, and structured collaboration memory are follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
 Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
@@ -168,7 +170,7 @@ Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, opaque Operator Replay source/batch admission with role-scoped state reads, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, a one-item common Gate, and automatic fresh-identity retry issuance; Compose enables both daemons with distinct credentials. Multi-item versioned-projection publication and negative Control Plane retest remain incomplete |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, opaque Operator Replay source/batch admission with role-scoped state reads, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, automatic fresh-identity retry issuance, schema-v11 multi-item projection, and schema-v12 dual-source negative Retest projection; Compose enables both daemons with distinct credentials |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -1240,9 +1242,9 @@ Scenario/canonical ToolSpec component digests, fixed `kisa-exact-v1`, forbidden 
 slot, and payload/claim/profile/permit transitive binding. The schema-v9 slice now provides the dedicated
 `kisa-exact-v1` daemon, permit-before-dispatch enforcement, execute/seal into the opaque staging slot,
 server-owned import and typed finalization, and the one-item common Gate; Compose enables that daemon with a
-credential distinct from the generic Worker. Opaque public source/batch admission, role-scoped state reads, and
-zero-permit fresh-identity retry issuance are also implemented. Multi-item versioned-projection publication,
-negative Control Plane retest, and portable/off-host proof remain separate completion criteria.
+  credential distinct from the generic Worker. Opaque public source/batch admission, role-scoped state reads,
+  zero-permit fresh-identity retry issuance, schema-v11 multi-item projection, and schema-v12 dual-source negative
+  Retest projection are also implemented. Portable/off-host proof remains a separate completion criterion.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1370,9 +1372,9 @@ seals output into the opaque staging slot, and finalizes using only issued autho
 Plane imports and re-verifies the Artifact, both seals, and permit lineage, then atomically records typed
 finalization and the one-item common Gate. Bounded identical permit/finalize response-loss retries do not
 redispatch a Tool, and any failure after permit issuance is terminal for that ticket. Compose enables the daemon.
-Opaque public source/batch admission, role-scoped state reads, and zero-permit fresh-identity retry issuance are
-also implemented. Multi-item versioned-projection publication and negative Control Plane retest remain
-outstanding, so full completion cannot be claimed. The Accepted ADR
+  Opaque public source/batch admission, role-scoped state reads, zero-permit fresh-identity retry issuance,
+  schema-v11 multi-item projection, and schema-v12 dual-source negative Retest projection are also implemented.
+  Portable/off-host proof remains outstanding, so full completion cannot be claimed. The Accepted ADR
 defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
@@ -1385,11 +1387,11 @@ defines at least the following.
 
 ## 21. Phase-by-Phase Roadmap
 
-| Phase | Status | Assessment as of 2026-07-21 |
+| Phase | Status | Assessment as of 2026-07-22 |
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→one-item Gate plus fresh-identity retry slice are implemented; multi-item projection publication, negative Control Plane retest, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; portable proof and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1464,12 +1466,16 @@ defines at least the following.
   response-loss retry for a permit immediately before dispatch, twice-sealed opaque staging, server-owned Artifact
   import and lineage verification, append-only typed finalization, and a one-item common Gate; Compose enables the
   daemon, and permit issuance makes same-ticket execution failure terminal
+- Schema-v11/v12 aggregate projection: append-only `cp_replay_projections` and
+  `cp_replay_retest_sources`, single-source confirmation and baseline/parent-Retest dual-source CAS, aggregate
+  receipt/seal re-verification outside database locks, parent normal-function regression, server-owned
+  `kisa-retest.json` materialization, and atomic item/batch `gated`/`completed` transitions
 - Automatic fresh-identity retry issuance: Worker claim polling issues `retry-pending` items only below the maximum
   attempt count and only after immutable-source rederivation, stable Candidate/contract verification, zero permits,
   fully released budget/rate reservations, and empty prior-staging removal; it preserves terminal history and appends
   fresh Run/compilation/context/reservation/Job/ticket/staging identities with incremented attempt and fence, while
   concurrent PostgreSQL or SQLite issuers converge on one authority graph
-- Remaining ADR-0029 scope: multi-item versioned-projection publication, negative Control Plane retest, portable or off-host signed proof,
+- Remaining ADR-0029 scope: portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
   Facts, Hypotheses, and Agent Working Memory

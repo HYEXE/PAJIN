@@ -701,7 +701,14 @@ class CreateReplayBatchRequest(StrictModel):
     """Locator-only request for server-owned sealed-source Replay derivation."""
 
     source: ArtifactLocator
+    retest_source: ArtifactLocator | None = None
     idempotency_key: str = Field(min_length=8, max_length=200)
+
+    @model_validator(mode="after")
+    def require_distinct_retest_source(self) -> CreateReplayBatchRequest:
+        if self.retest_source == self.source:
+            raise ValueError("baseline and parent Retest Artifacts must be distinct")
+        return self
 
 
 class ReplayClaimRequest(StrictModel):
@@ -856,6 +863,7 @@ class ReplayBatchView(StrictModel):
     batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
     campaign_name: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
     source: ArtifactRef
+    retest_source: ArtifactRef | None = None
     mode: CampaignMode
     purpose: ReplayPurpose
     policy_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
@@ -864,6 +872,21 @@ class ReplayBatchView(StrictModel):
     created_by: str = Field(min_length=1, max_length=200)
     created_at: datetime
     updated_at: datetime
+
+    @model_validator(mode="after")
+    def require_purpose_sources(self) -> ReplayBatchView:
+        if self.purpose is ReplayPurpose.CONFIRMATION:
+            if self.retest_source is not None:
+                raise ValueError("confirmation Replay batch cannot contain a Retest source")
+            return self
+        if (
+            self.retest_source is None
+            or self.retest_source == self.source
+            or self.retest_source.run_id == self.source.run_id
+            or self.retest_source.integrity_root_digest == self.source.integrity_root_digest
+        ):
+            raise ValueError("remediation Retest batch requires a distinct parent Retest source")
+        return self
 
 
 class ReplayItemView(StrictModel):
@@ -1134,6 +1157,8 @@ class ReplayExecutionClaimView(ReplayClaimView):
         matching_targets = [
             target for target in context.campaign.spec.targets if target.id == binding.target_id
         ]
+        retest_context = compilation.validation_packet.retest_context
+        retest_source = self.batch.retest_source
         if (
             candidate.candidate_id != self.item.candidate_id
             or replay_context_digest(candidate) != self.item.candidate_digest
@@ -1168,6 +1193,20 @@ class ReplayExecutionClaimView(ReplayClaimView):
             or context.scenario.tool_id != binding.tool_id
             or context.scenario.method.upper() != compilation.spec.method
             or context.tool_spec.tool_id != binding.tool_id
+            or (
+                self.batch.purpose is ReplayPurpose.CONFIRMATION
+                and retest_context is not None
+            )
+            or (
+                self.batch.purpose is ReplayPurpose.REMEDIATION_RETEST
+                and (
+                    retest_context is None
+                    or retest_source is None
+                    or retest_context.retest_run_id != retest_source.run_id
+                    or retest_context.retest_source_root_digest
+                    != retest_source.integrity_root_digest
+                )
+            )
             or context.tool_spec.version != binding.tool_version
             or context.tool_spec.risk_tier != compilation.spec.risk_tier
             or bool(compilation.spec.secret_lease_ids)
@@ -1326,6 +1365,34 @@ class ReplayProjectionInputAuthority(StrictModel):
         return self
 
 
+class ReplayRetestProjectionInputAuthority(StrictModel):
+    """Canonical two-source authority for a remediation-retest projection."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.control-plane.replay-projection-inputs/v2"] = (
+        "pajin.control-plane.replay-projection-inputs/v2"
+    )
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    source: ArtifactRef
+    retest_source: ArtifactRef
+    batch_cas_version: int = Field(strict=True, ge=1, le=2_147_483_647)
+    items: list[ReplayProjectionItemAuthority] = Field(min_length=1, max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_sorted_unique_items(self) -> ReplayRetestProjectionInputAuthority:
+        if self.source == self.retest_source:
+            raise ValueError("Replay retest projection requires distinct source Artifacts")
+        order = [(item.ordinal, item.item_id) for item in self.items]
+        if order != sorted(order) or len(order) != len(set(order)):
+            raise ValueError("Replay projection items must be uniquely sorted by ordinal")
+        for attribute in ("ticket_id", "finalization_id", "replay_run_id"):
+            values = [getattr(item, attribute) for item in self.items]
+            if len(values) != len(set(values)):
+                raise ValueError(f"Replay projection {attribute} values must be unique")
+        return self
+
+
 class ReplayProjectionView(StrictModel):
     """Published immutable validation projection for one complete Replay batch."""
 
@@ -1334,7 +1401,7 @@ class ReplayProjectionView(StrictModel):
     projection_id: str = Field(pattern=r"^replay-projection_[0-9a-f]{32}$")
     batch: ReplayBatchView
     artifact: ArtifactRef
-    input_authority: ReplayProjectionInputAuthority
+    input_authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
     input_authority_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     published_by: str = Field(min_length=1, max_length=200)
     published_at: datetime
@@ -1344,14 +1411,27 @@ class ReplayProjectionView(StrictModel):
         authority_digest = replay_context_digest(
             self.input_authority.model_dump(mode="json", by_alias=True)
         )
+        if isinstance(self.input_authority, ReplayRetestProjectionInputAuthority):
+            purpose_binding = (
+                self.batch.purpose is ReplayPurpose.REMEDIATION_RETEST
+                and self.batch.retest_source == self.input_authority.retest_source
+            )
+            projection_source = self.input_authority.retest_source
+        else:
+            purpose_binding = (
+                self.batch.purpose is ReplayPurpose.CONFIRMATION
+                and self.batch.retest_source is None
+            )
+            projection_source = self.input_authority.source
         if (
             self.batch.state is not ReplayBatchState.COMPLETED
             or self.input_authority.batch_id != self.batch.batch_id
             or self.input_authority.source != self.batch.source
+            or not purpose_binding
             or self.batch.cas_version != self.input_authority.batch_cas_version + 1
             or self.input_authority_digest != authority_digest
-            or self.artifact.producer_run_id != self.batch.source.producer_run_id
-            or self.artifact.run_id != self.batch.source.run_id
+            or self.artifact.producer_run_id != projection_source.producer_run_id
+            or self.artifact.run_id != projection_source.run_id
             or self.artifact.created_by != self.published_by
             or self.published_at.tzinfo is None
             or self.published_at.utcoffset() is None

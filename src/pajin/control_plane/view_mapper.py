@@ -41,6 +41,7 @@ from pajin.control_plane.models import (
     ReplayItemView,
     ReplayProjectionInputAuthority,
     ReplayProjectionView,
+    ReplayRetestProjectionInputAuthority,
     ReplayTicketState,
     ReplayTicketView,
     ReplayToolPermitView,
@@ -146,11 +147,17 @@ class ControlPlaneViewMapper:
             raise StateConflict("Replay batch Artifact metadata is invalid") from exc
 
     @classmethod
-    def replay_batch(cls, record: ReplayBatchRecord) -> ReplayBatchView:
+    def replay_batch(
+        cls,
+        record: ReplayBatchRecord,
+        *,
+        retest_artifact: ArtifactRecord | None = None,
+    ) -> ReplayBatchView:
         return ReplayBatchView(
             batch_id=record.batch_id,
             campaign_name=record.campaign_name,
             source=cls.replay_source(record),
+            retest_source=(cls.artifact(retest_artifact) if retest_artifact is not None else None),
             mode=CampaignMode(record.mode),
             purpose=ReplayPurpose(record.purpose),
             policy_version=record.policy_version,
@@ -246,6 +253,7 @@ class ControlPlaneViewMapper:
         item: ReplayItemRecord,
         ticket: ReplayTicketRecord,
         artifact: ArtifactRecord,
+        retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayFinalizationView:
         try:
             decision = ValidationDecision.model_validate(record.gate_decision)
@@ -293,9 +301,16 @@ class ControlPlaneViewMapper:
         *,
         batch: ReplayBatchRecord,
         artifact: ArtifactRecord,
+        retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayProjectionView:
         try:
-            authority = ReplayProjectionInputAuthority.model_validate(record.input_authority)
+            authority_type = (
+                ReplayRetestProjectionInputAuthority
+                if record.input_authority.get("apiVersion")
+                == "pajin.control-plane.replay-projection-inputs/v2"
+                else ReplayProjectionInputAuthority
+            )
+            authority = authority_type.model_validate(record.input_authority)
         except ValueError as exc:
             raise StateConflict("durable Replay projection inputs are invalid") from exc
         authority_digest = replay_context_digest(
@@ -312,7 +327,7 @@ class ControlPlaneViewMapper:
             raise StateConflict("durable Replay projection graph is inconsistent")
         return ReplayProjectionView(
             projection_id=record.projection_id,
-            batch=cls.replay_batch(batch),
+            batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
             artifact=cls.artifact(artifact),
             input_authority=authority,
             input_authority_digest=record.input_authority_digest,
@@ -332,10 +347,11 @@ class ControlPlaneViewMapper:
         execution_context: ReplayExecutionContext,
         execution_context_digest: str,
         lease_token: str,
+        retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayExecutionClaimView:
         return ReplayExecutionClaimView(
             job=cls.job(job),
-            batch=cls.replay_batch(batch),
+            batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
             item=cls.replay_item(item),
             ticket=cls.replay_ticket(ticket),
             compilation=compilation,

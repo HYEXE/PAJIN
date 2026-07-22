@@ -35,7 +35,8 @@ COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION = 8
 REPLAY_FINALIZATION_SCHEMA_VERSION = 9
 SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION = 10
 REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION = 11
-CURRENT_SCHEMA_VERSION = REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION
+REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION = 12
+CURRENT_SCHEMA_VERSION = REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -88,8 +89,12 @@ V10_CONTROL_PLANE_TABLES = frozenset(
     {*V8_CONTROL_PLANE_TABLES, *REPLAY_FINALIZATION_AUTHORITY_TABLES}
 )
 REPLAY_PROJECTION_AUTHORITY_TABLES = frozenset({"cp_replay_projections"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V11_CONTROL_PLANE_TABLES = frozenset(
     {*V10_CONTROL_PLANE_TABLES, *REPLAY_PROJECTION_AUTHORITY_TABLES}
+)
+REPLAY_RETEST_SOURCE_AUTHORITY_TABLES = frozenset({"cp_replay_retest_sources"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V11_CONTROL_PLANE_TABLES, *REPLAY_RETEST_SOURCE_AUTHORITY_TABLES}
 )
 
 
@@ -2089,3 +2094,49 @@ class ReplayProjectionRecord(Base):
     input_authority_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     published_by: Mapped[str] = mapped_column(String(200), nullable=False)
     published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+def _build_v11_metadata() -> MetaData:
+    """Freeze schema v11 before parent Retest source authority is added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V11_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V11_METADATA = _build_v11_metadata()
+
+
+class ReplayRetestSourceRecord(Base):
+    """Append-only parent Retest Artifact bound to one negative Replay batch."""
+
+    __tablename__ = "cp_replay_retest_sources"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["artifact_id", "repository_version"],
+            ["cp_artifacts.artifact_id", "cp_artifacts.repository_version"],
+            name="fk_cp_replay_retest_sources_artifact",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "repository_version > 0",
+            name="ck_cp_replay_retest_sources_repository_version",
+        ),
+        UniqueConstraint(
+            "artifact_id",
+            "repository_version",
+            "batch_id",
+            name="uq_cp_replay_retest_sources_authority",
+        ),
+        Index("ix_cp_replay_retest_sources_artifact", "artifact_id", "repository_version"),
+    )
+
+    batch_id: Mapped[str] = mapped_column(
+        ForeignKey("cp_replay_batches.batch_id", ondelete="RESTRICT"),
+        primary_key=True,
+    )
+    artifact_id: Mapped[str] = mapped_column(String(41), nullable=False)
+    repository_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

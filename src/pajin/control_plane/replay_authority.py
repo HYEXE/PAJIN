@@ -112,12 +112,14 @@ def replay_rate_account_is_exact(
     account: ReplayRateAccountRecord,
     batch: ReplayBatchRecord,
     authority: ReplayRateAccountAuthority,
+    *,
+    capacity_source: ArtifactRef,
 ) -> bool:
     """Compare a mutable rate account with its reconstructed sealed authority."""
 
     return (
-        account.source_run_id == batch.source_run_id
-        and account.source_root_digest == batch.source_root_digest
+        account.source_run_id == capacity_source.producer_run_id
+        and account.source_root_digest == capacity_source.integrity_root_digest
         and account.campaign_name == batch.campaign_name
         and account.rate_limits_digest == authority.rate_limits_digest
         and account.ledger_id == authority.ledger_id
@@ -134,6 +136,7 @@ def replay_binding_is_exact(
     item: ReplayItemRecord,
     batch: ReplayBatchRecord,
     source: ArtifactRef,
+    capacity_source: ArtifactRef,
     authority: ReplayBindingAuthority,
     *,
     budget_lifecycle_exact: bool,
@@ -148,6 +151,7 @@ def replay_binding_is_exact(
         and _capacity_binding_is_exact(
             ticket,
             batch,
+            capacity_source,
             authority,
             budget_lifecycle_exact=budget_lifecycle_exact,
             rate_lifecycle_exact=rate_lifecycle_exact,
@@ -283,6 +287,7 @@ def _execution_binding_is_exact(
 def _capacity_binding_is_exact(
     ticket: ReplayTicketRecord,
     batch: ReplayBatchRecord,
+    capacity_source: ArtifactRef,
     authority: ReplayBindingAuthority,
     *,
     budget_lifecycle_exact: bool,
@@ -324,8 +329,8 @@ def _capacity_binding_is_exact(
         and _aware(ticket.expires_at) <= _aware(rate.expires_at)
         and _aware(ticket.expires_at) <= _aware(trusted.spec.expires_at)
         and _aware(ticket.expires_at) <= _aware(trusted.grant.expires_at)
-        and budget_account.source_run_id == batch.source_run_id
-        and budget_account.source_root_digest == batch.source_root_digest
+        and budget_account.source_run_id == capacity_source.producer_run_id
+        and budget_account.source_root_digest == capacity_source.integrity_root_digest
         and budget_account.campaign_name == batch.campaign_name
     )
 
@@ -368,8 +373,15 @@ def require_exact_replay_rate_account(
     account: ReplayRateAccountRecord,
     batch: ReplayBatchRecord,
     authority: ReplayRateAccountAuthority,
+    *,
+    capacity_source: ArtifactRef,
 ) -> None:
-    if not replay_rate_account_is_exact(account, batch, authority):
+    if not replay_rate_account_is_exact(
+        account,
+        batch,
+        authority,
+        capacity_source=capacity_source,
+    ):
         raise StateConflict("durable Replay rate account differs from the sealed source")
 
 
@@ -381,6 +393,7 @@ def require_exact_replay_binding(
     authority: ReplayBindingAuthority,
     *,
     source: ArtifactRef,
+    capacity_source: ArtifactRef,
 ) -> None:
     if not replay_binding_is_exact(
         job,
@@ -388,6 +401,7 @@ def require_exact_replay_binding(
         item,
         batch,
         source,
+        capacity_source,
         authority,
         budget_lifecycle_exact=replay_budget_reservation_lifecycle_exact(
             authority.budget_reservation
@@ -430,9 +444,11 @@ def require_fresh_issuance_derivation(
     *,
     derived: DerivedKISAReplayBatch,
     source: ArtifactRef,
+    retest_source: ArtifactRef | None = None,
 ) -> None:
     if (
         derived.artifact_ref != source
+        or derived.retest_artifact_ref != retest_source
         or derived.candidate_run_id != source.run_id
         or derived.source_root_digest != source.integrity_root_digest
         or derived.campaign.metadata.name != derived.campaign_name
@@ -481,6 +497,7 @@ def require_fresh_retry_derivation(
     *,
     derived: DerivedKISAReplayBatch,
     source: ArtifactRef,
+    retest_source: ArtifactRef | None = None,
 ) -> None:
     """Require a fresh compilation set without rewriting the stable item plan.
 
@@ -491,6 +508,7 @@ def require_fresh_retry_derivation(
 
     if (
         derived.artifact_ref != source
+        or derived.retest_artifact_ref != retest_source
         or derived.candidate_run_id != source.run_id
         or derived.source_root_digest != source.integrity_root_digest
         or derived.campaign.metadata.name != derived.campaign_name

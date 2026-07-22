@@ -536,10 +536,21 @@ def test_create_replay_batch_rejects_caller_authored_authority(
     field_name: str, value: object
 ) -> None:
     request = _batch_request()
-    assert set(request.model_dump()) == {"source", "idempotency_key"}
+    assert set(request.model_dump()) == {"source", "retest_source", "idempotency_key"}
 
     with pytest.raises(ValidationError):
         CreateReplayBatchRequest.model_validate({**request.model_dump(), field_name: value})
+
+
+def test_create_replay_batch_requires_distinct_optional_retest_source() -> None:
+    request = _batch_request(
+        retest_source=_locator(artifact_id=f"artifact_{'b' * 32}"),
+    )
+    assert request.retest_source is not None
+    assert request.retest_source != request.source
+
+    with pytest.raises(ValidationError, match="must be distinct"):
+        _batch_request(retest_source=_locator())
 
 
 def test_replay_claim_and_lease_requests_use_authenticated_actor_identity() -> None:

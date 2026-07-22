@@ -22,8 +22,8 @@ The implementation baseline as of 2026-07-21 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v9 adds append-only server-derived finalization after sealed-output import and permit-lineage verification; it does not independently attest target execution. |
-| Primary gaps | Negative Control Plane retest, multi-item versioned-projection publication, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
+| Primary gaps | Multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -207,7 +207,8 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   and appends a fresh Replay Run, compilation, execution context, reservations, one-shot Job, ticket,
   staging capability, attempt, and fence. Any permit, staged output, missing capability, authority
   mismatch, or exhausted attempt count fails closed; the same Job or ticket is never redispatched.
-  Negative Control Plane retest remains incomplete.
+  Schema v11/v12 aggregate projection now covers both confirmation and exact dual-source negative
+  Control Plane retest; portable/off-host proof remains incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -877,13 +878,15 @@ An Operator credential can use the public Replay admission surface:
   Run/Job IDs and lets the server import the sealed source as a managed Artifact. A trusted producer
   must already have placed the sealed Run in the configured server-controlled staging handoff; this
   endpoint is not a file-upload or path-import API.
-- `POST /v1/replay/batches` accepts only the exact `(artifact_id, repository_version)` locator and
-  an idempotency key, then derives server-owned Candidate, contract, and Replay compilation
-  authority in the `planned` state.
+- `POST /v1/replay/batches` accepts the confirmed baseline's exact
+  `(artifact_id, repository_version)` locator, an optional parent Retest locator, and an idempotency
+  key. Omitting the parent selects confirmation; providing it derives baseline-bound
+  `remediation-retest` Candidate, contract, and Replay compilation authority in the `planned` state.
 
 Operator, Approver, and Auditor credentials can read
-`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`, and
-`/tickets/{ticket_id}/finalization`. Responses omit staging IDs, repository storage keys, and lease
+`GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
+`/tickets/{ticket_id}/finalization`, and `/batches/{batch_id}/projection`. Responses omit staging
+IDs, repository storage keys, and lease
 tokens. This public surface never accepts a raw path or URL, caller-authored Candidate, contract,
 Capability, Tool request, verdict, or internal Replay Job kind. First-attempt Job/ticket issuance
 remains a trusted internal service operation, so public admission does not implicitly dispatch a

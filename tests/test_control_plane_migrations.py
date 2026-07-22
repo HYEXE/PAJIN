@@ -43,6 +43,8 @@ from pajin.control_plane.database import (
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
     REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
     REPLAY_FINALIZATION_SCHEMA_VERSION,
+    REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
@@ -53,6 +55,7 @@ from pajin.control_plane.database import (
     V7_CONTROL_PLANE_TABLES,
     V8_CONTROL_PLANE_TABLES,
     V10_CONTROL_PLANE_TABLES,
+    V11_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
@@ -69,6 +72,7 @@ from pajin.control_plane.database import (
     ReplayProjectionRecord,
     ReplayRateAccountRecord,
     ReplayRateReservationRecord,
+    ReplayRetestSourceRecord,
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
@@ -1368,7 +1372,8 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
             REPLAY_FINALIZATION_SCHEMA_VERSION,
             SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
-            CURRENT_SCHEMA_VERSION,
+            REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
         ]
 
         repository.initialize()
@@ -1386,10 +1391,11 @@ def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) 
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
             connection.exec_driver_sql("DROP TABLE cp_replay_projections")
             connection.execute(
-                text("DELETE FROM cp_schema_version WHERE version = :version"),
-                {"version": CURRENT_SCHEMA_VERSION},
+                text("DELETE FROM cp_schema_version WHERE version >= :version"),
+                {"version": REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION},
             )
         assert {
             name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
@@ -1415,6 +1421,45 @@ def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) 
             "cp_replay_projections_no_delete",
             "cp_replay_projections_no_replace",
             "cp_replay_projections_no_update",
+        }
+    finally:
+        repository.close()
+
+
+def test_exact_v11_schema_adds_append_only_retest_source_authority(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "v11-retest-source-authority.db")
+    try:
+        repository.initialize()
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
+            connection.execute(
+                text("DELETE FROM cp_schema_version WHERE version = :version"),
+                {"version": REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION},
+            )
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V11_CONTROL_PLANE_TABLES
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert ReplayRetestSourceRecord.__tablename__ in inspect(
+            repository.engine
+        ).get_table_names()
+        with repository.engine.connect() as connection:
+            triggers = {
+                str(name)
+                for name in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND tbl_name = 'cp_replay_retest_sources'"
+                    )
+                ).scalars()
+            }
+        assert triggers == {
+            "cp_replay_retest_sources_no_delete",
+            "cp_replay_retest_sources_no_replace",
+            "cp_replay_retest_sources_no_update",
         }
     finally:
         repository.close()

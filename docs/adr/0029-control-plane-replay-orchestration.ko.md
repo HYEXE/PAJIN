@@ -95,7 +95,11 @@ terminal authority state를 원자적으로 commit한다. Compose도 이 daemon�
 fresh-identity retry 발행도 추가했다. 2026-07-22 schema-v11 조각은 append-only
 `cp_replay_projections`, 서버 소유 copy-on-project materialization, DB lock 밖의 aggregate receipt
 재검증, 최종 source-root/batch-CAS/정렬된 finalization 집합 commit과 역할 기반 projection 조회를
-추가했다. Negative Control Plane retest와 multi-host/object-store handoff는 아직 남아 있다.
+추가했다. Schema v12는 append-only `cp_replay_retest_sources`로 batch와 exact 부모 Retest Artifact를
+1:1 결박한다. Baseline과 부모 seal을 모두 다시 열고 부모 Retest snapshot의 capacity를 사용하며,
+projection-input v2가 모든 음성 receipt와 dual-source authority를 결박한 뒤 `KISARetestService`가 부모
+Retest Run copy에 `kisa-retest.json`을 쓰고 봉인한다. 독립 remediation attestation 없이 target-authored
+방어 응답을 `fixed`로 승격하지 않는다. Multi-host/object-store handoff는 아직 남아 있다.
 
 ## 맥락
 
@@ -609,8 +613,9 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 2026-07-22 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
 context, 전용 Worker transport/execution, opaque staging, schema-v9 server-derived finalization, exact
 response-loss idempotency, permit 0개 자동 fresh-identity retry와 schema-v11 multi-item versioned
-projection publisher가 positive-confirmation 실행 경로를 구성한다. Negative Control Plane retest는
-더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
+projection publisher가 positive-confirmation 실행 경로를 구성한다. Schema v12는 exact baseline/부모
+Retest authority, 부모 capacity accounting, aggregate 음성 receipt 검증과 서버 소유 Retest projection으로
+negative Control Plane retest 경로를 구성한다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
@@ -619,6 +624,8 @@ projection publisher가 positive-confirmation 실행 경로를 구성한다. Neg
   dispatch 가능한 v6 authority를 거부해 추측한 context bytes를 backfill하지 않고,
   non-dispatchable planned proof는 가짜 context row 없이 전진시킨다. v8은 append-only guard를
   완성하고 v9는 no-replace server-derived finalization table을 추가한다;
+- v11→v12는 negative batch마다 exact 부모 Retest source authority를 하나만 append하고, 누락·중복·baseline과
+  동일한 source·다른 Campaign/Run/root 결박을 거부한다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
   verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
   non-dispatchable compilation proof를 만든다. 내부 issuance는 source를 재검증하고 만료된 planned

@@ -91,8 +91,11 @@ verdict를 제출하지 않는다. 서버는 sealed output을 import해 다시 �
 source/compilation/ticket/permit lineage를 검증하며 ADR 0027 공통 Gate를 파생한 뒤 finalization과
 terminal authority state를 원자적으로 commit한다. Compose도 이 daemon과 owner-only staging handoff를
 활성화한다. 2026-07-21에는 opaque public source/batch admission, 역할 기반 상태 조회 API와 자동
-fresh-identity retry 발행도 추가했다. Negative Control Plane retest와 multi-host/object-store handoff는
-아직 남아 있다.
+fresh-identity retry 발행도 추가했다. 2026-07-22 schema v11/v12는 append-only aggregate projection과
+`cp_replay_retest_sources`를 추가했다. Confirmed baseline과 exact 부모 Retest Artifact를 1:1 결박하고
+두 seal과 부모 capacity를 다시 검증하며, 모든 음성 receipt와 정상 기능 회귀를 서버가 판정한
+`kisa-retest.json` projection을 부모 Retest Run copy에 봉인한다. 독립 remediation attestation 없는
+방어 응답은 `fixed`로 승격하지 않는다. Multi-host/object-store handoff는 아직 남아 있다.
 
 ## Context
 
@@ -154,8 +157,8 @@ output-staging identity를 결박한다. Job payload, claim envelope, profile ad
 bytes를 만들어 내지 않고 dispatch 가능한 legacy authority를 거부한다. 2026-07-19 구현은 아래의
 전용 executor, pre-dispatch permit seam, opaque staging handoff, 서버 import/finalization과 one-item
 공통 Gate를 추가한다. 2026-07-21 구현은 opaque public source/batch admission, 역할 기반 상태 조회
-API와 permit 0개 terminal attempt의 자동 fresh-identity retry 발행을 추가했다. Negative Control Plane
-retest는 완료된 조각 밖에 남아 있다.
+API와 permit 0개 terminal attempt의 자동 fresh-identity retry 발행을 추가했다. 2026-07-22 구현은
+multi-item confirmation projection과 exact dual-source negative Control Plane retest를 추가했다.
 
 따라서 M6-07B는 단순히 public `JobKind.REPLAY`를 추가하거나 Worker가 제출한 Candidate,
 Capability Grant, contract, `runPath`와 verdict를 저장하는 방식으로 구현할 수 없다. 일반 Job의
@@ -575,10 +578,9 @@ service attachment를 분리하지만 outbound deny 경계는 아니므로 produ
 - Control Plane이 물리적 fleet quiescence를 증명하는 cancellation acknowledgement protocol.
 
 현재 구현 조각은 전용 exact-KISA Worker, 호출별 durable permit seam, twice-sealed opaque staging
-handoff, schema-v9 server-derived Artifact finalization과 one-item 공통 Gate, opaque public
-admission/read API, permit 0개 자동 fresh-identity retry issuance까지 구현됐다. Multi-item versioned
-projection publication과 negative Control Plane retest는 후속 exit criteria다. Permit은 bearer
-credential이 아니므로 별도 redeem mutation을 추가하지 않는다.
+handoff, schema-v9 server-derived Artifact finalization, opaque public admission/read API, permit 0개 자동
+fresh-identity retry issuance, schema-v11 multi-item projection과 schema-v12 dual-source negative retest까지
+구현됐다. Permit은 bearer credential이 아니므로 별도 redeem mutation을 추가하지 않는다.
 
 multi-host/object-store 지원은 immutable `ArtifactRef` resolver, upload authorization, retention,
 encryption, tenant isolation과 cross-service authentication을 별도 ADR로 설계한 뒤 추가한다.
@@ -601,11 +603,10 @@ encryption, tenant isolation과 cross-service authentication을 별도 ADR로 �
 
 ## Acceptance and validation
 
-2026-07-21 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
+2026-07-22 기준 source admission/derivation, public admission/read API, durable reservation/permit authority, exact execution
 context, 전용 Worker transport/execution, opaque staging, schema-v9 server-derived finalization, exact
-response-loss idempotency, permit 0개 자동 fresh-identity retry와 one-item 공통 Gate가 첫 complete
-positive-confirmation 실행 조각을 구성한다. Multi-item projection publication과 negative Control Plane
-retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
+response-loss idempotency, permit 0개 자동 fresh-identity retry, schema-v11 confirmation projection과
+schema-v12 negative Retest projection이 exact KISA 실행 조각을 구성한다.
 
 이 ADR의 구현은 자동화된 테스트가 최소한 다음을 증명할 때 완료된다.
 
@@ -614,6 +615,8 @@ retest는 더 넓은 M6-07B 범위의 exit criteria로 남아 있다.
   dispatch 가능한 v6 authority를 거부해 추측한 context bytes를 backfill하지 않고,
   non-dispatchable planned proof는 가짜 context row 없이 전진시킨다. v8은 append-only guard를
   완성하고 v9는 no-replace server-derived finalization table을 추가한다;
+- v11→v12는 negative batch마다 exact 부모 Retest source authority를 하나만 append하고, 누락·중복·baseline과
+  동일한 source·다른 Campaign/Run/root 결박을 거부한다;
 - public submission이 internal Replay kind, raw path/URL, Candidate, contract, Capability와 Worker
   verdict 주입을 거부한다. server-side sealed-source derivation만 exact KISA planned/pending,
   non-dispatchable compilation proof를 만든다. 내부 issuance는 source를 재검증하고 만료된 planned

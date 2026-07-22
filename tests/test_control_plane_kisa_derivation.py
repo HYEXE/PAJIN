@@ -8,6 +8,7 @@ import pytest
 from kisa_control_plane_support import (
     KISAControlPlaneSource,
     _tree_identity,
+    build_kisa_control_plane_retest_sources,
     build_kisa_control_plane_source,
 )
 
@@ -18,7 +19,9 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+    KISA_RETEST_POLICY_VERSION,
     derive_kisa_confirmation_batch,
+    derive_kisa_retest_batch,
 )
 from pajin.control_plane.models import ArtifactRef
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
@@ -75,6 +78,44 @@ def test_derives_stable_canonical_compilations_from_only_the_sealed_source(
             item.compilation
         )
         assert not hasattr(item, "ticket")
+
+
+def test_derives_negative_retest_from_exact_baseline_and_parent_sources(
+    tmp_path: Path,
+) -> None:
+    sources = build_kisa_control_plane_retest_sources(
+        tmp_path / "retest-sources",
+        baseline_producer_run_id=f"run_{'a' * 32}",
+        retest_producer_run_id=f"run_{'b' * 32}",
+    )
+    replay_run_id = f"run_{'c' * 32}"
+
+    derived = derive_kisa_retest_batch(
+        source_root=sources.baseline.path,
+        artifact_ref=sources.baseline.artifact_ref,
+        retest_root=sources.retest.path,
+        retest_artifact_ref=sources.retest.artifact_ref,
+        replay_run_id_factory=lambda: replay_run_id,
+        clock=lambda: sources.retest.compilation_time,
+    )
+
+    assert derived.purpose is ReplayPurpose.REMEDIATION_RETEST
+    assert derived.policy_version == KISA_RETEST_POLICY_VERSION
+    assert derived.artifact_ref == sources.baseline.artifact_ref
+    assert derived.retest_artifact_ref == sources.retest.artifact_ref
+    assert derived.capacity_artifact_ref == sources.retest.artifact_ref
+    assert derived.required_tool_calls == 2
+    assert len(derived.items) == 1
+    item = derived.items[0]
+    assert item.replay_run_id == replay_run_id
+    assert item.compilation.spec.binding.purpose is ReplayPurpose.REMEDIATION_RETEST
+    context = item.compilation.validation_packet.retest_context
+    assert context is not None
+    assert context.retest_run_id == sources.retest.artifact_ref.run_id
+    assert (
+        context.retest_source_root_digest
+        == sources.retest.artifact_ref.integrity_root_digest
+    )
 
 
 @pytest.mark.parametrize("malformation", ["duplicate-key", "nan", "deep-nesting"])

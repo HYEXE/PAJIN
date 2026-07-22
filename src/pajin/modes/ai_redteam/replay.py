@@ -199,6 +199,57 @@ class KISAReplayBatchOutcome:
 
         return self.source_run_id
 
+    @classmethod
+    def from_verified_retest_results(
+        cls,
+        baseline_run_path: Path,
+        retest_run_path: Path,
+        replay_run_paths: Sequence[Path],
+        *,
+        tickets: ReplayTicketFinalizationVerifier,
+        contexts: Mapping[str, ReplayRetestContext],
+        catalog: KISACatalog = KISA_CATALOG,
+    ) -> KISAReplayBatchOutcome:
+        """Rebuild one canonical negative-retest batch from sealed Worker receipts."""
+
+        baseline_reader = _SealedRunReader.open(baseline_run_path.resolve())
+        retest_reader = _SealedRunReader.open(retest_run_path.resolve())
+        verified_results: dict[str, VerifiedReplayResult] = {}
+        for replay_run_path in replay_run_paths:
+            verified = load_verified_replay_result(replay_run_path, tickets=tickets)
+            candidate_id = verified.artifact_set.outcome.binding.candidate_id
+            if candidate_id in verified_results:
+                raise ValueError("KISA retest receipts contain duplicate Candidates")
+            verified_results[candidate_id] = verified
+
+        draft = cls(
+            source_run_id=baseline_reader.verification.run_id,
+            records=(),
+            verified_results=verified_results,
+            tickets=tickets,
+            purpose=ReplayPurpose.REMEDIATION_RETEST,
+            retest_run_id=retest_reader.verification.run_id,
+            contexts=dict(contexts),
+            catalog=catalog,
+        )
+        records = draft._verified_retest_records(
+            baseline_run_path,
+            retest_run_path,
+            require_public_records=False,
+        )
+        baseline_reader.require_current()
+        retest_reader.require_current()
+        return cls(
+            source_run_id=draft.source_run_id,
+            records=records,
+            verified_results=verified_results,
+            tickets=tickets,
+            purpose=draft.purpose,
+            retest_run_id=draft.retest_run_id,
+            contexts=dict(contexts),
+            catalog=catalog,
+        )
+
     def verified_records(
         self,
         source_run_path: Path,
@@ -299,6 +350,8 @@ class KISAReplayBatchOutcome:
         self,
         baseline_run_path: Path,
         retest_run_path: Path,
+        *,
+        require_public_records: bool = True,
     ) -> tuple[KISAReplayRecord, ...]:
         baseline_root = baseline_run_path.resolve()
         retest_root = retest_run_path.resolve()
@@ -321,7 +374,10 @@ class KISAReplayBatchOutcome:
             raise ValueError("KISA retest replay requires a versioned confirmed baseline")
         confirmed = _confirmed_baseline_candidates(snapshot.validation)
         expected_ids = {candidate.candidate_id for candidate, _decision in confirmed}
-        self._validate_retest_batch_coverage(expected_ids)
+        self._validate_retest_batch_coverage(
+            expected_ids,
+            require_public_records=require_public_records,
+        )
 
         remediation = _load_remediation_bindings(baseline_reader)
         if set(remediation) != expected_ids:
@@ -366,7 +422,7 @@ class KISAReplayBatchOutcome:
             outcome_ids.add(outcome_id)
             canonical.append(record)
         records = tuple(canonical)
-        if records != self.records:
+        if require_public_records and records != self.records:
             raise ValueError("KISA retest public records differ from sealed canonical outcomes")
         baseline_reader.require_current()
         retest_reader.require_current()
@@ -391,7 +447,12 @@ class KISAReplayBatchOutcome:
             raise ValueError("sealed KISA negative retest receipts changed repetition count")
         return current
 
-    def _validate_retest_batch_coverage(self, expected_ids: set[str]) -> None:
+    def _validate_retest_batch_coverage(
+        self,
+        expected_ids: set[str],
+        *,
+        require_public_records: bool,
+    ) -> None:
         if set(self.contexts) != expected_ids:
             raise ValueError(
                 "KISA retest contexts must exactly cover confirmed baseline Candidates"
@@ -400,9 +461,12 @@ class KISAReplayBatchOutcome:
             raise ValueError(
                 "KISA retest receipts must exactly cover confirmed baseline Candidates"
             )
-        record_ids = [record.candidate_id for record in self.records]
-        if len(record_ids) != len(expected_ids) or set(record_ids) != expected_ids:
-            raise ValueError("KISA retest public records contain missing or duplicate Candidates")
+        if require_public_records:
+            record_ids = [record.candidate_id for record in self.records]
+            if len(record_ids) != len(expected_ids) or set(record_ids) != expected_ids:
+                raise ValueError(
+                    "KISA retest public records contain missing or duplicate Candidates"
+                )
 
     def _canonical_retest_record(
         self,

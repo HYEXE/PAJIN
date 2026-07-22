@@ -29,6 +29,7 @@ from pajin.domain.replay import (
     ModeReplayContract,
     ReplayCompilation,
     ReplayPurpose,
+    ReplayRetestContext,
     replay_evidence_digest,
     replay_request_digest,
 )
@@ -45,7 +46,18 @@ from pajin.modes.ai_redteam.replay import (
     build_kisa_replay_compilation_inputs,
     derive_kisa_source_replay_context,
     eligible_for_kisa_replay,
+    kisa_negative_retest_contract,
     kisa_replay_contract,
+)
+from pajin.modes.ai_redteam.replay_source import (
+    SealedRunReader,
+    confirmed_baseline_candidates,
+    load_remediation_bindings,
+    read_array,
+    read_object,
+    validate_completed_run,
+    validate_parent_retest_plan_and_evidence,
+    validate_retest_context,
 )
 from pajin.policy.capability import CapabilityRecord
 from pajin.replay.compiler import ReplayCompiler
@@ -67,9 +79,11 @@ from pajin.workflow.validation_artifacts import (
     VALIDATOR_OUTPUT_PATH,
     VERSIONED_VALIDATION_ROOT,
     load_source_validation_artifacts_from_snapshot,
+    load_validation_snapshot,
 )
 
 KISA_CONFIRMATION_POLICY_VERSION = "pajin.kisa-confirmation:v1"
+KISA_RETEST_POLICY_VERSION = "pajin.kisa-negative-retest:v1"
 KISA_CONFIRMATION_REPETITIONS = 2
 KISA_CONFIRMATION_REQUIRED_SUCCESSES = 2
 KISA_CONFIRMATION_REQUIRED_ATTEMPTS = 1
@@ -179,6 +193,7 @@ class DerivedKISAReplayBatch:
     """Canonical planned batch; it carries no ticket or execution permission."""
 
     artifact_ref: ArtifactRef
+    retest_artifact_ref: ArtifactRef | None
     campaign: CampaignManifest
     campaign_name: str
     candidate_run_id: str
@@ -197,6 +212,12 @@ class DerivedKISAReplayBatch:
     max_requests_per_minute: int | None
     required_request_units: int
     items: tuple[DerivedKISAReplayItem, ...]
+
+    @property
+    def capacity_artifact_ref(self) -> ArtifactRef:
+        """Return the sealed Run whose budget and rate ledger fund execution."""
+
+        return self.retest_artifact_ref or self.artifact_ref
 
 
 @dataclass(frozen=True, slots=True)
@@ -400,6 +421,7 @@ def derive_kisa_confirmation_batch(
     )
     return DerivedKISAReplayBatch(
         artifact_ref=artifact_ref,
+        retest_artifact_ref=None,
         campaign=campaign,
         campaign_name=campaign.metadata.name,
         candidate_run_id=verification.run_id,
@@ -407,6 +429,200 @@ def derive_kisa_confirmation_batch(
         mode=CampaignMode.AI_REDTEAM,
         purpose=ReplayPurpose.CONFIRMATION,
         policy_version=KISA_CONFIRMATION_POLICY_VERSION,
+        compiled_at=compiled_at,
+        used_tool_calls=budget.tool_calls,
+        max_tool_calls=budget.max_tool_calls,
+        required_tool_calls=required_calls,
+        budget_digest=replay_context_digest(budget),
+        rate_limits_digest=replay_context_digest(rate_limits),
+        rate_ledger_id=rate_limits.ledger_id,
+        observed_campaign_request_units=rate_limits.reservation_counts.get(
+            campaign.metadata.name,
+            0,
+        ),
+        max_requests_per_minute=campaign.spec.rules_of_engagement.max_requests_per_minute,
+        required_request_units=sum(item.required_request_units for item in items),
+        items=tuple(items),
+    )
+
+
+def derive_kisa_retest_batch(
+    *,
+    source_root: Path,
+    artifact_ref: ArtifactRef,
+    retest_root: Path,
+    retest_artifact_ref: ArtifactRef,
+    replay_run_id_factory: Callable[[], str] = lambda: f"run_{uuid4().hex}",
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+) -> DerivedKISAReplayBatch:
+    """Compile a baseline-bound negative batch from two immutable managed Runs."""
+
+    baseline_path = source_root.resolve()
+    parent_path = retest_root.resolve()
+    baseline_reader = SealedRunReader.open(baseline_path)
+    parent_reader = SealedRunReader.open(parent_path)
+    baseline_verification = baseline_reader.verification
+    parent_verification = parent_reader.verification
+    _require_artifact_binding(
+        artifact_ref,
+        run_id=baseline_verification.run_id,
+        root_digest=baseline_verification.root_digest,
+    )
+    _require_artifact_binding(
+        retest_artifact_ref,
+        run_id=parent_verification.run_id,
+        root_digest=parent_verification.root_digest,
+    )
+    validate_completed_run(baseline_reader, label="baseline")
+    validate_completed_run(parent_reader, label="Retest")
+    if baseline_verification.run_id == parent_verification.run_id:
+        raise ValueError("KISA retest requires distinct baseline and parent Retest Runs")
+
+    campaign = CampaignManifest.model_validate(read_object(baseline_reader, "campaign.json"))
+    parent_campaign = CampaignManifest.model_validate(read_object(parent_reader, "campaign.json"))
+    if campaign != parent_campaign or campaign.spec.mode is not CampaignMode.AI_REDTEAM:
+        raise ValueError("KISA baseline and parent Retest Campaigns must match exactly")
+    plan = AgentPlan.model_validate(read_object(baseline_reader, "plan.json"))
+    capability_records = [
+        CapabilityRecord.model_validate(item)
+        for item in read_array(baseline_reader, "capabilities.json")
+    ]
+    validation = load_validation_snapshot(
+        baseline_path,
+        verified_snapshot=baseline_reader.snapshot,
+    )
+    confirmed = confirmed_baseline_candidates(validation.validation)
+    if not confirmed:
+        raise ValueError("KISA retest requires at least one confirmed baseline Candidate")
+    remediation = load_remediation_bindings(baseline_reader)
+    expected_ids = {candidate.candidate_id for candidate, _decision in confirmed}
+    if set(remediation) != expected_ids:
+        raise ValueError("KISA remediation plan must exactly cover confirmed baseline Candidates")
+
+    validate_parent_retest_plan_and_evidence(
+        parent_reader,
+        campaign=campaign,
+        repetitions=KISA_CONFIRMATION_REPETITIONS,
+    )
+    budget = _BudgetSnapshot.model_validate(read_object(parent_reader, "budget.json"))
+    rate_limits = _RateLimitSnapshot.model_validate(read_object(parent_reader, "rate-limits.json"))
+    _require_campaign_budget(campaign, budget, events=list(parent_reader.events))
+    required_calls = len(confirmed) * KISA_CONFIRMATION_REPETITIONS
+    if budget.tool_calls + required_calls > budget.max_tool_calls:
+        raise ValueError(
+            "KISA retest requires shared parent Retest tool-call budget for every Candidate"
+        )
+
+    compiled_at = _utc(clock())
+    probe_tool = AIChatProbeTool()
+    replay_run_ids: set[str] = set()
+    items: list[DerivedKISAReplayItem] = []
+    for candidate, decision in confirmed:
+        binding = remediation[candidate.candidate_id]
+        context = ReplayRetestContext(
+            baselineDecisionId=decision.decision_id,
+            baselineFindingId=candidate.claim.finding_id,
+            remediationId=binding.remediation_id,
+            retestRunId=parent_verification.run_id,
+            retestSourceRootDigest=parent_verification.root_digest,
+        )
+        validate_retest_context(
+            candidate=candidate,
+            decision=decision,
+            context=context,
+            remediation=binding,
+            retest_verification=parent_verification,
+        )
+        source = derive_kisa_source_replay_context(
+            source_root=baseline_path,
+            plan=plan,
+            candidate=candidate,
+            capability_records=capability_records,
+            verified_source=baseline_reader.snapshot,
+            expected_run_id=artifact_ref.run_id,
+            expected_root_digest=artifact_ref.integrity_root_digest,
+        )
+        contract = kisa_negative_retest_contract(
+            source.scenario.scenario_id,
+            repetitions=KISA_CONFIRMATION_REPETITIONS,
+        )
+        replay_run_id = replay_run_id_factory()
+        if (
+            not _REPLAY_RUN_ID.fullmatch(replay_run_id)
+            or replay_run_id in {
+                baseline_verification.run_id,
+                parent_verification.run_id,
+            }
+            or replay_run_id in replay_run_ids
+        ):
+            raise ValueError("KISA replay Run identity factory returned an invalid identity")
+        replay_run_ids.add(replay_run_id)
+        inputs = build_kisa_replay_compilation_inputs(
+            source_root=baseline_path,
+            candidate_run_id=baseline_verification.run_id,
+            candidate=candidate,
+            source=source,
+            contract=contract,
+            created_at=compiled_at,
+            retest_context=context,
+            verified_source=baseline_reader.snapshot,
+            expected_run_id=artifact_ref.run_id,
+            expected_root_digest=artifact_ref.integrity_root_digest,
+        )
+        compilation = ReplayCompiler.compile(
+            campaign=campaign,
+            plan=plan,
+            original_request=source.original_request,
+            source_capability=source.source_capability,
+            validation_packet=inputs.validation_packet,
+            intent=inputs.intent,
+            contract=contract,
+            scenario=source.scenario,
+            registered_tools={AIChatProbeTool.spec.tool_id: AIChatProbeTool.spec},
+            evidence_by_request=source.evidence_by_request,
+            trusted_original_request_digest=replay_request_digest(source.original_request),
+            trusted_original_evidence_digest=replay_evidence_digest(
+                source.evidence_by_request[source.original_request.request_id]
+            ),
+            replay_run_id=replay_run_id,
+            used_campaign_calls=budget.tool_calls,
+            compiled_at=compiled_at,
+        )
+        canonical_compilation = canonical_replay_compilation_bytes(compilation)
+        required_request_units = (
+            probe_tool.network_request_cost(compilation.original_request) * contract.repetitions
+        )
+        items.append(
+            DerivedKISAReplayItem(
+                candidate_id=candidate.candidate_id,
+                decision_id=decision.decision_id,
+                replay_run_id=replay_run_id,
+                candidate=candidate,
+                decision=decision,
+                scenario=source.scenario,
+                contract=contract,
+                compilation=compilation,
+                canonical_compilation=canonical_compilation,
+                candidate_digest=replay_context_digest(candidate),
+                contract_digest=replay_context_digest(contract),
+                compilation_digest=sha256(canonical_compilation).hexdigest(),
+                grant_digest=replay_context_digest(compilation.grant),
+                required_request_units=required_request_units,
+            )
+        )
+
+    baseline_reader.require_current()
+    parent_reader.require_current()
+    return DerivedKISAReplayBatch(
+        artifact_ref=artifact_ref,
+        retest_artifact_ref=retest_artifact_ref,
+        campaign=campaign,
+        campaign_name=campaign.metadata.name,
+        candidate_run_id=baseline_verification.run_id,
+        source_root_digest=baseline_verification.root_digest,
+        mode=CampaignMode.AI_REDTEAM,
+        purpose=ReplayPurpose.REMEDIATION_RETEST,
+        policy_version=KISA_RETEST_POLICY_VERSION,
         compiled_at=compiled_at,
         used_tool_calls=budget.tool_calls,
         max_tool_calls=budget.max_tool_calls,

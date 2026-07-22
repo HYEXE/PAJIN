@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pajin.control_plane.database import ControlPlaneRepository
+from sqlalchemy.orm import Session
+
+from pajin.control_plane.database import ArtifactRecord, ControlPlaneRepository, ReplayBatchRecord
 from pajin.control_plane.models import (
     ArtifactLocator,
     ReplayBatchView,
@@ -30,7 +32,11 @@ class ReplayReadService:
 
     def get_batch(self, batch_id: str) -> ReplayBatchView:
         with self._repository.read_transaction() as session:
-            return self._views.replay_batch(self._records.replay_batch(session, batch_id))
+            batch = self._records.replay_batch(session, batch_id)
+            return self._views.replay_batch(
+                batch,
+                retest_artifact=self._retest_artifact(session, batch),
+            )
 
     def get_item(self, item_id: str) -> ReplayItemView:
         with self._repository.read_transaction() as session:
@@ -65,6 +71,7 @@ class ReplayReadService:
                 item=item,
                 ticket=ticket,
                 artifact=artifact,
+                retest_artifact=self._retest_artifact(session, batch),
             )
 
     def get_projection(self, batch_id: str) -> ReplayProjectionView | None:
@@ -86,4 +93,21 @@ class ReplayReadService:
                 projection,
                 batch=batch,
                 artifact=artifact,
+                retest_artifact=self._retest_artifact(session, batch),
             )
+
+    def _retest_artifact(
+        self,
+        session: Session,
+        batch: ReplayBatchRecord,
+    ) -> ArtifactRecord | None:
+        authority = self._records.replay_retest_source(session, batch.batch_id)
+        if authority is None:
+            return None
+        return self._records.artifact(
+            session,
+            ArtifactLocator(
+                artifact_id=authority.artifact_id,
+                repository_version=authority.repository_version,
+            ),
+        )
