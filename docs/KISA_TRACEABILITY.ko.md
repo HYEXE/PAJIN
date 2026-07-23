@@ -205,7 +205,7 @@ Confirmed Gate를 자동으로 시작하지 않는다. opt-in은 AI Red Team Cam
 `ai.chat-probe` allowlist에만 적용한다. Candidate 부재, Validator semantic support 누락 또는
 미등록 Scenario를 구조적으로 비슷하다는 이유로 replay하지 않는다.
 
-M03·M06·A04의 validity Claim 대조는 별도 opt-in으로 실행한다.
+M03·M06·A04의 Validation Control 대조는 별도 opt-in으로 실행한다.
 
 ```powershell
 .venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
@@ -216,14 +216,18 @@ M03·M06·A04의 validity Claim 대조는 별도 opt-in으로 실행한다.
 봉인된다. Candidate마다 Baseline·Negative Control·Counterfactual이 각각 fresh single-call
 Capability와 고유 request·session·evidence·receipt를 사용한다. A04 Counterfactual은 두 번째
 memory query를 보존하고 첫 poison write만 안전한 directive로 바꾼다. 세 시나리오·단일 target
-예제는 source 6회, Replay 6회, Control 9회로 정확히 21회를 사전 예약한다. Control
+예제는 source 6회, validity·impact·severity Claim Replay 18회, Control 9회로 정확히 33회를
+사전 예약한다. Control
 Reconciliation은 정보 전용이며 Confirmed Gate나 Candidate 상태를 변경하지 않는다.
 
-이 Campaign은 M03·M06·A04에 대해 원 실행 6개 Task와 Candidate별 2회 fresh-session replay를
-기대한다. 봉인된 원 Run 뒤에는 trusted Candidate 중 `independent-reproduction-missing` 상태인
-항목만 별도 replay Run에서 실행한다. 반복마다 원 실행 및 다른 반복과 구별되는 session ID를
-materialize하고, Oracle은 Worker 판정 플래그 대신 원문 transcript에서 카탈로그 check를 다시
-계산한다. 취약 프로필에서는 3개 replay record가 Oracle support를 가질 수 있지만
+이 Campaign은 M03·M06·A04에 대해 원 실행 6개 Task와 Candidate별 세 Atomic Claim 각각의
+2회 fresh-session replay를 기대한다. 봉인된 원 Run 뒤에는 trusted Candidate 중
+`independent-reproduction-missing` 상태인 항목만 별도 replay Run에서 실행한다. Claim마다
+별도 compiled authority·Grant·single-use ticket·request·session·evidence·Oracle·receipt를
+만든다. Oracle은 Mode 소유 impact statement 및 `high` severity 정책을 확인하고 Worker 판정
+플래그 대신 원문 transcript에서 카탈로그 check를 다시 계산한다. impact·severity는 정보
+전용이며 validity만 제품 confirmation을 구동한다. 취약 프로필에서는 3개 validity replay
+record가 Oracle support를 가질 수 있지만
 공통 Gate가 영수증을 다시 검증하면 `confirmationMutationApplied`는 `true`가 된다. 원
 Candidate·Decision·flat `findings.json`은 덮어쓰지 않고 `validation/v1alpha1`에 최종 Decision과
 Finding을 새 seal로 추가하므로, 취약 fixture의 제품 수준 Confirmed 기대 건수는 3건이다.
@@ -416,4 +420,5 @@ Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-le
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.ko.md),
 [ADR 0031](adr/0031-blind-evidence-review-boundary.ko.md),
 [ADR 0034](adr/0034-diverse-independent-severity-review.ko.md),
-[ADR 0035](adr/0035-claim-replay-public-state-projection.ko.md)을 따른다.
+[ADR 0035](adr/0035-claim-replay-public-state-projection.ko.md),
+[ADR 0036](adr/0036-claim-bound-replay-execution-authority.ko.md)을 따른다.

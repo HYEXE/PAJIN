@@ -22,6 +22,8 @@ from pajin.domain.replay import (
     replay_request_digest,
 )
 from pajin.domain.validation import (
+    AtomicClaim,
+    AtomicClaimType,
     CandidateFinding,
     ClaimReplayAssessment,
     ClaimReplayStatus,
@@ -153,9 +155,11 @@ def _build_confirmation_projection(
         raise ValueError("confirmed gate receipts must bind one Candidate source seal")
     candidate_source_root_digest = next(iter(source_root_digests))
 
-    results_by_candidate = {
-        result.artifact_set.outcome.binding.candidate_id: result for result in verified_results
-    }
+    _validate_explicit_claim_coverage(
+        candidates=source_validation.candidates,
+        verified_results=verified_results,
+    )
+    results_by_candidate = _confirmation_authority_by_candidate(verified_results)
     source_decisions = {decision.candidate_id: decision for decision in source_validation.decisions}
     final_decisions: list[ValidationDecision] = []
     disposition_selector = successful_replay_disposition or _successful_replay_disposition
@@ -187,24 +191,22 @@ def _build_confirmation_projection(
     candidates_by_id = {
         candidate.candidate_id: candidate for candidate in source_validation.candidates
     }
-    assessments = [
-        _build_claim_replay_projection(
-            candidate=candidates_by_id[decision.candidate_id],
-            decision=decision,
-            artifact_set=results_by_candidate[decision.candidate_id].artifact_set,
-            lineage=decision.replay_lineage[0],
-        )
-        for decision in final_decisions
-        if decision.replay_lineage
-    ]
-    assessments_by_candidate = {assessment.candidate_id: assessment for assessment in assessments}
+    assessments = _build_claim_replay_assessments(
+        candidates=source_validation.candidates,
+        decisions=final_decisions,
+        verified_results=verified_results,
+        confirmation_results=results_by_candidate,
+    )
+    assessments_by_candidate: dict[str, list[ClaimReplayAssessment]] = {}
+    for assessment in assessments:
+        assessments_by_candidate.setdefault(assessment.candidate_id, []).append(assessment)
     public_states = {
         state: [
             decision.candidate_id
             for decision in final_decisions
             if _public_finding_state(
                 decision,
-                assessments_by_candidate.get(decision.candidate_id),
+                assessments_by_candidate.get(decision.candidate_id, []),
             )
             is state
         ]
@@ -268,23 +270,155 @@ def _build_confirmation_projection(
     )
 
 
+def _confirmation_authority_by_candidate(
+    verified_results: list[VerifiedReplayResult],
+) -> dict[str, VerifiedReplayResult]:
+    validity: dict[str, VerifiedReplayResult] = {}
+    legacy: dict[str, VerifiedReplayResult] = {}
+    claim_ids: set[str] = set()
+    for result in verified_results:
+        binding = result.artifact_set.outcome.binding
+        claim = binding.claim
+        if claim is None:
+            if binding.candidate_id in legacy:
+                raise ValueError("confirmed gate receipts contain duplicate legacy Candidates")
+            legacy[binding.candidate_id] = result
+            continue
+        if claim.claim_id in claim_ids:
+            raise ValueError("confirmed gate receipts contain duplicate Atomic Claims")
+        claim_ids.add(claim.claim_id)
+        if claim.claim_type is AtomicClaimType.VALIDITY:
+            if binding.candidate_id in validity:
+                raise ValueError("confirmed gate receipts contain duplicate validity Claims")
+            validity[binding.candidate_id] = result
+    if set(validity) & set(legacy):
+        raise ValueError("confirmed gate cannot mix legacy and Claim-bound validity authority")
+    return {**legacy, **validity}
+
+
+def _validate_explicit_claim_coverage(
+    *,
+    candidates: list[CandidateFinding],
+    verified_results: list[VerifiedReplayResult],
+) -> None:
+    candidates_by_id = {
+        candidate.candidate_id: candidate for candidate in candidates
+    }
+    claims_by_candidate: dict[str, set[str]] = {}
+    explicit_candidates: set[str] = set()
+    for result in verified_results:
+        artifact_set = result.artifact_set
+        binding = artifact_set.outcome.binding
+        claim = binding.claim
+        if artifact_set.contract.claim_type is not None:
+            explicit_candidates.add(binding.candidate_id)
+        if claim is not None:
+            claims_by_candidate.setdefault(binding.candidate_id, set()).add(claim.claim_id)
+    for candidate_id in explicit_candidates:
+        candidate = candidates_by_id[candidate_id]
+        expected = {claim.claim_id for claim in candidate_atomic_claims(candidate)}
+        if claims_by_candidate.get(candidate_id, set()) != expected:
+            raise ValueError(
+                "explicit Claim replay receipts must cover every Candidate Atomic Claim"
+            )
+
+
+def _build_claim_replay_assessments(
+    *,
+    candidates: list[CandidateFinding],
+    decisions: list[ValidationDecision],
+    verified_results: list[VerifiedReplayResult],
+    confirmation_results: dict[str, VerifiedReplayResult],
+) -> list[ClaimReplayAssessment]:
+    decisions_by_candidate = {decision.candidate_id: decision for decision in decisions}
+    results_by_claim_id: dict[str, VerifiedReplayResult] = {}
+    for result in verified_results:
+        result_claim = result.artifact_set.outcome.binding.claim
+        if result_claim is not None:
+            results_by_claim_id[result_claim.claim_id] = result
+    assessments: list[ClaimReplayAssessment] = []
+    for candidate in candidates:
+        decision = decisions_by_candidate[candidate.candidate_id]
+        claims = candidate_atomic_claims(candidate)
+        claim_bound = [claim for claim in claims if claim.claim_id in results_by_claim_id]
+        if claim_bound:
+            for claim in claim_bound:
+                verified = results_by_claim_id[claim.claim_id]
+                assessments.append(
+                    _build_claim_replay_projection(
+                        claim=claim,
+                        decision=decision,
+                        artifact_set=verified.artifact_set,
+                        lineage=_lineage(verified),
+                    )
+                )
+        elif decision.replay_lineage:
+            assessments.append(
+                _build_claim_replay_projection(
+                    claim=claims[0],
+                    decision=decision,
+                    artifact_set=confirmation_results[candidate.candidate_id].artifact_set,
+                    lineage=decision.replay_lineage[0],
+                )
+            )
+    return assessments
+
+
 def _build_claim_replay_projection(
     *,
-    candidate: CandidateFinding,
+    claim: AtomicClaim | None = None,
+    candidate: CandidateFinding | None = None,
     decision: ValidationDecision,
     artifact_set: ReplayArtifactSet,
     lineage: ReplayConfirmationLineage,
 ) -> ClaimReplayAssessment:
-    validity_claim = candidate_atomic_claims(candidate)[0]
+    if claim is None:
+        if candidate is None:
+            raise ValueError("Claim replay projection requires an Atomic Claim")
+        claim = candidate_atomic_claims(candidate)[0]
+    elif candidate is not None:
+        raise ValueError("Claim replay projection accepts either Claim or Candidate")
+    claim_binding = artifact_set.outcome.binding.claim
+    if claim_binding is not None and (
+        claim_binding.claim_id != claim.claim_id
+        or claim_binding.claim_digest != claim.claim_digest
+        or claim_binding.claim_type is not claim.claim_type
+        or claim_binding.candidate_claim_digest != claim.candidate_claim_digest
+        or claim_binding.statement != claim.statement
+    ):
+        raise ValueError("Claim replay artifact differs from its exact Atomic Claim")
     return build_claim_replay_assessment(
-        claim=validity_claim,
+        claim=claim,
         lineage=lineage,
-        status=_claim_replay_status(decision, artifact_set),
+        status=(
+            _claim_replay_status(decision, artifact_set)
+            if claim.claim_type is AtomicClaimType.VALIDITY
+            else _claim_replay_status_from_outcome(artifact_set)
+        ),
         independent_execution_attested=(
-            decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+            claim.claim_type is AtomicClaimType.VALIDITY
+            and decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
         ),
         assessed_at=decision.decided_at,
     )
+
+
+def _claim_replay_status_from_outcome(
+    artifact_set: ReplayArtifactSet,
+) -> ClaimReplayStatus:
+    outcome = artifact_set.outcome
+    if outcome.execution_status is ReplayExecutionStatus.UNSUPPORTED:
+        return ClaimReplayStatus.NOT_ELIGIBLE
+    if outcome.execution_status is not ReplayExecutionStatus.SUCCEEDED:
+        return ClaimReplayStatus.INCONCLUSIVE
+    oracle = outcome.oracle_result
+    if oracle is None:
+        raise ValueError("successful ReplayOutcome is missing its Mode Oracle result")
+    if oracle.verdict is ReplayOracleVerdict.SUPPORTS:
+        return ClaimReplayStatus.REPRODUCED
+    if oracle.verdict is ReplayOracleVerdict.CONTRADICTS:
+        return ClaimReplayStatus.NOT_REPRODUCED
+    return ClaimReplayStatus.INCONCLUSIVE
 
 
 def _claim_replay_status(
@@ -316,26 +450,45 @@ def _claim_replay_status(
 
 def _public_finding_state(
     decision: ValidationDecision,
-    assessment: ClaimReplayAssessment | None,
+    assessments: list[ClaimReplayAssessment] | ClaimReplayAssessment | None,
 ) -> PublicFindingState:
+    if assessments is None:
+        normalized: list[ClaimReplayAssessment] = []
+    elif isinstance(assessments, ClaimReplayAssessment):
+        normalized = [assessments]
+    else:
+        normalized = assessments
     if decision.disposition is FindingDisposition.CONFIRMED:
         return PublicFindingState.CONFIRMED
-    if assessment is None:
+    if not normalized:
         return PublicFindingState(decision.disposition.value)
     reason = decision.reason_codes[0]
     if reason is ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED:
-        if assessment.status is not ClaimReplayStatus.NOT_REPRODUCED:
+        validity = next(
+            (
+                assessment
+                for assessment in normalized
+                if assessment.claim_type is AtomicClaimType.VALIDITY
+            ),
+            None,
+        )
+        if validity is None or validity.status is not ClaimReplayStatus.NOT_REPRODUCED:
             raise ValueError("Oracle contradiction must project a not-reproduced Claim")
         return PublicFindingState.NOT_REPRODUCED
-    if assessment.status is ClaimReplayStatus.REPRODUCED and reason in {
-        ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING,
-        ValidationReasonCode.VALIDATOR_DISAGREED,
-        ValidationReasonCode.VALIDATOR_OMITTED,
-        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
-        ValidationReasonCode.VALIDATOR_CANCELLED,
-    }:
+    if any(
+        assessment.status is ClaimReplayStatus.REPRODUCED
+        for assessment in normalized
+    ):
         return PublicFindingState.PARTIALLY_CONFIRMED
-    if assessment.status is ClaimReplayStatus.INCONCLUSIVE:
+    if any(
+        assessment.status is ClaimReplayStatus.NOT_REPRODUCED
+        for assessment in normalized
+    ):
+        return PublicFindingState.NOT_REPRODUCED
+    if any(
+        assessment.status is ClaimReplayStatus.INCONCLUSIVE
+        for assessment in normalized
+    ):
         return PublicFindingState.INCONCLUSIVE
     return PublicFindingState(decision.disposition.value)
 
@@ -633,6 +786,8 @@ def _validate_receipt_set(
         candidate.candidate_id: candidate for candidate in source_validation.candidates
     }
     candidate_ids: list[str] = []
+    claim_ids: list[str] = []
+    legacy_candidate_ids: list[str] = []
     replay_run_ids: list[str] = []
     outcome_ids: list[str] = []
     source_root_digests: list[str] = []
@@ -654,6 +809,32 @@ def _validate_receipt_set(
             or verified.receipt.replay_run_id != binding.replay_run_id
         ):
             raise ValueError("replay receipt binding differs from the sealed source Candidate")
+        claim_binding = binding.claim
+        packet_claim = artifact_set.validation_packet.claim
+        if claim_binding is None:
+            if packet_claim is not None:
+                raise ValueError("legacy replay binding cannot contain a packet Atomic Claim")
+            legacy_candidate_ids.append(binding.candidate_id)
+        else:
+            expected_claim = next(
+                (
+                    claim
+                    for claim in candidate_atomic_claims(candidate)
+                    if claim.claim_id == claim_binding.claim_id
+                ),
+                None,
+            )
+            if (
+                expected_claim is None
+                or packet_claim != expected_claim
+                or claim_binding.claim_digest != expected_claim.claim_digest
+                or claim_binding.claim_type is not expected_claim.claim_type
+                or claim_binding.candidate_claim_digest
+                != expected_claim.candidate_claim_digest
+                or claim_binding.statement != expected_claim.statement
+            ):
+                raise ValueError("replay receipt substituted its source Atomic Claim")
+            claim_ids.append(claim_binding.claim_id)
         if set(candidate.source_request_ids) & set(outcome.replay_request_ids):
             raise ValueError("replay receipt reuses a Candidate source request identity")
         _validate_source_replay_binding(
@@ -669,12 +850,20 @@ def _validate_receipt_set(
         source_root_digests.append(verified.receipt.candidate_source_root_digest)
 
     for label, values in (
-        ("Candidate", candidate_ids),
+        ("Atomic Claim", claim_ids),
+        ("legacy Candidate", legacy_candidate_ids),
         ("replay Run", replay_run_ids),
         ("ReplayOutcome", outcome_ids),
     ):
         if len(values) != len(set(values)):
             raise ValueError(f"confirmed gate receipts contain duplicate {label} identities")
+    if set(legacy_candidate_ids) & {
+        candidate_id
+        for verified in verified_results
+        if verified.artifact_set.outcome.binding.claim is not None
+        for candidate_id in [verified.artifact_set.outcome.binding.candidate_id]
+    }:
+        raise ValueError("confirmed gate cannot mix legacy and Claim-bound Candidate receipts")
 
     seals = _read_seals(root)
     known_roots = {seal.root_digest for seal in seals}
@@ -1002,15 +1191,16 @@ def _render_confirmation_report(
         for candidate in validation.candidates
         if decisions_by_candidate[candidate.candidate_id].replay_lineage
     ]
-    assessments_by_candidate = {
-        assessment.candidate_id: assessment
-        for assessment in (claim_replay_set.assessments if claim_replay_set is not None else [])
-    }
+    assessments_by_candidate: dict[str, list[ClaimReplayAssessment]] = {}
+    for assessment in (
+        claim_replay_set.assessments if claim_replay_set is not None else []
+    ):
+        assessments_by_candidate.setdefault(assessment.candidate_id, []).append(assessment)
     lines.extend(["", "## Replay evidence decisions", ""])
     for candidate in replayed_candidates:
         decision = decisions_by_candidate[candidate.candidate_id]
         lineage = decision.replay_lineage[0]
-        assessment = assessments_by_candidate.get(candidate.candidate_id)
+        assessments = assessments_by_candidate.get(candidate.candidate_id, [])
         lines.extend(
             [
                 f"### {escape_markdown_text(candidate.claim.title)}",
@@ -1020,11 +1210,22 @@ def _render_confirmation_report(
                 *(
                     [
                         "- Public state: "
-                        + markdown_code_span(_public_finding_state(decision, assessment).value),
-                        f"- Claim ID: {markdown_code_span(assessment.claim_id)}",
-                        "- Claim replay status: " + markdown_code_span(assessment.status.value),
+                        + markdown_code_span(
+                            _public_finding_state(decision, assessments).value
+                        ),
+                        *[
+                            "- Claim "
+                            + markdown_code_span(assessment.claim_type.value)
+                            + ": "
+                            + markdown_code_span(assessment.claim_id)
+                            + " / "
+                            + markdown_code_span(assessment.status.value)
+                            + " / Run "
+                            + markdown_code_span(assessment.replay_run_id)
+                            for assessment in assessments
+                        ],
                     ]
-                    if assessment is not None
+                    if assessments
                     else []
                 ),
                 "- Reason: " + markdown_code_span(decision.reason_codes[0].value),

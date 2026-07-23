@@ -425,47 +425,36 @@ def _validate_claim_replay_projection(
 
     candidates_by_id = {candidate.candidate_id: candidate for candidate in validation.candidates}
     decisions_by_id = {decision.candidate_id: decision for decision in validation.decisions}
-    expected_candidate_order = [
-        candidate.candidate_id
+    assessments_by_candidate: dict[str, list[ClaimReplayAssessment]] = {}
+    for assessment in claim_replays.assessments:
+        assessments_by_candidate.setdefault(assessment.candidate_id, []).append(assessment)
+    expected_claim_order = [
+        claim.claim_id
         for candidate in validation.candidates
         if decisions_by_id[candidate.candidate_id].replay_lineage
-    ]
-    if [item.candidate_id for item in claim_replays.assessments] != expected_candidate_order:
-        raise ValueError("Claim replay assessments must follow replayed Candidate order")
-
-    assessments_by_candidate: dict[str, ClaimReplayAssessment] = {}
-    for assessment in claim_replays.assessments:
-        candidate = candidates_by_id[assessment.candidate_id]
-        decision = decisions_by_id[assessment.candidate_id]
-        validity_claim = next(
-            claim
-            for claim in candidate_atomic_claims(candidate)
-            if claim.claim_type is AtomicClaimType.VALIDITY
+        for claim in candidate_atomic_claims(candidate)
+        if any(
+            assessment.claim_id == claim.claim_id
+            for assessment in assessments_by_candidate.get(candidate.candidate_id, [])
         )
-        if (
-            assessment.candidate_claim_digest != validity_claim.candidate_claim_digest
-            or assessment.claim_id != validity_claim.claim_id
-            or assessment.claim_digest != validity_claim.claim_digest
-            or assessment.claim_type is not AtomicClaimType.VALIDITY
+    ]
+    if [item.claim_id for item in claim_replays.assessments] != expected_claim_order:
+        raise ValueError("Claim replay assessments must follow Candidate and Claim order")
+
+    for assessment in claim_replays.assessments:
+        _validate_claim_replay_assessment(
+            assessment,
+            candidates_by_id=candidates_by_id,
+            decisions_by_id=decisions_by_id,
+        )
+
+    for candidate_id, assessments in assessments_by_candidate.items():
+        decision = decisions_by_id[candidate_id]
+        if decision.replay_lineage and not any(
+            assessment.claim_type is AtomicClaimType.VALIDITY
+            for assessment in assessments
         ):
-            raise ValueError("Claim replay assessment differs from its exact validity Claim")
-        if len(decision.replay_lineage) != 1:
-            raise ValueError("Claim replay assessment requires exactly one replay lineage")
-        lineage = decision.replay_lineage[0]
-        if (
-            assessment.replay_run_id != lineage.replay_run_id
-            or assessment.replay_outcome_id != lineage.replay_outcome_id
-            or assessment.oracle_result_id != lineage.oracle_result_id
-            or assessment.replay_request_ids != lineage.replay_request_ids
-            or assessment.replay_evidence != lineage.replay_evidence
-            or assessment.assessed_at != decision.decided_at
-        ):
-            raise ValueError("Claim replay assessment differs from Decision replay lineage")
-        attested = decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
-        if assessment.independent_execution_attested is not attested:
-            raise ValueError("Claim replay assessment attestation differs from its Decision")
-        _validate_claim_replay_status_against_decision(assessment, decision)
-        assessments_by_candidate[assessment.candidate_id] = assessment
+            raise ValueError("replayed Candidate is missing its validity Claim assessment")
 
     expected_public_states = {
         state: [
@@ -473,7 +462,7 @@ def _validate_claim_replay_projection(
             for decision in validation.decisions
             if _loaded_public_state(
                 decision,
-                assessments_by_candidate.get(decision.candidate_id),
+                assessments_by_candidate.get(decision.candidate_id, []),
             )
             is state
         ]
@@ -481,6 +470,59 @@ def _validate_claim_replay_projection(
     }
     if index.public_states != expected_public_states:
         raise ValueError("public validation states differ from Claim replay assessments")
+
+
+def _validate_claim_replay_assessment(
+    assessment: ClaimReplayAssessment,
+    *,
+    candidates_by_id: dict[str, CandidateFinding],
+    decisions_by_id: dict[str, ValidationDecision],
+) -> None:
+    try:
+        candidate = candidates_by_id[assessment.candidate_id]
+        decision = decisions_by_id[assessment.candidate_id]
+    except KeyError as exc:
+        raise ValueError("Claim replay assessment references an unknown Candidate") from exc
+    claim = next(
+        (
+            claim
+            for claim in candidate_atomic_claims(candidate)
+            if claim.claim_id == assessment.claim_id
+        ),
+        None,
+    )
+    if (
+        claim is None
+        or assessment.candidate_claim_digest != claim.candidate_claim_digest
+        or assessment.claim_digest != claim.claim_digest
+        or assessment.claim_type is not claim.claim_type
+    ):
+        raise ValueError("Claim replay assessment differs from its exact Atomic Claim")
+    if assessment.assessed_at != decision.decided_at:
+        raise ValueError("Claim replay assessment time differs from its Candidate Decision")
+    if assessment.claim_type is not AtomicClaimType.VALIDITY:
+        if assessment.independent_execution_attested:
+            raise ValueError(
+                "impact and severity Claim replay cannot attest product confirmation"
+            )
+        return
+    if len(decision.replay_lineage) != 1:
+        raise ValueError("validity Claim replay requires exactly one Decision lineage")
+    lineage = decision.replay_lineage[0]
+    if (
+        assessment.replay_run_id != lineage.replay_run_id
+        or assessment.replay_outcome_id != lineage.replay_outcome_id
+        or assessment.oracle_result_id != lineage.oracle_result_id
+        or assessment.replay_request_ids != lineage.replay_request_ids
+        or assessment.replay_evidence != lineage.replay_evidence
+    ):
+        raise ValueError("validity Claim replay differs from Decision replay lineage")
+    attested = (
+        decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+    )
+    if assessment.independent_execution_attested is not attested:
+        raise ValueError("validity Claim attestation differs from its Decision")
+    _validate_claim_replay_status_against_decision(assessment, decision)
 
 
 def _validate_claim_replay_status_against_decision(
@@ -531,24 +573,29 @@ def _validate_claim_replay_status_against_decision(
 
 def _loaded_public_state(
     decision: ValidationDecision,
-    assessment: ClaimReplayAssessment | None,
+    assessments: list[ClaimReplayAssessment],
 ) -> PublicFindingState:
     if decision.disposition is FindingDisposition.CONFIRMED:
         return PublicFindingState.CONFIRMED
-    if assessment is None:
+    if not assessments:
         return PublicFindingState(decision.disposition.value)
     reason = decision.reason_codes[0]
     if reason is ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED:
         return PublicFindingState.NOT_REPRODUCED
-    if assessment.status is ClaimReplayStatus.REPRODUCED and reason in {
-        ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING,
-        ValidationReasonCode.VALIDATOR_DISAGREED,
-        ValidationReasonCode.VALIDATOR_OMITTED,
-        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
-        ValidationReasonCode.VALIDATOR_CANCELLED,
-    }:
+    if any(
+        assessment.status is ClaimReplayStatus.REPRODUCED
+        for assessment in assessments
+    ):
         return PublicFindingState.PARTIALLY_CONFIRMED
-    if assessment.status is ClaimReplayStatus.INCONCLUSIVE:
+    if any(
+        assessment.status is ClaimReplayStatus.NOT_REPRODUCED
+        for assessment in assessments
+    ):
+        return PublicFindingState.NOT_REPRODUCED
+    if any(
+        assessment.status is ClaimReplayStatus.INCONCLUSIVE
+        for assessment in assessments
+    ):
         return PublicFindingState.INCONCLUSIVE
     return PublicFindingState(decision.disposition.value)
 
@@ -628,10 +675,15 @@ def _validate_projection_lineage(
     if len(replay_outcome_ids) != len(set(replay_outcome_ids)):
         raise ValueError("versioned validation projection reuses a ReplayOutcome")
     if claim_replays is not None:
-        if [item.replay_run_id for item in claim_replays.assessments] != replay_run_ids:
-            raise ValueError("Claim replay Run lineage differs from validation Decisions")
-        if [item.replay_outcome_id for item in claim_replays.assessments] != replay_outcome_ids:
-            raise ValueError("Claim replay Outcome lineage differs from validation Decisions")
+        validity_assessments = [
+            item
+            for item in claim_replays.assessments
+            if item.claim_type is AtomicClaimType.VALIDITY
+        ]
+        if [item.replay_run_id for item in validity_assessments] != replay_run_ids:
+            raise ValueError("validity Claim replay lineage differs from validation Decisions")
+        if [item.replay_outcome_id for item in validity_assessments] != replay_outcome_ids:
+            raise ValueError("validity Claim ReplayOutcome differs from validation Decisions")
 
 
 def _validate_source_supersession(

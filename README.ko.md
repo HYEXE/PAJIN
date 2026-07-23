@@ -20,11 +20,11 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | --- | --- |
 | Core engine | 타입이 지정된 Campaign, 정책 및 Capability 집행, 동적 Specialist, 예산, 재시도, 취소, Candidate 수용, Candidate-aware Provider 검토, 결정론적 validity·impact·severity Atomic Claim, metadata-minimized Blind Evidence 검토와 결정론적 reconciliation, 선택적 별도 Provider/model Blind Review와 제안 등급을 숨긴 독립 severity 도출, opt-in 코드 등록형 M03·M06·A04 fresh-capability Baseline·Negative Control·Counterfactual Control Executor, 의미론적 증거 검토, 버전이 지정된 replay 계약, 결정론적 Replay Compiler, 일회용 실행 ticket, 로컬 SQLite replay-ticket 원장, 무상태 및 등록된 fresh-session Restricted Reproducer 경로, receipt 재로딩 confirmation/retest Gate, 변조 탐지 증거 seal |
 | Discovery 계약 | 버전형 `SurfaceObservation`, `AttackSurface`, `AttackSurfaceSet` artifact, canonical HTTP operation과 schema-bound Tool interface locator, 도메인 분리 결정론 identity, exact request/result/evidence/root 계보, bounded canonical JSON, ordering·uniqueness·lineage fail-closed 검증을 구현했습니다. 코드에 등록된 Trusted Surface Producer는 무결성이 검증된 Campaign·Gateway 증적만 받아 Scope·Authorization·method·Tool risk를 재검증하고 별도 append-only projection Run으로 발행합니다. A3는 명시적 opt-in 단일 MCP Recon wave, A4는 봉인된 projection 재검증·코드 등록 가설 컴파일·fresh-Capability Specialist wave를 제공합니다. A5는 별도 명시적 opt-in의 bounded replanning Control Run을 추가합니다. 봉인된 A4 wave를 다시 검증하고 exact 등록 결과 필드를 append-only `ObservationGraphSnapshot`으로 승격하며, `supports`·`contradicts`·`enables`·`depends-on`·`new-surface` 관계 계약을 기록합니다. 신규성이 임계값을 넘는 코드 등록 transition만 두 번째 fresh-Capability wave를 한 번 실행할 수 있고 Campaign의 Agent·Tool call·비용·시간·rate limit은 계속 공유됩니다. 동일 상태나 임계값 미만 Plan은 실행 전에 중단되며 기존 one-time Planner는 바꾸지 않습니다. |
-| AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 M03·M06·A04 validation Control, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
+| AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 exact M03·M06·A04 validity·impact·severity Claim별 fresh-session Replay 권위, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 validation Control, Claim replay projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
 | Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을 발행하고 schema v12는 confirmed baseline과 부모 Retest Artifact를 1:1로 결박해 음성 replay receipt와 정상 기능 회귀를 서버가 다시 검증한 `kisa-retest.json` projection을 발행합니다. 독립 remediation attestation이 없으므로 방어 응답은 계속 `inconclusive`입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Claim 단위 replay와 공개 부분 검증 상태, multi-host/object-store Artifact 전송, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, Control Plane Claim별 공개 projection, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, multi-host/object-store Artifact 전송, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -600,16 +600,19 @@ Replay 뒤에 적격 Candidate마다 정보 전용 호출 세 개가 추가됩�
 Baseline·Negative Control·Counterfactual은 각각 fresh one-call Capability와 고유
 request·session·evidence·receipt를 받습니다. M03·M06은 benign `READY` Counterfactual을
 사용하고, A04는 두 번째 memory query를 유지한 채 첫 poison write만 바꿉니다. 이 결과는
-Candidate를 confirm하거나 변경할 수 없습니다. 세 시나리오 예제는 source 6회, Replay 6회,
-Control 9회로 정확히 21회를 예약합니다.
+Candidate를 confirm하거나 변경할 수 없습니다. 세 시나리오 예제는 source 6회, Candidate별
+validity·impact·severity Claim Replay 18회, Control 9회로 정확히 33회를 예약합니다.
 
 6개의 Specialist Task는 고유한 session ID를 사용하며 system-prompt disclosure, jailbreak policy
 bypass, persistent memory poisoning을 다룹니다. lab은 `127.0.0.1:8765`에만 bind되고, read-only
 filesystem과 Linux Capability가 없는 non-root user로 실행되며, production AI service가 아닙니다.
 
 완료된 `kisa-run`은 적격한 신뢰 M03, M06, A04 Candidate를 별도 replay Run에서 추가로 재현합니다.
-각 시도는 source 실행 및 다른 모든 시도와 구별되는 session을 사용합니다. live KISA Oracle은 raw
-transcript에서 정확한 catalog check를 다시 계산하고 source/replay link는
+정확한 validity·impact·severity Atomic Claim마다 별도 compiled 실행 권위, single-use ticket,
+fresh session, evidence, Oracle과 receipt를 부여합니다. live KISA Oracle은 Mode 소유 Claim
+statement를 확인하고 raw transcript에서 정확한 catalog check를 다시 계산합니다. 제품
+confirmation에는 validity만 사용되며 impact·severity assessment는 정보 전용입니다.
+source/replay link는
 `kisa-replay-index.json`에 기록됩니다. 현재 Worker-only 경로의
 `confirmationMutationApplied`는 `false`로 유지됩니다. 공통 Gate는 receipt를 다시 불러와
 `verified-replay-evidence` 의미의 봉인된 `validation/v1alpha1`
@@ -800,7 +803,9 @@ disposition, Primary Decision과 보고서 문맥은 받지 않습니다. 그 �
 [ADR 0031](docs/adr/0031-blind-evidence-review-boundary.ko.md),
 [ADR 0032](docs/adr/0032-fresh-capability-validation-controls.ko.md),
 [ADR 0033](docs/adr/0033-registered-validation-control-materializers.ko.md),
-[ADR 0034](docs/adr/0034-diverse-independent-severity-review.ko.md)에 기록했습니다.
+[ADR 0034](docs/adr/0034-diverse-independent-severity-review.ko.md)에 기록했습니다. Claim projection과
+별도 Claim 실행 권위는 [ADR 0035](docs/adr/0035-claim-replay-public-state-projection.ko.md)와
+[ADR 0036](docs/adr/0036-claim-bound-replay-execution-authority.ko.md)에 기록했습니다.
 
 `maxModelCalls`와 `maxModelTokens`는 Campaign 내부 model 사용량을 각각 제한하며, `maxCostUsd`는
 등록 시 제공된 100만 token당 rate를 같은 보수적 예약량에 적용합니다. Provider가 보고한 token
@@ -1345,6 +1350,7 @@ rate-limits.json
 control.json
 kisa-replay-index.json  # kisa-run only
 validation/v1alpha1/    # verified replay Decision/Finding/report projection, when applied
+  claim-replays.json    # exact validity/impact/severity Claim ↔ replay lineage and outcome
 ```
 
 Restricted Reproducer는 별도 replay Run을 사용합니다. `replay/` directory에는 Validation Packet,
@@ -1372,7 +1378,11 @@ pre-replay compatibility snapshot으로 유지됩니다. 새 consumer는 봉인�
 `validation/v1alpha1/index.json`을 우선합니다. 이 파일의 Decision, Finding, Markdown artifact에는
 confirmation basis, superseded source Decision, replay Run/Outcome, request ID, artifact digest,
 receipt-seal lineage가 포함됩니다. 과거 flat confirmation은 legacy로 읽히며 reproduction-backed
-projection으로 승격되지 않습니다. 현재 신뢰 Producer는 정확한 KISA AI chat catalog 계약으로
+projection으로 승격되지 않습니다. 새 projection은 정확한 validity·impact·severity Claim과
+각각의 Replay Run·Outcome·request·evidence·Oracle·receipt 계보를 `claim-replays.json`에 별도로
+봉인합니다. KISA 경로는 일부 Claim 누락이나 다른 Claim receipt 치환을 거부합니다. 내부
+confirmation Decision은 validity만 구동하며 impact·severity는 정보 전용입니다. 현재 신뢰
+Producer는 정확한 KISA AI chat catalog 계약으로
 제한됩니다. generic `vulnerable` field를 신뢰하지 않고 Semantic Validator에 attack 또는 replay
 Tool을 주지 않습니다. 원자적 생산 과정은 request 및 target/threat confirmation 공간도 예약하므로
 Validator가 legacy Adapter를 통해 Candidate 0개 결과를 우회할 수 없습니다.

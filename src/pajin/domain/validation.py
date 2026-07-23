@@ -1530,7 +1530,7 @@ class ClaimReplayAssessment(StrictModel):
     )
     claim_id: _Identifier = Field(alias="claimId")
     claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
-    claim_type: Literal[AtomicClaimType.VALIDITY] = Field(alias="claimType")
+    claim_type: AtomicClaimType = Field(alias="claimType")
     status: ClaimReplayStatus
     replay_run_id: _Identifier = Field(alias="replayRunId")
     replay_outcome_id: _Identifier = Field(alias="replayOutcomeId")
@@ -1584,10 +1584,7 @@ def build_claim_replay_assessment(
     independent_execution_attested: bool,
     assessed_at: datetime,
 ) -> ClaimReplayAssessment:
-    """Bind a verified replay lineage to the exact validity Claim it evaluated."""
-
-    if claim.claim_type is not AtomicClaimType.VALIDITY:
-        raise ValueError("the first Claim replay projection supports validity Claims only")
+    """Bind verified replay lineage to the exact Atomic Claim it evaluated."""
     normalized_at = _normalize_utc(assessed_at, field_name="assessed_at")
     return ClaimReplayAssessment(
         assessmentId=_claim_replay_assessment_id(

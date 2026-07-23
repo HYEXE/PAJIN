@@ -21,6 +21,7 @@ from pajin.domain.replay import (
     ReplayAttemptStatus,
     ReplayBinding,
     ReplayCapabilityGrant,
+    ReplayClaimBinding,
     ReplayCompilation,
     ReplayExecutionStatus,
     ReplayIntent,
@@ -32,6 +33,7 @@ from pajin.domain.replay import (
     ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
+    replay_claim_binding,
 )
 from pajin.domain.validation import (
     AtomicClaim,
@@ -86,6 +88,7 @@ __all__ = [
     "ReplayAttemptStatus",
     "ReplayBinding",
     "ReplayCapabilityGrant",
+    "ReplayClaimBinding",
     "ReplayCompilation",
     "ReplayExecutionStatus",
     "ReplayIntent",
@@ -108,4 +111,5 @@ __all__ = [
     "ValidationMethod",
     "ValidationPacket",
     "ValidationReasonCode",
+    "replay_claim_binding",
 ]

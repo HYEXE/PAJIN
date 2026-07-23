@@ -32,11 +32,12 @@ from pajin.domain.replay import (
     ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
+    replay_claim_binding,
     replay_evidence_digest,
     replay_request_digest,
     replay_source_capability_digest,
 )
-from pajin.domain.validation import CandidateFinding
+from pajin.domain.validation import AtomicClaimType, CandidateFinding, candidate_atomic_claims
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.replay.compiler import (
@@ -348,6 +349,45 @@ def test_compiler_is_deterministic_and_issues_only_minimal_replay_authority() ->
     changed_threshold = _compile(contract=_contract(required_successes=1))
     assert changed_threshold.grant.grant_id != first.grant.grant_id
     assert changed_threshold.spec.spec_id != first.spec.spec_id
+
+
+def test_compiler_binds_exact_atomic_claim_into_grant_spec_and_outcome_identity() -> None:
+    candidate = _candidate().model_copy(
+        update={
+            "claim": _candidate().claim.model_copy(
+                update={"impact": "Protected system instructions can reach an untrusted user."}
+            )
+        }
+    )
+    impact = next(
+        claim
+        for claim in candidate_atomic_claims(candidate)
+        if claim.claim_type is AtomicClaimType.IMPACT
+    )
+    compiled = _compile(
+        validation_packet=_packet(candidate=candidate, claim=impact),
+        intent=_intent(claim=replay_claim_binding(impact)),
+        contract=_contract(claim_type=AtomicClaimType.IMPACT),
+    )
+
+    assert compiled.spec.binding.claim == replay_claim_binding(impact)
+    assert compiled.grant.claim == compiled.spec.binding.claim
+    assert compiled.validation_packet.claim == impact
+    assert compiled.intent.claim == compiled.spec.binding.claim
+
+    severity = next(
+        claim
+        for claim in candidate_atomic_claims(candidate)
+        if claim.claim_type is AtomicClaimType.SEVERITY
+    )
+    _assert_reason(
+        ReplayCompileReason.IDENTITY_MISMATCH,
+        lambda: _compile(
+            validation_packet=_packet(candidate=candidate, claim=impact),
+            intent=_intent(claim=replay_claim_binding(severity)),
+            contract=_contract(claim_type=AtomicClaimType.IMPACT),
+        ),
+    )
 
 
 @pytest.mark.parametrize(

@@ -386,14 +386,19 @@ def test_claim_replay_assessment_binds_exact_validity_claim_and_lineage() -> Non
     with pytest.raises(ValidationError, match="assessment ID"):
         type(assessment).model_validate(tampered)
 
-    with pytest.raises(ValueError, match="validity Claims only"):
-        build_claim_replay_assessment(
-            claim=claims[1],
-            lineage=lineage,
-            status=ClaimReplayStatus.REPRODUCED,
-            independent_execution_attested=False,
-            assessed_at=datetime(2026, 7, 23, 12, 1, tzinfo=UTC),
-        )
+    severity_assessment = build_claim_replay_assessment(
+        claim=claims[1],
+        lineage=lineage.model_copy(
+            update={
+                "replay_run_id": "run_claim_replay_impact",
+                "replay_outcome_id": "outcome_claim_replay_impact",
+            }
+        ),
+        status=ClaimReplayStatus.REPRODUCED,
+        independent_execution_attested=False,
+        assessed_at=datetime(2026, 7, 23, 12, 1, tzinfo=UTC),
+    )
+    assert severity_assessment.claim_type is AtomicClaimType.SEVERITY
 
 
 def test_atomic_claim_refinement_rejects_tampered_claims_and_unbound_evidence() -> None:

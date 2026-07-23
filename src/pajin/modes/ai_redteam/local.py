@@ -163,11 +163,11 @@ class KISALocalReplayOrchestrator:
             # This reload is mandatory even when the batch is empty: it proves that
             # the sealed receipts exactly cover the coordinator's eligible set.
             batch.verified_records(outcome.run_path)
-            if batch.verified_results:
+            if batch.confirmation_results:
                 projection = apply_confirmed_gate(
                     source_run_path=outcome.run_path,
                     replay_run_paths=[
-                        result.run_path for result in batch.verified_results.values()
+                        result.run_path for result in batch.confirmation_results.values()
                     ],
                     tickets=batch.tickets,
                 )

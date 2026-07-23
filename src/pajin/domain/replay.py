@@ -18,7 +18,12 @@ from pajin.domain.models import (
     ToolRequest,
     ToolRiskTier,
 )
-from pajin.domain.validation import CandidateFinding
+from pajin.domain.validation import (
+    AtomicClaim,
+    AtomicClaimType,
+    CandidateFinding,
+    candidate_atomic_claims,
+)
 
 REPLAY_API_VERSION: Literal["pajin.dev/replay/v1alpha1"] = "pajin.dev/replay/v1alpha1"
 _ALLOW_LEGACY_CONFIRMATION_CONTRADICTION = "allow_legacy_confirmation_contradiction"
@@ -96,6 +101,28 @@ class ValidationEvidenceExcerpt(StrictModel):
     untrusted: Literal[True] = True
 
 
+class ReplayClaimBinding(StrictModel):
+    """Exact Atomic Claim identity repeated through compiled execution authority."""
+
+    candidate_claim_digest: _Sha256
+    claim_id: _Identifier
+    claim_digest: _Sha256
+    claim_type: AtomicClaimType
+    statement: str = Field(min_length=1, max_length=20_000)
+
+
+def replay_claim_binding(claim: AtomicClaim) -> ReplayClaimBinding:
+    """Project one trusted Atomic Claim into the replay authority identity tuple."""
+
+    return ReplayClaimBinding(
+        candidate_claim_digest=claim.candidate_claim_digest,
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        claim_type=claim.claim_type,
+        statement=claim.statement,
+    )
+
+
 class ValidationPacket(ReplayArtifactModel):
     """Minimal semantic-review input without Tool or replay authority."""
 
@@ -103,6 +130,7 @@ class ValidationPacket(ReplayArtifactModel):
     packet_id: _Identifier
     candidate_run_id: _Identifier
     candidate: CandidateFinding
+    claim: AtomicClaim | None = None
     purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     retest_context: ReplayRetestContext | None = None
     mode: CampaignMode
@@ -124,6 +152,7 @@ class ValidationPacket(ReplayArtifactModel):
     @model_validator(mode="after")
     def bind_candidate_provenance(self) -> ValidationPacket:
         _validate_packet_candidate(self)
+        _validate_packet_claim(self)
         _validate_packet_evidence(self)
         _validate_packet_retest_context(self)
         return self
@@ -134,6 +163,7 @@ class ModeReplayContract(ReplayArtifactModel):
 
     kind: Literal["ModeReplayContract"] = "ModeReplayContract"
     contract_id: _Identifier
+    claim_type: AtomicClaimType | None = None
     purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     mode: CampaignMode
     scenario_id: _Identifier
@@ -189,6 +219,7 @@ class ReplayIntent(ReplayArtifactModel):
     intent_id: _Identifier
     replay_contract_id: _Identifier
     candidate_id: _Identifier
+    claim: ReplayClaimBinding | None = None
     candidate_run_id: _Identifier
     purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     retest_context: ReplayRetestContext | None = None
@@ -223,6 +254,7 @@ class ReplayBinding(StrictModel):
     """Identity tuple that every compiled, executed, and evaluated record repeats."""
 
     candidate_id: _Identifier
+    claim: ReplayClaimBinding | None = None
     campaign: _Identifier
     candidate_run_id: _Identifier
     replay_run_id: _Identifier
@@ -263,6 +295,7 @@ class ReplayCapabilityGrant(CapabilityGrant):
     purpose: Literal["restricted-replay"] = "restricted-replay"
     contract_id: _Identifier
     candidate_id: _Identifier
+    claim: ReplayClaimBinding | None = None
     candidate_run_id: _Identifier
     replay_run_id: _Identifier
     original_request_id: _Identifier
@@ -667,6 +700,16 @@ def _validate_packet_candidate(packet: ValidationPacket) -> None:
         raise ValueError("validation packet target must match the candidate")
 
 
+def _validate_packet_claim(packet: ValidationPacket) -> None:
+    if packet.claim is None:
+        return
+    expected = {
+        claim.claim_id: claim for claim in candidate_atomic_claims(packet.candidate)
+    }.get(packet.claim.claim_id)
+    if expected is None or packet.claim != expected:
+        raise ValueError("validation packet Claim must match an exact Candidate Atomic Claim")
+
+
 def _validate_packet_evidence(packet: ValidationPacket) -> None:
     references = [item.reference for item in packet.evidence]
     if len(references) != len(set(references)):
@@ -978,6 +1021,7 @@ def _validate_compilation_packet_binding(compilation: ReplayCompilation) -> None
     contract = compilation.contract
     spec = compilation.spec
     binding = spec.binding
+    expected_claim = replay_claim_binding(packet.claim) if packet.claim is not None else None
     if (
         packet.replay_contract_id != contract.contract_id
         or packet.purpose != contract.purpose
@@ -992,6 +1036,8 @@ def _validate_compilation_packet_binding(compilation: ReplayCompilation) -> None
         or binding.target != packet.target
         or binding.threat_class != packet.threat_class
         or binding.original_request_id not in packet.original_request_ids
+        or binding.claim != expected_claim
+        or intent.claim != expected_claim
     ):
         raise ValueError("compiled replay binding must match the validation packet")
     if packet.retest_context != intent.retest_context:
@@ -1013,6 +1059,7 @@ def _validate_compilation_packet_binding(compilation: ReplayCompilation) -> None
         or intent.mode != binding.mode
         or intent.scenario_id != binding.scenario_id
         or intent.threat_class != binding.threat_class
+        or intent.claim != binding.claim
     ):
         raise ValueError("ReplayIntent references must match the compiled replay binding")
 
@@ -1022,6 +1069,7 @@ def _validate_compilation_mode_contract(compilation: ReplayCompilation) -> None:
     contract = compilation.contract
     spec = compilation.spec
     binding = spec.binding
+    packet_claim_type = packet.claim.claim_type if packet.claim is not None else None
     if (
         spec.contract_id != contract.contract_id
         or binding.mode != contract.mode
@@ -1042,6 +1090,11 @@ def _validate_compilation_mode_contract(compilation: ReplayCompilation) -> None:
         or spec.observation_schema != contract.observation_schema
         or spec.semantic_support_required != contract.semantic_support_required
         or packet.semantic_support_required != contract.semantic_support_required
+        or contract.claim_type != packet_claim_type
+        or (
+            binding.claim is not None
+            and binding.claim.claim_type is not contract.claim_type
+        )
         or not contract.automatic
         or not contract.replay_safe
         or not contract.idempotent
@@ -1061,6 +1114,7 @@ def _validate_compilation_grant(compilation: ReplayCompilation) -> None:
         spec.grant_id != grant.grant_id
         or grant.contract_id != contract.contract_id
         or grant.candidate_id != binding.candidate_id
+        or grant.claim != binding.claim
         or grant.candidate_run_id != binding.candidate_run_id
         or grant.replay_run_id != binding.replay_run_id
         or grant.original_request_id != binding.original_request_id
@@ -1083,6 +1137,7 @@ def _validate_artifact_packet_binding(
     spec: CompiledReplaySpec,
 ) -> None:
     binding = spec.binding
+    expected_claim = replay_claim_binding(packet.claim) if packet.claim is not None else None
     if packet.replay_contract_id != contract.contract_id:
         raise ValueError("validation packet must reference the Mode replay contract")
     if (
@@ -1097,6 +1152,7 @@ def _validate_artifact_packet_binding(
         or binding.target != packet.target
         or binding.threat_class != packet.threat_class
         or binding.original_request_id not in packet.original_request_ids
+        or binding.claim != expected_claim
     ):
         raise ValueError("compiled replay binding must match the validation packet")
     if packet.retest_context is None:
@@ -1115,6 +1171,7 @@ def _validate_artifact_mode_contract(
     spec: CompiledReplaySpec,
 ) -> None:
     binding = spec.binding
+    packet_claim_type = packet.claim.claim_type if packet.claim is not None else None
     if packet.semantic_support_required != contract.semantic_support_required:
         raise ValueError("validation packet semantic policy must match the Mode contract")
     if spec.contract_id != contract.contract_id:
@@ -1124,6 +1181,11 @@ def _validate_artifact_mode_contract(
         or binding.scenario_id != contract.scenario_id
         or binding.tool_id != contract.tool_id
         or binding.tool_version != contract.tool_version
+        or contract.claim_type != packet_claim_type
+        or (
+            binding.claim is not None
+            and binding.claim.claim_type is not contract.claim_type
+        )
     ):
         raise ValueError("compiled replay binding must match the Mode contract")
     if (
@@ -1170,6 +1232,7 @@ def _validate_artifact_intent(
             or intent.mode != binding.mode
             or intent.scenario_id != binding.scenario_id
             or intent.threat_class != binding.threat_class
+            or intent.claim != binding.claim
         ):
             raise ValueError("ReplayIntent references must match the compiled replay binding")
         if intent.retest_context != packet.retest_context:

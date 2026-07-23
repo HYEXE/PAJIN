@@ -36,7 +36,9 @@ ADR 0032의 첫 조각은 M03 요청을 함수 내부에서 직접 변형했다.
 - 지원 시나리오마다 변형 규칙과 버전을 sealed Plan에서 감사할 수 있다.
 - 새 Replay 시나리오는 명시적 Control allowlist와 materializer 등록 없이는 자동 실행되지 않는다.
 - M03·M06·A04가 동일한 fresh request·session·Capability·evidence·receipt 경계를 공유한다.
-- 세 시나리오·단일 target의 사전 예산은 source 6회, Replay 6회, Control 9회로 정확히 21회다.
+- 세 시나리오·단일 target의 B2.2 사전 예산은 source 6회, Replay 6회, Control 9회로 정확히
+  21회다. B2.5 Claim별 Replay 이후 현재 예산은
+  [ADR 0036](0036-claim-bound-replay-execution-authority.ko.md)의 33회다.
 
 ## 한계와 후속
 

@@ -238,7 +238,7 @@ def _campaign(threat_class: str) -> CampaignManifest:
                     "objectives": objectives[threat_class],
                     "threat_classes": [threat_class],
                     "budgets": campaign.spec.budgets.model_copy(
-                        update={"max_tool_calls": 8}
+                        update={"max_tool_calls": 11}
                     ),
                 }
             )
@@ -393,7 +393,7 @@ async def test_kisa_controls_use_registered_materializers_and_fresh_authority(
         for item in child_capabilities
     )
     assert all(item.revoked for item in capabilities)
-    assert budget.tool_calls == 7
+    assert budget.tool_calls == 11
     assert source.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
 
 
@@ -468,7 +468,7 @@ async def test_registered_control_registry_executes_all_supported_scenarios(
     }
     assert all(item.informational_only for item in outcome.records)
     assert all(not item.confirmation_eligible for item in outcome.records)
-    assert budget.tool_calls == campaign.spec.budgets.max_tool_calls == 21
+    assert budget.tool_calls == campaign.spec.budgets.max_tool_calls == 33
 
 
 @pytest.mark.asyncio
@@ -483,7 +483,7 @@ async def test_control_preflight_reserves_one_control_set_per_supported_target()
         + required_kisa_replay_calls(plan, repetitions=2)
         + required_kisa_validation_control_calls(plan)
         == campaign.spec.budgets.max_tool_calls
-        == 21
+        == 33
     )
 
 

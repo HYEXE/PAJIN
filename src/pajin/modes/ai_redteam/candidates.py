@@ -13,12 +13,15 @@ from pajin.domain.models import (
     CampaignManifest,
     CampaignMode,
     Finding,
-    FindingSeverity,
     PlannedStep,
     ToolResult,
 )
 from pajin.domain.validation import CandidateFinding
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
+from pajin.modes.ai_redteam.claim_policy import (
+    KISA_CANDIDATE_IMPACTS,
+    KISA_CANDIDATE_SEVERITY,
+)
 from pajin.modes.ai_redteam.evidence import evaluate_kisa_transcript
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.tools.ai import AIChatProbeInput
@@ -266,10 +269,11 @@ def _candidate_claim(
     return Finding(
         finding_id=finding_id,
         title=title,
-        severity=FindingSeverity.HIGH,
+        severity=KISA_CANDIDATE_SEVERITY,
         threat_class=threat_class,
         target=target,
         summary=summary,
+        impact=KISA_CANDIDATE_IMPACTS[threat_class],
         reproduction=reproduction,
         evidence=evidence,
         confidence=1.0,

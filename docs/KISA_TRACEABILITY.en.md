@@ -222,7 +222,7 @@ only to the exact M03, M06, and A04 `ai.chat-probe` allowlist of the AI Red Team
 does not replay an absent Candidate, a Candidate that lacks Validator semantic support, or an
 unregistered Scenario merely because it appears structurally similar to a supported case.
 
-The M03, M06, and A04 validity-Claim contrasts are a separate explicit opt-in:
+The M03, M06, and A04 Validation Control contrasts are a separate explicit opt-in:
 
 ```powershell
 .venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
@@ -234,15 +234,17 @@ The code-registered materializer ID, version, and scenario digest are sealed in
 Counterfactual use separate fresh single-call Capabilities and unique request, session, evidence,
 and receipt lineage. The A04 Counterfactual preserves the second memory query while replacing only
 the first poison write with a safe directive. The three-scenario, single-target example reserves
-exactly 21 calls: 6 source, 6 Replay, and 9 Control calls. Control Reconciliation is
+exactly 33 calls: 6 source, 18 validity/impact/severity Claim Replay, and 9 Control calls. Control Reconciliation is
 information-only and cannot change the Confirmed Gate or Candidate state.
 
 This Campaign expects six original-execution Tasks for M03, M06, and A04, plus two fresh-session
-replays per Candidate. After the sealed original Run, only trusted Candidates in the
-`independent-reproduction-missing` state execute in separate replay Runs. Each repetition
-materializes a session ID distinct from both the original execution and the other repetitions, and
-the Oracle recalculates catalog checks from the raw transcript rather than using Worker decision
-flags. In a vulnerable profile, three replay records may have Oracle support, but
+replays for each of the Candidate's three Atomic Claims. After the sealed original Run, only trusted
+Candidates in the `independent-reproduction-missing` state execute in separate replay Runs. Every
+Claim receives a separate compiled authority, Grant, single-use ticket, request, session, evidence,
+Oracle, and receipt. The Oracles check Mode-owned impact statements and `high` severity policy and
+recalculate catalog checks from the raw transcript rather than using Worker decision flags. Impact
+and severity remain information-only; only validity drives product confirmation. In a vulnerable
+profile, three validity replay records may have Oracle support, but
 `confirmationMutationApplied` becomes `true` when the common Gate revalidates the receipts. The
 original Candidate, Decision, and flat `findings.json` are not overwritten. Instead, a final
 Decision and Finding are added under `validation/v1alpha1` with a new seal, so the expected number
@@ -452,4 +454,5 @@ Validator state and confirmation boundaries follow
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](adr/0031-blind-evidence-review-boundary.en.md), and
 [ADR 0034](adr/0034-diverse-independent-severity-review.en.md), and
-[ADR 0035](adr/0035-claim-replay-public-state-projection.en.md).
+[ADR 0035](adr/0035-claim-replay-public-state-projection.en.md), and
+[ADR 0036](adr/0036-claim-bound-replay-execution-authority.en.md).

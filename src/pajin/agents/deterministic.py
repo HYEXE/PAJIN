@@ -15,6 +15,10 @@ from pajin.domain.models import (
     ToolRequest,
     ToolResult,
 )
+from pajin.modes.ai_redteam.claim_policy import (
+    KISA_CANDIDATE_IMPACTS,
+    KISA_CANDIDATE_SEVERITY,
+)
 from pajin.tools.ai import (
     AIChatProbeInput,
     AIChatProbeOutput,
@@ -351,10 +355,11 @@ class DeterministicAgentRuntime:
         title, summary, reproduction = details
         return Finding(
             title=title,
-            severity=FindingSeverity.HIGH,
+            severity=KISA_CANDIDATE_SEVERITY,
             threat_class=probe.threat_class,
             target=step.request.target,
             summary=summary,
+            impact=KISA_CANDIDATE_IMPACTS[probe.threat_class],
             reproduction=reproduction,
             evidence=list(result.evidence),
             confidence=1.0,

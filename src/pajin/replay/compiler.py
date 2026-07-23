@@ -31,6 +31,7 @@ from pajin.domain.replay import (
     ReplaySourceCapabilityReceipt,
     ValidationPacket,
     replay_argument_digest,
+    replay_claim_binding,
     replay_evidence_digest,
     replay_request_digest,
     replay_retest_context_digest,
@@ -256,6 +257,11 @@ class ReplayCompiler:
         )
         binding = ReplayBinding(
             candidate_id=validation_packet.candidate.candidate_id,
+            claim=(
+                replay_claim_binding(validation_packet.claim)
+                if validation_packet.claim is not None
+                else None
+            ),
             campaign=campaign.metadata.name,
             candidate_run_id=validation_packet.candidate_run_id,
             replay_run_id=replay_run_id,
@@ -282,6 +288,7 @@ class ReplayCompiler:
             issued_at=now,
             contract_id=contract.contract_id,
             candidate_id=binding.candidate_id,
+            claim=binding.claim,
             candidate_run_id=binding.candidate_run_id,
             replay_run_id=binding.replay_run_id,
             original_request_id=binding.original_request_id,
@@ -451,6 +458,7 @@ def _validate_identity(
     original_request: ToolRequest,
 ) -> None:
     candidate = packet.candidate
+    expected_claim = replay_claim_binding(packet.claim) if packet.claim is not None else None
     matching_targets = [item for item in campaign.spec.targets if item.id == packet.target_id]
     if len(matching_targets) != 1:
         _identity_error("validation packet target ID is not unique in the Campaign")
@@ -463,6 +471,8 @@ def _validate_identity(
         or packet.threat_class not in campaign.spec.threat_classes
         or packet.replay_contract_id != contract.contract_id
         or packet.purpose != contract.purpose
+        or contract.claim_type
+        != (packet.claim.claim_type if packet.claim is not None else None)
     ):
         _identity_error("Candidate or validation packet does not match the Campaign")
     if (
@@ -475,6 +485,7 @@ def _validate_identity(
         or intent.mode != packet.mode
         or intent.scenario_id != packet.scenario_id
         or intent.threat_class != packet.threat_class
+        or intent.claim != expected_claim
     ):
         _identity_error("ReplayIntent identity does not match the trusted Candidate lineage")
     context = packet.retest_context
@@ -828,6 +839,13 @@ def _compilation_digest(
 ) -> str:
     payload = {
         "candidateId": validation_packet.candidate.candidate_id,
+        "claim": (
+            _canonical_value(
+                replay_claim_binding(validation_packet.claim).model_dump(mode="python")
+            )
+            if validation_packet.claim is not None
+            else None
+        ),
         "candidateRunId": validation_packet.candidate_run_id,
         "compiledAt": compiled_at.isoformat(),
         "contract": _canonical_value(contract.model_dump(mode="python", by_alias=True)),

@@ -62,9 +62,11 @@ and `claim-replays.json` together. A partial artifact, seal, or lineage is rejec
 ## Limitations and Follow-ups
 
 - The first vertical slice supports validity Claims only. Separate impact and severity execution
-  contracts and Oracles do not exist yet.
+  contracts and Oracles do not exist yet. This local KISA follow-up is completed by
+  [ADR 0036](0036-claim-bound-replay-execution-authority.en.md).
 - This projects an existing Candidate replay onto its validity Claim. Fully Claim-by-Claim Replay
-  with separate compiled execution authority per Claim remains follow-up work.
+  with separate compiled execution authority per Claim remains follow-up work. ADR 0036 completes
+  that follow-up for exact KISA M03, M06, and A04.
 - Local seals and receipts prove lineage and content consistency, not portable off-host execution
   by a separately attested organization or infrastructure.
 - Human overturn, Gold Datasets, calibration, and multi-Reviewer consensus remain follow-up scope.

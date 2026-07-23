@@ -37,19 +37,27 @@ from pajin.domain.replay import (
     ReplaySourceCapabilityReceipt,
     ValidationEvidenceExcerpt,
     ValidationPacket,
+    replay_claim_binding,
     replay_evidence_digest,
     replay_request_digest,
 )
 from pajin.domain.validation import (
+    AtomicClaim,
+    AtomicClaimType,
     CandidateFinding,
     FindingDisposition,
     ReplayConfirmationLineage,
     ValidationDecision,
     ValidationMethod,
     ValidationReasonCode,
+    candidate_atomic_claims,
 )
 from pajin.modes.ai_redteam import replay_source as _replay_source
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
+from pajin.modes.ai_redteam.claim_policy import (
+    KISA_CANDIDATE_IMPACTS,
+    KISA_CANDIDATE_SEVERITY,
+)
 from pajin.modes.ai_redteam.evidence import evaluate_kisa_transcript
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.policy.capability import CapabilityRecord
@@ -108,6 +116,8 @@ KISA_REPLAY_MATERIALIZER_ID = "kisa.ai-chat-fresh-session"
 KISA_REPLAY_MATERIALIZER_VERSION = "1.0.0"
 KISA_REPLAY_ORACLE_ID = "kisa.exact-transcript"
 KISA_REPLAY_ORACLE_VERSION = "1.0.0"
+KISA_IMPACT_REPLAY_ORACLE_ID = "kisa.exact-transcript-impact"
+KISA_SEVERITY_REPLAY_ORACLE_ID = "kisa.exact-transcript-severity"
 KISA_NEGATIVE_RETEST_ORACLE_ID = "kisa.exact-transcript-negative-retest"
 KISA_NEGATIVE_RETEST_ORACLE_VERSION = "1.0.0"
 KISA_REPLAY_OBSERVATION_SCHEMA = "pajin.kisa-ai-chat-transcript/v1"
@@ -188,6 +198,7 @@ class KISAReplayBatchOutcome:
     records: tuple[KISAReplayRecord, ...]
     verified_results: Mapping[str, VerifiedReplayResult]
     tickets: ReplayTicketFinalizationVerifier
+    claim_verified_results: Mapping[str, VerifiedReplayResult] = field(default_factory=dict)
     purpose: ReplayPurpose = ReplayPurpose.CONFIRMATION
     retest_run_id: str | None = None
     contexts: Mapping[str, ReplayRetestContext] = field(default_factory=dict)
@@ -198,6 +209,12 @@ class KISAReplayBatchOutcome:
         """Name the Candidate source explicitly for remediation-retest consumers."""
 
         return self.source_run_id
+
+    @property
+    def confirmation_results(self) -> Mapping[str, VerifiedReplayResult]:
+        """Return every Claim-bound confirmation receipt, falling back to legacy validity."""
+
+        return self.claim_verified_results or self.verified_results
 
     @classmethod
     def from_verified_retest_results(
@@ -282,6 +299,10 @@ class KISAReplayBatchOutcome:
         }
         if set(self.verified_results) != expected_ids:
             raise ValueError("KISA replay receipts must cover every eligible source Candidate")
+        self._validate_confirmation_claim_coverage(
+            candidates=candidates,
+            expected_candidate_ids=expected_ids,
+        )
         if (
             len(self.records) != len(expected_ids)
             or {record.candidate_id for record in self.records} != expected_ids
@@ -302,6 +323,49 @@ class KISAReplayBatchOutcome:
             raise ValueError("KISA replay public records differ from sealed canonical outcomes")
         source_reader.require_current()
         return records
+
+    def _validate_confirmation_claim_coverage(
+        self,
+        *,
+        candidates: Mapping[str, CandidateFinding],
+        expected_candidate_ids: set[str],
+    ) -> None:
+        if not self.claim_verified_results:
+            return
+        expected_claims = {
+            claim.claim_id: claim
+            for candidate_id in expected_candidate_ids
+            for claim in candidate_atomic_claims(candidates[candidate_id])
+        }
+        if set(self.claim_verified_results) != set(expected_claims):
+            raise ValueError(
+                "KISA Claim replay receipts must cover every Atomic Claim exactly once"
+            )
+        for claim_id, snapshot in self.claim_verified_results.items():
+            verified = load_verified_replay_result(snapshot.run_path, tickets=self.tickets)
+            if verified != snapshot:
+                raise ValueError("KISA Claim replay result differs from its sealed receipt")
+            binding = verified.artifact_set.outcome.binding
+            packet_claim = verified.artifact_set.validation_packet.claim
+            claim = expected_claims[claim_id]
+            if (
+                packet_claim != claim
+                or binding.claim is None
+                or binding.claim.claim_id != claim.claim_id
+                or binding.claim.claim_digest != claim.claim_digest
+                or binding.claim.claim_type is not claim.claim_type
+                or binding.claim.candidate_claim_digest != claim.candidate_claim_digest
+                or binding.claim.statement != claim.statement
+                or binding.candidate_id != claim.candidate_id
+            ):
+                raise ValueError("KISA Claim replay receipt substituted its Atomic Claim")
+            if (
+                claim.claim_type is AtomicClaimType.VALIDITY
+                and self.verified_results.get(claim.candidate_id) != snapshot
+            ):
+                raise ValueError(
+                    "KISA validity Claim receipt differs from confirmation authority"
+                )
 
     def _canonical_confirmation_record(
         self,
@@ -686,12 +750,13 @@ def required_kisa_replay_calls(
         for step in plan.steps
         if step.scenario_id in scenario_ids
     }
-    return len(candidate_keys) * repetitions
+    return len(candidate_keys) * repetitions * len(AtomicClaimType)
 
 
 def kisa_replay_contract(
     scenario_id: str,
     *,
+    claim_type: AtomicClaimType | None = None,
     repetitions: int = 2,
     required_successes: int | None = None,
     catalog: KISACatalog = KISA_CATALOG,
@@ -700,8 +765,20 @@ def kisa_replay_contract(
 
     scenario = _scenario(scenario_id, catalog)
     required = repetitions if required_successes is None else required_successes
+    oracle_id = {
+        None: KISA_REPLAY_ORACLE_ID,
+        AtomicClaimType.VALIDITY: KISA_REPLAY_ORACLE_ID,
+        AtomicClaimType.IMPACT: KISA_IMPACT_REPLAY_ORACLE_ID,
+        AtomicClaimType.SEVERITY: KISA_SEVERITY_REPLAY_ORACLE_ID,
+    }[claim_type]
+    contract_suffix = ""
+    if claim_type is AtomicClaimType.IMPACT:
+        contract_suffix = ":impact"
+    elif claim_type is AtomicClaimType.SEVERITY:
+        contract_suffix = ":severity"
     return ModeReplayContract(
-        contract_id=f"replay-contract:kisa:{scenario.scenario_id}:v1",
+        contract_id=f"replay-contract:kisa:{scenario.scenario_id}{contract_suffix}:v1",
+        claim_type=claim_type,
         purpose=ReplayPurpose.CONFIRMATION,
         mode=CampaignMode.AI_REDTEAM,
         scenario_id=scenario.scenario_id,
@@ -719,7 +796,7 @@ def kisa_replay_contract(
         repetitions=repetitions,
         required_successes=required,
         required_contradictions=0,
-        oracle_id=KISA_REPLAY_ORACLE_ID,
+        oracle_id=oracle_id,
         oracle_version=KISA_REPLAY_ORACLE_VERSION,
         observation_schema=KISA_REPLAY_OBSERVATION_SCHEMA,
         semantic_support_required=True,
@@ -830,6 +907,23 @@ class KISAAIChatSessionMaterializer:
         return arguments
 
 
+def _kisa_claim_statement(
+    *,
+    threat_class: str,
+    claim_type: AtomicClaimType,
+) -> str | None:
+    if claim_type is AtomicClaimType.VALIDITY:
+        return None
+    if claim_type is AtomicClaimType.IMPACT:
+        try:
+            return KISA_CANDIDATE_IMPACTS[threat_class]
+        except KeyError as exc:
+            raise ValueError("KISA impact Claim policy does not support the threat class") from exc
+    if claim_type is AtomicClaimType.SEVERITY:
+        return KISA_CANDIDATE_SEVERITY.value
+    raise ValueError("KISA Claim policy received an unsupported Atomic Claim type")
+
+
 class KISAAIChatReplayOracle:
     """Evaluate raw fresh transcripts without trusting Worker-authored verdict flags."""
 
@@ -839,7 +933,12 @@ class KISAAIChatReplayOracle:
     mode = CampaignMode.AI_REDTEAM
     tool_id = AIChatProbeTool.spec.tool_id
 
-    def __init__(self, scenario: KISAScenarioDefinition) -> None:
+    def __init__(
+        self,
+        scenario: KISAScenarioDefinition,
+        *,
+        claim_type: AtomicClaimType = AtomicClaimType.VALIDITY,
+    ) -> None:
         if (
             scenario.tool_id != AIChatProbeTool.spec.tool_id
             or scenario.probe is None
@@ -847,6 +946,12 @@ class KISAAIChatReplayOracle:
         ):
             raise ValueError("Oracle requires an exact trusted KISA catalog scenario")
         self._scenario = scenario
+        self.claim_type = claim_type
+        self.oracle_id = {
+            AtomicClaimType.VALIDITY: KISA_REPLAY_ORACLE_ID,
+            AtomicClaimType.IMPACT: KISA_IMPACT_REPLAY_ORACLE_ID,
+            AtomicClaimType.SEVERITY: KISA_SEVERITY_REPLAY_ORACLE_ID,
+        }[claim_type]
         self.scenario_id = scenario.scenario_id
         self.scenario_digest = replay_scenario_digest(scenario)
 
@@ -907,6 +1012,20 @@ class KISAAIChatReplayOracle:
         *,
         evaluated_at: datetime,
     ) -> ReplayOracleResult:
+        claim = spec.binding.claim
+        if claim is None and self.claim_type is not AtomicClaimType.VALIDITY:
+            raise ValueError("KISA Claim Oracle requires its compiled Claim binding")
+        if claim is not None and claim.claim_type is not self.claim_type:
+            raise ValueError("KISA Claim Oracle requires its exact compiled Claim binding")
+        expected_statement = _kisa_claim_statement(
+            threat_class=spec.binding.threat_class,
+            claim_type=self.claim_type,
+        )
+        if (
+            expected_statement is not None
+            and (claim is None or claim.statement != expected_statement)
+        ):
+            raise ValueError("compiled KISA Claim differs from the Mode-owned Claim policy")
         supportive: list[ReplayAttempt] = []
         for attempt in attempts:
             materialization = attempt.materialization
@@ -965,8 +1084,8 @@ class KISAAIChatReplayOracle:
             support_count=support_count,
             required_support_count=spec.required_successes,
             summary=(
-                f"Raw catalog checks supported {support_count} of {len(attempts)} "
-                "fresh-session transcripts."
+                f"Mode-owned {self.claim_type.value} Claim checks supported "
+                f"{support_count} of {len(attempts)} fresh-session transcripts."
             ),
             evaluated_at=evaluated_at,
         )
@@ -977,6 +1096,10 @@ class KISAAIChatNegativeRetestOracle(KISAAIChatReplayOracle):
 
     oracle_id = KISA_NEGATIVE_RETEST_ORACLE_ID
     oracle_version = KISA_NEGATIVE_RETEST_ORACLE_VERSION
+
+    def __init__(self, scenario: KISAScenarioDefinition) -> None:
+        super().__init__(scenario, claim_type=AtomicClaimType.VALIDITY)
+        self.oracle_id = KISA_NEGATIVE_RETEST_ORACLE_ID
 
     async def evaluate(
         self,
@@ -1092,7 +1215,10 @@ def kisa_replay_registries(
     for scenario in replayable_kisa_scenarios(catalog):
         materializers.register(KISAAIChatSessionMaterializer(scenario))
         if purpose is ReplayPurpose.CONFIRMATION:
-            oracles.register(KISAAIChatReplayOracle(scenario))
+            for claim_type in AtomicClaimType:
+                oracles.register(
+                    KISAAIChatReplayOracle(scenario, claim_type=claim_type)
+                )
         else:
             oracles.register(KISAAIChatNegativeRetestOracle(scenario))
     return materializers, oracles
@@ -1172,7 +1298,10 @@ class KISAReplayCoordinator:
             decision = decisions_by_candidate.get(candidate.candidate_id)
             if decision is not None and _eligible_for_kisa_replay(candidate, decision):
                 eligible.append((candidate, decision))
-        required_calls = len(eligible) * self._repetitions
+        required_calls = sum(
+            len(candidate_atomic_claims(candidate)) * self._repetitions
+            for candidate, _decision in eligible
+        )
         if budget.tool_calls + required_calls > budget.budgets.max_tool_calls:
             raise ValueError(
                 "KISA replay requires enough shared Campaign tool-call budget for every "
@@ -1183,6 +1312,7 @@ class KISAReplayCoordinator:
         materializers, oracles = kisa_replay_registries(self._catalog)
         records: list[KISAReplayRecord] = []
         verified_results: dict[str, VerifiedReplayResult] = {}
+        claim_verified_results: dict[str, VerifiedReplayResult] = {}
         for candidate, decision in eligible:
             source = _source_replay_context(
                 source_reader=source_reader,
@@ -1191,37 +1321,41 @@ class KISAReplayCoordinator:
                 capability_records=capability_records,
                 catalog=self._catalog,
             )
-            contract = kisa_replay_contract(
-                source.scenario.scenario_id,
-                repetitions=self._repetitions,
-                required_successes=self._required_successes,
-                catalog=self._catalog,
-            )
-            result, record = await _execute_kisa_replay(
-                tools=self._tools,
-                policy=self._policy,
-                worker=self._worker,
-                output_root=self._output_root,
-                campaign=campaign,
-                plan=plan,
-                source_root=source_root,
-                source_reader=source_reader,
-                candidate_source_root_digest=verification.root_digest,
-                candidate_run_id=verification.run_id,
-                candidate=candidate,
-                decision=decision,
-                source=source,
-                contract=contract,
-                retest_context=None,
-                authority=authority,
-                materializers=materializers,
-                oracles=oracles,
-                budget=budget,
-                rate_limits=rate_limits,
-                cancellation=cancellation,
-            )
-            records.append(record)
-            verified_results[candidate.candidate_id] = result
+            for claim in candidate_atomic_claims(candidate):
+                contract = kisa_replay_contract(
+                    source.scenario.scenario_id,
+                    claim_type=claim.claim_type,
+                    repetitions=self._repetitions,
+                    required_successes=self._required_successes,
+                    catalog=self._catalog,
+                )
+                result, record = await _execute_kisa_replay(
+                    tools=self._tools,
+                    policy=self._policy,
+                    worker=self._worker,
+                    output_root=self._output_root,
+                    campaign=campaign,
+                    plan=plan,
+                    source_root=source_root,
+                    source_reader=source_reader,
+                    candidate_source_root_digest=verification.root_digest,
+                    candidate_run_id=verification.run_id,
+                    candidate=candidate,
+                    decision=decision,
+                    source=source,
+                    contract=contract,
+                    retest_context=None,
+                    authority=authority,
+                    materializers=materializers,
+                    oracles=oracles,
+                    budget=budget,
+                    rate_limits=rate_limits,
+                    cancellation=cancellation,
+                )
+                claim_verified_results[claim.claim_id] = result
+                if claim.claim_type is AtomicClaimType.VALIDITY:
+                    records.append(record)
+                    verified_results[candidate.candidate_id] = result
 
         source_reader.require_current()
         return KISAReplayBatchOutcome(
@@ -1229,6 +1363,7 @@ class KISAReplayCoordinator:
             records=tuple(records),
             verified_results=verified_results,
             tickets=authority.verifier(),
+            claim_verified_results=claim_verified_results,
             purpose=ReplayPurpose.CONFIRMATION,
             catalog=self._catalog,
         )
@@ -1454,13 +1589,25 @@ def build_kisa_replay_compilation_inputs(
 
     if (contract.purpose is ReplayPurpose.REMEDIATION_RETEST) != (retest_context is not None):
         raise ValueError("KISA replay purpose and remediation context must agree")
+    claim: AtomicClaim | None = None
+    if contract.claim_type is not None:
+        claims = {
+            candidate_claim.claim_type: candidate_claim
+            for candidate_claim in candidate_atomic_claims(candidate)
+        }
+        try:
+            claim = claims[contract.claim_type]
+        except KeyError as exc:
+            raise ValueError("KISA replay Candidate is missing the contract Atomic Claim") from exc
     context_identity = (
         retest_context.retest_source_root_digest if retest_context is not None else "confirmation"
     )
     lineage_digest = sha256(
         (
             f"{candidate.candidate_id}|{source.original_request.request_id}|"
-            f"{contract.contract_id}|{context_identity}"
+            f"{contract.contract_id}|"
+            f"{claim.claim_id if claim is not None else 'legacy'}|"
+            f"{claim.claim_digest if claim is not None else 'legacy'}|{context_identity}"
         ).encode()
     ).hexdigest()[:24]
     if sealed_source is not None and verified_source is not None:
@@ -1481,6 +1628,7 @@ def build_kisa_replay_compilation_inputs(
         packet_id=f"validation-packet_{lineage_digest}",
         candidate_run_id=candidate_run_id,
         candidate=candidate,
+        claim=claim,
         purpose=contract.purpose,
         retest_context=retest_context,
         mode=CampaignMode.AI_REDTEAM,
@@ -1510,6 +1658,7 @@ def build_kisa_replay_compilation_inputs(
         intent_id=f"replay-intent_{lineage_digest}",
         replay_contract_id=contract.contract_id,
         candidate_id=candidate.candidate_id,
+        claim=replay_claim_binding(claim) if claim is not None else None,
         candidate_run_id=candidate_run_id,
         purpose=contract.purpose,
         retest_context=retest_context,

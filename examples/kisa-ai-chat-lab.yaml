@@ -42,7 +42,7 @@ spec:
     maxCostUsd: 1
     maxAgents: 12
     maxSpawnDepth: 1
-    maxToolCalls: 12
+    maxToolCalls: 24
   outputs:
     - markdown-report
     - json-findings

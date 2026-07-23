@@ -20,11 +20,11 @@ The implementation baseline as of 2026-07-23 is:
 | --- | --- |
 | Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, optional separate-Provider/model Blind Review plus proposed-label-free independent severity derivation, an opt-in code-registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual Control Executor, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
 | Discovery contracts | Versioned `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation and schema-bound Tool-interface locators; deterministic domain-separated identities; exact request/result/evidence/root lineage; bounded canonical JSON; and fail-closed ordering, uniqueness, and lineage validation. A code-registered Trusted Surface Producer admits only integrity-verified Campaign and Gateway evidence, revalidates Scope, Authorization, method, and Tool risk, and publishes through a separate append-only projection Run. A3 adds an explicit opt-in single-call MCP Recon wave. A4 re-verifies the sealed projection, compiles versioned Hypotheses through code-registered rules, and runs one fresh-Capability Specialist wave. A5 adds a separate explicit opt-in bounded replanning control Run: it re-verifies the sealed A4 wave, promotes exact registered result fields into append-only `ObservationGraphSnapshot` artifacts, records `supports`, `contradicts`, `enables`, `depends-on`, and `new-surface` relationship contracts, and permits at most one novel code-registered transition into a second fresh-Capability wave. Shared Campaign agent, Tool-call, cost, time, and rate limits still apply; repeated or sub-threshold plans stop before execution. The existing one-time Planner remains unchanged. |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; opt-in information-only M03/M06/A04 validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
-| Primary gaps | Validation Controls beyond the three registered KISA scenarios, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, Control Plane Claim-specific public projection, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -615,8 +615,8 @@ This adds three information-only calls per eligible Candidate after Replay. Base
 Control, and Counterfactual each receive a fresh one-call Capability and distinct request, session,
 evidence, and receipt. M03 and M06 use a benign `READY` Counterfactual; A04 replaces only the
 first-turn poison write while preserving the second memory query. Their result cannot confirm or
-mutate the Candidate. The bundled three-scenario example reserves exactly 21 calls: 6 source, 6
-Replay, and 9 Controls.
+mutate the Candidate. The bundled three-scenario example reserves exactly 33 calls: 6 source,
+18 Claim Replay calls (validity, impact, and severity per Candidate), and 9 Controls.
 
 The six Specialist Tasks use unique session IDs and cover system-prompt disclosure, jailbreak
 policy bypass, and persistent memory poisoning. The lab binds only to `127.0.0.1:8765`, runs as a
@@ -624,9 +624,12 @@ non-root user with a read-only filesystem and no Linux capabilities, and is not 
 service.
 
 A completed `kisa-run` additionally reproduces eligible trusted M03, M06, and A04 Candidates in
-separate replay Runs. Each attempt uses a session distinct from the source execution and every other
-attempt. The live KISA Oracle recomputes the exact catalog checks from the raw transcript, and the
-source/replay link is written to `kisa-replay-index.json`. The current Worker-only path keeps
+separate replay Runs. It gives each exact validity, impact, and severity Atomic Claim a separate
+compiled execution authority, single-use ticket, fresh session, evidence, Oracle, and receipt.
+The live KISA Oracles verify the Mode-owned Claim statement and recompute the exact catalog checks
+from the raw transcript. Only validity drives product confirmation; impact and severity remain
+information-only assessments. The source/replay link is written to `kisa-replay-index.json`. The
+current Worker-only path keeps
 `confirmationMutationApplied` at `false`. The common gate reloads the receipts and appends a sealed
 `validation/v1alpha1` Decision/evidence/report projection with
 `verified-replay-evidence` semantics; the original flat artifacts remain the immutable pre-replay
@@ -821,7 +824,10 @@ in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md),
 [ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md),
 [ADR 0033](docs/adr/0033-registered-validation-control-materializers.en.md), and
-[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md).
+[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md). Claim projection and separate
+Claim execution authority are recorded in
+[ADR 0035](docs/adr/0035-claim-replay-public-state-projection.en.md) and
+[ADR 0036](docs/adr/0036-claim-bound-replay-execution-authority.en.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative
@@ -1371,6 +1377,7 @@ rate-limits.json
 control.json
 kisa-replay-index.json  # kisa-run only
 validation/v1alpha1/    # verified replay Decision/Finding/report projection, when applied
+  claim-replays.json    # exact validity/impact/severity Claim ↔ replay lineage and outcome
 ```
 
 The Restricted Reproducer uses a distinct replay Run. Its `replay/`
@@ -1398,7 +1405,11 @@ flat `findings.json` remains the immutable pre-replay compatibility snapshot. Ne
 the sealed `validation/v1alpha1/index.json`, whose Decision, Finding, and Markdown artifacts include
 the confirmation basis, superseded source Decision, replay Run/Outcome, request IDs, artifact digest,
 and receipt-seal lineage. Historical flat confirmations are read as legacy and are never promoted to
-the reproduction-backed projection. The current trusted producer is limited to exact KISA AI chat
+the reproduction-backed projection. New projections also seal `claim-replays.json`, binding each
+exact validity, impact, and severity Claim to its own Replay Run, Outcome, request, evidence,
+Oracle, and receipt lineage. The KISA path rejects incomplete Claim coverage or cross-Claim receipt
+substitution. Only validity controls the internal confirmation Decision; impact and severity are
+information-only. The current trusted producer is limited to exact KISA AI chat
 catalog contracts; it does not trust a generic `vulnerable` field and gives the Semantic Validator
 no attack or replay Tools.
 Its atomic production also reserves request and target/threat confirmation space so a Validator

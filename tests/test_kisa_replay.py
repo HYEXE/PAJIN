@@ -47,6 +47,7 @@ from pajin.domain.replay import (
     replay_request_digest,
 )
 from pajin.domain.validation import (
+    AtomicClaimType,
     CandidateFinding,
     ClaimReplayStatus,
     FindingDisposition,
@@ -1144,7 +1145,7 @@ def test_kisa_replay_rejects_validation_from_an_intermediate_run_phase_before_di
     tools = ToolRegistry()
     tools.register(AIChatProbeTool())
     source_worker = TranscriptWorker([True] * 12)
-    replay_worker = TranscriptWorker([True] * 12)
+    replay_worker = TranscriptWorker([True] * 18)
     policy = PolicyEngine()
     budget = BudgetController(campaign.spec.budgets)
     rate_limits = RequestRateLimitLedger()
@@ -1225,7 +1226,7 @@ def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
     thresholds = EvaluationThresholds(repetitions=2)
     tools = ToolRegistry()
     tools.register(AIChatProbeTool())
-    worker = TranscriptWorker([True] * 12)
+    worker = TranscriptWorker([True] * 24)
     source_backend = _trusted_docker_backend(worker)
     replay_backend = _trusted_docker_backend(worker)
     assert source_backend is not replay_backend
@@ -1311,9 +1312,18 @@ def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
     mutable_result.artifact_set.outcome.oracle_result.verdict = ReplayOracleVerdict.INCONCLUSIVE
     assert mutable_result.artifact_set.outcome.supports_claim is False
     source_root_digest = verify_run_integrity(outcome.run_path).root_digest
+    all_claim_results = list(batch.confirmation_results.values())
+    with pytest.raises(ValueError, match="cover every Candidate Atomic Claim"):
+        apply_confirmed_gate(
+            source_run_path=outcome.run_path,
+            replay_run_paths=[result.run_path for result in all_claim_results[:-1]],
+            tickets=batch.tickets,
+        )
     confirmation = apply_confirmed_gate(
         source_run_path=outcome.run_path,
-        replay_run_paths=[result.run_path for result in batch.verified_results.values()],
+        replay_run_paths=[
+            result.run_path for result in batch.confirmation_results.values()
+        ],
         tickets=batch.tickets,
     )
     outcome = outcome.model_copy(
@@ -1354,6 +1364,11 @@ def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
         assessment.status is ClaimReplayStatus.REPRODUCED
         for assessment in loaded_projection.claim_replays.assessments
     )
+    assert len(loaded_projection.claim_replays.assessments) == 9
+    assert {
+        assessment.claim_type
+        for assessment in loaded_projection.claim_replays.assessments
+    } == set(AtomicClaimType)
     assert set(loaded_projection.public_states[PublicFindingState.PARTIALLY_CONFIRMED]) == {
         decision.candidate_id for decision in outcome.validation.decisions
     }
@@ -1365,8 +1380,8 @@ def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
     ]
     assert source_root_digest in {seal["root_digest"] for seal in seals}
     assert verify_run_integrity(outcome.run_path).root_digest != source_root_digest
-    assert budget.tool_calls == 12
-    assert len(set(worker.sessions)) == 12
+    assert budget.tool_calls == 24
+    assert len(set(worker.sessions)) == 24
     assert set(worker.sessions[:6]).isdisjoint(worker.sessions[6:])
     assert mode_outcome.replay_index_path is not None
     replay_index = json.loads(mode_outcome.replay_index_path.read_text(encoding="utf-8"))
@@ -1397,7 +1412,7 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
     tools = ToolRegistry()
     tools.register(AIChatProbeTool())
     policy = PolicyEngine()
-    baseline_worker = TranscriptWorker([True] * 12)
+    baseline_worker = TranscriptWorker([True] * 24)
     baseline_backend = _trusted_docker_backend(baseline_worker)
     baseline_budget = BudgetController(campaign.spec.budgets)
     baseline_rates = RequestRateLimitLedger()
@@ -1438,7 +1453,8 @@ def test_kisa_retest_coordinator_binds_negative_receipts_to_both_sealed_runs(
         confirmation = apply_confirmed_gate(
             source_run_path=baseline.run_path,
             replay_run_paths=[
-                result.run_path for result in confirmation_batch.verified_results.values()
+                result.run_path
+                for result in confirmation_batch.confirmation_results.values()
             ],
             tickets=confirmation_batch.tickets,
         )
@@ -1785,7 +1801,7 @@ def test_kisa_cli_defaults_to_docker_and_rejects_unreserved_replay_budget(
 
     assert result.exit_code == 2
     assert selected_workers == ["docker"]
-    assert "requires at least 18" in result.output
+    assert "requires at least 36" in result.output
 
 
 def test_kisa_cli_fails_closed_when_durable_ticket_ledger_is_corrupt(

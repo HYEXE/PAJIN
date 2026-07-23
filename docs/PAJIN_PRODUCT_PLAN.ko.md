@@ -938,6 +938,15 @@ Run·Outcome·Oracle·request·evidence·receipt 계보를 함께 봉인한다. 
 실행 실패·취소·시간초과·target unavailable·Oracle 판단 불가는 계속 `inconclusive`이며,
 두 공개 상태 모두 canonical confirmed Finding에는 들어가지 않는다.
 
+[`ADR-0036`](adr/0036-claim-bound-replay-execution-authority.ko.md)의 B2.5 첫 수직 조각은
+Candidate의 `validity`·`impact`·`severity`를 각각 별도 compiled 실행 권위에 결박한다.
+Packet·Intent·Contract·Binding·Grant·Spec·Oracle·Outcome은 Candidate Claim digest와
+Claim ID·digest·type·statement를 반복하며 치환을 fail closed한다. exact KISA
+M03·M06·A04는 Claim마다 별도 Replay Run·5분 이하 비위임 Grant·single-use ticket·fresh
+session·evidence·receipt를 사용한다. Mode 소유 impact statement와 `high` severity만
+Oracle 대상이며, 내부 confirmation은 계속 validity만 구동한다. impact·severity assessment는
+정보 전용 공개 projection이고 Candidate·Finding·severity를 변경할 수 없다.
+
 이 단계들 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.ko.md)에 따라 Semantic
 Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도
@@ -1458,7 +1467,7 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Atomic Claim Validator, metadata-minimized Blind Evidence Reviewer, 선택형 별도 Provider/model Blind Review·독립 severity 도출, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; 등록된 KISA 세 시나리오 밖의 Validation Control, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, Claim 단위 replay·공개 부분 검증 상태, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Atomic Claim Validator, metadata-minimized Blind Evidence Reviewer, 선택형 별도 Provider/model Blind Review·독립 severity 도출, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Claim별 Replay 실행 권위·공개 부분 검증 상태, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, Control Plane Claim별 공개 projection, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1497,6 +1506,10 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
   `claim-replays.json`, 내부 disposition과 분리된 공개 `partially-confirmed`·
   `not-reproduced` 상태. typed Oracle 반박만 `not-reproduced`이며 terminal 실패는
   `inconclusive`; canonical confirmed Finding은 변경하지 않음
+- B2.5 첫 수직 조각: validity·impact·severity 각각의 exact Claim identity를
+  Packet→Intent→Contract→Binding→Grant→Spec→Oracle→Outcome에 보존하고, exact KISA
+  M03·M06·A04에서 Claim별 별도 실행 권위·Replay Run·fresh session·receipt를 발급.
+  validity만 confirmation을 구동하고 impact·severity는 정보 전용
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
@@ -1659,7 +1672,7 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
 
 ## 24. 오픈 의사결정
 
-실행 경계와 기술 구조는 모두 승인된 ADR-0001부터 ADR-0034까지에 기록돼 있다. ADR-0029는
+실행 경계와 기술 구조는 모두 승인된 ADR-0001부터 ADR-0036까지에 기록돼 있다. ADR-0029는
 M6-07B Control Plane replay orchestration의 경계를 정의한다. 첫 권위 상태 조각, M6-07B-2A
 managed Artifact admission, M6-07B-2B 서버 파생 exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation 및 fresh authority-bound 내부 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6
@@ -1767,7 +1780,7 @@ XBOW의 공식 공개 저장소에서는 핵심 플랫폼 구현을 제공하지
 1. `README.ko.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.ko.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.ko.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. ADR-0001부터 ADR-0034까지 — 승인된 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, 등록형 Validation Control, 다양한 Provider/model 기반 독립 severity와 replay orchestration 의사결정
+4. ADR-0001부터 ADR-0036까지 — 승인된 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, 등록형 Validation Control, 다양한 Provider/model 기반 독립 severity, replay orchestration과 Claim별 실행 권위 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 

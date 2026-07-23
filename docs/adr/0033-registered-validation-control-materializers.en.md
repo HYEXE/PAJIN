@@ -42,8 +42,10 @@ relationship, so it cannot use the same single benign request as M03 and M06.
   materializer registration.
 - M03, M06, and A04 share the same fresh request, session, Capability, evidence, and receipt
   boundary.
-- For all three scenarios against one target, preflight reserves exactly 21 calls: 6 source, 6
-  Replay, and 9 Control calls.
+- For all three scenarios against one target, the B2.2 preflight baseline reserves exactly 21
+  calls: 6 source, 6 Replay, and 9 Control calls. After B2.5 Claim-by-Claim Replay, the current
+  budget is the 33 calls specified by
+  [ADR 0036](0036-claim-bound-replay-execution-authority.en.md).
 
 ## Limits and follow-up
 

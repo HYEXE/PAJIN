@@ -153,7 +153,7 @@ def test_run_kisa_replay_reserves_source_and_replay_budget_before_output(
     )
 
     assert result.exit_code == 2, result.output
-    assert "requires at least 18" in result.output
+    assert "requires at least 36" in result.output
     assert not output.exists()
 
 
@@ -205,7 +205,7 @@ def test_run_kisa_replay_uses_shared_controls_and_stable_sqlite_path(
     assert "Confirmed findings: 2" in result.output
     assert "Replay records: 3" in result.output
     assert "Final report:" in result.output
-    assert "validation/v1/report.md" in result.output.replace("\n", "")
+    assert str(Path("validation/v1/report.md")) in result.output.replace("\n", "")
 
 
 def test_run_kisa_replay_fails_closed_on_typed_replay_failure(

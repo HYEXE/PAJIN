@@ -13,6 +13,7 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode
 from pajin.domain.validation import (
+    AtomicClaimType,
     ClaimReplayStatus,
     FindingDisposition,
     PublicFindingState,
@@ -291,6 +292,7 @@ async def test_kisa_local_replay_preserves_m03_evidence_without_product_confirma
     assert ledger.is_file()
     assert len(result.batch.records) == 1
     assert len(result.batch.verified_results) == 1
+    assert len(result.batch.confirmation_results) == 3
     assert not hasattr(result.batch.tickets, "issuer")
     assert not hasattr(result.batch.tickets, "claimer")
     assert result.outcome.findings == result.outcome.validation.confirmed_findings
@@ -317,19 +319,22 @@ async def test_kisa_local_replay_preserves_m03_evidence_without_product_confirma
     assert loaded.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [decision.candidate_id]
     assert loaded.claim_replays is not None
     assert loaded.claim_replays.assessments[0].status is ClaimReplayStatus.REPRODUCED
+    assert {item.claim_type for item in loaded.claim_replays.assessments} == set(
+        AtomicClaimType
+    )
     assert (result.outcome.run_path / VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH).is_file()
 
     replay_paths = [item.run_path for item in result.batch.verified_results.values()]
     assert all(path.parent.parent == tmp_path / "local-replay" for path in replay_paths)
     assert result.outcome.run_path not in replay_paths
-    assert len(worker.jobs) == 4
-    assert budget.tool_calls == 4
+    assert len(worker.jobs) == 8
+    assert budget.tool_calls == 8
     sealed_rate_limits = json.loads(
         (result.outcome.run_path / "rate-limits.json").read_text(encoding="utf-8")
     )
     assert sealed_rate_limits["ledgerId"] == rate_limits.ledger_id
     assert rate_limits.snapshot()["reservationCounts"] == {}
-    assert len(set(worker.sessions)) == 4
+    assert len(set(worker.sessions)) == 8
     assert set(worker.sessions[:2]).isdisjoint(worker.sessions[2:])
     assert verify_run_integrity(result.outcome.run_path).valid
 
@@ -384,7 +389,7 @@ async def test_kisa_local_successful_replay_cannot_override_semantic_omission(
     assert len(omitted.batch.records) == 1
     assert omitted.batch.records[0].supports_claim is True
     assert len(omitted.batch.verified_results) == 1
-    assert len(omitted_worker.jobs) == 4
+    assert len(omitted_worker.jobs) == 8
     assert (omitted.outcome.run_path / VERSIONED_VALIDATION_INDEX_PATH).is_file()
     assert omitted.outcome.report_path == (
         omitted.outcome.run_path / VERSIONED_VALIDATION_REPORT_PATH

@@ -61,9 +61,11 @@ loader가 거부한다.
 ## 한계와 후속
 
 - 첫 수직 조각은 validity Claim만 지원한다. impact·severity의 별도 실행 계약과 Oracle은
-  아직 없다.
+  아직 없다. 이 로컬 KISA 후속은
+  [ADR 0036](0036-claim-bound-replay-execution-authority.ko.md)에서 완료했다.
 - 기존 Candidate replay를 validity Claim에 투영하므로, Claim별로 서로 다른 compiled
-  execution authority를 발급하는 완전한 Claim-by-Claim Replay는 후속이다.
+  execution authority를 발급하는 완전한 Claim-by-Claim Replay는 후속이다. exact KISA
+  M03·M06·A04 범위의 후속은 ADR 0036에서 완료했다.
 - 로컬 seal과 receipt는 계보·내용 일관성을 증명하지만 별도 조직·off-host 실행을 portable
   attestation으로 증명하지 않는다.
 - Human overturn, Gold Dataset, calibration과 다수 Reviewer 합의는 후속 범위다.
