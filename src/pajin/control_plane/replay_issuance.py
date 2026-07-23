@@ -338,7 +338,11 @@ class ReplayIssuanceService:
                 expected_policy = (
                     KISA_RETEST_POLICY_VERSION
                     if retest_source is not None
-                    else KISA_CONFIRMATION_POLICY_VERSION
+                    else (
+                        KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                        if request.claim_projection
+                        else KISA_CONFIRMATION_POLICY_VERSION
+                    )
                 )
                 if (
                     derived.artifact_ref != source
@@ -591,6 +595,9 @@ class ReplayIssuanceService:
                 else None
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
+            claim_projection = (
+                batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+            )
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
@@ -612,9 +619,7 @@ class ReplayIssuanceService:
                 artifact_ref=source,
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
-                claim_projection=(
-                    batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                ),
+                claim_projection=claim_projection,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
@@ -980,6 +985,9 @@ class ReplayIssuanceService:
                 else None
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
+            claim_projection = (
+                batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+            )
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
@@ -1001,9 +1009,7 @@ class ReplayIssuanceService:
                 artifact_ref=source,
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
-                claim_projection=(
-                    batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                ),
+                claim_projection=claim_projection,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict(
