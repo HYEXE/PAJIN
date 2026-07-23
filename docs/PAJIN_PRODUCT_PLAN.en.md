@@ -84,7 +84,7 @@ product values.
 
 ### 1.1 Current Implementation Baseline
 
-As of 2026-07-21, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
+As of 2026-07-23, PAJIN is **building a CLI-based policy-controlled multi-agent security validation backend MVP**.
 Phases 0 and 1 are complete, and Phase 2 has implemented the execution core, Replay contract, Compiler, single-use ticket,
 Restricted Reproducer, exact KISA M03, M06, A04 fresh-session materializer, live transcript Oracle, runner coordinator,
 verified receipt reload common Gate, append-only `validation/v1alpha1` projection, and the baseline Candidate-bound
@@ -159,6 +159,11 @@ the terminal authority graph and appends a fresh Run, compilation, context, rese
   server-reverified `kisa-retest.json` projection from all negative receipts plus normal-function regression.
   Defensive responses remain `inconclusive` without independent remediation attestation. Portable/off-host signed
   proof, materializers and Oracles for other Modes, and structured collaboration memory are follow-on work.
+The 2026-07-23 Agentic Discovery A1 contract slice adds versioned `SurfaceObservation`,
+`AttackSurface`, and `AttackSurfaceSet` artifacts, canonical HTTP-operation and schema-bound
+Tool-interface locators, domain-separated identities, and exact evidence-lineage validation. This
+slice provides only non-executable contracts and canonicalization; it does not yet provide a Trusted
+Surface Producer, Scope admission, Recon Wave, or replanning authority.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
 Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
@@ -1387,11 +1392,11 @@ defines at least the following.
 
 ## 21. Phase-by-Phase Roadmap
 
-| Phase | Status | Assessment as of 2026-07-22 |
+| Phase | Status | Assessment as of 2026-07-23 |
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; portable proof and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Trusted Surface admission, Recon integration, replanning, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1475,6 +1480,11 @@ defines at least the following.
   fully released budget/rate reservations, and empty prior-staging removal; it preserves terminal history and appends
   fresh Run/compilation/context/reservation/Job/ticket/staging identities with incremented attempt and fence, while
   concurrent PostgreSQL or SQLite issuers converge on one authority graph
+- Agentic Discovery A1 contracts: bounded and strict `pajin.dev/discovery/v1alpha1`
+  `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation
+  and schema-bound Tool-interface locators; domain-separated stable Surface identities; exact
+  request/result/evidence/root lineage; and Set ordering, uniqueness, and lineage validation. There
+  is no Trusted Surface Producer, Scope admission, Recon execution, or replanning authority yet
 - Remaining ADR-0029 scope: portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign

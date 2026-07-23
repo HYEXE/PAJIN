@@ -14,16 +14,17 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-21 is:
+The implementation baseline as of 2026-07-23 is:
 
 | Area | Current scope |
 | --- | --- |
 | Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| Discovery contracts | Versioned `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation and schema-bound Tool-interface locators; deterministic domain-separated identities; exact request/result/evidence/root lineage; bounded canonical JSON; and fail-closed ordering, uniqueness, and lineage validation. Trusted Surface production, Scope admission, Recon integration, Hypothesis planning, and replanning are not implemented yet. |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
-| Primary gaps | Multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Trusted Surface production and admission, Recon Wave integration, Hypothesis/Observation Graph/replanning, multi-host/object-store Artifact transfer, non-KISA Local replay orchestration, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
