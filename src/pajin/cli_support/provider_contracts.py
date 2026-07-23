@@ -5,10 +5,13 @@ from __future__ import annotations
 from pajin.agents.base import AgentReportNarrative
 from pajin.domain.orchestration import RunStatus
 from pajin.domain.validation import (
+    AtomicClaimType,
+    ClaimReviewOutcome,
     FindingDisposition,
     ValidationCheckStatus,
     ValidationMethod,
     ValidationReasonCode,
+    ValidatorOutputArtifact,
 )
 from pajin.workflow.multi_agent import MultiAgentRunOutcome
 
@@ -95,10 +98,12 @@ def provider_agent_checks(
         "budget.json",
         "model-narrative.json",
         "secrets.json",
+        "validator-output.json",
     )
     event_types = verified_cli_event_types(outcome.run_path, outcome.run_id)
     budget = cli_json_object(artifacts["budget.json"], label="budget snapshot")
     narrative = AgentReportNarrative.model_validate(artifacts["model-narrative.json"])
+    validator_output = ValidatorOutputArtifact.model_validate(artifacts["validator-output.json"])
     leases = cli_json_object_list(artifacts["secrets.json"], label="secret leases")
     model_calls = cli_json_integer(budget.get("modelCalls"), label="model call count")
     model_prompt_tokens = cli_json_integer(
@@ -212,11 +217,30 @@ def provider_agent_checks(
         and outcome.findings == []
         and outcome.validation.confirmed_findings == []
     )
+    blind_review_is_bound = bool(
+        validator_output.atomic_claims
+        and len(validator_output.blind_evidence_packets)
+        == sum(
+            claim.claim_type is not AtomicClaimType.SEVERITY
+            for claim in validator_output.atomic_claims
+        )
+        == len(validator_output.blind_evidence_decisions)
+        == len(validator_output.claim_review_reconciliations)
+        and all(
+            decision.reviewer_id != validator_output.validator_id
+            for decision in validator_output.blind_evidence_decisions
+        )
+        and all(
+            reconciliation.outcome is ClaimReviewOutcome.CORROBORATED
+            for reconciliation in validator_output.claim_review_reconciliations
+        )
+    )
     return {
         "campaign completed": outcome.status is RunStatus.COMPLETED,
         "provider planner produced bounded M03 plan": plan_is_bounded_m03,
         "trusted M03 candidate bound to same-run authority": trusted_candidate_is_bound,
         "semantic decision supported exact same-run evidence": semantic_decision_is_bound,
+        "blind evidence review independently corroborated exact claims": (blind_review_is_bound),
         "independent reproduction boundary preserved": independent_reproduction_boundary,
         "provider reporter narrative sealed and valid": bool(
             narrative.summary
@@ -224,19 +248,19 @@ def provider_agent_checks(
             and narrative.recommendations
             and narrative.limitations
         ),
-        "three role model calls audited": (
-            event_types.count("model.call.completed") == 3
+        "four role model calls audited": (
+            event_types.count("model.call.completed") == 4
             and event_types.count("model.fallback.activated") == 0
         ),
         "model call and conservative token budgets bounded": (
-            model_calls == 3
+            model_calls == 4
             and model_prompt_tokens > 0
             and model_completion_tokens > 0
             and model_tokens == model_prompt_tokens + model_completion_tokens
             and model_tokens <= max_model_tokens
         ),
-        "three provider secret leases revoked": (
-            len(leases) == 3
+        "four provider secret leases revoked": (
+            len(leases) == 4
             and all(
                 lease.get("status") == "revoked" and lease.get("remaining_uses") == 0
                 for lease in leases

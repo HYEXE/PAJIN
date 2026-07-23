@@ -39,6 +39,7 @@ from pajin.domain.validation import (
     ValidatorOutputArtifact,
     candidate_claim_digest,
     validate_candidate_atomic_refinement,
+    validate_candidate_blind_refinement,
     validator_finding_matches_candidate_claim,
 )
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
@@ -876,6 +877,19 @@ def _load_validator_output(
         output.atomic_claims,
         output.claim_decisions,
         required=has_atomic_refinement,
+    )
+    has_blind_refinement = bool(
+        output.blind_evidence_packets
+        or output.blind_evidence_decisions
+        or output.claim_review_reconciliations
+    )
+    validate_candidate_blind_refinement(
+        output.atomic_claims,
+        output.claim_decisions,
+        output.blind_evidence_packets,
+        output.blind_evidence_decisions,
+        output.claim_review_reconciliations,
+        required=has_blind_refinement,
     )
     claimed_finding_indices: set[int] = set()
     for candidate_id, assessment in assessments_by_id.items():

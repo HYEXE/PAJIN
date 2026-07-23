@@ -45,6 +45,9 @@ def _registration() -> ProviderRegistration:
 
 
 class RoleWorker:
+    def __init__(self, *, fail_blind_review: bool = False) -> None:
+        self.fail_blind_review = fail_blind_review
+
     def stable_execution_context(self) -> dict[str, object]:
         return {
             "implementationVersion": "pajin.test-role-worker/v1",
@@ -239,6 +242,43 @@ class RoleWorker:
                                 ),
                             }
                         )
+            elif schema_name == "pajin_blind_evidence_reviewer_output":
+                assert set(context) == {"packets"}
+                content = {"decisions": []}
+                for item in [] if self.fail_blind_review else context["packets"]:
+                    packet = item["packet"]
+                    assert "candidateId" not in packet
+                    assert "candidateClaimDigest" not in packet
+                    assert "disposition" not in packet
+                    verdict = (
+                        "supports"
+                        if packet["claimType"] == "validity"
+                        else (
+                            "contradicts" if packet["claimType"] == "severity" else "insufficient"
+                        )
+                    )
+                    content["decisions"].append(
+                        {
+                            "packetId": packet["packetId"],
+                            "packetDigest": packet["packetDigest"],
+                            "verdict": verdict,
+                            "rationale": (
+                                "Blind evidence independently supports the validity claim."
+                                if verdict == "supports"
+                                else (
+                                    "Blind evidence independently contradicts severity."
+                                    if verdict == "contradicts"
+                                    else "Blind impact evidence is insufficient."
+                                )
+                            ),
+                            "supportingEvidence": (
+                                packet["evidence"] if verdict == "supports" else []
+                            ),
+                            "contradictingEvidence": (
+                                packet["evidence"] if verdict == "contradicts" else []
+                            ),
+                        }
+                    )
             elif schema_name == "pajin_validator_output":
                 result = context["results"][0]
                 ai_probe = result["tool_id"] == "ai.chat-probe"
@@ -315,7 +355,11 @@ def _trusted_role_backend(worker: RoleWorker) -> DockerWorkerBackend:
     return backend
 
 
-def _run_provider_agent_fixture(tmp_path: Path) -> MultiAgentRunOutcome:
+def _run_provider_agent_fixture(
+    tmp_path: Path,
+    *,
+    fail_blind_review: bool = False,
+) -> MultiAgentRunOutcome:
     campaign = load_manifest(Path("examples/provider-agent-lab.yaml"))
     registration = _registration()
     fallback = DeterministicAgentRuntime()
@@ -343,7 +387,7 @@ def _run_provider_agent_fixture(tmp_path: Path) -> MultiAgentRunOutcome:
         candidate_producer=KISACandidateProducer(),
         tools=registry,
         policy=PolicyEngine(),
-        worker=_trusted_role_backend(RoleWorker()),
+        worker=_trusted_role_backend(RoleWorker(fail_blind_review=fail_blind_review)),
         output_root=tmp_path,
         secrets=secrets,
     )
@@ -378,7 +422,41 @@ def test_provider_agent_cli_checks_honest_needs_review_contract(tmp_path: Path) 
         "supports",
         "contradicts",
     ]
+    assert [decision["verdict"] for decision in validator_output["blindEvidenceDecisions"]] == [
+        "supports",
+    ]
+    assert [
+        reconciliation["outcome"]
+        for reconciliation in validator_output["claimReviewReconciliations"]
+    ] == [
+        "corroborated",
+    ]
+    assert all("candidateId" not in packet for packet in validator_output["blindEvidencePackets"])
     assert validator_output["assessments"][0]["supports_claim"] is True
+
+
+def test_provider_agent_blind_review_failure_seals_inconclusive(
+    tmp_path: Path,
+) -> None:
+    outcome = _run_provider_agent_fixture(tmp_path, fail_blind_review=True)
+
+    validator_output = json.loads(
+        (outcome.run_path / "validator-output.json").read_text(encoding="utf-8")
+    )
+
+    assert [decision["verdict"] for decision in validator_output["claimDecisions"]] == [
+        "supports",
+        "contradicts",
+    ]
+    assert [decision["verdict"] for decision in validator_output["blindEvidenceDecisions"]] == [
+        "insufficient"
+    ]
+    assert [
+        reconciliation["outcome"]
+        for reconciliation in validator_output["claimReviewReconciliations"]
+    ] == ["inconclusive"]
+    assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
+    assert outcome.findings == []
 
 
 def test_provider_agent_cli_checks_reject_tampered_model_narrative(

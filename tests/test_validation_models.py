@@ -10,6 +10,7 @@ from pajin.domain.validation import (
     AtomicClaimVerdict,
     CandidateAssessment,
     CandidateFinding,
+    ClaimReviewOutcome,
     FindingDisposition,
     FindingValidationSet,
     ValidationCheckResult,
@@ -18,10 +19,14 @@ from pajin.domain.validation import (
     ValidationMethod,
     ValidationReasonCode,
     ValidatorOutputArtifact,
+    blind_evidence_packets,
     build_atomic_claim_decision,
+    build_blind_evidence_decision,
     candidate_atomic_claims,
     candidate_claim_digest,
+    reconcile_claim_reviews,
     validate_candidate_atomic_refinement,
+    validate_candidate_blind_refinement,
 )
 
 
@@ -354,6 +359,143 @@ def test_atomic_claim_refinement_rejects_tampered_claims_and_unbound_evidence() 
             claims,
             decisions,
             required=True,
+        )
+
+
+def test_blind_evidence_review_excludes_candidate_metadata_and_reconciles_claims() -> None:
+    candidate = _candidate(
+        "candidate_blind",
+        finding_id="finding_blind",
+        claim=_finding(finding_id="finding_blind").model_copy(
+            update={"impact": "A protected record could be disclosed."}
+        ),
+    )
+    claims = candidate_atomic_claims(candidate)
+    primary = [
+        build_atomic_claim_decision(
+            claims[0],
+            verdict=AtomicClaimVerdict.SUPPORTS,
+            rationale="Primary review supports the validity claim.",
+            supporting_evidence=claims[0].evidence,
+        ),
+        build_atomic_claim_decision(
+            claims[1],
+            verdict=AtomicClaimVerdict.SUPPORTS,
+            rationale="Primary review supports the impact claim.",
+            supporting_evidence=claims[1].evidence,
+        ),
+        build_atomic_claim_decision(
+            claims[2],
+            verdict=AtomicClaimVerdict.CONTRADICTS,
+            rationale="Primary review contradicts the severity claim.",
+            contradicting_evidence=claims[2].evidence,
+        ),
+    ]
+    packets = blind_evidence_packets(claims)
+    packet_payload = packets[0].model_dump(mode="json", by_alias=True)
+
+    assert "candidateId" not in packet_payload
+    assert "candidateClaimDigest" not in packet_payload
+    assert "disposition" not in packet_payload
+    assert "primaryDecisionId" not in packet_payload
+    assert len(packets) == 2
+    assert all(packet.claim_type is not AtomicClaimType.SEVERITY for packet in packets)
+
+    blind = [
+        build_blind_evidence_decision(
+            packets[0],
+            reviewer_id="blind-reviewer:test",
+            verdict=AtomicClaimVerdict.CONTRADICTS,
+            rationale="Independent review contradicts the validity claim.",
+            contradicting_evidence=packets[0].evidence,
+        ),
+        build_blind_evidence_decision(
+            packets[1],
+            reviewer_id="blind-reviewer:test",
+            verdict=AtomicClaimVerdict.SUPPORTS,
+            rationale="Independent review also supports the impact claim.",
+            supporting_evidence=packets[1].evidence,
+        ),
+    ]
+    reconciliations = [
+        reconcile_claim_reviews(
+            {decision.claim_id: decision for decision in primary}[blind_decision.claim_id],
+            blind_decision,
+        )
+        for blind_decision in blind
+    ]
+
+    validate_candidate_blind_refinement(
+        claims,
+        primary,
+        packets,
+        blind,
+        reconciliations,
+        required=True,
+    )
+
+    assert [item.outcome for item in reconciliations] == [
+        ClaimReviewOutcome.CONTESTED,
+        ClaimReviewOutcome.CORROBORATED,
+    ]
+    assert candidate.claim.severity is FindingSeverity.HIGH
+    assert candidate.claim.validated is False
+
+
+def test_blind_evidence_refinement_rejects_tampering_and_primary_validator_reuse() -> None:
+    candidate = _candidate("candidate_blind_tamper", finding_id="finding_blind_tamper")
+    claims = candidate_atomic_claims(candidate)
+    primary = [
+        build_atomic_claim_decision(
+            claim,
+            verdict=AtomicClaimVerdict.INSUFFICIENT,
+            rationale="Primary evidence is insufficient.",
+        )
+        for claim in claims
+    ]
+    packets = blind_evidence_packets(claims)
+    tampered_packet = packets[0].model_dump(mode="python", by_alias=True)
+    tampered_packet["statement"] = "Substituted blind-review statement"
+    with pytest.raises(ValidationError, match="digest"):
+        type(packets[0]).model_validate(tampered_packet)
+
+    blind = [
+        build_blind_evidence_decision(
+            packet,
+            reviewer_id="agent:validator:same",
+            verdict=AtomicClaimVerdict.INSUFFICIENT,
+            rationale="Blind evidence is insufficient.",
+        )
+        for packet in packets
+    ]
+    reconciliations = [
+        reconcile_claim_reviews(
+            {decision.claim_id: decision for decision in primary}[blind_decision.claim_id],
+            blind_decision,
+        )
+        for blind_decision in blind
+    ]
+    assessments = [
+        CandidateAssessment(
+            candidate_id=candidate.candidate_id,
+            claim_digest=candidate_claim_digest(candidate),
+            supports_claim=False,
+            reason_code=ValidationReasonCode.VALIDATOR_OMITTED,
+            rationale=primary[0].rationale,
+        )
+    ]
+    with pytest.raises(ValidationError, match="must differ"):
+        ValidatorOutputArtifact(
+            sourceRunId="run_blind",
+            validatorId="agent:validator:same",
+            validationTaskId="task_blind",
+            findings=[],
+            assessments=assessments,
+            atomicClaims=claims,
+            claimDecisions=primary,
+            blindEvidencePackets=packets,
+            blindEvidenceDecisions=blind,
+            claimReviewReconciliations=reconciliations,
         )
 
 

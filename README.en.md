@@ -18,13 +18,13 @@ The implementation baseline as of 2026-07-23 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
 | Discovery contracts | Versioned `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation and schema-bound Tool-interface locators; deterministic domain-separated identities; exact request/result/evidence/root lineage; bounded canonical JSON; and fail-closed ordering, uniqueness, and lineage validation. A code-registered Trusted Surface Producer admits only integrity-verified Campaign and Gateway evidence, revalidates Scope, Authorization, method, and Tool risk, and publishes through a separate append-only projection Run. A3 adds an explicit opt-in single-call MCP Recon wave. A4 re-verifies the sealed projection, compiles versioned Hypotheses through code-registered rules, and runs one fresh-Capability Specialist wave. A5 adds a separate explicit opt-in bounded replanning control Run: it re-verifies the sealed A4 wave, promotes exact registered result fields into append-only `ObservationGraphSnapshot` artifacts, records `supports`, `contradicts`, `enables`, `depends-on`, and `new-surface` relationship contracts, and permits at most one novel code-registered transition into a second fresh-Capability wave. Shared Campaign agent, Tool-call, cost, time, and rate limits still apply; repeated or sub-threshold plans stop before execution. The existing one-time Planner remains unchanged. |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
-| Primary gaps | Broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Fresh-capability Baseline/Negative Control/Counterfactual execution, independent severity derivation and Provider/model diversity, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -32,7 +32,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > **Validation status:** PAJIN currently implements trusted Candidate admission, semantic review,
 > a Candidate-aware Provider contract that evaluates exact Candidate and Atomic Claim digests
 > without rewriting Findings, deterministic validity/impact/severity Claim decomposition, objective
-> evidence gates, sealed Decision snapshots, and versioned `ValidationPacket`,
+> evidence gates, sealed Decision snapshots, and a separate Blind Evidence Reviewer. The blind role
+> receives only opaque validity/impact Claim identity, statements, and allowlisted evidence; it does
+> not receive Candidate identity, disposition, severity, or prior Decisions. Deterministic
+> reconciliation records `corroborated`, `contested`, or `inconclusive` without changing Candidate
+> state or confirmation eligibility. Versioned `ValidationPacket`,
 > `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`,
 > and `ReplayOutcome` contracts. A pure deterministic compiler now checks the original Plan, bound
 > Tool request, Specialist grant, evidence digests, Scope, authorization, cancellation and budget,
@@ -728,9 +732,9 @@ do not add it to a Campaign manifest or provider registration file. The current 
 a local runtime boundary, not a production secret manager; a deployment should source values from
 a platform vault and isolate the supervisor process accordingly.
 
-### Provider-backed Planner, Validator, and Reporter
+### Provider-backed Planner, Validators, and Reporter
 
-`provider-agent-run` connects the registered Provider Gateway to the three reasoning roles without
+`provider-agent-run` connects the registered Provider Gateway to four reasoning roles without
 giving them offensive execution authority. Each role receives a distinct developer prompt, a
 strict JSON Schema, and an attenuated Capability containing only the exact Provider Tool and
 endpoint. Campaign, plan, result, and finding data are supplied as untrusted user content. The
@@ -749,18 +753,24 @@ docker compose -f containers/compose.ai-lab.yaml down
 ```
 
 The implemented flow is Provider Planner → isolated `ai.chat-probe` Specialist → trusted Candidate
-Producer → Candidate-aware Provider Semantic Validator → objective gate → Provider Reporter. The
+Producer → Candidate-aware Provider Semantic Validator → Blind Evidence Reviewer → deterministic
+reconciliation → objective gate → Provider Reporter. The
 Validator receives immutable Candidate IDs, Candidate digests, and deterministic `validity`,
 `impact`, and `severity` Atomic Claims. It returns only `supports`, `contradicts`, or `insufficient`
 Claim Decisions with Candidate-owned evidence references; it does not recreate a Finding. The
 validity Decision feeds the existing Candidate semantic gate, while impact and severity remain
-separate sealed judgments and cannot mutate the Candidate. Product confirmation still requires the
-Restricted Reproducer and independent execution attestation. Reporter output is stored separately
+separate sealed judgments and cannot mutate the Candidate. A second role receives only opaque
+validity/impact Claim identity, statements, and allowlisted evidence. It cannot see Candidate
+identity, disposition, severity, or the first review, and its result is reconciled as
+`corroborated`, `contested`, or `inconclusive`. Blind-review failure seals as insufficient; neither
+blind review nor reconciliation can mutate disposition or confirm a Finding. Product confirmation
+still requires the Restricted Reproducer and independent execution attestation. Reporter output is stored separately
 in `model-narrative.json` and is appended as a clearly subordinate section; it cannot alter
 canonical findings or execution state.
 
-The exact Claim identity, evidence, fallback, and confirmation boundaries are recorded in
-[ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md).
+The exact Claim identity, evidence, fallback, blind-review, and confirmation boundaries are recorded
+in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md) and
+[ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative

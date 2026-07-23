@@ -42,8 +42,8 @@ spec:
     maxSpawnDepth: 1
     maxToolCalls: 7
     maxModelCalls: 6
-    # Covers one 4x canonical prompt-byte/framing bound plus the 4096-token completion reservation.
-    maxModelTokens: 100000
+    # Covers Planner, Candidate Validator, Blind Reviewer, and Reporter conservative reservations.
+    maxModelTokens: 150000
   outputs:
     - markdown-report
     - json-findings

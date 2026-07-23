@@ -13,6 +13,7 @@ from pydantic import BaseModel, ConfigDict
 
 from pajin.agents.base import (
     AgentReportNarrative,
+    CandidateAwareValidatorRuntime,
     CandidateProducerRuntime,
     PlannerRuntime,
     ReporterRuntime,
@@ -191,6 +192,10 @@ class MultiAgentCampaignRunner:
             reporter=reporter,
             tools=tools,
             max_parallel_specialists=max_parallel_specialists,
+            candidate_aware_validation=(
+                candidate_producer is not None
+                and isinstance(validator, CandidateAwareValidatorRuntime)
+            ),
         )
         self._projector = MultiAgentResultProjector(
             host=self,

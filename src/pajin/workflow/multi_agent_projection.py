@@ -31,6 +31,7 @@ from pajin.domain.validation import (
     ValidationReasonCode,
     ValidatorOutputArtifact,
     validate_candidate_atomic_refinement,
+    validate_candidate_blind_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.runtime.control import (
@@ -256,11 +257,30 @@ class MultiAgentResultProjector:
                 assessments = _detached_models(validator_output.assessments)
                 atomic_claims = _detached_models(validator_output.atomic_claims)
                 claim_decisions = _detached_models(validator_output.claim_decisions)
+                blind_evidence_packets = _detached_models(validator_output.blind_evidence_packets)
+                blind_evidence_decisions = _detached_models(
+                    validator_output.blind_evidence_decisions
+                )
+                claim_review_reconciliations = _detached_models(
+                    validator_output.claim_review_reconciliations
+                )
                 validate_candidate_atomic_refinement(
                     list(state.candidates.admitted),
                     atomic_claims,
                     claim_decisions,
                     required=bool(atomic_claims or claim_decisions),
+                )
+                validate_candidate_blind_refinement(
+                    atomic_claims,
+                    claim_decisions,
+                    blind_evidence_packets,
+                    blind_evidence_decisions,
+                    claim_review_reconciliations,
+                    required=bool(
+                        blind_evidence_packets
+                        or blind_evidence_decisions
+                        or claim_review_reconciliations
+                    ),
                 )
             else:
                 validator_findings = await self._host._within_budget(
@@ -275,6 +295,9 @@ class MultiAgentResultProjector:
                 assessments = None
                 atomic_claims = []
                 claim_decisions = []
+                blind_evidence_packets = []
+                blind_evidence_decisions = []
+                claim_review_reconciliations = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=validator_agent.agent_id,
@@ -283,6 +306,9 @@ class MultiAgentResultProjector:
                 assessments=_detached_models(assessments or []),
                 atomicClaims=_detached_models(atomic_claims),
                 claimDecisions=_detached_models(claim_decisions),
+                blindEvidencePackets=_detached_models(blind_evidence_packets),
+                blindEvidenceDecisions=_detached_models(blind_evidence_decisions),
+                claimReviewReconciliations=_detached_models(claim_review_reconciliations),
             )
             validation = validate_findings(
                 campaign,

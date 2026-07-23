@@ -11,8 +11,11 @@ from pajin.domain.models import AgentPlan, CampaignManifest, Finding, StrictMode
 from pajin.domain.validation import (
     AtomicClaim,
     AtomicClaimDecision,
+    BlindEvidenceDecision,
+    BlindEvidencePacket,
     CandidateAssessment,
     CandidateFinding,
+    ClaimReviewReconciliation,
 )
 
 
@@ -57,6 +60,9 @@ class CandidateValidation(StrictModel):
     assessments: list[CandidateAssessment]
     atomic_claims: list[AtomicClaim] = Field(default_factory=list)
     claim_decisions: list[AtomicClaimDecision] = Field(default_factory=list)
+    blind_evidence_packets: list[BlindEvidencePacket] = Field(default_factory=list)
+    blind_evidence_decisions: list[BlindEvidenceDecision] = Field(default_factory=list)
+    claim_review_reconciliations: list[ClaimReviewReconciliation] = Field(default_factory=list)
 
 
 @runtime_checkable

@@ -31,13 +31,19 @@ from pajin.domain.validation import (
     AtomicClaimDecision,
     AtomicClaimType,
     AtomicClaimVerdict,
+    BlindEvidenceDecision,
+    BlindEvidencePacket,
     CandidateAssessment,
     CandidateFinding,
     ValidationReasonCode,
+    blind_evidence_packets,
     build_atomic_claim_decision,
+    build_blind_evidence_decision,
     candidate_atomic_claims,
     candidate_claim_digest,
+    reconcile_claim_reviews,
     validate_candidate_atomic_refinement,
+    validate_candidate_blind_refinement,
     validator_finding_matches_candidate_claim,
 )
 from pajin.providers.models import ProviderChatResult, ProviderMessage, ProviderRegistration
@@ -137,6 +143,27 @@ class CandidateValidatorDraft(StrictModel):
     decisions: list[AtomicClaimDecisionDraft] = Field(max_length=3_000)
 
 
+class BlindEvidenceDecisionDraft(StrictModel):
+    packet_id: str = Field(alias="packetId", min_length=1, max_length=200)
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    verdict: AtomicClaimVerdict
+    rationale: str = Field(min_length=1, max_length=5_000)
+    supporting_evidence: list[str] = Field(
+        default_factory=list,
+        alias="supportingEvidence",
+        max_length=1_000,
+    )
+    contradicting_evidence: list[str] = Field(
+        default_factory=list,
+        alias="contradictingEvidence",
+        max_length=1_000,
+    )
+
+
+class BlindEvidenceReviewerDraft(StrictModel):
+    decisions: list[BlindEvidenceDecisionDraft] = Field(max_length=3_000)
+
+
 class ReporterDraft(StrictModel):
     summary: str = Field(min_length=1, max_length=5_000)
     risk_overview: str = Field(min_length=1, max_length=5_000)
@@ -171,6 +198,7 @@ class ProviderAgentRuntime:
         self.model_provider_tool_id = f"provider.{registration.provider_id}.chat"
         self.model_provider_endpoint = str(registration.endpoint)
         self.model_max_attempts = max_attempts
+        self.model_validator_max_calls = max_attempts + 1
 
     def bind_model_port(self, port: StructuredModelPort) -> None:
         self._port = port
@@ -246,7 +274,7 @@ class ProviderAgentRuntime:
                 claims=claims,
                 draft=draft,
             )
-            return CandidateValidation(
+            primary = CandidateValidation(
                 findings=[],
                 assessments=self._candidate_assessments(claims, decisions),
                 atomic_claims=claims,
@@ -254,13 +282,19 @@ class ProviderAgentRuntime:
             )
         except (ModelCallFailure, ValueError, TypeError, json.JSONDecodeError) as exc:
             self._record_fallback("candidate-validator", exc)
-            return await self._fallback_candidate_validation(
+            primary = await self._fallback_candidate_validation(
                 campaign=campaign,
                 plan=plan,
                 results=results,
                 candidates=candidates,
                 claims=claims,
             )
+        if not primary.atomic_claims:
+            return primary
+        return await self._blind_review_candidate_validation(
+            results=results,
+            primary=primary,
+        )
 
     async def report(
         self,
@@ -295,12 +329,15 @@ class ProviderAgentRuntime:
         role: str,
         payload: dict[str, Any],
         output_type: type[_OutputDraftT],
+        *,
+        max_attempts: int | None = None,
     ) -> _OutputDraftT:
         if self._port is None:
             raise RuntimeError("provider runtime is not bound to a model port")
         last_error: Exception | None = None
         schema_name = f"pajin_{role.replace('-', '_')}_output"
-        for attempt in range(1, self.model_max_attempts + 1):
+        attempt_limit = max_attempts or self.model_max_attempts
+        for attempt in range(1, attempt_limit + 1):
             developer = self._role_instructions(role, repair=attempt > 1)
             try:
                 raw_result = await self._port.complete(
@@ -341,6 +378,97 @@ class ProviderAgentRuntime:
             f"{audit_safe_exception_diagnostic(last_error, stage='provider-output-validation')}"
         )
 
+    async def _blind_review_candidate_validation(
+        self,
+        *,
+        results: list[ToolResult],
+        primary: CandidateValidation,
+    ) -> CandidateValidation:
+        packets = blind_evidence_packets(primary.atomic_claims)
+        reviewer_id = f"blind-reviewer:{self._registration.provider_id}"
+        payload = {
+            "packets": [
+                {
+                    "packet": packet.model_dump(mode="json", by_alias=True),
+                    "evidenceRecords": self._blind_evidence_records(results, packet),
+                }
+                for packet in packets
+            ]
+        }
+        try:
+            draft = await self._structured(
+                "blind-evidence-reviewer",
+                payload,
+                BlindEvidenceReviewerDraft,
+                max_attempts=1,
+            )
+            blind_decisions = self._bind_blind_evidence_decisions(
+                packets=packets,
+                reviewer_id=reviewer_id,
+                draft=draft,
+            )
+        except (ModelCallFailure, ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._record_fallback("blind-evidence-reviewer", exc)
+            blind_decisions = [
+                build_blind_evidence_decision(
+                    packet,
+                    reviewer_id=reviewer_id,
+                    verdict=AtomicClaimVerdict.INSUFFICIENT,
+                    rationale=(
+                        "Blind evidence review was unavailable; no corroboration was inferred."
+                    ),
+                )
+                for packet in packets
+            ]
+        primary_by_claim = {decision.claim_id: decision for decision in primary.claim_decisions}
+        reconciliations = [
+            reconcile_claim_reviews(
+                primary_by_claim[blind_decision.claim_id],
+                blind_decision,
+            )
+            for blind_decision in blind_decisions
+        ]
+        validate_candidate_blind_refinement(
+            primary.atomic_claims,
+            primary.claim_decisions,
+            packets,
+            blind_decisions,
+            reconciliations,
+            required=True,
+        )
+        return primary.model_copy(
+            update={
+                "blind_evidence_packets": packets,
+                "blind_evidence_decisions": blind_decisions,
+                "claim_review_reconciliations": reconciliations,
+            }
+        )
+
+    @staticmethod
+    def _blind_evidence_records(
+        results: list[ToolResult],
+        packet: BlindEvidencePacket,
+    ) -> list[dict[str, object]]:
+        records: list[dict[str, object]] = []
+        packet_evidence = set(packet.evidence)
+        for result in results:
+            references = [
+                reference for reference in result.evidence if reference in packet_evidence
+            ]
+            if not references:
+                continue
+            records.append(
+                {
+                    "requestId": result.request_id,
+                    "toolId": result.tool_id,
+                    "success": result.success,
+                    "data": result.data,
+                    "error": result.error,
+                    "evidence": references,
+                }
+            )
+        return records
+
     @staticmethod
     def _bind_atomic_decisions(
         *,
@@ -375,6 +503,35 @@ class ProviderAgentRuntime:
             decisions,
             required=True,
         )
+        return decisions
+
+    @staticmethod
+    def _bind_blind_evidence_decisions(
+        *,
+        packets: list[BlindEvidencePacket],
+        reviewer_id: str,
+        draft: BlindEvidenceReviewerDraft,
+    ) -> list[BlindEvidenceDecision]:
+        drafts_by_packet = {item.packet_id: item for item in draft.decisions}
+        if len(drafts_by_packet) != len(draft.decisions):
+            raise ValueError("Blind reviewer returned duplicate Packet IDs")
+        if set(drafts_by_packet) != {packet.packet_id for packet in packets}:
+            raise ValueError("Blind reviewer must assess every Packet exactly once")
+        decisions: list[BlindEvidenceDecision] = []
+        for packet in packets:
+            item = drafts_by_packet[packet.packet_id]
+            if item.packet_digest != packet.packet_digest:
+                raise ValueError("Blind reviewer changed a Packet digest")
+            decisions.append(
+                build_blind_evidence_decision(
+                    packet,
+                    reviewer_id=reviewer_id,
+                    verdict=item.verdict,
+                    rationale=item.rationale,
+                    supporting_evidence=item.supporting_evidence,
+                    contradicting_evidence=item.contradicting_evidence,
+                )
+            )
         return decisions
 
     @staticmethod
@@ -597,6 +754,14 @@ class ProviderAgentRuntime:
                 "or Atomic Claims. Return exactly one verdict for every supplied claimId and "
                 "claimDigest. Judge validity independently from impact and severity, and cite "
                 "only evidence references already attached to that exact Atomic Claim."
+            ),
+            "blind-evidence-reviewer": (
+                "You are the PAJIN Blind Evidence Reviewer in a separate role call. You receive "
+                "only minimal Atomic Claim packets and matching evidence records. Candidate "
+                "identity, source, disposition, prior Validator decisions, and report context are "
+                "intentionally absent. Return exactly one verdict for every supplied packetId and "
+                "packetDigest. Do not infer confirmation authority, rewrite Claims, or cite "
+                "evidence outside the exact Packet."
             ),
             "reporter": (
                 "You are the PAJIN Reporter. Summarize canonical results without changing finding "

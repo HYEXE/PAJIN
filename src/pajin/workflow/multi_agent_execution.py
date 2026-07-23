@@ -186,6 +186,7 @@ class MultiAgentExecutionScheduler:
         reporter: ReporterRuntime | None,
         tools: ToolRegistry,
         max_parallel_specialists: int,
+        candidate_aware_validation: bool,
     ) -> None:
         self._host = host
         self._planner = planner
@@ -193,6 +194,7 @@ class MultiAgentExecutionScheduler:
         self._reporter = reporter
         self._tools = tools
         self._max_parallel_specialists = max_parallel_specialists
+        self._candidate_aware_validation = candidate_aware_validation
 
     async def run_planning_phase(
         self,
@@ -394,7 +396,14 @@ class MultiAgentExecutionScheduler:
             risk_tiers.append(spec.risk_tier)
             parallel_contracts.append(spec.parallel_safe)
 
-        validator_access = self._model_access(self._validator)
+        validator_access = self._model_access(
+            self._validator,
+            max_calls=(
+                getattr(self._validator, "model_validator_max_calls", None)
+                if self._candidate_aware_validation
+                else None
+            ),
+        )
         reporter_access = self._model_access(self._reporter) if self._reporter else None
         reserved_control_calls = sum(
             access.max_attempts
@@ -690,7 +699,12 @@ class MultiAgentExecutionScheduler:
                 retry_slots -= 1
         return allocations
 
-    def _model_access(self, runtime: object) -> ModelAccess | None:
+    def _model_access(
+        self,
+        runtime: object,
+        *,
+        max_calls: int | None = None,
+    ) -> ModelAccess | None:
         if not isinstance(runtime, ModelBoundRuntime):
             return None
         registration = ProviderRegistration.model_validate(runtime.model_provider_registration)
@@ -702,6 +716,9 @@ class MultiAgentExecutionScheduler:
             raise ValueError("model runtime endpoint differs from provider registration")
         if not 1 <= runtime.model_max_attempts <= 3:
             raise ValueError("model runtime attempts must be between one and three")
+        role_max_calls = max_calls or runtime.model_max_attempts
+        if not 1 <= role_max_calls <= 6:
+            raise ValueError("model runtime role call budget must be between one and six")
         spec = self._tools.spec(tool_id)
         if "model-provider" not in spec.categories:
             raise ValueError("model runtime tool is not registered as a provider")
@@ -709,7 +726,7 @@ class MultiAgentExecutionScheduler:
             registration=registration,
             tool_id=tool_id,
             endpoint=endpoint,
-            max_attempts=runtime.model_max_attempts,
+            max_attempts=role_max_calls,
             risk_tier=spec.risk_tier,
         )
 

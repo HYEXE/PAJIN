@@ -26,6 +26,7 @@ from pajin.domain.validation import (
     ValidationReasonCode,
     ValidatorOutputArtifact,
     validate_candidate_atomic_refinement,
+    validate_candidate_blind_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
@@ -349,11 +350,26 @@ class LocalCampaignRunner:
                 validator_assessments = validator_output.assessments
                 atomic_claims = validator_output.atomic_claims
                 claim_decisions = validator_output.claim_decisions
+                blind_evidence_packets = validator_output.blind_evidence_packets
+                blind_evidence_decisions = validator_output.blind_evidence_decisions
+                claim_review_reconciliations = validator_output.claim_review_reconciliations
                 validate_candidate_atomic_refinement(
                     admitted_candidates,
                     atomic_claims,
                     claim_decisions,
                     required=bool(atomic_claims or claim_decisions),
+                )
+                validate_candidate_blind_refinement(
+                    atomic_claims,
+                    claim_decisions,
+                    blind_evidence_packets,
+                    blind_evidence_decisions,
+                    claim_review_reconciliations,
+                    required=bool(
+                        blind_evidence_packets
+                        or blind_evidence_decisions
+                        or claim_review_reconciliations
+                    ),
                 )
             else:
                 raw_findings = await self._agents.validate(
@@ -368,6 +384,9 @@ class LocalCampaignRunner:
                 validator_assessments = None
                 atomic_claims = []
                 claim_decisions = []
+                blind_evidence_packets = []
+                blind_evidence_decisions = []
+                claim_review_reconciliations = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=agent_id,
@@ -378,6 +397,16 @@ class LocalCampaignRunner:
                 ],
                 atomicClaims=[claim.model_copy(deep=True) for claim in atomic_claims],
                 claimDecisions=[decision.model_copy(deep=True) for decision in claim_decisions],
+                blindEvidencePackets=[
+                    packet.model_copy(deep=True) for packet in blind_evidence_packets
+                ],
+                blindEvidenceDecisions=[
+                    decision.model_copy(deep=True) for decision in blind_evidence_decisions
+                ],
+                claimReviewReconciliations=[
+                    reconciliation.model_copy(deep=True)
+                    for reconciliation in claim_review_reconciliations
+                ],
             )
         except asyncio.CancelledError:
             try:

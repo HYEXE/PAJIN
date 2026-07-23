@@ -37,6 +37,12 @@ class AtomicClaimVerdict(StrEnum):
     INSUFFICIENT = "insufficient"
 
 
+class ClaimReviewOutcome(StrEnum):
+    CORROBORATED = "corroborated"
+    CONTESTED = "contested"
+    INCONCLUSIVE = "inconclusive"
+
+
 class ValidationMethod(StrEnum):
     LEGACY_VALIDATOR = "legacy-validator"
     DETERMINISTIC_GATE = "deterministic-gate"
@@ -210,6 +216,130 @@ class AtomicClaimDecision(StrictModel):
         return self
 
 
+class BlindEvidencePacket(StrictModel):
+    """Minimal Claim evidence view that excludes Candidate and prior-review metadata."""
+
+    api_version: Literal["pajin.dev/blind-evidence-packet/v1alpha1"] = Field(
+        default="pajin.dev/blind-evidence-packet/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["BlindEvidencePacket"] = "BlindEvidencePacket"
+    packet_id: _Identifier = Field(alias="packetId")
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    claim_id: _Identifier = Field(alias="claimId")
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+    claim_type: AtomicClaimType = Field(alias="claimType")
+    statement: str = Field(min_length=1, max_length=20_000)
+    evidence: list[_EvidenceReference] = Field(max_length=1_000)
+
+    @model_validator(mode="after")
+    def require_canonical_packet(self) -> BlindEvidencePacket:
+        if len(self.evidence) != len(set(self.evidence)):
+            raise ValueError("Blind Evidence Packet references must be unique")
+        expected_digest = _blind_evidence_packet_digest(
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            claim_type=self.claim_type,
+            statement=self.statement,
+            evidence=self.evidence,
+        )
+        if self.packet_digest != expected_digest:
+            raise ValueError("Blind Evidence Packet digest does not match its canonical content")
+        if self.packet_id != _blind_evidence_packet_id(
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            packet_digest=self.packet_digest,
+        ):
+            raise ValueError("Blind Evidence Packet ID does not match its Claim")
+        return self
+
+
+class BlindEvidenceDecision(StrictModel):
+    """Independent role decision over one exact Blind Evidence Packet."""
+
+    api_version: Literal["pajin.dev/blind-evidence-decision/v1alpha1"] = Field(
+        default="pajin.dev/blind-evidence-decision/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["BlindEvidenceDecision"] = "BlindEvidenceDecision"
+    decision_id: _Identifier = Field(alias="decisionId")
+    packet_id: _Identifier = Field(alias="packetId")
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    claim_id: _Identifier = Field(alias="claimId")
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+    reviewer_id: _Identifier = Field(alias="reviewerId")
+    verdict: AtomicClaimVerdict
+    rationale: str = Field(min_length=1, max_length=5_000)
+    supporting_evidence: list[_EvidenceReference] = Field(
+        default_factory=list,
+        alias="supportingEvidence",
+        max_length=1_000,
+    )
+    contradicting_evidence: list[_EvidenceReference] = Field(
+        default_factory=list,
+        alias="contradictingEvidence",
+        max_length=1_000,
+    )
+
+    @model_validator(mode="after")
+    def require_canonical_decision(self) -> BlindEvidenceDecision:
+        if len(self.supporting_evidence) != len(set(self.supporting_evidence)):
+            raise ValueError("Blind review supporting evidence must be unique")
+        if len(self.contradicting_evidence) != len(set(self.contradicting_evidence)):
+            raise ValueError("Blind review contradicting evidence must be unique")
+        if set(self.supporting_evidence) & set(self.contradicting_evidence):
+            raise ValueError("Blind review evidence cannot both support and contradict")
+        if self.verdict is AtomicClaimVerdict.SUPPORTS:
+            if not self.supporting_evidence or self.contradicting_evidence:
+                raise ValueError("supporting Blind review requires only supporting evidence")
+        elif self.verdict is AtomicClaimVerdict.CONTRADICTS:
+            if not self.contradicting_evidence or self.supporting_evidence:
+                raise ValueError("contradicting Blind review requires only contradicting evidence")
+        elif self.supporting_evidence or self.contradicting_evidence:
+            raise ValueError("insufficient Blind review cannot classify evidence")
+        if self.decision_id != _blind_evidence_decision_id(
+            packet_id=self.packet_id,
+            packet_digest=self.packet_digest,
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            reviewer_id=self.reviewer_id,
+            verdict=self.verdict,
+            rationale=self.rationale,
+            supporting_evidence=self.supporting_evidence,
+            contradicting_evidence=self.contradicting_evidence,
+        ):
+            raise ValueError("Blind Evidence Decision ID does not match its canonical content")
+        return self
+
+
+class ClaimReviewReconciliation(StrictModel):
+    """Deterministic comparison that cannot change Candidate disposition."""
+
+    api_version: Literal["pajin.dev/claim-review-reconciliation/v1alpha1"] = Field(
+        default="pajin.dev/claim-review-reconciliation/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["ClaimReviewReconciliation"] = "ClaimReviewReconciliation"
+    reconciliation_id: _Identifier = Field(alias="reconciliationId")
+    claim_id: _Identifier = Field(alias="claimId")
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+    primary_decision_id: _Identifier = Field(alias="primaryDecisionId")
+    blind_decision_id: _Identifier = Field(alias="blindDecisionId")
+    outcome: ClaimReviewOutcome
+
+    @model_validator(mode="after")
+    def require_canonical_reconciliation(self) -> ClaimReviewReconciliation:
+        if self.reconciliation_id != _claim_review_reconciliation_id(
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            primary_decision_id=self.primary_decision_id,
+            blind_decision_id=self.blind_decision_id,
+            outcome=self.outcome,
+        ):
+            raise ValueError("Claim review reconciliation ID is not canonical")
+        return self
+
+
 class CandidateAssessment(StrictModel):
     """Validator-owned semantic decision bound to one exact trusted Candidate claim."""
 
@@ -268,6 +398,21 @@ class ValidatorOutputArtifact(StrictModel):
         alias="claimDecisions",
         max_length=3_000,
     )
+    blind_evidence_packets: list[BlindEvidencePacket] = Field(
+        default_factory=list,
+        alias="blindEvidencePackets",
+        max_length=3_000,
+    )
+    blind_evidence_decisions: list[BlindEvidenceDecision] = Field(
+        default_factory=list,
+        alias="blindEvidenceDecisions",
+        max_length=3_000,
+    )
+    claim_review_reconciliations: list[ClaimReviewReconciliation] = Field(
+        default_factory=list,
+        alias="claimReviewReconciliations",
+        max_length=3_000,
+    )
 
     @model_validator(mode="after")
     def require_unique_output_identities(self) -> ValidatorOutputArtifact:
@@ -282,6 +427,22 @@ class ValidatorOutputArtifact(StrictModel):
             claims=self.atomic_claims,
             decisions=self.claim_decisions,
         )
+        validate_candidate_blind_refinement(
+            self.atomic_claims,
+            self.claim_decisions,
+            self.blind_evidence_packets,
+            self.blind_evidence_decisions,
+            self.claim_review_reconciliations,
+            required=bool(
+                self.blind_evidence_packets
+                or self.blind_evidence_decisions
+                or self.claim_review_reconciliations
+            ),
+        )
+        if any(
+            decision.reviewer_id == self.validator_id for decision in self.blind_evidence_decisions
+        ):
+            raise ValueError("Blind Evidence reviewer must differ from the primary Validator")
         if (
             any(assessment.supports_claim for assessment in self.assessments)
             and not any(finding.validated for finding in self.findings)
@@ -381,6 +542,162 @@ def build_atomic_claim_decision(
     )
 
 
+def blind_evidence_packets(claims: Sequence[AtomicClaim]) -> list[BlindEvidencePacket]:
+    """Project validity and impact without Candidate, severity, or prior decisions."""
+
+    packets: list[BlindEvidencePacket] = []
+    for claim in claims:
+        if claim.claim_type is AtomicClaimType.SEVERITY:
+            continue
+        packet_digest = _blind_evidence_packet_digest(
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_type=claim.claim_type,
+            statement=claim.statement,
+            evidence=claim.evidence,
+        )
+        packets.append(
+            BlindEvidencePacket(
+                packetId=_blind_evidence_packet_id(
+                    claim_id=claim.claim_id,
+                    claim_digest=claim.claim_digest,
+                    packet_digest=packet_digest,
+                ),
+                packetDigest=packet_digest,
+                claimId=claim.claim_id,
+                claimDigest=claim.claim_digest,
+                claimType=claim.claim_type,
+                statement=claim.statement,
+                evidence=list(claim.evidence),
+            )
+        )
+    return packets
+
+
+def build_blind_evidence_decision(
+    packet: BlindEvidencePacket,
+    *,
+    reviewer_id: str,
+    verdict: AtomicClaimVerdict,
+    rationale: str,
+    supporting_evidence: Sequence[str] = (),
+    contradicting_evidence: Sequence[str] = (),
+) -> BlindEvidenceDecision:
+    """Bind an independent review verdict to one exact minimal packet."""
+
+    supporting = list(supporting_evidence)
+    contradicting = list(contradicting_evidence)
+    return BlindEvidenceDecision(
+        decisionId=_blind_evidence_decision_id(
+            packet_id=packet.packet_id,
+            packet_digest=packet.packet_digest,
+            claim_id=packet.claim_id,
+            claim_digest=packet.claim_digest,
+            reviewer_id=reviewer_id,
+            verdict=verdict,
+            rationale=rationale,
+            supporting_evidence=supporting,
+            contradicting_evidence=contradicting,
+        ),
+        packetId=packet.packet_id,
+        packetDigest=packet.packet_digest,
+        claimId=packet.claim_id,
+        claimDigest=packet.claim_digest,
+        reviewerId=reviewer_id,
+        verdict=verdict,
+        rationale=rationale,
+        supportingEvidence=supporting,
+        contradictingEvidence=contradicting,
+    )
+
+
+def reconcile_claim_reviews(
+    primary: AtomicClaimDecision,
+    blind: BlindEvidenceDecision,
+) -> ClaimReviewReconciliation:
+    """Compare two sealed decisions without granting confirmation authority."""
+
+    if primary.verdict is blind.verdict and primary.verdict is not AtomicClaimVerdict.INSUFFICIENT:
+        outcome = ClaimReviewOutcome.CORROBORATED
+    elif {
+        primary.verdict,
+        blind.verdict,
+    } == {
+        AtomicClaimVerdict.SUPPORTS,
+        AtomicClaimVerdict.CONTRADICTS,
+    }:
+        outcome = ClaimReviewOutcome.CONTESTED
+    else:
+        outcome = ClaimReviewOutcome.INCONCLUSIVE
+    reconciliation_id = _claim_review_reconciliation_id(
+        claim_id=primary.claim_id,
+        claim_digest=primary.claim_digest,
+        primary_decision_id=primary.decision_id,
+        blind_decision_id=blind.decision_id,
+        outcome=outcome,
+    )
+    return ClaimReviewReconciliation(
+        reconciliationId=reconciliation_id,
+        claimId=primary.claim_id,
+        claimDigest=primary.claim_digest,
+        primaryDecisionId=primary.decision_id,
+        blindDecisionId=blind.decision_id,
+        outcome=outcome,
+    )
+
+
+def validate_candidate_blind_refinement(
+    claims: Sequence[AtomicClaim],
+    primary_decisions: Sequence[AtomicClaimDecision],
+    packets: Sequence[BlindEvidencePacket],
+    blind_decisions: Sequence[BlindEvidenceDecision],
+    reconciliations: Sequence[ClaimReviewReconciliation],
+    *,
+    required: bool,
+) -> None:
+    """Verify a complete blind-review set and its deterministic comparison."""
+
+    if not packets and not blind_decisions and not reconciliations and not required:
+        return
+    expected_packets = blind_evidence_packets(claims)
+    if list(packets) != expected_packets:
+        raise ValueError("Blind Evidence Packets differ from the trusted Atomic Claims")
+    if [decision.claim_id for decision in primary_decisions] != [
+        claim.claim_id for claim in claims
+    ]:
+        raise ValueError("Blind review requires one primary decision per Atomic Claim")
+    if [decision.packet_id for decision in blind_decisions] != [
+        packet.packet_id for packet in packets
+    ]:
+        raise ValueError("Blind Evidence Decisions must follow the exact Packet order")
+    decision_ids = [decision.decision_id for decision in blind_decisions]
+    if len(decision_ids) != len(set(decision_ids)):
+        raise ValueError("Blind Evidence Decision IDs must be unique")
+    reviewer_ids = {decision.reviewer_id for decision in blind_decisions}
+    if packets and len(reviewer_ids) != 1:
+        raise ValueError("one independent Blind reviewer must assess the complete Packet set")
+    for packet, decision in zip(packets, blind_decisions, strict=True):
+        if (
+            decision.packet_id != packet.packet_id
+            or decision.packet_digest != packet.packet_digest
+            or decision.claim_id != packet.claim_id
+            or decision.claim_digest != packet.claim_digest
+        ):
+            raise ValueError("Blind Evidence Decision identity does not match its Packet")
+        cited = set(decision.supporting_evidence) | set(decision.contradicting_evidence)
+        if not cited <= set(packet.evidence):
+            raise ValueError("Blind Evidence Decision cites evidence outside its Packet")
+    primary_by_claim = {decision.claim_id: decision for decision in primary_decisions}
+    if len(primary_by_claim) != len(primary_decisions):
+        raise ValueError("primary Atomic Claim Decision IDs must be unique")
+    expected_reconciliations = [
+        reconcile_claim_reviews(primary_by_claim[blind.claim_id], blind)
+        for blind in blind_decisions
+    ]
+    if list(reconciliations) != expected_reconciliations:
+        raise ValueError("Claim review reconciliations differ from their sealed decisions")
+
+
 def validate_candidate_atomic_refinement(
     candidates: Sequence[CandidateFinding],
     claims: Sequence[AtomicClaim],
@@ -472,6 +789,92 @@ def _atomic_claim_decision_id(
         }
     )
     return f"claim_decision_{digest}"
+
+
+def _blind_evidence_packet_digest(
+    *,
+    claim_id: str,
+    claim_digest: str,
+    claim_type: AtomicClaimType,
+    statement: str,
+    evidence: Sequence[str],
+) -> str:
+    return _canonical_digest(
+        {
+            "claimId": claim_id,
+            "claimDigest": claim_digest,
+            "claimType": claim_type.value,
+            "statement": statement,
+            "evidence": list(evidence),
+        }
+    )
+
+
+def _blind_evidence_packet_id(
+    *,
+    claim_id: str,
+    claim_digest: str,
+    packet_digest: str,
+) -> str:
+    return f"blind_packet_{
+        _canonical_digest(
+            {
+                'claimId': claim_id,
+                'claimDigest': claim_digest,
+                'packetDigest': packet_digest,
+            }
+        )
+    }"
+
+
+def _blind_evidence_decision_id(
+    *,
+    packet_id: str,
+    packet_digest: str,
+    claim_id: str,
+    claim_digest: str,
+    reviewer_id: str,
+    verdict: AtomicClaimVerdict,
+    rationale: str,
+    supporting_evidence: Sequence[str],
+    contradicting_evidence: Sequence[str],
+) -> str:
+    return f"blind_decision_{
+        _canonical_digest(
+            {
+                'packetId': packet_id,
+                'packetDigest': packet_digest,
+                'claimId': claim_id,
+                'claimDigest': claim_digest,
+                'reviewerId': reviewer_id,
+                'verdict': verdict.value,
+                'rationale': rationale,
+                'supportingEvidence': list(supporting_evidence),
+                'contradictingEvidence': list(contradicting_evidence),
+            }
+        )
+    }"
+
+
+def _claim_review_reconciliation_id(
+    *,
+    claim_id: str,
+    claim_digest: str,
+    primary_decision_id: str,
+    blind_decision_id: str,
+    outcome: ClaimReviewOutcome,
+) -> str:
+    return f"claim_review_{
+        _canonical_digest(
+            {
+                'claimId': claim_id,
+                'claimDigest': claim_digest,
+                'primaryDecisionId': primary_decision_id,
+                'blindDecisionId': blind_decision_id,
+                'outcome': outcome.value,
+            }
+        )
+    }"
 
 
 def _canonical_digest(payload: dict[str, object]) -> str:
