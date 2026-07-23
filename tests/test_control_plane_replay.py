@@ -4911,7 +4911,7 @@ def test_claim_specific_confirmation_publishes_exact_public_projection(
             projection.input_authority,
             ReplayClaimProjectionInputAuthority,
         )
-        assert projection.input_authority.version == (
+        assert projection.input_authority.api_version == (
             "pajin.control-plane.replay-projection-inputs/v3"
         )
         assert len(projection.input_authority.items) == len(AtomicClaimType)
