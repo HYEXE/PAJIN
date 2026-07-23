@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -468,7 +468,7 @@ def _admit_candidates(
 ) -> AttackSurfaceSet:
     request_digest = _canonical_sha256(request.model_dump(mode="json"))
     result_digest = _canonical_sha256(result.model_dump(mode="json"))
-    evidence = [
+    evidence: list[SurfaceEvidenceReference | Mapping[str, object]] = [
         SurfaceEvidenceReference(
             reference=evidence_reference,
             sha256=evidence_record.sha256,
