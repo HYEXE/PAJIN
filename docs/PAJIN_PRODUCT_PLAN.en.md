@@ -164,8 +164,11 @@ The 2026-07-23 Agentic Discovery A1 contract slice adds versioned `SurfaceObserv
 Tool-interface locators, domain-separated identities, and exact evidence-lineage validation. A2
 adds a Trusted Surface Producer restricted to integrity-verified Campaign and Gateway evidence,
 exact request/result/evidence/root binding, Scope, Authorization, method, and Tool-risk revalidation,
-and a separate append-only projection that preserves the source Run. Recon Wave and replanning
-authority remain follow-on work.
+and a separate append-only projection that preserves the source Run. A3 adds an explicit-feature-flag,
+single-call MCP Recon Planner and Specialist wave using shared Campaign budget and rate limits, then
+connects the sealed source Run to A2 admission and a separate Surface projection. Surfaces are not
+passed to the existing one-time Planner, so automatic follow-up attacks, Hypothesis authority, and
+replanning remain follow-on work.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
 Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
@@ -1398,7 +1401,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Recon integration, replanning, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Hypothesis-driven multi-wave replanning, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1488,8 +1491,12 @@ defines at least the following.
   request/result/evidence/root lineage; and Set ordering, uniqueness, and lineage validation
 - Agentic Discovery A2 Trusted Surface admission: code-registered adapters interpret only Campaign
   and Gateway evidence from a sealed source Run; Scope, Authorization, method, and Tool risk are
-  revalidated; and a separate create-only Surface Set projection preserves the source Run. Recon
-  execution integration and replanning authority are not implemented yet
+  revalidated; and a separate create-only Surface Set projection preserves the source Run
+- Agentic Discovery A3 single Recon Wave: an explicit `enable_recon` flag runs one deterministic
+  code-registered MCP-interface Recon Plan and bounded Specialist; seals the source plan, Gateway
+  evidence, budget, and stop condition; then publishes through A2 admission and a separate Surface
+  projection. Surfaces are not passed to the existing Planner, so automatic follow-up attacks and
+  replanning authority are not implemented yet
 - Remaining ADR-0029 scope: portable or off-host signed proof,
   session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign

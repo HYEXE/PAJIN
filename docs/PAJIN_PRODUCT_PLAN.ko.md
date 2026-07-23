@@ -165,7 +165,10 @@ receipt와 부모 정상 기능 회귀를 다시 검증해 부모 Retest Run 기
 schema-bound Tool interface locator, 도메인 분리 identity와 exact evidence lineage 검증을 추가했다.
 A2는 integrity-verified Campaign·Gateway evidence 전용 Trusted Surface Producer, exact
 request/result/evidence/root 결박, Scope·Authorization·method·Tool risk 재검증, 원본 Run을
-보존하는 별도 append-only projection을 추가했다. Recon Wave와 replanning authority는 후속이다.
+보존하는 별도 append-only projection을 추가했다. A3는 명시적 feature flag에서만 단일 호출
+MCP Recon Planner·Specialist wave를 Campaign 공용 budget·rate limit로 실행하고 봉인된 source
+Run → A2 admission → 별도 Surface projection을 연결한다. 기존 one-time Planner에는 Surface를
+전달하지 않으므로 자동 후속 공격은 아직 발생하지 않으며 Hypothesis·replanning authority는 후속이다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 일반 Control
 Plane 수직 조각과 전용 exact-KISA one-item Replay slice를 함께 포함한다.
 
@@ -1409,7 +1412,7 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization과 A2 Trusted Surface admission·append-only projection, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; Recon integration·replanning, portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection과 A3 opt-in 단일 MCP Recon Wave, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; Hypothesis·multi-wave replanning, portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1506,8 +1509,11 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
   request/result/evidence/root 계보 및 set ordering·uniqueness·lineage 검증
 - Agentic Discovery A2 Trusted Surface admission: 봉인된 source Run의 Campaign·Gateway evidence만
   코드 등록 adapter로 해석하고 Scope·Authorization·method·Tool risk를 재검증하며, 원본 Run을
-  변경하지 않는 별도 create-only Surface Set projection을 발행. Recon 실행 통합과 replanning
-  권위는 아직 없음
+  변경하지 않는 별도 create-only Surface Set projection을 발행
+- Agentic Discovery A3 단일 Recon Wave: 명시적 `enable_recon`에서만 코드 등록 MCP interface를
+  대상으로 결정론적 단일 Recon Plan과 제한된 Specialist를 실행. source Run의 plan·Gateway evidence·
+  budget·stop condition을 봉인하고 A2 admission과 별도 Surface projection을 발행하되, 기존 Planner에는
+  Surface를 전달하지 않아 자동 후속 공격과 replanning 권위는 아직 없음
 - 남은 ADR-0029 범위: portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Hypotheses·Agent Working Memory의 구조화된 영속 계층

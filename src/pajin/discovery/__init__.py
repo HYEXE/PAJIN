@@ -27,12 +27,29 @@ from pajin.discovery.projection import (
     SurfaceProjectionPublication,
     publish_surface_projection,
 )
+from pajin.discovery.recon import (
+    MCPInterfaceSurfaceAdapter,
+    RECON_API_VERSION,
+    ReconPlanner,
+    ReconWaveError,
+    ReconWaveOutcome,
+    ReconWavePlan,
+    RegisteredMCPReconPlanner,
+    SingleReconWaveRunner,
+)
 
 __all__ = [
     "DISCOVERY_API_VERSION",
+    "RECON_API_VERSION",
     "AttackSurface",
     "AttackSurfaceSet",
     "HTTPSurfaceLocator",
+    "MCPInterfaceSurfaceAdapter",
+    "ReconPlanner",
+    "ReconWaveError",
+    "ReconWaveOutcome",
+    "ReconWavePlan",
+    "RegisteredMCPReconPlanner",
     "SurfaceAdmissionError",
     "SurfaceCandidate",
     "SurfaceEvidenceReference",
@@ -40,6 +57,7 @@ __all__ = [
     "SurfaceObservation",
     "SurfaceProjectionConflict",
     "SurfaceProjectionPublication",
+    "SingleReconWaveRunner",
     "ToolInterfaceSurfaceLocator",
     "TrustedSurfaceAdapter",
     "TrustedSurfaceAdmission",
