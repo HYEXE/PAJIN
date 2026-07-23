@@ -15,7 +15,7 @@ from pajin.domain.models import (
     ToolRequest,
     ToolResult,
 )
-from pajin.modes.ai_redteam.claim_policy import (
+from pajin.kisa_claim_policy import (
     KISA_CANDIDATE_IMPACTS,
     KISA_CANDIDATE_SEVERITY,
 )

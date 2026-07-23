@@ -237,8 +237,8 @@ class RoleWorker:
                         evidence = claim["evidence"]
                         verdict = (
                             "supports"
-                            if claim_type == "validity"
-                            else ("contradicts" if claim_type == "severity" else "insufficient")
+                            if claim_type in {"validity", "impact"}
+                            else "contradicts"
                         )
                         content["decisions"].append(
                             {
@@ -247,11 +247,11 @@ class RoleWorker:
                                 "verdict": verdict,
                                 "rationale": (
                                     "Same-run evidence supports the exact validity claim."
-                                    if verdict == "supports"
+                                    if claim_type == "validity"
                                     else (
                                         "Evidence does not support the proposed severity."
                                         if verdict == "contradicts"
-                                        else "Impact evidence is insufficient."
+                                        else "Same-run evidence supports the exact impact claim."
                                     )
                                 ),
                                 "supportingEvidence": evidence if verdict == "supports" else [],
@@ -270,10 +270,8 @@ class RoleWorker:
                     assert "disposition" not in packet
                     verdict = (
                         "supports"
-                        if packet["claimType"] == "validity"
-                        else (
-                            "contradicts" if packet["claimType"] == "severity" else "insufficient"
-                        )
+                        if packet["claimType"] in {"validity", "impact"}
+                        else "contradicts"
                     )
                     content["decisions"].append(
                         {
@@ -282,11 +280,11 @@ class RoleWorker:
                             "verdict": verdict,
                             "rationale": (
                                 "Blind evidence independently supports the validity claim."
-                                if verdict == "supports"
+                                if packet["claimType"] == "validity"
                                 else (
                                     "Blind evidence independently contradicts severity."
                                     if verdict == "contradicts"
-                                    else "Blind impact evidence is insufficient."
+                                    else "Blind evidence independently supports impact."
                                 )
                             ),
                             "supportingEvidence": (
@@ -469,19 +467,23 @@ def test_provider_agent_cli_checks_honest_needs_review_contract(tmp_path: Path) 
     assert validator_output["findings"] == []
     assert [claim["claimType"] for claim in validator_output["atomicClaims"]] == [
         "validity",
+        "impact",
         "severity",
     ]
     assert [decision["verdict"] for decision in validator_output["claimDecisions"]] == [
         "supports",
+        "supports",
         "contradicts",
     ]
     assert [decision["verdict"] for decision in validator_output["blindEvidenceDecisions"]] == [
+        "supports",
         "supports",
     ]
     assert [
         reconciliation["outcome"]
         for reconciliation in validator_output["claimReviewReconciliations"]
     ] == [
+        "corroborated",
         "corroborated",
     ]
     assert all("candidateId" not in packet for packet in validator_output["blindEvidencePackets"])
@@ -563,15 +565,17 @@ def test_provider_agent_blind_review_failure_seals_inconclusive(
 
     assert [decision["verdict"] for decision in validator_output["claimDecisions"]] == [
         "supports",
+        "supports",
         "contradicts",
     ]
     assert [decision["verdict"] for decision in validator_output["blindEvidenceDecisions"]] == [
-        "insufficient"
+        "insufficient",
+        "insufficient",
     ]
     assert [
         reconciliation["outcome"]
         for reconciliation in validator_output["claimReviewReconciliations"]
-    ] == ["inconclusive"]
+    ] == ["inconclusive", "inconclusive"]
     assert outcome.validation.decisions[0].disposition is FindingDisposition.NEEDS_REVIEW
     assert outcome.findings == []
 

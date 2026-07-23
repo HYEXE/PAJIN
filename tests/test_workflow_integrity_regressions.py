@@ -127,7 +127,7 @@ def _create_kisa_source_and_replays(
     thresholds = EvaluationThresholds(repetitions=2)
     tools = ToolRegistry()
     tools.register(AIChatProbeTool())
-    worker = TranscriptWorker([True] * 12)
+    worker = TranscriptWorker([True] * 24)
     backend = _trusted_docker_backend(worker)
     policy = PolicyEngine()
     budget = BudgetController(campaign.spec.budgets)
@@ -563,7 +563,7 @@ def test_confirmation_projection_recovers_after_event_append_crash(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     source, batch = _create_kisa_source_and_replays(tmp_path)
-    replay_paths = [result.run_path for result in batch.verified_results.values()]
+    replay_paths = [result.run_path for result in batch.confirmation_results.values()]
     real_fsync_file = confirmation_module._fsync_file
     failure_injected = False
 
@@ -612,7 +612,7 @@ def test_confirmation_projection_recovers_after_event_append_crash(
 
 def test_confirmation_projection_serializes_concurrent_writers(tmp_path: Path) -> None:
     source, batch = _create_kisa_source_and_replays(tmp_path)
-    replay_paths = [result.run_path for result in batch.verified_results.values()]
+    replay_paths = [result.run_path for result in batch.confirmation_results.values()]
     decided_at = datetime.now(UTC) + timedelta(seconds=1)
 
     def apply_projection():
@@ -642,7 +642,7 @@ def test_confirmation_projection_serializes_concurrent_writers(tmp_path: Path) -
 
 def test_completed_confirmation_retry_requires_the_exact_replay_set(tmp_path: Path) -> None:
     source, batch = _create_kisa_source_and_replays(tmp_path)
-    replay_paths = [result.run_path for result in batch.verified_results.values()]
+    replay_paths = [result.run_path for result in batch.confirmation_results.values()]
     assert len(replay_paths) > 1
     apply_confirmed_gate(
         source_run_path=source.run_path,
@@ -662,7 +662,7 @@ def test_confirmation_projection_keeps_private_permissions_and_escapes_markdown(
     tmp_path: Path,
 ) -> None:
     source, batch = _create_kisa_source_and_replays(tmp_path)
-    replay_paths = [result.run_path for result in batch.verified_results.values()]
+    replay_paths = [result.run_path for result in batch.confirmation_results.values()]
     snapshot = apply_confirmed_gate(
         source_run_path=source.run_path,
         replay_run_paths=replay_paths,

@@ -52,12 +52,12 @@ from pajin.domain.validation import (
     ValidationReasonCode,
     candidate_atomic_claims,
 )
-from pajin.modes.ai_redteam import replay_source as _replay_source
-from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
-from pajin.modes.ai_redteam.claim_policy import (
+from pajin.kisa_claim_policy import (
     KISA_CANDIDATE_IMPACTS,
     KISA_CANDIDATE_SEVERITY,
 )
+from pajin.modes.ai_redteam import replay_source as _replay_source
+from pajin.modes.ai_redteam.catalog import KISA_CATALOG, KISACatalog
 from pajin.modes.ai_redteam.evidence import evaluate_kisa_transcript
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.policy.capability import CapabilityRecord

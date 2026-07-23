@@ -294,7 +294,7 @@ def _multi_target_campaign():
     scope = campaign.spec.scope.model_copy(
         update={"allow": [*campaign.spec.scope.allow, second_endpoint]}
     )
-    budgets = campaign.spec.budgets.model_copy(update={"max_agents": 30, "max_tool_calls": 40})
+    budgets = campaign.spec.budgets.model_copy(update={"max_agents": 30, "max_tool_calls": 60})
     spec = campaign.spec.model_copy(
         update={
             "targets": [first, second],
@@ -365,7 +365,9 @@ def _confirmed_baseline(tmp_path: Path, *, campaign=None):
     with externally_attested_confirmation_fixture():
         confirmation = apply_confirmed_gate(
             source_run_path=outcome.run_path,
-            replay_run_paths=[result.run_path for result in batch.verified_results.values()],
+            replay_run_paths=[
+                result.run_path for result in batch.confirmation_results.values()
+            ],
             tickets=batch.tickets,
         )
     outcome = outcome.model_copy(

@@ -991,12 +991,17 @@ def run_kisa_ai_redteam(
                 budget=budget,
                 rate_limits=rate_limits,
             )
-            if replay_batch.confirmation_results:
+            confirmation_results = getattr(
+                replay_batch,
+                "confirmation_results",
+                replay_batch.verified_results,
+            )
+            if confirmation_results:
                 confirmation = apply_confirmed_gate(
                     source_run_path=outcome.run_path,
                     replay_run_paths=[
                         result.run_path
-                        for result in replay_batch.confirmation_results.values()
+                        for result in confirmation_results.values()
                     ],
                     tickets=replay_batch.tickets,
                 )

@@ -471,7 +471,7 @@ def build_kisa_control_plane_retest_sources(
         confirmation = apply_confirmed_gate(
             source_run_path=baseline_outcome.run_path,
             replay_run_paths=[
-                result.run_path for result in replay_batch.verified_results.values()
+                result.run_path for result in replay_batch.confirmation_results.values()
             ],
             tickets=replay_batch.tickets,
         )

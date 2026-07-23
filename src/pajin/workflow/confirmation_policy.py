@@ -310,7 +310,10 @@ def _validate_explicit_claim_coverage(
         artifact_set = result.artifact_set
         binding = artifact_set.outcome.binding
         claim = binding.claim
-        if artifact_set.contract.claim_type is not None:
+        if (
+            claim is not None
+            and claim.claim_type is not AtomicClaimType.VALIDITY
+        ):
             explicit_candidates.add(binding.candidate_id)
         if claim is not None:
             claims_by_candidate.setdefault(binding.candidate_id, set()).add(claim.claim_id)

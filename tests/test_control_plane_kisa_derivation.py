@@ -60,7 +60,7 @@ def test_derives_stable_canonical_compilations_from_only_the_sealed_source(
     assert first.policy_version == KISA_CONFIRMATION_POLICY_VERSION
     assert first.used_tool_calls == 6
     assert first.required_tool_calls == 6
-    assert first.max_tool_calls == 12
+    assert first.max_tool_calls == 24
     assert [item.candidate_id for item in first.items] == sorted(
         item.candidate_id for item in first.items
     )
