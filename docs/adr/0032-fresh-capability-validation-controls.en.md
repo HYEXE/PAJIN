@@ -53,5 +53,6 @@ boundary.
   [ADR 0033](0033-registered-validation-control-materializers.en.md).
 - It uses a local Run seal and Docker proxy receipts; it is not portable or off-host independent
   attestation.
-- Independent severity derivation, Provider/model diversity, and public claim-level validation
-  states remain follow-up work.
+- The first opt-in independent-severity and Provider/model-diversity vertical slice was subsequently
+  accepted in [ADR 0034](0034-diverse-independent-severity-review.en.md). Attested operational
+  diversity and public claim-level validation states remain follow-up work.

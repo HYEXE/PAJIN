@@ -49,7 +49,8 @@ relationship, so it cannot use the same single benign request as M03 and M06.
 
 - Each scenario supports one validity check and one attempt per Control.
 - Materializers are code-registered, not an operationally approved or signed remote registry.
-- Independent severity derivation, Provider/model diversity, Claim-level Replay, and public partial
-  validation states remain follow-up work.
+- ADR-0034 implements the first opt-in independent-severity and Provider/model-diversity vertical
+  slice. Attested operational diversity, calibration, multi-Reviewer consensus, Claim-level Replay,
+  and public partial-validation states remain follow-up work.
 - Receipts still cover only a PAJIN-local Run seal and Docker proxy receipt; they are not portable
   or off-host independent attestation.

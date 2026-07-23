@@ -32,6 +32,7 @@ from pajin.domain.validation import (
     ValidatorOutputArtifact,
     validate_candidate_atomic_refinement,
     validate_candidate_blind_refinement,
+    validate_independent_severity_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.runtime.control import (
@@ -200,6 +201,7 @@ class MultiAgentResultProjector:
         execution: InitializedExecution,
     ) -> None:
         access = tasks.validator_access
+        reviewer_access = tasks.reviewer_access
         validator_agent = self._host._spawn_child(
             store,
             state.agents,
@@ -224,6 +226,34 @@ class MultiAgentResultProjector:
                 execution.gateway,
                 store,
             )
+        reviewer_agent = None
+        if reviewer_access:
+            if tasks.review_task is None:
+                raise RuntimeError("diverse review access requires a review task")
+            reviewer_agent = self._host._spawn_child(
+                store,
+                state.agents,
+                budget,
+                ledger,
+                parent=execution.supervisor,
+                parent_grant=execution.root_grant,
+                role=AgentRole.VALIDATOR,
+                tools={reviewer_access.tool_id},
+                targets={reviewer_access.endpoint},
+                max_calls=reviewer_access.max_attempts,
+                max_risk_tier=reviewer_access.risk_tier,
+            )
+            self._scheduler.bind_review_model_runtime(
+                self._validator,
+                reviewer_access,
+                campaign,
+                reviewer_agent,
+                ledger,
+                budget,
+                execution.gateway,
+                store,
+            )
+            tasks.review_task.assigned_agent_id = reviewer_agent.agent_id
         tasks.validation_task.assigned_agent_id = validator_agent.agent_id
         state.candidates.validator_agent_id = validator_agent.agent_id
         self._host._task_transition(
@@ -233,6 +263,14 @@ class MultiAgentResultProjector:
             TaskStatus.RUNNING,
         )
         self._host._set_agent(store, validator_agent, AgentStatus.RUNNING)
+        if tasks.review_task is not None and reviewer_agent is not None:
+            self._host._task_transition(
+                store,
+                state.graph,
+                tasks.review_task.task_id,
+                TaskStatus.RUNNING,
+            )
+            self._host._set_agent(store, reviewer_agent, AgentStatus.RUNNING)
         plan = state.plan
         if plan is None:
             raise RuntimeError("validation phase started without a validated plan")
@@ -264,6 +302,20 @@ class MultiAgentResultProjector:
                 claim_review_reconciliations = _detached_models(
                     validator_output.claim_review_reconciliations
                 )
+                provider_model_review_binding = (
+                    validator_output.provider_model_review_binding.model_copy(deep=True)
+                    if validator_output.provider_model_review_binding is not None
+                    else None
+                )
+                severity_derivation_packets = _detached_models(
+                    validator_output.severity_derivation_packets
+                )
+                independent_severity_decisions = _detached_models(
+                    validator_output.independent_severity_decisions
+                )
+                severity_claim_reconciliations = _detached_models(
+                    validator_output.severity_claim_reconciliations
+                )
                 validate_candidate_atomic_refinement(
                     list(state.candidates.admitted),
                     atomic_claims,
@@ -282,6 +334,19 @@ class MultiAgentResultProjector:
                         or claim_review_reconciliations
                     ),
                 )
+                validate_independent_severity_refinement(
+                    atomic_claims,
+                    severity_derivation_packets,
+                    independent_severity_decisions,
+                    severity_claim_reconciliations,
+                    provider_model_review_binding,
+                    required=bool(
+                        provider_model_review_binding
+                        or severity_derivation_packets
+                        or independent_severity_decisions
+                        or severity_claim_reconciliations
+                    ),
+                )
             else:
                 validator_findings = await self._host._within_budget(
                     self._validator.validate(
@@ -298,6 +363,10 @@ class MultiAgentResultProjector:
                 blind_evidence_packets = []
                 blind_evidence_decisions = []
                 claim_review_reconciliations = []
+                provider_model_review_binding = None
+                severity_derivation_packets = []
+                independent_severity_decisions = []
+                severity_claim_reconciliations = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=validator_agent.agent_id,
@@ -309,6 +378,14 @@ class MultiAgentResultProjector:
                 blindEvidencePackets=_detached_models(blind_evidence_packets),
                 blindEvidenceDecisions=_detached_models(blind_evidence_decisions),
                 claimReviewReconciliations=_detached_models(claim_review_reconciliations),
+                providerModelReviewBinding=provider_model_review_binding,
+                severityDerivationPackets=_detached_models(severity_derivation_packets),
+                independentSeverityDecisions=_detached_models(
+                    independent_severity_decisions
+                ),
+                severityClaimReconciliations=_detached_models(
+                    severity_claim_reconciliations
+                ),
             )
             validation = validate_findings(
                 campaign,
@@ -326,6 +403,15 @@ class MultiAgentResultProjector:
             raise
         except Exception as exc:
             try:
+                if tasks.review_task is not None and reviewer_agent is not None:
+                    self._host._mark_phase_failed(
+                        store,
+                        state.graph,
+                        tasks.review_task,
+                        reviewer_agent,
+                        exc,
+                        stage="diverse-reviewer",
+                    )
                 self._host._mark_phase_failed(
                     store,
                     state.graph,
@@ -335,6 +421,13 @@ class MultiAgentResultProjector:
                     stage="validator",
                 )
             finally:
+                if reviewer_agent is not None:
+                    self._host._revoke_capability_tree(
+                        store,
+                        ledger,
+                        reviewer_agent.capability_grant_id,
+                        reason="diverse review phase failed",
+                    )
                 self._host._revoke_capability_tree(
                     store,
                     ledger,
@@ -342,6 +435,13 @@ class MultiAgentResultProjector:
                     reason="validator phase failed",
                 )
             raise
+        if reviewer_agent is not None:
+            self._host._revoke_capability_tree(
+                store,
+                ledger,
+                reviewer_agent.capability_grant_id,
+                reason="diverse review phase completed",
+            )
         self._host._revoke_capability_tree(
             store,
             ledger,
@@ -359,6 +459,14 @@ class MultiAgentResultProjector:
             TaskStatus.SUCCEEDED,
         )
         self._host._set_agent(store, validator_agent, AgentStatus.COMPLETED)
+        if tasks.review_task is not None and reviewer_agent is not None:
+            self._host._task_transition(
+                store,
+                state.graph,
+                tasks.review_task.task_id,
+                TaskStatus.SUCCEEDED,
+            )
+            self._host._set_agent(store, reviewer_agent, AgentStatus.COMPLETED)
         store.write_json(
             "findings.json",
             [finding.model_dump(mode="json") for finding in state.findings],

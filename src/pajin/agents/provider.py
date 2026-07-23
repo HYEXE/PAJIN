@@ -35,15 +35,24 @@ from pajin.domain.validation import (
     BlindEvidencePacket,
     CandidateAssessment,
     CandidateFinding,
+    IndependentSeverityDecision,
+    ProviderModelReviewBinding,
+    SeverityDerivationPacket,
+    SeverityDerivationStatus,
     ValidationReasonCode,
     blind_evidence_packets,
     build_atomic_claim_decision,
     build_blind_evidence_decision,
+    build_independent_severity_decision,
+    build_provider_model_review_binding,
     candidate_atomic_claims,
     candidate_claim_digest,
     reconcile_claim_reviews,
+    reconcile_independent_severity,
+    severity_derivation_packets,
     validate_candidate_atomic_refinement,
     validate_candidate_blind_refinement,
+    validate_independent_severity_refinement,
     validator_finding_matches_candidate_claim,
 )
 from pajin.providers.models import ProviderChatResult, ProviderMessage, ProviderRegistration
@@ -164,6 +173,19 @@ class BlindEvidenceReviewerDraft(StrictModel):
     decisions: list[BlindEvidenceDecisionDraft] = Field(max_length=3_000)
 
 
+class SeverityDerivationDecisionDraft(StrictModel):
+    packet_id: str = Field(alias="packetId", min_length=1, max_length=200)
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    status: SeverityDerivationStatus
+    severity: FindingSeverity | None = None
+    rationale: str = Field(min_length=1, max_length=5_000)
+    evidence: list[str] = Field(default_factory=list, max_length=1_000)
+
+
+class SeverityDeriverDraft(StrictModel):
+    decisions: list[SeverityDerivationDecisionDraft] = Field(max_length=1_000)
+
+
 class ReporterDraft(StrictModel):
     summary: str = Field(min_length=1, max_length=5_000)
     risk_overview: str = Field(min_length=1, max_length=5_000)
@@ -172,7 +194,7 @@ class ReporterDraft(StrictModel):
 
 
 class ProviderAgentRuntime:
-    """Use one registered provider for isolated Planner, Validator, and Reporter calls."""
+    """Use policy-bound primary and optional diverse review Provider/model calls."""
 
     def __init__(
         self,
@@ -181,6 +203,7 @@ class ProviderAgentRuntime:
         tools: list[ModelToolDescriptor],
         fallback_planner: PlannerRuntime,
         fallback_validator: ValidatorRuntime,
+        review_registration: ProviderRegistration | None = None,
         max_attempts: int = 2,
         max_completion_tokens: int = 4_096,
     ) -> None:
@@ -194,14 +217,57 @@ class ProviderAgentRuntime:
         self._fallback_validator = fallback_validator
         self._max_completion_tokens = max_completion_tokens
         self._port: StructuredModelPort | None = None
+        self._review_port: StructuredModelPort | None = None
+        self._review_binding: ProviderModelReviewBinding | None = None
+        self._review_registration = review_registration
         self.model_provider_registration = registration
         self.model_provider_tool_id = f"provider.{registration.provider_id}.chat"
         self.model_provider_endpoint = str(registration.endpoint)
         self.model_max_attempts = max_attempts
-        self.model_validator_max_calls = max_attempts + 1
+        if review_registration is None:
+            self.model_primary_validator_max_calls = max_attempts + 1
+            self.model_validator_max_calls = max_attempts + 1
+        else:
+            reviewer_id = f"diverse-reviewer:{review_registration.provider_id}"
+            self._review_binding = build_provider_model_review_binding(
+                primary_provider_id=registration.provider_id,
+                primary_endpoint=str(registration.endpoint),
+                primary_model=registration.model,
+                reviewer_id=reviewer_id,
+                review_provider_id=review_registration.provider_id,
+                review_endpoint=str(review_registration.endpoint),
+                review_model=review_registration.model,
+            )
+            self.review_model_provider_registration = review_registration
+            self.review_model_provider_tool_id = (
+                f"provider.{review_registration.provider_id}.chat"
+            )
+            self.review_model_provider_endpoint = str(review_registration.endpoint)
+            self.review_model_max_attempts = 2
+            self.model_primary_validator_max_calls = max_attempts
+            self.model_validator_max_calls = max_attempts + self.review_model_max_attempts
 
     def bind_model_port(self, port: StructuredModelPort) -> None:
         self._port = port
+
+    def bind_review_model_port(self, port: StructuredModelPort) -> None:
+        if self._review_binding is None:
+            raise RuntimeError("provider runtime has no diverse review registration")
+        self._review_port = port
+
+    def bind_review_actor_id(self, reviewer_id: str) -> None:
+        review_registration = self._review_registration
+        if review_registration is None:
+            raise RuntimeError("provider runtime has no diverse review registration")
+        self._review_binding = build_provider_model_review_binding(
+            primary_provider_id=self._registration.provider_id,
+            primary_endpoint=str(self._registration.endpoint),
+            primary_model=self._registration.model,
+            reviewer_id=reviewer_id,
+            review_provider_id=review_registration.provider_id,
+            review_endpoint=str(review_registration.endpoint),
+            review_model=review_registration.model,
+        )
 
     async def plan(self, campaign: CampaignManifest) -> AgentPlan:
         payload = {
@@ -291,9 +357,15 @@ class ProviderAgentRuntime:
             )
         if not primary.atomic_claims:
             return primary
-        return await self._blind_review_candidate_validation(
+        reviewed = await self._blind_review_candidate_validation(
             results=results,
             primary=primary,
+        )
+        if self._review_binding is None:
+            return reviewed
+        return await self._derive_independent_severity(
+            results=results,
+            primary=reviewed,
         )
 
     async def report(
@@ -332,15 +404,14 @@ class ProviderAgentRuntime:
         *,
         max_attempts: int | None = None,
     ) -> _OutputDraftT:
-        if self._port is None:
-            raise RuntimeError("provider runtime is not bound to a model port")
+        port = self._port_for_role(role)
         last_error: Exception | None = None
         schema_name = f"pajin_{role.replace('-', '_')}_output"
         attempt_limit = max_attempts or self.model_max_attempts
         for attempt in range(1, attempt_limit + 1):
             developer = self._role_instructions(role, repair=attempt > 1)
             try:
-                raw_result = await self._port.complete(
+                raw_result = await port.complete(
                     role=role,
                     attempt=attempt,
                     messages=[
@@ -385,7 +456,11 @@ class ProviderAgentRuntime:
         primary: CandidateValidation,
     ) -> CandidateValidation:
         packets = blind_evidence_packets(primary.atomic_claims)
-        reviewer_id = f"blind-reviewer:{self._registration.provider_id}"
+        reviewer_id = (
+            self._review_binding.reviewer_id
+            if self._review_binding is not None
+            else f"blind-reviewer:{self._registration.provider_id}"
+        )
         payload = {
             "packets": [
                 {
@@ -444,6 +519,80 @@ class ProviderAgentRuntime:
             }
         )
 
+    async def _derive_independent_severity(
+        self,
+        *,
+        results: list[ToolResult],
+        primary: CandidateValidation,
+    ) -> CandidateValidation:
+        binding = self._review_binding
+        if binding is None:
+            raise RuntimeError("independent severity derivation requires a review binding")
+        packets = severity_derivation_packets(primary.atomic_claims)
+        payload = {
+            "packets": [
+                {
+                    "packet": packet.model_dump(mode="json", by_alias=True),
+                    "evidenceRecords": self._severity_evidence_records(results, packet),
+                }
+                for packet in packets
+            ]
+        }
+        try:
+            draft = await self._structured(
+                "severity-deriver",
+                payload,
+                SeverityDeriverDraft,
+                max_attempts=1,
+            )
+            decisions = self._bind_independent_severity_decisions(
+                packets=packets,
+                binding=binding,
+                draft=draft,
+            )
+        except (ModelCallFailure, ValueError, TypeError, json.JSONDecodeError) as exc:
+            self._record_fallback("severity-deriver", exc)
+            decisions = [
+                build_independent_severity_decision(
+                    packet,
+                    binding,
+                    status=SeverityDerivationStatus.INSUFFICIENT,
+                    severity=None,
+                    rationale=(
+                        "Independent severity derivation was unavailable; no severity was inferred."
+                    ),
+                )
+                for packet in packets
+            ]
+        severity_by_id = {
+            claim.claim_id: claim
+            for claim in primary.atomic_claims
+            if claim.claim_type is AtomicClaimType.SEVERITY
+        }
+        reconciliations = [
+            reconcile_independent_severity(
+                severity_by_id[packet.severity_claim_id],
+                decision,
+            )
+            for packet, decision in zip(packets, decisions, strict=True)
+        ]
+        validate_independent_severity_refinement(
+            primary.atomic_claims,
+            packets,
+            decisions,
+            reconciliations,
+            binding,
+            required=True,
+        )
+        return primary.model_copy(
+            update={
+                "provider_model_review_binding": binding,
+                "severity_derivation_packets": packets,
+                "independent_severity_decisions": decisions,
+                "severity_claim_reconciliations": reconciliations,
+            }
+        )
+
     @staticmethod
     def _blind_evidence_records(
         results: list[ToolResult],
@@ -451,6 +600,35 @@ class ProviderAgentRuntime:
     ) -> list[dict[str, object]]:
         records: list[dict[str, object]] = []
         packet_evidence = set(packet.evidence)
+        for result in results:
+            references = [
+                reference for reference in result.evidence if reference in packet_evidence
+            ]
+            if not references:
+                continue
+            records.append(
+                {
+                    "requestId": result.request_id,
+                    "toolId": result.tool_id,
+                    "success": result.success,
+                    "data": result.data,
+                    "error": result.error,
+                    "evidence": references,
+                }
+            )
+        return records
+
+    @staticmethod
+    def _severity_evidence_records(
+        results: list[ToolResult],
+        packet: SeverityDerivationPacket,
+    ) -> list[dict[str, object]]:
+        packet_evidence = {
+            reference
+            for context in packet.context_packets
+            for reference in context.evidence
+        }
+        records: list[dict[str, object]] = []
         for result in results:
             references = [
                 reference for reference in result.evidence if reference in packet_evidence
@@ -530,6 +708,35 @@ class ProviderAgentRuntime:
                     rationale=item.rationale,
                     supporting_evidence=item.supporting_evidence,
                     contradicting_evidence=item.contradicting_evidence,
+                )
+            )
+        return decisions
+
+    @staticmethod
+    def _bind_independent_severity_decisions(
+        *,
+        packets: list[SeverityDerivationPacket],
+        binding: ProviderModelReviewBinding,
+        draft: SeverityDeriverDraft,
+    ) -> list[IndependentSeverityDecision]:
+        drafts_by_packet = {item.packet_id: item for item in draft.decisions}
+        if len(drafts_by_packet) != len(draft.decisions):
+            raise ValueError("severity deriver returned duplicate Packet IDs")
+        if set(drafts_by_packet) != {packet.packet_id for packet in packets}:
+            raise ValueError("severity deriver must assess every Packet exactly once")
+        decisions: list[IndependentSeverityDecision] = []
+        for packet in packets:
+            item = drafts_by_packet[packet.packet_id]
+            if item.packet_digest != packet.packet_digest:
+                raise ValueError("severity deriver changed a Packet digest")
+            decisions.append(
+                build_independent_severity_decision(
+                    packet,
+                    binding,
+                    status=item.status,
+                    severity=item.severity,
+                    rationale=item.rationale,
+                    evidence=item.evidence,
                 )
             )
         return decisions
@@ -728,14 +935,29 @@ class ProviderAgentRuntime:
         return AgentPlan(summary=draft.summary, steps=steps)
 
     def _record_fallback(self, role: str, exc: Exception) -> None:
-        if self._port is not None:
-            self._port.record_fallback(
+        try:
+            port = self._port_for_role(role)
+        except RuntimeError:
+            return
+        port.record_fallback(
                 role=role,
                 reason=audit_safe_exception_diagnostic(
                     exc,
                     stage=f"provider-{role}-fallback",
                 ),
             )
+
+    def _port_for_role(self, role: str) -> StructuredModelPort:
+        if (
+            role in {"blind-evidence-reviewer", "severity-deriver"}
+            and self._review_binding is not None
+        ):
+            if self._review_port is None:
+                raise RuntimeError("provider runtime is not bound to a review model port")
+            return self._review_port
+        if self._port is None:
+            raise RuntimeError("provider runtime is not bound to a model port")
+        return self._port
 
     @staticmethod
     def _role_instructions(role: str, *, repair: bool) -> str:
@@ -762,6 +984,16 @@ class ProviderAgentRuntime:
                 "intentionally absent. Return exactly one verdict for every supplied packetId and "
                 "packetDigest. Do not infer confirmation authority, rewrite Claims, or cite "
                 "evidence outside the exact Packet."
+            ),
+            "severity-deriver": (
+                "You are the PAJIN Independent Severity Deriver using a Provider and model that "
+                "differ from the primary Validator. You receive only opaque validity and optional "
+                "impact context plus matching evidence. Candidate identity, proposed severity, "
+                "prior decisions, disposition, and report context are intentionally absent. "
+                "Return exactly one severity derivation for every packetId and packetDigest. "
+                "Use safe, low, medium, high, or critical only when cited Packet evidence supports "
+                "it; otherwise return insufficient. Do not infer confirmation authority or cite "
+                "evidence outside the Packet."
             ),
             "reporter": (
                 "You are the PAJIN Reporter. Summarize canonical results without changing finding "

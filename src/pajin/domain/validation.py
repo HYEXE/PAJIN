@@ -12,7 +12,7 @@ from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
 
-from pajin.domain.models import Finding, StrictModel
+from pajin.domain.models import Finding, FindingSeverity, StrictModel
 
 _Identifier = Annotated[str, Field(min_length=1, max_length=200)]
 _EvidenceReference = Annotated[str, Field(min_length=1, max_length=2_000)]
@@ -41,6 +41,11 @@ class ClaimReviewOutcome(StrEnum):
     CORROBORATED = "corroborated"
     CONTESTED = "contested"
     INCONCLUSIVE = "inconclusive"
+
+
+class SeverityDerivationStatus(StrEnum):
+    DERIVED = "derived"
+    INSUFFICIENT = "insufficient"
 
 
 class ValidationMethod(StrEnum):
@@ -340,6 +345,170 @@ class ClaimReviewReconciliation(StrictModel):
         return self
 
 
+class ProviderModelReviewBinding(StrictModel):
+    """Exact diverse Provider/model identities used by primary and review calls."""
+
+    api_version: Literal["pajin.dev/provider-model-review-binding/v1alpha1"] = Field(
+        default="pajin.dev/provider-model-review-binding/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["ProviderModelReviewBinding"] = "ProviderModelReviewBinding"
+    binding_id: _Identifier = Field(alias="bindingId")
+    primary_provider_id: _Identifier = Field(alias="primaryProviderId")
+    primary_endpoint: str = Field(alias="primaryEndpoint", min_length=1, max_length=2_000)
+    primary_model: _Identifier = Field(alias="primaryModel")
+    reviewer_id: _Identifier = Field(alias="reviewerId")
+    review_provider_id: _Identifier = Field(alias="reviewProviderId")
+    review_endpoint: str = Field(alias="reviewEndpoint", min_length=1, max_length=2_000)
+    review_model: _Identifier = Field(alias="reviewModel")
+    provider_distinct: Literal[True] = Field(default=True, alias="providerDistinct")
+    model_distinct: Literal[True] = Field(default=True, alias="modelDistinct")
+
+    @model_validator(mode="after")
+    def require_canonical_diverse_binding(self) -> ProviderModelReviewBinding:
+        if (
+            self.primary_provider_id == self.review_provider_id
+            or self.primary_endpoint == self.review_endpoint
+        ):
+            raise ValueError("review Provider ID and endpoint must differ from the primary")
+        if self.primary_model == self.review_model:
+            raise ValueError("review model must differ from the primary model")
+        if self.binding_id != _provider_model_review_binding_id(
+            primary_provider_id=self.primary_provider_id,
+            primary_endpoint=self.primary_endpoint,
+            primary_model=self.primary_model,
+            reviewer_id=self.reviewer_id,
+            review_provider_id=self.review_provider_id,
+            review_endpoint=self.review_endpoint,
+            review_model=self.review_model,
+        ):
+            raise ValueError("Provider/model review binding ID is not canonical")
+        return self
+
+
+class SeverityDerivationPacket(StrictModel):
+    """Minimal severity input that excludes the Candidate's proposed severity."""
+
+    api_version: Literal["pajin.dev/severity-derivation-packet/v1alpha1"] = Field(
+        default="pajin.dev/severity-derivation-packet/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["SeverityDerivationPacket"] = "SeverityDerivationPacket"
+    packet_id: _Identifier = Field(alias="packetId")
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    severity_claim_id: _Identifier = Field(alias="severityClaimId")
+    context_packets: list[BlindEvidencePacket] = Field(
+        alias="contextPackets",
+        min_length=1,
+        max_length=2,
+    )
+
+    @model_validator(mode="after")
+    def require_canonical_packet(self) -> SeverityDerivationPacket:
+        claim_types = [packet.claim_type for packet in self.context_packets]
+        if claim_types.count(AtomicClaimType.VALIDITY) != 1:
+            raise ValueError("severity derivation requires exactly one validity context")
+        if claim_types.count(AtomicClaimType.IMPACT) > 1:
+            raise ValueError("severity derivation accepts at most one impact context")
+        packet_ids = [packet.packet_id for packet in self.context_packets]
+        if len(packet_ids) != len(set(packet_ids)):
+            raise ValueError("severity derivation context Packet IDs must be unique")
+        expected_digest = _severity_derivation_packet_digest(
+            severity_claim_id=self.severity_claim_id,
+            context_packets=self.context_packets,
+        )
+        if self.packet_digest != expected_digest:
+            raise ValueError("severity derivation Packet digest is not canonical")
+        if self.packet_id != _severity_derivation_packet_id(
+            severity_claim_id=self.severity_claim_id,
+            packet_digest=self.packet_digest,
+        ):
+            raise ValueError("severity derivation Packet ID is not canonical")
+        return self
+
+
+class IndependentSeverityDecision(StrictModel):
+    """One diverse review model's information-only severity derivation."""
+
+    api_version: Literal["pajin.dev/independent-severity-decision/v1alpha1"] = Field(
+        default="pajin.dev/independent-severity-decision/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["IndependentSeverityDecision"] = "IndependentSeverityDecision"
+    decision_id: _Identifier = Field(alias="decisionId")
+    packet_id: _Identifier = Field(alias="packetId")
+    packet_digest: str = Field(alias="packetDigest", pattern=r"^[a-f0-9]{64}$")
+    reviewer_id: _Identifier = Field(alias="reviewerId")
+    review_binding_id: _Identifier = Field(alias="reviewBindingId")
+    status: SeverityDerivationStatus
+    severity: FindingSeverity | None = None
+    rationale: str = Field(min_length=1, max_length=5_000)
+    evidence: list[_EvidenceReference] = Field(default_factory=list, max_length=1_000)
+    informational_only: Literal[True] = Field(default=True, alias="informationalOnly")
+    confirmation_eligible: Literal[False] = Field(
+        default=False,
+        alias="confirmationEligible",
+    )
+    mutates_candidate: Literal[False] = Field(default=False, alias="mutatesCandidate")
+
+    @model_validator(mode="after")
+    def require_canonical_decision(self) -> IndependentSeverityDecision:
+        if len(self.evidence) != len(set(self.evidence)):
+            raise ValueError("independent severity evidence references must be unique")
+        if self.status is SeverityDerivationStatus.DERIVED:
+            if self.severity is None or not self.evidence:
+                raise ValueError("derived severity requires a severity and cited evidence")
+        elif self.severity is not None or self.evidence:
+            raise ValueError("insufficient severity derivation cannot classify evidence")
+        if self.decision_id != _independent_severity_decision_id(
+            packet_id=self.packet_id,
+            packet_digest=self.packet_digest,
+            reviewer_id=self.reviewer_id,
+            review_binding_id=self.review_binding_id,
+            status=self.status,
+            severity=self.severity,
+            rationale=self.rationale,
+            evidence=self.evidence,
+        ):
+            raise ValueError("independent severity Decision ID is not canonical")
+        return self
+
+
+class SeverityClaimReconciliation(StrictModel):
+    """Compare an independent derivation with the proposed severity without mutation."""
+
+    api_version: Literal["pajin.dev/severity-claim-reconciliation/v1alpha1"] = Field(
+        default="pajin.dev/severity-claim-reconciliation/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["SeverityClaimReconciliation"] = "SeverityClaimReconciliation"
+    reconciliation_id: _Identifier = Field(alias="reconciliationId")
+    severity_claim_id: _Identifier = Field(alias="severityClaimId")
+    severity_claim_digest: str = Field(
+        alias="severityClaimDigest",
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    derivation_decision_id: _Identifier = Field(alias="derivationDecisionId")
+    outcome: ClaimReviewOutcome
+    informational_only: Literal[True] = Field(default=True, alias="informationalOnly")
+    confirmation_eligible: Literal[False] = Field(
+        default=False,
+        alias="confirmationEligible",
+    )
+    mutates_candidate: Literal[False] = Field(default=False, alias="mutatesCandidate")
+
+    @model_validator(mode="after")
+    def require_canonical_reconciliation(self) -> SeverityClaimReconciliation:
+        if self.reconciliation_id != _severity_claim_reconciliation_id(
+            severity_claim_id=self.severity_claim_id,
+            severity_claim_digest=self.severity_claim_digest,
+            derivation_decision_id=self.derivation_decision_id,
+            outcome=self.outcome,
+        ):
+            raise ValueError("severity Claim reconciliation ID is not canonical")
+        return self
+
+
 class CandidateAssessment(StrictModel):
     """Validator-owned semantic decision bound to one exact trusted Candidate claim."""
 
@@ -378,8 +547,11 @@ class ValidatorOutputArtifact(StrictModel):
     Candidate they are supposed to assess.
     """
 
-    api_version: Literal["pajin.dev/validator-output/v1alpha1"] = Field(
-        default="pajin.dev/validator-output/v1alpha1",
+    api_version: Literal[
+        "pajin.dev/validator-output/v1alpha1",
+        "pajin.dev/validator-output/v1alpha2",
+    ] = Field(
+        default="pajin.dev/validator-output/v1alpha2",
         alias="apiVersion",
     )
     kind: Literal["ValidatorOutput"] = "ValidatorOutput"
@@ -413,6 +585,25 @@ class ValidatorOutputArtifact(StrictModel):
         alias="claimReviewReconciliations",
         max_length=3_000,
     )
+    provider_model_review_binding: ProviderModelReviewBinding | None = Field(
+        default=None,
+        alias="providerModelReviewBinding",
+    )
+    severity_derivation_packets: list[SeverityDerivationPacket] = Field(
+        default_factory=list,
+        alias="severityDerivationPackets",
+        max_length=1_000,
+    )
+    independent_severity_decisions: list[IndependentSeverityDecision] = Field(
+        default_factory=list,
+        alias="independentSeverityDecisions",
+        max_length=1_000,
+    )
+    severity_claim_reconciliations: list[SeverityClaimReconciliation] = Field(
+        default_factory=list,
+        alias="severityClaimReconciliations",
+        max_length=1_000,
+    )
 
     @model_validator(mode="after")
     def require_unique_output_identities(self) -> ValidatorOutputArtifact:
@@ -443,6 +634,26 @@ class ValidatorOutputArtifact(StrictModel):
             decision.reviewer_id == self.validator_id for decision in self.blind_evidence_decisions
         ):
             raise ValueError("Blind Evidence reviewer must differ from the primary Validator")
+        validate_independent_severity_refinement(
+            self.atomic_claims,
+            self.severity_derivation_packets,
+            self.independent_severity_decisions,
+            self.severity_claim_reconciliations,
+            self.provider_model_review_binding,
+            required=bool(
+                self.provider_model_review_binding
+                or self.severity_derivation_packets
+                or self.independent_severity_decisions
+                or self.severity_claim_reconciliations
+            ),
+        )
+        if self.provider_model_review_binding is not None:
+            expected_reviewer = self.provider_model_review_binding.reviewer_id
+            if any(
+                decision.reviewer_id != expected_reviewer
+                for decision in self.blind_evidence_decisions
+            ):
+                raise ValueError("Blind reviewer differs from the Provider/model review binding")
         if (
             any(assessment.supports_claim for assessment in self.assessments)
             and not any(finding.validated for finding in self.findings)
@@ -644,6 +855,198 @@ def reconcile_claim_reviews(
         blindDecisionId=blind.decision_id,
         outcome=outcome,
     )
+
+
+def build_provider_model_review_binding(
+    *,
+    primary_provider_id: str,
+    primary_endpoint: str,
+    primary_model: str,
+    reviewer_id: str,
+    review_provider_id: str,
+    review_endpoint: str,
+    review_model: str,
+) -> ProviderModelReviewBinding:
+    """Bind exact, strongly diverse primary and review Provider/model identities."""
+
+    return ProviderModelReviewBinding(
+        bindingId=_provider_model_review_binding_id(
+            primary_provider_id=primary_provider_id,
+            primary_endpoint=primary_endpoint,
+            primary_model=primary_model,
+            reviewer_id=reviewer_id,
+            review_provider_id=review_provider_id,
+            review_endpoint=review_endpoint,
+            review_model=review_model,
+        ),
+        primaryProviderId=primary_provider_id,
+        primaryEndpoint=primary_endpoint,
+        primaryModel=primary_model,
+        reviewerId=reviewer_id,
+        reviewProviderId=review_provider_id,
+        reviewEndpoint=review_endpoint,
+        reviewModel=review_model,
+    )
+
+
+def severity_derivation_packets(
+    claims: Sequence[AtomicClaim],
+) -> list[SeverityDerivationPacket]:
+    """Project validity/impact context while withholding proposed severity and identity."""
+
+    context_by_claim = {packet.claim_id: packet for packet in blind_evidence_packets(claims)}
+    claims_by_candidate: dict[str, list[AtomicClaim]] = {}
+    for claim in claims:
+        claims_by_candidate.setdefault(claim.candidate_id, []).append(claim)
+    packets: list[SeverityDerivationPacket] = []
+    for candidate_claims in claims_by_candidate.values():
+        severity_claims = [
+            claim
+            for claim in candidate_claims
+            if claim.claim_type is AtomicClaimType.SEVERITY
+        ]
+        if len(severity_claims) != 1:
+            raise ValueError("each Candidate requires exactly one severity Claim")
+        severity_claim = severity_claims[0]
+        context_packets = [
+            context_by_claim[claim.claim_id]
+            for claim in candidate_claims
+            if claim.claim_type is not AtomicClaimType.SEVERITY
+        ]
+        packet_digest = _severity_derivation_packet_digest(
+            severity_claim_id=severity_claim.claim_id,
+            context_packets=context_packets,
+        )
+        packets.append(
+            SeverityDerivationPacket(
+                packetId=_severity_derivation_packet_id(
+                    severity_claim_id=severity_claim.claim_id,
+                    packet_digest=packet_digest,
+                ),
+                packetDigest=packet_digest,
+                severityClaimId=severity_claim.claim_id,
+                contextPackets=context_packets,
+            )
+        )
+    return packets
+
+
+def build_independent_severity_decision(
+    packet: SeverityDerivationPacket,
+    binding: ProviderModelReviewBinding,
+    *,
+    status: SeverityDerivationStatus,
+    severity: FindingSeverity | None,
+    rationale: str,
+    evidence: Sequence[str] = (),
+) -> IndependentSeverityDecision:
+    """Bind one diverse review model's severity derivation to a minimal Packet."""
+
+    references = list(evidence)
+    return IndependentSeverityDecision(
+        decisionId=_independent_severity_decision_id(
+            packet_id=packet.packet_id,
+            packet_digest=packet.packet_digest,
+            reviewer_id=binding.reviewer_id,
+            review_binding_id=binding.binding_id,
+            status=status,
+            severity=severity,
+            rationale=rationale,
+            evidence=references,
+        ),
+        packetId=packet.packet_id,
+        packetDigest=packet.packet_digest,
+        reviewerId=binding.reviewer_id,
+        reviewBindingId=binding.binding_id,
+        status=status,
+        severity=severity,
+        rationale=rationale,
+        evidence=references,
+    )
+
+
+def reconcile_independent_severity(
+    severity_claim: AtomicClaim,
+    decision: IndependentSeverityDecision,
+) -> SeverityClaimReconciliation:
+    """Compare proposed and independently derived severity without changing either."""
+
+    if severity_claim.claim_type is not AtomicClaimType.SEVERITY:
+        raise ValueError("severity reconciliation requires a severity Atomic Claim")
+    proposed = FindingSeverity(severity_claim.statement)
+    if decision.status is SeverityDerivationStatus.INSUFFICIENT:
+        outcome = ClaimReviewOutcome.INCONCLUSIVE
+    elif decision.severity is proposed:
+        outcome = ClaimReviewOutcome.CORROBORATED
+    else:
+        outcome = ClaimReviewOutcome.CONTESTED
+    return SeverityClaimReconciliation(
+        reconciliationId=_severity_claim_reconciliation_id(
+            severity_claim_id=severity_claim.claim_id,
+            severity_claim_digest=severity_claim.claim_digest,
+            derivation_decision_id=decision.decision_id,
+            outcome=outcome,
+        ),
+        severityClaimId=severity_claim.claim_id,
+        severityClaimDigest=severity_claim.claim_digest,
+        derivationDecisionId=decision.decision_id,
+        outcome=outcome,
+    )
+
+
+def validate_independent_severity_refinement(
+    claims: Sequence[AtomicClaim],
+    packets: Sequence[SeverityDerivationPacket],
+    decisions: Sequence[IndependentSeverityDecision],
+    reconciliations: Sequence[SeverityClaimReconciliation],
+    binding: ProviderModelReviewBinding | None,
+    *,
+    required: bool,
+) -> None:
+    """Verify diverse, minimal-input severity derivation and information-only comparison."""
+
+    if not packets and not decisions and not reconciliations and binding is None and not required:
+        return
+    if binding is None:
+        raise ValueError("independent severity derivation requires a Provider/model binding")
+    expected_packets = severity_derivation_packets(claims)
+    if list(packets) != expected_packets:
+        raise ValueError("severity derivation Packets differ from trusted Atomic Claims")
+    if [decision.packet_id for decision in decisions] != [
+        packet.packet_id for packet in packets
+    ]:
+        raise ValueError("severity Decisions must follow the exact Packet order")
+    decision_ids = [decision.decision_id for decision in decisions]
+    if len(decision_ids) != len(set(decision_ids)):
+        raise ValueError("independent severity Decision IDs must be unique")
+    for packet, decision in zip(packets, decisions, strict=True):
+        if (
+            decision.packet_digest != packet.packet_digest
+            or decision.reviewer_id != binding.reviewer_id
+            or decision.review_binding_id != binding.binding_id
+        ):
+            raise ValueError("independent severity Decision differs from its authority")
+        allowed_evidence = {
+            reference
+            for context in packet.context_packets
+            for reference in context.evidence
+        }
+        if not set(decision.evidence) <= allowed_evidence:
+            raise ValueError("independent severity Decision cites evidence outside its Packet")
+    severity_by_id = {
+        claim.claim_id: claim
+        for claim in claims
+        if claim.claim_type is AtomicClaimType.SEVERITY
+    }
+    expected_reconciliations = [
+        reconcile_independent_severity(
+            severity_by_id[packet.severity_claim_id],
+            decision,
+        )
+        for packet, decision in zip(packets, decisions, strict=True)
+    ]
+    if list(reconciliations) != expected_reconciliations:
+        raise ValueError("severity reconciliations differ from their sealed inputs")
 
 
 def validate_candidate_blind_refinement(
@@ -871,6 +1274,107 @@ def _claim_review_reconciliation_id(
                 'claimDigest': claim_digest,
                 'primaryDecisionId': primary_decision_id,
                 'blindDecisionId': blind_decision_id,
+                'outcome': outcome.value,
+            }
+        )
+    }"
+
+
+def _provider_model_review_binding_id(
+    *,
+    primary_provider_id: str,
+    primary_endpoint: str,
+    primary_model: str,
+    reviewer_id: str,
+    review_provider_id: str,
+    review_endpoint: str,
+    review_model: str,
+) -> str:
+    return f"review_binding_{
+        _canonical_digest(
+            {
+                'primaryProviderId': primary_provider_id,
+                'primaryEndpoint': primary_endpoint,
+                'primaryModel': primary_model,
+                'reviewerId': reviewer_id,
+                'reviewProviderId': review_provider_id,
+                'reviewEndpoint': review_endpoint,
+                'reviewModel': review_model,
+            }
+        )
+    }"
+
+
+def _severity_derivation_packet_digest(
+    *,
+    severity_claim_id: str,
+    context_packets: Sequence[BlindEvidencePacket],
+) -> str:
+    return _canonical_digest(
+        {
+            "severityClaimId": severity_claim_id,
+            "contextPackets": [
+                packet.model_dump(mode="json", by_alias=True) for packet in context_packets
+            ],
+        }
+    )
+
+
+def _severity_derivation_packet_id(
+    *,
+    severity_claim_id: str,
+    packet_digest: str,
+) -> str:
+    return f"severity_packet_{
+        _canonical_digest(
+            {
+                'severityClaimId': severity_claim_id,
+                'packetDigest': packet_digest,
+            }
+        )
+    }"
+
+
+def _independent_severity_decision_id(
+    *,
+    packet_id: str,
+    packet_digest: str,
+    reviewer_id: str,
+    review_binding_id: str,
+    status: SeverityDerivationStatus,
+    severity: FindingSeverity | None,
+    rationale: str,
+    evidence: Sequence[str],
+) -> str:
+    return f"severity_decision_{
+        _canonical_digest(
+            {
+                'packetId': packet_id,
+                'packetDigest': packet_digest,
+                'reviewerId': reviewer_id,
+                'reviewBindingId': review_binding_id,
+                'status': status.value,
+                'severity': severity.value if severity is not None else None,
+                'rationale': rationale,
+                'evidence': list(evidence),
+            }
+        )
+    }"
+
+
+def _severity_claim_reconciliation_id(
+    *,
+    severity_claim_id: str,
+    severity_claim_digest: str,
+    derivation_decision_id: str,
+    outcome: ClaimReviewOutcome,
+) -> str:
+    return f"severity_review_{
+        _canonical_digest(
+            {
+                'severityClaimId': severity_claim_id,
+                'severityClaimDigest': severity_claim_digest,
+                'derivationDecisionId': derivation_decision_id,
                 'outcome': outcome.value,
             }
         )

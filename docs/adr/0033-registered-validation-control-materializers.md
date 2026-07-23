@@ -42,6 +42,8 @@ ADR 0032의 첫 조각은 M03 요청을 함수 내부에서 직접 변형했다.
 
 - 각 시나리오는 한 개 validity check와 Control별 한 번의 실행만 지원한다.
 - materializer는 코드 등록형이며 운영 승인·서명된 원격 registry는 아니다.
-- 독립 severity 도출, Provider/model 다양성, Claim-level Replay와 공개 부분 검증 상태는 후속이다.
+- 독립 severity와 Provider/model 다양성의 첫 opt-in 수직 조각은 ADR-0034에서 구현했다.
+  검증 가능한 운영 다양성·calibration·다수 Reviewer 합의, Claim-level Replay와 공개 부분 검증
+  상태는 후속이다.
 - Receipt는 여전히 PAJIN-local Run seal과 Docker proxy receipt 범위이며 portable/off-host 독립
   attestation은 아니다.

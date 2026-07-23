@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from pajin.agents.base import AgentReportNarrative
 from pajin.domain.orchestration import RunStatus
 from pajin.domain.validation import (
@@ -91,6 +93,7 @@ def provider_agent_checks(
     outcome: MultiAgentRunOutcome,
     *,
     credential: str,
+    additional_credentials: Sequence[str] = (),
 ) -> dict[str, bool]:
     artifacts = verified_cli_json_artifacts(
         outcome.run_path,
@@ -119,10 +122,13 @@ def provider_agent_checks(
         budget.get("maxModelTokens"),
         label="maximum model-token budget",
     )
-    credential_present = verified_cli_run_contains_secret(
-        outcome.run_path,
-        outcome.run_id,
-        credential,
+    credential_present = any(
+        verified_cli_run_contains_secret(
+            outcome.run_path,
+            outcome.run_id,
+            secret,
+        )
+        for secret in (credential, *additional_credentials)
     )
 
     step = (
@@ -235,7 +241,30 @@ def provider_agent_checks(
             for reconciliation in validator_output.claim_review_reconciliations
         )
     )
-    return {
+    review_binding = validator_output.provider_model_review_binding
+    diverse_review_is_bound = bool(
+        review_binding is not None
+        and validator_output.severity_derivation_packets
+        and len(validator_output.severity_derivation_packets)
+        == len(validator_output.independent_severity_decisions)
+        == len(validator_output.severity_claim_reconciliations)
+        and all(
+            decision.reviewer_id == review_binding.reviewer_id
+            and decision.review_binding_id == review_binding.binding_id
+            and decision.informational_only
+            and not decision.confirmation_eligible
+            and not decision.mutates_candidate
+            for decision in validator_output.independent_severity_decisions
+        )
+        and all(
+            reconciliation.informational_only
+            and not reconciliation.confirmation_eligible
+            and not reconciliation.mutates_candidate
+            for reconciliation in validator_output.severity_claim_reconciliations
+        )
+    )
+    expected_role_calls = 5 if review_binding is not None else 4
+    checks = {
         "campaign completed": outcome.status is RunStatus.COMPLETED,
         "provider planner produced bounded M03 plan": plan_is_bounded_m03,
         "trusted M03 candidate bound to same-run authority": trusted_candidate_is_bound,
@@ -248,19 +277,19 @@ def provider_agent_checks(
             and narrative.recommendations
             and narrative.limitations
         ),
-        "four role model calls audited": (
-            event_types.count("model.call.completed") == 4
+        f"{expected_role_calls} role model calls audited": (
+            event_types.count("model.call.completed") == expected_role_calls
             and event_types.count("model.fallback.activated") == 0
         ),
         "model call and conservative token budgets bounded": (
-            model_calls == 4
+            model_calls == expected_role_calls
             and model_prompt_tokens > 0
             and model_completion_tokens > 0
             and model_tokens == model_prompt_tokens + model_completion_tokens
             and model_tokens <= max_model_tokens
         ),
-        "four provider secret leases revoked": (
-            len(leases) == 4
+        f"{expected_role_calls} provider secret leases revoked": (
+            len(leases) == expected_role_calls
             and all(
                 lease.get("status") == "revoked" and lease.get("remaining_uses") == 0
                 for lease in leases
@@ -268,3 +297,8 @@ def provider_agent_checks(
         ),
         "credential absent from run artifacts": not credential_present,
     }
+    if review_binding is not None:
+        checks["diverse Provider/model severity derivation sealed information-only"] = (
+            diverse_review_is_bound
+        )
+    return checks

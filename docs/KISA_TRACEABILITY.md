@@ -112,7 +112,7 @@ flowchart LR
 | AI 시스템 계층과 공격 표면 | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `kisa-test-plan.json`의 `scenarioDefinitions` | 구현 |
 | 19개 위협 분류 D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | `kisa-results.json`의 요청·실행·미실행 위협 | 전체 카탈로그 구현 |
 | 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, sealed Worker transcript/request 재판정, `KISAMetricResult`, replay index, 공통 Confirmed Gate | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support, versioned Confirmed ID | 부분 구현: Worker summary verdict·집계값을 신뢰하지 않고 봉인 원문과 catalog check로 재계산하며, 원문 지연 또는 완결 실행이 없으면 `not-measured`; 비즈니스 영향 지표 후속 |
-| 위험 등급 | 27 | Candidate/Finding `severity`, 공통 Confirmed Gate, 체크리스트 판정 | `candidate-findings.json`, `validation/v1alpha1/findings.json`, `kisa-results.json` | 부분 구현: reproduction-backed 기술 등급 생성, 조직별 비즈니스 우선순위는 미완료 |
+| 위험 등급 | 27 | Candidate/Finding `severity`, 제안 등급을 숨긴 선택형 독립 Severity Deriver, 공통 Confirmed Gate, 체크리스트 판정 | `candidate-findings.json`, `validator-output.json` v1alpha2, `validation/v1alpha1/findings.json`, `kisa-results.json` | 부분 구현: reproduction-backed 기술 등급과 정보 전용 독립 등급 비교를 생성하며, calibration·다수 Reviewer 합의와 조직별 비즈니스 우선순위는 미완료 |
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed 분리 | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | 구현: 같은 sealed Run의 terminal-success repetition 전체가 있을 때만 executed로 집계하며 FAILED/CANCELLED Run은 실행 성공·비율을 주장하지 않음 |
@@ -410,4 +410,7 @@ Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-le
 [ADR 0026](adr/0026-trusted-kisa-candidate-admission.md),
 [ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md),
 [ADR 0028](adr/0028-durable-local-replay-ticket-ledger.md),
-[ADR 0029](adr/0029-control-plane-replay-orchestration.md)을 따른다.
+[ADR 0029](adr/0029-control-plane-replay-orchestration.md),
+[ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.md),
+[ADR 0031](adr/0031-blind-evidence-review-boundary.md),
+[ADR 0034](adr/0034-diverse-independent-severity-review.md)을 따른다.

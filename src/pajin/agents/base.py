@@ -16,6 +16,10 @@ from pajin.domain.validation import (
     CandidateAssessment,
     CandidateFinding,
     ClaimReviewReconciliation,
+    IndependentSeverityDecision,
+    ProviderModelReviewBinding,
+    SeverityClaimReconciliation,
+    SeverityDerivationPacket,
 )
 
 
@@ -63,6 +67,14 @@ class CandidateValidation(StrictModel):
     blind_evidence_packets: list[BlindEvidencePacket] = Field(default_factory=list)
     blind_evidence_decisions: list[BlindEvidenceDecision] = Field(default_factory=list)
     claim_review_reconciliations: list[ClaimReviewReconciliation] = Field(default_factory=list)
+    provider_model_review_binding: ProviderModelReviewBinding | None = None
+    severity_derivation_packets: list[SeverityDerivationPacket] = Field(default_factory=list)
+    independent_severity_decisions: list[IndependentSeverityDecision] = Field(
+        default_factory=list
+    )
+    severity_claim_reconciliations: list[SeverityClaimReconciliation] = Field(
+        default_factory=list
+    )
 
 
 @runtime_checkable

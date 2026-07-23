@@ -923,8 +923,18 @@ Counterfactual; A04 preserves the second memory query while replacing only the f
 to contrast the causal relationship. The deterministic Reconciler records only
 `contrast-observed`, `contrast-not-observed`, or `inconclusive`. The result is always
 information-only and cannot change Candidate disposition, severity, or confirmation eligibility.
-Independent severity, Provider/model diversity, and portable attestation remain B2.2 follow-up
-scope.
+
+[`ADR-0034`](adr/0034-diverse-independent-severity-review.en.md) adds the first B2.3 vertical slice:
+`provider-agent-run` may opt into a separate review Provider registration. The review Provider must
+differ from the Primary in Provider ID, endpoint, and model, and uses a separate Reviewer Agent,
+Tool allowlist, Capability call budget, and Secret Lease. The Severity Deriver receives no proposed
+severity, Candidate identity, disposition, or prior Decisions; it derives a label only from an
+opaque severity Claim ID and minimized validity plus optional impact Packets. Deterministic
+reconciliation compares the original and independent labels as `corroborated`, `contested`, or
+`inconclusive`, but remains information-only and cannot mutate Candidate, Finding, or confirmation.
+This Provider/model distinction is a configuration contract, not cryptographic attestation of
+separate organizations or infrastructure. Calibration, multi-Reviewer/Human consensus, and portable
+attestation remain follow-up scope.
 
 These stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
@@ -1440,7 +1450,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Validation Controls beyond the three registered KISA scenarios, independent severity derivation and Provider/model diversity, claim-level replay and public partial-validation states, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Validation Controls beyond the three registered KISA scenarios, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, claim-level replay and public partial-validation states, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1472,6 +1482,10 @@ defines at least the following.
   Counterfactual Control Executor that seals materializer ID, version, and scenario digest in Plan
   v1alpha2 and uses fresh single-call Capabilities with separate request, session, evidence, and
   receipt lineage. Its reconciliation is information-only and cannot confirm
+- B2.3 first vertical slice: optional Blind Review and proposed-label-free independent severity
+  derivation on a Reviewer Agent, Capability, and Secret Lease whose Provider ID, endpoint, and
+  model all differ from the Primary. The result is information-only and cannot mutate Candidate,
+  Finding, or confirmation
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
@@ -1739,7 +1753,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0033 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, and replay orchestration decisions
+4. ADR-0001 through ADR-0034 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, and replay orchestration decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

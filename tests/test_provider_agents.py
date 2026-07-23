@@ -14,7 +14,11 @@ from pajin.agents.provider import ModelToolDescriptor, ProviderAgentRuntime
 from pajin.cli import _provider_agent_checks
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest
-from pajin.domain.validation import FindingDisposition, ValidationReasonCode
+from pajin.domain.validation import (
+    ClaimReviewOutcome,
+    FindingDisposition,
+    ValidationReasonCode,
+)
 from pajin.modes.ai_redteam import (
     KISACandidateProducer,
     KISAPlannerRuntime,
@@ -40,6 +44,17 @@ def _registration() -> ProviderRegistration:
             "endpoint": "https://provider.example/v1/chat/completions",
             "model": "role-model",
             "secret_ref": "provider/role/api-key",
+        }
+    )
+
+
+def _review_registration() -> ProviderRegistration:
+    return ProviderRegistration.model_validate(
+        {
+            "provider_id": "review-provider",
+            "endpoint": "https://review-provider.example/v1/chat/completions",
+            "model": "review-model",
+            "secret_ref": "provider/review/api-key",
         }
     )
 
@@ -133,7 +148,10 @@ class RoleWorker:
             }
         else:
             assert job.command == ["openai-chat-completion"]
-            assert secrets and secrets[0].value == "role-provider-secret"
+            assert secrets and secrets[0].value in {
+                "role-provider-secret",
+                "review-provider-secret",
+            }
             request = json.loads(job.stdin)
             provider_request = request["request"]
             schema_name = provider_request["response_format"]["json_schema"]["name"]
@@ -279,6 +297,34 @@ class RoleWorker:
                             ),
                         }
                     )
+            elif schema_name == "pajin_severity_deriver_output":
+                assert set(context) == {"packets"}
+                content = {"decisions": []}
+                for item in context["packets"]:
+                    packet = item["packet"]
+                    packet_text = json.dumps(packet, sort_keys=True)
+                    assert "candidateId" not in packet_text
+                    assert '"claimType": "severity"' not in packet_text
+                    assert '"statement": "high"' not in packet_text
+                    evidence = list(
+                        dict.fromkeys(
+                            reference
+                            for context_packet in packet["contextPackets"]
+                            for reference in context_packet["evidence"]
+                        )
+                    )
+                    content["decisions"].append(
+                        {
+                            "packetId": packet["packetId"],
+                            "packetDigest": packet["packetDigest"],
+                            "status": "derived",
+                            "severity": "medium",
+                            "rationale": (
+                                "Minimal validity evidence independently supports medium severity."
+                            ),
+                            "evidence": evidence,
+                        }
+                    )
             elif schema_name == "pajin_validator_output":
                 result = context["results"][0]
                 ai_probe = result["tool_id"] == "ai.chat-probe"
@@ -314,9 +360,9 @@ class RoleWorker:
                     "limitations": ["This is a deterministic provider fixture."],
                 }
             output = {
-                "provider_id": "role-provider",
+                "provider_id": request["providerId"],
                 "response_id": f"response-{schema_name}",
-                "model": "role-model",
+                "model": provider_request["model"],
                 "content": json.dumps(content),
                 "refusal": None,
                 "finish_reason": "stop",
@@ -359,9 +405,11 @@ def _run_provider_agent_fixture(
     tmp_path: Path,
     *,
     fail_blind_review: bool = False,
+    diverse_review: bool = False,
 ) -> MultiAgentRunOutcome:
     campaign = load_manifest(Path("examples/provider-agent-lab.yaml"))
     registration = _registration()
+    review_registration = _review_registration() if diverse_review else None
     fallback = DeterministicAgentRuntime()
     runtime = ProviderAgentRuntime(
         registration,
@@ -374,12 +422,17 @@ def _run_provider_agent_fixture(
         ],
         fallback_planner=KISAPlannerRuntime(thresholds=EvaluationThresholds(repetitions=1)),
         fallback_validator=KISAValidatorRuntime(fallback),
+        review_registration=review_registration,
     )
     registry = ToolRegistry()
     registry.register(AIChatProbeTool())
     registry.register(OpenAICompatibleChatTool(registration))
+    if review_registration is not None:
+        registry.register(OpenAICompatibleChatTool(review_registration))
     secrets = SecretBroker()
     secrets.register(registration.secret_ref, "role-provider-secret")
+    if review_registration is not None:
+        secrets.register(review_registration.secret_ref, "review-provider-secret")
     runner = MultiAgentCampaignRunner(
         planner=runtime,
         validator=runtime,
@@ -433,6 +486,70 @@ def test_provider_agent_cli_checks_honest_needs_review_contract(tmp_path: Path) 
     ]
     assert all("candidateId" not in packet for packet in validator_output["blindEvidencePackets"])
     assert validator_output["assessments"][0]["supports_claim"] is True
+
+
+def test_provider_agent_diverse_review_derives_severity_without_candidate_mutation(
+    tmp_path: Path,
+) -> None:
+    outcome = _run_provider_agent_fixture(tmp_path, diverse_review=True)
+
+    checks = _provider_agent_checks(outcome, credential="role-provider-secret")
+    assert all(checks.values()), checks
+    validator_output = json.loads(
+        (outcome.run_path / "validator-output.json").read_text(encoding="utf-8")
+    )
+    binding = validator_output["providerModelReviewBinding"]
+    assert binding["primaryProviderId"] == "role-provider"
+    assert binding["primaryModel"] == "role-model"
+    assert binding["reviewProviderId"] == "review-provider"
+    assert binding["reviewModel"] == "review-model"
+    assert binding["providerDistinct"] is True
+    assert binding["modelDistinct"] is True
+    assert len(validator_output["severityDerivationPackets"]) == 1
+    packet_text = json.dumps(
+        validator_output["severityDerivationPackets"][0],
+        sort_keys=True,
+    )
+    assert "candidateId" not in packet_text
+    assert '"claimType": "severity"' not in packet_text
+    assert '"statement": "high"' not in packet_text
+    assert validator_output["independentSeverityDecisions"][0]["severity"] == "medium"
+    assert (
+        validator_output["severityClaimReconciliations"][0]["outcome"]
+        == ClaimReviewOutcome.CONTESTED.value
+    )
+    assert validator_output["independentSeverityDecisions"][0]["informationalOnly"] is True
+    assert (
+        validator_output["independentSeverityDecisions"][0]["confirmationEligible"]
+        is False
+    )
+    assert validator_output["severityClaimReconciliations"][0]["mutatesCandidate"] is False
+    assert outcome.validation.candidates[0].claim.severity.value == "high"
+    assert outcome.validation.candidates[0].claim.validated is False
+    assert outcome.findings == []
+
+    budget = json.loads((outcome.run_path / "budget.json").read_text(encoding="utf-8"))
+    assert budget["modelCalls"] == 5
+    events = (outcome.run_path / "events.jsonl").read_text(encoding="utf-8")
+    assert events.count('"event_type":"model.call.completed"') == 5
+    capabilities = json.loads(
+        (outcome.run_path / "capabilities.json").read_text(encoding="utf-8")
+    )
+    reviewer_grant = next(
+        item["grant"]
+        for item in capabilities
+        if item["grant"]["subject"] == binding["reviewerId"]
+    )
+    primary_validator_grant = next(
+        item["grant"]
+        for item in capabilities
+        if item["grant"]["subject"].startswith("agent:validator:")
+        and item["grant"]["subject"] != binding["reviewerId"]
+    )
+    assert reviewer_grant["tools"] == ["provider.review-provider.chat"]
+    assert reviewer_grant["max_calls"] == 2
+    assert primary_validator_grant["tools"] == ["provider.role-provider.chat"]
+    assert primary_validator_grant["max_calls"] == 2
 
 
 def test_provider_agent_blind_review_failure_seals_inconclusive(
@@ -501,6 +618,51 @@ def test_provider_agent_cli_command_passes_role_worker_contract(
     assert result.exit_code == 0, result.output
     assert "FAIL" not in result.output
     assert "independent reproduction boundary" in result.output
+
+
+def test_provider_agent_cli_supports_diverse_review_provider_and_model(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        cli_module,
+        "_worker_backend",
+        lambda _worker: _trusted_role_backend(RoleWorker()),
+    )
+
+    result = CliRunner().invoke(
+        cli_module.app,
+        [
+            "provider-agent-run",
+            "examples/provider-agent-lab.yaml",
+            "--output",
+            str(tmp_path),
+            "--worker",
+            "docker",
+            "--provider-endpoint",
+            "https://provider.example/v1/chat/completions",
+            "--provider-id",
+            "role-provider",
+            "--model",
+            "role-model",
+            "--review-provider-endpoint",
+            "https://review-provider.example/v1/chat/completions",
+            "--review-provider-id",
+            "review-provider",
+            "--review-model",
+            "review-model",
+            "--review-secret-env",
+            "PAJIN_REVIEW_PROVIDER_API_KEY",
+        ],
+        env={
+            "PAJIN_PROVIDER_API_KEY": "role-provider-secret",
+            "PAJIN_REVIEW_PROVIDER_API_KEY": "review-provider-secret",
+        },
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "FAIL" not in result.output
+    assert "diverse Provider/model severity derivation" in result.output
 
 
 def test_provider_roles_use_gateway_capabilities_budgets_and_same_run_evidence(

@@ -27,6 +27,7 @@ from pajin.domain.validation import (
     ValidatorOutputArtifact,
     validate_candidate_atomic_refinement,
     validate_candidate_blind_refinement,
+    validate_independent_severity_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
@@ -353,6 +354,18 @@ class LocalCampaignRunner:
                 blind_evidence_packets = validator_output.blind_evidence_packets
                 blind_evidence_decisions = validator_output.blind_evidence_decisions
                 claim_review_reconciliations = validator_output.claim_review_reconciliations
+                provider_model_review_binding = (
+                    validator_output.provider_model_review_binding
+                )
+                severity_derivation_packets = (
+                    validator_output.severity_derivation_packets
+                )
+                independent_severity_decisions = (
+                    validator_output.independent_severity_decisions
+                )
+                severity_claim_reconciliations = (
+                    validator_output.severity_claim_reconciliations
+                )
                 validate_candidate_atomic_refinement(
                     admitted_candidates,
                     atomic_claims,
@@ -371,6 +384,19 @@ class LocalCampaignRunner:
                         or claim_review_reconciliations
                     ),
                 )
+                validate_independent_severity_refinement(
+                    atomic_claims,
+                    severity_derivation_packets,
+                    independent_severity_decisions,
+                    severity_claim_reconciliations,
+                    provider_model_review_binding,
+                    required=bool(
+                        provider_model_review_binding
+                        or severity_derivation_packets
+                        or independent_severity_decisions
+                        or severity_claim_reconciliations
+                    ),
+                )
             else:
                 raw_findings = await self._agents.validate(
                     validator_campaign,
@@ -387,6 +413,10 @@ class LocalCampaignRunner:
                 blind_evidence_packets = []
                 blind_evidence_decisions = []
                 claim_review_reconciliations = []
+                provider_model_review_binding = None
+                severity_derivation_packets = []
+                independent_severity_decisions = []
+                severity_claim_reconciliations = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=agent_id,
@@ -406,6 +436,22 @@ class LocalCampaignRunner:
                 claimReviewReconciliations=[
                     reconciliation.model_copy(deep=True)
                     for reconciliation in claim_review_reconciliations
+                ],
+                providerModelReviewBinding=(
+                    provider_model_review_binding.model_copy(deep=True)
+                    if provider_model_review_binding is not None
+                    else None
+                ),
+                severityDerivationPackets=[
+                    packet.model_copy(deep=True) for packet in severity_derivation_packets
+                ],
+                independentSeverityDecisions=[
+                    decision.model_copy(deep=True)
+                    for decision in independent_severity_decisions
+                ],
+                severityClaimReconciliations=[
+                    reconciliation.model_copy(deep=True)
+                    for reconciliation in severity_claim_reconciliations
                 ],
             )
         except asyncio.CancelledError:

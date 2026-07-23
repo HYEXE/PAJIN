@@ -68,6 +68,7 @@ class _SpecialistAllocation:
     parallel_contracts: list[bool]
     attempts: list[int]
     validator_access: ModelAccess | None
+    reviewer_access: ModelAccess | None
     reporter_access: ModelAccess | None
 
 
@@ -80,8 +81,10 @@ class ExecutionTasks:
     specialist_grants: dict[str, CapabilityGrant]
     specialist_parallel_contracts: dict[str, bool]
     validation_task: TaskNode
+    review_task: TaskNode | None
     report_task: TaskNode
     validator_access: ModelAccess | None
+    reviewer_access: ModelAccess | None
     reporter_access: ModelAccess | None
 
 
@@ -355,9 +358,19 @@ class MultiAgentExecutionScheduler:
             depends_on={task.task_id for task in specialist_tasks},
         )
         state.graph.add(validation_task)
+        review_task = None
+        if allocation.reviewer_access is not None:
+            review_task = TaskNode(
+                title="Blind-review evidence and derive severity with a diverse Provider/model",
+                depends_on={task.task_id for task in specialist_tasks},
+            )
+            state.graph.add(review_task)
+        report_dependencies = {validation_task.task_id}
+        if review_task is not None:
+            report_dependencies.add(review_task.task_id)
         report_task = TaskNode(
             title="Render campaign report",
-            depends_on={validation_task.task_id},
+            depends_on=report_dependencies,
         )
         state.graph.add(report_task)
         return ExecutionTasks(
@@ -366,8 +379,10 @@ class MultiAgentExecutionScheduler:
             specialist_grants=specialist_grants,
             specialist_parallel_contracts=specialist_parallel_contracts,
             validation_task=validation_task,
+            review_task=review_task,
             report_task=report_task,
             validator_access=allocation.validator_access,
+            reviewer_access=allocation.reviewer_access,
             reporter_access=allocation.reporter_access,
         )
 
@@ -381,9 +396,6 @@ class MultiAgentExecutionScheduler:
         ledger: CapabilityLedger,
         execution: InitializedExecution,
     ) -> _SpecialistAllocation:
-        required_agents = len(plan.steps) + 2
-        if budget.agent_count + required_agents > campaign.spec.budgets.max_agents:
-            raise BudgetExceeded("plan requires more agents than the campaign budget allows")
         risk_tiers: list[ToolRiskTier] = []
         parallel_contracts: list[bool] = []
         for step in plan.steps:
@@ -399,15 +411,23 @@ class MultiAgentExecutionScheduler:
         validator_access = self._model_access(
             self._validator,
             max_calls=(
-                getattr(self._validator, "model_validator_max_calls", None)
+                getattr(self._validator, "model_primary_validator_max_calls", None)
                 if self._candidate_aware_validation
                 else None
             ),
         )
+        reviewer_access = (
+            self._review_model_access(self._validator)
+            if self._candidate_aware_validation
+            else None
+        )
         reporter_access = self._model_access(self._reporter) if self._reporter else None
+        required_agents = len(plan.steps) + 2 + (1 if reviewer_access is not None else 0)
+        if budget.agent_count + required_agents > campaign.spec.budgets.max_agents:
+            raise BudgetExceeded("plan requires more agents than the campaign budget allows")
         reserved_control_calls = sum(
             access.max_attempts
-            for access in (validator_access, reporter_access)
+            for access in (validator_access, reviewer_access, reporter_access)
             if access is not None
         )
         root_remaining_calls = ledger.record(execution.root_grant.grant_id).remaining_calls
@@ -444,6 +464,7 @@ class MultiAgentExecutionScheduler:
             parallel_contracts=parallel_contracts,
             attempts=attempts,
             validator_access=validator_access,
+            reviewer_access=reviewer_access,
             reporter_access=reporter_access,
         )
 
@@ -730,6 +751,31 @@ class MultiAgentExecutionScheduler:
             risk_tier=spec.risk_tier,
         )
 
+    def _review_model_access(self, runtime: object) -> ModelAccess | None:
+        raw_registration = getattr(runtime, "review_model_provider_registration", None)
+        if raw_registration is None:
+            return None
+        registration = ProviderRegistration.model_validate(raw_registration)
+        tool_id = f"provider.{registration.provider_id}.chat"
+        endpoint = str(registration.endpoint)
+        if getattr(runtime, "review_model_provider_tool_id", None) != tool_id:
+            raise ValueError("review model runtime tool ID differs from its registration")
+        if getattr(runtime, "review_model_provider_endpoint", None) != endpoint:
+            raise ValueError("review model runtime endpoint differs from its registration")
+        max_attempts = getattr(runtime, "review_model_max_attempts", None)
+        if not isinstance(max_attempts, int) or not 1 <= max_attempts <= 3:
+            raise ValueError("review model runtime attempts must be between one and three")
+        spec = self._tools.spec(tool_id)
+        if "model-provider" not in spec.categories:
+            raise ValueError("review model runtime tool is not registered as a provider")
+        return ModelAccess(
+            registration=registration,
+            tool_id=tool_id,
+            endpoint=endpoint,
+            max_attempts=max_attempts,
+            risk_tier=spec.risk_tier,
+        )
+
     def reasoning_model_accesses(self) -> tuple[ModelAccess, ...]:
         """Return the exact Provider authorities used by reasoning roles."""
 
@@ -740,6 +786,9 @@ class MultiAgentExecutionScheduler:
             access = self._model_access(runtime)
             if access is not None:
                 accesses.append(access)
+        review_access = self._review_model_access(self._validator)
+        if review_access is not None:
+            accesses.append(review_access)
         return tuple(accesses)
 
     @staticmethod
@@ -757,6 +806,36 @@ class MultiAgentExecutionScheduler:
             raise TypeError("runtime does not support a policy-bound model port")
         grant = ledger.record(agent.capability_grant_id).grant
         runtime.bind_model_port(
+            PolicyBoundProviderPort(
+                registration=access.registration,
+                campaign=campaign,
+                grant=grant,
+                ledger=ledger,
+                budget=budget,
+                gateway=gateway,
+                store=store,
+            )
+        )
+
+    @staticmethod
+    def bind_review_model_runtime(
+        runtime: object,
+        access: ModelAccess,
+        campaign: CampaignManifest,
+        agent: AgentNode,
+        ledger: CapabilityLedger,
+        budget: BudgetController,
+        gateway: ToolGateway,
+        store: RunStore,
+    ) -> None:
+        binder = getattr(runtime, "bind_review_model_port", None)
+        if not callable(binder):
+            raise TypeError("runtime does not support a policy-bound review model port")
+        actor_binder = getattr(runtime, "bind_review_actor_id", None)
+        if callable(actor_binder):
+            actor_binder(agent.agent_id)
+        grant = ledger.record(agent.capability_grant_id).grant
+        binder(
             PolicyBoundProviderPort(
                 registration=access.registration,
                 campaign=campaign,

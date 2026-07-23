@@ -123,7 +123,7 @@ flowchart LR
 | AI system layers and attack surfaces | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `scenarioDefinitions` in `kisa-test-plan.json` | Implemented |
 | 19 threat classes: D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | Requested, executed, and unexecuted threats in `kisa-results.json` | Full catalog implemented |
 | Evaluation criteria and metrics | 26 | `EvaluationThresholds`, sealed Worker transcript/request reevaluation, `KISAMetricResult`, replay index, common Confirmed Gate | Attack success rate, block/refusal rate, repeated-observation rate, sensitive-information exposure, latency, coverage, replay Oracle support, versioned Confirmed ID | Partially implemented: Worker summary verdicts and aggregates are ignored and recomputed from sealed raw evidence and catalog checks; missing raw latency or incomplete execution is `not-measured`; business-impact metrics remain follow-up work |
-| Risk rating | 27 | Candidate/Finding `severity`, common Confirmed Gate, checklist decisions | `candidate-findings.json`, `validation/v1alpha1/findings.json`, `kisa-results.json` | Partially implemented: reproduction-backed technical ratings are generated; organization-specific business priorities remain incomplete |
+| Risk rating | 27 | Candidate/Finding `severity`, optional proposed-label-free independent Severity Deriver, common Confirmed Gate, checklist decisions | `candidate-findings.json`, `validator-output.json` v1alpha2, `validation/v1alpha1/findings.json`, `kisa-results.json` | Partially implemented: reproduction-backed technical ratings and an information-only independent-rating comparison are generated; calibration, multi-Reviewer consensus, and organization-specific business priorities remain incomplete |
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed projection | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | Implemented: a scenario is executed only when every required terminal-success repetition is present in the same sealed Run; FAILED/CANCELLED Runs do not claim execution success or rates |
@@ -447,5 +447,8 @@ Validator state and confirmation boundaries follow
 [ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.en.md),
 [ADR 0026](adr/0026-trusted-kisa-candidate-admission.en.md),
 [ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.en.md), and
-[ADR 0028](adr/0028-durable-local-replay-ticket-ledger.en.md), and
-[ADR 0029](adr/0029-control-plane-replay-orchestration.en.md).
+[ADR 0028](adr/0028-durable-local-replay-ticket-ledger.en.md),
+[ADR 0029](adr/0029-control-plane-replay-orchestration.en.md),
+[ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.en.md),
+[ADR 0031](adr/0031-blind-evidence-review-boundary.en.md), and
+[ADR 0034](adr/0034-diverse-independent-severity-review.en.md).

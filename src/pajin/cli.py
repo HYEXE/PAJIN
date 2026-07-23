@@ -531,10 +531,27 @@ def run_provider_backed_agents(
     model: Annotated[str, typer.Option("--model")] = "pajin-provider-lab",
     secret_env: Annotated[str, typer.Option("--secret-env")] = "PAJIN_PROVIDER_API_KEY",
     allow_private_provider: Annotated[bool, typer.Option("--allow-private-provider")] = False,
+    review_provider_endpoint: Annotated[
+        str | None,
+        typer.Option("--review-provider-endpoint"),
+    ] = None,
+    review_provider_id: Annotated[
+        str | None,
+        typer.Option("--review-provider-id"),
+    ] = None,
+    review_model: Annotated[str | None, typer.Option("--review-model")] = None,
+    review_secret_env: Annotated[
+        str | None,
+        typer.Option("--review-secret-env"),
+    ] = None,
+    allow_private_review_provider: Annotated[
+        bool,
+        typer.Option("--allow-private-review-provider"),
+    ] = False,
     input_cost_per_million: Annotated[float, typer.Option("--input-cost-per-million", min=0)] = 0,
     output_cost_per_million: Annotated[float, typer.Option("--output-cost-per-million", min=0)] = 0,
 ) -> None:
-    """Run Planner, Validator, and Reporter through a policy-bound model provider."""
+    """Run policy-bound roles with optional diverse review Provider/model authority."""
 
     with _cli_error_boundary("Cannot start provider-backed agents", exit_code=2):
         campaign = load_manifest(manifest)
@@ -553,11 +570,49 @@ def run_provider_backed_agents(
                 "output_cost_per_million_usd": output_cost_per_million,
             }
         )
+        review_values = (
+            review_provider_endpoint,
+            review_provider_id,
+            review_model,
+            review_secret_env,
+        )
+        if any(value is not None for value in review_values) and not all(
+            value is not None for value in review_values
+        ):
+            raise ValueError(
+                "diverse review requires endpoint, provider ID, model, and secret environment"
+            )
+        review_registration = None
+        review_credential = None
+        if all(value is not None for value in review_values):
+            assert review_provider_endpoint is not None
+            assert review_provider_id is not None
+            assert review_model is not None
+            assert review_secret_env is not None
+            review_credential = os.environ.get(review_secret_env)
+            if not review_credential:
+                raise ValueError(
+                    "review provider credential environment variable is unset: "
+                    f"{review_secret_env}"
+                )
+            review_registration = ProviderRegistration.model_validate(
+                {
+                    "provider_id": review_provider_id,
+                    "endpoint": review_provider_endpoint,
+                    "model": review_model,
+                    "secret_ref": f"provider/{review_provider_id}/api-key",
+                    "allow_private_networks": allow_private_review_provider,
+                }
+            )
     with _cli_error_boundary("Provider-backed agent run failed", exit_code=1):
         secrets = SecretBroker()
         secrets.register(registration.secret_ref, credential)
+        if review_registration is not None and review_credential is not None:
+            secrets.register(review_registration.secret_ref, review_credential)
         registry = _tool_registry()
         registry.register(OpenAICompatibleChatTool(registration))
+        if review_registration is not None:
+            registry.register(OpenAICompatibleChatTool(review_registration))
         fallback = DeterministicAgentRuntime()
         runtime = ProviderAgentRuntime(
             registration,
@@ -570,6 +625,7 @@ def run_provider_backed_agents(
             ],
             fallback_planner=KISAPlannerRuntime(thresholds=EvaluationThresholds(repetitions=1)),
             fallback_validator=KISAValidatorRuntime(fallback),
+            review_registration=review_registration,
         )
         runner = MultiAgentCampaignRunner(
             planner=runtime,
@@ -583,7 +639,15 @@ def run_provider_backed_agents(
             secrets=secrets,
         )
         outcome = asyncio.run(runner.run(campaign))
-        checks = _provider_agent_checks(outcome, credential=credential)
+        checks = _provider_agent_checks(
+            outcome,
+            credential=credential,
+            additional_credentials=(
+                (review_credential,)
+                if review_credential is not None
+                else ()
+            ),
+        )
     _print_check_table("PAJIN Provider-Backed Multi-Agent Runtime", checks)
     _print_cli_field("Run", outcome.run_id)
     _print_cli_field("Report", outcome.report_path.resolve())

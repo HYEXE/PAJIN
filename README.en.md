@@ -18,13 +18,13 @@ The implementation baseline as of 2026-07-23 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, an opt-in code-registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual Control Executor, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, optional separate-Provider/model Blind Review plus proposed-label-free independent severity derivation, an opt-in code-registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual Control Executor, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
 | Discovery contracts | Versioned `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation and schema-bound Tool-interface locators; deterministic domain-separated identities; exact request/result/evidence/root lineage; bounded canonical JSON; and fail-closed ordering, uniqueness, and lineage validation. A code-registered Trusted Surface Producer admits only integrity-verified Campaign and Gateway evidence, revalidates Scope, Authorization, method, and Tool risk, and publishes through a separate append-only projection Run. A3 adds an explicit opt-in single-call MCP Recon wave. A4 re-verifies the sealed projection, compiles versioned Hypotheses through code-registered rules, and runs one fresh-Capability Specialist wave. A5 adds a separate explicit opt-in bounded replanning control Run: it re-verifies the sealed A4 wave, promotes exact registered result fields into append-only `ObservationGraphSnapshot` artifacts, records `supports`, `contradicts`, `enables`, `depends-on`, and `new-surface` relationship contracts, and permits at most one novel code-registered transition into a second fresh-Capability wave. Shared Campaign agent, Tool-call, cost, time, and rate limits still apply; repeated or sub-threshold plans stop before execution. The existing one-time Planner remains unchanged. |
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; opt-in information-only M03/M06/A04 validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
-| Primary gaps | Validation Controls beyond the three registered KISA scenarios, independent severity derivation and Provider/model diversity, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Validation Controls beyond the three registered KISA scenarios, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -36,7 +36,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > receives only opaque validity/impact Claim identity, statements, and allowlisted evidence; it does
 > not receive Candidate identity, disposition, severity, or prior Decisions. Deterministic
 > reconciliation records `corroborated`, `contested`, or `inconclusive` without changing Candidate
-> state or confirmation eligibility. An opt-in M03/M06/A04 Control Executor now resolves only
+> state or confirmation eligibility. An optional diverse-review registration places Blind Review
+> and independent Severity Derivation on a separate Agent, Provider Tool, endpoint, model,
+> Capability budget, and Secret Lease. Its severity Packet excludes the proposed label and all
+> Candidate identity and prior-decision context; reconciliation is information-only and cannot
+> rewrite Candidate severity. An opt-in M03/M06/A04 Control Executor now resolves only
 > code-registered materializers and binds their ID, version, and scenario digest into Plan v1alpha2.
 > It binds Baseline, Negative Control, and Counterfactual observations to the validity Claim using
 > three unique sessions, three fresh non-delegable single-call Capabilities, and separate
@@ -754,8 +758,8 @@ a platform vault and isolate the supervisor process accordingly.
 
 ### Provider-backed Planner, Validators, and Reporter
 
-`provider-agent-run` connects the registered Provider Gateway to four reasoning roles without
-giving them offensive execution authority. Each role receives a distinct developer prompt, a
+`provider-agent-run` connects the registered Provider Gateway to four default reasoning calls
+without giving them offensive execution authority. Each role receives a distinct developer prompt, a
 strict JSON Schema, and an attenuated Capability containing only the exact Provider Tool and
 endpoint. Campaign, plan, result, and finding data are supplied as untrusted user content. The
 Supervisor validates model-created plans again before Specialist creation and rejects undeclared
@@ -771,6 +775,22 @@ $env:PAJIN_PROVIDER_API_KEY='pajin-local-credential-v1' # public local fixture o
 Remove-Item Env:PAJIN_PROVIDER_API_KEY
 docker compose -f containers/compose.ai-lab.yaml down
 ```
+
+To place Blind Review and independent Severity Derivation behind a separate Provider/model boundary,
+register all four review settings together:
+
+```powershell
+$env:PAJIN_PROVIDER_API_KEY='<primary-provider-secret>'
+$env:PAJIN_REVIEW_PROVIDER_API_KEY='<review-provider-secret>'
+.venv\Scripts\pajin provider-agent-run examples\provider-agent-lab.yaml `
+  --review-provider-endpoint https://review-provider.example/v1 `
+  --review-provider-id independent-review `
+  --review-model review-model-v1 `
+  --review-secret-env PAJIN_REVIEW_PROVIDER_API_KEY
+```
+
+The review Provider ID, endpoint, and model must all differ from the Primary registration. PAJIN
+fails closed before execution if any value is equal.
 
 The implemented flow is Provider Planner → isolated `ai.chat-probe` Specialist → trusted Candidate
 Producer → Candidate-aware Provider Semantic Validator → Blind Evidence Reviewer → deterministic
@@ -788,11 +808,20 @@ still requires the Restricted Reproducer and independent execution attestation. 
 in `model-narrative.json` and is appended as a clearly subordinate section; it cannot alter
 canonical findings or execution state.
 
+With diverse review enabled, the Blind Reviewer and Severity Deriver share a dedicated reviewer
+Agent and review Provider Capability that has no Primary Provider Tool authority. Severity Derivation
+receives only an opaque severity Claim ID and the already minimized validity/optional impact Packets;
+it does not receive the Candidate, proposed severity, disposition, Primary Decisions, or report
+context. Its `corroborated`, `contested`, or `inconclusive` comparison is sealed in
+`validator-output.json` v1alpha2 as an information-only signal. This local Provider/model distinction
+is a configuration assertion, not cryptographic proof of separate organizations or infrastructure.
+
 The exact Claim identity, evidence, fallback, blind-review, Control, and confirmation boundaries are recorded
 in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md),
-[ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md), and
-[ADR 0033](docs/adr/0033-registered-validation-control-materializers.en.md).
+[ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md),
+[ADR 0033](docs/adr/0033-registered-validation-control-materializers.en.md), and
+[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative

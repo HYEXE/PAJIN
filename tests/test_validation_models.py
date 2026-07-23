@@ -1,3 +1,4 @@
+import json
 from datetime import UTC, datetime, timedelta, timezone
 
 import pytest
@@ -13,6 +14,7 @@ from pajin.domain.validation import (
     ClaimReviewOutcome,
     FindingDisposition,
     FindingValidationSet,
+    SeverityDerivationStatus,
     ValidationCheckResult,
     ValidationCheckStatus,
     ValidationDecision,
@@ -22,11 +24,16 @@ from pajin.domain.validation import (
     blind_evidence_packets,
     build_atomic_claim_decision,
     build_blind_evidence_decision,
+    build_independent_severity_decision,
+    build_provider_model_review_binding,
     candidate_atomic_claims,
     candidate_claim_digest,
     reconcile_claim_reviews,
+    reconcile_independent_severity,
+    severity_derivation_packets,
     validate_candidate_atomic_refinement,
     validate_candidate_blind_refinement,
+    validate_independent_severity_refinement,
 )
 
 
@@ -715,3 +722,87 @@ def test_validation_models_reject_duplicate_nested_identifiers_and_extra_fields(
     )
     with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
         ValidationCheckResult.model_validate({**check.model_dump(), "unexpected": True})
+
+
+def test_independent_severity_derivation_withholds_proposed_severity_and_is_informational() -> None:
+    candidate = _candidate(
+        "candidate_severity",
+        finding_id="finding_severity",
+        claim=_finding(finding_id="finding_severity").model_copy(
+            update={"impact": "A protected system prompt was disclosed to an untrusted user."}
+        ),
+    )
+    claims = candidate_atomic_claims(candidate)
+    packets = severity_derivation_packets(claims)
+    binding = build_provider_model_review_binding(
+        primary_provider_id="primary-provider",
+        primary_endpoint="https://primary.example/v1/chat/completions",
+        primary_model="primary-model",
+        reviewer_id="diverse-reviewer:review-provider:review-model",
+        review_provider_id="review-provider",
+        review_endpoint="https://review.example/v1/chat/completions",
+        review_model="review-model",
+    )
+    packet_text = json.dumps(
+        packets[0].model_dump(mode="json", by_alias=True),
+        sort_keys=True,
+    )
+    assert candidate.candidate_id not in packet_text
+    assert '"claimType": "severity"' not in packet_text
+    assert f'"statement": "{FindingSeverity.HIGH.value}"' not in packet_text
+
+    evidence = packets[0].context_packets[0].evidence
+    decisions = [
+        build_independent_severity_decision(
+            packets[0],
+            binding,
+            status=SeverityDerivationStatus.DERIVED,
+            severity=FindingSeverity.MEDIUM,
+            rationale="Minimal validity and impact evidence supports medium severity.",
+            evidence=evidence,
+        )
+    ]
+    severity_claim = next(
+        claim for claim in claims if claim.claim_type is AtomicClaimType.SEVERITY
+    )
+    reconciliations = [reconcile_independent_severity(severity_claim, decisions[0])]
+
+    validate_independent_severity_refinement(
+        claims,
+        packets,
+        decisions,
+        reconciliations,
+        binding,
+        required=True,
+    )
+
+    assert reconciliations[0].outcome is ClaimReviewOutcome.CONTESTED
+    assert decisions[0].informational_only is True
+    assert decisions[0].confirmation_eligible is False
+    assert decisions[0].mutates_candidate is False
+    assert candidate.claim.severity is FindingSeverity.HIGH
+    assert candidate.claim.validated is False
+
+
+def test_provider_model_review_binding_requires_distinct_provider_endpoint_and_model() -> None:
+    with pytest.raises(ValidationError, match="Provider ID and endpoint"):
+        build_provider_model_review_binding(
+            primary_provider_id="same-provider",
+            primary_endpoint="https://same.example/v1/chat/completions",
+            primary_model="primary-model",
+            reviewer_id="reviewer",
+            review_provider_id="same-provider",
+            review_endpoint="https://same.example/v1/chat/completions",
+            review_model="review-model",
+        )
+
+    with pytest.raises(ValidationError, match="review model must differ"):
+        build_provider_model_review_binding(
+            primary_provider_id="primary-provider",
+            primary_endpoint="https://primary.example/v1/chat/completions",
+            primary_model="same-model",
+            reviewer_id="reviewer",
+            review_provider_id="review-provider",
+            review_endpoint="https://review.example/v1/chat/completions",
+            review_model="same-model",
+        )

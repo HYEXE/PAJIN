@@ -2,7 +2,7 @@ apiVersion: pajin.dev/v1alpha1
 kind: Campaign
 metadata:
   name: provider-agent-runtime-lab
-  description: Run Planner, Validator, and Reporter through the policy-bound Provider Gateway.
+  description: Run Planner, Validators, and Reporter through policy-bound Provider Gateways.
 spec:
   mode: ai-redteam
   autonomy: supervised
@@ -23,7 +23,8 @@ spec:
   accessProfile: greybox
   objectives:
     - generate a bounded M03 plan through a registered model provider
-    - independently validate same-run specialist evidence through a separate role prompt
+    - independently validate same-run specialist evidence through a separate reviewer boundary
+    - derive severity without disclosing the candidate's proposed label
     - produce a subordinate narrative without changing canonical findings
   threatClasses: [M03]
   rulesOfEngagement:
@@ -38,11 +39,11 @@ spec:
   budgets:
     durationSeconds: 120
     maxCostUsd: 0
-    maxAgents: 5
+    maxAgents: 6
     maxSpawnDepth: 1
-    maxToolCalls: 7
+    maxToolCalls: 8
     maxModelCalls: 6
-    # Covers Planner, Candidate Validator, Blind Reviewer, and Reporter conservative reservations.
+    # Covers Planner, Candidate Validator, diverse Blind/Severity Reviewer, and Reporter.
     maxModelTokens: 150000
   outputs:
     - markdown-report
