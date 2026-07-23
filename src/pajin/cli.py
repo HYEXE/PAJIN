@@ -843,8 +843,8 @@ def run_kisa_ai_redteam(
         typer.Option(
             "--validation-controls",
             help=(
-                "Run information-only fresh-capability M03 Baseline, Negative Control, "
-                "and Counterfactual checks."
+                "Run information-only fresh-capability M03, M06, and A04 Baseline, "
+                "Negative Control, and Counterfactual checks."
             ),
         ),
     ] = False,

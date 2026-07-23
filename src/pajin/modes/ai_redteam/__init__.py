@@ -32,9 +32,11 @@ from pajin.modes.ai_redteam.runtime import (
 )
 from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.modes.ai_redteam.validation_controls import (
+    KISAAIChatValidationControlMaterializer,
     KISAValidationControlBatchOutcome,
     KISAValidationControlCoordinator,
     KISAValidationControlRunRecord,
+    kisa_validation_control_materializers,
     required_kisa_validation_control_calls,
 )
 
@@ -43,6 +45,7 @@ __all__ = [
     "KISAAIChatNegativeRetestOracle",
     "KISAAIChatReplayOracle",
     "KISAAIChatSessionMaterializer",
+    "KISAAIChatValidationControlMaterializer",
     "KISACandidateProducer",
     "KISALocalAgentRuntime",
     "KISALocalReplayOrchestrator",
@@ -64,6 +67,7 @@ __all__ = [
     "kisa_negative_retest_contract",
     "kisa_replay_contract",
     "kisa_replay_registries",
+    "kisa_validation_control_materializers",
     "required_kisa_replay_calls",
     "required_kisa_validation_control_calls",
 ]

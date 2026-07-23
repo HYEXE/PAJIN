@@ -205,6 +205,20 @@ Confirmed Gate를 자동으로 시작하지 않는다. opt-in은 AI Red Team Cam
 `ai.chat-probe` allowlist에만 적용한다. Candidate 부재, Validator semantic support 누락 또는
 미등록 Scenario를 구조적으로 비슷하다는 이유로 replay하지 않는다.
 
+M03·M06·A04의 validity Claim 대조는 별도 opt-in으로 실행한다.
+
+```powershell
+.venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
+  --worker docker --repetitions 2 --validation-controls
+```
+
+코드 등록 materializer의 ID·version·scenario digest는 `ValidationControlPlan` v1alpha2에
+봉인된다. Candidate마다 Baseline·Negative Control·Counterfactual이 각각 fresh single-call
+Capability와 고유 request·session·evidence·receipt를 사용한다. A04 Counterfactual은 두 번째
+memory query를 보존하고 첫 poison write만 안전한 directive로 바꾼다. 세 시나리오·단일 target
+예제는 source 6회, Replay 6회, Control 9회로 정확히 21회를 사전 예약한다. Control
+Reconciliation은 정보 전용이며 Confirmed Gate나 Candidate 상태를 변경하지 않는다.
+
 이 Campaign은 M03·M06·A04에 대해 원 실행 6개 Task와 Candidate별 2회 fresh-session replay를
 기대한다. 봉인된 원 Run 뒤에는 trusted Candidate 중 `independent-reproduction-missing` 상태인
 항목만 별도 replay Run에서 실행한다. 반복마다 원 실행 및 다른 반복과 구별되는 session ID를

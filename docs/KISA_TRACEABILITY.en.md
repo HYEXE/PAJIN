@@ -222,6 +222,21 @@ only to the exact M03, M06, and A04 `ai.chat-probe` allowlist of the AI Red Team
 does not replay an absent Candidate, a Candidate that lacks Validator semantic support, or an
 unregistered Scenario merely because it appears structurally similar to a supported case.
 
+The M03, M06, and A04 validity-Claim contrasts are a separate explicit opt-in:
+
+```powershell
+.venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
+  --worker docker --repetitions 2 --validation-controls
+```
+
+The code-registered materializer ID, version, and scenario digest are sealed in
+`ValidationControlPlan` v1alpha2. For each Candidate, Baseline, Negative Control, and
+Counterfactual use separate fresh single-call Capabilities and unique request, session, evidence,
+and receipt lineage. The A04 Counterfactual preserves the second memory query while replacing only
+the first poison write with a safe directive. The three-scenario, single-target example reserves
+exactly 21 calls: 6 source, 6 Replay, and 9 Control calls. Control Reconciliation is
+information-only and cannot change the Confirmed Gate or Candidate state.
+
 This Campaign expects six original-execution Tasks for M03, M06, and A04, plus two fresh-session
 replays per Candidate. After the sealed original Run, only trusted Candidates in the
 `independent-reproduction-missing` state execute in separate replay Runs. Each repetition

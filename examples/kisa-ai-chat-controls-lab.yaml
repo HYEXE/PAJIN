@@ -2,7 +2,7 @@ apiVersion: pajin.dev/v1alpha1
 kind: Campaign
 metadata:
   name: kisa-ai-chat-controls-lab
-  description: M03 lab with independent Replay and information-only validation Controls.
+  description: M03, M06, and A04 lab with Replay and information-only validation Controls.
 spec:
   mode: ai-redteam
   autonomy: supervised
@@ -23,7 +23,9 @@ spec:
   accessProfile: greybox
   objectives:
     - detect system prompt disclosure
-  threatClasses: [M03]
+    - validate jailbreak policy enforcement
+    - detect persistence of untrusted input in agent memory
+  threatClasses: [M03, M06, A04]
   rulesOfEngagement:
     maxToolRiskTier: T2
     allowedMethods: [POST]
@@ -38,9 +40,9 @@ spec:
   budgets:
     durationSeconds: 120
     maxCostUsd: 1
-    maxAgents: 8
+    maxAgents: 12
     maxSpawnDepth: 1
-    maxToolCalls: 7
+    maxToolCalls: 21
   outputs:
     - markdown-report
     - json-findings

@@ -85,8 +85,8 @@ class ValidationControlDefinition(StrictModel):
 class ValidationControlPlan(StrictModel):
     """Trusted plan for the three controls attached to one validity Claim."""
 
-    api_version: Literal["pajin.dev/validation-control-plan/v1alpha1"] = Field(
-        default="pajin.dev/validation-control-plan/v1alpha1",
+    api_version: Literal["pajin.dev/validation-control-plan/v1alpha2"] = Field(
+        default="pajin.dev/validation-control-plan/v1alpha2",
         alias="apiVersion",
     )
     kind: Literal["ValidationControlPlan"] = "ValidationControlPlan"
@@ -109,6 +109,12 @@ class ValidationControlPlan(StrictModel):
         alias="originalRequestDigest",
         pattern=_DIGEST_PATTERN,
     )
+    materializer_id: str = Field(alias="materializerId", pattern=_IDENTIFIER_PATTERN)
+    materializer_version: str = Field(
+        alias="materializerVersion",
+        pattern=_IDENTIFIER_PATTERN,
+    )
+    scenario_digest: str = Field(alias="scenarioDigest", pattern=_DIGEST_PATTERN)
     executor_id: Literal["trusted-core:kisa-validation-control-executor"] = Field(
         default="trusted-core:kisa-validation-control-executor",
         alias="executorId",
@@ -288,6 +294,9 @@ def build_validation_control_plan(
     scenario_id: str,
     original_request_id: str,
     original_request_digest: str,
+    materializer_id: str,
+    materializer_version: str,
+    scenario_digest: str,
     controls: list[ValidationControlDefinition],
 ) -> ValidationControlPlan:
     payload = {
@@ -300,6 +309,9 @@ def build_validation_control_plan(
         "scenarioId": scenario_id,
         "originalRequestId": original_request_id,
         "originalRequestDigest": original_request_digest,
+        "materializerId": materializer_id,
+        "materializerVersion": materializer_version,
+        "scenarioDigest": scenario_digest,
         "executorId": "trusted-core:kisa-validation-control-executor",
         "controls": [item.model_dump(mode="json", by_alias=True) for item in controls],
         "informationalOnly": True,

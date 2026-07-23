@@ -45,7 +45,8 @@ B2.1은 Candidate-aware Validator와 Blind Evidence Reviewer를 분리했지만,
 
 ## 한계와 후속
 
-- 현재는 M03 단일 check와 단일 Control attempt만 지원한다.
+- 이 ADR이 결정한 첫 조각은 M03 단일 check와 단일 Control attempt만 지원한다. M06·A04와
+  등록형 materializer 확장은 [ADR 0033](0033-registered-validation-control-materializers.ko.md)에서
+  후속 승인했다.
 - local Run seal과 Docker proxy receipt를 사용하며 portable/off-host 독립 attestation은 아니다.
-- 독립 severity 도출, Provider/model 다양성, M06/A04 및 일반화된 Control materializer,
-  Claim 단위 public validation 상태는 후속 작업이다.
+- 독립 severity 도출, Provider/model 다양성과 Claim 단위 public validation 상태는 후속 작업이다.

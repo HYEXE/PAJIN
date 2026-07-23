@@ -894,14 +894,17 @@ Claim에서 Candidate identity·disposition·severity·기존 Decision을 제거
 변경하지 않는다. Blind 실패는 `insufficient`·`inconclusive`로 닫힌다. severity 문장 자체가 제안된
 severity를 누설하므로 severity Blind Review는 제외한다.
 
-[`ADR-0032`](adr/0032-fresh-capability-validation-controls.md)의 B2.2 첫 수직 조각은 KISA M03
-validity Claim에 대해 별도 Control Executor를 제공한다. 명시적 `--validation-controls` 실행은
-Baseline·Negative Control·Counterfactual마다 fresh non-delegable `max_calls=1` Capability와
-고유 request·session·evidence·receipt를 만들고 별도 Control Run에 봉인한다. 결정론적
-Reconciler는 `contrast-observed`·`contrast-not-observed`·`inconclusive`만 기록한다. 결과는
-항상 information-only이며 Candidate disposition·severity·confirmation eligibility를 변경하지
-않는다. M06/A04·일반화 materializer, 독립 severity, Provider/model 다양성과 portable attestation은
-B2.2 후속 범위다.
+[`ADR-0032`](adr/0032-fresh-capability-validation-controls.md)와
+[`ADR-0033`](adr/0033-registered-validation-control-materializers.md)의 B2.2 확장은 KISA
+M03·M06·A04 validity Claim에 대해 별도 Control Executor를 제공한다. 명시적
+`--validation-controls` 실행은 코드 등록 materializer의 ID·version·scenario digest를 Plan
+v1alpha2에 봉인하고, Baseline·Negative Control·Counterfactual마다 fresh non-delegable
+`max_calls=1` Capability와 고유 request·session·evidence·receipt를 만든다. M03·M06은 benign
+`READY` Counterfactual을 사용하고, A04는 두 번째 memory query를 유지한 채 첫 poison write만
+바꿔 인과관계를 대조한다. 결정론적 Reconciler는 `contrast-observed`·
+`contrast-not-observed`·`inconclusive`만 기록한다. 결과는 항상 information-only이며 Candidate
+disposition·severity·confirmation eligibility를 변경하지 않는다. 독립 severity,
+Provider/model 다양성과 portable attestation은 B2.2 후속 범위다.
 
 이 단계들 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
@@ -1418,7 +1421,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Provider Validator와 validity·impact·severity Atomic Claim/Decision, metadata-minimized Blind Evidence Review·결정론적 reconciliation, M03 fresh-capability Baseline·Negative Control·Counterfactual 첫 수직 조각, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; M03 밖의 Validation Control, 독립 severity 도출·Provider/model 다양성, Claim 단위 replay·공개 부분 검증 상태, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Provider Validator와 validity·impact·severity Atomic Claim/Decision, metadata-minimized Blind Evidence Review·결정론적 reconciliation, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; 등록된 KISA 세 시나리오 밖의 Validation Control, 독립 severity 도출·Provider/model 다양성, Claim 단위 replay·공개 부분 검증 상태, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1446,7 +1449,8 @@ Accepted ADR은 최소한 다음을 결정한다.
 - 후보 Finding 검증 및 중복 처리
 - Candidate-aware Atomic Claim Validator, metadata-minimized Blind Evidence Reviewer와 결정론적
   `corroborated`·`contested`·`inconclusive` reconciliation
-- B2.2 첫 조각: M03 validity Claim에 대해 fresh single-call Capability와 별도
+- B2.2 등록형 확장: M03·M06·A04 validity Claim에 대해 materializer ID·version·scenario
+  digest를 Plan v1alpha2에 봉인하고, fresh single-call Capability와 별도
   request·session·evidence·receipt를 사용하는 opt-in Baseline·Negative
   Control·Counterfactual Control Executor. 정보 전용 reconciliation이며 confirmation 불가
 - Kill Switch, 예산, 재시도, 체크포인트
@@ -1713,7 +1717,7 @@ XBOW의 공식 공개 저장소에서는 핵심 플랫폼 구현을 제공하지
 1. `README.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. `docs/adr/0001-0032` — 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, Validation Control과 Replay orchestration 설계에 관한 Accepted 의사결정
+4. `docs/adr/0001-0033` — 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, 등록형 Validation Control과 Replay orchestration 설계에 관한 Accepted 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 
