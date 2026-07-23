@@ -4,6 +4,7 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
+from pydantic import JsonValue
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.discovery import (
@@ -50,7 +51,7 @@ def _rule(
     *,
     rule_id: str = "pajin.test.tool-authorization.v1",
     required_tool_id: str = MockAgentProbe.spec.tool_id,
-    arguments: dict[str, object] | None = None,
+    arguments: dict[str, JsonValue] | None = None,
 ) -> RegisteredHypothesisRule:
     registration = recon_tool.registration
     return RegisteredHypothesisRule(

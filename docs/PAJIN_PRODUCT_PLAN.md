@@ -162,8 +162,12 @@ Run → A2 admission → 별도 Surface projection을 연결한다. 기존 one-t
 전달하지 않으므로 A3만으로 자동 후속 공격은 발생하지 않는다. A4는 별도 명시적 flag에서 봉인된
 Surface projection을 다시 검증하고 코드 등록 규칙으로 `AttackHypothesis`·`AttackHypothesisSet`과
 단일 Dynamic Specialist Wave를 결정론적으로 컴파일한다. 가설별 fresh 감쇠 Capability와 한 번의
-Tool 호출만 허용하고 결과를 canonical Hypothesis 순서로 봉인한다. 기존 Planner 입력과 A5
-Observation Graph·replanning authority는 아직 바꾸지 않는다.
+Tool 호출만 허용하고 결과를 canonical Hypothesis 순서로 봉인한다. A5는 별도 명시적 flag에서 봉인된
+A4 결과를 다시 검증하고 exact 등록 필드를 `ObservationGraphSnapshot`과 typed 관계로 승격한다.
+결정론적 `ReplanDecision`은 신규성 임계값, 최대 2 wave·1 replan, 동일 Plan 반복, Campaign 공유
+Agent·Tool call·비용·시간·rate limit을 강제한다. 코드 등록 transition이 새 Compiler·rule을 선택한
+경우에만 두 번째 fresh-Capability Wave를 한 번 실행하며 모든 Graph·Decision을 별도 Control Run에
+append-only artifact와 audit event로 봉인한다. 기존 one-time Planner 입력은 계속 바꾸지 않는다.
 Phase 3 Mode Pack은 제한된 실행 시나리오를 갖춘 동작 가능한 수준이며, Phase 4는 일반 Control
 Plane 수직 조각과 전용 exact-KISA one-item Replay slice를 함께 포함한다.
 
@@ -1390,7 +1394,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave와 A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; Observation Graph·multi-wave replanning, portable proof와 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection 및 fresh-identity retry slice를 구현; trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable proof와 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1492,9 +1496,17 @@ Accepted ADR은 최소한 다음을 결정한다.
   versioned `AttackHypothesis`·`AttackHypothesisSet`과 단일 `HypothesisWavePlan`을 컴파일. Surface·가설별
   fresh Specialist와 1-call 감쇠 Capability를 발급하고 Campaign 공유 budget·rate limit·Tool Gateway로
   한 wave만 실행해 결과를 canonical Hypothesis 순서로 봉인하며 기존 Planner에는 입력하지 않음
+- Agentic Discovery A5 bounded replanning: 명시적 `enable_replanning`에서만 봉인된 첫 Hypothesis
+  Wave의 Campaign·set·plan·result·terminal state·audit event를 다시 검증하고, 코드 등록 exact-field
+  판정으로 `HypothesisObservation`과 append-only `ObservationGraphSnapshot`을 생성. `supports`·
+  `contradicts`·`enables`·`depends-on`·`new-surface` 관계 계약과 canonical `ReplanDecision`을
+  봉인하고, 신규성 임계값을 넘는 exact 등록 transition에 한해 서로 다른 Compiler·rule의 두 번째
+  fresh-Capability Wave를 한 번 실행. 최대 2 wave·1 replan, 동일 상태 반복 차단과 Campaign 공유
+  Agent·Tool call·cost·time·rate limit을 runtime이 강제하며 기존 Planner에는 입력하지 않음
 - 남은 ADR 0029 범위: portable/off-host 서명 proof, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
-  Facts·Observation Graph·Agent Working Memory의 구조화된 영속 계층과 A5 bounded replanning
+  Facts·Agent Working Memory의 구조화된 영속 계층, trusted new-Surface admission, ranking·정보가치,
+  병렬-safe grouping과 3개 이상 wave replanning
 
 ### Phase 3 — Mode Packs (진행 중)
 

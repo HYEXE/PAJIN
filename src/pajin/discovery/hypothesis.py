@@ -450,16 +450,25 @@ class CompiledHypothesisWave:
 class DeterministicHypothesisCompiler:
     """Compile only verified Surface projections through code-registered rules."""
 
-    compiler_id = "pajin.discovery.registered-hypothesis-compiler.v1"
+    default_compiler_id = "pajin.discovery.registered-hypothesis-compiler.v1"
 
     def __init__(
         self,
         *,
         tools: ToolRegistry,
         rules: Sequence[RegisteredHypothesisRule],
+        compiler_id: str | None = None,
     ) -> None:
         if not isinstance(tools, ToolRegistry):
             raise TypeError("Hypothesis Compiler requires a ToolRegistry")
+        resolved_compiler_id = (
+            self.default_compiler_id if compiler_id is None else compiler_id
+        )
+        if (
+            not isinstance(resolved_compiler_id, str)
+            or fullmatch(_IDENTIFIER_PATTERN, resolved_compiler_id) is None
+        ):
+            raise ValueError("Hypothesis Compiler ID is malformed")
         registered = [
             RegisteredHypothesisRule.model_validate(rule.model_dump(mode="python"))
             for rule in rules
@@ -469,8 +478,15 @@ class DeterministicHypothesisCompiler:
         rule_ids = [rule.rule_id for rule in registered]
         if len(rule_ids) != len(set(rule_ids)):
             raise ValueError("Hypothesis Compiler rule IDs must be unique")
+        self.compiler_id = resolved_compiler_id
         self._tools = tools
         self._rules = tuple(sorted(registered, key=lambda item: item.rule_id))
+
+    @property
+    def registered_rule_ids(self) -> tuple[str, ...]:
+        """Expose the immutable code-registered authority identity."""
+
+        return tuple(rule.rule_id for rule in self._rules)
 
     def compile(
         self,
@@ -681,6 +697,18 @@ class DynamicHypothesisWaveRunner:
         self._worker = worker
         self._output_root = output_root
 
+    @property
+    def compiler_id(self) -> str:
+        """Return the exact compiler authority used by this runner."""
+
+        return self._compiler.compiler_id
+
+    @property
+    def registered_rule_ids(self) -> tuple[str, ...]:
+        """Return the exact registered rules that can create executable steps."""
+
+        return self._compiler.registered_rule_ids
+
     async def run(
         self,
         campaign: CampaignManifest,
@@ -820,6 +848,7 @@ class DynamicHypothesisWaveRunner:
             raise BudgetExceeded("Hypothesis Wave estimated cost exceeds the Campaign budget")
         for _ in plan.steps:
             state.budget.reserve_agent(depth=1)
+        state.budget.record_cost(estimated_cost)
 
         ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
         state.ledger = ledger

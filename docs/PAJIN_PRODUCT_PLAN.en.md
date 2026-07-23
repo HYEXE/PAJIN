@@ -171,8 +171,13 @@ passed to the existing one-time Planner, so A3 alone cannot trigger a follow-up 
 separate explicit flag, A4 re-verifies the sealed Surface projection and deterministically compiles
 `AttackHypothesis`, `AttackHypothesisSet`, and one Dynamic Specialist Wave through code-registered
 rules. Each Hypothesis receives a fresh attenuated Capability and one Tool call, and results are
-sealed in canonical Hypothesis order. Existing Planner inputs and A5 Observation Graph/replanning
-authority remain unchanged.
+sealed in canonical Hypothesis order. Behind another explicit flag, A5 re-verifies that sealed A4
+result and promotes exact registered fields into `ObservationGraphSnapshot` artifacts and typed
+relationships. A deterministic `ReplanDecision` enforces a novelty threshold, at most two waves and
+one replan, repeated-Plan blocking, and the shared Campaign agent, Tool-call, cost, time, and rate
+limits. Only a code-registered transition to a new Compiler/rule authority can run one second
+fresh-Capability wave. Every Graph and Decision is sealed as an append-only artifact and audit event
+in a separate control Run. Existing one-time Planner inputs remain unchanged.
 Phase 3 Mode Packs are functional with restricted execution scenarios, and Phase 4 includes both the general
 Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 
@@ -1405,7 +1410,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Observation Graphs, multi-wave replanning, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1508,10 +1513,20 @@ defines at least the following.
   receives a fresh Specialist and one-call attenuated Capability; and one wave runs through the
   shared Campaign budget, rate ledger, and Tool Gateway before results are sealed in canonical
   Hypothesis order. The existing Planner still receives none of these inputs
+- Agentic Discovery A5 bounded replanning: an explicit `enable_replanning` flag re-verifies the
+  sealed first Hypothesis Wave's Campaign, set, plan, results, terminal state, and audit events;
+  code-registered exact-field rules produce `HypothesisObservation` and append-only
+  `ObservationGraphSnapshot` artifacts; `supports`, `contradicts`, `enables`, `depends-on`, and
+  `new-surface` relationship contracts plus canonical `ReplanDecision` artifacts are sealed. Only
+  an exact registered transition above the novelty threshold can execute one second
+  fresh-Capability Wave under a distinct Compiler/rule authority. The runtime enforces at most two
+  waves and one replan, blocks repeated state, and shares Campaign agent, Tool-call, cost, time, and
+  rate limits. None of these inputs are passed to the existing Planner
 - Remaining ADR-0029 scope: portable or off-host signed proof,
   session-bearing driver and Oracle
-  linkage for non-KISA Local and Control Plane paths, and a structured persistence layer for Campaign
-  Facts, Observation Graphs, and Agent Working Memory plus A5 bounded replanning
+  linkage for non-KISA Local and Control Plane paths, a structured persistence layer for Campaign
+  Facts and Agent Working Memory, trusted new-Surface admission, ranking and information value,
+  parallel-safe grouping, and three-or-more-wave replanning
 
 ### Phase 3 - Mode Packs (In progress)
 
