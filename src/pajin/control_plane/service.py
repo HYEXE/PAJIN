@@ -69,6 +69,7 @@ from pajin.control_plane.errors import (
     StateConflict,
 )
 from pajin.control_plane.kisa_derivation import (
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
     DerivedKISAReplayBatch,
     derive_kisa_confirmation_batch,
     derive_kisa_retest_batch,
@@ -106,6 +107,8 @@ from pajin.control_plane.models import (
     ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayBatchView,
+    ReplayClaimProjectionInputAuthority,
+    ReplayClaimProjectionItemAuthority,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
     ReplayFinalizationView,
@@ -149,8 +152,8 @@ from pajin.control_plane.replay_issuance import (
 from pajin.control_plane.replay_reads import ReplayReadService
 from pajin.control_plane.security import CheckpointSigner, token_digest
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
-from pajin.domain.replay import ReplayPurpose, ReplayRetestContext
-from pajin.domain.validation import ReplayConfirmationLineage, ValidationDecision
+from pajin.domain.replay import ReplayCompilation, ReplayPurpose, ReplayRetestContext
+from pajin.domain.validation import AtomicClaimType, ReplayConfirmationLineage, ValidationDecision
 from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome
 from pajin.modes.ai_redteam.retest import KISARetestService
 from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_result
@@ -196,7 +199,11 @@ class _ReplayFinalizationPreflight:
 
 @dataclass(frozen=True, slots=True)
 class _ReplayProjectionSnapshot:
-    authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
+    authority: (
+        ReplayProjectionInputAuthority
+        | ReplayRetestProjectionInputAuthority
+        | ReplayClaimProjectionInputAuthority
+    )
     authority_digest: str
     source_storage_key: str
     retest_source_storage_key: str | None
@@ -210,7 +217,11 @@ class _ReplayProjectionTicketVerifier:
 
     def __init__(
         self,
-        authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority,
+        authority: (
+            ReplayProjectionInputAuthority
+            | ReplayRetestProjectionInputAuthority
+            | ReplayClaimProjectionInputAuthority
+        ),
     ) -> None:
         self._items = {item.ticket_id: item for item in authority.items}
         self._source_root_digest = authority.source.integrity_root_digest
@@ -316,8 +327,11 @@ class ControlPlaneService:
             artifact_ref: ArtifactRef,
             retest_root: Path | None = None,
             retest_artifact_ref: ArtifactRef | None = None,
+            claim_projection: bool = False,
         ) -> DerivedKISAReplayBatch:
             if retest_root is not None and retest_artifact_ref is not None:
+                if claim_projection:
+                    raise ValueError("Claim projection is not supported for remediation Retest")
                 return derive_kisa_retest_batch(
                     source_root=source_root,
                     artifact_ref=artifact_ref,
@@ -329,6 +343,7 @@ class ControlPlaneService:
             return derive_kisa_confirmation_batch(
                 source_root=source_root,
                 artifact_ref=artifact_ref,
+                claim_projection=claim_projection,
             )
 
         def load_run_artifacts(
@@ -1637,6 +1652,11 @@ class ControlPlaneService:
                     item=locked_item,
                     ticket=locked_ticket,
                     artifact=artifact,
+                    claim_authority=self._records.replay_claim_binding(
+                        session,
+                        locked_item.item_id,
+                        lock=True,
+                    ),
                     retest_artifact=retest_artifact,
                 )
             self._publish_ready_replay_projection(committed_view.batch.batch_id)
@@ -1963,14 +1983,14 @@ class ControlPlaneService:
             )
 
     @staticmethod
-    def _replay_projection_retest_context(
+    def _replay_projection_compilation_context(
         session: Session,
         *,
         batch: ReplayBatchRecord,
         item: ReplayItemRecord,
         finalization: ReplayFinalizationRecord,
         lock: bool,
-    ) -> ReplayRetestContext | None:
+    ) -> tuple[ReplayCompilation, ReplayRetestContext | None]:
         statement = select(ReplayCompilationRecord).where(
             ReplayCompilationRecord.compilation_id == finalization.compilation_id
         )
@@ -1997,12 +2017,12 @@ class ControlPlaneService:
         if batch.purpose == ReplayPurpose.REMEDIATION_RETEST.value:
             if context is None:
                 raise StateConflict("Replay retest projection context set is inconsistent")
-            return context
+            return compilation, context
         if context is not None:
             raise StateConflict("Replay confirmation projection contains Retest context")
-        return None
+        return compilation, None
 
-    def _replay_projection_snapshot(
+    def _replay_projection_snapshot(  # noqa: C901
         self,
         session: Session,
         batch: ReplayBatchRecord,
@@ -2045,6 +2065,7 @@ class ControlPlaneService:
             raise StateConflict("Replay projection finalization set is incomplete")
 
         authority_items: list[ReplayProjectionItemAuthority] = []
+        claim_authority_items: list[ReplayClaimProjectionItemAuthority] = []
         output_storage_keys: list[str] = []
         retest_contexts: dict[str, ReplayRetestContext] = {}
         for item in items:
@@ -2075,46 +2096,95 @@ class ControlPlaneService:
                 and output_ref.run_id == item.replay_run_id
             ):
                 raise StateConflict("Replay projection finalization graph is inconsistent")
-            retest_context = self._replay_projection_retest_context(
+            compilation, retest_context = self._replay_projection_compilation_context(
                 session,
                 batch=batch,
                 item=item,
                 finalization=finalization,
                 lock=lock,
             )
-            if retest_context is not None:
-                if item.candidate_id in retest_contexts:
-                    raise StateConflict("Replay retest projection context set is ambiguous")
-                retest_contexts[item.candidate_id] = retest_context
-            authority_items.append(
-                ReplayProjectionItemAuthority(
-                    ordinal=item.ordinal,
-                    item_id=item.item_id,
-                    ticket_id=ticket.ticket_id,
-                    finalization_id=finalization.finalization_id,
-                    replay_run_id=item.replay_run_id,
-                    compilation_digest=item.compilation_digest,
-                    output=output_ref,
-                    artifact_set_digest=finalization.artifact_set_digest,
-                    receipt_seal_root_digest=finalization.receipt_seal_root_digest,
-                    gate_decision_digest=finalization.gate_decision_digest,
-                    result_digest=finalization.result_digest,
-                    finalized_at=_aware(finalization.finalized_at),
-                )
+            claim_authority = self._records.replay_claim_binding(
+                session,
+                item.item_id,
+                lock=lock,
             )
+            if retest_context is not None:
+                source_candidate_id = compilation.spec.binding.candidate_id
+                if source_candidate_id in retest_contexts:
+                    raise StateConflict("Replay retest projection context set is ambiguous")
+                retest_contexts[source_candidate_id] = retest_context
+            base_authority = ReplayProjectionItemAuthority(
+                ordinal=item.ordinal,
+                item_id=item.item_id,
+                ticket_id=ticket.ticket_id,
+                finalization_id=finalization.finalization_id,
+                replay_run_id=item.replay_run_id,
+                compilation_digest=item.compilation_digest,
+                output=output_ref,
+                artifact_set_digest=finalization.artifact_set_digest,
+                receipt_seal_root_digest=finalization.receipt_seal_root_digest,
+                gate_decision_digest=finalization.gate_decision_digest,
+                result_digest=finalization.result_digest,
+                finalized_at=_aware(finalization.finalized_at),
+            )
+            if batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION:
+                claim = compilation.spec.binding.claim
+                if (
+                    claim is None
+                    or claim_authority is None
+                    or claim_authority.item_id != item.item_id
+                    or claim_authority.batch_id != batch.batch_id
+                    or claim_authority.source_candidate_id
+                    != compilation.spec.binding.candidate_id
+                    or claim_authority.claim_id != item.candidate_id
+                    or claim_authority.claim_id != claim.claim_id
+                    or claim_authority.claim_binding != claim.model_dump(mode="json")
+                    or claim_authority.binding_digest
+                    != replay_context_digest(claim.model_dump(mode="json"))
+                ):
+                    raise StateConflict("Replay Claim projection item authority is inconsistent")
+                claim_authority_items.append(
+                    ReplayClaimProjectionItemAuthority(
+                        **base_authority.model_dump(mode="python"),
+                        candidate_id=claim_authority.source_candidate_id,
+                        candidate_digest=item.candidate_digest,
+                        claim=claim,
+                    )
+                )
+            else:
+                if claim_authority is not None:
+                    raise StateConflict("legacy Replay projection contains Claim authority")
+                authority_items.append(base_authority)
             output_storage_keys.append(output_artifact.storage_key)
 
         if retest_artifact is None:
-            authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority = (
-                ReplayProjectionInputAuthority(
+            authority: (
+                ReplayProjectionInputAuthority
+                | ReplayRetestProjectionInputAuthority
+                | ReplayClaimProjectionInputAuthority
+            )
+            if batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION:
+                if authority_items or len(claim_authority_items) != len(items):
+                    raise StateConflict("Replay Claim projection authority is incomplete")
+                authority = ReplayClaimProjectionInputAuthority(
+                    batch_id=batch.batch_id,
+                    source=source_ref,
+                    batch_cas_version=batch.cas_version,
+                    items=claim_authority_items,
+                )
+            else:
+                if claim_authority_items:
+                    raise StateConflict("legacy Replay projection contains Claim authority")
+                authority = ReplayProjectionInputAuthority(
                     batch_id=batch.batch_id,
                     source=source_ref,
                     batch_cas_version=batch.cas_version,
                     items=authority_items,
                 )
-            )
             retest_source_storage_key = None
         else:
+            if claim_authority_items:
+                raise StateConflict("Replay retest projection contains Claim authority")
             authority = ReplayRetestProjectionInputAuthority(
                 batch_id=batch.batch_id,
                 source=source_ref,
@@ -2736,12 +2806,12 @@ class ControlPlaneService:
         candidates = [
             candidate
             for candidate in source_validation.candidates
-            if candidate.candidate_id == item.candidate_id
+            if candidate.candidate_id == compilation.spec.binding.candidate_id
         ]
         decisions = [
             decision
             for decision in source_validation.decisions
-            if decision.candidate_id == item.candidate_id
+            if decision.candidate_id == compilation.spec.binding.candidate_id
         ]
         if (
             len(candidates) != 1
@@ -2765,13 +2835,20 @@ class ControlPlaneService:
             verified_at=receipt.verified_at,
         )
         try:
-            return decide_replay_confirmation(
+            evaluated = decide_replay_confirmation(
                 candidate=candidates[0],
                 source_decision=decisions[0],
                 artifact_set=artifact_set,
                 lineage=lineage,
                 decided_at=now,
             )
+            claim_binding = artifact_set.outcome.binding.claim
+            if (
+                claim_binding is not None
+                and claim_binding.claim_type is not AtomicClaimType.VALIDITY
+            ):
+                return decisions[0]
+            return evaluated
         except ValueError as exc:
             raise StateConflict(
                 "verified Replay output failed the common confirmation Gate"
@@ -3186,5 +3263,6 @@ class ControlPlaneService:
             item=item,
             ticket=ticket,
             artifact=artifact,
+            claim_authority=self._records.replay_claim_binding(session, item.item_id),
             retest_artifact=retest_artifact,
         )

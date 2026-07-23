@@ -40,6 +40,7 @@ from pajin.control_plane.database import (
     DURABLE_REPLAY_RESERVATION_SCHEMA_VERSION,
     LEGACY_CONTROL_PLANE_TABLES,
     REPLAY_AUTHORITY_SCHEMA_VERSION,
+    REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION,
     REPLAY_COMPILATION_AUTHORITY_SCHEMA_VERSION,
     REPLAY_EXECUTION_CONTEXT_SCHEMA_VERSION,
     REPLAY_FINALIZATION_SCHEMA_VERSION,
@@ -56,6 +57,7 @@ from pajin.control_plane.database import (
     V8_CONTROL_PLANE_TABLES,
     V10_CONTROL_PLANE_TABLES,
     V11_CONTROL_PLANE_TABLES,
+    V12_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
@@ -64,6 +66,7 @@ from pajin.control_plane.database import (
     ReplayBatchRecord,
     ReplayBudgetAccountRecord,
     ReplayBudgetReservationRecord,
+    ReplayClaimBindingRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayExecutionContextRecord,
@@ -1374,6 +1377,7 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
             REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
             REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
+            REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION,
         ]
 
         repository.initialize()
@@ -1391,6 +1395,7 @@ def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) 
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
             connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
             connection.exec_driver_sql("DROP TABLE cp_replay_projections")
             connection.execute(
@@ -1431,9 +1436,10 @@ def test_exact_v11_schema_adds_append_only_retest_source_authority(tmp_path: Pat
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
             connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
             connection.execute(
-                text("DELETE FROM cp_schema_version WHERE version = :version"),
+                text("DELETE FROM cp_schema_version WHERE version >= :version"),
                 {"version": REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION},
             )
         assert {
@@ -1460,6 +1466,45 @@ def test_exact_v11_schema_adds_append_only_retest_source_authority(tmp_path: Pat
             "cp_replay_retest_sources_no_delete",
             "cp_replay_retest_sources_no_replace",
             "cp_replay_retest_sources_no_update",
+        }
+    finally:
+        repository.close()
+
+
+def test_exact_v12_schema_adds_append_only_claim_binding_authority(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "v12-claim-binding-authority.db")
+    try:
+        repository.initialize()
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
+            connection.execute(
+                text("DELETE FROM cp_schema_version WHERE version >= :version"),
+                {"version": REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION},
+            )
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V12_CONTROL_PLANE_TABLES
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert ReplayClaimBindingRecord.__tablename__ in inspect(
+            repository.engine
+        ).get_table_names()
+        with repository.engine.connect() as connection:
+            triggers = {
+                str(name)
+                for name in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' AND tbl_name = 'cp_replay_claim_bindings'"
+                    )
+                ).scalars()
+            }
+        assert triggers == {
+            "cp_replay_claim_bindings_no_delete",
+            "cp_replay_claim_bindings_no_replace",
+            "cp_replay_claim_bindings_no_update",
         }
     finally:
         repository.close()
@@ -4825,6 +4870,48 @@ def test_v5_permit_checks_reject_impossible_usage_and_lifecycle(
             updates = {"expires_at": record.reserved_at}
         for field, value in updates.items():
             setattr(record, field, value)
+    repository.close()
+
+
+def test_replay_claim_binding_is_append_only(tmp_path: Path) -> None:
+    repository = _repository(tmp_path / "replay-claim-binding-append-only.db")
+    repository.initialize()
+    _seed_replay_item_authority(repository)
+    now = datetime.now(UTC)
+    with repository.transaction() as session:
+        session.add(
+            ReplayClaimBindingRecord(
+                item_id="item_migration",
+                batch_id="batch_migration",
+                source_candidate_id="candidate-migration",
+                claim_id="claim-migration",
+                claim_binding={
+                    "candidateClaimDigest": "1" * 64,
+                    "claimId": "claim-migration",
+                    "claimDigest": "2" * 64,
+                    "claimType": "validity",
+                    "statement": "migration Claim",
+                },
+                binding_digest="3" * 64,
+                created_at=now,
+            )
+        )
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        binding = session.get(ReplayClaimBindingRecord, "item_migration")
+        assert binding is not None
+        binding.claim_id = "claim-tampered"
+
+    with (
+        pytest.raises(DatabaseError, match="append-only"),
+        repository.transaction() as session,
+    ):
+        binding = session.get(ReplayClaimBindingRecord, "item_migration")
+        assert binding is not None
+        session.delete(binding)
     repository.close()
 
 

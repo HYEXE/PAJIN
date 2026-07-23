@@ -1293,6 +1293,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_replay_finalizations": "replay_finalization",
     "cp_replay_projections": "replay_projection",
     "cp_replay_retest_sources": "replay_retest_source",
+    "cp_replay_claim_bindings": "replay_claim_binding",
 }
 
 

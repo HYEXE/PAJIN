@@ -28,6 +28,7 @@ from pajin.control_plane.database import (
     ReplayBatchRecord,
     ReplayBudgetAccountRecord,
     ReplayBudgetReservationRecord,
+    ReplayClaimBindingRecord,
     ReplayCompilationRecord,
     ReplayExecutionContextRecord,
     ReplayItemRecord,
@@ -40,6 +41,7 @@ from pajin.control_plane.database import (
 )
 from pajin.control_plane.errors import ResourceNotFound, StateConflict
 from pajin.control_plane.kisa_derivation import (
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
     DerivedKISAReplayBatch,
@@ -57,6 +59,7 @@ from pajin.control_plane.models import (
     ReplayBatchView,
     ReplayExecutionContext,
     ReplayItemState,
+    ReplayItemView,
     ReplayJobPayload,
     ReplayTicketState,
     RunState,
@@ -81,6 +84,7 @@ from pajin.control_plane.replay_authority import (
 from pajin.control_plane.view_mapper import ControlPlaneViewMapper
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.replay.tickets import replay_context_digest
 from pajin.tools.ai import AIChatProbeTool
 
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
@@ -108,6 +112,7 @@ class ReplayBatchDeriver(Protocol):
         artifact_ref: ArtifactRef,
         retest_root: Path | None = None,
         retest_artifact_ref: ArtifactRef | None = None,
+        claim_projection: bool = False,
     ) -> DerivedKISAReplayBatch: ...
 
 
@@ -234,6 +239,7 @@ class ReplayIssuanceService:
                     artifact_ref=source,
                     retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                     retest_artifact_ref=retest_source,
+                    claim_projection=request.claim_projection,
                 )
             except (OSError, ValueError) as exc:
                 raise StateConflict("managed source is not eligible for KISA Replay") from exc
@@ -413,6 +419,11 @@ class ReplayIssuanceService:
                 for ordinal, admitted in enumerate(derived.items):
                     replay_run_id = admitted.replay_run_id
                     item_id = f"replay-item_{uuid4().hex}"
+                    internal_candidate_key = (
+                        admitted.claim.claim_id
+                        if admitted.claim is not None
+                        else admitted.candidate_id
+                    )
                     replay_run = RunRecord(
                         run_id=replay_run_id,
                         campaign_name=derived.campaign_name,
@@ -422,6 +433,11 @@ class ReplayIssuanceService:
                                 "batchId": batch.batch_id,
                                 "itemId": item_id,
                                 "candidateId": admitted.candidate_id,
+                                "claim": (
+                                    admitted.claim.model_dump(mode="json")
+                                    if admitted.claim is not None
+                                    else None
+                                ),
                                 "candidateDigest": admitted.candidate_digest,
                                 "contractDigest": admitted.contract_digest,
                                 "compilationDigest": admitted.compilation_digest,
@@ -451,7 +467,7 @@ class ReplayIssuanceService:
                         source_run_id=batch.source_run_id,
                         replay_run_id=replay_run_id,
                         ordinal=ordinal,
-                        candidate_id=admitted.candidate_id,
+                        candidate_id=internal_candidate_key,
                         candidate_digest=admitted.candidate_digest,
                         contract_digest=admitted.contract_digest,
                         compilation_digest=admitted.compilation_digest,
@@ -465,6 +481,20 @@ class ReplayIssuanceService:
                     )
                     session.add(item)
                     session.flush()
+                    if admitted.claim is not None:
+                        claim_value = admitted.claim.model_dump(mode="json")
+                        session.add(
+                            ReplayClaimBindingRecord(
+                                item_id=item.item_id,
+                                batch_id=batch.batch_id,
+                                source_candidate_id=admitted.candidate_id,
+                                claim_id=admitted.claim.claim_id,
+                                claim_binding=claim_value,
+                                binding_digest=replay_context_digest(claim_value),
+                                created_at=now,
+                            )
+                        )
+                        session.flush()
                     compilation = ReplayCompilationRecord(
                         compilation_id=f"replay-compilation_{uuid4().hex}",
                         item_id=item.item_id,
@@ -582,6 +612,9 @@ class ReplayIssuanceService:
                 artifact_ref=source,
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
+                claim_projection=(
+                    batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                ),
             )
         except (OSError, ValueError) as exc:
             raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
@@ -763,7 +796,7 @@ class ReplayIssuanceService:
             )
             return ReplayBatchIssuanceView(
                 batch=self._batch_view(session, batch),
-                items=[self._views.replay_item(item) for item in items],
+                items=[self._item_view(session, item) for item in items],
                 tickets=[self._views.replay_ticket(ticket) for ticket in issued_tickets],
             )
 
@@ -968,6 +1001,9 @@ class ReplayIssuanceService:
                 artifact_ref=source,
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
+                claim_projection=(
+                    batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                ),
             )
         except (OSError, ValueError) as exc:
             raise StateConflict(
@@ -1066,7 +1102,14 @@ class ReplayIssuanceService:
         released_staging_ids: list[str],
         now: datetime,
     ) -> list[_ReplayRetryAttempt]:
-        derived_by_candidate = {admitted.candidate_id: admitted for admitted in retry.derived.items}
+        derived_by_candidate = {
+            (
+                admitted.claim.claim_id
+                if admitted.claim is not None
+                else admitted.candidate_id
+            ): admitted
+            for admitted in retry.derived.items
+        }
         admitted_items = [derived_by_candidate[item.candidate_id] for item in retry_items]
         replay_run_ids = [admitted.replay_run_id for admitted in admitted_items]
         if session.scalar(
@@ -1243,7 +1286,8 @@ class ReplayIssuanceService:
             mode=derived.mode,
             purpose=derived.purpose,
             policy_version=derived.policy_version,
-            candidate_id=item.candidate_id,
+            candidate_id=admitted.candidate_id,
+            claim=admitted.claim,
             candidate_digest=item.candidate_digest,
             contract_digest=item.contract_digest,
             compilation_digest=admitted.compilation_digest,
@@ -1613,7 +1657,11 @@ class ReplayIssuanceService:
         expected_policy = (
             KISA_RETEST_POLICY_VERSION
             if request.retest_source is not None
-            else KISA_CONFIRMATION_POLICY_VERSION
+            else (
+                KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                if request.claim_projection
+                else KISA_CONFIRMATION_POLICY_VERSION
+            )
         )
         batch_matches = (
             batch.created_by == actor
@@ -1679,8 +1727,14 @@ class ReplayIssuanceService:
         current_tickets = self._require_exact_replay_issuance_graph(session, graph)
         return ReplayBatchIssuanceView(
             batch=self._batch_view(session, graph.batch),
-            items=[self._views.replay_item(item) for item in graph.items],
+            items=[self._item_view(session, item) for item in graph.items],
             tickets=[self._views.replay_ticket(ticket) for ticket in current_tickets],
+        )
+
+    def _item_view(self, session: Session, item: ReplayItemRecord) -> ReplayItemView:
+        return self._views.replay_item(
+            item,
+            claim_authority=self._records.replay_claim_binding(session, item.item_id),
         )
 
     def _reconstruct_replay_issuance_graph(

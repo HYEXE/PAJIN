@@ -14,8 +14,8 @@ from typing import Annotated, Any, Literal
 from pydantic import BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
 from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRiskTier
-from pajin.domain.replay import ReplayCompilation, ReplayPurpose
-from pajin.domain.validation import ValidationDecision
+from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
+from pajin.domain.validation import AtomicClaimType, ValidationDecision
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.tools.base import ToolSpec
@@ -689,6 +689,7 @@ class ReplayJobPayload(StrictModel):
     purpose: ReplayPurpose
     policy_version: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
     candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    claim: ReplayClaimBinding | None = None
     candidate_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     contract_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -702,12 +703,15 @@ class CreateReplayBatchRequest(StrictModel):
 
     source: ArtifactLocator
     retest_source: ArtifactLocator | None = None
+    claim_projection: bool = False
     idempotency_key: str = Field(min_length=8, max_length=200)
 
     @model_validator(mode="after")
     def require_distinct_retest_source(self) -> CreateReplayBatchRequest:
         if self.retest_source == self.source:
             raise ValueError("baseline and parent Retest Artifacts must be distinct")
+        if self.retest_source is not None and self.claim_projection:
+            raise ValueError("Claim projection is not supported for remediation Retest batches")
         return self
 
 
@@ -895,6 +899,7 @@ class ReplayItemView(StrictModel):
     replay_run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     state: ReplayItemState
     candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    claim: ReplayClaimBinding | None = None
     candidate_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     contract_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     compilation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -1122,6 +1127,7 @@ class ReplayClaimView(StrictModel):
             "purpose": self.batch.purpose,
             "policy_version": self.batch.policy_version,
             "candidate_id": self.item.candidate_id,
+            "claim": self.item.claim,
             "candidate_digest": self.item.candidate_digest,
             "contract_digest": self.item.contract_digest,
             "compilation_digest": self.item.compilation_digest,
@@ -1166,6 +1172,8 @@ class ReplayExecutionClaimView(ReplayClaimView):
             or compilation_digest != self.item.compilation_digest
             or grant_digest != self.item.grant_digest
             or binding.candidate_id != self.item.candidate_id
+            or binding.claim != self.item.claim
+            or payload.claim != self.item.claim
             or binding.candidate_run_id != self.batch.source.run_id
             or binding.replay_run_id != self.item.replay_run_id
             or binding.campaign != self.batch.campaign_name
@@ -1393,6 +1401,66 @@ class ReplayRetestProjectionInputAuthority(StrictModel):
         return self
 
 
+class ReplayClaimProjectionItemAuthority(ReplayProjectionItemAuthority):
+    """Exact Claim-specific finalized input for a Control Plane projection."""
+
+    candidate_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
+    candidate_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    claim: ReplayClaimBinding
+
+
+class ReplayClaimProjectionInputAuthority(StrictModel):
+    """Canonical exact-Claim input set for one immutable confirmation projection."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.control-plane.replay-projection-inputs/v3"] = (
+        "pajin.control-plane.replay-projection-inputs/v3"
+    )
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    source: ArtifactRef
+    batch_cas_version: int = Field(strict=True, ge=1, le=2_147_483_647)
+    items: list[ReplayClaimProjectionItemAuthority] = Field(min_length=1, max_length=3_000)
+
+    @model_validator(mode="after")
+    def require_complete_claim_authority(self) -> ReplayClaimProjectionInputAuthority:
+        order = [(item.ordinal, item.item_id) for item in self.items]
+        if order != sorted(order) or len(order) != len(set(order)):
+            raise ValueError("Replay Claim projection items must be uniquely sorted by ordinal")
+        for attribute in (
+            "ticket_id",
+            "finalization_id",
+            "replay_run_id",
+        ):
+            values = [getattr(item, attribute) for item in self.items]
+            if len(values) != len(set(values)):
+                raise ValueError(
+                    f"Replay Claim projection {attribute} values must be unique"
+                )
+        claim_ids = [item.claim.claim_id for item in self.items]
+        claim_digests = [item.claim.claim_digest for item in self.items]
+        if len(claim_ids) != len(set(claim_ids)) or len(claim_digests) != len(
+            set(claim_digests)
+        ):
+            raise ValueError("Replay Claim projection must bind unique Atomic Claims")
+
+        grouped: dict[str, list[ReplayClaimProjectionItemAuthority]] = {}
+        for item in self.items:
+            grouped.setdefault(item.candidate_id, []).append(item)
+        for candidate_items in grouped.values():
+            if {item.claim.claim_type for item in candidate_items} != set(AtomicClaimType):
+                raise ValueError(
+                    "Replay Claim projection must cover every Candidate Atomic Claim"
+                )
+            if len({item.candidate_digest for item in candidate_items}) != 1:
+                raise ValueError("Replay Claim projection changed its Candidate digest")
+            if len(
+                {item.claim.candidate_claim_digest for item in candidate_items}
+            ) != 1:
+                raise ValueError("Replay Claim projection changed its Candidate Claim digest")
+        return self
+
+
 class ReplayProjectionView(StrictModel):
     """Published immutable validation projection for one complete Replay batch."""
 
@@ -1401,7 +1469,11 @@ class ReplayProjectionView(StrictModel):
     projection_id: str = Field(pattern=r"^replay-projection_[0-9a-f]{32}$")
     batch: ReplayBatchView
     artifact: ArtifactRef
-    input_authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
+    input_authority: (
+        ReplayProjectionInputAuthority
+        | ReplayRetestProjectionInputAuthority
+        | ReplayClaimProjectionInputAuthority
+    )
     input_authority_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     published_by: str = Field(min_length=1, max_length=200)
     published_at: datetime

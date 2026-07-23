@@ -65,8 +65,9 @@ timeout, target unavailability, and Oracle indecision remain `inconclusive`, nev
 - A reproduced `high` severity is catalog policy, not calibration, a Gold Dataset, multi-Reviewer
   consensus, or Human agreement.
 - Negative retest conservatively retains the existing Candidate/validity boundary.
-- Control Plane public projection and portable/off-host attestation do not yet carry the full
-  Claim-specific execution authority.
+- Control Plane Claim-specific public projection is implemented by
+  [ADR 0037](0037-control-plane-claim-specific-public-projection.en.md). Portable/off-host
+  attestation still does not carry that authority to an external trust anchor.
 - Local seals and receipts prove lineage and content consistency, not cryptographically attested
   execution by a separate organization or infrastructure.
 

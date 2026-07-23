@@ -584,7 +584,12 @@ def test_create_replay_batch_rejects_caller_authored_authority(
     field_name: str, value: object
 ) -> None:
     request = _batch_request()
-    assert set(request.model_dump()) == {"source", "retest_source", "idempotency_key"}
+    assert set(request.model_dump()) == {
+        "source",
+        "retest_source",
+        "claim_projection",
+        "idempotency_key",
+    }
 
     with pytest.raises(ValidationError):
         CreateReplayBatchRequest.model_validate({**request.model_dump(), field_name: value})

@@ -552,6 +552,11 @@ class ControlPlaneClaimService:
             execution_context=attempt.authority.execution_context,
             execution_context_digest=attempt.authority.execution_context_record.context_digest,
             lease_token=lease_token,
+            claim_authority=self._records.replay_claim_binding(
+                session,
+                attempt.item.item_id,
+                lock=True,
+            ),
             retest_artifact=self._retest_artifact(session, attempt.batch),
         )
 
@@ -670,6 +675,11 @@ class ControlPlaneClaimService:
                     execution_context=authority.execution_context,
                     execution_context_digest=(authority.execution_context_record.context_digest),
                     lease_token=request.lease_token,
+                    claim_authority=self._records.replay_claim_binding(
+                        session,
+                        item.item_id,
+                        lock=True,
+                    ),
                     retest_artifact=self._retest_artifact(session, batch),
                 )
         if expired:

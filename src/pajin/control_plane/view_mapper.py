@@ -13,6 +13,7 @@ from pajin.control_plane.database import (
     EventRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayClaimBindingRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
     ReplayProjectionRecord,
@@ -34,6 +35,7 @@ from pajin.control_plane.models import (
     JobView,
     ReplayBatchState,
     ReplayBatchView,
+    ReplayClaimProjectionInputAuthority,
     ReplayExecutionClaimView,
     ReplayExecutionContext,
     ReplayFinalizationView,
@@ -50,7 +52,7 @@ from pajin.control_plane.models import (
     RunView,
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
-from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import ValidationDecision
 from pajin.replay.tickets import replay_context_digest
 
@@ -169,23 +171,46 @@ class ControlPlaneViewMapper:
         )
 
     @staticmethod
-    def replay_item(record: ReplayItemRecord) -> ReplayItemView:
-        return ReplayItemView(
-            item_id=record.item_id,
-            batch_id=record.batch_id,
-            replay_run_id=record.replay_run_id,
-            state=ReplayItemState(record.state),
-            candidate_id=record.candidate_id,
-            candidate_digest=record.candidate_digest,
-            contract_digest=record.contract_digest,
-            compilation_digest=record.compilation_digest,
-            grant_digest=record.grant_digest,
-            required_attempts=record.required_attempts,
-            max_attempts=record.max_attempts,
-            attempts=record.attempts,
-            created_at=_aware(record.created_at),
-            updated_at=_aware(record.updated_at),
-        )
+    def replay_item(
+        record: ReplayItemRecord,
+        *,
+        claim_authority: ReplayClaimBindingRecord | None = None,
+    ) -> ReplayItemView:
+        try:
+            if claim_authority is None:
+                candidate_id = record.candidate_id
+                claim = None
+            else:
+                claim = ReplayClaimBinding.model_validate(claim_authority.claim_binding)
+                if not (
+                    claim_authority.item_id == record.item_id
+                    and claim_authority.batch_id == record.batch_id
+                    and claim_authority.claim_id == record.candidate_id
+                    and claim.claim_id == claim_authority.claim_id
+                    and claim_authority.binding_digest
+                    == replay_context_digest(claim.model_dump(mode="json"))
+                ):
+                    raise ValueError("Replay Claim binding record is inconsistent")
+                candidate_id = claim_authority.source_candidate_id
+            return ReplayItemView(
+                item_id=record.item_id,
+                batch_id=record.batch_id,
+                replay_run_id=record.replay_run_id,
+                state=ReplayItemState(record.state),
+                candidate_id=candidate_id,
+                claim=claim,
+                candidate_digest=record.candidate_digest,
+                contract_digest=record.contract_digest,
+                compilation_digest=record.compilation_digest,
+                grant_digest=record.grant_digest,
+                required_attempts=record.required_attempts,
+                max_attempts=record.max_attempts,
+                attempts=record.attempts,
+                created_at=_aware(record.created_at),
+                updated_at=_aware(record.updated_at),
+            )
+        except (TypeError, ValueError) as exc:
+            raise StateConflict("durable Replay item Claim authority is invalid") from exc
 
     @staticmethod
     def replay_ticket(record: ReplayTicketRecord) -> ReplayTicketView:
@@ -253,6 +278,7 @@ class ControlPlaneViewMapper:
         item: ReplayItemRecord,
         ticket: ReplayTicketRecord,
         artifact: ArtifactRecord,
+        claim_authority: ReplayClaimBindingRecord | None = None,
         retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayFinalizationView:
         try:
@@ -282,7 +308,7 @@ class ControlPlaneViewMapper:
             finalization_id=record.finalization_id,
             job=cls.job(job),
             batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
-            item=cls.replay_item(item),
+            item=cls.replay_item(item, claim_authority=claim_authority),
             ticket=cls.replay_ticket(ticket),
             artifact=cls.artifact(artifact),
             artifact_set_digest=record.artifact_set_digest,
@@ -304,12 +330,20 @@ class ControlPlaneViewMapper:
         retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayProjectionView:
         try:
-            authority: ReplayProjectionInputAuthority | ReplayRetestProjectionInputAuthority
+            authority: (
+                ReplayProjectionInputAuthority
+                | ReplayRetestProjectionInputAuthority
+                | ReplayClaimProjectionInputAuthority
+            )
             api_version = record.input_authority.get("api_version")
             if api_version == "pajin.control-plane.replay-projection-inputs/v1":
                 authority = ReplayProjectionInputAuthority.model_validate(record.input_authority)
             elif api_version == "pajin.control-plane.replay-projection-inputs/v2":
                 authority = ReplayRetestProjectionInputAuthority.model_validate(
+                    record.input_authority
+                )
+            elif api_version == "pajin.control-plane.replay-projection-inputs/v3":
+                authority = ReplayClaimProjectionInputAuthority.model_validate(
                     record.input_authority
                 )
             else:
@@ -350,12 +384,13 @@ class ControlPlaneViewMapper:
         execution_context: ReplayExecutionContext,
         execution_context_digest: str,
         lease_token: str,
+        claim_authority: ReplayClaimBindingRecord | None = None,
         retest_artifact: ArtifactRecord | None = None,
     ) -> ReplayExecutionClaimView:
         return ReplayExecutionClaimView(
             job=cls.job(job),
             batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
-            item=cls.replay_item(item),
+            item=cls.replay_item(item, claim_authority=claim_authority),
             ticket=cls.replay_ticket(ticket),
             compilation=compilation,
             execution_context=execution_context,

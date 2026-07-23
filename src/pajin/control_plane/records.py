@@ -11,6 +11,7 @@ from pajin.control_plane.database import (
     CheckpointRecord,
     JobRecord,
     ReplayBatchRecord,
+    ReplayClaimBindingRecord,
     ReplayFinalizationRecord,
     ReplayItemRecord,
     ReplayProjectionRecord,
@@ -118,6 +119,20 @@ class ControlPlaneRecords:
         if item is None:
             raise ResourceNotFound("Replay item not found")
         return item
+
+    @staticmethod
+    def replay_claim_binding(
+        session: Session,
+        item_id: str,
+        *,
+        lock: bool = False,
+    ) -> ReplayClaimBindingRecord | None:
+        statement = select(ReplayClaimBindingRecord).where(
+            ReplayClaimBindingRecord.item_id == item_id
+        )
+        if lock:
+            statement = statement.with_for_update()
+        return session.scalar(statement)
 
     @staticmethod
     def replay_ticket(

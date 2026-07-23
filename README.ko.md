@@ -23,8 +23,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 exact M03·M06·A04 validity·impact·severity Claim별 fresh-session Replay 권위, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 validation Control, Claim replay projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을 발행하고 schema v12는 confirmed baseline과 부모 Retest Artifact를 1:1로 결박해 음성 replay receipt와 정상 기능 회귀를 서버가 다시 검증한 `kisa-retest.json` projection을 발행합니다. 독립 remediation attestation이 없으므로 방어 응답은 계속 `inconclusive`입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, Control Plane Claim별 공개 projection, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, multi-host/object-store Artifact 전송, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을, schema v12는 confirmed baseline과 부모 Retest Artifact를 결박한 `kisa-retest.json`을 발행하며, schema v13은 append-only exact Claim binding과 KISA M03·M06·A04용 opt-in v3 Claim별 공개 projection을 추가합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, portable/off-host replay attestation과 multi-host/object-store Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -932,7 +932,9 @@ Operator credential은 다음 공개 Replay admission API를 사용할 수 있�
 - `POST /v1/replay/batches`: confirmed baseline의 정확한 `(artifact_id, repository_version)` locator,
   선택적인 부모 Retest locator와 idempotency key만 받습니다. 부모 Retest를 생략하면 confirmation,
   제공하면 baseline-bound `remediation-retest` Candidate/contract/Replay compilation을 서버가
-  `planned` 상태로 파생합니다.
+  `planned` 상태로 파생합니다. Confirmation에서만 명시적 `claim_projection: true`를 사용하면
+  exact KISA M03·M06·A04의 validity·impact·severity item을 각각 파생하고 v3 Claim별 projection
+  authority와 `claim-replays.json`을 발행합니다. 부모 Retest locator와 함께 사용할 수 없습니다.
 
 `GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
 `/tickets/{ticket_id}/finalization` 및 `/batches/{batch_id}/projection` 조회는 Operator, Approver,

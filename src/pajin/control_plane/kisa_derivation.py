@@ -27,16 +27,20 @@ from pajin.domain.models import (
 from pajin.domain.orchestration import AgentNode, AgentRole, AgentStatus, TaskGraph, TaskStatus
 from pajin.domain.replay import (
     ModeReplayContract,
+    ReplayClaimBinding,
     ReplayCompilation,
     ReplayPurpose,
     ReplayRetestContext,
+    replay_claim_binding,
     replay_evidence_digest,
     replay_request_digest,
 )
 from pajin.domain.validation import (
+    AtomicClaimType,
     CandidateFinding,
     ValidationDecision,
     ValidatorOutputArtifact,
+    candidate_atomic_claims,
     candidate_claim_digest,
     validate_candidate_atomic_refinement,
     validate_candidate_blind_refinement,
@@ -85,6 +89,7 @@ from pajin.workflow.validation_artifacts import (
 )
 
 KISA_CONFIRMATION_POLICY_VERSION = "pajin.kisa-confirmation:v1"
+KISA_CLAIM_CONFIRMATION_POLICY_VERSION = "pajin.kisa-claim-confirmation:v2"
 KISA_RETEST_POLICY_VERSION = "pajin.kisa-negative-retest:v1"
 KISA_CONFIRMATION_REPETITIONS = 2
 KISA_CONFIRMATION_REQUIRED_SUCCESSES = 2
@@ -173,6 +178,7 @@ class DerivedKISAReplayItem:
     """One canonical compiler output derived only from the sealed source."""
 
     candidate_id: str
+    claim: ReplayClaimBinding | None
     decision_id: str
     replay_run_id: str
     candidate: CandidateFinding
@@ -255,6 +261,7 @@ def derive_kisa_confirmation_batch(
     *,
     source_root: Path,
     artifact_ref: ArtifactRef,
+    claim_projection: bool = False,
     replay_run_id_factory: Callable[[], str] = lambda: f"run_{uuid4().hex}",
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> DerivedKISAReplayBatch:
@@ -327,7 +334,8 @@ def derive_kisa_confirmation_batch(
     if not eligible:
         raise ValueError("sealed KISA source contains no eligible confirmation Candidate")
 
-    required_calls = len(eligible) * KISA_CONFIRMATION_REPETITIONS
+    claim_multiplier = len(AtomicClaimType) if claim_projection else 1
+    required_calls = len(eligible) * KISA_CONFIRMATION_REPETITIONS * claim_multiplier
     if budget.tool_calls + required_calls > budget.max_tool_calls:
         raise ValueError(
             "KISA replay derivation requires aggregate Campaign tool-call budget for every "
@@ -348,72 +356,77 @@ def derive_kisa_confirmation_batch(
             expected_run_id=artifact_ref.run_id,
             expected_root_digest=artifact_ref.integrity_root_digest,
         )
-        contract = kisa_replay_contract(
-            source.scenario.scenario_id,
-            repetitions=KISA_CONFIRMATION_REPETITIONS,
-            required_successes=KISA_CONFIRMATION_REQUIRED_SUCCESSES,
-        )
-        replay_run_id = replay_run_id_factory()
-        if (
-            not _REPLAY_RUN_ID.fullmatch(replay_run_id)
-            or replay_run_id == verification.run_id
-            or replay_run_id in replay_run_ids
-        ):
-            raise ValueError("KISA replay Run identity factory returned an invalid identity")
-        replay_run_ids.add(replay_run_id)
-
-        inputs = build_kisa_replay_compilation_inputs(
-            source_root=root,
-            candidate_run_id=verification.run_id,
-            candidate=candidate,
-            source=source,
-            contract=contract,
-            created_at=compiled_at,
-            verified_source=snapshot,
-            expected_run_id=artifact_ref.run_id,
-            expected_root_digest=artifact_ref.integrity_root_digest,
-        )
-        compilation = ReplayCompiler.compile(
-            campaign=campaign,
-            plan=plan,
-            original_request=source.original_request,
-            source_capability=source.source_capability,
-            validation_packet=inputs.validation_packet,
-            intent=inputs.intent,
-            contract=contract,
-            scenario=source.scenario,
-            registered_tools={AIChatProbeTool.spec.tool_id: AIChatProbeTool.spec},
-            evidence_by_request=source.evidence_by_request,
-            trusted_original_request_digest=replay_request_digest(source.original_request),
-            trusted_original_evidence_digest=replay_evidence_digest(
-                source.evidence_by_request[source.original_request.request_id]
-            ),
-            replay_run_id=replay_run_id,
-            used_campaign_calls=budget.tool_calls,
-            compiled_at=compiled_at,
-        )
-        canonical_compilation = canonical_replay_compilation_bytes(compilation)
-        required_request_units = (
-            probe_tool.network_request_cost(compilation.original_request) * contract.repetitions
-        )
-        items.append(
-            DerivedKISAReplayItem(
-                candidate_id=candidate.candidate_id,
-                decision_id=decision.decision_id,
-                replay_run_id=replay_run_id,
-                candidate=candidate,
-                decision=decision,
-                scenario=source.scenario,
-                contract=contract,
-                compilation=compilation,
-                canonical_compilation=canonical_compilation,
-                candidate_digest=replay_context_digest(candidate),
-                contract_digest=replay_context_digest(contract),
-                compilation_digest=sha256(canonical_compilation).hexdigest(),
-                grant_digest=replay_context_digest(compilation.grant),
-                required_request_units=required_request_units,
+        claims = candidate_atomic_claims(candidate) if claim_projection else [None]
+        for claim in claims:
+            contract = kisa_replay_contract(
+                source.scenario.scenario_id,
+                claim_type=(claim.claim_type if claim is not None else None),
+                repetitions=KISA_CONFIRMATION_REPETITIONS,
+                required_successes=KISA_CONFIRMATION_REQUIRED_SUCCESSES,
             )
-        )
+            replay_run_id = replay_run_id_factory()
+            if (
+                not _REPLAY_RUN_ID.fullmatch(replay_run_id)
+                or replay_run_id == verification.run_id
+                or replay_run_id in replay_run_ids
+            ):
+                raise ValueError("KISA replay Run identity factory returned an invalid identity")
+            replay_run_ids.add(replay_run_id)
+
+            inputs = build_kisa_replay_compilation_inputs(
+                source_root=root,
+                candidate_run_id=verification.run_id,
+                candidate=candidate,
+                source=source,
+                contract=contract,
+                created_at=compiled_at,
+                verified_source=snapshot,
+                expected_run_id=artifact_ref.run_id,
+                expected_root_digest=artifact_ref.integrity_root_digest,
+            )
+            compilation = ReplayCompiler.compile(
+                campaign=campaign,
+                plan=plan,
+                original_request=source.original_request,
+                source_capability=source.source_capability,
+                validation_packet=inputs.validation_packet,
+                intent=inputs.intent,
+                contract=contract,
+                scenario=source.scenario,
+                registered_tools={AIChatProbeTool.spec.tool_id: AIChatProbeTool.spec},
+                evidence_by_request=source.evidence_by_request,
+                trusted_original_request_digest=replay_request_digest(source.original_request),
+                trusted_original_evidence_digest=replay_evidence_digest(
+                    source.evidence_by_request[source.original_request.request_id]
+                ),
+                replay_run_id=replay_run_id,
+                used_campaign_calls=budget.tool_calls,
+                compiled_at=compiled_at,
+            )
+            canonical_compilation = canonical_replay_compilation_bytes(compilation)
+            required_request_units = (
+                probe_tool.network_request_cost(compilation.original_request)
+                * contract.repetitions
+            )
+            items.append(
+                DerivedKISAReplayItem(
+                    candidate_id=candidate.candidate_id,
+                    claim=(replay_claim_binding(claim) if claim is not None else None),
+                    decision_id=decision.decision_id,
+                    replay_run_id=replay_run_id,
+                    candidate=candidate,
+                    decision=decision,
+                    scenario=source.scenario,
+                    contract=contract,
+                    compilation=compilation,
+                    canonical_compilation=canonical_compilation,
+                    candidate_digest=replay_context_digest(candidate),
+                    contract_digest=replay_context_digest(contract),
+                    compilation_digest=sha256(canonical_compilation).hexdigest(),
+                    grant_digest=replay_context_digest(compilation.grant),
+                    required_request_units=required_request_units,
+                )
+            )
 
     final_snapshot = load_verified_run_snapshot(root, expected_run_id=verification.run_id)
     require_same_authority(
@@ -430,7 +443,11 @@ def derive_kisa_confirmation_batch(
         source_root_digest=verification.root_digest,
         mode=CampaignMode.AI_REDTEAM,
         purpose=ReplayPurpose.CONFIRMATION,
-        policy_version=KISA_CONFIRMATION_POLICY_VERSION,
+        policy_version=(
+            KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+            if claim_projection
+            else KISA_CONFIRMATION_POLICY_VERSION
+        ),
         compiled_at=compiled_at,
         used_tool_calls=budget.tool_calls,
         max_tool_calls=budget.max_tool_calls,
@@ -597,6 +614,7 @@ def derive_kisa_retest_batch(
         items.append(
             DerivedKISAReplayItem(
                 candidate_id=candidate.candidate_id,
+                claim=None,
                 decision_id=decision.decision_id,
                 replay_run_id=replay_run_id,
                 candidate=candidate,

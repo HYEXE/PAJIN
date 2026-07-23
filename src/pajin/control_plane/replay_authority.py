@@ -223,7 +223,8 @@ def _core_binding_is_exact(
         and item.compilation_digest == ticket.compilation_digest
         and batch.source_root_digest == ticket.source_root_digest
         and item.attempts == ticket.attempt_number
-        and binding.candidate_id == item.candidate_id
+        and item.candidate_id
+        == (binding.claim.claim_id if binding.claim is not None else binding.candidate_id)
         and binding.candidate_run_id == batch.source_artifact_run_id
         and binding.replay_run_id == item.replay_run_id
         and binding.campaign == batch.campaign_name
@@ -359,7 +360,8 @@ def _payload_binding_is_exact(
         and payload.mode.value == batch.mode
         and payload.purpose.value == batch.purpose
         and payload.policy_version == batch.policy_version
-        and payload.candidate_id == item.candidate_id
+        and payload.candidate_id == authority.compilation.spec.binding.candidate_id
+        and payload.claim == authority.compilation.spec.binding.claim
         and payload.candidate_digest == item.candidate_digest
         and payload.contract_digest == item.contract_digest
         and payload.compilation_digest == item.compilation_digest
@@ -473,7 +475,12 @@ def require_fresh_issuance_derivation(
             item.ordinal == ordinal
             and item.state == ReplayItemState.PENDING.value
             and item.attempts == 0
-            and item.candidate_id == admitted.candidate_id
+            and item.candidate_id
+            == (
+                admitted.claim.claim_id
+                if admitted.claim is not None
+                else admitted.candidate_id
+            )
             and item.candidate_digest == admitted.candidate_digest
             and item.contract_digest == admitted.contract_digest
             and item.required_attempts == admitted.required_attempts
@@ -528,7 +535,14 @@ def require_fresh_retry_derivation(
     if len({admitted.replay_run_id for admitted in derived.items}) != len(derived.items):
         raise StateConflict("fresh Replay retry derivation reused a Run identity")
 
-    derived_by_candidate = {admitted.candidate_id: admitted for admitted in derived.items}
+    derived_by_candidate = {
+        (
+            admitted.claim.claim_id
+            if admitted.claim is not None
+            else admitted.candidate_id
+        ): admitted
+        for admitted in derived.items
+    }
     if len(derived_by_candidate) != len(derived.items):
         raise StateConflict("fresh Replay retry derivation has duplicate Candidates")
     for item in items:
@@ -579,8 +593,14 @@ def trusted_replay_compilation(record: ReplayCompilationRecord) -> ReplayCompila
         and replay_context_digest(trusted.validation_packet.candidate) == record.candidate_digest
         and replay_context_digest(trusted.contract) == record.contract_digest
         and replay_context_digest(trusted.grant) == record.grant_digest
-        and trusted.validation_packet.candidate.candidate_id == record.candidate_id
-        and trusted.spec.binding.candidate_id == record.candidate_id
+        and record.candidate_id
+        == (
+            trusted.spec.binding.claim.claim_id
+            if trusted.spec.binding.claim is not None
+            else trusted.spec.binding.candidate_id
+        )
+        and trusted.validation_packet.candidate.candidate_id
+        == trusted.spec.binding.candidate_id
         and trusted.spec.binding.replay_run_id == record.replay_run_id
     ):
         raise StateConflict("stored Replay compilation authority is inconsistent")

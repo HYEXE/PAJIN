@@ -71,8 +71,9 @@ the attached PDF.
 > same ticket is not automatically dispatched again. Public Replay admission/read APIs,
 > fresh-identity retry issuance, and schema-v11 multi-item projection are implemented. Schema v12
 > binds a confirmed baseline to one parent Retest and seals a server-reverified `kisa-retest.json`
-> from all negative receipts plus normal-function regression. Portable/off-host proof remains
-> follow-up work; M6-07B is not complete.
+> from all negative receipts plus normal-function regression. Schema v13 preserves every validity,
+> impact, and severity Claim for exact KISA M03/M06/A04 through an append-only ledger and v3 public
+> projection. Portable/off-host proof remains follow-up work; M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
 omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
@@ -127,7 +128,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed projection | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | Implemented: a scenario is executed only when every required terminal-success repetition is present in the same sealed Run; FAILED/CANCELLED Runs do not claim execution success or rates |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, and Retest-source ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `kisa-retest.json` | Supported KISA positive/negative contracts, explicit Local orchestration, public Replay admission/read APIs, fresh-identity retry, and the Control Plane M03/M06/A04 claim→permit→execute/seal→server import/finalize→schema-v11 confirmation projection and schema-v12 dual-source Retest projection are implemented and enabled in Compose; portable proof and organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, and Claim-binding ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `kisa-retest.json` | Supported KISA positive/negative contracts, explicit Local orchestration, public Replay admission/read APIs, fresh-identity retry, and the Control Plane M03/M06/A04 claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation projection and schema-v12 dual-source Retest projection are implemented and enabled in Compose; portable proof and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3` | Local DB/OS trust boundary implemented; portable signed proof remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` exact binding of sealed Campaign, Plan, Agents, TaskGraph, Gateway evidence, and report generation | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | Implemented: planned and actually completed scenarios are separated; foreign-Run or caller-forged inputs are rejected |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -432,7 +433,8 @@ KISA threats remain `not assessed`.
   then atomically finalizes the Artifact and Job/ticket/item/batch/Run state. Any failure after a
   permit is terminal for that ticket. Compose enables this dedicated daemon alongside the generic
   Worker. Public Replay admission/read APIs, fresh-identity retry issuance, schema-v11 multi-item
-  projection, and schema-v12 dual-source negative Control Plane retest are implemented.
+  projection, schema-v12 dual-source negative Control Plane retest, and schema-v13 exact
+  Claim-specific public projection are implemented.
   Portable/off-host proof remains outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.

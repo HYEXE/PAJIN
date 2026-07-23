@@ -40,7 +40,10 @@ class ReplayReadService:
 
     def get_item(self, item_id: str) -> ReplayItemView:
         with self._repository.read_transaction() as session:
-            return self._views.replay_item(self._records.replay_item(session, item_id))
+            return self._views.replay_item(
+                self._records.replay_item(session, item_id),
+                claim_authority=self._records.replay_claim_binding(session, item_id),
+            )
 
     def get_ticket(self, ticket_id: str) -> ReplayTicketView:
         with self._repository.read_transaction() as session:
@@ -71,6 +74,7 @@ class ReplayReadService:
                 item=item,
                 ticket=ticket,
                 artifact=artifact,
+                claim_authority=self._records.replay_claim_binding(session, item.item_id),
                 retest_artifact=self._retest_artifact(session, batch),
             )
 

@@ -48,6 +48,7 @@ from pajin.control_plane.database import (
     ReplayBatchRecord,
     ReplayBudgetAccountRecord,
     ReplayBudgetReservationRecord,
+    ReplayClaimBindingRecord,
     ReplayCompilationRecord,
     ReplayEventRecord,
     ReplayExecutionContextRecord,
@@ -62,6 +63,7 @@ from pajin.control_plane.database import (
     RunRecord,
 )
 from pajin.control_plane.kisa_derivation import (
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
@@ -86,6 +88,7 @@ from pajin.control_plane.models import (
     PrincipalRole,
     ReplayBatchIssuanceView,
     ReplayBatchState,
+    ReplayClaimProjectionInputAuthority,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
     ReplayExecutionContext,
@@ -121,7 +124,13 @@ from pajin.control_plane.service import (
 )
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayOracleVerdict, ReplayPurpose
-from pajin.domain.validation import FindingDisposition, ValidationDecision, ValidationReasonCode
+from pajin.domain.validation import (
+    AtomicClaimType,
+    FindingDisposition,
+    PublicFindingState,
+    ValidationDecision,
+    ValidationReasonCode,
+)
 from pajin.modes.ai_redteam.retest import (
     KISARetestAssessment,
     RegressionStatus,
@@ -132,6 +141,7 @@ from pajin.runtime.store import RunStore, verify_run_integrity
 from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
 from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
 from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
     VERSIONED_VALIDATION_DECISIONS_PATH,
     VERSIONED_VALIDATION_FINDINGS_PATH,
     VERSIONED_VALIDATION_INDEX_PATH,
@@ -4820,6 +4830,152 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
         assert repeated == second_finalization
         assert service.get_replay_projection(batch_id) == projection
         with repository.read_transaction() as session:
+            assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
+    finally:
+        repository.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable Artifact repository requires POSIX fsync")
+def test_claim_specific_confirmation_publishes_exact_public_projection(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "claim-specific-projection.db"
+    repository, service = _service(database_path)
+    actor = "replay-worker-a"
+    try:
+        source = build_kisa_control_plane_source(
+            tmp_path / "claim-specific-source",
+            scenario_count=1,
+        )
+        admitted = _admit_built_source(
+            repository,
+            service,
+            source,
+            suffix="claim-specific-projection",
+        )
+        planned = service.create_replay_batch(
+            CreateReplayBatchRequest(
+                source=ArtifactLocator(
+                    artifact_id=admitted.artifact_id,
+                    repository_version=admitted.repository_version,
+                ),
+                claim_projection=True,
+                idempotency_key="claim-specific-projection",
+            ),
+            actor="trusted-replay-admission",
+        )
+        assert planned.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+
+        issued = service.issue_replay_batch(
+            planned.batch_id,
+            actor="trusted-replay-admission",
+        )
+        assert len(issued.items) == len(AtomicClaimType)
+        assert {item.claim.claim_type for item in issued.items if item.claim is not None} == set(
+            AtomicClaimType
+        )
+        candidate_id = issued.items[0].candidate_id
+        assert {item.candidate_id for item in issued.items} == {candidate_id}
+
+        staging_root, artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=staging_root,
+            worker=_trusted_replay_backend(),
+        )
+        finalizations: list[ReplayFinalizationView] = []
+        claims: list[ReplayExecutionClaimView] = []
+        for ordinal in range(len(AtomicClaimType)):
+            claim = _claim(service, actor=actor)
+            claims.append(claim)
+            assert claim.item.claim is not None
+            assert claim.job.payload.claim == claim.item.claim
+            assert claim.compilation.spec.binding.claim == claim.item.claim
+            finalize_request = asyncio.run(executor.execute(claim))
+            finalized = service.finalize_replay_job(
+                claim.job.job_id,
+                finalize_request,
+                actor=actor,
+            )
+            finalizations.append(finalized)
+            if ordinal < len(AtomicClaimType) - 1:
+                assert finalized.item.state is ReplayItemState.VERIFIED
+                assert finalized.batch.state is ReplayBatchState.RUNNING
+                assert service.get_replay_projection(planned.batch_id) is None
+
+        assert finalizations[-1].item.state is ReplayItemState.GATED
+        assert finalizations[-1].batch.state is ReplayBatchState.COMPLETED
+        projection = service.get_replay_projection(planned.batch_id)
+        assert projection is not None
+        assert isinstance(
+            projection.input_authority,
+            ReplayClaimProjectionInputAuthority,
+        )
+        assert projection.input_authority.version == (
+            "pajin.control-plane.replay-projection-inputs/v3"
+        )
+        assert len(projection.input_authority.items) == len(AtomicClaimType)
+        assert {
+            item.claim.claim_type for item in projection.input_authority.items
+        } == set(AtomicClaimType)
+        assert {
+            item.candidate_id for item in projection.input_authority.items
+        } == {candidate_id}
+        assert len(
+            {item.finalization_id for item in projection.input_authority.items}
+        ) == len(AtomicClaimType)
+        assert len(
+            {item.replay_run_id for item in projection.input_authority.items}
+        ) == len(AtomicClaimType)
+
+        managed = ManagedArtifactRepository(
+            staging_root=staging_root,
+            repository_root=artifact_root,
+        )
+        projection_snapshot = managed.resolve(projection.artifact)
+        assert (
+            projection_snapshot.path / VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH
+        ).is_file()
+        validation = load_validation_snapshot(projection_snapshot.path)
+        assert validation.claim_replays is not None
+        assert len(validation.claim_replays.assessments) == len(AtomicClaimType)
+        assert {
+            assessment.claim_type
+            for assessment in validation.claim_replays.assessments
+        } == set(AtomicClaimType)
+        assert validation.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [
+            candidate_id
+        ]
+        assert validation.public_states[PublicFindingState.CONFIRMED] == []
+        repeated = service.finalize_replay_job(
+            claims[-1].job.job_id,
+            ReplayFinalizeRequest(
+                executor_profile=EXECUTOR_PROFILE,
+                lease_token=claims[-1].lease_token,
+                ticket_id=claims[-1].ticket.ticket_id,
+                fencing_value=claims[-1].ticket.fencing_value,
+                output_staging_id=claims[-1].execution_context.output_staging_id,
+            ),
+            actor=actor,
+        )
+        assert repeated == finalizations[-1]
+        assert service.get_replay_projection(planned.batch_id) == projection
+
+        with repository.read_transaction() as session:
+            bindings = list(
+                session.scalars(
+                    select(ReplayClaimBindingRecord).order_by(
+                        ReplayClaimBindingRecord.claim_id
+                    )
+                ).all()
+            )
+            assert len(bindings) == len(AtomicClaimType)
+            assert {binding.source_candidate_id for binding in bindings} == {
+                candidate_id
+            }
+            assert len({binding.claim_id for binding in bindings}) == len(
+                AtomicClaimType
+            )
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
     finally:
         repository.close()

@@ -189,7 +189,7 @@ Control Plane vertical slice and the dedicated exact-KISA one-item Replay slice.
 | AI Red Team | In progress | Cataloged 19 KISA threats and 52 checklists and executes A01, A02, A04, M03, M06; hardened retest and normal-functionality regression linkage on a reproduction-backed baseline |
 | Bug Bounty | In progress | Policy, Scope, deduplication, local reporting, and fixed Boolean SQLi local lab execution |
 | CTF | In progress | Local Web backup exposure, offline Single-byte XOR, Web + Crypto Suite execution |
-| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, opaque Operator Replay source/batch admission with role-scoped state reads, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, automatic fresh-identity retry issuance, schema-v11 multi-item projection, and schema-v12 dual-source negative Retest projection; Compose enables both daemons with distinct credentials |
+| Control Plane | Initial implementation | FastAPI, PostgreSQL Job queue, approval checkpoints, fence-style cancellation, schema-v10 exact submission identity and bounded JSON ingress, absolute lease deadline and heartbeat coalescing, generic Worker daemon, opaque Operator Replay source/batch admission with role-scoped state reads, plus the dedicated exact-KISA Replay path through durable reservations, one-use pre-dispatch permits, schema-v7 execution context, sealed opaque staging, schema-v9 server-owned Artifact import/finalization, automatic fresh-identity retry issuance, schema-v11 multi-item projection, schema-v12 dual-source negative Retest projection, and schema-v13 opt-in exact Claim-specific public projection; Compose enables both daemons with distinct credentials |
 | Product UI and Ecosystem | Initial implementation | Same-origin Web Console for submit, inspect, approve, resume, and cancel; Agent Graph, Pack registry, and external integrations are follow-on work |
 
 The current default interface is CLI + YAML, and it does not provide general offensive automation or automated
@@ -956,6 +956,17 @@ statements and `high` severity are eligible for these Oracles. Validity alone co
 internal confirmation; impact and severity are information-only public projections that cannot
 mutate Candidate, Finding, or severity.
 
+[`ADR-0037`](adr/0037-control-plane-claim-specific-public-projection.en.md) adds the first B2.6
+vertical slice and preserves this Claim-specific authority through the PostgreSQL Control Plane.
+An explicit `claim_projection` opt-in derives three items for every exact KISA Candidate, while
+schema-v13 append-only `cp_replay_claim_bindings` binds each item to its source Candidate and exact
+Claim. Projection input authority v3 seals Candidate and Claim digests together with ticket,
+compilation, Replay Run, finalization, output, and receipt lineage and fails closed without the
+complete three-Claim set. The server reverifies all Claim outputs before publishing
+`claim-replays.json` and public states, but validity alone drives confirmation and impact and
+severity remain information-only. Existing v1 confirmation and v2 negative Retest projections
+remain readable.
+
 These stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
 Semantic Validator agreement and the objective gate can be at most `needs-review`, and it cannot be promoted to
@@ -1452,7 +1463,8 @@ Plane imports and re-verifies the Artifact, both seals, and permit lineage, then
 finalization and the one-item common Gate. Bounded identical permit/finalize response-loss retries do not
 redispatch a Tool, and any failure after permit issuance is terminal for that ticket. Compose enables the daemon.
   Opaque public source/batch admission, role-scoped state reads, zero-permit fresh-identity retry issuance,
-  schema-v11 multi-item projection, and schema-v12 dual-source negative Retest projection are also implemented.
+  schema-v11 multi-item projection, schema-v12 dual-source negative Retest projection, and
+  schema-v13 opt-in exact Claim-specific public projection are also implemented.
   Portable/off-host proof remains outstanding, so full completion cannot be claimed. The Accepted ADR
 defines at least the following.
 
@@ -1470,7 +1482,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Claim-specific Replay authority and public partial-validation states, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, Control Plane Claim-specific public projection, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Claim-specific Replay authority and public partial-validation states, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation/negative-retest projection plus fresh-identity retry slice are implemented; Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable/off-host attestation, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1514,6 +1526,10 @@ defines at least the following.
   through Packet → Intent → Contract → Binding → Grant → Spec → Oracle → Outcome, with separate
   Claim authority, Replay Run, fresh session, and receipt for exact KISA M03, M06, and A04.
   Validity alone drives confirmation; impact and severity remain information-only
+- B2.6 first vertical slice: an explicit Control Plane `claim_projection` opt-in, schema-v13
+  append-only Claim binding ledger, and v3 projection authority preserve all three exact KISA
+  M03/M06/A04 Claims through claim → permit → finalize → public `claim-replays.json`, while
+  retaining v1/v2 compatibility and the validity-only confirmation invariant
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
@@ -1781,7 +1797,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0036 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, and Claim-specific execution-authority decisions
+4. ADR-0001 through ADR-0037 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, and Claim-specific execution and public-projection decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

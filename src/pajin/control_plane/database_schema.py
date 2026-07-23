@@ -36,7 +36,8 @@ REPLAY_FINALIZATION_SCHEMA_VERSION = 9
 SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION = 10
 REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION = 11
 REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION = 12
-CURRENT_SCHEMA_VERSION = REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION
+REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION = 13
+CURRENT_SCHEMA_VERSION = REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -96,6 +97,7 @@ REPLAY_RETEST_SOURCE_AUTHORITY_TABLES = frozenset({"cp_replay_retest_sources"})
 CURRENT_CONTROL_PLANE_TABLES = frozenset(
     {*V11_CONTROL_PLANE_TABLES, *REPLAY_RETEST_SOURCE_AUTHORITY_TABLES}
 )
+V12_CONTROL_PLANE_TABLES = CURRENT_CONTROL_PLANE_TABLES
 
 
 def _lower_hex_check(value: str, length: int) -> str:
@@ -2139,4 +2141,64 @@ class ReplayRetestSourceRecord(Base):
     )
     artifact_id: Mapped[str] = mapped_column(String(41), nullable=False)
     repository_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+def _build_v12_metadata() -> MetaData:
+    """Freeze schema v12 before Claim-specific Replay projection authority is added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V12_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V12_METADATA = _build_v12_metadata()
+
+REPLAY_CLAIM_PROJECTION_AUTHORITY_TABLES = frozenset({"cp_replay_claim_bindings"})
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V12_CONTROL_PLANE_TABLES, *REPLAY_CLAIM_PROJECTION_AUTHORITY_TABLES}
+)
+
+
+class ReplayClaimBindingRecord(Base):
+    """Append-only exact Claim identity attached to one Replay item."""
+
+    __tablename__ = "cp_replay_claim_bindings"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["item_id", "batch_id"],
+            ["cp_replay_items.item_id", "cp_replay_items.batch_id"],
+            name="fk_cp_replay_claim_bindings_item",
+            ondelete="RESTRICT",
+        ),
+        CheckConstraint(
+            "length(source_candidate_id) > 0 AND length(source_candidate_id) <= 200",
+            name="ck_cp_replay_claim_bindings_candidate",
+        ),
+        CheckConstraint(
+            "length(claim_id) > 0 AND length(claim_id) <= 200",
+            name="ck_cp_replay_claim_bindings_claim",
+        ),
+        CheckConstraint(
+            _lower_hex_check("binding_digest", 64),
+            name="ck_cp_replay_claim_bindings_digest",
+        ),
+        UniqueConstraint("batch_id", "claim_id", name="uq_cp_replay_claim_bindings_claim"),
+        UniqueConstraint(
+            "batch_id",
+            "source_candidate_id",
+            "claim_id",
+            name="uq_cp_replay_claim_bindings_candidate_claim",
+        ),
+        Index("ix_cp_replay_claim_bindings_candidate", "batch_id", "source_candidate_id"),
+    )
+
+    item_id: Mapped[str] = mapped_column(String(80), primary_key=True)
+    batch_id: Mapped[str] = mapped_column(String(80), nullable=False)
+    source_candidate_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    claim_id: Mapped[str] = mapped_column(String(200), nullable=False)
+    claim_binding: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -16,6 +16,7 @@ import pajin.control_plane.kisa_derivation as kisa_derivation
 import pajin.modes.ai_redteam.replay as ai_redteam_replay
 import pajin.workflow.validation as finding_validation
 from pajin.control_plane.kisa_derivation import (
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
@@ -25,6 +26,7 @@ from pajin.control_plane.kisa_derivation import (
 )
 from pajin.control_plane.models import ArtifactRef
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
+from pajin.domain.validation import AtomicClaimType
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.runtime.store import AuditEvent, RunStore, verify_run_integrity
 
@@ -78,6 +80,39 @@ def test_derives_stable_canonical_compilations_from_only_the_sealed_source(
             item.compilation
         )
         assert not hasattr(item, "ticket")
+
+
+def test_derives_one_exact_replay_per_atomic_claim_when_projection_is_requested(
+    tmp_path: Path,
+) -> None:
+    source = build_kisa_control_plane_source(tmp_path / "claim-source", scenario_count=1)
+    replay_ids = tuple(f"run_{index:032x}" for index in range(1, 4))
+    ids = iter(replay_ids)
+
+    derived = derive_kisa_confirmation_batch(
+        source_root=source.path,
+        artifact_ref=source.artifact_ref,
+        replay_run_id_factory=lambda: next(ids),
+        clock=lambda: source.compilation_time,
+        claim_projection=True,
+    )
+
+    assert derived.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+    assert derived.used_tool_calls == 2
+    assert derived.required_tool_calls == 6
+    assert derived.max_tool_calls == 24
+    assert len(derived.items) == len(AtomicClaimType)
+    assert {item.claim.claim_type for item in derived.items if item.claim is not None} == set(
+        AtomicClaimType
+    )
+    assert len({item.candidate_id for item in derived.items}) == 1
+    assert [item.replay_run_id for item in derived.items] == list(replay_ids)
+    assert len({item.contract_digest for item in derived.items}) == len(AtomicClaimType)
+    for item in derived.items:
+        assert item.claim is not None
+        assert item.compilation.validation_packet.candidate == item.candidate
+        assert item.compilation.spec.binding.claim == item.claim
+        assert item.compilation_digest == sha256(item.canonical_compilation).hexdigest()
 
 
 def test_derives_negative_retest_from_exact_baseline_and_parent_sources(
