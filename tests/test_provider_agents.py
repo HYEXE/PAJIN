@@ -208,6 +208,37 @@ class RoleWorker:
                             }
                         ],
                     }
+            elif schema_name == "pajin_candidate_validator_output":
+                content = {"decisions": []}
+                for candidate in context["candidates"]:
+                    for claim in candidate["atomicClaims"]:
+                        claim_type = claim["claimType"]
+                        evidence = claim["evidence"]
+                        verdict = (
+                            "supports"
+                            if claim_type == "validity"
+                            else ("contradicts" if claim_type == "severity" else "insufficient")
+                        )
+                        content["decisions"].append(
+                            {
+                                "claimId": claim["claimId"],
+                                "claimDigest": claim["claimDigest"],
+                                "verdict": verdict,
+                                "rationale": (
+                                    "Same-run evidence supports the exact validity claim."
+                                    if verdict == "supports"
+                                    else (
+                                        "Evidence does not support the proposed severity."
+                                        if verdict == "contradicts"
+                                        else "Impact evidence is insufficient."
+                                    )
+                                ),
+                                "supportingEvidence": evidence if verdict == "supports" else [],
+                                "contradictingEvidence": (
+                                    evidence if verdict == "contradicts" else []
+                                ),
+                            }
+                        )
             elif schema_name == "pajin_validator_output":
                 result = context["results"][0]
                 ai_probe = result["tool_id"] == "ai.chat-probe"
@@ -335,6 +366,19 @@ def test_provider_agent_cli_checks_honest_needs_review_contract(tmp_path: Path) 
     assert outcome.validation.decisions[0].reason_codes == [
         ValidationReasonCode.INDEPENDENT_REPRODUCTION_MISSING
     ]
+    validator_output = json.loads(
+        (outcome.run_path / "validator-output.json").read_text(encoding="utf-8")
+    )
+    assert validator_output["findings"] == []
+    assert [claim["claimType"] for claim in validator_output["atomicClaims"]] == [
+        "validity",
+        "severity",
+    ]
+    assert [decision["verdict"] for decision in validator_output["claimDecisions"]] == [
+        "supports",
+        "contradicts",
+    ]
+    assert validator_output["assessments"][0]["supports_claim"] is True
 
 
 def test_provider_agent_cli_checks_reject_tampered_model_narrative(

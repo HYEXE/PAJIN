@@ -896,6 +896,14 @@ the legacy Validator as Candidates and implemented a Decision snapshot per Candi
 [`ADR-0026`](adr/0026-trusted-kisa-candidate-admission.en.md) added a trusted Candidate Producer that recalculates
 the `ai.chat-probe` catalog, typed requests, execution identity, and actual transcript for KISA.
 
+[`ADR-0030`](adr/0030-candidate-aware-atomic-claim-validation.en.md) replaces the generic Provider
+Validator's whole-Finding regeneration path with exact Candidate ID and digest assessment. Trusted
+code deterministically decomposes each Candidate into `validity`, `impact`, and `severity` Atomic
+Claims. The Provider returns only `supports`, `contradicts`, or `insufficient` for each exact Claim
+ID and digest, with Candidate-owned evidence references. Only validity projects into the existing
+Candidate semantic gate; impact and severity remain separate decisions sealed in
+`validator-output.json` and cannot rewrite the Candidate or its severity.
+
 The two stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
 Semantic Validator agreement and the objective gate can be at most `needs-review`, and it cannot be promoted to
@@ -1410,7 +1418,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, and the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→multi-item confirmation/negative-retest projection plus fresh-identity retry slice are implemented; claim-level replay and public partial-validation states, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, portable proof, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1597,7 +1605,7 @@ defines at least the following.
 
 ## 24. Open Decisions
 
-The execution boundary and technical structure are recorded across ADR-0001 through ADR-0029, all of which are
+The execution boundary and technical structure are recorded across ADR-0001 through ADR-0030, all of which are
 Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice,
 M6-07B-2A managed Artifact admission, M6-07B-2B server-derived exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation plus fresh-authority-bound internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6
@@ -1703,7 +1711,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0029 - Accepted runtime, policy, Mode Pack, Control Plane, stepwise Validator, and replay orchestration decisions
+4. ADR-0001 through ADR-0030 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, and replay orchestration decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

@@ -18,19 +18,21 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 
 | 영역 | 현재 범위 |
 | --- | --- |
-| Core engine | 타입이 지정된 Campaign, 정책 및 Capability 집행, 동적 Specialist, 예산, 재시도, 취소, Candidate 수용, 의미론적 증거 검토, 버전이 지정된 replay 계약, 결정론적 Replay Compiler, 일회용 실행 ticket, 로컬 SQLite replay-ticket 원장, 무상태 및 등록된 fresh-session Restricted Reproducer 경로, receipt 재로딩 confirmation/retest Gate, 변조 탐지 증거 seal |
+| Core engine | 타입이 지정된 Campaign, 정책 및 Capability 집행, 동적 Specialist, 예산, 재시도, 취소, Candidate 수용, Candidate-aware Provider 검토, 결정론적 validity·impact·severity Atomic Claim, 의미론적 증거 검토, 버전이 지정된 replay 계약, 결정론적 Replay Compiler, 일회용 실행 ticket, 로컬 SQLite replay-ticket 원장, 무상태 및 등록된 fresh-session Restricted Reproducer 경로, receipt 재로딩 confirmation/retest Gate, 변조 탐지 증거 seal |
 | Discovery 계약 | 버전형 `SurfaceObservation`, `AttackSurface`, `AttackSurfaceSet` artifact, canonical HTTP operation과 schema-bound Tool interface locator, 도메인 분리 결정론 identity, exact request/result/evidence/root 계보, bounded canonical JSON, ordering·uniqueness·lineage fail-closed 검증을 구현했습니다. 코드에 등록된 Trusted Surface Producer는 무결성이 검증된 Campaign·Gateway 증적만 받아 Scope·Authorization·method·Tool risk를 재검증하고 별도 append-only projection Run으로 발행합니다. A3는 명시적 opt-in 단일 MCP Recon wave, A4는 봉인된 projection 재검증·코드 등록 가설 컴파일·fresh-Capability Specialist wave를 제공합니다. A5는 별도 명시적 opt-in의 bounded replanning Control Run을 추가합니다. 봉인된 A4 wave를 다시 검증하고 exact 등록 결과 필드를 append-only `ObservationGraphSnapshot`으로 승격하며, `supports`·`contradicts`·`enables`·`depends-on`·`new-surface` 관계 계약을 기록합니다. 신규성이 임계값을 넘는 코드 등록 transition만 두 번째 fresh-Capability wave를 한 번 실행할 수 있고 Campaign의 Agent·Tool call·비용·시간·rate limit은 계속 공유됩니다. 동일 상태나 임계값 미만 Plan은 실행 전에 중단되며 기존 one-time Planner는 바꾸지 않습니다. |
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 정확한 M03, M06, A04 fresh-session replay, Candidate-bound replay-evidence projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
 | Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을 발행하고 schema v12는 confirmed baseline과 부모 Retest Artifact를 1:1로 결박해 음성 replay receipt와 정상 기능 회귀를 서버가 다시 검증한 `kisa-retest.json` projection을 발행합니다. 독립 remediation attestation이 없으므로 방어 응답은 계속 `inconclusive`입니다. |
-| 주요 공백 | HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Candidate-aware validation·Atomic Claim, multi-host/object-store Artifact 전송, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| 주요 공백 | HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Claim 단위 replay와 공개 부분 검증 상태, multi-host/object-store Artifact 전송, portable/off-host replay proof, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
 
-> **검증 상태:** PAJIN은 현재 신뢰된 Candidate 수용, 의미론적 검토, 객관적 증거 Gate, 봉인된
-> Decision snapshot, 버전이 지정된 `ValidationPacket`, `ReplayIntent`, `ModeReplayContract`,
+> **검증 상태:** PAJIN은 현재 신뢰된 Candidate 수용, 의미론적 검토, Finding을 다시 쓰지 않고
+> 정확한 Candidate·Atomic Claim digest를 판정하는 Candidate-aware Provider 계약, 결정론적
+> validity·impact·severity Claim 분해, 객관적 증거 Gate, 봉인된 Decision snapshot, 버전이 지정된
+> `ValidationPacket`, `ReplayIntent`, `ModeReplayContract`,
 > `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`, `ReplayOutcome` 계약을 구현합니다.
 > 순수 결정론적 compiler는 원래 Plan, 결박된 Tool 요청, Specialist grant, 증거 digest, Scope,
 > authorization, cancellation, budget을 확인한 다음, 위임할 수 없고 유효 기간이 5분인
@@ -729,11 +731,13 @@ docker compose -f containers/compose.ai-lab.yaml down
 ```
 
 구현된 flow는 Provider Planner → 격리된 `ai.chat-probe` Specialist → 신뢰된 Candidate Producer →
-Provider Semantic Validator → objective Gate → Provider Reporter입니다. Validator Finding은 같은
-Run의 Specialist가 만든 evidence를 인용할 때만 받아들입니다. 제품 수준 confirmation 전에 필요한
-Restricted Reproducer 단계는 아직 구현되지 않았습니다. Reporter output은
-`model-narrative.json`에 별도로 저장되어 명확히 하위 섹션으로 append되며, canonical Finding이나
-실행 상태를 변경할 수 없습니다.
+Candidate-aware Provider Semantic Validator → objective Gate → Provider Reporter입니다. Validator는
+불변 Candidate ID·digest와 결정론적 `validity`·`impact`·`severity` Atomic Claim을 받고, Finding을
+다시 만들지 않은 채 Claim마다 `supports`·`contradicts`·`insufficient`와 Candidate 소유 evidence만
+반환합니다. validity Decision만 기존 Candidate 의미 Gate에 전달되고 impact·severity 판정은 별도로
+봉인되며 Candidate를 변경할 수 없습니다. 제품 수준 confirmation은 계속 Restricted Reproducer와
+독립 실행 attestation을 요구합니다. Reporter output은 `model-narrative.json`에 별도로 저장되어
+명확히 하위 섹션으로 append되며 canonical Finding이나 실행 상태를 변경할 수 없습니다.
 
 `maxModelCalls`와 `maxModelTokens`는 Campaign 내부 model 사용량을 각각 제한하며, `maxCostUsd`는
 등록 시 제공된 100만 token당 rate를 같은 보수적 예약량에 적용합니다. Provider가 보고한 token

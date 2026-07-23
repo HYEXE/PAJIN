@@ -25,6 +25,18 @@ class FindingDisposition(StrEnum):
     REJECTED_OBJECTIVE = "rejected-objective"
 
 
+class AtomicClaimType(StrEnum):
+    VALIDITY = "validity"
+    IMPACT = "impact"
+    SEVERITY = "severity"
+
+
+class AtomicClaimVerdict(StrEnum):
+    SUPPORTS = "supports"
+    CONTRADICTS = "contradicts"
+    INSUFFICIENT = "insufficient"
+
+
 class ValidationMethod(StrEnum):
     LEGACY_VALIDATOR = "legacy-validator"
     DETERMINISTIC_GATE = "deterministic-gate"
@@ -99,6 +111,105 @@ class CandidateFinding(StrictModel):
         return self
 
 
+class AtomicClaim(StrictModel):
+    """Trusted deterministic projection of one independently reviewable Candidate claim."""
+
+    api_version: Literal["pajin.dev/atomic-claim/v1alpha1"] = Field(
+        default="pajin.dev/atomic-claim/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["AtomicClaim"] = "AtomicClaim"
+    claim_id: _Identifier = Field(alias="claimId")
+    candidate_id: _Identifier = Field(alias="candidateId")
+    candidate_claim_digest: str = Field(
+        alias="candidateClaimDigest",
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    claim_type: AtomicClaimType = Field(alias="claimType")
+    statement: str = Field(min_length=1, max_length=20_000)
+    evidence: list[_EvidenceReference] = Field(max_length=1_000)
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+
+    @model_validator(mode="after")
+    def require_canonical_identity(self) -> AtomicClaim:
+        if len(self.evidence) != len(set(self.evidence)):
+            raise ValueError("Atomic Claim evidence references must be unique")
+        if self.claim_id != _atomic_claim_id(self.candidate_id, self.claim_type):
+            raise ValueError("Atomic Claim ID does not match its Candidate and type")
+        if self.claim_digest != _atomic_claim_digest(
+            candidate_id=self.candidate_id,
+            candidate_claim_digest=self.candidate_claim_digest,
+            claim_type=self.claim_type,
+            statement=self.statement,
+            evidence=self.evidence,
+        ):
+            raise ValueError("Atomic Claim digest does not match its canonical content")
+        return self
+
+
+class AtomicClaimDecision(StrictModel):
+    """Validator-owned verdict bound to one exact trusted Atomic Claim."""
+
+    api_version: Literal["pajin.dev/atomic-claim-decision/v1alpha1"] = Field(
+        default="pajin.dev/atomic-claim-decision/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["AtomicClaimDecision"] = "AtomicClaimDecision"
+    decision_id: _Identifier = Field(alias="decisionId")
+    claim_id: _Identifier = Field(alias="claimId")
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+    candidate_id: _Identifier = Field(alias="candidateId")
+    candidate_claim_digest: str = Field(
+        alias="candidateClaimDigest",
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    verdict: AtomicClaimVerdict
+    rationale: str = Field(min_length=1, max_length=5_000)
+    supporting_evidence: list[_EvidenceReference] = Field(
+        default_factory=list,
+        alias="supportingEvidence",
+        max_length=1_000,
+    )
+    contradicting_evidence: list[_EvidenceReference] = Field(
+        default_factory=list,
+        alias="contradictingEvidence",
+        max_length=1_000,
+    )
+
+    @model_validator(mode="after")
+    def require_canonical_decision(self) -> AtomicClaimDecision:
+        if len(self.supporting_evidence) != len(set(self.supporting_evidence)):
+            raise ValueError("Atomic Claim supporting evidence must be unique")
+        if len(self.contradicting_evidence) != len(set(self.contradicting_evidence)):
+            raise ValueError("Atomic Claim contradicting evidence must be unique")
+        if set(self.supporting_evidence) & set(self.contradicting_evidence):
+            raise ValueError("Atomic Claim evidence cannot both support and contradict")
+        if self.verdict is AtomicClaimVerdict.SUPPORTS:
+            if not self.supporting_evidence or self.contradicting_evidence:
+                raise ValueError(
+                    "supporting Atomic Claim decision requires only supporting evidence"
+                )
+        elif self.verdict is AtomicClaimVerdict.CONTRADICTS:
+            if not self.contradicting_evidence or self.supporting_evidence:
+                raise ValueError(
+                    "contradicting Atomic Claim decision requires only contradicting evidence"
+                )
+        elif self.supporting_evidence or self.contradicting_evidence:
+            raise ValueError("insufficient Atomic Claim decision cannot classify evidence")
+        if self.decision_id != _atomic_claim_decision_id(
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            candidate_id=self.candidate_id,
+            candidate_claim_digest=self.candidate_claim_digest,
+            verdict=self.verdict,
+            rationale=self.rationale,
+            supporting_evidence=self.supporting_evidence,
+            contradicting_evidence=self.contradicting_evidence,
+        ):
+            raise ValueError("Atomic Claim decision ID does not match its canonical content")
+        return self
+
+
 class CandidateAssessment(StrictModel):
     """Validator-owned semantic decision bound to one exact trusted Candidate claim."""
 
@@ -147,6 +258,16 @@ class ValidatorOutputArtifact(StrictModel):
     validation_task_id: _Identifier = Field(alias="validationTaskId")
     findings: list[Finding] = Field(default_factory=list, max_length=1_000)
     assessments: list[CandidateAssessment] = Field(default_factory=list, max_length=1_000)
+    atomic_claims: list[AtomicClaim] = Field(
+        default_factory=list,
+        alias="atomicClaims",
+        max_length=3_000,
+    )
+    claim_decisions: list[AtomicClaimDecision] = Field(
+        default_factory=list,
+        alias="claimDecisions",
+        max_length=3_000,
+    )
 
     @model_validator(mode="after")
     def require_unique_output_identities(self) -> ValidatorOutputArtifact:
@@ -156,8 +277,15 @@ class ValidatorOutputArtifact(StrictModel):
         candidate_ids = [assessment.candidate_id for assessment in self.assessments]
         if len(candidate_ids) != len(set(candidate_ids)):
             raise ValueError("Validator output Candidate assessment IDs must be unique")
-        if any(assessment.supports_claim for assessment in self.assessments) and not any(
-            finding.validated for finding in self.findings
+        _validate_atomic_output_contract(
+            assessments=self.assessments,
+            claims=self.atomic_claims,
+            decisions=self.claim_decisions,
+        )
+        if (
+            any(assessment.supports_claim for assessment in self.assessments)
+            and not any(finding.validated for finding in self.findings)
+            and not self.claim_decisions
         ):
             raise ValueError("supporting Validator output requires a validated Finding")
         return self
@@ -176,6 +304,251 @@ def candidate_claim_digest(candidate: CandidateFinding) -> str:
         allow_nan=False,
     ).encode()
     return sha256(canonical).hexdigest()
+
+
+def candidate_atomic_claims(candidate: CandidateFinding) -> list[AtomicClaim]:
+    """Split one Candidate into deterministic validity, impact, and severity claims."""
+
+    digest = candidate_claim_digest(candidate)
+    validity = {
+        "affectedComponent": candidate.claim.affected_component,
+        "reproduction": candidate.claim.reproduction,
+        "rootCause": candidate.claim.root_cause,
+        "summary": candidate.claim.summary,
+        "target": candidate.claim.target,
+        "threatClass": candidate.claim.threat_class,
+        "title": candidate.claim.title,
+    }
+    specifications: list[tuple[AtomicClaimType, str]] = [
+        (
+            AtomicClaimType.VALIDITY,
+            json.dumps(
+                validity,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+        )
+    ]
+    if candidate.claim.impact is not None:
+        specifications.append((AtomicClaimType.IMPACT, candidate.claim.impact))
+    specifications.append((AtomicClaimType.SEVERITY, candidate.claim.severity.value))
+    return [
+        _build_atomic_claim(
+            candidate_id=candidate.candidate_id,
+            candidate_claim_digest=digest,
+            claim_type=claim_type,
+            statement=statement,
+            evidence=candidate.claim.evidence,
+        )
+        for claim_type, statement in specifications
+    ]
+
+
+def build_atomic_claim_decision(
+    claim: AtomicClaim,
+    *,
+    verdict: AtomicClaimVerdict,
+    rationale: str,
+    supporting_evidence: Sequence[str] = (),
+    contradicting_evidence: Sequence[str] = (),
+) -> AtomicClaimDecision:
+    """Bind a semantic verdict to trusted Claim identity in canonical code."""
+
+    supporting = list(supporting_evidence)
+    contradicting = list(contradicting_evidence)
+    decision_id = _atomic_claim_decision_id(
+        claim_id=claim.claim_id,
+        claim_digest=claim.claim_digest,
+        candidate_id=claim.candidate_id,
+        candidate_claim_digest=claim.candidate_claim_digest,
+        verdict=verdict,
+        rationale=rationale,
+        supporting_evidence=supporting,
+        contradicting_evidence=contradicting,
+    )
+    return AtomicClaimDecision(
+        decisionId=decision_id,
+        claimId=claim.claim_id,
+        claimDigest=claim.claim_digest,
+        candidateId=claim.candidate_id,
+        candidateClaimDigest=claim.candidate_claim_digest,
+        verdict=verdict,
+        rationale=rationale,
+        supportingEvidence=supporting,
+        contradictingEvidence=contradicting,
+    )
+
+
+def validate_candidate_atomic_refinement(
+    candidates: Sequence[CandidateFinding],
+    claims: Sequence[AtomicClaim],
+    decisions: Sequence[AtomicClaimDecision],
+    *,
+    required: bool,
+) -> None:
+    """Verify an exact deterministic Claim set and one bound verdict per Claim."""
+
+    if not claims and not decisions and not required:
+        return
+    expected = [claim for candidate in candidates for claim in candidate_atomic_claims(candidate)]
+    if list(claims) != expected:
+        raise ValueError("Atomic Claims differ from the trusted Candidate decomposition")
+    _validate_atomic_claim_decisions(claims, decisions)
+
+
+def _build_atomic_claim(
+    *,
+    candidate_id: str,
+    candidate_claim_digest: str,
+    claim_type: AtomicClaimType,
+    statement: str,
+    evidence: Sequence[str],
+) -> AtomicClaim:
+    references = list(evidence)
+    return AtomicClaim(
+        claimId=_atomic_claim_id(candidate_id, claim_type),
+        candidateId=candidate_id,
+        candidateClaimDigest=candidate_claim_digest,
+        claimType=claim_type,
+        statement=statement,
+        evidence=references,
+        claimDigest=_atomic_claim_digest(
+            candidate_id=candidate_id,
+            candidate_claim_digest=candidate_claim_digest,
+            claim_type=claim_type,
+            statement=statement,
+            evidence=references,
+        ),
+    )
+
+
+def _atomic_claim_id(candidate_id: str, claim_type: AtomicClaimType) -> str:
+    payload = f"{candidate_id}\0{claim_type.value}".encode()
+    return f"claim_{sha256(payload).hexdigest()}"
+
+
+def _atomic_claim_digest(
+    *,
+    candidate_id: str,
+    candidate_claim_digest: str,
+    claim_type: AtomicClaimType,
+    statement: str,
+    evidence: Sequence[str],
+) -> str:
+    return _canonical_digest(
+        {
+            "candidateId": candidate_id,
+            "candidateClaimDigest": candidate_claim_digest,
+            "claimType": claim_type.value,
+            "statement": statement,
+            "evidence": list(evidence),
+        }
+    )
+
+
+def _atomic_claim_decision_id(
+    *,
+    claim_id: str,
+    claim_digest: str,
+    candidate_id: str,
+    candidate_claim_digest: str,
+    verdict: AtomicClaimVerdict,
+    rationale: str,
+    supporting_evidence: Sequence[str],
+    contradicting_evidence: Sequence[str],
+) -> str:
+    digest = _canonical_digest(
+        {
+            "claimId": claim_id,
+            "claimDigest": claim_digest,
+            "candidateId": candidate_id,
+            "candidateClaimDigest": candidate_claim_digest,
+            "verdict": verdict.value,
+            "rationale": rationale,
+            "supportingEvidence": list(supporting_evidence),
+            "contradictingEvidence": list(contradicting_evidence),
+        }
+    )
+    return f"claim_decision_{digest}"
+
+
+def _canonical_digest(payload: dict[str, object]) -> str:
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode()
+    return sha256(canonical).hexdigest()
+
+
+def _validate_atomic_output_contract(
+    *,
+    assessments: Sequence[CandidateAssessment],
+    claims: Sequence[AtomicClaim],
+    decisions: Sequence[AtomicClaimDecision],
+) -> None:
+    if not claims and not decisions:
+        return
+    _validate_atomic_claim_decisions(claims, decisions)
+    assessment_by_candidate = {assessment.candidate_id: assessment for assessment in assessments}
+    if {claim.candidate_id for claim in claims} != set(assessment_by_candidate):
+        raise ValueError("Atomic Claims must cover every Candidate assessment exactly")
+    validity_by_candidate = {
+        claim.candidate_id: (claim, decision)
+        for claim, decision in zip(claims, decisions, strict=True)
+        if claim.claim_type is AtomicClaimType.VALIDITY
+    }
+    if set(validity_by_candidate) != set(assessment_by_candidate):
+        raise ValueError("each Candidate assessment requires one validity Claim decision")
+    for candidate_id, assessment in assessment_by_candidate.items():
+        _claim, decision = validity_by_candidate[candidate_id]
+        expected_support = decision.verdict is AtomicClaimVerdict.SUPPORTS
+        expected_reason = (
+            ValidationReasonCode.VALIDATOR_CONFIRMED
+            if expected_support
+            else (
+                ValidationReasonCode.VALIDATOR_DISAGREED
+                if decision.verdict is AtomicClaimVerdict.CONTRADICTS
+                else ValidationReasonCode.VALIDATOR_OMITTED
+            )
+        )
+        if (
+            assessment.claim_digest != decision.candidate_claim_digest
+            or assessment.supports_claim is not expected_support
+            or assessment.reason_code is not expected_reason
+            or assessment.rationale != decision.rationale
+            or assessment.supporting_evidence != decision.supporting_evidence
+        ):
+            raise ValueError("Candidate assessment differs from its validity Claim decision")
+
+
+def _validate_atomic_claim_decisions(
+    claims: Sequence[AtomicClaim],
+    decisions: Sequence[AtomicClaimDecision],
+) -> None:
+    claim_ids = [claim.claim_id for claim in claims]
+    if len(claim_ids) != len(set(claim_ids)):
+        raise ValueError("Atomic Claim IDs must be unique")
+    decision_ids = [decision.decision_id for decision in decisions]
+    if len(decision_ids) != len(set(decision_ids)):
+        raise ValueError("Atomic Claim decision IDs must be unique")
+    if [decision.claim_id for decision in decisions] != claim_ids:
+        raise ValueError("Atomic Claim decisions must follow the exact Claim order")
+    for claim, decision in zip(claims, decisions, strict=True):
+        if (
+            decision.claim_id != claim.claim_id
+            or decision.claim_digest != claim.claim_digest
+            or decision.candidate_id != claim.candidate_id
+            or decision.candidate_claim_digest != claim.candidate_claim_digest
+        ):
+            raise ValueError("Atomic Claim decision identity does not match its Claim")
+        cited = set(decision.supporting_evidence) | set(decision.contradicting_evidence)
+        if not cited <= set(claim.evidence):
+            raise ValueError("Atomic Claim decision cites evidence outside its Claim")
 
 
 def validator_finding_matches_candidate_claim(

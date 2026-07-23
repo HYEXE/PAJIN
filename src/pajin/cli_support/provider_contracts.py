@@ -191,9 +191,10 @@ def provider_agent_checks(
         and decision.supporting_evidence == exact_evidence
         and decision.contradicting_evidence == []
         and objective_gate_passed
-        and decision_checks.get("legacy-validator-signal") is not None
-        and decision_checks["legacy-validator-signal"].status is ValidationCheckStatus.PASS
-        and decision_checks["legacy-validator-signal"].reason_code
+        and decision_checks.get("candidate-bound-validator-assessment") is not None
+        and decision_checks["candidate-bound-validator-assessment"].status
+        is ValidationCheckStatus.PASS
+        and decision_checks["candidate-bound-validator-assessment"].reason_code
         is ValidationReasonCode.VALIDATOR_CONFIRMED
     )
     independent_reproduction_boundary = bool(

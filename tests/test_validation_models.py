@@ -6,6 +6,8 @@ from pydantic import ValidationError
 from pajin.agents.base import CandidateAuthority, CandidateProduction
 from pajin.domain.models import Finding, FindingSeverity
 from pajin.domain.validation import (
+    AtomicClaimType,
+    AtomicClaimVerdict,
     CandidateAssessment,
     CandidateFinding,
     FindingDisposition,
@@ -16,6 +18,10 @@ from pajin.domain.validation import (
     ValidationMethod,
     ValidationReasonCode,
     ValidatorOutputArtifact,
+    build_atomic_claim_decision,
+    candidate_atomic_claims,
+    candidate_claim_digest,
+    validate_candidate_atomic_refinement,
 )
 
 
@@ -248,6 +254,106 @@ def test_supporting_validator_output_requires_evidence_and_a_validated_finding()
             validationTaskId="task_supported",
             findings=[],
             assessments=[assessment],
+        )
+
+
+def test_atomic_claims_separate_validity_impact_and_severity_without_rewriting_candidate() -> None:
+    candidate = _candidate(
+        "candidate_atomic",
+        finding_id="finding_atomic",
+        claim=_finding(finding_id="finding_atomic").model_copy(
+            update={"impact": "A protected record could be disclosed."}
+        ),
+    )
+    claims = candidate_atomic_claims(candidate)
+
+    assert [claim.claim_type for claim in claims] == [
+        AtomicClaimType.VALIDITY,
+        AtomicClaimType.IMPACT,
+        AtomicClaimType.SEVERITY,
+    ]
+    decisions = [
+        build_atomic_claim_decision(
+            claims[0],
+            verdict=AtomicClaimVerdict.SUPPORTS,
+            rationale="The same-run observation supports the core behavior.",
+            supporting_evidence=claims[0].evidence,
+        ),
+        build_atomic_claim_decision(
+            claims[1],
+            verdict=AtomicClaimVerdict.INSUFFICIENT,
+            rationale="The evidence does not establish the proposed impact.",
+        ),
+        build_atomic_claim_decision(
+            claims[2],
+            verdict=AtomicClaimVerdict.CONTRADICTS,
+            rationale="The evidence contradicts the proposed severity.",
+            contradicting_evidence=claims[2].evidence,
+        ),
+    ]
+
+    validate_candidate_atomic_refinement(
+        [candidate],
+        claims,
+        decisions,
+        required=True,
+    )
+    artifact = ValidatorOutputArtifact(
+        sourceRunId="run_atomic",
+        validatorId="agent:validator:atomic",
+        validationTaskId="task_atomic",
+        findings=[],
+        assessments=[
+            CandidateAssessment(
+                candidate_id=candidate.candidate_id,
+                claim_digest=candidate_claim_digest(candidate),
+                supports_claim=True,
+                reason_code=ValidationReasonCode.VALIDATOR_CONFIRMED,
+                rationale=decisions[0].rationale,
+                supporting_evidence=decisions[0].supporting_evidence,
+            )
+        ],
+        atomicClaims=claims,
+        claimDecisions=decisions,
+    )
+
+    assert artifact.findings == []
+    assert artifact.claim_decisions == decisions
+    assert candidate.claim.severity is FindingSeverity.HIGH
+    assert candidate.claim.validated is False
+
+
+def test_atomic_claim_refinement_rejects_tampered_claims_and_unbound_evidence() -> None:
+    candidate = _candidate("candidate_atomic_tamper", finding_id="finding_atomic_tamper")
+    claims = candidate_atomic_claims(candidate)
+    tampered = claims[0].model_dump(mode="python", by_alias=True)
+    tampered["statement"] = "Substituted claim text"
+    with pytest.raises(ValidationError, match="digest"):
+        type(claims[0]).model_validate(tampered)
+
+    decisions = [
+        build_atomic_claim_decision(
+            claim,
+            verdict=(
+                AtomicClaimVerdict.SUPPORTS
+                if claim.claim_type is AtomicClaimType.VALIDITY
+                else AtomicClaimVerdict.INSUFFICIENT
+            ),
+            rationale="Bounded semantic assessment.",
+            supporting_evidence=(
+                ["evidence/outside-candidate.json"]
+                if claim.claim_type is AtomicClaimType.VALIDITY
+                else []
+            ),
+        )
+        for claim in claims
+    ]
+    with pytest.raises(ValueError, match="outside its Claim"):
+        validate_candidate_atomic_refinement(
+            [candidate],
+            claims,
+            decisions,
+            required=True,
         )
 
 

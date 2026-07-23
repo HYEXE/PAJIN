@@ -5,8 +5,15 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Protocol, runtime_checkable
 
+from pydantic import Field
+
 from pajin.domain.models import AgentPlan, CampaignManifest, Finding, StrictModel, ToolResult
-from pajin.domain.validation import CandidateAssessment, CandidateFinding
+from pajin.domain.validation import (
+    AtomicClaim,
+    AtomicClaimDecision,
+    CandidateAssessment,
+    CandidateFinding,
+)
 
 
 class ModelCallFailure(RuntimeError):
@@ -44,10 +51,12 @@ class ValidatorRuntime(Protocol):
 
 
 class CandidateValidation(StrictModel):
-    """One validator call's legacy findings and explicit Candidate-bound assessments."""
+    """One validator call's Candidate-bound assessments and optional legacy findings."""
 
     findings: list[Finding]
     assessments: list[CandidateAssessment]
+    atomic_claims: list[AtomicClaim] = Field(default_factory=list)
+    claim_decisions: list[AtomicClaimDecision] = Field(default_factory=list)
 
 
 @runtime_checkable

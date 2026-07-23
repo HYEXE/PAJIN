@@ -34,6 +34,10 @@ from pajin.domain.replay import (
     ValidationPacket,
 )
 from pajin.domain.validation import (
+    AtomicClaim,
+    AtomicClaimDecision,
+    AtomicClaimType,
+    AtomicClaimVerdict,
     CandidateFinding,
     FindingDisposition,
     FindingValidationSet,
@@ -46,6 +50,10 @@ from pajin.domain.validation import (
 
 __all__ = [
     "AgentPlan",
+    "AtomicClaim",
+    "AtomicClaimDecision",
+    "AtomicClaimType",
+    "AtomicClaimVerdict",
     "AutonomyLevel",
     "CampaignManifest",
     "CampaignMode",

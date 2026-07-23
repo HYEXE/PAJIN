@@ -38,6 +38,7 @@ from pajin.domain.validation import (
     ValidationDecision,
     ValidatorOutputArtifact,
     candidate_claim_digest,
+    validate_candidate_atomic_refinement,
     validator_finding_matches_candidate_claim,
 )
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
@@ -869,12 +870,25 @@ def _load_validator_output(
     assessments_by_id = {assessment.candidate_id: assessment for assessment in output.assessments}
     if set(assessments_by_id) != set(candidates_by_id):
         raise ValueError("sealed KISA Validator output must assess every exact Candidate once")
+    has_atomic_refinement = bool(output.atomic_claims or output.claim_decisions)
+    validate_candidate_atomic_refinement(
+        candidates,
+        output.atomic_claims,
+        output.claim_decisions,
+        required=has_atomic_refinement,
+    )
     claimed_finding_indices: set[int] = set()
     for candidate_id, assessment in assessments_by_id.items():
         candidate = candidates_by_id[candidate_id]
         if assessment.claim_digest != candidate_claim_digest(candidate):
             raise ValueError("sealed KISA Validator assessment differs from its Candidate claim")
         if assessment.supports_claim:
+            if has_atomic_refinement:
+                if not set(assessment.supporting_evidence) <= set(candidate.claim.evidence):
+                    raise ValueError(
+                        "sealed KISA supporting assessment cites evidence outside its Candidate"
+                    )
+                continue
             if assessment.supporting_evidence != candidate.claim.evidence:
                 raise ValueError(
                     "sealed KISA supporting assessment differs from exact Candidate evidence"

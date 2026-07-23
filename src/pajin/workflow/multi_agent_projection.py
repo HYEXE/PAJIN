@@ -30,6 +30,7 @@ from pajin.domain.validation import (
     FindingValidationSet,
     ValidationReasonCode,
     ValidatorOutputArtifact,
+    validate_candidate_atomic_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.runtime.control import (
@@ -235,7 +236,10 @@ class MultiAgentResultProjector:
         if plan is None:
             raise RuntimeError("validation phase started without a validated plan")
         try:
-            if isinstance(self._validator, CandidateAwareValidatorRuntime):
+            if self._candidate_producer is not None and isinstance(
+                self._validator,
+                CandidateAwareValidatorRuntime,
+            ):
                 validator_output = await self._host._within_budget(
                     self._validator.validate_candidates(
                         _detached_model(campaign),
@@ -250,6 +254,14 @@ class MultiAgentResultProjector:
                 )
                 findings = _detached_models(validator_output.findings)
                 assessments = _detached_models(validator_output.assessments)
+                atomic_claims = _detached_models(validator_output.atomic_claims)
+                claim_decisions = _detached_models(validator_output.claim_decisions)
+                validate_candidate_atomic_refinement(
+                    list(state.candidates.admitted),
+                    atomic_claims,
+                    claim_decisions,
+                    required=bool(atomic_claims or claim_decisions),
+                )
             else:
                 validator_findings = await self._host._within_budget(
                     self._validator.validate(
@@ -261,12 +273,16 @@ class MultiAgentResultProjector:
                 )
                 findings = _detached_models(validator_findings)
                 assessments = None
+                atomic_claims = []
+                claim_decisions = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=validator_agent.agent_id,
                 validationTaskId=tasks.validation_task.task_id,
                 findings=_detached_models(findings),
                 assessments=_detached_models(assessments or []),
+                atomicClaims=_detached_models(atomic_claims),
+                claimDecisions=_detached_models(claim_decisions),
             )
             validation = validate_findings(
                 campaign,

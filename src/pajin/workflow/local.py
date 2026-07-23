@@ -25,6 +25,7 @@ from pajin.domain.validation import (
     FindingValidationSet,
     ValidationReasonCode,
     ValidatorOutputArtifact,
+    validate_candidate_atomic_refinement,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
@@ -331,7 +332,10 @@ class LocalCampaignRunner:
         validator_results = [result.model_copy(deep=True) for result in results]
         validator_output_artifact: ValidatorOutputArtifact | None = None
         try:
-            if isinstance(self._agents, CandidateAwareValidatorRuntime):
+            if self._candidate_producer is not None and isinstance(
+                self._agents,
+                CandidateAwareValidatorRuntime,
+            ):
                 raw_validator_output = await self._agents.validate_candidates(
                     validator_campaign,
                     validator_plan,
@@ -343,6 +347,14 @@ class LocalCampaignRunner:
                 )
                 findings = validator_output.findings
                 validator_assessments = validator_output.assessments
+                atomic_claims = validator_output.atomic_claims
+                claim_decisions = validator_output.claim_decisions
+                validate_candidate_atomic_refinement(
+                    admitted_candidates,
+                    atomic_claims,
+                    claim_decisions,
+                    required=bool(atomic_claims or claim_decisions),
+                )
             else:
                 raw_findings = await self._agents.validate(
                     validator_campaign,
@@ -354,6 +366,8 @@ class LocalCampaignRunner:
                     for finding in raw_findings
                 ]
                 validator_assessments = None
+                atomic_claims = []
+                claim_decisions = []
             validator_output_artifact = ValidatorOutputArtifact(
                 sourceRunId=store.run_id,
                 validatorId=agent_id,
@@ -362,6 +376,8 @@ class LocalCampaignRunner:
                 assessments=[
                     assessment.model_copy(deep=True) for assessment in (validator_assessments or [])
                 ],
+                atomicClaims=[claim.model_copy(deep=True) for claim in atomic_claims],
+                claimDecisions=[decision.model_copy(deep=True) for decision in claim_decisions],
             )
         except asyncio.CancelledError:
             try:
