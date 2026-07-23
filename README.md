@@ -757,6 +757,9 @@ Restricted Reproducer and independent execution attestation. Reporter output is 
 in `model-narrative.json` and is appended as a clearly subordinate section; it cannot alter
 canonical findings or execution state.
 
+The exact Claim identity, evidence, fallback, and confirmation boundaries are recorded in
+[ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md).
+
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative
 reservation. Provider-reported token usage and its derived reported cost are retained only as

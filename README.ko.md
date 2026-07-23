@@ -739,6 +739,9 @@ Candidate-aware Provider Semantic Validator → objective Gate → Provider Repo
 독립 실행 attestation을 요구합니다. Reporter output은 `model-narrative.json`에 별도로 저장되어
 명확히 하위 섹션으로 append되며 canonical Finding이나 실행 상태를 변경할 수 없습니다.
 
+정확한 Claim identity·evidence·fallback·confirmation 경계는
+[ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.ko.md)에 기록했습니다.
+
 `maxModelCalls`와 `maxModelTokens`는 Campaign 내부 model 사용량을 각각 제한하며, `maxCostUsd`는
 등록 시 제공된 100만 token당 rate를 같은 보수적 예약량에 적용합니다. Provider가 보고한 token
 usage와 그 값으로 계산한 reported cost는 비신뢰 감사 관찰값으로만 보존됩니다. 이 값은 Campaign
