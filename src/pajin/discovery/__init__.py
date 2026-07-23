@@ -1,5 +1,12 @@
 """Evidence-bound attack-surface discovery contracts."""
 
+from pajin.discovery.admission import (
+    SurfaceAdmissionError,
+    SurfaceCandidate,
+    TrustedSurfaceAdapter,
+    TrustedSurfaceAdmission,
+    TrustedSurfaceProducer,
+)
 from pajin.discovery.models import (
     DISCOVERY_API_VERSION,
     AttackSurface,
@@ -15,19 +22,32 @@ from pajin.discovery.models import (
     surface_observation,
     tool_interface_surface_locator,
 )
+from pajin.discovery.projection import (
+    SurfaceProjectionConflict,
+    SurfaceProjectionPublication,
+    publish_surface_projection,
+)
 
 __all__ = [
     "DISCOVERY_API_VERSION",
     "AttackSurface",
     "AttackSurfaceSet",
     "HTTPSurfaceLocator",
+    "SurfaceAdmissionError",
+    "SurfaceCandidate",
     "SurfaceEvidenceReference",
     "SurfaceLocator",
     "SurfaceObservation",
+    "SurfaceProjectionConflict",
+    "SurfaceProjectionPublication",
     "ToolInterfaceSurfaceLocator",
+    "TrustedSurfaceAdapter",
+    "TrustedSurfaceAdmission",
+    "TrustedSurfaceProducer",
     "attack_surface",
     "attack_surface_set",
     "http_surface_locator",
+    "publish_surface_projection",
     "surface_observation",
     "tool_interface_surface_locator",
 ]
