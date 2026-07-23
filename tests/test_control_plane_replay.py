@@ -4889,7 +4889,7 @@ def test_claim_specific_confirmation_publishes_exact_public_projection(
             claim = _claim(service, actor=actor)
             claims.append(claim)
             assert claim.item.claim is not None
-            assert claim.job.payload.claim == claim.item.claim
+            assert ReplayJobPayload.model_validate(claim.job.payload).claim == claim.item.claim
             assert claim.compilation.spec.binding.claim == claim.item.claim
             finalize_request = asyncio.run(executor.execute(claim))
             finalized = service.finalize_replay_job(
