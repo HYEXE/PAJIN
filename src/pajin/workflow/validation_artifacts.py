@@ -8,16 +8,23 @@ from pathlib import Path
 
 from pajin.domain.models import Finding
 from pajin.domain.validation import (
+    AtomicClaimType,
     CandidateFinding,
+    ClaimReplayAssessment,
+    ClaimReplayStatus,
     ConfirmationBasis,
     FindingDisposition,
     FindingValidationSet,
+    PublicFindingState,
     ValidationDecision,
     ValidationMethod,
+    ValidationReasonCode,
     ValidatorOutputArtifact,
+    VersionedClaimReplaySet,
     VersionedConfirmedFindingSet,
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
+    candidate_atomic_claims,
 )
 from pajin.runtime.store import (
     RunIntegritySeal,
@@ -32,6 +39,7 @@ VERSIONED_VALIDATION_ROOT = "validation/v1alpha1"
 VERSIONED_VALIDATION_INDEX_PATH = f"{VERSIONED_VALIDATION_ROOT}/index.json"
 VERSIONED_VALIDATION_DECISIONS_PATH = f"{VERSIONED_VALIDATION_ROOT}/decisions.json"
 VERSIONED_VALIDATION_FINDINGS_PATH = f"{VERSIONED_VALIDATION_ROOT}/findings.json"
+VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH = f"{VERSIONED_VALIDATION_ROOT}/claim-replays.json"
 VERSIONED_VALIDATION_REPORT_PATH = f"{VERSIONED_VALIDATION_ROOT}/report.md"
 VALIDATOR_OUTPUT_PATH = "validator-output.json"
 _MAX_VALIDATION_ARTIFACT_BYTES = 64 * 1024 * 1024
@@ -59,12 +67,26 @@ class LoadedValidationSnapshot:
     validation: FindingValidationSet
     semantics: ValidationSnapshotSemantics
     index: VersionedValidationIndex | None = None
+    claim_replays: VersionedClaimReplaySet | None = None
 
     @property
     def product_confirmed_findings(self) -> list[Finding]:
         if self.semantics is ValidationSnapshotSemantics.VERIFIED_INDEPENDENT_REPLAY:
             return self.validation.confirmed_findings
         return []
+
+    @property
+    def public_states(self) -> dict[PublicFindingState, list[str]]:
+        if self.index is not None and self.index.public_states is not None:
+            return self.index.public_states
+        return {
+            state: [
+                decision.candidate_id
+                for decision in self.validation.decisions
+                if decision.disposition.value == state.value
+            ]
+            for state in PublicFindingState
+        }
 
 
 def write_validation_artifacts(
@@ -213,6 +235,8 @@ def load_validation_snapshot(
     )
     final_requests = dict(preliminary_requests)
     final_requests[index.candidate_findings_path] = _MAX_VALIDATION_ARTIFACT_BYTES
+    if index.claim_replays_path is not None:
+        final_requests[index.claim_replays_path] = _MAX_VALIDATION_ARTIFACT_BYTES
     snapshot = load_verified_run_artifacts(
         root,
         requests=final_requests,
@@ -223,17 +247,18 @@ def load_validation_snapshot(
         snapshot,
         message="sealed validation Run changed while artifacts were loaded",
     )
-    index, validation, source_run_ids = _load_versioned_projection(snapshot)
+    index, validation, claim_replays, source_run_ids = _load_versioned_projection(snapshot)
     _validate_projection_run_identity(source_run_ids, snapshot.verification.run_id)
     source_validation = load_source_validation_artifacts_from_snapshot(snapshot)
-    _validate_projection_content(index, validation, source_validation)
+    _validate_projection_content(index, validation, claim_replays, source_validation)
     _validate_projection_seal_binding(index, list(snapshot.seals))
-    _validate_projection_lineage(index, validation)
+    _validate_projection_lineage(index, validation, claim_replays)
 
     return LoadedValidationSnapshot(
         validation=validation,
         semantics=ValidationSnapshotSemantics(index.confirmation_semantics),
         index=index,
+        claim_replays=claim_replays,
     )
 
 
@@ -264,7 +289,12 @@ def _validation_authority(
 
 def _load_versioned_projection(
     snapshot: VerifiedRunSnapshot,
-) -> tuple[VersionedValidationIndex, FindingValidationSet, tuple[str, str, str]]:
+) -> tuple[
+    VersionedValidationIndex,
+    FindingValidationSet,
+    VersionedClaimReplaySet | None,
+    tuple[str, ...],
+]:
     try:
         index = VersionedValidationIndex.model_validate(
             strict_json(
@@ -297,6 +327,21 @@ def _load_versioned_projection(
             CandidateFinding.model_validate(item)
             for item in _read_json_list(snapshot, index.candidate_findings_path)
         ]
+        claim_replays = (
+            VersionedClaimReplaySet.model_validate(
+                strict_json(
+                    snapshot,
+                    index.claim_replays_path,
+                    label="versioned Claim replay assessments",
+                    max_bytes=_MAX_VALIDATION_ARTIFACT_BYTES,
+                    missing_or_invalid_message=(
+                        "versioned Claim replay assessments could not be loaded"
+                    ),
+                )
+            )
+            if index.claim_replays_path is not None
+            else None
+        )
     except ValueError as exc:
         raise ValueError("versioned validation projection could not be loaded") from exc
     if index.confirmation_semantics != finding_set.confirmation_semantics:
@@ -309,12 +354,18 @@ def _load_versioned_projection(
             decisions=decision_set.decisions,
             confirmed_findings=finding_set.findings,
         ),
-        (index.source_run_id, decision_set.source_run_id, finding_set.source_run_id),
+        claim_replays,
+        (
+            index.source_run_id,
+            decision_set.source_run_id,
+            finding_set.source_run_id,
+            *([claim_replays.source_run_id] if claim_replays is not None else []),
+        ),
     )
 
 
 def _validate_projection_run_identity(
-    source_run_ids: tuple[str, str, str],
+    source_run_ids: tuple[str, ...],
     verified_run_id: str,
 ) -> None:
     if any(source_run_id != verified_run_id for source_run_id in source_run_ids):
@@ -324,6 +375,7 @@ def _validate_projection_run_identity(
 def _validate_projection_content(
     index: VersionedValidationIndex,
     validation: FindingValidationSet,
+    claim_replays: VersionedClaimReplaySet | None,
     source_validation: FindingValidationSet,
 ) -> None:
     if validation.candidates != source_validation.candidates:
@@ -352,6 +404,153 @@ def _validate_projection_content(
         if decision.disposition is FindingDisposition.CONFIRMED
     ):
         raise ValueError("versioned confirmed Decisions require verified replay semantics")
+    _validate_claim_replay_projection(index, validation, claim_replays)
+
+
+def _validate_claim_replay_projection(
+    index: VersionedValidationIndex,
+    validation: FindingValidationSet,
+    claim_replays: VersionedClaimReplaySet | None,
+) -> None:
+    if index.claim_replays_path is None:
+        if claim_replays is not None or index.public_states is not None:
+            raise ValueError("legacy projection cannot contain Claim replay public state")
+        return
+    if (
+        index.claim_replays_path != VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH
+        or claim_replays is None
+        or index.public_states is None
+    ):
+        raise ValueError("Claim replay projection is incomplete")
+
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in validation.candidates}
+    decisions_by_id = {decision.candidate_id: decision for decision in validation.decisions}
+    expected_candidate_order = [
+        candidate.candidate_id
+        for candidate in validation.candidates
+        if decisions_by_id[candidate.candidate_id].replay_lineage
+    ]
+    if [item.candidate_id for item in claim_replays.assessments] != expected_candidate_order:
+        raise ValueError("Claim replay assessments must follow replayed Candidate order")
+
+    assessments_by_candidate: dict[str, ClaimReplayAssessment] = {}
+    for assessment in claim_replays.assessments:
+        candidate = candidates_by_id[assessment.candidate_id]
+        decision = decisions_by_id[assessment.candidate_id]
+        validity_claim = next(
+            claim
+            for claim in candidate_atomic_claims(candidate)
+            if claim.claim_type is AtomicClaimType.VALIDITY
+        )
+        if (
+            assessment.candidate_claim_digest != validity_claim.candidate_claim_digest
+            or assessment.claim_id != validity_claim.claim_id
+            or assessment.claim_digest != validity_claim.claim_digest
+            or assessment.claim_type is not AtomicClaimType.VALIDITY
+        ):
+            raise ValueError("Claim replay assessment differs from its exact validity Claim")
+        if len(decision.replay_lineage) != 1:
+            raise ValueError("Claim replay assessment requires exactly one replay lineage")
+        lineage = decision.replay_lineage[0]
+        if (
+            assessment.replay_run_id != lineage.replay_run_id
+            or assessment.replay_outcome_id != lineage.replay_outcome_id
+            or assessment.oracle_result_id != lineage.oracle_result_id
+            or assessment.replay_request_ids != lineage.replay_request_ids
+            or assessment.replay_evidence != lineage.replay_evidence
+            or assessment.assessed_at != decision.decided_at
+        ):
+            raise ValueError("Claim replay assessment differs from Decision replay lineage")
+        attested = decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+        if assessment.independent_execution_attested is not attested:
+            raise ValueError("Claim replay assessment attestation differs from its Decision")
+        _validate_claim_replay_status_against_decision(assessment, decision)
+        assessments_by_candidate[assessment.candidate_id] = assessment
+
+    expected_public_states = {
+        state: [
+            decision.candidate_id
+            for decision in validation.decisions
+            if _loaded_public_state(
+                decision,
+                assessments_by_candidate.get(decision.candidate_id),
+            )
+            is state
+        ]
+        for state in PublicFindingState
+    }
+    if index.public_states != expected_public_states:
+        raise ValueError("public validation states differ from Claim replay assessments")
+
+
+def _validate_claim_replay_status_against_decision(
+    assessment: ClaimReplayAssessment,
+    decision: ValidationDecision,
+) -> None:
+    reason = decision.reason_codes[0]
+    objective_reasons = {
+        ValidationReasonCode.TARGET_UNDECLARED,
+        ValidationReasonCode.TARGET_OUT_OF_SCOPE,
+        ValidationReasonCode.THREAT_CLASS_UNDECLARED,
+        ValidationReasonCode.EVIDENCE_MISSING,
+        ValidationReasonCode.EVIDENCE_UNLINKED,
+        ValidationReasonCode.EVIDENCE_FILE_MISSING,
+        ValidationReasonCode.SOURCE_REQUEST_MISMATCH,
+    }
+    if (
+        reason in objective_reasons
+        or reason is ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED
+    ):
+        expected = ClaimReplayStatus.NOT_ELIGIBLE
+    elif reason is ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED:
+        expected = ClaimReplayStatus.NOT_REPRODUCED
+    elif reason is ValidationReasonCode.REPLAY_ORACLE_INCONCLUSIVE or reason in {
+        ValidationReasonCode.EXECUTION_FAILED,
+        ValidationReasonCode.REPLAY_EXECUTION_FAILED,
+        ValidationReasonCode.REPLAY_CANCELLED,
+        ValidationReasonCode.REPLAY_TIMED_OUT,
+        ValidationReasonCode.REPLAY_TARGET_UNAVAILABLE,
+    }:
+        expected = ClaimReplayStatus.INCONCLUSIVE
+    elif reason is ValidationReasonCode.REPLAY_NOT_ELIGIBLE:
+        expected = ClaimReplayStatus.NOT_ELIGIBLE
+    elif reason in {
+        ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED,
+        ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING,
+        ValidationReasonCode.VALIDATOR_DISAGREED,
+        ValidationReasonCode.VALIDATOR_OMITTED,
+        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
+        ValidationReasonCode.VALIDATOR_CANCELLED,
+    }:
+        expected = ClaimReplayStatus.REPRODUCED
+    else:
+        return
+    if assessment.status is not expected:
+        raise ValueError("Claim replay status differs from its Gate reason")
+
+
+def _loaded_public_state(
+    decision: ValidationDecision,
+    assessment: ClaimReplayAssessment | None,
+) -> PublicFindingState:
+    if decision.disposition is FindingDisposition.CONFIRMED:
+        return PublicFindingState.CONFIRMED
+    if assessment is None:
+        return PublicFindingState(decision.disposition.value)
+    reason = decision.reason_codes[0]
+    if reason is ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED:
+        return PublicFindingState.NOT_REPRODUCED
+    if assessment.status is ClaimReplayStatus.REPRODUCED and reason in {
+        ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING,
+        ValidationReasonCode.VALIDATOR_DISAGREED,
+        ValidationReasonCode.VALIDATOR_OMITTED,
+        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
+        ValidationReasonCode.VALIDATOR_CANCELLED,
+    }:
+        return PublicFindingState.PARTIALLY_CONFIRMED
+    if assessment.status is ClaimReplayStatus.INCONCLUSIVE:
+        return PublicFindingState.INCONCLUSIVE
+    return PublicFindingState(decision.disposition.value)
 
 
 def _validate_projection_seal_binding(
@@ -386,6 +585,8 @@ def _validate_projection_seal_binding(
         VERSIONED_VALIDATION_FINDINGS_PATH,
         VERSIONED_VALIDATION_REPORT_PATH,
     }
+    if index.claim_replays_path is not None:
+        projection_paths.add(index.claim_replays_path)
     sealed_projection_paths = {
         artifact.path
         for seal in seals
@@ -410,6 +611,7 @@ def _validate_projection_seal_binding(
 def _validate_projection_lineage(
     index: VersionedValidationIndex,
     validation: FindingValidationSet,
+    claim_replays: VersionedClaimReplaySet | None,
 ) -> None:
     replay_run_ids: list[str] = []
     replay_outcome_ids: list[str] = []
@@ -425,6 +627,11 @@ def _validate_projection_lineage(
         raise ValueError("versioned validation projection reuses a replay Run")
     if len(replay_outcome_ids) != len(set(replay_outcome_ids)):
         raise ValueError("versioned validation projection reuses a ReplayOutcome")
+    if claim_replays is not None:
+        if [item.replay_run_id for item in claim_replays.assessments] != replay_run_ids:
+            raise ValueError("Claim replay Run lineage differs from validation Decisions")
+        if [item.replay_outcome_id for item in claim_replays.assessments] != replay_outcome_ids:
+            raise ValueError("Claim replay Outcome lineage differs from validation Decisions")
 
 
 def _validate_source_supersession(

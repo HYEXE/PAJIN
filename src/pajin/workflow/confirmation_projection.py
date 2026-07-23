@@ -53,6 +53,7 @@ from pajin.workflow.confirmation_policy import (
     _load_source_context,
 )
 from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
     VERSIONED_VALIDATION_DECISIONS_PATH,
     VERSIONED_VALIDATION_FINDINGS_PATH,
     VERSIONED_VALIDATION_INDEX_PATH,
@@ -261,6 +262,9 @@ def _unlock_confirmation_handle(handle: BinaryIO) -> None:
 
 def _projection_artifact_bytes(projection: _ConfirmationProjection) -> dict[str, bytes]:
     return {
+        VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH: _json_bytes(
+            projection.claim_replay_set.model_dump(mode="json", by_alias=True)
+        ),
         VERSIONED_VALIDATION_DECISIONS_PATH: _json_bytes(
             projection.decision_set.model_dump(mode="json", by_alias=True)
         ),
@@ -477,6 +481,7 @@ def _recover_confirmation_projection(
     if not isinstance(source_run_id, str) or not isinstance(source_root_digest, str):
         raise RunIntegrityError("confirmation transaction source identity is invalid")
     expected_paths = {
+        VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
         VERSIONED_VALIDATION_DECISIONS_PATH,
         VERSIONED_VALIDATION_FINDINGS_PATH,
         VERSIONED_VALIDATION_INDEX_PATH,

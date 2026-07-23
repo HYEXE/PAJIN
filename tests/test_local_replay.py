@@ -13,7 +13,9 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode
 from pajin.domain.validation import (
+    ClaimReplayStatus,
     FindingDisposition,
+    PublicFindingState,
     ValidationReasonCode,
 )
 from pajin.modes.ai_redteam import replay as replay_module
@@ -42,6 +44,7 @@ from pajin.tools.ai import AI_CHAT_PROXY_RECEIPT_VERSION, AIChatProbeTool
 from pajin.tools.base import ToolRegistry, audit_http_target, http_target_sha256
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
     VERSIONED_VALIDATION_INDEX_PATH,
     VERSIONED_VALIDATION_REPORT_PATH,
     ValidationSnapshotSemantics,
@@ -309,9 +312,12 @@ async def test_kisa_local_replay_preserves_m03_evidence_without_product_confirma
     )
     assert legacy_findings == []
     assert versioned_findings["findings"] == []
-    assert load_validation_snapshot(result.outcome.run_path).semantics is (
-        ValidationSnapshotSemantics.VERIFIED_REPLAY_EVIDENCE
-    )
+    loaded = load_validation_snapshot(result.outcome.run_path)
+    assert loaded.semantics is ValidationSnapshotSemantics.VERIFIED_REPLAY_EVIDENCE
+    assert loaded.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [decision.candidate_id]
+    assert loaded.claim_replays is not None
+    assert loaded.claim_replays.assessments[0].status is ClaimReplayStatus.REPRODUCED
+    assert (result.outcome.run_path / VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH).is_file()
 
     replay_paths = [item.run_path for item in result.batch.verified_results.values()]
     assert all(path.parent.parent == tmp_path / "local-replay" for path in replay_paths)

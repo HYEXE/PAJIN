@@ -413,4 +413,5 @@ Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-le
 [ADR 0029](adr/0029-control-plane-replay-orchestration.md),
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.md),
 [ADR 0031](adr/0031-blind-evidence-review-boundary.md),
-[ADR 0034](adr/0034-diverse-independent-severity-review.md)을 따른다.
+[ADR 0034](adr/0034-diverse-independent-severity-review.md),
+[ADR 0035](adr/0035-claim-replay-public-state-projection.md)을 따른다.

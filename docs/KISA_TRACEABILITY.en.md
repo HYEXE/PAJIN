@@ -451,4 +451,5 @@ Validator state and confirmation boundaries follow
 [ADR 0029](adr/0029-control-plane-replay-orchestration.en.md),
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](adr/0031-blind-evidence-review-boundary.en.md), and
-[ADR 0034](adr/0034-diverse-independent-severity-review.en.md).
+[ADR 0034](adr/0034-diverse-independent-severity-review.en.md), and
+[ADR 0035](adr/0035-claim-replay-public-state-projection.en.md).

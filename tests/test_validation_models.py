@@ -11,9 +11,12 @@ from pajin.domain.validation import (
     AtomicClaimVerdict,
     CandidateAssessment,
     CandidateFinding,
+    ClaimReplayStatus,
     ClaimReviewOutcome,
     FindingDisposition,
     FindingValidationSet,
+    PublicFindingState,
+    ReplayConfirmationLineage,
     SeverityDerivationStatus,
     ValidationCheckResult,
     ValidationCheckStatus,
@@ -24,6 +27,7 @@ from pajin.domain.validation import (
     blind_evidence_packets,
     build_atomic_claim_decision,
     build_blind_evidence_decision,
+    build_claim_replay_assessment,
     build_independent_severity_decision,
     build_provider_model_review_binding,
     candidate_atomic_claims,
@@ -104,6 +108,20 @@ def test_validation_enum_wire_values_are_stable() -> None:
         "needs-review",
         "inconclusive",
         "rejected-objective",
+    ]
+    assert [item.value for item in PublicFindingState] == [
+        "confirmed",
+        "partially-confirmed",
+        "not-reproduced",
+        "needs-review",
+        "inconclusive",
+        "rejected-objective",
+    ]
+    assert [item.value for item in ClaimReplayStatus] == [
+        "reproduced",
+        "not-reproduced",
+        "inconclusive",
+        "not-eligible",
     ]
     assert [item.value for item in ValidationMethod] == [
         "legacy-validator",
@@ -333,6 +351,49 @@ def test_atomic_claims_separate_validity_impact_and_severity_without_rewriting_c
     assert artifact.claim_decisions == decisions
     assert candidate.claim.severity is FindingSeverity.HIGH
     assert candidate.claim.validated is False
+
+
+def test_claim_replay_assessment_binds_exact_validity_claim_and_lineage() -> None:
+    candidate = _candidate("candidate_claim_replay", finding_id="finding_claim_replay")
+    claims = candidate_atomic_claims(candidate)
+    lineage = ReplayConfirmationLineage(
+        replay_run_id="run_claim_replay",
+        replay_outcome_id="outcome_claim_replay",
+        replay_request_ids=["request_claim_replay"],
+        replay_evidence=["evidence/request_claim_replay.json"],
+        oracle_result_id="oracle_claim_replay",
+        ticket_id="ticket_claim_replay",
+        candidate_source_root_digest="a" * 64,
+        artifact_set_digest="b" * 64,
+        artifact_seal_root_digest="c" * 64,
+        receipt_seal_root_digest="d" * 64,
+        verified_at=datetime(2026, 7, 23, 12, 0, tzinfo=UTC),
+    )
+    assessment = build_claim_replay_assessment(
+        claim=claims[0],
+        lineage=lineage,
+        status=ClaimReplayStatus.REPRODUCED,
+        independent_execution_attested=False,
+        assessed_at=datetime(2026, 7, 23, 12, 1, tzinfo=UTC),
+    )
+
+    assert assessment.claim_id == claims[0].claim_id
+    assert assessment.claim_digest == claims[0].claim_digest
+    assert assessment.replay_outcome_id == lineage.replay_outcome_id
+
+    tampered = assessment.model_dump(mode="python", by_alias=True)
+    tampered["claimDigest"] = "e" * 64
+    with pytest.raises(ValidationError, match="assessment ID"):
+        type(assessment).model_validate(tampered)
+
+    with pytest.raises(ValueError, match="validity Claims only"):
+        build_claim_replay_assessment(
+            claim=claims[1],
+            lineage=lineage,
+            status=ClaimReplayStatus.REPRODUCED,
+            independent_execution_attested=False,
+            assessed_at=datetime(2026, 7, 23, 12, 1, tzinfo=UTC),
+        )
 
 
 def test_atomic_claim_refinement_rejects_tampered_claims_and_unbound_evidence() -> None:
@@ -762,9 +823,7 @@ def test_independent_severity_derivation_withholds_proposed_severity_and_is_info
             evidence=evidence,
         )
     ]
-    severity_claim = next(
-        claim for claim in claims if claim.claim_type is AtomicClaimType.SEVERITY
-    )
+    severity_claim = next(claim for claim in claims if claim.claim_type is AtomicClaimType.SEVERITY)
     reconciliations = [reconcile_independent_severity(severity_claim, decisions[0])]
 
     validate_independent_severity_refinement(

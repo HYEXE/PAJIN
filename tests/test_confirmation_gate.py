@@ -20,7 +20,9 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import (
     CandidateFinding,
+    ClaimReplayStatus,
     FindingDisposition,
+    PublicFindingState,
     ReplayConfirmationLineage,
     ValidationCheckResult,
     ValidationCheckStatus,
@@ -29,6 +31,10 @@ from pajin.domain.validation import (
     ValidationReasonCode,
 )
 from pajin.workflow.confirmation import decide_replay_confirmation
+from pajin.workflow.confirmation_policy import (
+    _build_claim_replay_projection,
+    _public_finding_state,
+)
 
 NOW = datetime(2026, 7, 16, 9, 0, tzinfo=UTC)
 SOURCE_REQUEST_ID = "tool_source_1"
@@ -343,6 +349,76 @@ def test_supporting_replay_needs_independent_execution_attestation() -> None:
     assert len(decision.replay_lineage) == 1
     assert decision.replay_lineage[0].replay_request_ids == [REPLAY_REQUEST_ID]
     assert decision.replay_lineage[0].replay_evidence == [REPLAY_EVIDENCE]
+
+
+@pytest.mark.parametrize(
+    ("execution_status", "oracle_verdict", "claim_status", "public_state"),
+    [
+        (
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayOracleVerdict.SUPPORTS,
+            ClaimReplayStatus.REPRODUCED,
+            PublicFindingState.PARTIALLY_CONFIRMED,
+        ),
+        (
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayOracleVerdict.CONTRADICTS,
+            ClaimReplayStatus.NOT_REPRODUCED,
+            PublicFindingState.NOT_REPRODUCED,
+        ),
+        (
+            ReplayExecutionStatus.SUCCEEDED,
+            ReplayOracleVerdict.INCONCLUSIVE,
+            ClaimReplayStatus.INCONCLUSIVE,
+            PublicFindingState.INCONCLUSIVE,
+        ),
+        (
+            ReplayExecutionStatus.FAILED,
+            ReplayOracleVerdict.SUPPORTS,
+            ClaimReplayStatus.INCONCLUSIVE,
+            PublicFindingState.INCONCLUSIVE,
+        ),
+        (
+            ReplayExecutionStatus.UNSUPPORTED,
+            ReplayOracleVerdict.SUPPORTS,
+            ClaimReplayStatus.NOT_ELIGIBLE,
+            PublicFindingState.NEEDS_REVIEW,
+        ),
+    ],
+)
+def test_claim_replay_projection_preserves_partial_and_negative_public_states(
+    execution_status: ReplayExecutionStatus,
+    oracle_verdict: ReplayOracleVerdict,
+    claim_status: ClaimReplayStatus,
+    public_state: PublicFindingState,
+) -> None:
+    candidate = _candidate()
+    artifact_set = _artifact_set(
+        candidate,
+        execution_status=execution_status,
+        oracle_verdict=oracle_verdict,
+    )
+    lineage = _lineage(artifact_set)
+    decision = decide_replay_confirmation(
+        candidate=candidate,
+        source_decision=_source_decision(candidate),
+        artifact_set=artifact_set,
+        lineage=lineage,
+        decided_at=NOW + timedelta(seconds=9),
+    )
+
+    assessment = _build_claim_replay_projection(
+        candidate=candidate,
+        decision=decision,
+        artifact_set=artifact_set,
+        lineage=lineage,
+    )
+
+    assert assessment.status is claim_status
+    assert assessment.candidate_id == candidate.candidate_id
+    assert assessment.replay_outcome_id == artifact_set.outcome.outcome_id
+    assert assessment.independent_execution_attested is False
+    assert _public_finding_state(decision, assessment) is public_state
 
 
 def test_supporting_replay_stays_needs_review_without_required_semantic_support() -> None:

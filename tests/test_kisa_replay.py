@@ -48,7 +48,9 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import (
     CandidateFinding,
+    ClaimReplayStatus,
     FindingDisposition,
+    PublicFindingState,
     ValidationReasonCode,
 )
 from pajin.modes.ai_redteam.candidates import KISACandidateProducer
@@ -1346,6 +1348,15 @@ def test_kisa_coordinator_records_replay_without_worker_only_confirmation(
         (outcome.run_path / "validation/v1alpha1/findings.json").read_text(encoding="utf-8")
     )
     assert versioned_findings["findings"] == []
+    loaded_projection = validation_artifacts.load_validation_snapshot(outcome.run_path)
+    assert loaded_projection.claim_replays is not None
+    assert all(
+        assessment.status is ClaimReplayStatus.REPRODUCED
+        for assessment in loaded_projection.claim_replays.assessments
+    )
+    assert set(loaded_projection.public_states[PublicFindingState.PARTIALLY_CONFIRMED]) == {
+        decision.candidate_id for decision in outcome.validation.decisions
+    }
     seals = [
         json.loads(line)
         for line in (outcome.run_path / "run-integrity.jsonl")

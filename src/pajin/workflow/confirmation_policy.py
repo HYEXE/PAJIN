@@ -23,18 +23,24 @@ from pajin.domain.replay import (
 )
 from pajin.domain.validation import (
     CandidateFinding,
+    ClaimReplayAssessment,
+    ClaimReplayStatus,
     ConfirmationBasis,
     FindingDisposition,
     FindingValidationSet,
+    PublicFindingState,
     ReplayConfirmationLineage,
     ValidationCheckResult,
     ValidationCheckStatus,
     ValidationDecision,
     ValidationMethod,
     ValidationReasonCode,
+    VersionedClaimReplaySet,
     VersionedConfirmedFindingSet,
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
+    build_claim_replay_assessment,
+    candidate_atomic_claims,
 )
 from pajin.replay.runtime import VerifiedReplayResult
 from pajin.reporting import escape_markdown_text, markdown_code_span
@@ -89,6 +95,7 @@ class _ConfirmationProjection:
     index: VersionedValidationIndex
     decision_set: VersionedValidationDecisionSet
     finding_set: VersionedConfirmedFindingSet
+    claim_replay_set: VersionedClaimReplaySet
     report: str
     event_payload: dict[str, Any]
     evaluated_at: datetime
@@ -180,6 +187,29 @@ def _build_confirmation_projection(
     candidates_by_id = {
         candidate.candidate_id: candidate for candidate in source_validation.candidates
     }
+    assessments = [
+        _build_claim_replay_projection(
+            candidate=candidates_by_id[decision.candidate_id],
+            decision=decision,
+            artifact_set=results_by_candidate[decision.candidate_id].artifact_set,
+            lineage=decision.replay_lineage[0],
+        )
+        for decision in final_decisions
+        if decision.replay_lineage
+    ]
+    assessments_by_candidate = {assessment.candidate_id: assessment for assessment in assessments}
+    public_states = {
+        state: [
+            decision.candidate_id
+            for decision in final_decisions
+            if _public_finding_state(
+                decision,
+                assessments_by_candidate.get(decision.candidate_id),
+            )
+            is state
+        ]
+        for state in PublicFindingState
+    }
     validation = FindingValidationSet(
         candidates=source_validation.candidates,
         decisions=final_decisions,
@@ -199,7 +229,9 @@ def _build_confirmation_projection(
     index = VersionedValidationIndex(
         sourceRunId=source_run_id,
         candidateSourceRootDigest=candidate_source_root_digest,
+        claimReplaysPath="validation/v1alpha1/claim-replays.json",
         dispositions=dispositions,
+        publicStates=public_states,
         confirmedCandidateIds=confirmed_candidate_ids,
         generatedAt=evaluated_at,
     )
@@ -211,22 +243,101 @@ def _build_confirmation_projection(
         sourceRunId=source_run_id,
         findings=validation.confirmed_findings,
     )
+    claim_replay_set = VersionedClaimReplaySet(
+        sourceRunId=source_run_id,
+        assessments=assessments,
+    )
     return _ConfirmationProjection(
         validation=validation,
         index=index,
         decision_set=decision_set,
         finding_set=finding_set,
-        report=_render_confirmation_report(index, validation),
+        claim_replay_set=claim_replay_set,
+        report=_render_confirmation_report(index, validation, claim_replay_set),
         event_payload={
             "apiVersion": index.api_version,
             "candidateSourceRootDigest": candidate_source_root_digest,
             "receiptCount": len(verified_results),
             "confirmedCount": len(validation.confirmed_findings),
             "confirmedCandidateIds": confirmed_candidate_ids,
+            "partiallyConfirmedCount": len(public_states[PublicFindingState.PARTIALLY_CONFIRMED]),
+            "notReproducedCount": len(public_states[PublicFindingState.NOT_REPRODUCED]),
             "index": VERSIONED_VALIDATION_INDEX_PATH,
         },
         evaluated_at=evaluated_at,
     )
+
+
+def _build_claim_replay_projection(
+    *,
+    candidate: CandidateFinding,
+    decision: ValidationDecision,
+    artifact_set: ReplayArtifactSet,
+    lineage: ReplayConfirmationLineage,
+) -> ClaimReplayAssessment:
+    validity_claim = candidate_atomic_claims(candidate)[0]
+    return build_claim_replay_assessment(
+        claim=validity_claim,
+        lineage=lineage,
+        status=_claim_replay_status(decision, artifact_set),
+        independent_execution_attested=(
+            decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+        ),
+        assessed_at=decision.decided_at,
+    )
+
+
+def _claim_replay_status(
+    decision: ValidationDecision,
+    artifact_set: ReplayArtifactSet,
+) -> ClaimReplayStatus:
+    reason = decision.reason_codes[0]
+    if (
+        reason in _OBJECTIVE_REASONS
+        or reason is ValidationReasonCode.CANDIDATE_PRODUCER_NOT_ADMITTED
+    ):
+        return ClaimReplayStatus.NOT_ELIGIBLE
+    if reason is ValidationReasonCode.EXECUTION_FAILED:
+        return ClaimReplayStatus.INCONCLUSIVE
+    outcome = artifact_set.outcome
+    if outcome.execution_status is ReplayExecutionStatus.UNSUPPORTED:
+        return ClaimReplayStatus.NOT_ELIGIBLE
+    if outcome.execution_status is not ReplayExecutionStatus.SUCCEEDED:
+        return ClaimReplayStatus.INCONCLUSIVE
+    oracle = outcome.oracle_result
+    if oracle is None:
+        raise ValueError("successful ReplayOutcome is missing its Mode Oracle result")
+    if oracle.verdict is ReplayOracleVerdict.SUPPORTS:
+        return ClaimReplayStatus.REPRODUCED
+    if oracle.verdict is ReplayOracleVerdict.CONTRADICTS:
+        return ClaimReplayStatus.NOT_REPRODUCED
+    return ClaimReplayStatus.INCONCLUSIVE
+
+
+def _public_finding_state(
+    decision: ValidationDecision,
+    assessment: ClaimReplayAssessment | None,
+) -> PublicFindingState:
+    if decision.disposition is FindingDisposition.CONFIRMED:
+        return PublicFindingState.CONFIRMED
+    if assessment is None:
+        return PublicFindingState(decision.disposition.value)
+    reason = decision.reason_codes[0]
+    if reason is ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED:
+        if assessment.status is not ClaimReplayStatus.NOT_REPRODUCED:
+            raise ValueError("Oracle contradiction must project a not-reproduced Claim")
+        return PublicFindingState.NOT_REPRODUCED
+    if assessment.status is ClaimReplayStatus.REPRODUCED and reason in {
+        ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING,
+        ValidationReasonCode.VALIDATOR_DISAGREED,
+        ValidationReasonCode.VALIDATOR_OMITTED,
+        ValidationReasonCode.VALIDATOR_UNAVAILABLE,
+        ValidationReasonCode.VALIDATOR_CANCELLED,
+    }:
+        return PublicFindingState.PARTIALLY_CONFIRMED
+    if assessment.status is ClaimReplayStatus.INCONCLUSIVE:
+        return PublicFindingState.INCONCLUSIVE
+    return PublicFindingState(decision.disposition.value)
 
 
 def decide_replay_confirmation(
@@ -810,6 +921,7 @@ def _replay_checks(
 def _render_confirmation_report(
     index: VersionedValidationIndex,
     validation: FindingValidationSet,
+    claim_replay_set: VersionedClaimReplaySet | None = None,
 ) -> str:
     counts = {
         disposition: sum(decision.disposition is disposition for decision in validation.decisions)
@@ -833,9 +945,31 @@ def _render_confirmation_report(
         f"- Inconclusive: `{counts[FindingDisposition.INCONCLUSIVE]}`",
         f"- Rejected objective: `{counts[FindingDisposition.REJECTED_OBJECTIVE]}`",
         "",
-        "## Confirmed findings",
-        "",
     ]
+    if index.public_states is not None:
+        public_counts = {state: len(index.public_states[state]) for state in PublicFindingState}
+        lines.extend(
+            [
+                "## Public validation states",
+                "",
+                f"- Confirmed: `{public_counts[PublicFindingState.CONFIRMED]}`",
+                f"- Partially confirmed: `{public_counts[PublicFindingState.PARTIALLY_CONFIRMED]}`",
+                f"- Not reproduced: `{public_counts[PublicFindingState.NOT_REPRODUCED]}`",
+                f"- Needs review: `{public_counts[PublicFindingState.NEEDS_REVIEW]}`",
+                f"- Inconclusive: `{public_counts[PublicFindingState.INCONCLUSIVE]}`",
+                f"- Rejected objective: `{public_counts[PublicFindingState.REJECTED_OBJECTIVE]}`",
+                "",
+                "`partially-confirmed` records Claim-scoped replay support only. It is not "
+                "a product confirmation and remains excluded from confirmed findings.",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Confirmed findings",
+            "",
+        ]
+    )
     decisions_by_candidate = {decision.candidate_id: decision for decision in validation.decisions}
     confirmed_candidates = [
         candidate
@@ -868,16 +1002,31 @@ def _render_confirmation_report(
         for candidate in validation.candidates
         if decisions_by_candidate[candidate.candidate_id].replay_lineage
     ]
+    assessments_by_candidate = {
+        assessment.candidate_id: assessment
+        for assessment in (claim_replay_set.assessments if claim_replay_set is not None else [])
+    }
     lines.extend(["", "## Replay evidence decisions", ""])
     for candidate in replayed_candidates:
         decision = decisions_by_candidate[candidate.candidate_id]
         lineage = decision.replay_lineage[0]
+        assessment = assessments_by_candidate.get(candidate.candidate_id)
         lines.extend(
             [
                 f"### {escape_markdown_text(candidate.claim.title)}",
                 "",
                 f"- Candidate ID: {markdown_code_span(candidate.candidate_id)}",
                 f"- Disposition: {markdown_code_span(decision.disposition.value)}",
+                *(
+                    [
+                        "- Public state: "
+                        + markdown_code_span(_public_finding_state(decision, assessment).value),
+                        f"- Claim ID: {markdown_code_span(assessment.claim_id)}",
+                        "- Claim replay status: " + markdown_code_span(assessment.status.value),
+                    ]
+                    if assessment is not None
+                    else []
+                ),
                 "- Reason: " + markdown_code_span(decision.reason_codes[0].value),
                 f"- Replay Run: {markdown_code_span(lineage.replay_run_id)}",
                 f"- ReplayOutcome: {markdown_code_span(lineage.replay_outcome_id)}",

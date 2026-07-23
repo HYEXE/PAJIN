@@ -916,6 +916,16 @@ Candidate·Finding·confirmation을 변경하지 않는다. 이 Provider/model �
 별도 조직·인프라를 암호학적으로 attest하지 않으며, calibration·다수 Reviewer/Human 합의와
 portable attestation은 후속 범위다.
 
+[`ADR-0035`](adr/0035-claim-replay-public-state-projection.md)의 B2.4 첫 수직 조각은 기존
+Candidate 단위 Restricted Replay를 정확한 validity Atomic Claim에 결박한 별도
+`claim-replays.json`으로 투영한다. 이 artifact는 Claim·Candidate digest와 Replay
+Run·Outcome·Oracle·request·evidence·receipt 계보를 함께 봉인한다. 내부
+`FindingDisposition`과 `confirmed` Gate는 변경하지 않고, 소비자용 상태를 별도 map으로
+제공한다. validity Claim이 재현됐지만 전체 confirmation invariant를 만족하지 못하면
+`partially-confirmed`, 성공한 typed Oracle이 명시적으로 반박하면 `not-reproduced`다.
+실행 실패·취소·시간초과·target unavailable·Oracle 판단 불가는 계속 `inconclusive`이며,
+두 공개 상태 모두 canonical confirmed Finding에는 들어가지 않는다.
+
 이 단계들 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
 Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도
@@ -1466,6 +1476,10 @@ Accepted ADR은 최소한 다음을 결정한다.
 - B2.3 첫 수직 조각: Primary와 Provider ID·endpoint·model이 모두 다른 선택형 Reviewer
   Agent·Capability·Secret Lease에서 Blind Review와 제안 등급을 숨긴 독립 severity 도출 실행.
   결과는 정보 전용이며 Candidate·Finding·confirmation 변경 불가
+- B2.4 첫 수직 조각: exact validity Claim ID·digest와 verified Replay 계보를 봉인하는
+  `claim-replays.json`, 내부 disposition과 분리된 공개 `partially-confirmed`·
+  `not-reproduced` 상태. typed Oracle 반박만 `not-reproduced`이며 terminal 실패는
+  `inconclusive`; canonical confirmed Finding은 변경하지 않음
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant

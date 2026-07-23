@@ -25,6 +25,17 @@ class FindingDisposition(StrEnum):
     REJECTED_OBJECTIVE = "rejected-objective"
 
 
+class PublicFindingState(StrEnum):
+    """Consumer-facing status kept separate from the internal gate disposition."""
+
+    CONFIRMED = "confirmed"
+    PARTIALLY_CONFIRMED = "partially-confirmed"
+    NOT_REPRODUCED = "not-reproduced"
+    NEEDS_REVIEW = "needs-review"
+    INCONCLUSIVE = "inconclusive"
+    REJECTED_OBJECTIVE = "rejected-objective"
+
+
 class AtomicClaimType(StrEnum):
     VALIDITY = "validity"
     IMPACT = "impact"
@@ -41,6 +52,13 @@ class ClaimReviewOutcome(StrEnum):
     CORROBORATED = "corroborated"
     CONTESTED = "contested"
     INCONCLUSIVE = "inconclusive"
+
+
+class ClaimReplayStatus(StrEnum):
+    REPRODUCED = "reproduced"
+    NOT_REPRODUCED = "not-reproduced"
+    INCONCLUSIVE = "inconclusive"
+    NOT_ELIGIBLE = "not-eligible"
 
 
 class SeverityDerivationStatus(StrEnum):
@@ -901,9 +919,7 @@ def severity_derivation_packets(
     packets: list[SeverityDerivationPacket] = []
     for candidate_claims in claims_by_candidate.values():
         severity_claims = [
-            claim
-            for claim in candidate_claims
-            if claim.claim_type is AtomicClaimType.SEVERITY
+            claim for claim in candidate_claims if claim.claim_type is AtomicClaimType.SEVERITY
         ]
         if len(severity_claims) != 1:
             raise ValueError("each Candidate requires exactly one severity Claim")
@@ -1012,9 +1028,7 @@ def validate_independent_severity_refinement(
     expected_packets = severity_derivation_packets(claims)
     if list(packets) != expected_packets:
         raise ValueError("severity derivation Packets differ from trusted Atomic Claims")
-    if [decision.packet_id for decision in decisions] != [
-        packet.packet_id for packet in packets
-    ]:
+    if [decision.packet_id for decision in decisions] != [packet.packet_id for packet in packets]:
         raise ValueError("severity Decisions must follow the exact Packet order")
     decision_ids = [decision.decision_id for decision in decisions]
     if len(decision_ids) != len(set(decision_ids)):
@@ -1027,16 +1041,12 @@ def validate_independent_severity_refinement(
         ):
             raise ValueError("independent severity Decision differs from its authority")
         allowed_evidence = {
-            reference
-            for context in packet.context_packets
-            for reference in context.evidence
+            reference for context in packet.context_packets for reference in context.evidence
         }
         if not set(decision.evidence) <= allowed_evidence:
             raise ValueError("independent severity Decision cites evidence outside its Packet")
     severity_by_id = {
-        claim.claim_id: claim
-        for claim in claims
-        if claim.claim_type is AtomicClaimType.SEVERITY
+        claim.claim_id: claim for claim in claims if claim.claim_type is AtomicClaimType.SEVERITY
     }
     expected_reconciliations = [
         reconcile_independent_severity(
@@ -1504,6 +1514,151 @@ class ReplayConfirmationLineage(StrictModel):
         return self
 
 
+class ClaimReplayAssessment(StrictModel):
+    """Public, Claim-bound interpretation of one verified Candidate replay."""
+
+    api_version: Literal["pajin.dev/claim-replay-assessment/v1alpha1"] = Field(
+        default="pajin.dev/claim-replay-assessment/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["ClaimReplayAssessment"] = "ClaimReplayAssessment"
+    assessment_id: _Identifier = Field(alias="assessmentId")
+    candidate_id: _Identifier = Field(alias="candidateId")
+    candidate_claim_digest: str = Field(
+        alias="candidateClaimDigest",
+        pattern=r"^[a-f0-9]{64}$",
+    )
+    claim_id: _Identifier = Field(alias="claimId")
+    claim_digest: str = Field(alias="claimDigest", pattern=r"^[a-f0-9]{64}$")
+    claim_type: Literal[AtomicClaimType.VALIDITY] = Field(alias="claimType")
+    status: ClaimReplayStatus
+    replay_run_id: _Identifier = Field(alias="replayRunId")
+    replay_outcome_id: _Identifier = Field(alias="replayOutcomeId")
+    oracle_result_id: _Identifier | None = Field(default=None, alias="oracleResultId")
+    replay_request_ids: list[_Identifier] = Field(alias="replayRequestIds", max_length=20)
+    replay_evidence: list[_EvidenceReference] = Field(alias="replayEvidence", max_length=100)
+    independent_execution_attested: bool = Field(alias="independentExecutionAttested")
+    assessed_at: datetime = Field(alias="assessedAt")
+
+    @field_validator("assessed_at")
+    @classmethod
+    def normalize_assessed_at(cls, value: datetime) -> datetime:
+        return _normalize_utc(value, field_name="assessed_at")
+
+    @model_validator(mode="after")
+    def require_canonical_assessment(self) -> ClaimReplayAssessment:
+        _require_unique(
+            self.replay_request_ids,
+            "Claim replay request IDs must be unique",
+        )
+        _require_unique(
+            self.replay_evidence,
+            "Claim replay evidence references must be unique",
+        )
+        if self.independent_execution_attested and self.status is not ClaimReplayStatus.REPRODUCED:
+            raise ValueError("independent execution attestation requires a reproduced Claim")
+        if self.assessment_id != _claim_replay_assessment_id(
+            candidate_id=self.candidate_id,
+            candidate_claim_digest=self.candidate_claim_digest,
+            claim_id=self.claim_id,
+            claim_digest=self.claim_digest,
+            claim_type=self.claim_type,
+            status=self.status,
+            replay_run_id=self.replay_run_id,
+            replay_outcome_id=self.replay_outcome_id,
+            oracle_result_id=self.oracle_result_id,
+            replay_request_ids=self.replay_request_ids,
+            replay_evidence=self.replay_evidence,
+            independent_execution_attested=self.independent_execution_attested,
+            assessed_at=self.assessed_at,
+        ):
+            raise ValueError("Claim replay assessment ID does not match its canonical content")
+        return self
+
+
+def build_claim_replay_assessment(
+    *,
+    claim: AtomicClaim,
+    lineage: ReplayConfirmationLineage,
+    status: ClaimReplayStatus,
+    independent_execution_attested: bool,
+    assessed_at: datetime,
+) -> ClaimReplayAssessment:
+    """Bind a verified replay lineage to the exact validity Claim it evaluated."""
+
+    if claim.claim_type is not AtomicClaimType.VALIDITY:
+        raise ValueError("the first Claim replay projection supports validity Claims only")
+    normalized_at = _normalize_utc(assessed_at, field_name="assessed_at")
+    return ClaimReplayAssessment(
+        assessmentId=_claim_replay_assessment_id(
+            candidate_id=claim.candidate_id,
+            candidate_claim_digest=claim.candidate_claim_digest,
+            claim_id=claim.claim_id,
+            claim_digest=claim.claim_digest,
+            claim_type=claim.claim_type,
+            status=status,
+            replay_run_id=lineage.replay_run_id,
+            replay_outcome_id=lineage.replay_outcome_id,
+            oracle_result_id=lineage.oracle_result_id,
+            replay_request_ids=lineage.replay_request_ids,
+            replay_evidence=lineage.replay_evidence,
+            independent_execution_attested=independent_execution_attested,
+            assessed_at=normalized_at,
+        ),
+        candidateId=claim.candidate_id,
+        candidateClaimDigest=claim.candidate_claim_digest,
+        claimId=claim.claim_id,
+        claimDigest=claim.claim_digest,
+        claimType=claim.claim_type,
+        status=status,
+        replayRunId=lineage.replay_run_id,
+        replayOutcomeId=lineage.replay_outcome_id,
+        oracleResultId=lineage.oracle_result_id,
+        replayRequestIds=lineage.replay_request_ids,
+        replayEvidence=lineage.replay_evidence,
+        independentExecutionAttested=independent_execution_attested,
+        assessedAt=normalized_at,
+    )
+
+
+def _claim_replay_assessment_id(
+    *,
+    candidate_id: str,
+    candidate_claim_digest: str,
+    claim_id: str,
+    claim_digest: str,
+    claim_type: AtomicClaimType,
+    status: ClaimReplayStatus,
+    replay_run_id: str,
+    replay_outcome_id: str,
+    oracle_result_id: str | None,
+    replay_request_ids: Sequence[str],
+    replay_evidence: Sequence[str],
+    independent_execution_attested: bool,
+    assessed_at: datetime,
+) -> str:
+    digest = _canonical_digest(
+        {
+            "candidateId": candidate_id,
+            "candidateClaimDigest": candidate_claim_digest,
+            "claimId": claim_id,
+            "claimDigest": claim_digest,
+            "claimType": claim_type.value,
+            "status": status.value,
+            "replayRunId": replay_run_id,
+            "replayOutcomeId": replay_outcome_id,
+            "oracleResultId": oracle_result_id,
+            "replayRequestIds": list(replay_request_ids),
+            "replayEvidence": list(replay_evidence),
+            "independentExecutionAttested": independent_execution_attested,
+            "assessedAt": _normalize_utc(assessed_at, field_name="assessed_at")
+            .isoformat()
+            .replace("+00:00", "Z"),
+        }
+    )
+    return f"claim_replay_{digest[:24]}"
+
+
 class ValidationDecision(StrictModel):
     decision_id: _Identifier
     supersedes_decision_id: _Identifier | None = None
@@ -1620,6 +1775,36 @@ class VersionedConfirmedFindingSet(StrictModel):
     findings: list[Finding]
 
 
+class VersionedClaimReplaySet(StrictModel):
+    api_version: Literal["pajin.dev/claim-replay/v1alpha1"] = Field(
+        default="pajin.dev/claim-replay/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["ClaimReplayAssessmentSet"] = "ClaimReplayAssessmentSet"
+    source_run_id: _Identifier = Field(alias="sourceRunId")
+    assessments: list[ClaimReplayAssessment]
+
+    @model_validator(mode="after")
+    def require_unique_assessments(self) -> VersionedClaimReplaySet:
+        _require_unique(
+            [assessment.assessment_id for assessment in self.assessments],
+            "Claim replay assessment IDs must be unique",
+        )
+        _require_unique(
+            [assessment.claim_id for assessment in self.assessments],
+            "Claim replay assessments must bind unique Claims",
+        )
+        _require_unique(
+            [assessment.replay_run_id for assessment in self.assessments],
+            "Claim replay assessments must bind unique replay Runs",
+        )
+        _require_unique(
+            [assessment.replay_outcome_id for assessment in self.assessments],
+            "Claim replay assessments must bind unique ReplayOutcomes",
+        )
+        return self
+
+
 class VersionedValidationIndex(StrictModel):
     api_version: Literal["pajin.dev/validation/v1alpha1"] = Field(
         default="pajin.dev/validation/v1alpha1",
@@ -1653,7 +1838,15 @@ class VersionedValidationIndex(StrictModel):
         default="validation/v1alpha1/report.md",
         alias="reportPath",
     )
+    claim_replays_path: Literal["validation/v1alpha1/claim-replays.json"] | None = Field(
+        default=None,
+        alias="claimReplaysPath",
+    )
     dispositions: dict[FindingDisposition, list[_Identifier]]
+    public_states: dict[PublicFindingState, list[_Identifier]] | None = Field(
+        default=None,
+        alias="publicStates",
+    )
     confirmed_candidate_ids: list[_Identifier] = Field(alias="confirmedCandidateIds")
     generated_at: datetime = Field(alias="generatedAt")
 
@@ -1675,6 +1868,22 @@ class VersionedValidationIndex(StrictModel):
             raise ValueError("versioned validation index Candidate IDs must be unique")
         if self.confirmed_candidate_ids != self.dispositions[FindingDisposition.CONFIRMED]:
             raise ValueError("confirmed Candidate IDs must match the confirmed disposition")
+        if (self.claim_replays_path is None) != (self.public_states is None):
+            raise ValueError("Claim replay path and public states must be introduced together")
+        if self.public_states is not None:
+            if set(self.public_states) != set(PublicFindingState):
+                raise ValueError("versioned validation index must include every public state")
+            public_candidate_ids = [
+                candidate_id
+                for state in PublicFindingState
+                for candidate_id in self.public_states[state]
+            ]
+            if len(public_candidate_ids) != len(set(public_candidate_ids)):
+                raise ValueError("public validation state Candidate IDs must be unique")
+            if set(public_candidate_ids) != set(all_candidate_ids):
+                raise ValueError("public validation states must cover every Candidate exactly once")
+            if self.confirmed_candidate_ids != self.public_states[PublicFindingState.CONFIRMED]:
+                raise ValueError("confirmed Candidate IDs must match the public confirmed state")
         return self
 
 

@@ -819,7 +819,9 @@ in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md),
 [ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md),
 [ADR 0033](docs/adr/0033-registered-validation-control-materializers.en.md), and
-[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md).
+[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md). Claim-bound replay lineage and
+the public partial-validation projection are recorded in
+[ADR 0035](docs/adr/0035-claim-replay-public-state-projection.en.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative
@@ -1372,6 +1374,7 @@ rate-limits.json
 control.json
 kisa-replay-index.json  # kisa-run only
 validation/v1alpha1/    # verified replay Decision/Finding/report projection, when applied
+  claim-replays.json    # exact validity Claim ↔ verified replay lineage and outcome
 ```
 
 The Restricted Reproducer uses a distinct replay Run. Its `replay/`
@@ -1399,7 +1402,13 @@ flat `findings.json` remains the immutable pre-replay compatibility snapshot. Ne
 the sealed `validation/v1alpha1/index.json`, whose Decision, Finding, and Markdown artifacts include
 the confirmation basis, superseded source Decision, replay Run/Outcome, request IDs, artifact digest,
 and receipt-seal lineage. Historical flat confirmations are read as legacy and are never promoted to
-the reproduction-backed projection. The current trusted producer is limited to exact KISA AI chat
+the reproduction-backed projection. New projections also seal `claim-replays.json`, binding each
+replayed Candidate's exact validity Claim ID and digest to its replay Run, Outcome, request,
+evidence, Oracle, and receipt lineage. The index exposes a separate public state map:
+`partially-confirmed` means a Claim was reproduced but the full confirmation invariant was not
+satisfied, while `not-reproduced` requires a successful typed Oracle contradiction. Neither state
+enters `findings.json`; failed, cancelled, timed-out, unavailable, or inconclusive execution remains
+`inconclusive`. The current trusted producer is limited to exact KISA AI chat
 catalog contracts; it does not trust a generic `vulnerable` field and gives the Semantic Validator
 no attack or replay Tools.
 Its atomic production also reserves request and target/threat confirmation space so a Validator

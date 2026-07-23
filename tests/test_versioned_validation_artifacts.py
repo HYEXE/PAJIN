@@ -9,19 +9,25 @@ from pydantic import ValidationError
 from pajin.domain.models import Finding, FindingSeverity
 from pajin.domain.validation import (
     CandidateFinding,
+    ClaimReplayStatus,
     ConfirmationBasis,
     FindingDisposition,
     FindingValidationSet,
+    PublicFindingState,
     ReplayConfirmationLineage,
     ValidationDecision,
     ValidationMethod,
     ValidationReasonCode,
+    VersionedClaimReplaySet,
     VersionedConfirmedFindingSet,
     VersionedValidationDecisionSet,
     VersionedValidationIndex,
+    build_claim_replay_assessment,
+    candidate_atomic_claims,
 )
 from pajin.runtime.store import RunIntegritySeal, RunStore, load_verified_run_snapshot
 from pajin.workflow.validation_artifacts import (
+    VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
     VERSIONED_VALIDATION_DECISIONS_PATH,
     VERSIONED_VALIDATION_FINDINGS_PATH,
     VERSIONED_VALIDATION_INDEX_PATH,
@@ -217,6 +223,99 @@ def _write_versioned_projection(
     return decision, index
 
 
+def _write_claim_replay_projection(
+    store: RunStore,
+    *,
+    candidate: CandidateFinding,
+    source_decision: ValidationDecision,
+    source_root_digest: str,
+    public_state: PublicFindingState = PublicFindingState.PARTIALLY_CONFIRMED,
+    claim_status: ClaimReplayStatus = ClaimReplayStatus.REPRODUCED,
+    disposition: FindingDisposition = FindingDisposition.NEEDS_REVIEW,
+    reason: ValidationReasonCode = (ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING),
+) -> tuple[ValidationDecision, VersionedValidationIndex, VersionedClaimReplaySet]:
+    lineage = _lineage(source_root_digest)
+    decision = ValidationDecision(
+        decision_id="decision_replay_partial_1",
+        supersedes_decision_id=source_decision.decision_id,
+        candidate_id=candidate.candidate_id,
+        validator_id="trusted-core:confirmed-gate",
+        method=ValidationMethod.RESTRICTED_REPLAY_GATE,
+        disposition=disposition,
+        reason_codes=[reason],
+        decision_summary="The validity Claim replayed without independent execution attestation.",
+        supporting_evidence=source_decision.supporting_evidence,
+        contradicting_evidence=source_decision.contradicting_evidence,
+        replay_request_ids=lineage.replay_request_ids,
+        replay_outcome_ids=[lineage.replay_outcome_id],
+        replay_lineage=[lineage],
+        checks=[],
+        decided_at=NOW,
+    )
+    assessment = build_claim_replay_assessment(
+        claim=candidate_atomic_claims(candidate)[0],
+        lineage=lineage,
+        status=claim_status,
+        independent_execution_attested=False,
+        assessed_at=decision.decided_at,
+    )
+    claim_set = VersionedClaimReplaySet(
+        sourceRunId=store.run_id,
+        assessments=[assessment],
+    )
+    index = VersionedValidationIndex(
+        sourceRunId=store.run_id,
+        candidateSourceRootDigest=source_root_digest,
+        claimReplaysPath="validation/v1alpha1/claim-replays.json",
+        dispositions={
+            FindingDisposition.CONFIRMED: [],
+            FindingDisposition.NEEDS_REVIEW: (
+                [candidate.candidate_id] if disposition is FindingDisposition.NEEDS_REVIEW else []
+            ),
+            FindingDisposition.INCONCLUSIVE: (
+                [candidate.candidate_id] if disposition is FindingDisposition.INCONCLUSIVE else []
+            ),
+            FindingDisposition.REJECTED_OBJECTIVE: (
+                [candidate.candidate_id]
+                if disposition is FindingDisposition.REJECTED_OBJECTIVE
+                else []
+            ),
+        },
+        publicStates={
+            state: [candidate.candidate_id] if state is public_state else []
+            for state in PublicFindingState
+        },
+        confirmedCandidateIds=[],
+        generatedAt=NOW,
+    )
+    store.write_json(
+        VERSIONED_VALIDATION_DECISIONS_PATH,
+        VersionedValidationDecisionSet(
+            sourceRunId=store.run_id,
+            decisions=[decision],
+        ).model_dump(mode="json", by_alias=True),
+    )
+    store.write_json(
+        VERSIONED_VALIDATION_FINDINGS_PATH,
+        VersionedConfirmedFindingSet(
+            sourceRunId=store.run_id,
+            findings=[],
+        ).model_dump(mode="json", by_alias=True),
+    )
+    store.write_json(
+        VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
+        claim_set.model_dump(mode="json", by_alias=True),
+    )
+    store.write_text(VERSIONED_VALIDATION_REPORT_PATH, "# Claim replay projection\n")
+    store.write_json(
+        VERSIONED_VALIDATION_INDEX_PATH,
+        index.model_dump(mode="json", by_alias=True),
+    )
+    store.append_event("test.claim-replay-projection.created", {})
+    store.seal()
+    return decision, index, claim_set
+
+
 def test_sealed_flat_legacy_confirmation_is_not_product_confirmation(
     tmp_path: Path,
 ) -> None:
@@ -338,6 +437,74 @@ def test_valid_versioned_projection_enforces_fixed_paths_and_receipt_lineage(
     substituted_decision["replay_request_ids"] = ["request_substituted"]
     with pytest.raises(ValidationError, match="exactly match replay lineage"):
         ValidationDecision.model_validate(substituted_decision)
+
+
+def test_claim_replay_projection_loads_partial_public_state_without_confirmation(
+    tmp_path: Path,
+) -> None:
+    store, candidate, source_decision, _, source_seal = _sealed_source_run(
+        tmp_path,
+        legacy_confirmed=False,
+    )
+    decision, index, claim_set = _write_claim_replay_projection(
+        store,
+        candidate=candidate,
+        source_decision=source_decision,
+        source_root_digest=source_seal.root_digest,
+    )
+
+    loaded = load_validation_snapshot(store.path)
+
+    assert loaded.validation.decisions == [decision]
+    assert loaded.claim_replays == claim_set
+    assert loaded.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [candidate.candidate_id]
+    assert loaded.public_states[PublicFindingState.CONFIRMED] == []
+    assert loaded.product_confirmed_findings == []
+    assert loaded.index == index
+
+
+def test_claim_replay_projection_rejects_a_substituted_public_state(
+    tmp_path: Path,
+) -> None:
+    store, candidate, source_decision, _, source_seal = _sealed_source_run(
+        tmp_path,
+        legacy_confirmed=False,
+    )
+    _write_claim_replay_projection(
+        store,
+        candidate=candidate,
+        source_decision=source_decision,
+        source_root_digest=source_seal.root_digest,
+        public_state=PublicFindingState.NEEDS_REVIEW,
+    )
+
+    with pytest.raises(ValueError, match="public validation states differ"):
+        load_validation_snapshot(store.path)
+
+
+def test_claim_replay_projection_loads_not_reproduced_only_for_oracle_contradiction(
+    tmp_path: Path,
+) -> None:
+    store, candidate, source_decision, _, source_seal = _sealed_source_run(
+        tmp_path,
+        legacy_confirmed=False,
+    )
+    _write_claim_replay_projection(
+        store,
+        candidate=candidate,
+        source_decision=source_decision,
+        source_root_digest=source_seal.root_digest,
+        public_state=PublicFindingState.NOT_REPRODUCED,
+        claim_status=ClaimReplayStatus.NOT_REPRODUCED,
+        disposition=FindingDisposition.REJECTED_OBJECTIVE,
+        reason=ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED,
+    )
+
+    loaded = load_validation_snapshot(store.path)
+
+    assert loaded.public_states[PublicFindingState.NOT_REPRODUCED] == [candidate.candidate_id]
+    assert loaded.public_states[PublicFindingState.CONFIRMED] == []
+    assert loaded.product_confirmed_findings == []
 
 
 def test_versioned_projection_rejects_substituted_source_supersession(

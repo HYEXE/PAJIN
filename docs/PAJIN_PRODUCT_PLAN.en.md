@@ -936,6 +936,16 @@ This Provider/model distinction is a configuration contract, not cryptographic a
 separate organizations or infrastructure. Calibration, multi-Reviewer/Human consensus, and portable
 attestation remain follow-up scope.
 
+[`ADR-0035`](adr/0035-claim-replay-public-state-projection.en.md) adds the first B2.4 vertical
+slice. It projects each existing Candidate-bound Restricted Replay onto the exact validity Atomic
+Claim in a separately sealed `claim-replays.json`. The artifact binds Claim and Candidate digests
+to Replay Run, Outcome, Oracle, request, evidence, and receipt lineage. Internal
+`FindingDisposition` and the `confirmed` Gate remain unchanged; consumers receive a separate public
+state map. A reproduced validity Claim that does not satisfy the full confirmation invariant is
+`partially-confirmed`, while `not-reproduced` requires an explicit contradiction from a successful
+typed Oracle. Failed, cancelled, timed-out, target-unavailable, and Oracle-inconclusive runs remain
+`inconclusive`, and neither new public state enters canonical confirmed Findings.
+
 These stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
 Semantic Validator agreement and the objective gate can be at most `needs-review`, and it cannot be promoted to
@@ -1486,6 +1496,10 @@ defines at least the following.
   derivation on a Reviewer Agent, Capability, and Secret Lease whose Provider ID, endpoint, and
   model all differ from the Primary. The result is information-only and cannot mutate Candidate,
   Finding, or confirmation
+- B2.4 first vertical slice: a sealed `claim-replays.json` binding exact validity Claim ID and
+  digest to verified Replay lineage, plus public `partially-confirmed` and `not-reproduced` states
+  separated from internal dispositions. Only typed Oracle contradiction is `not-reproduced`;
+  terminal failures remain `inconclusive`, and canonical confirmed Findings do not change
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
