@@ -648,7 +648,11 @@ def trusted_fresh_issuance_compilation(
         compilation_id=f"replay-compilation_{'0' * 32}",
         item_id="fresh-validation",
         batch_id="fresh-validation",
-        candidate_id=admitted.candidate_id,
+        candidate_id=(
+            admitted.claim.claim_id
+            if admitted.claim is not None
+            else admitted.candidate_id
+        ),
         replay_run_id=admitted.replay_run_id,
         candidate_digest=admitted.candidate_digest,
         contract_digest=admitted.contract_digest,

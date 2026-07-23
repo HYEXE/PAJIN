@@ -59,6 +59,13 @@ class _ReplayRecords:
     ) -> None:
         return None
 
+    @staticmethod
+    def replay_claim_binding(
+        session: object,
+        record_id: str,
+    ) -> None:
+        return None
+
 
 class _ReplayViews:
     @staticmethod
@@ -71,7 +78,12 @@ class _ReplayViews:
         return ("batch-view", record)
 
     @staticmethod
-    def replay_item(record: object) -> tuple[str, object]:
+    def replay_item(
+        record: object,
+        *,
+        claim_authority: object | None = None,
+    ) -> tuple[str, object]:
+        assert claim_authority is None
         return ("item-view", record)
 
     @staticmethod

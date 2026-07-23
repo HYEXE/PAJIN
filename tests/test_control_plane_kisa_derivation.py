@@ -25,6 +25,7 @@ from pajin.control_plane.kisa_derivation import (
     derive_kisa_retest_batch,
 )
 from pajin.control_plane.models import ArtifactRef
+from pajin.control_plane.replay_authority import trusted_fresh_issuance_compilation
 from pajin.domain.replay import ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import AtomicClaimType
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
@@ -113,6 +114,13 @@ def test_derives_one_exact_replay_per_atomic_claim_when_projection_is_requested(
         assert item.compilation.validation_packet.candidate == item.candidate
         assert item.compilation.spec.binding.claim == item.claim
         assert item.compilation_digest == sha256(item.canonical_compilation).hexdigest()
+        assert (
+            trusted_fresh_issuance_compilation(
+                item,
+                now=source.compilation_time,
+            )
+            == item.compilation
+        )
 
 
 def test_derives_negative_retest_from_exact_baseline_and_parent_sources(
