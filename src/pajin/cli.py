@@ -103,8 +103,11 @@ from pajin.modes.ai_redteam import (
     KISARetestOutcome,
     KISARetestPlannerRuntime,
     KISARetestService,
+    KISAValidationControlBatchOutcome,
+    KISAValidationControlCoordinator,
     KISAValidatorRuntime,
     required_kisa_replay_calls,
+    required_kisa_validation_control_calls,
 )
 from pajin.modes.ai_redteam.models import EvaluationThresholds, MetricStatus
 from pajin.modes.ai_redteam.replay import KISARetestReplayCoordinator
@@ -207,6 +210,7 @@ def _prepare_kisa_replay_planner(
     repetitions: int,
     mode_error: str,
     budget_error: str,
+    validation_controls: bool = False,
 ) -> KISAPlannerRuntime:
     if campaign.spec.mode is not CampaignMode.AI_REDTEAM:
         raise ValueError(mode_error)
@@ -216,6 +220,8 @@ def _prepare_kisa_replay_planner(
         preflight_plan,
         repetitions=repetitions,
     )
+    if validation_controls:
+        required_calls += required_kisa_validation_control_calls(preflight_plan)
     if required_calls > campaign.spec.budgets.max_tool_calls:
         raise ValueError(f"{budget_error} (requires at least {required_calls})")
     return planner
@@ -832,6 +838,16 @@ def run_kisa_ai_redteam(
     output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/runs"),
     worker: Annotated[str, typer.Option("--worker")] = "docker",
     repetitions: Annotated[int, typer.Option("--repetitions", min=2, max=20)] = 2,
+    validation_controls: Annotated[
+        bool,
+        typer.Option(
+            "--validation-controls",
+            help=(
+                "Run information-only fresh-capability M03 Baseline, Negative Control, "
+                "and Counterfactual checks."
+            ),
+        ),
+    ] = False,
 ) -> None:
     """Run the KISA-aligned AI Red Team Mode Pack and emit guide artifacts."""
 
@@ -843,9 +859,17 @@ def run_kisa_ai_redteam(
             repetitions=repetitions,
             mode_error="KISA Mode Pack requires mode: ai-redteam",
             budget_error=(
-                "maxToolCalls must reserve the original KISA plan and every automatic "
-                "replay attempt"
+                (
+                    "maxToolCalls must reserve the original KISA plan and every automatic "
+                    "replay attempt and opted-in validation Control"
+                )
+                if validation_controls
+                else (
+                    "maxToolCalls must reserve the original KISA plan and every automatic "
+                    "replay attempt"
+                )
             ),
+            validation_controls=validation_controls,
         )
         thresholds = planner.thresholds
     with _cli_error_boundary("KISA campaign setup failed", exit_code=1):
@@ -873,14 +897,29 @@ def run_kisa_ai_redteam(
                 output / "replay" / "replay-tickets.sqlite3"
             ),
         )
+        control_coordinator = (
+            KISAValidationControlCoordinator(
+                tools=registry,
+                policy=policy,
+                worker=backend,
+                output_root=output / "validation-controls",
+            )
+            if validation_controls
+            else None
+        )
 
-    async def execute_kisa() -> tuple[MultiAgentRunOutcome, KISAReplayBatchOutcome | None]:
+    async def execute_kisa() -> tuple[
+        MultiAgentRunOutcome,
+        KISAReplayBatchOutcome | None,
+        KISAValidationControlBatchOutcome | None,
+    ]:
         outcome = await runner.run(
             campaign,
             budget=budget,
             rate_limits=rate_limits,
         )
         replay_batch = None
+        control_batch = None
         if outcome.status is RunStatus.COMPLETED:
             replay_batch = await coordinator.reproduce(
                 campaign,
@@ -902,10 +941,17 @@ def run_kisa_ai_redteam(
                         "findings": confirmation.product_confirmed_findings,
                     }
                 )
-        return outcome, replay_batch
+            if control_coordinator is not None:
+                control_batch = await control_coordinator.execute(
+                    campaign,
+                    outcome.run_path,
+                    budget=budget,
+                    rate_limits=rate_limits,
+                )
+        return outcome, replay_batch, control_batch
 
     with _cli_error_boundary("KISA evaluation failed", exit_code=1):
-        outcome, replay_batch = asyncio.run(execute_kisa())
+        outcome, replay_batch, control_batch = asyncio.run(execute_kisa())
         mode_outcome = KISAModePack(thresholds=thresholds).evaluate(
             campaign,
             outcome,
@@ -929,6 +975,14 @@ def run_kisa_ai_redteam(
             if replay_batch is not None
             else 0
         ),
+    )
+    table.add_row(
+        "Validation Control runs",
+        str(len(control_batch.records) if control_batch is not None else 0),
+    )
+    table.add_row(
+        "Validation Control authority",
+        "information-only (cannot confirm)",
     )
     table.add_row(
         "Finding needs review",

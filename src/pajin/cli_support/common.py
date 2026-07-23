@@ -54,6 +54,8 @@ _SAFE_CLI_REQUIRED_CALL_PREFIXES = (
     "(requires at least ",
     "maxToolCalls must reserve the original KISA plan and every automatic replay attempt "
     "(requires at least ",
+    "maxToolCalls must reserve the original KISA plan and every automatic replay attempt and "
+    "opted-in validation Control (requires at least ",
     "maxToolCalls must reserve every normal-function probe retry and baseline-bound negative "
     "replay attempt (requires at least ",
 )

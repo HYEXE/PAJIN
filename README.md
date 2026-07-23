@@ -16,13 +16,13 @@ The implementation baseline as of 2026-07-23 is:
 
 | Area | Current scope |
 | --- | --- |
-| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
+| Core engine | Typed Campaigns, policy and capability enforcement, dynamic Specialists, budgets, retries, cancellation, Candidate admission, Candidate-aware Provider review, deterministic validity/impact/severity Atomic Claims, metadata-minimized Blind Evidence review and deterministic reconciliation, an opt-in M03 fresh-capability Baseline/Negative Control/Counterfactual Control Executor, semantic evidence review, versioned replay contracts, a deterministic Replay Compiler, single-use execution tickets, a local SQLite replay-ticket ledger, stateless and registered fresh-session Restricted Reproducer paths, receipt-reloading confirmation/retest gates, and tamper-evident evidence seals |
 | Discovery contracts | Versioned `SurfaceObservation`, `AttackSurface`, and `AttackSurfaceSet` artifacts; canonical HTTP-operation and schema-bound Tool-interface locators; deterministic domain-separated identities; exact request/result/evidence/root lineage; bounded canonical JSON; and fail-closed ordering, uniqueness, and lineage validation. A code-registered Trusted Surface Producer admits only integrity-verified Campaign and Gateway evidence, revalidates Scope, Authorization, method, and Tool risk, and publishes through a separate append-only projection Run. A3 adds an explicit opt-in single-call MCP Recon wave. A4 re-verifies the sealed projection, compiles versioned Hypotheses through code-registered rules, and runs one fresh-Capability Specialist wave. A5 adds a separate explicit opt-in bounded replanning control Run: it re-verifies the sealed A4 wave, promotes exact registered result fields into append-only `ObservationGraphSnapshot` artifacts, records `supports`, `contradicts`, `enables`, `depends-on`, and `new-surface` relationship contracts, and permits at most one novel code-registered transition into a second fresh-Capability wave. Shared Campaign agent, Tool-call, cost, time, and rate limits still apply; repeated or sub-threshold plans stop before execution. The existing one-time Planner remains unchanged. |
-| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
+| AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; exact M03, M06, and A04 fresh-session replay through `kisa-run` and an explicit Local path; opt-in information-only M03 validation Controls with three fresh single-call Capabilities and separate request/evidence/receipt lineage; Candidate-bound replay-evidence projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json` projection from negative replay receipts plus normal-function regression. Defensive responses remain `inconclusive` without independent remediation attestation. |
-| Primary gaps | Fresh-capability Baseline/Negative Control/Counterfactual execution, independent severity derivation and Provider/model diversity, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Validation Controls beyond the first M03 slice, independent severity derivation and Provider/model diversity, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, claim-level replay and public partial-validation states, multi-host/object-store Artifact transfer, portable/off-host replay proof, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -34,7 +34,11 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
 > receives only opaque validity/impact Claim identity, statements, and allowlisted evidence; it does
 > not receive Candidate identity, disposition, severity, or prior Decisions. Deterministic
 > reconciliation records `corroborated`, `contested`, or `inconclusive` without changing Candidate
-> state or confirmation eligibility. Versioned `ValidationPacket`,
+> state or confirmation eligibility. An opt-in M03 Control Executor now binds Baseline, Negative
+> Control, and Counterfactual observations to the validity Claim using three unique sessions, three
+> fresh non-delegable single-call Capabilities, and separate request/evidence/receipt lineage. Its
+> deterministic reconciliation is information-only and cannot change disposition, severity, or
+> confirmation eligibility. Versioned `ValidationPacket`,
 > `ReplayIntent`, `ModeReplayContract`, `CompiledReplaySpec`, `ReplayAttempt`, `ReplayOracleResult`,
 > and `ReplayOutcome` contracts. A pure deterministic compiler now checks the original Plan, bound
 > Tool request, Specialist grant, evidence digests, Scope, authorization, cancellation and budget,
@@ -592,6 +596,17 @@ docker compose -f containers/compose.ai-lab.yaml up --build --detach
 docker compose -f containers/compose.ai-lab.yaml down
 ```
 
+Run the first B2.2 M03 Control slice explicitly:
+
+```powershell
+.venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
+  --worker docker --repetitions 2 --validation-controls
+```
+
+This adds three information-only calls after Replay. Baseline, Negative Control, and
+Counterfactual each receive a fresh one-call Capability and distinct request, session, evidence,
+and receipt. Their result cannot confirm or mutate the Candidate.
+
 The six Specialist Tasks use unique session IDs and cover system-prompt disclosure, jailbreak
 policy bypass, and persistent memory poisoning. The lab binds only to `127.0.0.1:8765`, runs as a
 non-root user with a read-only filesystem and no Linux capabilities, and is not a production AI
@@ -766,9 +781,10 @@ still requires the Restricted Reproducer and independent execution attestation. 
 in `model-narrative.json` and is appended as a clearly subordinate section; it cannot alter
 canonical findings or execution state.
 
-The exact Claim identity, evidence, fallback, blind-review, and confirmation boundaries are recorded
+The exact Claim identity, evidence, fallback, blind-review, Control, and confirmation boundaries are recorded
 in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md) and
-[ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md).
+[ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md), and
+[ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative

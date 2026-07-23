@@ -31,6 +31,12 @@ from pajin.modes.ai_redteam.runtime import (
     KISAValidatorRuntime,
 )
 from pajin.modes.ai_redteam.service import KISAModePack
+from pajin.modes.ai_redteam.validation_controls import (
+    KISAValidationControlBatchOutcome,
+    KISAValidationControlCoordinator,
+    KISAValidationControlRunRecord,
+    required_kisa_validation_control_calls,
+)
 
 __all__ = [
     "KISA_CATALOG",
@@ -51,9 +57,13 @@ __all__ = [
     "KISARetestPlannerRuntime",
     "KISARetestReplayCoordinator",
     "KISARetestService",
+    "KISAValidationControlBatchOutcome",
+    "KISAValidationControlCoordinator",
+    "KISAValidationControlRunRecord",
     "KISAValidatorRuntime",
     "kisa_negative_retest_contract",
     "kisa_replay_contract",
     "kisa_replay_registries",
     "required_kisa_replay_calls",
+    "required_kisa_validation_control_calls",
 ]
