@@ -28,8 +28,8 @@ from pajin.discovery.projection import (
     publish_surface_projection,
 )
 from pajin.discovery.recon import (
-    MCPInterfaceSurfaceAdapter,
     RECON_API_VERSION,
+    MCPInterfaceSurfaceAdapter,
     ReconPlanner,
     ReconWaveError,
     ReconWaveOutcome,
@@ -50,6 +50,7 @@ __all__ = [
     "ReconWaveOutcome",
     "ReconWavePlan",
     "RegisteredMCPReconPlanner",
+    "SingleReconWaveRunner",
     "SurfaceAdmissionError",
     "SurfaceCandidate",
     "SurfaceEvidenceReference",
@@ -57,7 +58,6 @@ __all__ = [
     "SurfaceObservation",
     "SurfaceProjectionConflict",
     "SurfaceProjectionPublication",
-    "SingleReconWaveRunner",
     "ToolInterfaceSurfaceLocator",
     "TrustedSurfaceAdapter",
     "TrustedSurfaceAdmission",
