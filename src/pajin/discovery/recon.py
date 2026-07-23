@@ -53,7 +53,7 @@ class ReconWavePlan(StrictModel):
     """Canonical plan for exactly one non-recursive Recon specialist wave."""
 
     api_version: Literal["pajin.dev/discovery-recon/v1alpha1"] = Field(
-        default=RECON_API_VERSION,
+        default="pajin.dev/discovery-recon/v1alpha1",
         alias="apiVersion",
     )
     kind: Literal["ReconWavePlan"] = "ReconWavePlan"
