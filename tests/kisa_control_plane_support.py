@@ -48,7 +48,7 @@ from pajin.tools.ai import (
     AIChatProbeTool,
     AIChatRegressionTool,
 )
-from pajin.tools.base import EGRESS_HTTPS_CONNECT_RECEIPT_VERSION, ToolRegistry
+from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow import confirmation as confirmation_module
 from pajin.workflow.confirmation import apply_confirmed_gate
@@ -327,39 +327,21 @@ def _trusted_supporting_backend(worker: SupportingKISAWorker) -> DockerWorkerBac
             zip(probe["turns"], output["turns"], strict=True)
         ):
             request_body = observed["request"]
-            if parsed_target.scheme == "https":
-                hostname = parsed_target.hostname or ""
-                host = f"[{hostname}]" if ":" in hostname else hostname
-                authority = f"{host}:{parsed_target.port or 443}"
-                receipt = {
-                    "event": "allow",
-                    "receiptVersion": EGRESS_HTTPS_CONNECT_RECEIPT_VERSION,
-                    "sequence": index + 1,
-                    "method": "CONNECT",
-                    "authority": authority,
-                    "authoritySha256": sha256(authority.encode("utf-8")).hexdigest(),
-                    "address": "172.17.0.1",
-                    "applicationVisibility": "opaque",
-                    "methodEnforcement": "trusted-worker-only",
-                    "pathEnforcement": "authority-only",
-                }
-            else:
-                receipt = {
-                    "event": "allow",
-                    "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
-                    "sequence": index + 1,
-                    "method": "POST",
-                    "target": audit_target,
-                    "targetSha256": sha256(payload["target"].encode("utf-8")).hexdigest(),
-                    "address": "172.17.0.1",
-                    "status": 200,
-                    "requestJsonSha256": _canonical_json_digest(request_body),
-                    "responseBodySha256": _canonical_json_digest(observed["response"]),
-                    "responseJsonSha256": _canonical_json_digest(observed["response"]),
-                }
             events.append(
                 json.dumps(
-                    receipt,
+                    {
+                        "event": "allow",
+                        "receiptVersion": AI_CHAT_PROXY_RECEIPT_VERSION,
+                        "sequence": index + 1,
+                        "method": "POST",
+                        "target": audit_target,
+                        "targetSha256": sha256(payload["target"].encode("utf-8")).hexdigest(),
+                        "address": "172.17.0.1",
+                        "status": 200,
+                        "requestJsonSha256": _canonical_json_digest(request_body),
+                        "responseBodySha256": _canonical_json_digest(observed["response"]),
+                        "responseJsonSha256": _canonical_json_digest(observed["response"]),
+                    },
                     separators=(",", ":"),
                 )
             )
@@ -435,29 +417,16 @@ def build_kisa_control_plane_source(
     scenario_count: int = 1,
     producer_run_id: str | None = None,
     created_by: str = "trusted-source-admission",
-    target_endpoint: str | None = None,
 ) -> KISAControlPlaneSource:
     """Create a sealed completed Run with one to three exact eligible KISA Candidates."""
 
     if not 1 <= scenario_count <= len(_THREAT_CLASSES):
         raise ValueError("scenario_count must be between one and three")
     campaign = load_manifest(Path("examples/kisa-ai-chat-lab.yaml"))
-    target = campaign.spec.targets[0]
-    scope = campaign.spec.scope
     campaign = campaign.model_copy(
         update={
             "spec": campaign.spec.model_copy(
-                update={
-                    "threat_classes": list(_THREAT_CLASSES[:scenario_count]),
-                    **(
-                        {
-                            "targets": [target.model_copy(update={"endpoint": target_endpoint})],
-                            "scope": scope.model_copy(update={"allow": [target_endpoint]}),
-                        }
-                        if target_endpoint is not None
-                        else {}
-                    ),
-                }
+                update={"threat_classes": list(_THREAT_CLASSES[:scenario_count])}
             )
         }
     )

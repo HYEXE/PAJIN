@@ -4930,7 +4930,7 @@ def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_stat
         registry_id="test-targets-2026-07",
         entries=[
             TargetAttestationTrustRegistryEntry(
-                target="https://host.docker.internal:8765/v1/chat",
+                target="http://host.docker.internal:8765/v1/chat",
                 trust_anchor=target_anchor,
             )
         ],
@@ -4948,7 +4948,6 @@ def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_stat
         source = build_kisa_control_plane_source(
             tmp_path / "target-attested-source",
             scenario_count=1,
-            target_endpoint="https://host.docker.internal:8765/v1/chat",
         )
         admitted = _admit_built_source(
             repository,
