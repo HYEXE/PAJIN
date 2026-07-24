@@ -1504,6 +1504,17 @@ images or Compose fixtures.
 
 ## Architecture rule
 
+### B2.8c HTTPS Target attestation
+
+Target-attested Replay may use `PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY` instead of the legacy
+single `PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR`. The settings are mutually exclusive and registry
+routes are canonical exact URLs with no wildcard or fallback. For HTTPS, a host-observed opaque
+CONNECT authority/IP receipt is joined to the Target-signed application exchange; this does not
+claim that the proxy observed TLS plaintext or the server certificate. The development Target can
+enable a TLS 1.2-or-newer listener by configuring `PAJIN_TARGET_TLS_CERTIFICATE` and
+`PAJIN_TARGET_TLS_PRIVATE_KEY` together. See
+[ADR-0041](docs/adr/0041-https-attested-transport-and-target-trust-registry.en.md).
+
 `ProviderAgentRuntime` is the governed production path for network-backed planning and validation.
 It binds every model call to `PolicyBoundProviderPort`, the Tool Gateway, Campaign budgets, and
 run-scoped Secret Leases. `PydanticAIAgentRuntime` is limited to PydanticAI's exact local

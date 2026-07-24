@@ -1,5 +1,13 @@
 # KISA AI 보안 레드티밍 가이드 추적성
 
+> 2026-07-24 B2.8c: Target-attested Replay는 HTTPS CONNECT authority/IP receipt와 Target
+> 서명 application exchange를 결합하고, versioned exact-URL trust registry에서 Target별
+> anchor를 선택한다. registry ID/digest와 선택된 anchor digest는 finalization/projection
+> authority에 보존된다. 이 증명은 TLS plaintext나 certificate fingerprint 관찰을 주장하지
+> 않으며 certificate/exporter binding, registry 자동 회전과 object-store Artifact 전송은
+> 후속 범위다. 자세한 결정은
+> [`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.md)을 참조한다.
+
 ## 1. 목적과 기준선
 
 이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행

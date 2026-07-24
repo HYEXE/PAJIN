@@ -181,13 +181,18 @@ from pajin.replay.tickets import replay_context_digest
 from pajin.runtime.store import RunStore, VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.target_attestation import (
     TargetAttestationTrustAnchor,
+    TargetAttestationTrustRegistry,
+    TargetExecutionChallenge,
+    TargetExecutionProxyBinding,
+    TargetExecutionTLSBinding,
+    TargetExecutionTransportBinding,
     TargetExecutionVerificationSummary,
     canonical_target_json_sha256,
     derive_target_execution_challenge,
     verify_target_execution_receipt,
 )
 from pajin.tools.ai import AIChatProbeOutput, AIChatProbeTool
-from pajin.tools.base import audit_http_target, http_target_sha256
+from pajin.tools.base import audit_http_target, http_target_sha256, https_connect_authority
 from pajin.workflow.confirmation import apply_confirmed_gate, decide_replay_confirmation
 from pajin.workflow.validation_artifacts import load_source_validation_artifacts
 
@@ -226,10 +231,13 @@ def _target_verification_digest_fields(
 ) -> dict[str, object]:
     if summary is None:
         return {}
-    return {
+    fields: dict[str, object] = {
         "targetExecutionVerificationDigest": summary.digest,
         "targetAttestationTrustAnchorDigest": summary.trust_anchor_digest,
     }
+    if summary.trust_registry_digest is not None:
+        fields["targetAttestationTrustRegistryDigest"] = summary.trust_registry_digest
+    return fields
 
 
 def _target_verification_job_fields(
@@ -255,6 +263,78 @@ def _target_verification_event_fields(
         "targetExecutionVerificationDigest": summary.digest,
         "targetReceiptCount": summary.receipt_count,
     }
+
+
+def _target_transport_binding_matches(
+    proof: TargetExecutionTransportBinding,
+    *,
+    permit: ReplayToolPermitRecord,
+    challenge: TargetExecutionChallenge,
+    exchange_ordinal: int,
+    receipt_digest: str,
+    status: int,
+    request_digest: str,
+    response_digest: str,
+) -> bool:
+    if isinstance(proof, TargetExecutionProxyBinding):
+        return (
+            proof.replay_request_id == permit.replay_request_id
+            and proof.exchange_ordinal == exchange_ordinal
+            and proof.challenge_sha256 == challenge.digest
+            and proof.target_receipt_sha256 == receipt_digest
+            and proof.proxy_sequence == exchange_ordinal
+            and proof.proxy_method == permit.method
+            and proof.proxy_target == audit_http_target(permit.target)
+            and proof.proxy_target_sha256 == http_target_sha256(permit.target)
+            and proof.proxy_status == status
+            and proof.proxy_request_json_sha256 == request_digest
+            and proof.proxy_response_json_sha256 == response_digest
+        )
+    if isinstance(proof, TargetExecutionTLSBinding):
+        expected_authority = https_connect_authority(permit.target)
+        return (
+            proof.replay_request_id == permit.replay_request_id
+            and proof.exchange_ordinal == exchange_ordinal
+            and proof.challenge_sha256 == challenge.digest
+            and proof.target_receipt_sha256 == receipt_digest
+            and proof.target_sha256 == challenge.target_sha256
+            and proof.connect_sequence == exchange_ordinal
+            and proof.connect_authority == expected_authority
+            and proof.connect_authority_sha256
+            == sha256(expected_authority.encode("utf-8")).hexdigest()
+            and proof.application_method == permit.method
+            and proof.transcript_request_json_sha256 == request_digest
+            and proof.transcript_response_json_sha256 == response_digest
+        )
+    return False
+
+
+def _target_attempt_transcript(
+    attempt: Any,
+    permit: ReplayToolPermitRecord,
+) -> AIChatProbeOutput:
+    try:
+        transcript = AIChatProbeOutput.model_validate(attempt.observation["transcript"])
+    except (KeyError, ValueError) as exc:
+        raise StateConflict("target-attested Replay transcript is unavailable") from exc
+    if attempt.replay_request_id != permit.replay_request_id or transcript.target != permit.target:
+        raise StateConflict("target-attested Replay transcript belongs to another authority")
+    return transcript
+
+
+def _target_trust_anchor_for(
+    target: str,
+    *,
+    trust_anchor: TargetAttestationTrustAnchor | None,
+    trust_registry: TargetAttestationTrustRegistry | None,
+) -> TargetAttestationTrustAnchor:
+    if trust_anchor is not None:
+        return trust_anchor
+    assert trust_registry is not None
+    try:
+        return trust_registry.resolve(target)
+    except ValueError as exc:
+        raise StateConflict("Replay target is absent from the exact trust registry") from exc
 
 
 @dataclass(slots=True)
@@ -360,7 +440,13 @@ class ControlPlaneService:
         replay_attestor: ReplayAttestor | None = None,
         executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
         target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None,
+        target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None,
     ) -> None:
+        if (
+            target_attestation_trust_anchor is not None
+            and target_attestation_trust_registry is not None
+        ):
+            raise ValueError("configure either one target trust anchor or the exact registry")
         self.repository = repository
         self.signer = signer
         self._replay_executor_profiles = {
@@ -371,6 +457,7 @@ class ControlPlaneService:
         self._replay_attestor = replay_attestor
         self._executor_attestation_trust_anchor = executor_attestation_trust_anchor
         self._target_attestation_trust_anchor = target_attestation_trust_anchor
+        self._target_attestation_trust_registry = target_attestation_trust_registry
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -799,8 +886,11 @@ class ControlPlaneService:
     ) -> ReplayBatchView:
         if request.portable_attestation and self._replay_attestor is None:
             raise StateConflict("portable Replay attestation signer is not configured")
-        if request.target_attestation and self._target_attestation_trust_anchor is None:
-            raise StateConflict("target attestation trust anchor is not configured")
+        if request.target_attestation and (
+            self._target_attestation_trust_anchor is None
+            and self._target_attestation_trust_registry is None
+        ):
+            raise StateConflict("target attestation trust authority is not configured")
         if request.target_attestation and self._executor_attestation_trust_anchor is None:
             raise StateConflict("executor attestation trust anchor is not configured")
         return self._replay_issuance.create_replay_batch(request, actor=actor)
@@ -1646,6 +1736,7 @@ class ControlPlaneService:
             verified=verified,
             preverification=executor_preverification,
             target_trust_anchor=self._target_attestation_trust_anchor,
+            target_trust_registry=self._target_attestation_trust_registry,
         )
         gate_decision = self._verify_replay_output_and_gate(
             authority=authority,
@@ -3085,8 +3176,11 @@ class ControlPlaneService:
             raise StateConflict("executor execution attestation is not trusted") from exc
 
         statement = request.executor_attestation.statement
-        if target_attestation_required and self._target_attestation_trust_anchor is None:
-            raise StateConflict("target attestation trust anchor is not configured")
+        if target_attestation_required and (
+            self._target_attestation_trust_anchor is None
+            and self._target_attestation_trust_registry is None
+        ):
+            raise StateConflict("target attestation trust authority is not configured")
         if (statement.target_execution_proofs is not None) != target_attestation_required:
             raise StateConflict("executor target execution proof does not match the Replay policy")
         permits = sorted(authority.permits, key=lambda permit: permit.call_ordinal)
@@ -3133,6 +3227,7 @@ class ControlPlaneService:
         verified: VerifiedReplayResult,
         preverification: ExecutorExecutionVerificationResult | None,
         target_trust_anchor: TargetAttestationTrustAnchor | None,
+        target_trust_registry: TargetAttestationTrustRegistry | None,
     ) -> _PortableReplayFinalizationProof | None:
         """Bind the preverified executor observation to the reloaded sealed output."""
 
@@ -3163,6 +3258,7 @@ class ControlPlaneService:
             verified=verified,
             attestation=request.executor_attestation,
             trust_anchor=target_trust_anchor,
+            trust_registry=target_trust_registry,
         )
         transport_digest = replay_context_digest(
             transport_receipt.model_dump(mode="json", by_alias=True)
@@ -3183,6 +3279,7 @@ class ControlPlaneService:
         verified: VerifiedReplayResult,
         attestation: ExecutorExecutionAttestation,
         trust_anchor: TargetAttestationTrustAnchor | None,
+        trust_registry: TargetAttestationTrustRegistry | None,
     ) -> TargetExecutionVerificationSummary | None:
         required = authority.payload.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
         proofs = attestation.statement.target_execution_proofs
@@ -3190,8 +3287,10 @@ class ControlPlaneService:
             if proofs is not None:
                 raise StateConflict("legacy Replay finalization contains target execution proof")
             return None
-        if trust_anchor is None or proofs is None:
+        if (trust_anchor is None and trust_registry is None) or proofs is None:
             raise StateConflict("target-attested Replay proof authority is incomplete")
+        if trust_anchor is not None and trust_registry is not None:
+            raise StateConflict("target-attested Replay proof authority is ambiguous")
 
         permits = sorted(authority.permits, key=lambda permit: permit.call_ordinal)
         attempts = verified.artifact_set.outcome.attempts
@@ -3202,6 +3301,7 @@ class ControlPlaneService:
         proof_index = 0
         receipt_digests: list[str] = []
         key_ids: set[str] = set()
+        trust_anchor_digests: set[str] = set()
         for permit, attempt in zip(permits, attempts, strict=True):
             challenge = derive_target_execution_challenge(
                 permit_digest=permit.permit_digest,
@@ -3217,17 +3317,7 @@ class ControlPlaneService:
                 issued_at=_aware(permit.issued_at),
                 expires_at=_aware(permit.expires_at),
             )
-            try:
-                transcript = AIChatProbeOutput.model_validate(attempt.observation["transcript"])
-            except (KeyError, ValueError) as exc:
-                raise StateConflict("target-attested Replay transcript is unavailable") from exc
-            if (
-                attempt.replay_request_id != permit.replay_request_id
-                or transcript.target != permit.target
-            ):
-                raise StateConflict(
-                    "target-attested Replay transcript belongs to another authority"
-                )
+            transcript = _target_attempt_transcript(attempt, permit)
             for exchange_ordinal, turn in enumerate(transcript.turns, start=1):
                 if proof_index >= len(proofs):
                     raise StateConflict("target execution proof set is incomplete")
@@ -3275,36 +3365,43 @@ class ControlPlaneService:
                     and statement.response_payload_sha256 == response_payload_digest
                     and challenge.issued_at <= statement.issued_at < challenge.expires_at
                 )
-                exact_proxy = (
-                    proof.replay_request_id == permit.replay_request_id
-                    and proof.exchange_ordinal == exchange_ordinal
-                    and proof.challenge_sha256 == challenge.digest
-                    and proof.target_receipt_sha256 == receipt.digest
-                    and proof.proxy_sequence == exchange_ordinal
-                    and proof.proxy_method == permit.method
-                    and proof.proxy_target == audit_http_target(permit.target)
-                    and proof.proxy_target_sha256 == http_target_sha256(permit.target)
-                    and proof.proxy_status == statement.status
-                    and proof.proxy_request_json_sha256 == request_digest
-                    and proof.proxy_response_json_sha256 == response_digest
+                exact_transport = _target_transport_binding_matches(
+                    proof,
+                    permit=permit,
+                    challenge=challenge,
+                    exchange_ordinal=exchange_ordinal,
+                    receipt_digest=receipt.digest,
+                    status=statement.status,
+                    request_digest=request_digest,
+                    response_digest=response_digest,
                 )
-                if not exact_statement or not exact_proxy:
+                if not exact_statement or not exact_transport:
                     raise StateConflict(
                         "target receipt differs from Replay authority or proxy observation"
                     )
+                selected_anchor = _target_trust_anchor_for(
+                    permit.target,
+                    trust_anchor=trust_anchor,
+                    trust_registry=trust_registry,
+                )
                 try:
                     key_id = verify_target_execution_receipt(
                         receipt,
-                        trust_anchor=trust_anchor,
+                        trust_anchor=selected_anchor,
                     )
                 except ValueError as exc:
                     raise StateConflict("target execution receipt is not trusted") from exc
                 receipt_digests.append(receipt.digest)
                 key_ids.add(key_id)
+                trust_anchor_digests.add(selected_anchor.digest)
         if proof_index != len(proofs):
             raise StateConflict("target execution proof set contains unbound exchanges")
+        if len(trust_anchor_digests) != 1:
+            raise StateConflict("target execution proof set spans multiple trust anchors")
         return TargetExecutionVerificationSummary(
-            trust_anchor_digest=trust_anchor.digest,
+            trust_anchor_digest=next(iter(trust_anchor_digests)),
+            trust_registry_id=(trust_registry.registry_id if trust_registry is not None else None),
+            trust_registry_digest=(trust_registry.digest if trust_registry is not None else None),
             proof_set_digest=canonical_target_json_sha256(
                 [proof.model_dump(mode="json") for proof in proofs]
             ),

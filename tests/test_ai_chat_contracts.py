@@ -9,6 +9,16 @@ from pydantic import ValidationError
 from pajin.domain.models import ToolRequest
 from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.runtime.worker import WorkerResult, WorkerStatus
+from pajin.target_attestation import (
+    TargetAttestationKeyState,
+    TargetAttestationTrustAnchor,
+    TargetAttestationVerificationKey,
+    TargetExecutionAttestor,
+    TargetExecutionTLSBinding,
+    canonical_target_json_sha256,
+    derive_target_execution_challenge,
+    target_public_key_base64url,
+)
 from pajin.tools.ai import (
     AI_CHAT_PROXY_RECEIPT_VERSION,
     AIChatProbeInput,
@@ -23,8 +33,10 @@ from pajin.tools.ai import (
     ProbePurpose,
     ProbeTurn,
     evaluate_trusted_regression,
+    target_execution_proxy_bindings,
     verify_ai_chat_proxy_receipts,
 )
+from pajin.tools.base import EGRESS_HTTPS_CONNECT_RECEIPT_VERSION
 
 
 def _attack_contract() -> tuple[AIChatProbeTool, ToolRequest, dict[str, object]]:
@@ -601,3 +613,151 @@ def test_trusted_ai_transcript_rechecks_reject_duplicate_worker_json() -> None:
             ambiguous,
             network_log_trusted=True,
         )
+
+
+def test_target_attested_https_binds_opaque_connect_to_signed_application_exchange() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    private_key = bytes(range(32))
+    anchor = TargetAttestationTrustAnchor(
+        trust_domain="pajin.example/targets",
+        issuer="PAJIN HTTPS target",
+        target_profile="kisa-https-v1",
+        keys=[
+            TargetAttestationVerificationKey(
+                key_id="target-key-https-01",
+                public_key_base64url=target_public_key_base64url(private_key),
+                state=TargetAttestationKeyState.ACTIVE,
+                not_before=now,
+            )
+        ],
+    )
+    attestor = TargetExecutionAttestor.from_private_key_bytes(
+        active_key_id="target-key-https-01",
+        private_key=private_key,
+        trust_anchor=anchor,
+        clock=lambda: now,
+    )
+    scenario = next(
+        item
+        for item in KISA_CATALOG.scenarios
+        if item.scenario_id == "kisa.model.system-prompt-disclosure"
+    )
+    assert scenario.probe is not None
+    probe = AIChatProbeInput(
+        scenario_id=scenario.scenario_id,
+        threat_class="M03",
+        session_id="pajin:test:https-target:1",
+        turns=scenario.probe.turns[:1],
+        checks=[check for check in scenario.probe.checks if check.turn == 0],
+    )
+    request = ToolRequest(
+        request_id=f"tool_replay_{'1' * 32}",
+        agent_id="agent:test",
+        tool_id=AIChatProbeTool.spec.tool_id,
+        target="https://ai.example.test/v1/chat",
+        method="POST",
+        arguments=probe.model_dump(mode="json"),
+    )
+    challenge = derive_target_execution_challenge(
+        permit_digest="a" * 64,
+        replay_request_id=request.request_id,
+        batch_id=f"replay-batch_{'2' * 32}",
+        item_id=f"replay-item_{'3' * 32}",
+        ticket_id=f"replay-ticket_{'4' * 32}",
+        fencing_value=1,
+        call_ordinal=1,
+        target=request.target,
+        method=request.method,
+        compiled_argument_digest="b" * 64,
+        issued_at=now,
+        expires_at=now.replace(second=23),
+    )
+    raw = _output(
+        target=request.target,
+        scenario_id=probe.scenario_id,
+        threat_class=probe.threat_class,
+        session_id=probe.session_id,
+        turns=probe.turns,
+        checks=probe.checks,
+        purpose=ProbePurpose.ATTACK,
+    )
+    raw_turns = raw["turns"]
+    assert isinstance(raw_turns, list) and isinstance(raw_turns[0], dict)
+    raw_request = raw_turns[0]["request"]
+    raw_response = raw_turns[0]["response"]
+    assert isinstance(raw_request, dict) and isinstance(raw_response, dict)
+    metadata = raw_request["metadata"]
+    assert isinstance(metadata, dict)
+    metadata["targetChallenge"] = challenge.model_dump(mode="json")
+    metadata["targetExchangeOrdinal"] = 1
+    receipt = attestor.attest(
+        {
+            "challenge_id": challenge.challenge_id,
+            "challenge_sha256": challenge.digest,
+            "permit_digest": challenge.permit_digest,
+            "replay_request_id": challenge.replay_request_id,
+            "batch_id": challenge.batch_id,
+            "item_id": challenge.item_id,
+            "ticket_id": challenge.ticket_id,
+            "fencing_value": challenge.fencing_value,
+            "call_ordinal": challenge.call_ordinal,
+            "exchange_ordinal": 1,
+            "target_sha256": challenge.target_sha256,
+            "method": challenge.method,
+            "request_json_sha256": canonical_target_json_sha256(raw_request),
+            "response_payload_sha256": canonical_target_json_sha256(raw_response),
+            "status": 200,
+        }
+    )
+    raw_response["targetReceipt"] = receipt.model_dump(mode="json")
+    output = AIChatProbeOutput.model_validate(raw)
+    authority = "ai.example.test:443"
+    connect_event = {
+        "event": "allow",
+        "receiptVersion": EGRESS_HTTPS_CONNECT_RECEIPT_VERSION,
+        "sequence": 1,
+        "method": "CONNECT",
+        "authority": authority,
+        "authoritySha256": sha256(authority.encode()).hexdigest(),
+        "address": "203.0.113.10",
+        "applicationVisibility": "opaque",
+        "methodEnforcement": "trusted-worker-only",
+        "pathEnforcement": "authority-only",
+    }
+    worker_result = _worker_result(raw).model_copy(
+        update={
+            "backend": "docker",
+            "network_log": "\n".join(
+                [
+                    json.dumps({"event": "ready", "port": 8080}),
+                    json.dumps(connect_event),
+                ]
+            ),
+        }
+    )
+
+    assert not verify_ai_chat_proxy_receipts(
+        request,
+        worker_result,
+        output,
+        network_log_trusted=True,
+    )
+    assert verify_ai_chat_proxy_receipts(
+        request,
+        worker_result,
+        output,
+        network_log_trusted=True,
+        allow_target_attested_https=True,
+    )
+    bindings = target_execution_proxy_bindings(
+        request,
+        worker_result,
+        output,
+        expected_challenge=challenge,
+        network_log_trusted=True,
+    )
+
+    assert len(bindings) == 1
+    assert isinstance(bindings[0], TargetExecutionTLSBinding)
+    assert bindings[0].connect_authority == authority
+    assert bindings[0].target_receipt_sha256 == receipt.digest

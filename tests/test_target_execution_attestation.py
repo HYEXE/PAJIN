@@ -10,11 +10,14 @@ from pajin.control_plane.api import ControlPlaneSettings
 from pajin.target_attestation import (
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
+    TargetAttestationTrustRegistry,
+    TargetAttestationTrustRegistryEntry,
     TargetAttestationVerificationKey,
     TargetExecutionAttestor,
     TargetExecutionChallenge,
     canonical_target_json,
     derive_target_execution_challenge,
+    parse_target_attestation_trust_registry,
     target_public_key_base64url,
     verify_target_execution_receipt,
 )
@@ -169,6 +172,67 @@ def test_target_receipt_rejects_revoked_signing_key() -> None:
         verify_target_execution_receipt(receipt, trust_anchor=revoked_anchor)
 
 
+def test_target_trust_registry_routes_only_exact_canonical_targets() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    first, _attestor = _authority(now)
+    second = first.model_copy(
+        update={
+            "issuer": "PAJIN second deterministic AI target",
+            "target_profile": "kisa-lab-v2",
+        }
+    )
+    registry = TargetAttestationTrustRegistry(
+        registry_id="pajin-targets-2026-07",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="http://ai-target:8080/v1/chat",
+                trust_anchor=first,
+            ),
+            TargetAttestationTrustRegistryEntry(
+                target="https://ai.example.test/v1/chat",
+                trust_anchor=second,
+            ),
+        ],
+    )
+
+    assert registry.resolve("http://ai-target:8080/v1/chat") == first
+    assert registry.resolve("https://ai.example.test/v1/chat") == second
+    with pytest.raises(ValueError, match="absent from the exact trust registry"):
+        registry.resolve("https://ai.example.test/v1/other")
+    assert (
+        parse_target_attestation_trust_registry(
+            json.dumps(registry.model_dump(mode="json"), separators=(",", ":")).encode()
+        )
+        == registry
+    )
+    assert len(registry.digest) == 64
+
+
+def test_target_trust_registry_rejects_unsorted_or_noncanonical_routes() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    anchor, _attestor = _authority(now)
+
+    with pytest.raises(ValueError, match="uniquely sorted"):
+        TargetAttestationTrustRegistry(
+            registry_id="pajin-targets-2026-07",
+            entries=[
+                TargetAttestationTrustRegistryEntry(
+                    target="https://z.example.test/v1/chat",
+                    trust_anchor=anchor,
+                ),
+                TargetAttestationTrustRegistryEntry(
+                    target="https://a.example.test/v1/chat",
+                    trust_anchor=anchor,
+                ),
+            ],
+        )
+    with pytest.raises(ValueError, match="canonical exact URL"):
+        TargetAttestationTrustRegistryEntry(
+            target="https://AI.EXAMPLE.TEST/v1/chat",
+            trust_anchor=anchor,
+        )
+
+
 def test_control_plane_loads_only_target_public_trust_anchor(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,3 +253,69 @@ def test_control_plane_loads_only_target_public_trust_anchor(
     settings = ControlPlaneSettings.from_env()
 
     assert settings.target_attestation_trust_anchor == anchor
+
+
+def test_control_plane_loads_versioned_target_trust_registry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    anchor, _attestor = _authority(now)
+    registry = TargetAttestationTrustRegistry(
+        registry_id="pajin-targets-2026-07",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="https://ai.example.test/v1/chat",
+                trust_anchor=anchor,
+            )
+        ],
+    )
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", "o" * 32)
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", "a" * 32)
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", "w" * 32)
+    monkeypatch.setenv(
+        "PAJIN_CP_CHECKPOINT_KEY",
+        "checkpoint-key-that-is-at-least-32-bytes",
+    )
+    monkeypatch.setenv(
+        "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY",
+        json.dumps(registry.model_dump(mode="json"), separators=(",", ":")),
+    )
+
+    settings = ControlPlaneSettings.from_env()
+
+    assert settings.target_attestation_trust_anchor is None
+    assert settings.target_attestation_trust_registry == registry
+
+
+def test_control_plane_rejects_ambiguous_target_trust_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    anchor, _attestor = _authority(now)
+    registry = TargetAttestationTrustRegistry(
+        registry_id="pajin-targets-2026-07",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="https://ai.example.test/v1/chat",
+                trust_anchor=anchor,
+            )
+        ],
+    )
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", "o" * 32)
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", "a" * 32)
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", "w" * 32)
+    monkeypatch.setenv(
+        "PAJIN_CP_CHECKPOINT_KEY",
+        "checkpoint-key-that-is-at-least-32-bytes",
+    )
+    monkeypatch.setenv(
+        "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR",
+        json.dumps(anchor.model_dump(mode="json"), separators=(",", ":")),
+    )
+    monkeypatch.setenv(
+        "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY",
+        json.dumps(registry.model_dump(mode="json"), separators=(",", ":")),
+    )
+
+    with pytest.raises(RuntimeError, match="mutually exclusive"):
+        ControlPlaneSettings.from_env()

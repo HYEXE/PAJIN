@@ -420,6 +420,10 @@ class ControlPlaneViewMapper:
                         ),
                     }
                 )
+                if target_execution_verification.trust_registry_digest is not None:
+                    finalization_material["targetAttestationTrustRegistryDigest"] = (
+                        target_execution_verification.trust_registry_digest
+                    )
         expected_result_digest = replay_context_digest(finalization_material)
         if not (
             record.job_id == job.job_id

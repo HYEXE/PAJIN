@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from pajin.control_plane.artifact_transfer import PortableArtifactBundle
 from pajin.control_plane.artifacts import build_portable_artifact_bundle
@@ -60,12 +61,12 @@ from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend, WorkerJob, WorkerResult
 from pajin.target_attestation import (
     TargetExecutionChallenge,
-    TargetExecutionProxyBinding,
+    TargetExecutionTransportBinding,
 )
 from pajin.tools.ai import (
-    AIChatProbeOutput,
     AIChatProbeTool,
     target_execution_proxy_bindings,
+    verify_ai_chat_proxy_receipts,
 )
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
@@ -93,7 +94,7 @@ class _TargetExecutionProofLedger:
     def __init__(self, *, required: bool) -> None:
         self.required = required
         self._challenges: dict[str, TargetExecutionChallenge] = {}
-        self._proofs: dict[str, list[TargetExecutionProxyBinding]] = {}
+        self._proofs: dict[str, list[TargetExecutionTransportBinding]] = {}
 
     def register(
         self,
@@ -116,7 +117,7 @@ class _TargetExecutionProofLedger:
     def record(
         self,
         request_id: str,
-        proofs: list[TargetExecutionProxyBinding],
+        proofs: list[TargetExecutionTransportBinding],
     ) -> None:
         if not self.required or not proofs:
             raise ValueError("target-attested Replay requires at least one exchange proof")
@@ -127,7 +128,7 @@ class _TargetExecutionProofLedger:
     def finalize(
         self,
         permits: tuple[ReplayToolPermitView, ...],
-    ) -> list[TargetExecutionProxyBinding] | None:
+    ) -> list[TargetExecutionTransportBinding] | None:
         if not self.required:
             if self._challenges or self._proofs:
                 raise ControlPlaneProtocolError(
@@ -408,18 +409,26 @@ class _ReplayAIChatProbeTool(AIChatProbeTool):
         *,
         network_log_trusted: bool,
     ) -> None:
-        super().validate_trusted_execution(
-            request,
-            result,
-            worker_result,
-            network_log_trusted=network_log_trusted,
-        )
         if self._target_proofs is None or not self._target_proofs.required:
+            super().validate_trusted_execution(
+                request,
+                result,
+                worker_result,
+                network_log_trusted=network_log_trusted,
+            )
             return
+        typed_result = self._validated_trusted_output(request, result, worker_result)
+        if not verify_ai_chat_proxy_receipts(
+            request,
+            worker_result,
+            typed_result,
+            network_log_trusted=network_log_trusted,
+            allow_target_attested_https=(urlsplit(request.target).scheme == "https"),
+        ):
+            raise ValueError("target-attested AI probe requires complete transport receipts")
         challenge = self._target_proofs.challenge(request.request_id)
         if challenge is None:
             raise ValueError("target-attested Replay Tool has no issued challenge")
-        typed_result = AIChatProbeOutput.model_validate(result.data)
         proofs = target_execution_proxy_bindings(
             request,
             worker_result,

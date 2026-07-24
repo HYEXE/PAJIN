@@ -1,5 +1,22 @@
 # PAJIN 제품 기획서
 
+## 2026-07-24 B2.8c 구현 상태
+
+[`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.md)에 따라
+Target-attested Replay를 HTTPS-aware transport와 versioned multi-Target trust registry로
+확장했다. HTTPS proxy receipt는 application bytes를 관찰했다고 주장하지 않고 canonical
+CONNECT authority, 선택된 IP, 연속 sequence와 `applicationVisibility=opaque`만 기록한다.
+Executor는 이 route를 Target 서명 exact application exchange와 결합하고, Control Plane은
+permit-derived target digest와 transcript, Target key lifecycle을 함께 재검증한다.
+
+`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY`는 최대 128개의 canonical exact URL을 독립
+anchor에 연결하며 wildcard·fallback을 금지한다. 기존 단일 anchor 설정과는 상호 배타적이고,
+finalization에는 registry ID/digest와 선택된 anchor digest가 보존된다. 개발 Target은 인증서와
+private key가 함께 주어질 때 TLS 1.2 이상으로 기동한다.
+
+남은 한계는 certificate/exporter pinning, mTLS/HSM/KMS, registry 배포·회전 자동화,
+transparency/federation과 object-store/multipart Artifact 전송이다.
+
 > 자율형 멀티 에이전트 AI 레드팀·보안 검증 오케스트레이션 플랫폼
 
 | 항목 | 내용 |

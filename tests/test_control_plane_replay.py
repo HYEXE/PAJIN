@@ -162,6 +162,8 @@ from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult
 from pajin.target_attestation import (
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
+    TargetAttestationTrustRegistry,
+    TargetAttestationTrustRegistryEntry,
     TargetAttestationVerificationKey,
     TargetExecutionAttestor,
     target_public_key_base64url,
@@ -420,6 +422,7 @@ def _service(
     replay_attestor: ReplayAttestor | None = None,
     executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
     target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None,
+    target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None,
 ) -> tuple[ControlPlaneRepository, ControlPlaneService]:
     repository = ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
     repository.initialize()
@@ -442,6 +445,7 @@ def _service(
         replay_attestor=replay_attestor,
         executor_attestation_trust_anchor=executor_attestation_trust_anchor,
         target_attestation_trust_anchor=target_attestation_trust_anchor,
+        target_attestation_trust_registry=target_attestation_trust_registry,
     )
 
 
@@ -4922,11 +4926,20 @@ def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_stat
     database_path = tmp_path / "target-attested-claim-replay.db"
     executor_anchor, execution_attestor = _executor_attestation_authority()
     target_anchor, target_attestor = _target_attestation_authority()
+    target_registry = TargetAttestationTrustRegistry(
+        registry_id="test-targets-2026-07",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="https://host.docker.internal:8765/v1/chat",
+                trust_anchor=target_anchor,
+            )
+        ],
+    )
     repository, service = _service(
         database_path,
         replay_attestor=_portable_replay_attestor(),
         executor_attestation_trust_anchor=executor_anchor,
-        target_attestation_trust_anchor=target_anchor,
+        target_attestation_trust_registry=target_registry,
     )
     actor = "replay-worker-a"
     worker_staging_root = tmp_path / "target-attested-worker-staging"
@@ -4935,6 +4948,7 @@ def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_stat
         source = build_kisa_control_plane_source(
             tmp_path / "target-attested-source",
             scenario_count=1,
+            target_endpoint="https://host.docker.internal:8765/v1/chat",
         )
         admitted = _admit_built_source(
             repository,
@@ -4992,6 +5006,12 @@ def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_stat
         )
         assert all(
             finalization.target_execution_verification is not None for finalization in finalizations
+        )
+        assert all(
+            finalization.target_execution_verification is not None
+            and finalization.target_execution_verification.trust_registry_digest
+            == target_registry.digest
+            for finalization in finalizations
         )
         assert validity.gate_decision.disposition is FindingDisposition.CONFIRMED
         assert (

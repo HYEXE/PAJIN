@@ -123,6 +123,54 @@ class TargetAttestationTrustAnchor(StrictModel):
         return canonical_target_json_sha256(self.model_dump(mode="json"))
 
 
+class TargetAttestationTrustRegistryEntry(StrictModel):
+    """One exact Target URL route to one independently versioned trust anchor."""
+
+    target: str = Field(min_length=1, max_length=2_000)
+    trust_anchor: TargetAttestationTrustAnchor
+
+    @field_validator("target")
+    @classmethod
+    def require_canonical_exact_target(cls, value: str) -> str:
+        # Local import avoids the policy package's ToolSpec import cycle.
+        from pajin.policy.scope import normalize_target_url
+
+        if normalize_target_url(value) != value:
+            raise ValueError("target trust registry route must use a canonical exact URL")
+        return value
+
+    @property
+    def target_sha256(self) -> str:
+        return sha256(self.target.encode("utf-8")).hexdigest()
+
+
+class TargetAttestationTrustRegistry(StrictModel):
+    """Versioned, fail-closed mapping from exact Target URLs to public anchors."""
+
+    api_version: Literal["pajin.replay.target-attestation-trust-registry/v1"] = (
+        "pajin.replay.target-attestation-trust-registry/v1"
+    )
+    registry_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    entries: list[TargetAttestationTrustRegistryEntry] = Field(min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def require_unique_sorted_routes(self) -> Self:
+        targets = [entry.target for entry in self.entries]
+        if targets != sorted(targets) or len(targets) != len(set(targets)):
+            raise ValueError("target trust registry routes must be uniquely sorted")
+        return self
+
+    def resolve(self, target: str) -> TargetAttestationTrustAnchor:
+        for entry in self.entries:
+            if entry.target == target:
+                return entry.trust_anchor
+        raise ValueError("target is absent from the exact trust registry")
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
 class TargetExecutionChallenge(StrictModel):
     """Control Plane challenge derived from one durable Replay Tool permit."""
 
@@ -315,9 +363,46 @@ class TargetExecutionProxyBinding(StrictModel):
         return canonical_target_json_sha256(self.model_dump(mode="json"))
 
 
+class TargetExecutionTLSBinding(StrictModel):
+    """Executor-signed join of opaque TLS routing and Target-signed application data."""
+
+    api_version: Literal["pajin.replay.target-tls-binding/v1"] = (
+        "pajin.replay.target-tls-binding/v1"
+    )
+    replay_request_id: str = Field(pattern=r"^tool_replay_[0-9a-f]{32}$")
+    exchange_ordinal: int = Field(strict=True, ge=1, le=20)
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_receipt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    connect_sequence: int = Field(strict=True, ge=1, le=100)
+    connect_authority: str = Field(min_length=3, max_length=300)
+    connect_authority_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    connect_address: str = Field(min_length=1, max_length=100)
+    application_method: Literal["POST"]
+    transcript_request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    transcript_response_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+TargetExecutionTransportBinding = TargetExecutionProxyBinding | TargetExecutionTLSBinding
+
+
 class TargetExecutionVerificationSummary(StrictModel):
     valid: Literal[True] = True
     trust_anchor_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    trust_registry_id: str | None = Field(
+        default=None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$",
+        exclude_if=lambda value: value is None,
+    )
+    trust_registry_digest: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
     proof_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     receipt_count: int = Field(strict=True, ge=1, le=400)
     receipt_digests: list[str] = Field(min_length=1, max_length=400)
@@ -346,6 +431,8 @@ class TargetExecutionVerificationSummary(StrictModel):
     def require_exact_count(self) -> Self:
         if self.receipt_count != len(self.receipt_digests):
             raise ValueError("target receipt count differs from its digest set")
+        if (self.trust_registry_id is None) != (self.trust_registry_digest is None):
+            raise ValueError("target trust registry identity and digest must be present together")
         return self
 
     @property
@@ -463,6 +550,19 @@ def parse_target_attestation_trust_anchor(
         max_nodes=2_000,
     )
     return TargetAttestationTrustAnchor.model_validate(decoded)
+
+
+def parse_target_attestation_trust_registry(
+    content: bytes,
+) -> TargetAttestationTrustRegistry:
+    decoded = parse_strict_json_bytes(
+        content,
+        label="target attestation trust registry",
+        max_bytes=512 * 1024,
+        max_depth=16,
+        max_nodes=20_000,
+    )
+    return TargetAttestationTrustRegistry.model_validate(decoded)
 
 
 def verify_target_execution_receipt(

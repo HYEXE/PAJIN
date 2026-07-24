@@ -62,7 +62,9 @@ from pajin.control_plane.service import ControlPlaneService
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.target_attestation import (
     TargetAttestationTrustAnchor,
+    TargetAttestationTrustRegistry,
     parse_target_attestation_trust_anchor,
+    parse_target_attestation_trust_registry,
 )
 
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
@@ -71,6 +73,7 @@ _REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
 _REPLAY_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR"
 _EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
 _TARGET_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR"
+_TARGET_ATTESTATION_TRUST_REGISTRY_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY"
 _REPLAY_EXECUTOR_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_BYTES = 64 * 1024
@@ -431,6 +434,17 @@ def _parse_target_attestation_anchor(
         raise RuntimeError("target attestation trust anchor is invalid") from exc
 
 
+def _parse_target_attestation_registry(
+    raw: str | None,
+) -> TargetAttestationTrustRegistry | None:
+    if raw is None:
+        return None
+    try:
+        return parse_target_attestation_trust_registry(raw.encode("utf-8"))
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError("target attestation trust registry is invalid") from exc
+
+
 @dataclass(frozen=True)
 class ControlPlaneSettings:
     database_url: str
@@ -447,6 +461,7 @@ class ControlPlaneSettings:
     replay_attestation_trust_anchor: ReplayAttestationTrustAnchor | None = None
     executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None
     target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None
+    target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -463,6 +478,11 @@ class ControlPlaneSettings:
                 "Control Plane request body timeout must be a finite value "
                 "between 0.1 and 300 seconds"
             )
+        if (
+            self.target_attestation_trust_anchor is not None
+            and self.target_attestation_trust_registry is not None
+        ):
+            raise ValueError("configure either one target trust anchor or the exact registry")
         credentials = dict(self.credentials)
         for token in credentials:
             validate_bearer_token(
@@ -509,6 +529,7 @@ class ControlPlaneSettings:
         replay_attestation_trust_anchor = os.environ.get(_REPLAY_ATTESTATION_TRUST_ANCHOR_ENV)
         executor_attestation_trust_anchor = os.environ.get(_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV)
         target_attestation_trust_anchor = os.environ.get(_TARGET_ATTESTATION_TRUST_ANCHOR_ENV)
+        target_attestation_trust_registry = os.environ.get(_TARGET_ATTESTATION_TRUST_REGISTRY_ENV)
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
@@ -573,6 +594,17 @@ class ControlPlaneSettings:
         parsed_target_attestation_trust_anchor = _parse_target_attestation_anchor(
             target_attestation_trust_anchor
         )
+        parsed_target_attestation_trust_registry = _parse_target_attestation_registry(
+            target_attestation_trust_registry
+        )
+        if (
+            parsed_target_attestation_trust_anchor is not None
+            and parsed_target_attestation_trust_registry is not None
+        ):
+            raise RuntimeError(
+                "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR and "
+                "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY are mutually exclusive"
+            )
         if replay_worker_token is not None and replay_worker_token in {
             operator_token,
             approver_token,
@@ -656,6 +688,7 @@ class ControlPlaneSettings:
             replay_attestation_trust_anchor=parsed_attestation_trust_anchor,
             executor_attestation_trust_anchor=(parsed_executor_attestation_trust_anchor),
             target_attestation_trust_anchor=parsed_target_attestation_trust_anchor,
+            target_attestation_trust_registry=parsed_target_attestation_trust_registry,
             request_body_timeout_seconds=float(
                 os.environ.get(
                     "PAJIN_CP_REQUEST_BODY_TIMEOUT_SECONDS",
@@ -720,6 +753,7 @@ def _build_application_context(
         replay_attestor=replay_attestor,
         executor_attestation_trust_anchor=(settings.executor_attestation_trust_anchor),
         target_attestation_trust_anchor=settings.target_attestation_trust_anchor,
+        target_attestation_trust_registry=settings.target_attestation_trust_registry,
     )
     return _ControlPlaneApplicationContext(
         settings=settings,

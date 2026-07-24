@@ -350,3 +350,56 @@ def test_ai_target_does_not_reflect_request_lines_into_logs(
     handler.log_message('%s "GET /?token=pajin-secret HTTP/1.1"', "127.0.0.1")
 
     assert capsys.readouterr().out == ""
+
+
+def test_ai_target_requires_complete_optional_tls_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _load_target()
+
+    class FakeServer:
+        socket = object()
+
+    monkeypatch.setattr(target, "ThreadingHTTPServer", lambda *_args: FakeServer())
+    monkeypatch.setenv("PAJIN_TARGET_TLS_CERTIFICATE", "/run/secrets/target.crt")
+
+    with pytest.raises(RuntimeError, match="must be configured together"):
+        target.main()
+
+
+def test_ai_target_wraps_listener_when_tls_is_configured(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = _load_target()
+    events: list[object] = []
+
+    class FakeServer:
+        socket = object()
+
+        def serve_forever(self) -> None:
+            events.append("served")
+
+    class FakeTLSContext:
+        minimum_version: object = None
+
+        def load_cert_chain(self, certificate: str, private_key: str) -> None:
+            events.append((certificate, private_key))
+
+        def wrap_socket(self, listener: object, *, server_side: bool) -> object:
+            events.append((listener, server_side, self.minimum_version))
+            return "tls-listener"
+
+    server = FakeServer()
+    monkeypatch.setattr(target, "ThreadingHTTPServer", lambda *_args: server)
+    monkeypatch.setattr(target.ssl, "SSLContext", lambda _protocol: FakeTLSContext())
+    monkeypatch.setenv("PAJIN_TARGET_TLS_CERTIFICATE", "/run/secrets/target.crt")
+    monkeypatch.setenv("PAJIN_TARGET_TLS_PRIVATE_KEY", "/run/secrets/target.key")
+
+    target.main()
+
+    ready = json.loads(capsys.readouterr().out)
+    assert ready["transport"] == "https"
+    assert server.socket == "tls-listener"
+    assert events[0] == ("/run/secrets/target.crt", "/run/secrets/target.key")
+    assert events[-1] == "served"

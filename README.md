@@ -948,6 +948,8 @@ $env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
 $env:PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR='<one-line-executor-trust-anchor-json>'
 # Optional B2.8b target execution proof; the Control Plane receives public trust only:
 $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR='<one-line-target-trust-anchor-json>'
+# B2.8c alternative for multiple exact Target URLs; mutually exclusive with the anchor above:
+$env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY='<one-line-versioned-target-registry-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -971,6 +973,11 @@ confirmation ceiling. B2.8b additionally configures the Target process with
 `PAJIN_TARGET_ATTESTATION_TRUST_DOMAIN`, `PAJIN_TARGET_ATTESTATION_ISSUER`, and
 `PAJIN_TARGET_ATTESTATION_PROFILE`. Keep that private key out of the Control Plane. The Control
 Plane receives only the matching anchor above and validates its key lifecycle.
+For multiple Targets, configure the versioned registry instead of the single anchor. Routes are
+canonical exact URLs with no wildcard or fallback. HTTPS target-attested Replay joins an opaque,
+host-observed CONNECT authority/IP receipt to the Target-signed application exchange; it does not
+claim that the proxy observed TLS plaintext or the server certificate. The development Target can
+optionally enable TLS with `PAJIN_TARGET_TLS_CERTIFICATE` and `PAJIN_TARGET_TLS_PRIVATE_KEY`.
 
 An Operator credential can use the public Replay admission surface:
 
@@ -989,9 +996,11 @@ An Operator credential can use the public Replay admission surface:
   Ed25519 bundle over the complete Claim receipt authority. It fails closed unless all three
   attestation settings are present and mutually consistent.
   Adding `target_attestation: true` requires both Claim projection and portable attestation, selects
-  `pajin.kisa-target-attestation:v4`, and requires separately configured executor and Target trust
-  anchors. The Target receipt, host proxy observation, and executor proof must bind the exact
-  permit-derived challenge before validity can reach `VERIFIED_INDEPENDENT_REPLAY`.
+  `pajin.kisa-target-attestation:v4`, and requires a separately configured executor anchor plus
+  either the legacy Target anchor or the versioned exact-URL registry. The Target receipt, host
+  proxy observation, and executor proof must bind the exact permit-derived challenge before
+  validity can reach `VERIFIED_INDEPENDENT_REPLAY`. HTTPS uses an opaque CONNECT route receipt plus
+  the Target-signed application exchange.
 
 Operator, Approver, and Auditor credentials can read
 `GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,

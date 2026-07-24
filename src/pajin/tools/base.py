@@ -21,6 +21,7 @@ from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.worker import WorkerJob, WorkerResult
 
 EGRESS_HTTP_RECEIPT_VERSION = "pajin.dev/egress-http-json-receipt/v1"
+EGRESS_HTTPS_CONNECT_RECEIPT_VERSION = "pajin.dev/egress-https-connect-receipt/v1"
 MAX_TRUSTED_NETWORK_LOG_BYTES = 256_000
 _MAX_TOOL_JSON_DEPTH = 64
 _MAX_TOOL_JSON_NODES = 20_000
@@ -219,6 +220,51 @@ class HTTPJSONProxyReceipt(StrictModel):
         return self
 
 
+class HTTPSConnectProxyReceipt(StrictModel):
+    """Host-observed TLS tunnel route without claiming application plaintext visibility."""
+
+    model_config = ConfigDict(frozen=True)
+
+    event: Literal["allow"]
+    receipt_version: Literal["pajin.dev/egress-https-connect-receipt/v1"] = Field(
+        alias="receiptVersion"
+    )
+    sequence: int = Field(strict=True, ge=1, le=100)
+    method: Literal["CONNECT"]
+    authority: str = Field(min_length=3, max_length=300)
+    authority_sha256: str = Field(alias="authoritySha256", pattern=r"^[a-f0-9]{64}$")
+    address: str = Field(min_length=1, max_length=100)
+    application_visibility: Literal["opaque"] = Field(alias="applicationVisibility")
+    method_enforcement: Literal["trusted-worker-only"] = Field(alias="methodEnforcement")
+    path_enforcement: Literal["authority-only"] = Field(alias="pathEnforcement")
+
+    @model_validator(mode="after")
+    def validate_canonical_authority(self) -> HTTPSConnectProxyReceipt:
+        try:
+            parsed = urlsplit(f"//{self.authority}")
+            port = parsed.port
+        except ValueError as exc:
+            raise ValueError("HTTPS CONNECT receipt authority is invalid") from exc
+        if (
+            not parsed.hostname
+            or port is None
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.path
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError("HTTPS CONNECT receipt requires a bare host:port authority")
+        hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+        host = f"[{hostname}]" if ":" in hostname else hostname
+        canonical = f"{host}:{port}"
+        if self.authority != canonical:
+            raise ValueError("HTTPS CONNECT receipt authority is not canonical")
+        if self.authority_sha256 != sha256(canonical.encode("utf-8")).hexdigest():
+            raise ValueError("HTTPS CONNECT receipt authority digest is inconsistent")
+        return self
+
+
 def audit_http_target(target: str) -> str:
     """Return a URL suitable for logs without recording raw query values."""
 
@@ -235,6 +281,19 @@ def http_target_sha256(target: str) -> str:
     """Bind a receipt to the full URL while keeping query values out of logs."""
 
     return sha256(target.encode("utf-8")).hexdigest()
+
+
+def https_connect_authority(target: str) -> str:
+    """Return the canonical host:port authority used by an HTTPS CONNECT tunnel."""
+
+    from pajin.policy.scope import normalize_target_url
+
+    parsed = urlsplit(normalize_target_url(target))
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise ValueError("HTTPS CONNECT authority requires an HTTPS target")
+    hostname = parsed.hostname.encode("idna").decode("ascii").lower()
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    return f"{host}:{parsed.port or 443}"
 
 
 def decode_bounded_json_response(
@@ -299,7 +358,8 @@ def _strict_proxy_log_object(raw: str) -> dict[str, object]:
 
 @dataclass
 class _ProxyReceiptLogState:
-    receipts: list[HTTPJSONProxyReceipt] = field(default_factory=list)
+    http_receipts: list[HTTPJSONProxyReceipt] = field(default_factory=list)
+    https_connect_receipts: list[HTTPSConnectProxyReceipt] = field(default_factory=list)
     non_receipt_allows: int = 0
     ready_seen: bool = False
     exchange_seen: bool = False
@@ -318,7 +378,25 @@ def host_observed_http_receipts(
     if network_log is None:
         return None
     state = _parse_proxy_network_log(network_log)
-    return _validated_proxy_receipts(state)
+    _validate_proxy_receipt_log(state)
+    return state.http_receipts or None
+
+
+def host_observed_https_connect_receipts(
+    worker_result: WorkerResult,
+    *,
+    network_log_trusted: bool,
+) -> list[HTTPSConnectProxyReceipt] | None:
+    """Parse complete ordered HTTPS CONNECT routes from one host-trusted proxy log."""
+
+    if not network_log_trusted:
+        return None
+    network_log = _trusted_docker_network_log(worker_result)
+    if network_log is None:
+        return None
+    state = _parse_proxy_network_log(network_log)
+    _validate_proxy_receipt_log(state)
+    return state.https_connect_receipts or None
 
 
 def _trusted_docker_network_log(worker_result: WorkerResult) -> str | None:
@@ -371,24 +449,29 @@ def _consume_proxy_event(state: _ProxyReceiptLogState, event: dict[str, object])
         state.non_receipt_allows += 1
         return
     try:
-        state.receipts.append(HTTPJSONProxyReceipt.model_validate(event))
+        receipt_version = event["receiptVersion"]
+        if receipt_version == EGRESS_HTTP_RECEIPT_VERSION:
+            state.http_receipts.append(HTTPJSONProxyReceipt.model_validate(event))
+        elif receipt_version == EGRESS_HTTPS_CONNECT_RECEIPT_VERSION:
+            state.https_connect_receipts.append(HTTPSConnectProxyReceipt.model_validate(event))
+        else:
+            raise ValueError("unknown proxy receipt version")
     except ValueError as exc:
         raise ValueError("Docker egress proxy receipt is invalid") from exc
 
 
-def _validated_proxy_receipts(
-    state: _ProxyReceiptLogState,
-) -> list[HTTPJSONProxyReceipt] | None:
+def _validate_proxy_receipt_log(state: _ProxyReceiptLogState) -> None:
     if not state.ready_seen:
         raise ValueError("Docker egress proxy log is missing its initial ready event")
-    if not state.receipts:
-        return None
-    if state.non_receipt_allows:
+    if not state.http_receipts and not state.https_connect_receipts:
+        return
+    if state.non_receipt_allows or (state.http_receipts and state.https_connect_receipts):
         raise ValueError("Docker egress proxy log mixes observable and opaque exchanges")
-    sequences = [receipt.sequence for receipt in state.receipts]
+    sequences = [receipt.sequence for receipt in state.http_receipts] + [
+        receipt.sequence for receipt in state.https_connect_receipts
+    ]
     if len(sequences) != len(set(sequences)) or sequences != list(range(1, len(sequences) + 1)):
         raise ValueError("Docker egress proxy receipt sequence is duplicate or incomplete")
-    return state.receipts
 
 
 class ToolSpec(BaseModel):

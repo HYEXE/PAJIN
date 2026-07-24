@@ -2,6 +2,14 @@
 
 # KISA AI Security Red Teaming Guide Traceability
 
+> 2026-07-24 B2.8c: target-attested Replay now joins an HTTPS CONNECT authority/IP receipt to the
+> Target-signed application exchange and selects each Target anchor from a versioned exact-URL
+> trust registry. The registry ID/digest and selected anchor digest are preserved in finalization
+> and projection authority. This does not claim observation of TLS plaintext or a certificate
+> fingerprint. Certificate/exporter binding, automated registry rotation, and object-store
+> Artifact transport remain follow-up work. See
+> [`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.en.md).
+
 ## 1. Purpose and Baseline
 
 This document maps requirements from the KISA *AI Security Red Teaming Guide* (2026.07) to PAJIN

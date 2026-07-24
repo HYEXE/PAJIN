@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from enum import StrEnum
 from hashlib import sha256
+from urllib.parse import urlsplit
 
 from pydantic import Field, JsonValue, StrictBool, model_validator
 
@@ -14,11 +15,14 @@ from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
     TargetExecutionReceipt,
+    TargetExecutionTLSBinding,
+    TargetExecutionTransportBinding,
 )
 from pajin.tools.base import (
     EGRESS_HTTP_RECEIPT_VERSION,
     MAX_TRUSTED_NETWORK_LOG_BYTES,
     HTTPJSONProxyReceipt,
+    HTTPSConnectProxyReceipt,
     Tool,
     ToolSpec,
     audit_http_target,
@@ -26,7 +30,9 @@ from pajin.tools.base import (
     audit_safe_worker_failure,
     decode_strict_worker_json_object,
     host_observed_http_receipts,
+    host_observed_https_connect_receipts,
     http_target_sha256,
+    https_connect_authority,
 )
 
 AI_CHAT_PROXY_RECEIPT_VERSION = EGRESS_HTTP_RECEIPT_VERSION
@@ -347,6 +353,21 @@ class AIChatProbeTool(Tool):
         *,
         network_log_trusted: bool,
     ) -> None:
+        output = self._validated_trusted_output(request, result, worker_result)
+        if not verify_ai_chat_proxy_receipts(
+            request,
+            worker_result,
+            output,
+            network_log_trusted=network_log_trusted,
+        ):
+            raise ValueError("AI probe requires complete host-observed HTTP receipts")
+
+    def _validated_trusted_output(
+        self,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult,
+    ) -> AIChatProbeOutput:
         if worker_result.status is not WorkerStatus.SUCCEEDED:
             raise ValueError("successful AI probe requires a successful Worker execution")
         if worker_result.stdout_truncated or worker_result.stderr_truncated:
@@ -368,13 +389,7 @@ class AIChatProbeTool(Tool):
             raise ValueError("raw AI probe transcript is invalid") from exc
         if result.data != output.model_dump(mode="json", by_alias=True):
             raise ValueError("AI probe Tool result differs from raw Worker stdout")
-        if not verify_ai_chat_proxy_receipts(
-            request,
-            worker_result,
-            output,
-            network_log_trusted=network_log_trusted,
-        ):
-            raise ValueError("AI probe requires complete host-observed HTTP receipts")
+        return output
 
     def _validate_output_identity(
         self,
@@ -492,12 +507,49 @@ def _canonical_json_sha256(value: object) -> str:
     return sha256(canonical).hexdigest()
 
 
+def _host_observed_ai_transport_receipts(
+    request: ToolRequest,
+    worker_result: WorkerResult,
+    *,
+    network_log_trusted: bool,
+    allow_target_attested_https: bool,
+) -> list[HTTPJSONProxyReceipt | HTTPSConnectProxyReceipt] | None:
+    scheme = urlsplit(request.target).scheme
+    if scheme not in {"http", "https"}:
+        raise ValueError("AI transport receipts require an HTTP(S) target")
+    if scheme == "https" and allow_target_attested_https:
+        https_receipts = host_observed_https_connect_receipts(
+            worker_result,
+            network_log_trusted=network_log_trusted,
+        )
+        return None if https_receipts is None else list(https_receipts)
+    http_receipts = host_observed_http_receipts(
+        worker_result,
+        network_log_trusted=network_log_trusted,
+    )
+    return None if http_receipts is None else list(http_receipts)
+
+
+def _ai_probe_and_scenario(
+    request: ToolRequest,
+) -> tuple[AIChatProbeInput | AIChatRegressionInput, str]:
+    if request.tool_id == AIChatProbeTool.spec.tool_id:
+        probe = AIChatProbeInput.model_validate(request.arguments)
+        return probe, probe.scenario_id
+    if request.tool_id == AIChatRegressionTool.spec.tool_id:
+        return AIChatRegressionInput.model_validate(request.arguments), (
+            "retest.normal-chat-function"
+        )
+    raise ValueError("AI proxy receipts require a registered AI chat Tool")
+
+
 def verify_ai_chat_proxy_receipts(
     request: ToolRequest,
     worker_result: WorkerResult,
     output: AIChatProbeOutput,
     *,
     network_log_trusted: bool,
+    allow_target_attested_https: bool = False,
 ) -> bool:
     """Bind each typed transcript turn to host-observed proxy request/response bytes.
 
@@ -506,24 +558,19 @@ def verify_ai_chat_proxy_receipts(
     or contradictory trusted logs are integrity errors and fail closed.
     """
 
-    receipts = host_observed_http_receipts(
+    scheme = urlsplit(request.target).scheme
+    receipts = _host_observed_ai_transport_receipts(
+        request,
         worker_result,
         network_log_trusted=network_log_trusted,
+        allow_target_attested_https=allow_target_attested_https,
     )
     if receipts is None:
         return False
     if len(receipts) != len(output.turns):
         raise ValueError("Docker egress proxy receipts do not cover every transcript turn")
 
-    probe: AIChatProbeInput | AIChatRegressionInput
-    if request.tool_id == AIChatProbeTool.spec.tool_id:
-        probe = AIChatProbeInput.model_validate(request.arguments)
-        scenario_id = probe.scenario_id
-    elif request.tool_id == AIChatRegressionTool.spec.tool_id:
-        probe = AIChatRegressionInput.model_validate(request.arguments)
-        scenario_id = "retest.normal-chat-function"
-    else:
-        raise ValueError("AI proxy receipts require a registered AI chat Tool")
+    probe, scenario_id = _ai_probe_and_scenario(request)
     if len(probe.turns) != len(output.turns):
         raise ValueError("AI proxy receipt count differs from the sealed probe")
 
@@ -540,6 +587,7 @@ def verify_ai_chat_proxy_receipts(
 
     expected_target = audit_http_target(request.target)
     expected_target_digest = http_target_sha256(request.target)
+    expected_authority = https_connect_authority(request.target) if scheme == "https" else None
     for index, (receipt, turn, raw_turn) in enumerate(
         zip(receipts, probe.turns, raw_turns, strict=True)
     ):
@@ -573,16 +621,24 @@ def verify_ai_chat_proxy_receipts(
             or metadata.turn != index
         ):
             raise ValueError("raw Worker transcript request differs from the sealed probe")
-        if (
-            receipt.method != request.method
-            or receipt.method != "POST"
-            or receipt.target != expected_target
-            or receipt.target_sha256 != expected_target_digest
-            or not 200 <= receipt.status < 300
-            or receipt.request_json_sha256 != _canonical_json_sha256(receipt_request)
-            or receipt.response_json_sha256 != _canonical_json_sha256(raw_turn["response"])
+        if isinstance(receipt, HTTPJSONProxyReceipt):
+            if (
+                receipt.method != request.method
+                or receipt.method != "POST"
+                or receipt.target != expected_target
+                or receipt.target_sha256 != expected_target_digest
+                or not 200 <= receipt.status < 300
+                or receipt.request_json_sha256 != _canonical_json_sha256(receipt_request)
+                or receipt.response_json_sha256 != _canonical_json_sha256(raw_turn["response"])
+            ):
+                raise ValueError("AI transcript differs from its host-observed proxy receipt")
+        elif (
+            expected_authority is None
+            or receipt.sequence != index + 1
+            or receipt.authority != expected_authority
+            or receipt.authority_sha256 != sha256(expected_authority.encode("utf-8")).hexdigest()
         ):
-            raise ValueError("AI transcript differs from its host-observed proxy receipt")
+            raise ValueError("AI transcript differs from its host-observed HTTPS CONNECT route")
     return True
 
 
@@ -593,12 +649,14 @@ def target_execution_proxy_bindings(
     *,
     expected_challenge: TargetExecutionChallenge,
     network_log_trusted: bool,
-) -> list[TargetExecutionProxyBinding]:
-    """Bind Target-issued receipts to the exact host-observed HTTP exchanges."""
+) -> list[TargetExecutionTransportBinding]:
+    """Bind Target receipts to plaintext exchanges or opaque HTTPS tunnel routes."""
 
-    receipts = host_observed_http_receipts(
+    receipts = _host_observed_ai_transport_receipts(
+        request,
         worker_result,
         network_log_trusted=network_log_trusted,
+        allow_target_attested_https=True,
     )
     if receipts is None or len(receipts) != len(output.turns):
         raise ValueError("target execution receipts require complete proxy coverage")
@@ -620,8 +678,8 @@ def target_execution_proxy_bindings(
     if not isinstance(raw_turns, list) or len(raw_turns) != len(output.turns):
         raise ValueError("target-attested transcript turn count is inconsistent")
 
-    bindings: list[TargetExecutionProxyBinding] = []
-    for index, (proxy_receipt, typed_turn, raw_turn) in enumerate(
+    bindings: list[TargetExecutionTransportBinding] = []
+    for index, (transport_receipt, typed_turn, raw_turn) in enumerate(
         zip(receipts, output.turns, raw_turns, strict=True),
         start=1,
     ):
@@ -666,33 +724,64 @@ def target_execution_proxy_bindings(
             or statement.method != expected_challenge.method
             or statement.request_json_sha256 != request_digest
             or statement.response_payload_sha256 != response_payload_digest
-            or statement.status != proxy_receipt.status
             or not expected_challenge.issued_at
             <= statement.issued_at
             < expected_challenge.expires_at
-            or proxy_receipt.request_json_sha256 != request_digest
-            or proxy_receipt.response_json_sha256 != full_response_digest
         ):
             raise ValueError(
                 "target receipt differs from its challenge, transcript, or proxy receipt"
             )
-        bindings.append(
-            TargetExecutionProxyBinding(
-                replay_request_id=request.request_id,
-                exchange_ordinal=index,
-                challenge_sha256=expected_challenge.digest,
-                target_receipt_sha256=target_receipt.digest,
-                proxy_sequence=proxy_receipt.sequence,
-                proxy_method="POST",
-                proxy_target=proxy_receipt.target,
-                proxy_target_sha256=proxy_receipt.target_sha256,
-                proxy_address=proxy_receipt.address,
-                proxy_status=proxy_receipt.status,
-                proxy_request_json_sha256=request_digest,
-                proxy_response_body_sha256=proxy_receipt.response_body_sha256,
-                proxy_response_json_sha256=full_response_digest,
+        if isinstance(transport_receipt, HTTPJSONProxyReceipt):
+            if (
+                statement.status != transport_receipt.status
+                or transport_receipt.request_json_sha256 != request_digest
+                or transport_receipt.response_json_sha256 != full_response_digest
+            ):
+                raise ValueError(
+                    "target receipt differs from its challenge, transcript, or proxy receipt"
+                )
+            bindings.append(
+                TargetExecutionProxyBinding(
+                    replay_request_id=request.request_id,
+                    exchange_ordinal=index,
+                    challenge_sha256=expected_challenge.digest,
+                    target_receipt_sha256=target_receipt.digest,
+                    proxy_sequence=transport_receipt.sequence,
+                    proxy_method="POST",
+                    proxy_target=transport_receipt.target,
+                    proxy_target_sha256=transport_receipt.target_sha256,
+                    proxy_address=transport_receipt.address,
+                    proxy_status=transport_receipt.status,
+                    proxy_request_json_sha256=request_digest,
+                    proxy_response_body_sha256=transport_receipt.response_body_sha256,
+                    proxy_response_json_sha256=full_response_digest,
+                )
             )
-        )
+        else:
+            expected_authority = https_connect_authority(request.target)
+            if (
+                transport_receipt.sequence != index
+                or transport_receipt.authority != expected_authority
+                or transport_receipt.authority_sha256
+                != sha256(expected_authority.encode("utf-8")).hexdigest()
+            ):
+                raise ValueError("HTTPS Target receipt differs from its observed CONNECT route")
+            bindings.append(
+                TargetExecutionTLSBinding(
+                    replay_request_id=request.request_id,
+                    exchange_ordinal=index,
+                    challenge_sha256=expected_challenge.digest,
+                    target_receipt_sha256=target_receipt.digest,
+                    target_sha256=expected_challenge.target_sha256,
+                    connect_sequence=transport_receipt.sequence,
+                    connect_authority=transport_receipt.authority,
+                    connect_authority_sha256=transport_receipt.authority_sha256,
+                    connect_address=transport_receipt.address,
+                    application_method="POST",
+                    transcript_request_json_sha256=request_digest,
+                    transcript_response_json_sha256=full_response_digest,
+                )
+            )
     return bindings
 
 

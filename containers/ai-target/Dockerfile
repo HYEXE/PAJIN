@@ -23,5 +23,5 @@ RUN chmod 0555 /app/target.py \
 USER 65532:65532
 EXPOSE 8080
 HEALTHCHECK --interval=5s --timeout=2s --start-period=2s --retries=5 \
-  CMD ["python", "-c", "import os,sys,urllib.request; p=os.environ.get('PAJIN_LAB_PROFILE','vulnerable'); c=os.environ.get('PAJIN_PROVIDER_CREDENTIAL','pajin-local-credential-v1'); sys.exit(1) if p not in {'vulnerable','hardened'} or not c or c != c.strip() else None; urllib.request.urlopen('http://127.0.0.1:8080/health',timeout=1).close()"]
+  CMD ["python", "-c", "import os,socket,sys; p=os.environ.get('PAJIN_LAB_PROFILE','vulnerable'); c=os.environ.get('PAJIN_PROVIDER_CREDENTIAL','pajin-local-credential-v1'); sys.exit(1) if p not in {'vulnerable','hardened'} or not c or c != c.strip() else None; socket.create_connection(('127.0.0.1',8080),1).close()"]
 ENTRYPOINT ["python", "/app/target.py"]

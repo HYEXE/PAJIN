@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import threading
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
@@ -758,7 +759,18 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
-    print(json.dumps({"event": "ready", "port": 8080}), flush=True)
+    certificate = os.environ.get("PAJIN_TARGET_TLS_CERTIFICATE")
+    private_key = os.environ.get("PAJIN_TARGET_TLS_PRIVATE_KEY")
+    if (certificate is None) != (private_key is None):
+        raise RuntimeError("Target TLS certificate and private key must be configured together")
+    transport = "http"
+    if certificate is not None and private_key is not None:
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.minimum_version = ssl.TLSVersion.TLSv1_2
+        context.load_cert_chain(certificate, private_key)
+        server.socket = context.wrap_socket(server.socket, server_side=True)
+        transport = "https"
+    print(json.dumps({"event": "ready", "port": 8080, "transport": transport}), flush=True)
     server.serve_forever()
 
 

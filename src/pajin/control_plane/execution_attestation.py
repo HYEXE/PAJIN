@@ -22,7 +22,7 @@ from pydantic import Field, field_validator, model_validator
 
 from pajin.domain.models import StrictModel
 from pajin.runtime.safe_files import parse_strict_json_bytes
-from pajin.target_attestation import TargetExecutionProxyBinding
+from pajin.target_attestation import TargetExecutionTransportBinding
 
 _SIGNATURE_DOMAIN = b"pajin.replay.executor-execution-attestation/v1\0"
 
@@ -141,7 +141,7 @@ class ExecutorExecutionStatement(StrictModel):
     execution_context_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     permit_digests: list[str] = Field(min_length=1, max_length=20)
     replay_request_ids: list[str] = Field(min_length=1, max_length=20)
-    target_execution_proofs: list[TargetExecutionProxyBinding] | None = Field(
+    target_execution_proofs: list[TargetExecutionTransportBinding] | None = Field(
         default=None,
         min_length=1,
         max_length=400,

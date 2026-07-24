@@ -31,6 +31,7 @@ UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
 UPSTREAM_IO_TIMEOUT_SECONDS = 30.0
 CONNECT_TUNNEL_TIMEOUT_SECONDS = 60.0
 RECEIPT_VERSION = "pajin.dev/egress-http-json-receipt/v1"
+HTTPS_CONNECT_RECEIPT_VERSION = "pajin.dev/egress-https-connect-receipt/v1"
 VALID_PERCENT_ESCAPE = compile_pattern(r"%[0-9A-Fa-f]{2}")
 INVALID_PERCENT_ESCAPE = compile_pattern(r"%(?![0-9A-Fa-f]{2})")
 HTTP_TOKEN = compile_pattern(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
@@ -645,6 +646,12 @@ async def handle_connect(
         log_event("deny", method="CONNECT", authority=authority)
         return
     address, port = await resolve_target(host, port)
+    normalized_target = parse_url(target_url)
+    normalized_hostname = normalized_target.hostname or ""
+    normalized_host = (
+        f"[{normalized_hostname}]" if ":" in normalized_hostname else normalized_hostname
+    )
+    connect_authority = f"{normalized_host}:{normalized_target.port or 443}"
     upstream_reader, upstream_writer = await asyncio.wait_for(
         asyncio.open_connection(address, port),
         timeout=exchange_timeout(UPSTREAM_CONNECT_TIMEOUT_SECONDS),
@@ -654,11 +661,13 @@ async def handle_connect(
         await drain_client(writer)
         log_event(
             "allow",
+            receiptVersion=HTTPS_CONNECT_RECEIPT_VERSION,
             sequence=sequence,
             method="CONNECT",
-            authority=authority,
+            authority=connect_authority,
+            authoritySha256=sha256(connect_authority.encode("utf-8")).hexdigest(),
             address=address,
-            receiptEligible=False,
+            applicationVisibility="opaque",
             methodEnforcement="trusted-worker-only",
             pathEnforcement="authority-only",
         )

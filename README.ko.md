@@ -2,6 +2,19 @@
 
 # PAJIN
 
+## B2.8c HTTPS Target 증명
+
+Target-attested Replay는 기존 단일
+`PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR` 대신
+`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY`를 사용할 수 있습니다. 두 설정은 상호
+배타적이며 registry route는 wildcard나 fallback이 없는 canonical exact URL입니다. HTTPS에서는
+host proxy가 관찰한 opaque CONNECT authority/IP receipt와 Target 서명 application exchange를
+결합합니다. proxy가 TLS plaintext나 server certificate를 관찰했다고 주장하지 않습니다.
+개발 Target은 `PAJIN_TARGET_TLS_CERTIFICATE`와 `PAJIN_TARGET_TLS_PRIVATE_KEY`를 함께
+설정해 TLS 1.2 이상 listener를 켤 수 있습니다. 자세한 경계는
+[ADR-0041](docs/adr/0041-https-attested-transport-and-target-trust-registry.ko.md)을
+참조하십시오.
+
 PAJIN은 정책 통제를 받는 멀티 에이전트 AI 레드팀 및 보안 검증 플랫폼입니다.
 
 현재 구현은 MVP에 가까워진 CLI 우선 백엔드입니다. 타입이 지정된 Campaign 및 Mode Pack

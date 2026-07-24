@@ -802,7 +802,10 @@ def test_connect_receipt_states_authority_only_enforcement(
     event = json.loads(capsys.readouterr().err)
 
     assert bytes(writer.data).startswith(b"HTTP/1.1 200 Connection Established")
-    assert event["receiptEligible"] is False
+    assert event["receiptVersion"] == proxy_module.HTTPS_CONNECT_RECEIPT_VERSION
+    assert event["authority"] == "example.com:443"
+    assert event["authoritySha256"] == sha256(b"example.com:443").hexdigest()
+    assert event["applicationVisibility"] == "opaque"
     assert event["methodEnforcement"] == "trusted-worker-only"
     assert event["pathEnforcement"] == "authority-only"
 
