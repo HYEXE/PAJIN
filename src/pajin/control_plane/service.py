@@ -177,15 +177,15 @@ from pajin.domain.validation import AtomicClaimType, ReplayConfirmationLineage, 
 from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome
 from pajin.modes.ai_redteam.retest import KISARetestService
 from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_result
-from pajin.replay.target_attestation import (
+from pajin.replay.tickets import replay_context_digest
+from pajin.runtime.store import RunStore, VerifiedRunSnapshot, load_verified_run_artifacts
+from pajin.target_attestation import (
     TargetAttestationTrustAnchor,
     TargetExecutionVerificationSummary,
     canonical_target_json_sha256,
     derive_target_execution_challenge,
     verify_target_execution_receipt,
 )
-from pajin.replay.tickets import replay_context_digest
-from pajin.runtime.store import RunStore, VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.tools.ai import AIChatProbeOutput, AIChatProbeTool
 from pajin.tools.base import audit_http_target, http_target_sha256
 from pajin.workflow.confirmation import apply_confirmed_gate, decide_replay_confirmation
@@ -289,6 +289,7 @@ class _ReplayProjectionSnapshot:
     executor_attestations: Mapping[str, ExecutorExecutionAttestation]
     decided_at: datetime
     portable_attestation: bool
+    target_attestation: bool
 
 
 class _ReplayProjectionTicketVerifier:
@@ -2070,6 +2071,7 @@ class ControlPlaneService:
                     tickets=tickets,
                     decided_at=snapshot.decided_at,
                     additional_artifacts=additional_artifacts,
+                    independent_execution_attested=snapshot.target_attestation,
                 )
             projection_snapshot = artifact_repository.import_run(
                 staging_id=projection_staging_id,
@@ -2530,6 +2532,7 @@ class ControlPlaneService:
                     KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
                 }
             ),
+            target_attestation=(batch.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION),
         )
 
     @staticmethod

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 
@@ -31,6 +32,7 @@ from pajin.domain.validation import (
     ValidationMethod,
     ValidationReasonCode,
 )
+from pajin.workflow import confirmation
 from pajin.workflow.confirmation import decide_replay_confirmation
 from pajin.workflow.confirmation_policy import (
     _build_claim_replay_projection,
@@ -360,6 +362,31 @@ def test_independently_attested_supporting_replay_is_confirmed() -> None:
     assert decision.disposition is FindingDisposition.CONFIRMED
     assert decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
     assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
+
+
+def test_confirmed_gate_selects_independently_attested_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    selected_projection: list[object] = []
+    expected = object()
+
+    def _capture_projection(**kwargs: object) -> object:
+        selected_projection.append(kwargs["build_projection"])
+        return expected
+
+    monkeypatch.setattr(confirmation, "_apply_confirmed_gate", _capture_projection)
+
+    result = confirmation.apply_confirmed_gate(
+        source_run_path=Path("source"),
+        replay_run_paths=[Path("replay")],
+        tickets=object(),  # type: ignore[arg-type]
+        independent_execution_attested=True,
+    )
+
+    assert result is expected
+    assert selected_projection == [
+        confirmation._build_independently_attested_confirmation_projection
+    ]
 
 
 def test_independent_attestation_cannot_override_oracle_contradiction() -> None:

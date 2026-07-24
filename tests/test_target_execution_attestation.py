@@ -7,7 +7,7 @@ from hashlib import sha256
 import pytest
 
 from pajin.control_plane.api import ControlPlaneSettings
-from pajin.replay.target_attestation import (
+from pajin.target_attestation import (
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
     TargetAttestationVerificationKey,

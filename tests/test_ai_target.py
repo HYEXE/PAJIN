@@ -7,7 +7,7 @@ from types import ModuleType
 
 import pytest
 
-from pajin.replay.target_attestation import (
+from pajin.target_attestation import (
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
     TargetAttestationVerificationKey,

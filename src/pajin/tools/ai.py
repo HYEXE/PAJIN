@@ -9,12 +9,12 @@ from hashlib import sha256
 from pydantic import Field, JsonValue, StrictBool, model_validator
 
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
-from pajin.replay.target_attestation import (
+from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
+from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
     TargetExecutionReceipt,
 )
-from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
 from pajin.tools.base import (
     EGRESS_HTTP_RECEIPT_VERSION,
     MAX_TRUSTED_NETWORK_LOG_BYTES,

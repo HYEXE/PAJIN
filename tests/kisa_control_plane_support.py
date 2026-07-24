@@ -34,15 +34,15 @@ from pajin.modes.ai_redteam.runtime import (
 )
 from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.policy.engine import PolicyEngine
-from pajin.replay.target_attestation import (
-    TargetExecutionAttestor,
-    TargetExecutionChallenge,
-    canonical_target_json_sha256,
-)
 from pajin.runtime.control import BudgetController
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import verify_run_integrity
 from pajin.runtime.worker import DockerWorkerBackend, WorkerJob, WorkerResult, WorkerStatus
+from pajin.target_attestation import (
+    TargetExecutionAttestor,
+    TargetExecutionChallenge,
+    canonical_target_json_sha256,
+)
 from pajin.tools.ai import (
     AI_CHAT_PROXY_RECEIPT_VERSION,
     AIChatProbeTool,

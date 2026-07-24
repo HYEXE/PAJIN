@@ -45,10 +45,6 @@ from pajin.replay.runtime import (
     ReplayDispatchAuthority,
     VerifiedReplayResult,
 )
-from pajin.replay.target_attestation import (
-    TargetExecutionChallenge,
-    TargetExecutionProxyBinding,
-)
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
     ReplayExecutionTicket,
@@ -62,6 +58,10 @@ from pajin.runtime.control import (
 )
 from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend, WorkerJob, WorkerResult
+from pajin.target_attestation import (
+    TargetExecutionChallenge,
+    TargetExecutionProxyBinding,
+)
 from pajin.tools.ai import (
     AIChatProbeOutput,
     AIChatProbeTool,

@@ -59,11 +59,11 @@ from pajin.control_plane.security import (
     validate_bearer_token,
 )
 from pajin.control_plane.service import ControlPlaneService
-from pajin.replay.target_attestation import (
+from pajin.runtime.safe_files import parse_strict_json_bytes
+from pajin.target_attestation import (
     TargetAttestationTrustAnchor,
     parse_target_attestation_trust_anchor,
 )
-from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
 _REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"

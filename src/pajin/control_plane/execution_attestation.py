@@ -21,8 +21,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from pydantic import Field, field_validator, model_validator
 
 from pajin.domain.models import StrictModel
-from pajin.replay.target_attestation import TargetExecutionProxyBinding
 from pajin.runtime.safe_files import parse_strict_json_bytes
+from pajin.target_attestation import TargetExecutionProxyBinding
 
 _SIGNATURE_DOMAIN = b"pajin.replay.executor-execution-attestation/v1\0"
 

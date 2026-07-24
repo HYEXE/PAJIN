@@ -22,12 +22,12 @@ from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, Too
 from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import AtomicClaimType, ValidationDecision
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
-from pajin.replay.target_attestation import (
+from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
+from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionVerificationSummary,
     derive_target_execution_challenge,
 )
-from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.tools.base import ToolSpec
 
 KISA_EXACT_REPLAY_EXECUTOR_PROFILE: Literal["kisa-exact-v1"] = "kisa-exact-v1"

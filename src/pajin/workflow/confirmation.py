@@ -58,6 +58,7 @@ def apply_confirmed_gate(
     tickets: ReplayTicketFinalizationVerifier,
     decided_at: datetime | None = None,
     additional_artifacts: Mapping[str, bytes] | None = None,
+    independent_execution_attested: bool = False,
 ) -> LoadedValidationSnapshot:
     """Apply or recover one cross-process serialized confirmation projection."""
 
@@ -65,7 +66,11 @@ def apply_confirmed_gate(
         source_run_path=source_run_path,
         replay_run_paths=replay_run_paths,
         tickets=tickets,
-        build_projection=_build_confirmation_projection,
+        build_projection=(
+            _build_independently_attested_confirmation_projection
+            if independent_execution_attested
+            else _build_confirmation_projection
+        ),
         fsync_file=_fsync_file,
         decided_at=decided_at,
         additional_artifacts=additional_artifacts,
@@ -119,6 +124,30 @@ def _build_confirmation_projection(
         verified_results=verified_results,
         evaluated_at=evaluated_at,
         successful_replay_disposition=_successful_replay_disposition,
+    )
+
+
+def _build_independently_attested_confirmation_projection(
+    *,
+    root: Path,
+    source_run_id: str,
+    source_validation: FindingValidationSet,
+    campaign: CampaignManifest,
+    plan: AgentPlan,
+    verified_results: list[VerifiedReplayResult],
+    evaluated_at: datetime,
+) -> _ConfirmationProjection:
+    """Project successful exact replays under independent execution authority."""
+
+    return _policy._build_confirmation_projection(
+        root=root,
+        source_run_id=source_run_id,
+        source_validation=source_validation,
+        campaign=campaign,
+        plan=plan,
+        verified_results=verified_results,
+        evaluated_at=evaluated_at,
+        successful_replay_disposition=_independently_attested_successful_replay_disposition,
     )
 
 

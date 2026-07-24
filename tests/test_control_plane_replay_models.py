@@ -40,7 +40,7 @@ from pajin.control_plane.models import (
 )
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayPurpose
-from pajin.replay.target_attestation import derive_target_execution_challenge
+from pajin.target_attestation import derive_target_execution_challenge
 from pajin.tools.ai import AIChatProbeTool
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)

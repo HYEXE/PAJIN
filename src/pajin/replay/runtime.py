@@ -43,7 +43,6 @@ from pajin.replay.oracle import (
 from pajin.replay.oracle import (
     ReplayOracleRegistry as ReplayOracleRegistry,
 )
-from pajin.replay.target_attestation import TargetExecutionChallenge
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
     ReplayExecutionTicket,
@@ -70,6 +69,7 @@ from pajin.runtime.store import (
     verify_run_integrity,
 )
 from pajin.runtime.worker import WorkerBackend, WorkerStatus
+from pajin.target_attestation import TargetExecutionChallenge
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import (
     GatewayOutcome,

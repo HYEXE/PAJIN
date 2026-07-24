@@ -56,11 +56,11 @@ from pajin.control_plane.models import (
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import ValidationDecision
-from pajin.replay.target_attestation import (
+from pajin.replay.tickets import replay_context_digest
+from pajin.target_attestation import (
     TargetExecutionVerificationSummary,
     derive_target_execution_challenge,
 )
-from pajin.replay.tickets import replay_context_digest
 
 
 def _aware(value: datetime) -> datetime:
