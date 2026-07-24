@@ -2,24 +2,26 @@
 
 # PAJIN Product Plan
 
-## 2026-07-24 B2.8d implementation status
+## 2026-07-24 B2.8e implementation status
 
-[`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.en.md) binds the endpoint key of HTTPS
-target-attested Replay to the exact registry route. Each HTTPS registry v2 entry requires
-`tls_leaf_spki_sha256`. After standard PKIX and hostname validation, the Worker observes the peer
-leaf certificate SPKI SHA-256. The Executor signs it with the CONNECT route and Target receipt in
-TLS binding v2, and the Control Plane fails closed on an exact pin mismatch or a TLS binding v1
-downgrade.
+[`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.en.md) introduces registry
+v3 in a bundle signed by a separate Ed25519 distribution trust anchor. It binds a contiguous
+sequence, predecessor digest, a lifetime of at most seven days, and the complete exact-URL
+registry. Schema v14 append-only `cp_target_attestation_registry_versions` records activation per
+trust domain and rejects rollback, gaps, predecessor mismatch, and equivocation across restarts and
+replicas.
 
-Registry v1 and the legacy single-anchor route preserve serialization and verification
-compatibility. A successful registry v2 summary and finalization/projection authority preserve the
-registry ID/digest, selected anchor digest, and verified SPKI digest. An SPKI pin is endpoint-key
-binding; it does not prove the full certificate chain, revocation or CT, or one TLS session's
-handshake and application bytes.
+An HTTPS entry may carry one retiring pin for at most 24 hours. Receipt issue time determines
+whether it remains accepted, and summaries preserve the SPKI actually observed and verified. The
+Control Plane reads an inline bundle or at most 512 KiB once at startup from a redirect-free
+absolute HTTPS URL, then activates it only after signature, key-lifecycle, and current-validity
+verification. Registry v1/v2 and the legacy single anchor remain compatible; unsigned inline v3 is
+rejected.
 
-The next sequence is signed registry distribution, monotonic anti-rollback, old/new pin overlap
-rotation, and TLS exporter or equivalent session binding, followed by object-store/multipart
-Artifact transport. mTLS/HSM/KMS and transparency/federation remain later boundaries.
+TLS exporter or equivalent session binding is next, followed by object-store/multipart Artifact
+transport. Runtime registry refresh, transparency/federation for the distribution anchor, an
+external anti-rollback baseline after database and backup loss, and mTLS/HSM/KMS remain later
+boundaries.
 
 > Autonomous multi-agent AI red team and security validation orchestration platform
 
@@ -1394,9 +1396,11 @@ slot, and payload/claim/profile/permit transitive binding. The schema-v9 slice n
 server-owned import and typed finalization, and the one-item common Gate; Compose enables that daemon with a
   credential distinct from the generic Worker. Opaque public source/batch admission, role-scoped state reads,
   zero-permit fresh-identity retry issuance, schema-v11 multi-item projection, and schema-v12 dual-source negative
-  Retest projection, schema-v13 Claim-specific projection, Ed25519 portable receipt proof, and a
-  separate executor workload key for bounded multi-host Artifact transfer are also implemented.
-  Target-issued attestation and large object-store/multipart transfer remain separate completion criteria.
+  Retest projection, schema-v13 Claim-specific projection, Ed25519 portable receipt proof, a
+  separate executor workload key for bounded multi-host Artifact transfer, Target-issued exact
+  exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 schema-v14
+  anti-rollback with bounded pin rotation are implemented. TLS session binding and large
+  object-store/multipart transfer remain separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1546,7 +1550,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Claim-specific Replay authority and public partial-validation states, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation/negative-retest projection, fresh-identity retry, an Ed25519 portable Claim-receipt verifier bundle, and executor-attested bounded multi-host Artifact transfer are implemented; Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, target-issued attestation and large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claims and Blind Review, registered M03/M06/A04 Validation Controls and Claim-specific Replay, common Gate, exact-KISA fresh-session Oracle, baseline-bound retest, durable SQLite tickets, explicit Local orchestration, attenuated authority, budget, cancellation, approval, opaque public admission/read APIs, schema-v13 Claim projection, Ed25519 portable Claim receipts, executor-attested bounded multi-host Artifacts, Target-issued challenge-bound receipts, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 with schema-v14 anti-rollback and bounded pin rotation are implemented; Validation Controls and Claim Replay beyond the three registered scenarios, TLS-exporter session binding, runtime registry refresh and transparency/federation, large object-store/multipart transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1600,7 +1604,12 @@ defines at least the following.
 - B2.8a first vertical slice: a separate executor workload key signs the exact issued authority,
   canonical permit set, sealed-output digests, and bounded portable bundle. The Control Plane
   verifies the external trust anchor before copying bytes, rebinds the proof after managed Artifact
-  import, and preserves legacy projection digests. Target-issued attestation remains follow-on work
+  import, and preserves legacy projection digests
+- B2.8b-c: bind a permit-derived challenge to a Target-issued Ed25519 exact-exchange receipt and
+  host proxy/HTTPS CONNECT observation, with an exact-URL multi-Target trust registry
+- B2.8d: exact-match registry-v2 HTTPS leaf-SPKI pins against Worker-observed TLS binding v2
+- B2.8e: separately signed registry v3, schema-v14 monotonic anti-rollback, at most 24-hour old/new
+  pin overlap, and bounded startup HTTPS distribution
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
@@ -1772,10 +1781,11 @@ are implemented. The schema-v9 dedicated exact-KISA daemon, pre-dispatch permits
 server-owned import/typed finalization, and one-item common Gate are also implemented and enabled in Compose with a
 distinct Replay Worker credential. Opaque public source/batch admission, role-scoped state reads, and automatic
 fresh-identity retry issuance are also implemented. Schema-v11 multi-item projection, schema-v12 dual-source
-negative Control Plane retest, schema-v13 Claim-specific public projection, and the Ed25519 portable Claim-receipt
-verifier bundle are implemented. B2.8a also signs exact permits, sealed output, and a bounded portable Artifact
-with a separate executor workload key for transfer to a Control Plane on another host. M6-07B remains incomplete
-pending a target issuer and large object-store/multipart Artifact transfer. The following items need additional
+negative Control Plane retest, schema-v13 Claim-specific projection, Ed25519 portable Claim receipts,
+executor-attested portable Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and
+leaf-SPKI binding, and signed registry v3 schema-v14 anti-rollback with bounded pin rotation are
+implemented. M6-07B remains incomplete pending TLS-exporter session binding and large
+object-store/multipart Artifact transfer. The following items need additional
 decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet

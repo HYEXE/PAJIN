@@ -1294,6 +1294,7 @@ _APPEND_ONLY_TABLE_SUFFIXES = {
     "cp_replay_projections": "replay_projection",
     "cp_replay_retest_sources": "replay_retest_source",
     "cp_replay_claim_bindings": "replay_claim_binding",
+    "cp_target_attestation_registry_versions": "target_attestation_registry_version",
 }
 
 

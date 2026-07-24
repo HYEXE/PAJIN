@@ -26,6 +26,11 @@ from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _SIGNATURE_DOMAIN = b"pajin.replay.target-execution-receipt/v1\0"
 _CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
+_REGISTRY_BUNDLE_SIGNATURE_DOMAIN = (
+    b"pajin.replay.target-attestation-trust-registry-bundle/v1\0"
+)
+MAX_TARGET_REGISTRY_BUNDLE_LIFETIME = timedelta(days=7)
+MAX_TARGET_TLS_PIN_OVERLAP = timedelta(hours=24)
 
 
 def canonical_target_json(value: object) -> bytes:
@@ -134,6 +139,15 @@ class TargetAttestationTrustRegistryEntry(StrictModel):
         pattern=r"^[a-f0-9]{64}$",
         exclude_if=lambda value: value is None,
     )
+    retiring_tls_leaf_spki_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    retiring_tls_leaf_spki_not_after: datetime | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("target")
     @classmethod
@@ -144,6 +158,46 @@ class TargetAttestationTrustRegistryEntry(StrictModel):
         if normalize_target_url(value) != value:
             raise ValueError("target trust registry route must use a canonical exact URL")
         return value
+
+    @model_validator(mode="after")
+    def require_complete_retiring_pin(self) -> Self:
+        retiring_values = (
+            self.retiring_tls_leaf_spki_sha256,
+            self.retiring_tls_leaf_spki_not_after,
+        )
+        if any(value is not None for value in retiring_values) and not all(
+            value is not None for value in retiring_values
+        ):
+            raise ValueError("retiring TLS leaf SPKI pin and expiry must be configured together")
+        if self.retiring_tls_leaf_spki_not_after is not None:
+            _require_aware_utc(
+                self.retiring_tls_leaf_spki_not_after,
+                label="retiring TLS leaf SPKI pin expiry",
+            )
+        if (
+            self.retiring_tls_leaf_spki_sha256 is not None
+            and self.retiring_tls_leaf_spki_sha256 == self.tls_leaf_spki_sha256
+        ):
+            raise ValueError("active and retiring TLS leaf SPKI pins must differ")
+        return self
+
+    def accepted_tls_leaf_spki_sha256(self, issued_at: datetime) -> frozenset[str]:
+        """Return exact pins accepted for a receipt issued at ``issued_at``."""
+
+        if self.tls_leaf_spki_sha256 is None:
+            return frozenset()
+        accepted = {self.tls_leaf_spki_sha256}
+        if (
+            self.retiring_tls_leaf_spki_sha256 is not None
+            and self.retiring_tls_leaf_spki_not_after is not None
+            and _require_aware_utc(issued_at, label="target receipt issue time")
+            < _require_aware_utc(
+                self.retiring_tls_leaf_spki_not_after,
+                label="retiring TLS leaf SPKI pin expiry",
+            )
+        ):
+            accepted.add(self.retiring_tls_leaf_spki_sha256)
+        return frozenset(accepted)
 
     @property
     def target_sha256(self) -> str:
@@ -156,6 +210,7 @@ class TargetAttestationTrustRegistry(StrictModel):
     api_version: Literal[
         "pajin.replay.target-attestation-trust-registry/v1",
         "pajin.replay.target-attestation-trust-registry/v2",
+        "pajin.replay.target-attestation-trust-registry/v3",
     ] = (
         "pajin.replay.target-attestation-trust-registry/v1"
     )
@@ -168,15 +223,27 @@ class TargetAttestationTrustRegistry(StrictModel):
         if targets != sorted(targets) or len(targets) != len(set(targets)):
             raise ValueError("target trust registry routes must be uniquely sorted")
         if self.api_version == "pajin.replay.target-attestation-trust-registry/v1":
-            if any(entry.tls_leaf_spki_sha256 is not None for entry in self.entries):
+            if any(
+                entry.tls_leaf_spki_sha256 is not None
+                or entry.retiring_tls_leaf_spki_sha256 is not None
+                for entry in self.entries
+            ):
                 raise ValueError("target trust registry v1 cannot carry TLS certificate pins")
             return self
         for entry in self.entries:
             scheme = urlsplit(entry.target).scheme
             if scheme == "https" and entry.tls_leaf_spki_sha256 is None:
-                raise ValueError("target trust registry v2 requires an HTTPS TLS leaf SPKI pin")
-            if scheme != "https" and entry.tls_leaf_spki_sha256 is not None:
-                raise ValueError("target trust registry v2 allows TLS pins only for HTTPS routes")
+                raise ValueError("target trust registry requires an HTTPS TLS leaf SPKI pin")
+            if scheme != "https" and (
+                entry.tls_leaf_spki_sha256 is not None
+                or entry.retiring_tls_leaf_spki_sha256 is not None
+            ):
+                raise ValueError("target trust registry allows TLS pins only for HTTPS routes")
+            if (
+                self.api_version == "pajin.replay.target-attestation-trust-registry/v2"
+                and entry.retiring_tls_leaf_spki_sha256 is not None
+            ):
+                raise ValueError("target trust registry v2 cannot carry a retiring TLS pin")
         return self
 
     def resolve(self, target: str) -> TargetAttestationTrustAnchor:
@@ -191,6 +258,203 @@ class TargetAttestationTrustRegistry(StrictModel):
     @property
     def digest(self) -> str:
         return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+class TargetAttestationRegistryTrustAnchor(StrictModel):
+    """Out-of-band public authority for signed registry distribution."""
+
+    api_version: Literal[
+        "pajin.replay.target-attestation-registry-trust-anchor/v1"
+    ] = "pajin.replay.target-attestation-registry-trust-anchor/v1"
+    trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+    issuer: str = Field(min_length=1, max_length=200)
+    keys: list[TargetAttestationVerificationKey] = Field(min_length=1, max_length=32)
+
+    @model_validator(mode="after")
+    def require_unique_sorted_keyring(self) -> Self:
+        key_ids = [key.key_id for key in self.keys]
+        if key_ids != sorted(key_ids) or len(key_ids) != len(set(key_ids)):
+            raise ValueError("target registry signing keys must be uniquely sorted")
+        if len([key for key in self.keys if key.state is TargetAttestationKeyState.ACTIVE]) != 1:
+            raise ValueError("target registry trust anchor requires one active key")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+class TargetAttestationRegistryStatement(StrictModel):
+    api_version: Literal[
+        "pajin.replay.target-attestation-trust-registry-statement/v1"
+    ] = "pajin.replay.target-attestation-trust-registry-statement/v1"
+    trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+    issuer: str = Field(min_length=1, max_length=200)
+    sequence: int = Field(strict=True, ge=1, le=2_147_483_647)
+    previous_bundle_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    issued_at: datetime
+    not_before: datetime
+    expires_at: datetime
+    registry: TargetAttestationTrustRegistry
+
+    @model_validator(mode="after")
+    def require_bounded_chain_and_rotation(self) -> Self:
+        issued_at = _require_aware_utc(self.issued_at, label="registry bundle issue time")
+        not_before = _require_aware_utc(
+            self.not_before,
+            label="registry bundle not-before time",
+        )
+        expires_at = _require_aware_utc(
+            self.expires_at,
+            label="registry bundle expiry time",
+        )
+        if not issued_at <= not_before < expires_at:
+            raise ValueError("target registry bundle validity window is invalid")
+        if expires_at > issued_at + MAX_TARGET_REGISTRY_BUNDLE_LIFETIME:
+            raise ValueError("target registry bundle lifetime exceeds seven days")
+        if (self.sequence == 1) != (self.previous_bundle_sha256 is None):
+            raise ValueError(
+                "target registry sequence one must start the chain and later versions "
+                "must bind their predecessor"
+            )
+        if self.registry.api_version != "pajin.replay.target-attestation-trust-registry/v3":
+            raise ValueError("signed target registry bundle requires registry v3")
+        for entry in self.registry.entries:
+            if entry.retiring_tls_leaf_spki_not_after is None:
+                continue
+            retiring_not_after = _require_aware_utc(
+                entry.retiring_tls_leaf_spki_not_after,
+                label="retiring TLS leaf SPKI pin expiry",
+            )
+            if not not_before < retiring_not_after <= min(
+                expires_at,
+                issued_at + MAX_TARGET_TLS_PIN_OVERLAP,
+            ):
+                raise ValueError(
+                    "retiring TLS leaf SPKI pin must expire within the 24-hour overlap"
+                )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+class TargetAttestationRegistryBundle(StrictModel):
+    api_version: Literal[
+        "pajin.replay.target-attestation-trust-registry-bundle/v1"
+    ] = "pajin.replay.target-attestation-trust-registry-bundle/v1"
+    algorithm: Literal["Ed25519"] = "Ed25519"
+    key_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    statement: TargetAttestationRegistryStatement
+    statement_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    signature_base64url: str = Field(pattern=r"^[A-Za-z0-9_-]{86}$")
+
+    @model_validator(mode="after")
+    def require_canonical_envelope(self) -> Self:
+        canonical = canonical_target_json(self.statement.model_dump(mode="json"))
+        if sha256(canonical).hexdigest() != self.statement_sha256:
+            raise ValueError("target registry statement digest is inconsistent")
+        _base64url_decode(
+            self.signature_base64url,
+            expected_length=64,
+            label="target registry signature",
+        )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+@dataclass(frozen=True, slots=True)
+class TargetAttestationRegistrySigner:
+    """Offline helper for producing one signed registry distribution bundle."""
+
+    active_key_id: str
+    private_key: Ed25519PrivateKey
+    trust_anchor: TargetAttestationRegistryTrustAnchor
+
+    @classmethod
+    def from_private_key_bytes(
+        cls,
+        *,
+        active_key_id: str,
+        private_key: bytes,
+        trust_anchor: TargetAttestationRegistryTrustAnchor,
+    ) -> TargetAttestationRegistrySigner:
+        if len(private_key) != 32:
+            raise ValueError("Ed25519 target registry private key must contain 32 bytes")
+        return cls(
+            active_key_id=active_key_id,
+            private_key=Ed25519PrivateKey.from_private_bytes(private_key),
+            trust_anchor=trust_anchor,
+        )
+
+    def __post_init__(self) -> None:
+        matching = [key for key in self.trust_anchor.keys if key.key_id == self.active_key_id]
+        if len(matching) != 1 or matching[0].state is not TargetAttestationKeyState.ACTIVE:
+            raise ValueError("target registry signer key is not the active trust-anchor key")
+        public_bytes = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        expected = _base64url_decode(
+            matching[0].public_key_base64url,
+            expected_length=32,
+            label="target registry active public key",
+        )
+        if public_bytes != expected:
+            raise ValueError("target registry private key does not match its trust anchor")
+
+    def sign(
+        self,
+        *,
+        registry: TargetAttestationTrustRegistry,
+        sequence: int,
+        previous_bundle_sha256: str | None,
+        issued_at: datetime,
+        not_before: datetime,
+        expires_at: datetime,
+    ) -> TargetAttestationRegistryBundle:
+        statement = TargetAttestationRegistryStatement(
+            trust_domain=self.trust_anchor.trust_domain,
+            issuer=self.trust_anchor.issuer,
+            sequence=sequence,
+            previous_bundle_sha256=previous_bundle_sha256,
+            issued_at=issued_at,
+            not_before=not_before,
+            expires_at=expires_at,
+            registry=registry,
+        )
+        active_key = next(key for key in self.trust_anchor.keys if key.key_id == self.active_key_id)
+        normalized_issue_time = _require_aware_utc(
+            issued_at,
+            label="registry bundle issue time",
+        )
+        if normalized_issue_time < _require_aware_utc(
+            active_key.not_before,
+            label="key not-before time",
+        ):
+            raise ValueError("target registry signing key is not valid at the issue time")
+        if active_key.not_after is not None and normalized_issue_time >= _require_aware_utc(
+            active_key.not_after,
+            label="key not-after time",
+        ):
+            raise ValueError("target registry signing key is not valid at the issue time")
+        canonical = canonical_target_json(statement.model_dump(mode="json"))
+        return TargetAttestationRegistryBundle(
+            key_id=self.active_key_id,
+            statement=statement,
+            statement_sha256=sha256(canonical).hexdigest(),
+            signature_base64url=_base64url_encode(
+                self.private_key.sign(_REGISTRY_BUNDLE_SIGNATURE_DOMAIN + canonical)
+            ),
+        )
 
 
 class TargetExecutionChallenge(StrictModel):
@@ -616,6 +880,92 @@ def parse_target_attestation_trust_registry(
         max_nodes=20_000,
     )
     return TargetAttestationTrustRegistry.model_validate(decoded)
+
+
+def parse_target_attestation_registry_trust_anchor(
+    content: bytes,
+) -> TargetAttestationRegistryTrustAnchor:
+    decoded = parse_strict_json_bytes(
+        content,
+        label="target attestation registry trust anchor",
+        max_bytes=64 * 1024,
+        max_depth=12,
+        max_nodes=2_000,
+    )
+    return TargetAttestationRegistryTrustAnchor.model_validate(decoded)
+
+
+def parse_target_attestation_registry_bundle(
+    content: bytes,
+) -> TargetAttestationRegistryBundle:
+    decoded = parse_strict_json_bytes(
+        content,
+        label="target attestation trust registry bundle",
+        max_bytes=512 * 1024,
+        max_depth=20,
+        max_nodes=24_000,
+    )
+    return TargetAttestationRegistryBundle.model_validate(decoded)
+
+
+def verify_target_attestation_registry_bundle(
+    bundle: TargetAttestationRegistryBundle,
+    *,
+    trust_anchor: TargetAttestationRegistryTrustAnchor,
+    now: datetime | None = None,
+) -> str:
+    """Verify distribution signature, lifecycle, and optional current validity."""
+
+    statement = bundle.statement
+    if (
+        statement.trust_domain != trust_anchor.trust_domain
+        or statement.issuer != trust_anchor.issuer
+    ):
+        raise ValueError("target registry issuer or trust domain is not trusted")
+    key = next((item for item in trust_anchor.keys if item.key_id == bundle.key_id), None)
+    if key is None:
+        raise ValueError("target registry signing key is absent from the trust anchor")
+    if key.state is TargetAttestationKeyState.REVOKED:
+        raise ValueError("target registry signing key is revoked")
+    issued_at = _require_aware_utc(statement.issued_at, label="registry bundle issue time")
+    if issued_at < _require_aware_utc(key.not_before, label="key not-before time"):
+        raise ValueError("target registry bundle predates signing-key validity")
+    if key.not_after is not None and issued_at >= _require_aware_utc(
+        key.not_after,
+        label="key not-after time",
+    ):
+        raise ValueError("target registry bundle was issued after signing-key expiry")
+    canonical = canonical_target_json(statement.model_dump(mode="json"))
+    public_key = Ed25519PublicKey.from_public_bytes(
+        _base64url_decode(
+            key.public_key_base64url,
+            expected_length=32,
+            label="target registry public key",
+        )
+    )
+    try:
+        public_key.verify(
+            _base64url_decode(
+                bundle.signature_base64url,
+                expected_length=64,
+                label="target registry signature",
+            ),
+            _REGISTRY_BUNDLE_SIGNATURE_DOMAIN + canonical,
+        )
+    except InvalidSignature as exc:
+        raise ValueError("target registry signature verification failed") from exc
+    if now is not None:
+        timestamp = _require_aware_utc(now, label="target registry verification time")
+        if not (
+            _require_aware_utc(
+                statement.not_before,
+                label="registry bundle not-before time",
+            )
+            <= timestamp
+            < _require_aware_utc(statement.expires_at, label="registry bundle expiry time")
+        ):
+            raise ValueError("target registry bundle is not currently valid")
+    return key.key_id
 
 
 def verify_target_execution_receipt(

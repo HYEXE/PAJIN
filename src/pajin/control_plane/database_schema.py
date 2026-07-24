@@ -37,7 +37,8 @@ SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION = 10
 REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION = 11
 REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION = 12
 REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION = 13
-CURRENT_SCHEMA_VERSION = REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION
+TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION = 14
+CURRENT_SCHEMA_VERSION = TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION
 MAX_JOB_LEASE_LIFETIME_SECONDS = 24 * 60 * 60
 _MIGRATION_BACKFILL_BATCH_SIZE = 500
 _JSON_AUTHORITY_BATCH_SIZE = 8
@@ -2157,7 +2158,7 @@ def _build_v12_metadata() -> MetaData:
 _V12_METADATA = _build_v12_metadata()
 
 REPLAY_CLAIM_PROJECTION_AUTHORITY_TABLES = frozenset({"cp_replay_claim_bindings"})
-CURRENT_CONTROL_PLANE_TABLES = frozenset(
+V13_CONTROL_PLANE_TABLES = frozenset(
     {*V12_CONTROL_PLANE_TABLES, *REPLAY_CLAIM_PROJECTION_AUTHORITY_TABLES}
 )
 
@@ -2202,3 +2203,81 @@ class ReplayClaimBindingRecord(Base):
     claim_binding: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     binding_digest: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+def _build_v13_metadata() -> MetaData:
+    """Freeze schema v13 before the registry anti-rollback ledger is added."""
+
+    metadata = MetaData()
+    for table in Base.metadata.sorted_tables:
+        if table.name in V13_CONTROL_PLANE_TABLES:
+            table.to_metadata(metadata)
+    return metadata
+
+
+_V13_METADATA = _build_v13_metadata()
+
+TARGET_ATTESTATION_REGISTRY_AUTHORITY_TABLES = frozenset(
+    {"cp_target_attestation_registry_versions"}
+)
+CURRENT_CONTROL_PLANE_TABLES = frozenset(
+    {*V13_CONTROL_PLANE_TABLES, *TARGET_ATTESTATION_REGISTRY_AUTHORITY_TABLES}
+)
+
+
+class TargetAttestationRegistryVersionRecord(Base):
+    """Append-only monotonic activation ledger for signed Target registries."""
+
+    __tablename__ = "cp_target_attestation_registry_versions"
+    __table_args__ = (
+        CheckConstraint(
+            "length(trust_domain) > 0 AND length(trust_domain) <= 200",
+            name="ck_cp_target_registry_versions_trust_domain",
+        ),
+        CheckConstraint(
+            "length(issuer) > 0 AND length(issuer) <= 200",
+            name="ck_cp_target_registry_versions_issuer",
+        ),
+        CheckConstraint(
+            "sequence > 0 AND sequence <= 2147483647",
+            name="ck_cp_target_registry_versions_sequence",
+        ),
+        CheckConstraint(
+            _lower_hex_check("bundle_digest", 64),
+            name="ck_cp_target_registry_versions_bundle_digest",
+        ),
+        CheckConstraint(
+            "previous_bundle_digest IS NULL OR "
+            + _lower_hex_check("previous_bundle_digest", 64),
+            name="ck_cp_target_registry_versions_previous_digest",
+        ),
+        CheckConstraint(
+            "length(registry_id) > 0 AND length(registry_id) <= 100",
+            name="ck_cp_target_registry_versions_registry_id",
+        ),
+        CheckConstraint(
+            _lower_hex_check("registry_digest", 64),
+            name="ck_cp_target_registry_versions_registry_digest",
+        ),
+        UniqueConstraint(
+            "bundle_digest",
+            name="uq_cp_target_registry_versions_bundle_digest",
+        ),
+        Index(
+            "ix_cp_target_registry_versions_activation",
+            "trust_domain",
+            "activated_at",
+        ),
+    )
+
+    trust_domain: Mapped[str] = mapped_column(String(200), primary_key=True)
+    sequence: Mapped[int] = mapped_column(Integer, primary_key=True)
+    issuer: Mapped[str] = mapped_column(String(200), nullable=False)
+    bundle_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    previous_bundle_digest: Mapped[str | None] = mapped_column(String(64))
+    registry_id: Mapped[str] = mapped_column(String(100), nullable=False)
+    registry_digest: Mapped[str] = mapped_column(String(64), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    not_before: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    activated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

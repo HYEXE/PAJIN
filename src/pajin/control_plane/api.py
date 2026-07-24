@@ -9,9 +9,14 @@ from collections import deque
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
 from typing import Annotated
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, build_opener
+from urllib.request import Request as URLRequest
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from fastapi.exceptions import RequestValidationError
@@ -61,10 +66,15 @@ from pajin.control_plane.security import (
 from pajin.control_plane.service import ControlPlaneService
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.target_attestation import (
+    TargetAttestationRegistryBundle,
+    TargetAttestationRegistryTrustAnchor,
     TargetAttestationTrustAnchor,
     TargetAttestationTrustRegistry,
+    parse_target_attestation_registry_bundle,
+    parse_target_attestation_registry_trust_anchor,
     parse_target_attestation_trust_anchor,
     parse_target_attestation_trust_registry,
+    verify_target_attestation_registry_bundle,
 )
 
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
@@ -74,6 +84,16 @@ _REPLAY_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR
 _EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
 _TARGET_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR"
 _TARGET_ATTESTATION_TRUST_REGISTRY_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY"
+_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR_ENV = (
+    "PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR"
+)
+_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_ENV = (
+    "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE"
+)
+_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL_ENV = (
+    "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL"
+)
+_MAX_TARGET_ATTESTATION_REGISTRY_BUNDLE_BYTES = 512 * 1024
 _REPLAY_EXECUTOR_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_BYTES = 64 * 1024
@@ -445,6 +465,87 @@ def _parse_target_attestation_registry(
         raise RuntimeError("target attestation trust registry is invalid") from exc
 
 
+class _RejectRegistryBundleRedirects(HTTPRedirectHandler):
+    def redirect_request(
+        self,
+        req: URLRequest,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> None:
+        return None
+
+
+def _load_target_attestation_registry_bundle(
+    *,
+    inline: str | None,
+    url: str | None,
+) -> TargetAttestationRegistryBundle | None:
+    if inline is not None and url is not None:
+        raise RuntimeError(
+            f"{_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_ENV} and "
+            f"{_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL_ENV} are mutually exclusive"
+        )
+    content: bytes
+    if inline is not None:
+        try:
+            content = inline.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise RuntimeError("target attestation registry bundle is invalid") from exc
+    elif url is not None:
+        parsed = urlsplit(url)
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.fragment
+        ):
+            raise RuntimeError(
+                f"{_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL_ENV} "
+                "must be an absolute HTTPS URL without credentials or a fragment"
+            )
+        request = URLRequest(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "PAJIN-Control-Plane/target-registry-v1",
+            },
+            method="GET",
+        )
+        try:
+            with build_opener(_RejectRegistryBundleRedirects()).open(
+                request,
+                timeout=10,
+            ) as response:
+                if response.geturl() != url or response.getcode() != 200:
+                    raise RuntimeError("target attestation registry fetch was redirected or failed")
+                content = response.read(_MAX_TARGET_ATTESTATION_REGISTRY_BUNDLE_BYTES + 1)
+        except (HTTPError, URLError, OSError) as exc:
+            raise RuntimeError("target attestation registry HTTPS fetch failed") from exc
+        if len(content) > _MAX_TARGET_ATTESTATION_REGISTRY_BUNDLE_BYTES:
+            raise RuntimeError("target attestation registry bundle exceeds 512 KiB")
+    else:
+        return None
+    try:
+        return parse_target_attestation_registry_bundle(content)
+    except ValueError as exc:
+        raise RuntimeError("target attestation registry bundle is invalid") from exc
+
+
+def _parse_target_attestation_registry_trust_anchor(
+    raw: str | None,
+) -> TargetAttestationRegistryTrustAnchor | None:
+    if raw is None:
+        return None
+    try:
+        return parse_target_attestation_registry_trust_anchor(raw.encode("utf-8"))
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError("target attestation registry trust anchor is invalid") from exc
+
+
 @dataclass(frozen=True)
 class ControlPlaneSettings:
     database_url: str
@@ -462,6 +563,10 @@ class ControlPlaneSettings:
     executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None
     target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None
     target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None
+    target_attestation_registry_bundle: TargetAttestationRegistryBundle | None = None
+    target_attestation_registry_trust_anchor: (
+        TargetAttestationRegistryTrustAnchor | None
+    ) = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -478,11 +583,35 @@ class ControlPlaneSettings:
                 "Control Plane request body timeout must be a finite value "
                 "between 0.1 and 300 seconds"
             )
-        if (
-            self.target_attestation_trust_anchor is not None
-            and self.target_attestation_trust_registry is not None
+        if (self.target_attestation_registry_bundle is None) != (
+            self.target_attestation_registry_trust_anchor is None
         ):
-            raise ValueError("configure either one target trust anchor or the exact registry")
+            raise ValueError(
+                "signed target registry bundle and distribution trust anchor "
+                "must be configured together"
+            )
+        target_authorities = (
+            self.target_attestation_trust_anchor,
+            self.target_attestation_trust_registry,
+            self.target_attestation_registry_bundle,
+        )
+        if len([value for value in target_authorities if value is not None]) > 1:
+            raise ValueError(
+                "configure only one target trust anchor, inline registry, or signed registry"
+            )
+        if (
+            self.target_attestation_trust_registry is not None
+            and self.target_attestation_trust_registry.api_version
+            == "pajin.replay.target-attestation-trust-registry/v3"
+        ):
+            raise ValueError("target trust registry v3 requires a signed distribution bundle")
+        if self.target_attestation_registry_bundle is not None:
+            assert self.target_attestation_registry_trust_anchor is not None
+            verify_target_attestation_registry_bundle(
+                self.target_attestation_registry_bundle,
+                trust_anchor=self.target_attestation_registry_trust_anchor,
+                now=datetime.now(UTC),
+            )
         credentials = dict(self.credentials)
         for token in credentials:
             validate_bearer_token(
@@ -517,7 +646,7 @@ class ControlPlaneSettings:
         object.__setattr__(self, "replay_executor_profiles", normalized)
 
     @classmethod
-    def from_env(cls) -> "ControlPlaneSettings":
+    def from_env(cls) -> "ControlPlaneSettings":  # noqa: C901
         operator_token = os.environ.get("PAJIN_CP_OPERATOR_TOKEN")
         approver_token = os.environ.get("PAJIN_CP_APPROVER_TOKEN")
         worker_token = os.environ.get("PAJIN_CP_WORKER_TOKEN")
@@ -530,6 +659,15 @@ class ControlPlaneSettings:
         executor_attestation_trust_anchor = os.environ.get(_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV)
         target_attestation_trust_anchor = os.environ.get(_TARGET_ATTESTATION_TRUST_ANCHOR_ENV)
         target_attestation_trust_registry = os.environ.get(_TARGET_ATTESTATION_TRUST_REGISTRY_ENV)
+        target_attestation_registry_trust_anchor = os.environ.get(
+            _TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR_ENV
+        )
+        target_attestation_trust_registry_bundle = os.environ.get(
+            _TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_ENV
+        )
+        target_attestation_trust_registry_bundle_url = os.environ.get(
+            _TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL_ENV
+        )
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
@@ -597,14 +735,51 @@ class ControlPlaneSettings:
         parsed_target_attestation_trust_registry = _parse_target_attestation_registry(
             target_attestation_trust_registry
         )
-        if (
-            parsed_target_attestation_trust_anchor is not None
-            and parsed_target_attestation_trust_registry is not None
-        ):
+        parsed_target_attestation_registry_trust_anchor = (
+            _parse_target_attestation_registry_trust_anchor(
+                target_attestation_registry_trust_anchor
+            )
+        )
+        parsed_target_attestation_registry_bundle = (
+            _load_target_attestation_registry_bundle(
+                inline=target_attestation_trust_registry_bundle,
+                url=target_attestation_trust_registry_bundle_url,
+            )
+        )
+        configured_target_authorities = (
+            parsed_target_attestation_trust_anchor,
+            parsed_target_attestation_trust_registry,
+            parsed_target_attestation_registry_bundle,
+        )
+        if len([value for value in configured_target_authorities if value is not None]) > 1:
             raise RuntimeError(
                 "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR and "
-                "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY are mutually exclusive"
+                "target registry settings are mutually exclusive"
             )
+        if (parsed_target_attestation_registry_bundle is None) != (
+            parsed_target_attestation_registry_trust_anchor is None
+        ):
+            raise RuntimeError(
+                "signed target registry bundle requires "
+                "PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR"
+            )
+        if parsed_target_attestation_trust_registry is not None and (
+            parsed_target_attestation_trust_registry.api_version
+            == "pajin.replay.target-attestation-trust-registry/v3"
+        ):
+            raise RuntimeError("target trust registry v3 requires a signed distribution bundle")
+        if parsed_target_attestation_registry_bundle is not None:
+            assert parsed_target_attestation_registry_trust_anchor is not None
+            try:
+                verify_target_attestation_registry_bundle(
+                    parsed_target_attestation_registry_bundle,
+                    trust_anchor=parsed_target_attestation_registry_trust_anchor,
+                    now=datetime.now(UTC),
+                )
+            except ValueError as exc:
+                raise RuntimeError(
+                    "target attestation registry bundle is not currently trusted"
+                ) from exc
         if replay_worker_token is not None and replay_worker_token in {
             operator_token,
             approver_token,
@@ -689,6 +864,12 @@ class ControlPlaneSettings:
             executor_attestation_trust_anchor=(parsed_executor_attestation_trust_anchor),
             target_attestation_trust_anchor=parsed_target_attestation_trust_anchor,
             target_attestation_trust_registry=parsed_target_attestation_trust_registry,
+            target_attestation_registry_bundle=(
+                parsed_target_attestation_registry_bundle
+            ),
+            target_attestation_registry_trust_anchor=(
+                parsed_target_attestation_registry_trust_anchor
+            ),
             request_body_timeout_seconds=float(
                 os.environ.get(
                     "PAJIN_CP_REQUEST_BODY_TIMEOUT_SECONDS",
@@ -754,6 +935,10 @@ def _build_application_context(
         executor_attestation_trust_anchor=(settings.executor_attestation_trust_anchor),
         target_attestation_trust_anchor=settings.target_attestation_trust_anchor,
         target_attestation_trust_registry=settings.target_attestation_trust_registry,
+        target_attestation_registry_bundle=settings.target_attestation_registry_bundle,
+        target_attestation_registry_trust_anchor=(
+            settings.target_attestation_registry_trust_anchor
+        ),
     )
     return _ControlPlaneApplicationContext(
         settings=settings,
@@ -775,6 +960,7 @@ def _create_lifespan(
             # Deployment-managed migrations may disable DDL at process startup, but
             # they must never disable the Control Plane's schema compatibility fence.
             context.repository.schema_version()
+        context.service.activate_target_attestation_registry()
         app.state.repository = context.repository
         app.state.artifact_repository = context.artifact_repository
         app.state.control_plane = context.service

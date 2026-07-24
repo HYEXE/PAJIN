@@ -48,6 +48,7 @@ from pajin.control_plane.database import (
     REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
+    TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
@@ -58,6 +59,7 @@ from pajin.control_plane.database import (
     V10_CONTROL_PLANE_TABLES,
     V11_CONTROL_PLANE_TABLES,
     V12_CONTROL_PLANE_TABLES,
+    V13_CONTROL_PLANE_TABLES,
     ArtifactRecord,
     Base,
     ControlPlaneRepository,
@@ -81,6 +83,7 @@ from pajin.control_plane.database import (
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
+    TargetAttestationRegistryVersionRecord,
     _install_append_only_trigger,
     _install_complete_append_only_guard,
     _json_object_is_valid_sql,
@@ -1378,6 +1381,7 @@ def test_empty_database_migrates_to_current_schema_and_restart_validates(
             REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION,
             REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION,
             REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION,
+            TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION,
         ]
 
         repository.initialize()
@@ -1395,6 +1399,7 @@ def test_exact_v10_schema_adds_append_only_projection_authority(tmp_path: Path) 
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
             connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
             connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
             connection.exec_driver_sql("DROP TABLE cp_replay_projections")
@@ -1436,6 +1441,7 @@ def test_exact_v11_schema_adds_append_only_retest_source_authority(tmp_path: Pat
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
             connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
             connection.exec_driver_sql("DROP TABLE cp_replay_retest_sources")
             connection.execute(
@@ -1476,6 +1482,7 @@ def test_exact_v12_schema_adds_append_only_claim_binding_authority(tmp_path: Pat
     try:
         repository.initialize()
         with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
             connection.exec_driver_sql("DROP TABLE cp_replay_claim_bindings")
             connection.execute(
                 text("DELETE FROM cp_schema_version WHERE version >= :version"),
@@ -1505,6 +1512,48 @@ def test_exact_v12_schema_adds_append_only_claim_binding_authority(tmp_path: Pat
             "cp_replay_claim_bindings_no_delete",
             "cp_replay_claim_bindings_no_replace",
             "cp_replay_claim_bindings_no_update",
+        }
+    finally:
+        repository.close()
+
+
+def test_exact_v13_schema_adds_target_registry_anti_rollback_authority(
+    tmp_path: Path,
+) -> None:
+    repository = _repository(tmp_path / "v13-target-registry-authority.db")
+    try:
+        repository.initialize()
+        with repository.engine.begin() as connection:
+            connection.exec_driver_sql("DROP TABLE cp_target_attestation_registry_versions")
+            connection.execute(
+                text("DELETE FROM cp_schema_version WHERE version >= :version"),
+                {"version": TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION},
+            )
+        assert {
+            name for name in inspect(repository.engine).get_table_names() if name.startswith("cp_")
+        } == V13_CONTROL_PLANE_TABLES
+
+        repository.initialize()
+
+        assert repository.schema_version() == CURRENT_SCHEMA_VERSION
+        assert TargetAttestationRegistryVersionRecord.__tablename__ in inspect(
+            repository.engine
+        ).get_table_names()
+        with repository.engine.connect() as connection:
+            triggers = {
+                str(name)
+                for name in connection.execute(
+                    text(
+                        "SELECT name FROM sqlite_master "
+                        "WHERE type = 'trigger' "
+                        "AND tbl_name = 'cp_target_attestation_registry_versions'"
+                    )
+                ).scalars()
+            }
+        assert triggers == {
+            "cp_target_attestation_registry_versions_no_delete",
+            "cp_target_attestation_registry_versions_no_replace",
+            "cp_target_attestation_registry_versions_no_update",
         }
     finally:
         repository.close()

@@ -2,6 +2,21 @@
 
 # PAJIN
 
+## B2.8e signed Target registry distribution
+
+Target registry v3 can now be distributed as a separately domain-signed Ed25519 bundle. The
+statement binds a contiguous sequence, predecessor bundle digest, seven-day-or-shorter validity
+window, and the complete exact-URL registry. Schema v14 records activation in append-only
+`cp_target_attestation_registry_versions`, rejecting rollback, gaps, predecessor mismatch, and
+same-sequence equivocation across restarts and replicas. One retiring SPKI pin may overlap for at
+most 24 hours, selected by Target receipt issue time.
+
+The Control Plane accepts an inline bundle or fetches it once at startup from a redirect-free
+absolute HTTPS URL, bounded to 512 KiB. The distribution trust anchor remains out of band. Runtime
+refresh, TLS-exporter session binding, CT/revocation, and recovery after loss of the database and
+its backups remain outside this slice. See
+[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
+
 PAJIN is a policy-governed multi-agent AI red-team and security validation platform.
 
 The current implementation is a CLI-first backend approaching MVP. It validates typed campaign and
@@ -23,8 +38,8 @@ The implementation baseline as of 2026-07-24 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. Additional opt-ins bind an Ed25519 Claim-receipt verifier bundle, an executor-attested portable Artifact, a Target-issued receipt plus HTTPS CONNECT evidence, and the Worker-observed TLS leaf SPKI pin from an exact-URL registry v2 entry. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, signed registry distribution with monotonic anti-rollback and old/new pin overlap rotation, TLS exporter session binding, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact; schema v13 adds append-only exact Claim bindings and a Claim-specific projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins bind an Ed25519 Claim-receipt verifier bundle, an executor-attested portable Artifact, a Target-issued receipt plus HTTPS CONNECT evidence, exact endpoint SPKI, and signed registry v3 rotation with bounded old/new pin overlap. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS exporter session binding, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -1516,6 +1531,16 @@ Plane fails closed on an exact pin mismatch or a v1 binding downgrade. This is e
 binding, not TLS-exporter session binding, registry anti-rollback/overlap rotation, revocation, or
 Certificate Transparency proof. See
 [ADR-0042](docs/adr/0042-worker-observed-tls-leaf-spki-binding.en.md).
+
+### B2.8e signed registry distribution and rotation
+
+Registry v3 is accepted only in a separately signed Ed25519 bundle. Configure
+`PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR` with either the inline
+`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE` or the redirect-free HTTPS
+`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL`. Bundle fetch is bounded to 512 KiB and
+occurs once at startup. Its sequence begins at one and binds its predecessor; schema v14 preserves
+the monotonic activation ledger. One retiring pin may overlap for at most 24 hours. See
+[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
 
 `ProviderAgentRuntime` is the governed production path for network-backed planning and validation.
 It binds every model call to `PolicyBoundProviderPort`, the Tool Gateway, Campaign budgets, and

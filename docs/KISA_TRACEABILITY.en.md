@@ -2,13 +2,14 @@
 
 # KISA AI Security Red Teaming Guide Traceability
 
-> 2026-07-24 B2.8d: every registry v2 HTTPS entry requires a leaf SPKI SHA-256 pin for its exact
-> Target URL. After standard PKIX and hostname validation, the Worker observes the peer leaf SPKI;
-> the Executor signs it with the CONNECT route and Target receipt in TLS binding v2, and the
-> Control Plane rejects pin mismatch and v1 downgrade. This is endpoint-key binding, not proof of
-> the full chain, revocation or CT, or TLS-exporter session binding. Registry anti-rollback,
-> overlap rotation, and object-store Artifact transport remain follow-up work. See
-> [`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.en.md).
+> 2026-07-24 B2.8e: a separate Ed25519 distribution anchor signs registry v3 sequence,
+> predecessor digest, validity window, and complete exact-URL registry. The schema-v14 append-only
+> activation ledger rejects rollback, gaps, predecessor mismatch, and equivocation. An old HTTPS
+> SPKI pin may overlap for at most 24 hours, with the cutoff evaluated against receipt issue time.
+> The Control Plane verifies an inline or redirect-free HTTPS bundle once at startup. This proves
+> registry order and endpoint-key rotation, not TLS-exporter session binding, CT/revocation,
+> runtime refresh, or an external anti-rollback baseline after database and backup loss. See
+> [`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.en.md).
 
 ## 1. Purpose and Baseline
 
@@ -143,7 +144,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed projection | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | Implemented: a scenario is executed only when every required terminal-success repetition is present in the same sealed Run; FAILED/CANCELLED Runs do not claim execution success or rates |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim-receipt attestor and external-trust-anchor verifier, executor workload attestor and bounded portable-transport verifier, Target execution attestor and host-proxy-binding verifier, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, and Claim-binding ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | Supported KISA positive/negative contracts, explicit Local orchestration, public Replay admission/read APIs, fresh-identity retry, the Control Plane M03/M06/A04 claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation projection, schema-v12 dual-source Retest projection, portable Claim-receipt proof, executor-attested bounded multi-host Artifact transfer, Target-issued exact-exchange proof, and Compose daemon are implemented; HTTPS and multi-Target proof plus organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim-receipt attestor and external-trust-anchor verifier, executor workload attestor and bounded portable-transport verifier, Target execution, HTTPS leaf-SPKI, and signed-registry verifiers, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, Claim-binding, and registry-version ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | Supported KISA contracts, explicit Local orchestration, public Replay APIs, fresh-identity retry, schema-v13 Claim projection, portable Claim receipts, executor-attested Artifacts, Target-issued exact exchanges, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 schema-v14 anti-rollback with bounded pin rotation are implemented; TLS-exporter session binding and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal, Control Plane Ed25519 Claim-receipt bundle, executor workload attestation, Target-issued execution receipt | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | Local SQLite DB/OS trust boundary plus Control Plane receipt, executor, and Target external-trust-anchor verification are implemented; a transparency log remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` exact binding of sealed Campaign, Plan, Agents, TaskGraph, Gateway evidence, and report generation | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | Implemented: planned and actually completed scenarios are separated; foreign-Run or caller-forged inputs are rejected |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -449,9 +450,10 @@ KISA threats remain `not assessed`.
   permit is terminal for that ticket. Compose enables this dedicated daemon alongside the generic
   Worker. Public Replay admission/read APIs, fresh-identity retry issuance, schema-v11 multi-item
   projection, schema-v12 dual-source negative Control Plane retest, schema-v13 exact
-  Claim-specific public projection, Ed25519 portable Claim-receipt proof, and executor-attested
-  bounded multi-host Artifact transfer are implemented. A target issuer and large
-  object-store/multipart Artifact transfer remain outstanding.
+  Claim-specific projection, Ed25519 portable Claim receipts, executor-attested portable
+  Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed
+  registry v3 schema-v14 anti-rollback with bounded pin rotation are implemented. TLS-exporter
+  session binding and large object-store/multipart Artifact transfer remain outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific

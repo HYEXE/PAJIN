@@ -2,13 +2,14 @@
 
 # KISA AI 보안 레드티밍 가이드 추적성
 
-> 2026-07-24 B2.8d: registry v2 HTTPS entry는 exact Target URL별 leaf SPKI SHA-256 pin을
-> 요구한다. Worker가 표준 PKIX·hostname 검증 뒤 관찰한 peer leaf SPKI를 Executor가 CONNECT
-> route·Target receipt와 함께 TLS binding v2로 서명하고, Control Plane은 pin 불일치와 v1
-> downgrade를 거부한다. 이 증명은 endpoint key 결박이며 full chain, revocation·CT 또는 TLS
-> exporter session binding을 주장하지 않는다. registry anti-rollback·overlap rotation과
-> object-store Artifact 전송은 후속 범위다. 자세한 결정은
-> [`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.ko.md)을 참조한다.
+> 2026-07-24 B2.8e: registry v3는 별도 Ed25519 배포 anchor가 sequence·이전 번들
+> digest·유효기간·exact-URL registry 전체를 서명한다. schema v14 append-only 활성화 원장은
+> rollback, gap, predecessor 불일치와 equivocation을 거부한다. HTTPS entry의 이전 SPKI pin은
+> 최대 24시간만 중첩하며 receipt 발행 시각으로 cutoff를 적용한다. Control Plane은 inline
+> 또는 redirect 없는 HTTPS 번들을 시작 시 한 번 가져와 검증한다. 이는 registry 배포 순서와
+> endpoint key rotation 증명이며 TLS exporter session binding, CT·revocation, runtime refresh
+> 또는 DB·백업 소실 뒤 외부 anti-rollback 기준은 아니다. 자세한 결정은
+> [`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.ko.md)을 참조한다.
 
 ## 1. 목적과 기준선
 
@@ -133,7 +134,7 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed 분리 | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | 구현: 같은 sealed Run의 terminal-success repetition 전체가 있을 때만 executed로 집계하며 FAILED/CANCELLED Run은 실행 성공·비율을 주장하지 않음 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim receipt attestor·외부 trust-anchor verifier, executor workload attestor·bounded portable transport verifier, Target execution attestor·host proxy binding verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization·Retest-source·Claim-binding 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, public Replay admission/read API, fresh-identity retry, Control Plane M03·M06·A04 claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation projection, schema-v12 dual-source Retest projection, portable Claim receipt proof, executor 서명 기반 bounded multi-host Artifact, Target-issued exact exchange proof와 Compose daemon 구현; HTTPS·다중 Target 증명과 조직 영향 분석은 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim receipt attestor·외부 trust-anchor verifier, executor workload attestor·bounded portable transport verifier, Target execution attestor·HTTPS leaf-SPKI·signed registry verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization·Retest-source·Claim-binding·registry-version 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, public Replay admission/read API, fresh-identity retry, schema-v13 Claim projection, portable Claim receipt, executor-attested Artifact, Target-issued exact exchange, HTTPS CONNECT·leaf SPKI와 signed registry v3 schema-v14 anti-rollback·제한된 pin rotation 구현; TLS exporter session binding과 조직 영향 분석은 후속 |
 | 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal, Control Plane Ed25519 Claim receipt bundle, executor workload attestation, Target-issued execution receipt | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | 로컬 SQLite DB/OS 신뢰 경계, Control Plane receipt 공개키 검증, executor와 Target 외부 trust-anchor 검증 구현; transparency log는 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` sealed Campaign·Plan·Agent·TaskGraph·Gateway evidence exact binding과 보고 생성 | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | 구현: 계획 시나리오와 실제 완결 시나리오를 분리하고 다른 Run 또는 caller 위조 결과를 거부 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
@@ -417,8 +418,9 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   ticket에 terminal이다. Compose는 일반 Worker와 함께 전용 daemon을 활성화한다. Public Replay
   admission/read API, fresh-identity retry 발행, schema-v11 multi-item projection, schema-v12 dual-source
   negative Control Plane retest, schema-v13 exact Claim별 공개 projection, Ed25519 portable Claim
-  receipt proof와 executor 서명 기반 bounded multi-host Artifact 전송은 구현됐다. target issuer와
-  대형 object-store/multipart Artifact 전송은 남아 있다.
+  receipt, executor-attested portable Artifact, Target-issued exact exchange receipt, HTTPS
+  CONNECT·leaf SPKI 결박과 signed registry v3 schema-v14 anti-rollback·제한된 pin rotation은
+  구현됐다. TLS exporter session binding과 대형 object-store/multipart Artifact 전송은 남아 있다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

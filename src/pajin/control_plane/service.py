@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -70,6 +70,7 @@ from pajin.control_plane.database import (
     ReplayTicketRecord,
     ReplayToolPermitRecord,
     RunRecord,
+    TargetAttestationRegistryVersionRecord,
     utc_now,
 )
 from pajin.control_plane.errors import (
@@ -180,6 +181,8 @@ from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_res
 from pajin.replay.tickets import replay_context_digest
 from pajin.runtime.store import RunStore, VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.target_attestation import (
+    TargetAttestationRegistryBundle,
+    TargetAttestationRegistryTrustAnchor,
     TargetAttestationTrustAnchor,
     TargetAttestationTrustRegistry,
     TargetExecutionChallenge,
@@ -190,6 +193,7 @@ from pajin.target_attestation import (
     TargetExecutionVerificationSummary,
     canonical_target_json_sha256,
     derive_target_execution_challenge,
+    verify_target_attestation_registry_bundle,
     verify_target_execution_receipt,
 )
 from pajin.tools.ai import AIChatProbeOutput, AIChatProbeTool
@@ -276,8 +280,17 @@ def _target_transport_binding_matches(
     status: int,
     request_digest: str,
     response_digest: str,
-    expected_tls_leaf_spki_sha256: str | None,
+    expected_tls_leaf_spki_sha256: str | frozenset[str] | None,
 ) -> bool:
+    expected_pins = (
+        frozenset()
+        if expected_tls_leaf_spki_sha256 is None
+        else (
+            frozenset({expected_tls_leaf_spki_sha256})
+            if isinstance(expected_tls_leaf_spki_sha256, str)
+            else expected_tls_leaf_spki_sha256
+        )
+    )
     if isinstance(proof, TargetExecutionProxyBinding):
         return (
             proof.replay_request_id == permit.replay_request_id
@@ -308,12 +321,12 @@ def _target_transport_binding_matches(
             and proof.transcript_request_json_sha256 == request_digest
             and proof.transcript_response_json_sha256 == response_digest
         )
-        if expected_tls_leaf_spki_sha256 is None:
+        if not expected_pins:
             return exact
         return (
             exact
             and isinstance(proof, TargetExecutionTLSBindingV2)
-            and proof.tls_peer_leaf_spki_sha256 == expected_tls_leaf_spki_sha256
+            and proof.tls_peer_leaf_spki_sha256 in expected_pins
         )
     return False
 
@@ -334,17 +347,18 @@ def _target_attempt_transcript(
 def _target_trust_material_for(
     target: str,
     *,
+    receipt_issued_at: datetime,
     trust_anchor: TargetAttestationTrustAnchor | None,
     trust_registry: TargetAttestationTrustRegistry | None,
-) -> tuple[TargetAttestationTrustAnchor, str | None]:
+) -> tuple[TargetAttestationTrustAnchor, frozenset[str]]:
     if trust_anchor is not None:
-        return trust_anchor, None
+        return trust_anchor, frozenset()
     assert trust_registry is not None
     try:
         entry = trust_registry.resolve_entry(target)
     except ValueError as exc:
         raise StateConflict("Replay target is absent from the exact trust registry") from exc
-    return entry.trust_anchor, entry.tls_leaf_spki_sha256
+    return entry.trust_anchor, entry.accepted_tls_leaf_spki_sha256(receipt_issued_at)
 
 
 @dataclass(slots=True)
@@ -451,12 +465,31 @@ class ControlPlaneService:
         executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
         target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None,
         target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None,
+        target_attestation_registry_bundle: TargetAttestationRegistryBundle | None = None,
+        target_attestation_registry_trust_anchor: (
+            TargetAttestationRegistryTrustAnchor | None
+        ) = None,
     ) -> None:
+        if (target_attestation_registry_bundle is None) != (
+            target_attestation_registry_trust_anchor is None
+        ):
+            raise ValueError(
+                "signed target registry bundle and distribution trust anchor "
+                "must be configured together"
+            )
         if (
             target_attestation_trust_anchor is not None
-            and target_attestation_trust_registry is not None
+            and (
+                target_attestation_trust_registry is not None
+                or target_attestation_registry_bundle is not None
+            )
         ):
             raise ValueError("configure either one target trust anchor or the exact registry")
+        if (
+            target_attestation_trust_registry is not None
+            and target_attestation_registry_bundle is not None
+        ):
+            raise ValueError("configure either an inline or signed target trust registry")
         self.repository = repository
         self.signer = signer
         self._replay_executor_profiles = {
@@ -467,7 +500,18 @@ class ControlPlaneService:
         self._replay_attestor = replay_attestor
         self._executor_attestation_trust_anchor = executor_attestation_trust_anchor
         self._target_attestation_trust_anchor = target_attestation_trust_anchor
-        self._target_attestation_trust_registry = target_attestation_trust_registry
+        self._target_attestation_registry_bundle = target_attestation_registry_bundle
+        self._target_attestation_registry_trust_anchor = (
+            target_attestation_registry_trust_anchor
+        )
+        self._target_attestation_trust_registry = (
+            target_attestation_registry_bundle.statement.registry
+            if target_attestation_registry_bundle is not None
+            else target_attestation_trust_registry
+        )
+        self._target_attestation_registry_activated = (
+            target_attestation_registry_bundle is None
+        )
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -3132,6 +3176,107 @@ class ControlPlaneService:
     def _verify_checkpoint(self, checkpoint: CheckpointRecord) -> None:
         self._lifecycle.verify_checkpoint(checkpoint)
 
+    def activate_target_attestation_registry(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> None:
+        """Verify and durably advance one signed registry distribution chain."""
+
+        bundle = self._target_attestation_registry_bundle
+        trust_anchor = self._target_attestation_registry_trust_anchor
+        if bundle is None or trust_anchor is None:
+            return
+        activated_at = _aware(now or utc_now())
+        try:
+            verify_target_attestation_registry_bundle(
+                bundle,
+                trust_anchor=trust_anchor,
+                now=activated_at,
+            )
+        except ValueError as exc:
+            raise StateConflict("signed target trust registry is not currently trusted") from exc
+        statement = bundle.statement
+        bundle_digest = bundle.digest
+        with self.repository.transaction() as session:
+            if self.repository.dialect_name == "postgresql":
+                advisory_key = int.from_bytes(
+                    sha256(statement.trust_domain.encode("utf-8")).digest()[:8],
+                    byteorder="big",
+                    signed=True,
+                )
+                session.execute(
+                    text("SELECT pg_advisory_xact_lock(:key)"),
+                    {"key": advisory_key},
+                )
+            latest = session.scalar(
+                select(TargetAttestationRegistryVersionRecord)
+                .where(
+                    TargetAttestationRegistryVersionRecord.trust_domain
+                    == statement.trust_domain
+                )
+                .order_by(TargetAttestationRegistryVersionRecord.sequence.desc())
+                .limit(1)
+                .with_for_update()
+            )
+            if latest is None:
+                if statement.sequence != 1 or statement.previous_bundle_sha256 is not None:
+                    raise StateConflict(
+                        "signed target trust registry does not start at sequence one"
+                    )
+            elif statement.sequence == latest.sequence:
+                if bundle_digest != latest.bundle_digest:
+                    raise StateConflict(
+                        "signed target trust registry sequence has equivocated"
+                    )
+                self._target_attestation_registry_activated = True
+                return
+            else:
+                if statement.sequence < latest.sequence:
+                    raise StateConflict("signed target trust registry rollback was rejected")
+                if statement.issuer != latest.issuer:
+                    raise StateConflict(
+                        "signed target trust registry issuer changed within one trust domain"
+                    )
+                if statement.sequence != latest.sequence + 1:
+                    raise StateConflict("signed target trust registry sequence has a gap")
+                if statement.previous_bundle_sha256 != latest.bundle_digest:
+                    raise StateConflict(
+                        "signed target trust registry predecessor digest is inconsistent"
+                    )
+            session.add(
+                TargetAttestationRegistryVersionRecord(
+                    trust_domain=statement.trust_domain,
+                    sequence=statement.sequence,
+                    issuer=statement.issuer,
+                    bundle_digest=bundle_digest,
+                    previous_bundle_digest=statement.previous_bundle_sha256,
+                    registry_id=statement.registry.registry_id,
+                    registry_digest=statement.registry.digest,
+                    issued_at=_aware(statement.issued_at),
+                    not_before=_aware(statement.not_before),
+                    expires_at=_aware(statement.expires_at),
+                    activated_at=activated_at,
+                )
+            )
+        self._target_attestation_registry_activated = True
+
+    def _require_current_target_attestation_registry(self, now: datetime) -> None:
+        bundle = self._target_attestation_registry_bundle
+        trust_anchor = self._target_attestation_registry_trust_anchor
+        if bundle is None:
+            return
+        if trust_anchor is None or not self._target_attestation_registry_activated:
+            raise StateConflict("signed target trust registry has not been durably activated")
+        try:
+            verify_target_attestation_registry_bundle(
+                bundle,
+                trust_anchor=trust_anchor,
+                now=now,
+            )
+        except ValueError as exc:
+            raise StateConflict("signed target trust registry is not currently trusted") from exc
+
     def _replay_attempt(
         self,
         session: Session,
@@ -3191,6 +3336,8 @@ class ControlPlaneService:
             and self._target_attestation_trust_registry is None
         ):
             raise StateConflict("target attestation trust authority is not configured")
+        if target_attestation_required:
+            self._require_current_target_attestation_registry(now)
         if (statement.target_execution_proofs is not None) != target_attestation_required:
             raise StateConflict("executor target execution proof does not match the Replay policy")
         permits = sorted(authority.permits, key=lambda permit: permit.call_ordinal)
@@ -3361,6 +3508,7 @@ class ControlPlaneService:
                 statement = receipt.statement
                 selected_anchor, expected_tls_leaf_spki_sha256 = _target_trust_material_for(
                     permit.target,
+                    receipt_issued_at=statement.issued_at,
                     trust_anchor=trust_anchor,
                     trust_registry=trust_registry,
                 )
@@ -3406,8 +3554,11 @@ class ControlPlaneService:
                 receipt_digests.append(receipt.digest)
                 key_ids.add(key_id)
                 trust_anchor_digests.add(selected_anchor.digest)
-                if expected_tls_leaf_spki_sha256 is not None:
-                    tls_peer_leaf_spki_sha256_digests.add(expected_tls_leaf_spki_sha256)
+                if expected_tls_leaf_spki_sha256:
+                    assert isinstance(proof, TargetExecutionTLSBindingV2)
+                    tls_peer_leaf_spki_sha256_digests.add(
+                        proof.tls_peer_leaf_spki_sha256
+                    )
         if proof_index != len(proofs):
             raise StateConflict("target execution proof set contains unbound exchanges")
         if len(trust_anchor_digests) != 1:

@@ -77,6 +77,7 @@ from pajin.control_plane.database_schema import (
     _V10_METADATA,
     _V11_METADATA,
     _V12_METADATA,
+    _V13_METADATA,
     ARTIFACT_AUTHORITY_SCHEMA_VERSION,
     ARTIFACT_AUTHORITY_TABLES,
     COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
@@ -102,6 +103,8 @@ from pajin.control_plane.database_schema import (
     REPLAY_TOOL_PERMIT_AUTHORITY_TABLES,
     REPLAY_TOOL_PERMIT_SCHEMA_VERSION,
     SUBMISSION_AND_LEASE_AUTHORITY_SCHEMA_VERSION,
+    TARGET_ATTESTATION_REGISTRY_AUTHORITY_TABLES,
+    TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION,
     V2_CONTROL_PLANE_TABLES,
     V3_CONTROL_PLANE_TABLES,
     V4_CONTROL_PLANE_TABLES,
@@ -112,6 +115,7 @@ from pajin.control_plane.database_schema import (
     V10_CONTROL_PLANE_TABLES,
     V11_CONTROL_PLANE_TABLES,
     V12_CONTROL_PLANE_TABLES,
+    V13_CONTROL_PLANE_TABLES,
     Base,
     EventRecord,
     JobRecord,
@@ -133,6 +137,7 @@ from pajin.control_plane.database_schema import (
     RunRecord,
     SchemaInitializationError,
     SchemaVersionRecord,
+    TargetAttestationRegistryVersionRecord,
     _replay_ticket_permit_authority_index,
 )
 from pajin.control_plane.models import (
@@ -165,6 +170,9 @@ _MIGRATIONS = {
     REPLAY_PROJECTION_AUTHORITY_SCHEMA_VERSION: "versioned-replay-projection-authority",
     REPLAY_RETEST_SOURCE_AUTHORITY_SCHEMA_VERSION: "negative-retest-source-authority",
     REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION: "claim-specific-replay-projection-authority",
+    TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION: (
+        "signed-target-attestation-registry-anti-rollback-authority"
+    ),
 }
 
 
@@ -241,6 +249,13 @@ def _initialize_schema(connection: Connection) -> None:  # noqa: C901
             raise SchemaInitializationError("unknown migration history for schema-v12 table set")
         _validate_v12_schema(connection)
         _migrate_v12_schema(connection)
+        _validate_current_schema(connection)
+        return
+    if cp_tables == V13_CONTROL_PLANE_TABLES:
+        if _latest_schema_version(connection) != REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION:
+            raise SchemaInitializationError("unknown migration history for schema-v13 table set")
+        _validate_v13_schema(connection)
+        _migrate_v13_schema(connection)
         _validate_current_schema(connection)
         return
     if cp_tables == CURRENT_CONTROL_PLANE_TABLES:
@@ -600,6 +615,23 @@ def _migrate_v12_schema(connection: Connection) -> None:
     _install_append_only_trigger(connection, ReplayClaimBindingRecord.__tablename__)
     _install_complete_append_only_guard(connection, ReplayClaimBindingRecord.__tablename__)
     _record_migration(connection, REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION)
+    _migrate_v13_schema(connection)
+
+
+def _migrate_v13_schema(connection: Connection) -> None:
+    """Add the durable monotonic activation ledger for signed Target registries."""
+
+    _lock_v9_migration_writes(connection)
+    _create_tables(connection, TARGET_ATTESTATION_REGISTRY_AUTHORITY_TABLES)
+    _install_append_only_trigger(
+        connection,
+        TargetAttestationRegistryVersionRecord.__tablename__,
+    )
+    _install_complete_append_only_guard(
+        connection,
+        TargetAttestationRegistryVersionRecord.__tablename__,
+    )
+    _record_migration(connection, TARGET_ATTESTATION_REGISTRY_SCHEMA_VERSION)
 
 
 def _validate_migrating_core_json_rows(connection: Connection) -> None:
@@ -1476,6 +1508,36 @@ def _validate_v12_schema(connection: Connection) -> None:
     if actual != expected or any(row.applied_at is None for row in rows):
         raise SchemaInitializationError(
             f"unknown or incomplete schema v12 migration history: {actual!r}"
+        )
+    _validate_v10_authority_rows(connection)
+
+
+def _validate_v13_schema(connection: Connection) -> None:
+    _validate_tables(
+        connection,
+        V13_CONTROL_PLANE_TABLES,
+        metadata=_V13_METADATA,
+        append_only_guard_version=COMPLETE_APPEND_ONLY_GUARDS_SCHEMA_VERSION,
+        require_submission_and_lease_guards=True,
+    )
+    rows = connection.execute(
+        select(
+            SchemaVersionRecord.version,
+            SchemaVersionRecord.description,
+            SchemaVersionRecord.applied_at,
+        ).order_by(SchemaVersionRecord.version)
+    ).all()
+    expected = [
+        (version, _MIGRATIONS[version])
+        for version in range(
+            LEGACY_SCHEMA_VERSION,
+            REPLAY_CLAIM_PROJECTION_SCHEMA_VERSION + 1,
+        )
+    ]
+    actual = [(int(row.version), str(row.description)) for row in rows]
+    if actual != expected or any(row.applied_at is None for row in rows):
+        raise SchemaInitializationError(
+            f"unknown or incomplete schema v13 migration history: {actual!r}"
         )
     _validate_v10_authority_rows(connection)
 

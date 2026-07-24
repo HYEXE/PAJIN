@@ -2,23 +2,25 @@
 
 # PAJIN 제품 기획서
 
-## 2026-07-24 B2.8d 구현 상태
+## 2026-07-24 B2.8e 구현 상태
 
-[`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.ko.md)에 따라 HTTPS
-Target-attested Replay의 endpoint key를 exact registry route에 결박했다. registry v2의
-HTTPS entry는 `tls_leaf_spki_sha256`이 필수다. Worker는 표준 PKIX·hostname 검증을 통과한
-peer leaf certificate의 SPKI SHA-256을 관찰하고, Executor는 이를 CONNECT route·Target
-receipt와 함께 TLS binding v2로 서명한다. Control Plane은 exact pin 불일치와 TLS binding
-v1 downgrade를 fail closed 한다.
+[`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.ko.md)에 따라 registry
+v3를 별도 Ed25519 배포 trust anchor가 서명하는 번들로 도입했다. 번들은 연속 sequence,
+이전 번들 digest, 최대 7일의 유효기간과 exact-URL registry 전체를 결박한다. schema v14
+append-only `cp_target_attestation_registry_versions`는 trust domain별 활성화를 기록해
+재시작·다중 replica에서도 rollback, gap, predecessor 불일치와 equivocation을 거부한다.
 
-registry v1과 기존 단일 anchor 경로는 직렬화·검증 호환성을 유지한다. registry v2 성공
-summary와 finalization/projection authority에는 registry ID/digest, 선택된 anchor digest와
-검증한 SPKI digest가 보존된다. SPKI pin은 endpoint key 결박이며 full certificate chain,
-revocation·CT 또는 특정 TLS session의 handshake/application bytes를 증명하지 않는다.
+HTTPS entry는 현재 pin 외에 이전 pin 하나를 최대 24시간만 포함할 수 있다. Target receipt
+발행 시각이 cutoff 전일 때만 이전 pin을 허용하며 summary에는 실제 관찰·검증한 SPKI를
+보존한다. Control Plane은 inline 번들 또는 redirect 없는 absolute HTTPS URL에서 최대
+512 KiB를 시작 시 한 번 읽고, 서명·key lifecycle·현재 유효기간 검증 뒤에만 활성화한다.
+registry v1/v2와 기존 단일 anchor는 호환성을 유지하지만 v3는 unsigned inline 설정을
+거부한다.
 
-다음 개발 순서는 signed registry 배포, monotonic anti-rollback과 old/new pin overlap
-rotation, TLS exporter 또는 동등한 session binding이며, 그 뒤 object-store/multipart
-Artifact 전송으로 이어진다. mTLS/HSM/KMS와 transparency/federation도 후속 경계다.
+다음 개발 순서는 TLS exporter 또는 동등한 session binding이며, 그 뒤
+object-store/multipart Artifact 전송으로 이어진다. runtime registry refresh, 배포 anchor
+transparency/federation, DB·백업 소실 뒤 외부 anti-rollback 기준과 mTLS/HSM/KMS도 후속
+경계다.
 
 > 자율형 멀티 에이전트 AI 레드팀·보안 검증 오케스트레이션 플랫폼
 
@@ -1383,8 +1385,10 @@ Worker와 다른 credential로 이 daemon을 활성화한다. Opaque public sour
 정렬된 immutable input authority로 묶고, source copy와 전체 Replay Artifact를 DB lock 밖에서 다시
 검증해 `validation/v1alpha1` projection을 만든 뒤 source root·batch CAS·item 집합이 그대로일 때만
 append-only publication authority와 `gated`/`completed` 상태를 commit한다. Negative Control Plane
-retest, Claim별 public projection과 Ed25519 portable receipt proof가 구현됐다. 독립
-executor·target issuer와 multi-host 전송은 별도 완료 기준으로 남아 있다.
+retest, Claim별 public projection, Ed25519 portable receipt, executor-attested portable Artifact,
+Target-issued exact exchange receipt, HTTPS CONNECT·leaf SPKI 결박과 signed registry v3의
+schema-v14 anti-rollback·제한된 pin rotation이 구현됐다. TLS session binding과 대형
+object-store/multipart 전송은 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 강화된 KISA 재테스트 완료 기준
 
@@ -1535,7 +1539,7 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Atomic Claim Validator, metadata-minimized Blind Evidence Reviewer, 선택형 별도 Provider/model Blind Review·독립 severity 도출, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Claim별 Replay 실행 권위·공개 부분 검증 상태, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API, Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation·negative-retest projection, fresh-identity retry, Ed25519 portable Claim receipt verifier bundle과 executor 서명 기반 bounded multi-host Artifact 전송을 구현; 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, target issuer attestation과 대형 object-store/multipart Artifact 전송, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning과 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claim·Blind Review, 등록형 M03·M06·A04 Validation Control과 Claim별 Replay, 공통 Gate, exact KISA fresh-session Oracle, baseline-bound retest, durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API, schema-v13 Claim projection, Ed25519 portable Claim receipt, executor 서명 기반 bounded multi-host Artifact, Target-issued challenge-bound receipt, HTTPS CONNECT·leaf SPKI 결박, signed registry v3와 schema-v14 anti-rollback·제한된 pin rotation을 구현; 등록된 세 시나리오 밖의 Validation Control·Claim Replay, TLS exporter session binding, runtime registry refresh·transparency/federation, 대형 object-store/multipart Artifact, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning과 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1587,8 +1591,12 @@ source-root/batch-CAS/정렬된 finalization 집합 검증으로 구현됐다. N
   Claim receipt authority를 off-host에서 검증
 - B2.8a 첫 수직 조각: 별도 executor workload key가 exact 발급 authority·canonical permit set·
   sealed output digest와 bounded portable bundle을 서명. Control Plane은 bytes 복사 전에 외부
-  trust anchor로 검증하고 managed Artifact import 뒤 다시 결박하며, 기존 projection digest의
-  하위 호환성을 유지. target issuer attestation은 후속
+  trust anchor로 검증하고 managed Artifact import 뒤 다시 결박하며 기존 projection digest 호환 유지
+- B2.8b-c: permit-derived challenge를 Target-issued Ed25519 exact exchange receipt와 host
+  proxy/HTTPS CONNECT 관찰에 결박하고 exact-URL 다중 Target trust registry 도입
+- B2.8d: registry v2 HTTPS entry의 leaf SPKI pin과 Worker 관찰 TLS binding v2를 exact match
+- B2.8e: 별도 배포 anchor가 서명한 registry v3, schema-v14 monotonic anti-rollback 원장,
+  최대 24시간 old/new pin overlap과 시작 시 bounded HTTPS 배포
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
@@ -1763,10 +1771,10 @@ server-owned import·typed finalization과 one-item 공통 Gate도 구현됐고 
 credential로 daemon을 활성화한다. Opaque public source/batch admission, 역할 기반 상태 조회 API와
 자동 fresh-identity retry 발행도 구현됐다. Schema-v11 multi-item projection, schema-v12 dual-source
 negative Control Plane retest, schema-v13 opt-in exact Claim별 공개 projection과 Ed25519 portable
-Claim receipt verifier bundle도 구현됐다. 별도 executor workload key가 exact permit·sealed
-output과 bounded portable Artifact를 서명해 다른 host의 Control Plane으로 전달하는 B2.8a도
-구현됐다. target issuer와 대형 object-store/multipart Artifact 전송이 남아 있어 M6-07B 전체는
-미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에
+Claim receipt verifier bundle, executor-attested portable Artifact, Target-issued exact exchange
+receipt, HTTPS CONNECT·leaf SPKI 결박과 signed registry v3의 schema-v14 anti-rollback·제한된
+pin rotation도 구현됐다. TLS exporter session binding과 대형 object-store/multipart Artifact
+전송이 남아 있어 M6-07B 전체는 미완료다. 다음 항목은 Phase 3-4의 후속 작업 전에
 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
