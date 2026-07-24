@@ -301,19 +301,14 @@ def _validate_explicit_claim_coverage(
     candidates: list[CandidateFinding],
     verified_results: list[VerifiedReplayResult],
 ) -> None:
-    candidates_by_id = {
-        candidate.candidate_id: candidate for candidate in candidates
-    }
+    candidates_by_id = {candidate.candidate_id: candidate for candidate in candidates}
     claims_by_candidate: dict[str, set[str]] = {}
     explicit_candidates: set[str] = set()
     for result in verified_results:
         artifact_set = result.artifact_set
         binding = artifact_set.outcome.binding
         claim = binding.claim
-        if (
-            claim is not None
-            and claim.claim_type is not AtomicClaimType.VALIDITY
-        ):
+        if claim is not None and claim.claim_type is not AtomicClaimType.VALIDITY:
             explicit_candidates.add(binding.candidate_id)
         if claim is not None:
             claims_by_candidate.setdefault(binding.candidate_id, set()).add(claim.claim_id)
@@ -478,20 +473,11 @@ def _public_finding_state(
         if validity is None or validity.status is not ClaimReplayStatus.NOT_REPRODUCED:
             raise ValueError("Oracle contradiction must project a not-reproduced Claim")
         return PublicFindingState.NOT_REPRODUCED
-    if any(
-        assessment.status is ClaimReplayStatus.REPRODUCED
-        for assessment in normalized
-    ):
+    if any(assessment.status is ClaimReplayStatus.REPRODUCED for assessment in normalized):
         return PublicFindingState.PARTIALLY_CONFIRMED
-    if any(
-        assessment.status is ClaimReplayStatus.NOT_REPRODUCED
-        for assessment in normalized
-    ):
+    if any(assessment.status is ClaimReplayStatus.NOT_REPRODUCED for assessment in normalized):
         return PublicFindingState.NOT_REPRODUCED
-    if any(
-        assessment.status is ClaimReplayStatus.INCONCLUSIVE
-        for assessment in normalized
-    ):
+    if any(assessment.status is ClaimReplayStatus.INCONCLUSIVE for assessment in normalized):
         return PublicFindingState.INCONCLUSIVE
     return PublicFindingState(decision.disposition.value)
 
@@ -503,6 +489,7 @@ def decide_replay_confirmation(
     artifact_set: ReplayArtifactSet,
     lineage: ReplayConfirmationLineage,
     decided_at: datetime,
+    independent_execution_attested: bool = False,
 ) -> ValidationDecision:
     """Pure reason-matrix evaluation over an already verified replay artifact set."""
 
@@ -513,7 +500,11 @@ def decide_replay_confirmation(
         lineage=lineage,
         decided_at=decided_at,
         allow_legacy_confirmation_contradiction=False,
-        successful_replay_disposition=_successful_replay_disposition,
+        successful_replay_disposition=(
+            _independently_attested_successful_replay_disposition
+            if independent_execution_attested
+            else _successful_replay_disposition
+        ),
     )
 
 
@@ -703,6 +694,30 @@ def _successful_replay_disposition(
     )
 
 
+def _independently_attested_successful_replay_disposition(
+    source_decision: ValidationDecision,
+    artifact_set: ReplayArtifactSet,
+    *,
+    allow_legacy_confirmation_contradiction: bool,
+) -> _ReplayDisposition:
+    selected = _successful_replay_disposition(
+        source_decision,
+        artifact_set,
+        allow_legacy_confirmation_contradiction=allow_legacy_confirmation_contradiction,
+    )
+    if selected.reason is not ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING:
+        return selected
+    return _ReplayDisposition(
+        disposition=FindingDisposition.CONFIRMED,
+        reason=ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED,
+        confirmation_basis=ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY,
+        summary=(
+            "The exact Replay claim was reproduced with a challenge-bound Target receipt, "
+            "host proxy observation, and independently keyed executor attestation."
+        ),
+    )
+
+
 def _validate_oracle_contradiction(
     *,
     required_contradiction_count: int,
@@ -832,8 +847,7 @@ def _validate_receipt_set(
                 or packet_claim != expected_claim
                 or claim_binding.claim_digest != expected_claim.claim_digest
                 or claim_binding.claim_type is not expected_claim.claim_type
-                or claim_binding.candidate_claim_digest
-                != expected_claim.candidate_claim_digest
+                or claim_binding.candidate_claim_digest != expected_claim.candidate_claim_digest
                 or claim_binding.statement != expected_claim.statement
             ):
                 raise ValueError("replay receipt substituted its source Atomic Claim")
@@ -1195,9 +1209,7 @@ def _render_confirmation_report(
         if decisions_by_candidate[candidate.candidate_id].replay_lineage
     ]
     assessments_by_candidate: dict[str, list[ClaimReplayAssessment]] = {}
-    for assessment in (
-        claim_replay_set.assessments if claim_replay_set is not None else []
-    ):
+    for assessment in claim_replay_set.assessments if claim_replay_set is not None else []:
         assessments_by_candidate.setdefault(assessment.candidate_id, []).append(assessment)
     lines.extend(["", "## Replay evidence decisions", ""])
     for candidate in replayed_candidates:
@@ -1213,9 +1225,7 @@ def _render_confirmation_report(
                 *(
                     [
                         "- Public state: "
-                        + markdown_code_span(
-                            _public_finding_state(decision, assessments).value
-                        ),
+                        + markdown_code_span(_public_finding_state(decision, assessments).value),
                         *[
                             "- Claim "
                             + markdown_code_span(assessment.claim_type.value)

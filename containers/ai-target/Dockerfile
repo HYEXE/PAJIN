@@ -4,9 +4,21 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
+COPY requirements.lock /tmp/pajin-ai-target-requirements.lock
+
+RUN python -m pip install \
+        --require-hashes \
+        --only-binary=:all: \
+        --target /opt/pajin-target-vendor \
+        -r /tmp/pajin-ai-target-requirements.lock \
+    && rm /tmp/pajin-ai-target-requirements.lock
+
 COPY target.py /app/target.py
 
-RUN chmod 0555 /app/target.py
+ENV PYTHONPATH=/opt/pajin-target-vendor
+
+RUN chmod 0555 /app/target.py \
+    && python -c "import cryptography; print('verified bundled cryptography runtime')"
 
 USER 65532:65532
 EXPOSE 8080

@@ -56,6 +56,10 @@ from pajin.control_plane.models import (
 from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import ValidationDecision
+from pajin.replay.target_attestation import (
+    TargetExecutionVerificationSummary,
+    derive_target_execution_challenge,
+)
 from pajin.replay.tickets import replay_context_digest
 
 
@@ -236,7 +240,11 @@ class ControlPlaneViewMapper:
         )
 
     @staticmethod
-    def replay_tool_permit(record: ReplayToolPermitRecord) -> ReplayToolPermitView:
+    def replay_tool_permit(
+        record: ReplayToolPermitRecord,
+        *,
+        target_attestation: bool = False,
+    ) -> ReplayToolPermitView:
         return ReplayToolPermitView(
             permit_id=record.permit_id,
             permit_digest=record.permit_digest,
@@ -268,6 +276,24 @@ class ControlPlaneViewMapper:
             request_units=record.request_units,
             issued_at=_aware(record.issued_at),
             expires_at=_aware(record.expires_at),
+            target_execution_challenge=(
+                derive_target_execution_challenge(
+                    permit_digest=record.permit_digest,
+                    replay_request_id=record.replay_request_id,
+                    batch_id=record.batch_id,
+                    item_id=record.item_id,
+                    ticket_id=record.ticket_id,
+                    fencing_value=record.fencing_value,
+                    call_ordinal=record.call_ordinal,
+                    target=record.target,
+                    method=record.method,
+                    compiled_argument_digest=record.compiled_argument_digest,
+                    issued_at=_aware(record.issued_at),
+                    expires_at=_aware(record.expires_at),
+                )
+                if target_attestation
+                else None
+            ),
         )
 
     @classmethod
@@ -299,9 +325,11 @@ class ControlPlaneViewMapper:
         )
         artifact_transport: PortableArtifactTransportReceipt | None
         executor_attestation: ExecutorExecutionAttestation | None
+        target_execution_verification: TargetExecutionVerificationSummary | None
         if all(value is None for value in portable_fields):
             artifact_transport = None
             executor_attestation = None
+            target_execution_verification = None
         elif any(value is None for value in portable_fields):
             raise StateConflict("durable portable Replay finalization is incomplete")
         else:
@@ -313,27 +341,19 @@ class ControlPlaneViewMapper:
                     portable_fields[2]
                 )
             except ValueError as exc:
-                raise StateConflict(
-                    "durable portable Replay finalization is invalid"
-                ) from exc
+                raise StateConflict("durable portable Replay finalization is invalid") from exc
             statement = executor_attestation.statement
             anchor_digest = portable_fields[4]
             if not (
                 portable_fields[1]
-                == replay_context_digest(
-                    artifact_transport.model_dump(mode="json", by_alias=True)
-                )
+                == replay_context_digest(artifact_transport.model_dump(mode="json", by_alias=True))
                 and portable_fields[3] == executor_attestation.digest
                 and isinstance(anchor_digest, str)
                 and len(anchor_digest) == 64
-                and all(
-                    character in "0123456789abcdef"
-                    for character in anchor_digest
-                )
+                and all(character in "0123456789abcdef" for character in anchor_digest)
                 and artifact_transport.output_staging_id == record.output_staging_id
                 and artifact_transport.manifest_sha256 == artifact.content_digest
-                and statement.artifact_bundle_manifest_sha256
-                == artifact_transport.manifest_sha256
+                and statement.artifact_bundle_manifest_sha256 == artifact_transport.manifest_sha256
                 and statement.artifact_bundle_file_count == artifact_transport.file_count
                 and statement.artifact_bundle_total_bytes == artifact_transport.total_bytes
                 and statement.batch_id == batch.batch_id
@@ -344,14 +364,31 @@ class ControlPlaneViewMapper:
                 and statement.replay_run_id == record.replay_run_id
                 and statement.compilation_digest == item.compilation_digest
                 and statement.artifact_set_digest == record.artifact_set_digest
-                and statement.artifact_seal_root_digest
-                == record.artifact_seal_root_digest
-                and statement.receipt_seal_root_digest
-                == record.receipt_seal_root_digest
+                and statement.artifact_seal_root_digest == record.artifact_seal_root_digest
+                and statement.receipt_seal_root_digest == record.receipt_seal_root_digest
             ):
-                raise StateConflict(
-                    "durable portable Replay finalization graph is inconsistent"
-                )
+                raise StateConflict("durable portable Replay finalization graph is inconsistent")
+            raw_target_verification = job.result.get("targetExecutionVerification")
+            raw_target_verification_digest = job.result.get("targetExecutionVerificationDigest")
+            target_proofs_present = statement.target_execution_proofs is not None
+            if not target_proofs_present:
+                if (
+                    raw_target_verification is not None
+                    or raw_target_verification_digest is not None
+                ):
+                    raise StateConflict("legacy portable Replay contains target verification state")
+                target_execution_verification = None
+            else:
+                try:
+                    target_execution_verification = (
+                        TargetExecutionVerificationSummary.model_validate(raw_target_verification)
+                    )
+                except ValueError as exc:
+                    raise StateConflict("durable target execution verification is invalid") from exc
+                if raw_target_verification_digest != target_execution_verification.digest:
+                    raise StateConflict(
+                        "durable target execution verification digest is inconsistent"
+                    )
         artifact_ref = cls.artifact(artifact)
         finalization_material: dict[str, object] = {
             "artifact": artifact_ref.model_dump(mode="json"),
@@ -374,6 +411,15 @@ class ControlPlaneViewMapper:
                     "executorAttestationTrustAnchorDigest": portable_fields[4],
                 }
             )
+            if target_execution_verification is not None:
+                finalization_material.update(
+                    {
+                        "targetExecutionVerificationDigest": (target_execution_verification.digest),
+                        "targetAttestationTrustAnchorDigest": (
+                            target_execution_verification.trust_anchor_digest
+                        ),
+                    }
+                )
         expected_result_digest = replay_context_digest(finalization_material)
         if not (
             record.job_id == job.job_id
@@ -406,6 +452,7 @@ class ControlPlaneViewMapper:
             receipt_seal_root_digest=record.receipt_seal_root_digest,
             artifact_transport=artifact_transport,
             executor_attestation=executor_attestation,
+            target_execution_verification=target_execution_verification,
             gate_decision=decision,
             result_digest=record.result_digest,
             finalized_by=record.finalized_by,
@@ -442,9 +489,7 @@ class ControlPlaneViewMapper:
                 raise ValueError("unsupported Replay projection input authority version")
         except ValueError as exc:
             raise StateConflict("durable Replay projection inputs are invalid") from exc
-        authority_digest = replay_context_digest(
-            authority.model_dump(mode="json", by_alias=True)
-        )
+        authority_digest = replay_context_digest(authority.model_dump(mode="json", by_alias=True))
         if not (
             record.batch_id == batch.batch_id
             and record.source_root_digest == batch.source_root_digest

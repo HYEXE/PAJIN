@@ -171,6 +171,22 @@ def test_worker_image_builds_from_its_hash_lock_without_an_ignored_vendor_tree()
     assert "sys_platform == 'win32'" in lock
 
 
+def test_ai_target_image_builds_receipt_signer_from_its_hash_lock() -> None:
+    dockerfile = Path("containers/ai-target/Dockerfile").read_text(encoding="utf-8")
+    lock = Path("containers/ai-target/requirements.lock").read_text(encoding="utf-8")
+    preparation = Path("scripts/prepare-ai-target-dependencies.ps1").read_text(encoding="utf-8")
+
+    assert "COPY requirements.lock /tmp/pajin-ai-target-requirements.lock" in dockerfile
+    assert "--require-hashes" in dockerfile
+    assert "--only-binary=:all:" in dockerfile
+    assert "cryptography==49.0.0" in lock
+    assert "--hash=sha256:" in lock
+    assert "--universal" in preparation
+    assert "--python-platform" not in preparation
+    assert '--custom-compile-command "scripts/prepare-ai-target-dependencies.ps1"' in preparation
+    assert "#    scripts/prepare-ai-target-dependencies.ps1" in lock
+
+
 def test_container_base_images_are_pinned_to_immutable_manifest_digests() -> None:
     dockerfiles = sorted(Path("containers").glob("*/Dockerfile"))
     assert dockerfiles

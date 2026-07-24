@@ -46,6 +46,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
+    KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
     DerivedKISAReplayBatch,
     DerivedKISAReplayItem,
 )
@@ -116,6 +117,7 @@ class ReplayBatchDeriver(Protocol):
         retest_artifact_ref: ArtifactRef | None = None,
         claim_projection: bool = False,
         portable_attestation: bool = False,
+        target_attestation: bool = False,
     ) -> DerivedKISAReplayBatch: ...
 
 
@@ -244,6 +246,7 @@ class ReplayIssuanceService:
                     retest_artifact_ref=retest_source,
                     claim_projection=request.claim_projection,
                     portable_attestation=request.portable_attestation,
+                    target_attestation=request.target_attestation,
                 )
             except (OSError, ValueError) as exc:
                 raise StateConflict("managed source is not eligible for KISA Replay") from exc
@@ -343,12 +346,16 @@ class ReplayIssuanceService:
                     KISA_RETEST_POLICY_VERSION
                     if retest_source is not None
                     else (
-                        KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
-                        if request.portable_attestation
+                        KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
+                        if request.target_attestation
                         else (
-                            KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                            if request.claim_projection
-                            else KISA_CONFIRMATION_POLICY_VERSION
+                            KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+                            if request.portable_attestation
+                            else (
+                                KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                                if request.claim_projection
+                                else KISA_CONFIRMATION_POLICY_VERSION
+                            )
                         )
                     )
                 )
@@ -604,9 +611,11 @@ class ReplayIssuanceService:
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
             claim_projection = batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS
-            portable_attestation = (
-                batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
-            )
+            portable_attestation = batch.policy_version in {
+                KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
+                KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
+            }
+            target_attestation = batch.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
@@ -630,6 +639,7 @@ class ReplayIssuanceService:
                 retest_artifact_ref=retest_source,
                 claim_projection=claim_projection,
                 portable_attestation=portable_attestation,
+                target_attestation=target_attestation,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
@@ -996,9 +1006,11 @@ class ReplayIssuanceService:
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
             claim_projection = batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS
-            portable_attestation = (
-                batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
-            )
+            portable_attestation = batch.policy_version in {
+                KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
+                KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
+            }
+            target_attestation = batch.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
 
         snapshot = self._resolve_managed_artifact(
             artifact_repository,
@@ -1022,6 +1034,7 @@ class ReplayIssuanceService:
                 retest_artifact_ref=retest_source,
                 claim_projection=claim_projection,
                 portable_attestation=portable_attestation,
+                target_attestation=target_attestation,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict(
@@ -1674,12 +1687,16 @@ class ReplayIssuanceService:
             KISA_RETEST_POLICY_VERSION
             if request.retest_source is not None
             else (
-                KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
-                if request.portable_attestation
+                KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
+                if request.target_attestation
                 else (
-                    KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                    if request.claim_projection
-                    else KISA_CONFIRMATION_POLICY_VERSION
+                    KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+                    if request.portable_attestation
+                    else (
+                        KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                        if request.claim_projection
+                        else KISA_CONFIRMATION_POLICY_VERSION
+                    )
                 )
             )
         )

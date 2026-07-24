@@ -24,6 +24,7 @@ from pajin.replay.tickets import ReplayTicketFinalizationVerifier
 from pajin.workflow import confirmation_policy as _policy
 from pajin.workflow.confirmation_policy import (
     _ConfirmationProjection,
+    _independently_attested_successful_replay_disposition,
     _render_confirmation_report,
     _ReplayDisposition,
     _semantic_supported,
@@ -78,6 +79,7 @@ def decide_replay_confirmation(
     artifact_set: ReplayArtifactSet,
     lineage: ReplayConfirmationLineage,
     decided_at: datetime,
+    independent_execution_attested: bool = False,
 ) -> ValidationDecision:
     """Pure reason-matrix evaluation over an already verified replay artifact set."""
 
@@ -88,7 +90,11 @@ def decide_replay_confirmation(
         lineage=lineage,
         decided_at=decided_at,
         allow_legacy_confirmation_contradiction=False,
-        successful_replay_disposition=_successful_replay_disposition,
+        successful_replay_disposition=(
+            _independently_attested_successful_replay_disposition
+            if independent_execution_attested
+            else _successful_replay_disposition
+        ),
     )
 
 

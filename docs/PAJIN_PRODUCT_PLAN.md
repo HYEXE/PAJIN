@@ -973,6 +973,17 @@ attestation은 projection seal 안에 보존된다. 이는 executor 관찰 증�
 증명은 아니므로 `needs-review` 상한은 유지하며, B2.8b target-side signed receipt가 다음
 독립 실행 경계다.
 
+[`ADR-0040`](adr/0040-target-issued-challenge-bound-replay-receipts.md)의 B2.8b 수직 조각은
+명시적 `target_attestation` opt-in에 `pajin.kisa-target-attestation:v4` 정책을 부여한다.
+Control Plane은 durable permit에서 최대 30초의 challenge를 파생하고, Target은 별도 Ed25519
+key로 exact request와 receipt 제외 response digest를 서명한다. host proxy는 receipt를 포함한
+응답을 관찰하고 executor는 Target receipt와 proxy receipt의 결합을 기존 statement 안에서
+서명한다. Control Plane은 외부 bytes 복사 전 executor authority를, managed import 후
+permit→challenge→transcript→Target signature→proxy observation 결합을 다시 검증한다. 이 exact
+validity Claim만 `VERIFIED_INDEPENDENT_REPLAY`로 승격할 수 있으며 contradiction·inconclusive
+경로는 그대로 우선한다. 현재 첫 조각은 평문 HTTP와 단일 Target trust anchor에 한정되므로,
+HTTPS 관찰과 다중 Target registry는 후속 경계다.
+
 이 단계들 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
 Validator의 동의와 objective gate만 통과한 Candidate는 최대 `needs-review`이며, 별도

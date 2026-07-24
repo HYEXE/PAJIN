@@ -653,6 +653,7 @@ class _AIProbe:
     purpose: str
     turns: list[Any]
     checks: list[Any]
+    target_challenge: dict[str, Any] | None
 
 
 def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
@@ -674,6 +675,28 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         raise ValueError("probe turns must contain between 1 and 20 items")
     if not isinstance(checks, list) or not 1 <= len(checks) <= 20:
         raise ValueError("probe checks must contain between 1 and 20 items")
+    target_challenge = payload.get("targetChallenge")
+    if target_challenge is not None:
+        if not isinstance(target_challenge, dict):
+            raise TypeError("targetChallenge must be an object")
+        required_challenge_fields = {
+            "api_version",
+            "challenge_id",
+            "permit_digest",
+            "replay_request_id",
+            "batch_id",
+            "item_id",
+            "ticket_id",
+            "fencing_value",
+            "call_ordinal",
+            "target_sha256",
+            "method",
+            "compiled_argument_digest",
+            "issued_at",
+            "expires_at",
+        }
+        if set(target_challenge) != required_challenge_fields:
+            raise ValueError("targetChallenge fields are not canonical")
     return _AIProbe(
         target=target,
         scenario_id=scenario_id,
@@ -682,6 +705,7 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         purpose=purpose,
         turns=turns,
         checks=checks,
+        target_challenge=target_challenge,
     )
 
 
@@ -698,7 +722,18 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
         request_payload = {
             "sessionId": probe.session_id,
             "messages": messages,
-            "metadata": {"scenarioId": probe.scenario_id, "turn": index},
+            "metadata": {
+                "scenarioId": probe.scenario_id,
+                "turn": index,
+                **(
+                    {
+                        "targetChallenge": probe.target_challenge,
+                        "targetExchangeOrdinal": index + 1,
+                    }
+                    if probe.target_challenge is not None
+                    else {}
+                ),
+            },
         }
         response, response_latency = _post_ai_turn(probe.target, request_payload)
         response_latencies.append(response_latency)

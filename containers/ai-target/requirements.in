@@ -1,0 +1,2 @@
+# Runtime dependency for Target-issued Ed25519 Replay receipts.
+cryptography>=45,<50

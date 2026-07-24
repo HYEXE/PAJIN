@@ -996,6 +996,18 @@ attestation digests are bound into finalization and projection authority, and th
 is sealed into the projection. This proves an executor observation, not a target-issued execution
 receipt, so `needs-review` remains and a B2.8b target-side signed receipt is the next boundary.
 
+[`ADR-0040`](adr/0040-target-issued-challenge-bound-replay-receipts.en.md) adds the B2.8b
+vertical slice through an explicit `target_attestation` opt-in and
+`pajin.kisa-target-attestation:v4`. The Control Plane derives an at-most-30-second challenge from
+durable permit authority. A separate Target Ed25519 key signs the exact request and response
+payload excluding its receipt; the host proxy observes the response including that receipt; and
+the executor signs their exact binding in its existing statement. The Control Plane verifies
+executor authority before copying external bytes and rechecks the full
+permit-to-challenge-to-transcript-to-Target-signature-to-proxy-observation chain after managed
+import. Only this exact validity Claim can reach `VERIFIED_INDEPENDENT_REPLAY`; contradiction and
+inconclusive paths still take precedence. This first slice is limited to plaintext HTTP and one
+Target trust anchor, leaving HTTPS observation and a multi-Target registry as follow-up boundaries.
+
 These stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
 Semantic Validator agreement and the objective gate can be at most `needs-review`, and it cannot be promoted to

@@ -22,6 +22,11 @@ from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, Too
 from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import AtomicClaimType, ValidationDecision
 from pajin.modes.ai_redteam.models import KISAScenarioDefinition
+from pajin.replay.target_attestation import (
+    TargetExecutionChallenge,
+    TargetExecutionVerificationSummary,
+    derive_target_execution_challenge,
+)
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.tools.base import ToolSpec
 
@@ -710,6 +715,7 @@ class CreateReplayBatchRequest(StrictModel):
     retest_source: ArtifactLocator | None = None
     claim_projection: bool = False
     portable_attestation: bool = False
+    target_attestation: bool = False
     idempotency_key: str = Field(min_length=8, max_length=200)
 
     @model_validator(mode="after")
@@ -720,6 +726,8 @@ class CreateReplayBatchRequest(StrictModel):
             raise ValueError("Claim projection is not supported for remediation Retest batches")
         if self.portable_attestation and not self.claim_projection:
             raise ValueError("portable attestation requires a Claim projection")
+        if self.target_attestation and not self.portable_attestation:
+            raise ValueError("target attestation requires portable Replay attestation")
         return self
 
 
@@ -772,8 +780,7 @@ class ReplayFinalizeRequest(StrictModel):
     def require_complete_portable_transport(self) -> ReplayFinalizeRequest:
         if (self.artifact_bundle is None) != (self.executor_attestation is None):
             raise ValueError(
-                "portable Replay Artifact bundle and executor attestation "
-                "must be supplied together"
+                "portable Replay Artifact bundle and executor attestation must be supplied together"
             )
         return self
 
@@ -1279,6 +1286,10 @@ class ReplayToolPermitView(StrictModel):
     request_units: int = Field(strict=True, ge=1, le=100)
     issued_at: datetime
     expires_at: datetime
+    target_execution_challenge: TargetExecutionChallenge | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("method")
     @classmethod
@@ -1293,6 +1304,23 @@ class ReplayToolPermitView(StrictModel):
             raise ValueError("Replay Tool permit must expire after issuance")
         if self.expires_at > self.issued_at + timedelta(seconds=30):
             raise ValueError("Replay Tool permit exceeds the 30-second TTL ceiling")
+        if self.target_execution_challenge is not None:
+            expected = derive_target_execution_challenge(
+                permit_digest=self.permit_digest,
+                replay_request_id=self.replay_request_id,
+                batch_id=self.batch_id,
+                item_id=self.item_id,
+                ticket_id=self.ticket_id,
+                fencing_value=self.fencing_value,
+                call_ordinal=self.call_ordinal,
+                target=self.target,
+                method=self.method,
+                compiled_argument_digest=self.compiled_argument_digest,
+                issued_at=self.issued_at,
+                expires_at=self.expires_at,
+            )
+            if self.target_execution_challenge != expected:
+                raise ValueError("Replay Tool permit target execution challenge is inconsistent")
         return self
 
 
@@ -1312,6 +1340,7 @@ class ReplayFinalizationView(StrictModel):
     receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_transport: PortableArtifactTransportReceipt | None = None
     executor_attestation: ExecutorExecutionAttestation | None = None
+    target_execution_verification: TargetExecutionVerificationSummary | None = None
     gate_decision: ValidationDecision
     result_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     finalized_by: str = Field(min_length=1, max_length=200)
@@ -1335,15 +1364,19 @@ class ReplayFinalizationView(StrictModel):
             or self.artifact.producer_run_id != self.job.run_id
             or self.artifact.run_id != self.job.run_id
             or self.gate_decision.candidate_id != self.item.candidate_id
-            or (
-                (self.artifact_transport is None)
-                != (self.executor_attestation is None)
-            )
+            or ((self.artifact_transport is None) != (self.executor_attestation is None))
             or (
                 self.artifact_transport is not None
                 and self.executor_attestation is not None
                 and self.artifact_transport.manifest_sha256
                 != self.executor_attestation.statement.artifact_bundle_manifest_sha256
+            )
+            or (
+                (
+                    self.executor_attestation is not None
+                    and self.executor_attestation.statement.target_execution_proofs is not None
+                )
+                != (self.target_execution_verification is not None)
             )
         ):
             raise ValueError("Replay finalization view authority binding is inconsistent")
@@ -1384,9 +1417,7 @@ class ReplayProjectionItemAuthority(StrictModel):
             raise ValueError("Replay projection finalization time must be timezone-aware")
         if self.output.run_id != self.replay_run_id:
             raise ValueError("Replay projection output belongs to another Replay Run")
-        if (self.artifact_transport_digest is None) != (
-            self.executor_attestation_digest is None
-        ):
+        if (self.artifact_transport_digest is None) != (self.executor_attestation_digest is None):
             raise ValueError(
                 "Replay projection portable transport and executor attestation "
                 "digests must be supplied together"

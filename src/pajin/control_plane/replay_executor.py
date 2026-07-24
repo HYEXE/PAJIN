@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import shutil
 import stat
@@ -27,6 +28,7 @@ from pajin.control_plane.execution_attestation import (
     ExecutorExecutionAttestation,
     ExecutorExecutionAttestor,
 )
+from pajin.control_plane.kisa_derivation import KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
 from pajin.control_plane.models import (
     KISA_EXACT_REPLAY_EXECUTOR_PROFILE,
     ReplayExecutionClaimView,
@@ -34,7 +36,7 @@ from pajin.control_plane.models import (
     ReplayToolPermitRequest,
     ReplayToolPermitView,
 )
-from pajin.domain.models import ToolRequest
+from pajin.domain.models import ToolRequest, ToolResult
 from pajin.domain.replay import CompiledReplaySpec, replay_argument_digest
 from pajin.modes.ai_redteam.replay import kisa_replay_registries
 from pajin.policy.engine import PolicyEngine
@@ -42,6 +44,10 @@ from pajin.replay.runtime import (
     GatewayRestrictedReproducerRuntime,
     ReplayDispatchAuthority,
     VerifiedReplayResult,
+)
+from pajin.replay.target_attestation import (
+    TargetExecutionChallenge,
+    TargetExecutionProxyBinding,
 )
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
@@ -55,8 +61,12 @@ from pajin.runtime.control import (
     ExecutionCancellationContext,
 )
 from pajin.runtime.store import RunStore
-from pajin.runtime.worker import WorkerBackend, WorkerJob
-from pajin.tools.ai import AIChatProbeTool
+from pajin.runtime.worker import WorkerBackend, WorkerJob, WorkerResult
+from pajin.tools.ai import (
+    AIChatProbeOutput,
+    AIChatProbeTool,
+    target_execution_proxy_bindings,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.cancellation import record_engine_cleanup, seal_executor_quiescence
@@ -75,6 +85,61 @@ class _LocalPortableStage:
     path: Path
     device: int
     inode: int
+
+
+class _TargetExecutionProofLedger:
+    """Per-execution bridge from Control Plane challenges to signed executor proof."""
+
+    def __init__(self, *, required: bool) -> None:
+        self.required = required
+        self._challenges: dict[str, TargetExecutionChallenge] = {}
+        self._proofs: dict[str, list[TargetExecutionProxyBinding]] = {}
+
+    def register(
+        self,
+        request_id: str,
+        challenge: TargetExecutionChallenge | None,
+    ) -> None:
+        if not self.required:
+            return
+        if challenge is None or challenge.replay_request_id != request_id:
+            raise ControlPlaneProtocolError(
+                "target-attested Replay permit omitted its exact challenge"
+            )
+        if request_id in self._challenges:
+            raise ControlPlaneProtocolError("target execution challenge was issued twice")
+        self._challenges[request_id] = challenge
+
+    def challenge(self, request_id: str) -> TargetExecutionChallenge | None:
+        return self._challenges.get(request_id)
+
+    def record(
+        self,
+        request_id: str,
+        proofs: list[TargetExecutionProxyBinding],
+    ) -> None:
+        if not self.required or not proofs:
+            raise ValueError("target-attested Replay requires at least one exchange proof")
+        if request_id in self._proofs:
+            raise ValueError("target execution proof was recorded twice")
+        self._proofs[request_id] = proofs
+
+    def finalize(
+        self,
+        permits: tuple[ReplayToolPermitView, ...],
+    ) -> list[TargetExecutionProxyBinding] | None:
+        if not self.required:
+            if self._challenges or self._proofs:
+                raise ControlPlaneProtocolError(
+                    "legacy Replay unexpectedly accumulated target execution proof"
+                )
+            return None
+        request_ids = [permit.replay_request_id for permit in permits]
+        if list(self._challenges) != request_ids or list(self._proofs) != request_ids:
+            raise ControlPlaneProtocolError(
+                "target execution proof set does not cover every Replay permit"
+            )
+        return [proof for request_id in request_ids for proof in self._proofs[request_id]]
 
 
 class _ClaimTicketBackend:
@@ -178,6 +243,7 @@ class _ControlPlaneDispatchAuthorizer:
         permit_attempts: int,
         retry_base_seconds: float,
         retry_max_seconds: float,
+        target_proofs: _TargetExecutionProofLedger,
     ) -> None:
         self._client = client
         self._claim = claim
@@ -185,6 +251,7 @@ class _ControlPlaneDispatchAuthorizer:
         self._permit_attempts = permit_attempts
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_seconds = retry_max_seconds
+        self._target_proofs = target_proofs
         self._permits: list[ReplayToolPermitView] = []
 
     async def authorize(
@@ -264,9 +331,16 @@ class _ControlPlaneDispatchAuthorizer:
                 "durable Replay Tool permits were not consumed in canonical order"
             )
         self._permits.append(permit)
+        self._target_proofs.register(
+            permit.replay_request_id,
+            permit.target_execution_challenge,
+        )
         return ReplayDispatchAuthority(
             request_id=permit.replay_request_id,
             expires_at=permit.expires_at,
+            target_execution_challenge=(
+                permit.target_execution_challenge if self._target_proofs.required else None
+            ),
         )
 
     @staticmethod
@@ -294,15 +368,66 @@ class _ControlPlaneDispatchAuthorizer:
 class _ReplayAIChatProbeTool(AIChatProbeTool):
     """Bind the otherwise fixed Tool adapter to one startup-allowlisted image."""
 
-    def __init__(self, image: str) -> None:
+    def __init__(
+        self,
+        image: str,
+        *,
+        target_proofs: _TargetExecutionProofLedger | None = None,
+    ) -> None:
         probe = WorkerJob(image=image, command=["ai-chat-probe"])
         self._image = probe.image
+        self._target_proofs = target_proofs
 
     def prepare(self, request: ToolRequest) -> WorkerJob:
         prepared = super().prepare(request)
-        return WorkerJob.model_validate(
-            {**prepared.model_dump(mode="python"), "image": self._image}
+        challenge = (
+            self._target_proofs.challenge(request.request_id)
+            if self._target_proofs is not None
+            else None
         )
+        stdin = prepared.stdin
+        if challenge is not None:
+            payload = json.loads(stdin)
+            if not isinstance(payload, dict) or "targetChallenge" in payload:
+                raise ValueError("Replay Worker input target challenge is ambiguous")
+            payload["targetChallenge"] = challenge.model_dump(mode="json")
+            stdin = json.dumps(payload, separators=(",", ":"), allow_nan=False)
+        return WorkerJob.model_validate(
+            {
+                **prepared.model_dump(mode="python"),
+                "image": self._image,
+                "stdin": stdin,
+            }
+        )
+
+    def validate_trusted_execution(
+        self,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult,
+        *,
+        network_log_trusted: bool,
+    ) -> None:
+        super().validate_trusted_execution(
+            request,
+            result,
+            worker_result,
+            network_log_trusted=network_log_trusted,
+        )
+        if self._target_proofs is None or not self._target_proofs.required:
+            return
+        challenge = self._target_proofs.challenge(request.request_id)
+        if challenge is None:
+            raise ValueError("target-attested Replay Tool has no issued challenge")
+        typed_result = AIChatProbeOutput.model_validate(result.data)
+        proofs = target_execution_proxy_bindings(
+            request,
+            worker_result,
+            typed_result,
+            expected_challenge=challenge,
+            network_log_trusted=network_log_trusted,
+        )
+        self._target_proofs.record(request.request_id, proofs)
 
 
 class KISAExactReplayExecutor:
@@ -343,7 +468,7 @@ class KISAExactReplayExecutor:
         root = self._staging_root.stat()
         self._staging_root_identity = (root.st_dev, root.st_ino)
         self._worker = worker
-        self._replay_tool = _ReplayAIChatProbeTool(worker_image)
+        self._worker_image = _ReplayAIChatProbeTool(worker_image)._image
         self._policy = policy or PolicyEngine()
         self._clock = clock or (lambda: datetime.now(UTC))
         self._permit_attempts = permit_attempts
@@ -362,9 +487,16 @@ class KISAExactReplayExecutor:
             or claim.ticket.executor_profile != self.profile
         ):
             raise PermissionError("Replay claim requires a different executor profile")
+        target_proofs = _TargetExecutionProofLedger(
+            required=(claim.batch.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION)
+        )
+        replay_tool = _ReplayAIChatProbeTool(
+            self._worker_image,
+            target_proofs=target_proofs,
+        )
         store, local_portable_stage = self._staging_store(claim)
         tools = ToolRegistry()
-        tools.register(self._replay_tool)
+        tools.register(replay_tool)
         materializers, oracles = kisa_replay_registries(purpose=claim.batch.purpose)
         ticket_backend = _ClaimTicketBackend(claim)
         dispatch_authorizer = _ControlPlaneDispatchAuthorizer(
@@ -374,6 +506,7 @@ class KISAExactReplayExecutor:
             permit_attempts=self._permit_attempts,
             retry_base_seconds=self._retry_base_seconds,
             retry_max_seconds=self._retry_max_seconds,
+            target_proofs=target_proofs,
         )
         runtime = GatewayRestrictedReproducerRuntime(
             tools=tools,
@@ -436,6 +569,7 @@ class KISAExactReplayExecutor:
                 verified=verified,
                 permits=dispatch_authorizer.permits,
                 store=store,
+                target_proofs=target_proofs,
             )
         finally:
             if local_portable_stage is not None:
@@ -457,6 +591,7 @@ class KISAExactReplayExecutor:
         verified: VerifiedReplayResult,
         permits: tuple[ReplayToolPermitView, ...],
         store: RunStore,
+        target_proofs: _TargetExecutionProofLedger,
     ) -> tuple[PortableArtifactBundle | None, ExecutorExecutionAttestation | None]:
         attestor = self._execution_attestor
         if attestor is None:
@@ -480,6 +615,7 @@ class KISAExactReplayExecutor:
                 "execution_context_digest": claim.execution_context_digest,
                 "permit_digests": [permit.permit_digest for permit in permits],
                 "replay_request_ids": [permit.replay_request_id for permit in permits],
+                "target_execution_proofs": target_proofs.finalize(permits),
                 "artifact_bundle_manifest_sha256": bundle.manifest_sha256,
                 "artifact_bundle_file_count": bundle.file_count,
                 "artifact_bundle_total_bytes": bundle.total_bytes,
@@ -556,8 +692,7 @@ class KISAExactReplayExecutor:
         observed_root = root.stat()
         if (
             root != self._staging_root
-            or (observed_root.st_dev, observed_root.st_ino)
-            != self._staging_root_identity
+            or (observed_root.st_dev, observed_root.st_ino) != self._staging_root_identity
             or stage.path.parent != root
         ):
             raise PermissionError("Replay staging root changed before local cleanup")
@@ -567,19 +702,15 @@ class KISAExactReplayExecutor:
             raise PermissionError(
                 "local portable Replay staging disappeared before cleanup"
             ) from exc
-        if (
-            not stat.S_ISDIR(observed.st_mode)
-            or (observed.st_dev, observed.st_ino) != (stage.device, stage.inode)
+        if not stat.S_ISDIR(observed.st_mode) or (observed.st_dev, observed.st_ino) != (
+            stage.device,
+            stage.inode,
         ):
-            raise PermissionError(
-                "local portable Replay staging identity changed before cleanup"
-            )
+            raise PermissionError("local portable Replay staging identity changed before cleanup")
         try:
             shutil.rmtree(stage.path)
         except OSError as exc:
-            raise PermissionError(
-                "local portable Replay staging cleanup failed"
-            ) from exc
+            raise PermissionError("local portable Replay staging cleanup failed") from exc
         if os.path.lexists(stage.path):
             raise PermissionError("local portable Replay staging cleanup was incomplete")
 

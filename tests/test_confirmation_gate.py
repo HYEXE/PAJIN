@@ -21,6 +21,7 @@ from pajin.domain.replay import (
 from pajin.domain.validation import (
     CandidateFinding,
     ClaimReplayStatus,
+    ConfirmationBasis,
     FindingDisposition,
     PublicFindingState,
     ReplayConfirmationLineage,
@@ -316,6 +317,7 @@ def _decide(
     oracle_verdict: ReplayOracleVerdict = ReplayOracleVerdict.SUPPORTS,
     semantic_supported: bool = True,
     semantic_support_required: bool = True,
+    independent_execution_attested: bool = False,
 ) -> ValidationDecision:
     candidate = _candidate()
     artifact_set = _artifact_set(
@@ -333,6 +335,7 @@ def _decide(
         artifact_set=artifact_set,
         lineage=_lineage(artifact_set),
         decided_at=NOW + timedelta(seconds=9),
+        independent_execution_attested=independent_execution_attested,
     )
 
 
@@ -349,6 +352,25 @@ def test_supporting_replay_needs_independent_execution_attestation() -> None:
     assert len(decision.replay_lineage) == 1
     assert decision.replay_lineage[0].replay_request_ids == [REPLAY_REQUEST_ID]
     assert decision.replay_lineage[0].replay_evidence == [REPLAY_EVIDENCE]
+
+
+def test_independently_attested_supporting_replay_is_confirmed() -> None:
+    decision = _decide(independent_execution_attested=True)
+
+    assert decision.disposition is FindingDisposition.CONFIRMED
+    assert decision.confirmation_basis is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+    assert decision.reason_codes == [ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED]
+
+
+def test_independent_attestation_cannot_override_oracle_contradiction() -> None:
+    decision = _decide(
+        oracle_verdict=ReplayOracleVerdict.CONTRADICTS,
+        independent_execution_attested=True,
+    )
+
+    assert decision.disposition is FindingDisposition.REJECTED_OBJECTIVE
+    assert decision.reason_codes == [ValidationReasonCode.REPLAY_ORACLE_CONTRADICTED]
+    assert decision.confirmation_basis is None
 
 
 @pytest.mark.parametrize(

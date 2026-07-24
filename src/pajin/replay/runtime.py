@@ -43,6 +43,7 @@ from pajin.replay.oracle import (
 from pajin.replay.oracle import (
     ReplayOracleRegistry as ReplayOracleRegistry,
 )
+from pajin.replay.target_attestation import TargetExecutionChallenge
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
     ReplayExecutionTicket,
@@ -119,6 +120,7 @@ class ReplayDispatchAuthority:
 
     request_id: str
     expires_at: datetime
+    target_execution_challenge: TargetExecutionChallenge | None = None
 
 
 class ReplayDispatchAuthorizer(Protocol):
@@ -540,6 +542,7 @@ class GatewayRestrictedReproducerRuntime:
             dispatch_authority = ReplayDispatchAuthority(
                 request_id=authorized.request_id,
                 expires_at=authorized.expires_at,
+                target_execution_challenge=authorized.target_execution_challenge,
             )
             request, materialization = self._apply_dispatch_authority(
                 trusted.spec,

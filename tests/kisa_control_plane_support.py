@@ -34,6 +34,11 @@ from pajin.modes.ai_redteam.runtime import (
 )
 from pajin.modes.ai_redteam.service import KISAModePack
 from pajin.policy.engine import PolicyEngine
+from pajin.replay.target_attestation import (
+    TargetExecutionAttestor,
+    TargetExecutionChallenge,
+    canonical_target_json_sha256,
+)
 from pajin.runtime.control import BudgetController
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import verify_run_integrity
@@ -231,6 +236,57 @@ class HardenedKISAWorker(SupportingKISAWorker):
         )
 
 
+class TargetAttestedKISAWorker(SupportingKISAWorker):
+    """Simulate the separate lab Target issuer while retaining the host proxy fixture."""
+
+    def __init__(self, attestor: TargetExecutionAttestor) -> None:
+        self._attestor = attestor
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        result = await super().run(job, secrets=secrets)
+        payload = json.loads(job.stdin)
+        raw_challenge = payload.get("targetChallenge")
+        if not isinstance(raw_challenge, dict):
+            raise ValueError("target-attested fixture requires a Replay challenge")
+        challenge = TargetExecutionChallenge.model_validate(raw_challenge)
+        output = json.loads(result.stdout)
+        for exchange_ordinal, turn in enumerate(output["turns"], start=1):
+            request_payload = turn["request"]
+            request_payload["metadata"].update(
+                {
+                    "targetChallenge": challenge.model_dump(mode="json"),
+                    "targetExchangeOrdinal": exchange_ordinal,
+                }
+            )
+            response_payload = turn["response"]
+            receipt = self._attestor.attest(
+                {
+                    "challenge_id": challenge.challenge_id,
+                    "challenge_sha256": challenge.digest,
+                    "permit_digest": challenge.permit_digest,
+                    "replay_request_id": challenge.replay_request_id,
+                    "batch_id": challenge.batch_id,
+                    "item_id": challenge.item_id,
+                    "ticket_id": challenge.ticket_id,
+                    "fencing_value": challenge.fencing_value,
+                    "call_ordinal": challenge.call_ordinal,
+                    "exchange_ordinal": exchange_ordinal,
+                    "target_sha256": challenge.target_sha256,
+                    "method": challenge.method,
+                    "request_json_sha256": canonical_target_json_sha256(request_payload),
+                    "response_payload_sha256": canonical_target_json_sha256(response_payload),
+                    "status": 200,
+                }
+            )
+            response_payload["targetReceipt"] = receipt.model_dump(mode="json")
+        return result.model_copy(update={"stdout": json.dumps(output, separators=(",", ":"))})
+
+
 def _canonical_json_digest(value: object) -> str:
     return sha256(
         json.dumps(
@@ -267,12 +323,10 @@ def _trusted_supporting_backend(worker: SupportingKISAWorker) -> DockerWorkerBac
             )
         )
         events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
-        for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
-            request_body = {
-                "sessionId": probe["session_id"],
-                "messages": turn["messages"],
-                "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
-            }
+        for index, (_turn, observed) in enumerate(
+            zip(probe["turns"], output["turns"], strict=True)
+        ):
+            request_body = observed["request"]
             events.append(
                 json.dumps(
                     {
@@ -423,9 +477,7 @@ def build_kisa_control_plane_retest_sources(
 
     campaign = load_manifest(Path("examples/kisa-ai-chat-lab.yaml"))
     campaign = campaign.model_copy(
-        update={
-            "spec": campaign.spec.model_copy(update={"threat_classes": ["M03"]})
-        }
+        update={"spec": campaign.spec.model_copy(update={"threat_classes": ["M03"]})}
     )
     thresholds = EvaluationThresholds(repetitions=2)
     baseline_tools = ToolRegistry()

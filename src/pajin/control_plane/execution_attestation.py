@@ -21,6 +21,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 from pydantic import Field, field_validator, model_validator
 
 from pajin.domain.models import StrictModel
+from pajin.replay.target_attestation import TargetExecutionProxyBinding
 from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _SIGNATURE_DOMAIN = b"pajin.replay.executor-execution-attestation/v1\0"
@@ -108,16 +109,7 @@ class ExecutorAttestationTrustAnchor(StrictModel):
         key_ids = [key.key_id for key in self.keys]
         if key_ids != sorted(key_ids) or len(key_ids) != len(set(key_ids)):
             raise ValueError("executor attestation keys must be uniquely sorted")
-        if (
-            len(
-                [
-                    key
-                    for key in self.keys
-                    if key.state is ExecutorAttestationKeyState.ACTIVE
-                ]
-            )
-            != 1
-        ):
+        if len([key for key in self.keys if key.state is ExecutorAttestationKeyState.ACTIVE]) != 1:
             raise ValueError("executor attestation trust anchor requires one active key")
         return self
 
@@ -149,6 +141,12 @@ class ExecutorExecutionStatement(StrictModel):
     execution_context_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     permit_digests: list[str] = Field(min_length=1, max_length=20)
     replay_request_ids: list[str] = Field(min_length=1, max_length=20)
+    target_execution_proofs: list[TargetExecutionProxyBinding] | None = Field(
+        default=None,
+        min_length=1,
+        max_length=400,
+        exclude_if=lambda value: value is None,
+    )
     artifact_bundle_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_bundle_file_count: int = Field(strict=True, ge=1, le=256)
     artifact_bundle_total_bytes: int = Field(strict=True, ge=1, le=2 * 1024 * 1024)
@@ -187,6 +185,26 @@ class ExecutorExecutionStatement(StrictModel):
     def require_exact_call_cardinality(self) -> Self:
         if len(self.permit_digests) != len(self.replay_request_ids):
             raise ValueError("executor attestation permit and request counts differ")
+        if self.target_execution_proofs is not None:
+            identities = [
+                (proof.replay_request_id, proof.exchange_ordinal)
+                for proof in self.target_execution_proofs
+            ]
+            request_order = {
+                request_id: index for index, request_id in enumerate(self.replay_request_ids)
+            }
+            if identities != sorted(
+                identities,
+                key=lambda item: (request_order.get(item[0], len(request_order)), item[1]),
+            ) or len(identities) != len(set(identities)):
+                raise ValueError("executor target execution proofs must be uniquely sorted")
+            if any(
+                proof.replay_request_id not in self.replay_request_ids
+                for proof in self.target_execution_proofs
+            ):
+                raise ValueError(
+                    "executor target execution proof references an unknown Replay request"
+                )
         _require_aware_utc(self.issued_at, label="executor attestation issue time")
         return self
 
@@ -279,9 +297,7 @@ class ExecutorExecutionAttestor:
             issued_at or self.clock(),
             label="executor attestation issue time",
         )
-        active_key = next(
-            key for key in self.trust_anchor.keys if key.key_id == self.active_key_id
-        )
+        active_key = next(key for key in self.trust_anchor.keys if key.key_id == self.active_key_id)
         if timestamp < _require_aware_utc(active_key.not_before, label="key not-before time"):
             raise ValueError("executor signing key is not valid at the issue time")
         if active_key.not_after is not None and timestamp >= _require_aware_utc(

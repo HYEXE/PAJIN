@@ -12,7 +12,7 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-23 is:
+The implementation baseline as of 2026-07-24 is:
 
 | Area | Current scope |
 | --- | --- |
@@ -21,8 +21,8 @@ The implementation baseline as of 2026-07-23 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. An additional opt-in seals an Ed25519 Claim-receipt verifier bundle with active/retired/revoked key lifecycle and explicit external trust-anchor verification. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, target-issued execution attestation and large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, and bind a v4 Control Plane challenge to a Target-issued receipt, host proxy observation, and executor signature. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, HTTPS-aware and multi-Target execution attestation, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -225,8 +225,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   Schema v11/v12 aggregate projection now covers both confirmation and exact dual-source negative
   Control Plane retest; exact Claim receipts can optionally carry portable Ed25519 proof. A separate
   executor workload key now attests the exact permit set and bounded portable Artifact bytes across
-  hosts, while target-issued execution proof and large object-store/multipart transfer remain
-  incomplete.
+  hosts. A further opt-in binds each permit-derived challenge to a Target-issued Ed25519 receipt,
+  the host-observed proxy exchange, and that executor signature. Only this exact v4 chain can remove
+  the independent-execution confirmation ceiling. HTTPS CONNECT observation, a multi-Target trust
+  registry, and large object-store/multipart transfer remain incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -944,6 +946,8 @@ $env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-see
 $env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
 # Optional B2.8a executor transport; the Control Plane receives public trust only:
 $env:PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR='<one-line-executor-trust-anchor-json>'
+# Optional B2.8b target execution proof; the Control Plane receives public trust only:
+$env:PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR='<one-line-target-trust-anchor-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -961,8 +965,12 @@ When the executor signer and Control Plane public anchor are configured, Replay 
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is
 bounded to 2 MiB raw total, 1 MiB per file, 256 files, and depth 24. The Control Plane verifies the
 external signature before copying bytes and then reverifies the normal Run, receipt, and seals.
-This is executor observation evidence, not a target-issued receipt, so it does not lift the
-`needs-review` confirmation ceiling.
+By itself this remains executor observation evidence and does not lift the `needs-review`
+confirmation ceiling. B2.8b additionally configures the Target process with
+`PAJIN_TARGET_ATTESTATION_KEY_ID`, `PAJIN_TARGET_ATTESTATION_PRIVATE_KEY`,
+`PAJIN_TARGET_ATTESTATION_TRUST_DOMAIN`, `PAJIN_TARGET_ATTESTATION_ISSUER`, and
+`PAJIN_TARGET_ATTESTATION_PROFILE`. Keep that private key out of the Control Plane. The Control
+Plane receives only the matching anchor above and validates its key lifecycle.
 
 An Operator credential can use the public Replay admission surface:
 
@@ -980,6 +988,10 @@ An Operator credential can use the public Replay admission surface:
   Adding `portable_attestation: true` selects policy `pajin.kisa-claim-attestation:v3` and seals an
   Ed25519 bundle over the complete Claim receipt authority. It fails closed unless all three
   attestation settings are present and mutually consistent.
+  Adding `target_attestation: true` requires both Claim projection and portable attestation, selects
+  `pajin.kisa-target-attestation:v4`, and requires separately configured executor and Target trust
+  anchors. The Target receipt, host proxy observation, and executor proof must bind the exact
+  permit-derived challenge before validity can reach `VERIFIED_INDEPENDENT_REPLAY`.
 
 Operator, Approver, and Auditor credentials can read
 `GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
@@ -1307,19 +1319,22 @@ Build both development images directly from their checked-in, hash-locked inputs
 ```powershell
 docker build --tag pajin-worker:dev containers/worker
 docker build --tag pajin-egress-proxy:dev containers/egress-proxy
+docker build --tag pajin-ai-target:dev containers/ai-target
 ```
 
 `containers/worker/requirements.lock` pins the MCP v1 SDK and every transitive dependency with
-distribution hashes. The Worker Dockerfile installs that lock with `--require-hashes` and
+distribution hashes. `containers/ai-target/requirements.lock` does the same for the Target receipt
+signer's cryptography runtime. Their Dockerfiles install those locks with `--require-hashes` and
 `--only-binary`, so a generated or ignored `vendor/` tree is not required. All checked-in
 Dockerfiles also pin their base image by multi-platform manifest digest. The build downloads the
 selected binary wheels from the configured package index unless they are already cached; hash
 locking makes it reproducible but does not make it an offline build.
 
-After an intentional change to `containers/worker/requirements.in`, refresh the checked-in lock:
+After an intentional change to either container input, refresh its checked-in lock:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-worker-dependencies.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/prepare-ai-target-dependencies.ps1
 ```
 
 The script performs a marker-preserving universal resolution. Linux Docker builds ignore the

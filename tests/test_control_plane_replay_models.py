@@ -40,6 +40,7 @@ from pajin.control_plane.models import (
 )
 from pajin.domain.models import CampaignMode
 from pajin.domain.replay import ReplayPurpose
+from pajin.replay.target_attestation import derive_target_execution_challenge
 from pajin.tools.ai import AIChatProbeTool
 
 NOW = datetime(2026, 7, 17, 12, 0, tzinfo=UTC)
@@ -591,11 +592,27 @@ def test_create_replay_batch_rejects_caller_authored_authority(
         "retest_source",
         "claim_projection",
         "portable_attestation",
+        "target_attestation",
         "idempotency_key",
     }
 
     with pytest.raises(ValidationError):
         CreateReplayBatchRequest.model_validate({**request.model_dump(), field_name: value})
+
+
+def test_create_replay_batch_target_attestation_requires_portable_claim_projection() -> None:
+    with pytest.raises(
+        ValidationError,
+        match="target attestation requires portable Replay attestation",
+    ):
+        _batch_request(claim_projection=True, target_attestation=True)
+
+    request = _batch_request(
+        claim_projection=True,
+        portable_attestation=True,
+        target_attestation=True,
+    )
+    assert request.target_attestation is True
 
 
 def test_create_replay_batch_requires_distinct_optional_retest_source() -> None:
@@ -720,6 +737,34 @@ def test_replay_tool_permit_view_is_immutable_canonical_and_non_bearer() -> None
             ReplayToolPermitView.model_validate(
                 {**permit.model_dump(), field_name: "must-not-be-exposed"}
             )
+
+
+def test_replay_tool_permit_view_rejects_a_foreign_target_challenge() -> None:
+    permit = _permit_view()
+    challenge = derive_target_execution_challenge(
+        permit_digest=permit.permit_digest,
+        replay_request_id=permit.replay_request_id,
+        batch_id=permit.batch_id,
+        item_id=permit.item_id,
+        ticket_id=permit.ticket_id,
+        fencing_value=permit.fencing_value,
+        call_ordinal=permit.call_ordinal,
+        target=permit.target,
+        method=permit.method,
+        compiled_argument_digest=permit.compiled_argument_digest,
+        issued_at=permit.issued_at,
+        expires_at=permit.expires_at,
+    )
+    bound = _permit_view(target_execution_challenge=challenge)
+    assert bound.target_execution_challenge == challenge
+
+    with pytest.raises(
+        ValidationError,
+        match=r"target execution challenge.*inconsistent",
+    ):
+        _permit_view(
+            target_execution_challenge=challenge.model_copy(update={"permit_digest": "d" * 64})
+        )
 
 
 @pytest.mark.parametrize(

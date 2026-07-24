@@ -91,10 +91,12 @@ from pajin.workflow.validation_artifacts import (
 KISA_CONFIRMATION_POLICY_VERSION = "pajin.kisa-confirmation:v1"
 KISA_CLAIM_CONFIRMATION_POLICY_VERSION = "pajin.kisa-claim-confirmation:v2"
 KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION = "pajin.kisa-claim-attestation:v3"
+KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION = "pajin.kisa-target-attestation:v4"
 KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS = frozenset(
     {
         KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
         KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
+        KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
     }
 )
 KISA_RETEST_POLICY_VERSION = "pajin.kisa-negative-retest:v1"
@@ -270,6 +272,7 @@ def derive_kisa_confirmation_batch(
     artifact_ref: ArtifactRef,
     claim_projection: bool = False,
     portable_attestation: bool = False,
+    target_attestation: bool = False,
     replay_run_id_factory: Callable[[], str] = lambda: f"run_{uuid4().hex}",
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> DerivedKISAReplayBatch:
@@ -277,6 +280,8 @@ def derive_kisa_confirmation_batch(
 
     if portable_attestation and not claim_projection:
         raise ValueError("portable attestation requires Claim-specific Replay derivation")
+    if target_attestation and not portable_attestation:
+        raise ValueError("target attestation requires portable Replay attestation")
     root = source_root.resolve()
     snapshot = _load_kisa_source_snapshot(root)
     verification = snapshot.verification
@@ -453,12 +458,16 @@ def derive_kisa_confirmation_batch(
         mode=CampaignMode.AI_REDTEAM,
         purpose=ReplayPurpose.CONFIRMATION,
         policy_version=(
-            KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
-            if portable_attestation
+            KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
+            if target_attestation
             else (
-                KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                if claim_projection
-                else KISA_CONFIRMATION_POLICY_VERSION
+                KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+                if portable_attestation
+                else (
+                    KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                    if claim_projection
+                    else KISA_CONFIRMATION_POLICY_VERSION
+                )
             )
         ),
         compiled_at=compiled_at,

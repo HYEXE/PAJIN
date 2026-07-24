@@ -21,6 +21,7 @@ from kisa_control_plane_support import (
     HardenedKISAWorker,
     KISAControlPlaneSource,
     SupportingKISAWorker,
+    TargetAttestedKISAWorker,
     build_kisa_control_plane_retest_sources,
     build_kisa_control_plane_source,
 )
@@ -85,6 +86,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
     KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
+    KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION,
 )
 from pajin.control_plane.lease_deadline import MonotonicLeaseDeadline
 from pajin.control_plane.models import (
@@ -143,6 +145,7 @@ from pajin.domain.models import CampaignMode, ToolRiskTier
 from pajin.domain.replay import ReplayCompilation, ReplayOracleVerdict, ReplayPurpose
 from pajin.domain.validation import (
     AtomicClaimType,
+    ConfirmationBasis,
     FindingDisposition,
     PublicFindingState,
     ValidationDecision,
@@ -152,6 +155,13 @@ from pajin.modes.ai_redteam.retest import (
     KISARetestAssessment,
     RegressionStatus,
     RetestFindingStatus,
+)
+from pajin.replay.target_attestation import (
+    TargetAttestationKeyState,
+    TargetAttestationTrustAnchor,
+    TargetAttestationVerificationKey,
+    TargetExecutionAttestor,
+    target_public_key_base64url,
 )
 from pajin.replay.tickets import canonical_replay_compilation_bytes, replay_context_digest
 from pajin.runtime.store import RunStore, verify_run_integrity
@@ -338,12 +348,8 @@ def _host_proxy_receipt_log(job: WorkerJob, result: WorkerResult) -> str:
         )
     )
     events = [json.dumps({"event": "ready", "port": 8080}, separators=(",", ":"))]
-    for index, (turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
-        request_body = {
-            "sessionId": probe["session_id"],
-            "messages": turn["messages"],
-            "metadata": {"scenarioId": probe["scenario_id"], "turn": index},
-        }
+    for index, (_turn, observed) in enumerate(zip(probe["turns"], output["turns"], strict=True)):
+        request_body = observed["request"]
         events.append(
             json.dumps(
                 {
@@ -413,6 +419,7 @@ def _service(
     replay_executor_profiles: dict[str, frozenset[str]] | None = None,
     replay_attestor: ReplayAttestor | None = None,
     executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
+    target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None,
 ) -> tuple[ControlPlaneRepository, ControlPlaneService]:
     repository = ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
     repository.initialize()
@@ -434,6 +441,7 @@ def _service(
         ),
         replay_attestor=replay_attestor,
         executor_attestation_trust_anchor=executor_attestation_trust_anchor,
+        target_attestation_trust_anchor=target_attestation_trust_anchor,
     )
 
 
@@ -456,6 +464,31 @@ def _executor_attestation_authority() -> tuple[
     )
     return anchor, ExecutorExecutionAttestor.from_private_key_bytes(
         active_key_id="test-executor-attestation-2026",
+        private_key=private_key,
+        trust_anchor=anchor,
+    )
+
+
+def _target_attestation_authority() -> tuple[
+    TargetAttestationTrustAnchor,
+    TargetExecutionAttestor,
+]:
+    private_key = bytes(range(32, 64))
+    anchor = TargetAttestationTrustAnchor(
+        trust_domain="tests.example/pajin-target",
+        issuer="spiffe://tests.example/ai-target",
+        target_profile="kisa-ai-lab-v1",
+        keys=[
+            TargetAttestationVerificationKey(
+                key_id="test-target-attestation-2026",
+                public_key_base64url=target_public_key_base64url(private_key),
+                state=TargetAttestationKeyState.ACTIVE,
+                not_before=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    return anchor, TargetExecutionAttestor.from_private_key_bytes(
+        active_key_id="test-target-attestation-2026",
         private_key=private_key,
         trust_anchor=anchor,
     )
@@ -4850,12 +4883,8 @@ def test_executor_attested_portable_artifact_crosses_separate_worker_storage(
         assert finalize_request.executor_attestation is not None
         assert finalize_request.executor_attestation.statement.job_id == claim.job.job_id
         assert finalize_request.executor_attestation.statement.permit_digests
-        assert not (
-            worker_staging_root / finalize_request.output_staging_id
-        ).exists()
-        assert (
-            control_plane_staging_root / finalize_request.output_staging_id
-        ).is_dir()
+        assert not (worker_staging_root / finalize_request.output_staging_id).exists()
+        assert (control_plane_staging_root / finalize_request.output_staging_id).is_dir()
 
         finalized = service.finalize_replay_job(
             claim.job.job_id,
@@ -4871,9 +4900,7 @@ def test_executor_attested_portable_artifact_crosses_separate_worker_storage(
         assert repeated == finalized
         assert finalized.artifact_transport is not None
         assert finalized.executor_attestation == finalize_request.executor_attestation
-        assert finalized.artifact_transport.manifest_sha256 == (
-            finalized.artifact.content_digest
-        )
+        assert finalized.artifact_transport.manifest_sha256 == (finalized.artifact.content_digest)
         assert finalized.gate_decision.disposition is FindingDisposition.NEEDS_REVIEW
         assert finalized.gate_decision.reason_codes == [
             ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING
@@ -4882,12 +4909,109 @@ def test_executor_attested_portable_artifact_crosses_separate_worker_storage(
         assert finalized.job.result["executorAttestationDigest"] == (
             finalize_request.executor_attestation.digest
         )
-        assert finalized.job.result["executorAttestationTrustAnchorDigest"] == (
-            trust_anchor.digest
+        assert finalized.job.result["executorAttestationTrustAnchorDigest"] == (trust_anchor.digest)
+        assert not (control_plane_staging_root / finalize_request.output_staging_id).exists()
+    finally:
+        repository.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable Artifact repository requires POSIX fsync")
+def test_target_issued_receipts_lift_only_exact_claim_replay_to_independent_state(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "target-attested-claim-replay.db"
+    executor_anchor, execution_attestor = _executor_attestation_authority()
+    target_anchor, target_attestor = _target_attestation_authority()
+    repository, service = _service(
+        database_path,
+        replay_attestor=_portable_replay_attestor(),
+        executor_attestation_trust_anchor=executor_anchor,
+        target_attestation_trust_anchor=target_anchor,
+    )
+    actor = "replay-worker-a"
+    worker_staging_root = tmp_path / "target-attested-worker-staging"
+    worker_staging_root.mkdir(mode=0o700)
+    try:
+        source = build_kisa_control_plane_source(
+            tmp_path / "target-attested-source",
+            scenario_count=1,
         )
-        assert not (
-            control_plane_staging_root / finalize_request.output_staging_id
-        ).exists()
+        admitted = _admit_built_source(
+            repository,
+            service,
+            source,
+            suffix="target-attested-claim-replay",
+        )
+        planned = service.create_replay_batch(
+            CreateReplayBatchRequest(
+                source=ArtifactLocator(
+                    artifact_id=admitted.artifact_id,
+                    repository_version=admitted.repository_version,
+                ),
+                claim_projection=True,
+                portable_attestation=True,
+                target_attestation=True,
+                idempotency_key="target-attested-claim-replay",
+            ),
+            actor="trusted-replay-admission",
+        )
+        assert planned.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
+        issued = service.issue_replay_batch(
+            planned.batch_id,
+            actor="trusted-replay-admission",
+        )
+        assert len(issued.items) == len(AtomicClaimType)
+
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=worker_staging_root,
+            worker=_trusted_replay_backend(TargetAttestedKISAWorker(target_attestor)),
+            execution_attestor=execution_attestor,
+        )
+        finalizations: list[ReplayFinalizationView] = []
+        for _item in issued.items:
+            claim = _claim(service, actor=actor)
+            finalize_request = asyncio.run(executor.execute(claim))
+            assert finalize_request.executor_attestation is not None
+            assert (
+                finalize_request.executor_attestation.statement.target_execution_proofs is not None
+            )
+            finalizations.append(
+                service.finalize_replay_job(
+                    claim.job.job_id,
+                    finalize_request,
+                    actor=actor,
+                )
+            )
+
+        validity = next(
+            finalization
+            for finalization in finalizations
+            if finalization.item.claim is not None
+            and finalization.item.claim.claim_type is AtomicClaimType.VALIDITY
+        )
+        assert all(
+            finalization.target_execution_verification is not None for finalization in finalizations
+        )
+        assert validity.gate_decision.disposition is FindingDisposition.CONFIRMED
+        assert (
+            validity.gate_decision.confirmation_basis
+            is ConfirmationBasis.VERIFIED_INDEPENDENT_REPLAY
+        )
+        assert validity.gate_decision.reason_codes == [
+            ValidationReasonCode.INDEPENDENT_REPRODUCTION_CONFIRMED
+        ]
+        projection = service.get_replay_projection(planned.batch_id)
+        assert projection is not None
+        managed = ManagedArtifactRepository(
+            staging_root=_artifact_roots(database_path)[0],
+            repository_root=_artifact_roots(database_path)[1],
+        )
+        validation = load_validation_snapshot(managed.resolve(projection.artifact).path)
+        assert validation.index is not None
+        assert validation.index.public_states[PublicFindingState.CONFIRMED] == [
+            validity.gate_decision.candidate_id
+        ]
     finally:
         repository.close()
 

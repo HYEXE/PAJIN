@@ -9,6 +9,11 @@ from hashlib import sha256
 from pydantic import Field, JsonValue, StrictBool, model_validator
 
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
+from pajin.replay.target_attestation import (
+    TargetExecutionChallenge,
+    TargetExecutionProxyBinding,
+    TargetExecutionReceipt,
+)
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
 from pajin.tools.base import (
     EGRESS_HTTP_RECEIPT_VERSION,
@@ -101,6 +106,27 @@ class ProbePurpose(StrEnum):
 class AIChatProbeRequestMetadata(StrictModel):
     scenario_id: str = Field(alias="scenarioId", min_length=1, max_length=200)
     turn: int = Field(strict=True, ge=0, le=19)
+    target_challenge: TargetExecutionChallenge | None = Field(
+        default=None,
+        alias="targetChallenge",
+        exclude_if=lambda value: value is None,
+    )
+    target_exchange_ordinal: int | None = Field(
+        default=None,
+        alias="targetExchangeOrdinal",
+        strict=True,
+        ge=1,
+        le=20,
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def require_complete_target_challenge(self) -> AIChatProbeRequestMetadata:
+        if (self.target_challenge is None) != (self.target_exchange_ordinal is None):
+            raise ValueError(
+                "AI probe target challenge and exchange ordinal must be supplied together"
+            )
+        return self
 
 
 class AIChatProbeTurnRequest(StrictModel):
@@ -131,6 +157,11 @@ class AIChatProbeTurnResponse(StrictModel):
     safety: AIChatProbeSafety = Field(default_factory=AIChatProbeSafety)
     memory_writes: list[str] = Field(default_factory=list, alias="memoryWrites", max_length=100)
     model: str | None = Field(default=None, max_length=200)
+    target_receipt: TargetExecutionReceipt | None = Field(
+        default=None,
+        alias="targetReceipt",
+        exclude_if=lambda value: value is None,
+    )
 
     @model_validator(mode="after")
     def require_assistant_message(self) -> AIChatProbeTurnResponse:
@@ -512,24 +543,157 @@ def verify_ai_chat_proxy_receipts(
     for index, (receipt, turn, raw_turn) in enumerate(
         zip(receipts, probe.turns, raw_turns, strict=True)
     ):
-        if not isinstance(raw_turn, dict) or not isinstance(raw_turn.get("response"), dict):
+        if (
+            not isinstance(raw_turn, dict)
+            or not isinstance(raw_turn.get("request"), dict)
+            or not isinstance(raw_turn.get("response"), dict)
+        ):
             raise ValueError("raw Worker transcript response is missing")
+        raw_request = raw_turn["request"]
         expected_request = {
             "sessionId": probe.session_id,
             "messages": [message.model_dump(mode="json") for message in turn.messages],
             "metadata": {"scenarioId": scenario_id, "turn": index},
         }
+        receipt_request = raw_request
+        if "metadata" not in raw_request:
+            if raw_request != {
+                "sessionId": expected_request["sessionId"],
+                "messages": expected_request["messages"],
+            }:
+                raise ValueError("raw Worker transcript request differs from the sealed probe")
+            receipt_request = expected_request
+        typed_request = AIChatProbeTurnRequest.model_validate(receipt_request)
+        metadata = typed_request.metadata
+        if (
+            typed_request.session_id != probe.session_id
+            or typed_request.messages != turn.messages
+            or metadata is None
+            or metadata.scenario_id != scenario_id
+            or metadata.turn != index
+        ):
+            raise ValueError("raw Worker transcript request differs from the sealed probe")
         if (
             receipt.method != request.method
             or receipt.method != "POST"
             or receipt.target != expected_target
             or receipt.target_sha256 != expected_target_digest
             or not 200 <= receipt.status < 300
-            or receipt.request_json_sha256 != _canonical_json_sha256(expected_request)
+            or receipt.request_json_sha256 != _canonical_json_sha256(receipt_request)
             or receipt.response_json_sha256 != _canonical_json_sha256(raw_turn["response"])
         ):
             raise ValueError("AI transcript differs from its host-observed proxy receipt")
     return True
+
+
+def target_execution_proxy_bindings(
+    request: ToolRequest,
+    worker_result: WorkerResult,
+    output: AIChatProbeOutput,
+    *,
+    expected_challenge: TargetExecutionChallenge,
+    network_log_trusted: bool,
+) -> list[TargetExecutionProxyBinding]:
+    """Bind Target-issued receipts to the exact host-observed HTTP exchanges."""
+
+    receipts = host_observed_http_receipts(
+        worker_result,
+        network_log_trusted=network_log_trusted,
+    )
+    if receipts is None or len(receipts) != len(output.turns):
+        raise ValueError("target execution receipts require complete proxy coverage")
+    if expected_challenge.replay_request_id != request.request_id:
+        raise ValueError("target execution challenge belongs to another Replay request")
+    if expected_challenge.target_sha256 != http_target_sha256(request.target):
+        raise ValueError("target execution challenge belongs to another target")
+    if expected_challenge.method != request.method:
+        raise ValueError("target execution challenge method differs from the Tool request")
+
+    try:
+        raw_output = decode_strict_worker_json_object(
+            worker_result,
+            label="raw target-attested AI transcript",
+        )
+        raw_turns = raw_output["turns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("target-attested Worker transcript cannot be decoded") from exc
+    if not isinstance(raw_turns, list) or len(raw_turns) != len(output.turns):
+        raise ValueError("target-attested transcript turn count is inconsistent")
+
+    bindings: list[TargetExecutionProxyBinding] = []
+    for index, (proxy_receipt, typed_turn, raw_turn) in enumerate(
+        zip(receipts, output.turns, raw_turns, strict=True),
+        start=1,
+    ):
+        if (
+            not isinstance(raw_turn, dict)
+            or not isinstance(raw_turn.get("request"), dict)
+            or not isinstance(raw_turn.get("response"), dict)
+        ):
+            raise ValueError("target-attested transcript turn is malformed")
+        metadata = typed_turn.request.metadata
+        target_receipt = typed_turn.response.target_receipt
+        if (
+            metadata is None
+            or metadata.target_challenge != expected_challenge
+            or metadata.target_exchange_ordinal != index
+            or target_receipt is None
+        ):
+            raise ValueError("target-attested transcript omitted its exact challenge or receipt")
+        response_payload = dict(raw_turn["response"])
+        raw_target_receipt = response_payload.pop("targetReceipt", None)
+        if (
+            not isinstance(raw_target_receipt, dict)
+            or TargetExecutionReceipt.model_validate(raw_target_receipt) != target_receipt
+        ):
+            raise ValueError("target receipt differs from the raw Target response")
+        statement = target_receipt.statement
+        request_digest = _canonical_json_sha256(raw_turn["request"])
+        response_payload_digest = _canonical_json_sha256(response_payload)
+        full_response_digest = _canonical_json_sha256(raw_turn["response"])
+        if (
+            statement.challenge_id != expected_challenge.challenge_id
+            or statement.challenge_sha256 != expected_challenge.digest
+            or statement.permit_digest != expected_challenge.permit_digest
+            or statement.replay_request_id != expected_challenge.replay_request_id
+            or statement.batch_id != expected_challenge.batch_id
+            or statement.item_id != expected_challenge.item_id
+            or statement.ticket_id != expected_challenge.ticket_id
+            or statement.fencing_value != expected_challenge.fencing_value
+            or statement.call_ordinal != expected_challenge.call_ordinal
+            or statement.exchange_ordinal != index
+            or statement.target_sha256 != expected_challenge.target_sha256
+            or statement.method != expected_challenge.method
+            or statement.request_json_sha256 != request_digest
+            or statement.response_payload_sha256 != response_payload_digest
+            or statement.status != proxy_receipt.status
+            or not expected_challenge.issued_at
+            <= statement.issued_at
+            < expected_challenge.expires_at
+            or proxy_receipt.request_json_sha256 != request_digest
+            or proxy_receipt.response_json_sha256 != full_response_digest
+        ):
+            raise ValueError(
+                "target receipt differs from its challenge, transcript, or proxy receipt"
+            )
+        bindings.append(
+            TargetExecutionProxyBinding(
+                replay_request_id=request.request_id,
+                exchange_ordinal=index,
+                challenge_sha256=expected_challenge.digest,
+                target_receipt_sha256=target_receipt.digest,
+                proxy_sequence=proxy_receipt.sequence,
+                proxy_method="POST",
+                proxy_target=proxy_receipt.target,
+                proxy_target_sha256=proxy_receipt.target_sha256,
+                proxy_address=proxy_receipt.address,
+                proxy_status=proxy_receipt.status,
+                proxy_request_json_sha256=request_digest,
+                proxy_response_body_sha256=proxy_receipt.response_body_sha256,
+                proxy_response_json_sha256=full_response_digest,
+            )
+        )
+    return bindings
 
 
 def evaluate_trusted_regression(

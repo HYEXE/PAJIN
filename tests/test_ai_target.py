@@ -1,9 +1,22 @@
 import importlib.util
 import json
+from base64 import urlsafe_b64encode
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+
+from pajin.replay.target_attestation import (
+    TargetAttestationKeyState,
+    TargetAttestationTrustAnchor,
+    TargetAttestationVerificationKey,
+    TargetExecutionReceipt,
+    canonical_target_json_sha256,
+    derive_target_execution_challenge,
+    target_public_key_base64url,
+    verify_target_execution_receipt,
+)
 
 
 def _load_target() -> ModuleType:
@@ -21,6 +34,128 @@ def _payload(session_id: str, content: str) -> dict[str, object]:
         "sessionId": session_id,
         "messages": [{"role": "user", "content": content}],
     }
+
+
+def test_ai_target_signs_exact_challenge_bound_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _load_target()
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    private_key = bytes(range(32))
+    challenge = derive_target_execution_challenge(
+        permit_digest="a" * 64,
+        replay_request_id=f"tool_replay_{'1' * 32}",
+        batch_id=f"replay-batch_{'2' * 32}",
+        item_id=f"replay-item_{'3' * 32}",
+        ticket_id=f"replay-ticket_{'4' * 32}",
+        fencing_value=1,
+        call_ordinal=1,
+        target="http://ai-target:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=20),
+    )
+    request = {
+        **_payload("target-attested", "hello"),
+        "metadata": {
+            "targetChallenge": challenge.model_dump(mode="json"),
+            "targetExchangeOrdinal": 1,
+        },
+    }
+    response = target.respond(request, profile="vulnerable")
+    encoded_private_key = urlsafe_b64encode(private_key).decode("ascii").rstrip("=")
+    monkeypatch.setenv("PAJIN_TARGET_ATTESTATION_KEY_ID", "target-key-2026-01")
+    monkeypatch.setenv("PAJIN_TARGET_ATTESTATION_PRIVATE_KEY", encoded_private_key)
+    monkeypatch.setenv(
+        "PAJIN_TARGET_ATTESTATION_TRUST_DOMAIN",
+        "pajin.example/targets",
+    )
+    monkeypatch.setenv(
+        "PAJIN_TARGET_ATTESTATION_ISSUER",
+        "PAJIN deterministic AI target",
+    )
+    monkeypatch.setenv("PAJIN_TARGET_ATTESTATION_PROFILE", "kisa-lab-v1")
+
+    attested = target._target_attested_response(
+        request,
+        response,
+        now=now + timedelta(seconds=1),
+    )
+    receipt = TargetExecutionReceipt.model_validate(attested["targetReceipt"])
+    anchor = TargetAttestationTrustAnchor(
+        trust_domain="pajin.example/targets",
+        issuer="PAJIN deterministic AI target",
+        target_profile="kisa-lab-v1",
+        keys=[
+            TargetAttestationVerificationKey(
+                key_id="target-key-2026-01",
+                public_key_base64url=target_public_key_base64url(private_key),
+                state=TargetAttestationKeyState.ACTIVE,
+                not_before=now - timedelta(seconds=1),
+            )
+        ],
+    )
+
+    assert (
+        verify_target_execution_receipt(
+            receipt,
+            trust_anchor=anchor,
+        )
+        == "target-key-2026-01"
+    )
+    assert receipt.statement.request_json_sha256 == canonical_target_json_sha256(request)
+    assert receipt.statement.response_payload_sha256 == canonical_target_json_sha256(response)
+
+
+def test_ai_target_rejects_expired_execution_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _load_target()
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    private_key = bytes(range(32))
+    challenge = derive_target_execution_challenge(
+        permit_digest="a" * 64,
+        replay_request_id=f"tool_replay_{'1' * 32}",
+        batch_id=f"replay-batch_{'2' * 32}",
+        item_id=f"replay-item_{'3' * 32}",
+        ticket_id=f"replay-ticket_{'4' * 32}",
+        fencing_value=1,
+        call_ordinal=1,
+        target="http://ai-target:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=1),
+    )
+    request = {
+        **_payload("expired-target-attestation", "hello"),
+        "metadata": {
+            "targetChallenge": challenge.model_dump(mode="json"),
+            "targetExchangeOrdinal": 1,
+        },
+    }
+    monkeypatch.setenv("PAJIN_TARGET_ATTESTATION_KEY_ID", "target-key-2026-01")
+    monkeypatch.setenv(
+        "PAJIN_TARGET_ATTESTATION_PRIVATE_KEY",
+        urlsafe_b64encode(private_key).decode("ascii").rstrip("="),
+    )
+    monkeypatch.setenv(
+        "PAJIN_TARGET_ATTESTATION_TRUST_DOMAIN",
+        "pajin.example/targets",
+    )
+    monkeypatch.setenv(
+        "PAJIN_TARGET_ATTESTATION_ISSUER",
+        "PAJIN deterministic AI target",
+    )
+    monkeypatch.setenv("PAJIN_TARGET_ATTESTATION_PROFILE", "kisa-lab-v1")
+
+    with pytest.raises(ValueError, match="not currently valid"):
+        target._target_attested_response(
+            request,
+            target.respond(request, profile="vulnerable"),
+            now=now + timedelta(seconds=2),
+        )
 
 
 def test_vulnerable_ai_target_exposes_all_cataloged_signals() -> None:

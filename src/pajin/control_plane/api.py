@@ -59,15 +59,18 @@ from pajin.control_plane.security import (
     validate_bearer_token,
 )
 from pajin.control_plane.service import ControlPlaneService
+from pajin.replay.target_attestation import (
+    TargetAttestationTrustAnchor,
+    parse_target_attestation_trust_anchor,
+)
 from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
 _REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"
 _REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
 _REPLAY_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR"
-_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = (
-    "PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
-)
+_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
+_TARGET_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR"
 _REPLAY_EXECUTOR_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_BYTES = 64 * 1024
@@ -409,13 +412,23 @@ def _parse_executor_attestation_anchor(
         return None
     if replay_worker_token is None:
         raise RuntimeError(
-            f"{_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV} requires "
-            "PAJIN_CP_REPLAY_WORKER_TOKEN"
+            f"{_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV} requires PAJIN_CP_REPLAY_WORKER_TOKEN"
         )
     try:
         return parse_executor_attestation_trust_anchor(raw.encode("utf-8"))
     except (UnicodeEncodeError, ValueError) as exc:
         raise RuntimeError("executor attestation trust anchor is invalid") from exc
+
+
+def _parse_target_attestation_anchor(
+    raw: str | None,
+) -> TargetAttestationTrustAnchor | None:
+    if raw is None:
+        return None
+    try:
+        return parse_target_attestation_trust_anchor(raw.encode("utf-8"))
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError("target attestation trust anchor is invalid") from exc
 
 
 @dataclass(frozen=True)
@@ -433,6 +446,7 @@ class ControlPlaneSettings:
     replay_attestation_private_key: bytes | None = field(default=None, repr=False)
     replay_attestation_trust_anchor: ReplayAttestationTrustAnchor | None = None
     executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None
+    target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -493,9 +507,8 @@ class ControlPlaneSettings:
         replay_attestation_key_id = os.environ.get(_REPLAY_ATTESTATION_KEY_ID_ENV)
         replay_attestation_private_key = os.environ.get(_REPLAY_ATTESTATION_PRIVATE_KEY_ENV)
         replay_attestation_trust_anchor = os.environ.get(_REPLAY_ATTESTATION_TRUST_ANCHOR_ENV)
-        executor_attestation_trust_anchor = os.environ.get(
-            _EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV
-        )
+        executor_attestation_trust_anchor = os.environ.get(_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV)
+        target_attestation_trust_anchor = os.environ.get(_TARGET_ATTESTATION_TRUST_ANCHOR_ENV)
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
@@ -553,11 +566,12 @@ class ControlPlaneSettings:
                 raise RuntimeError(
                     "Replay attestation configuration is not a valid Ed25519 key and trust anchor"
                 ) from exc
-        parsed_executor_attestation_trust_anchor = (
-            _parse_executor_attestation_anchor(
-                executor_attestation_trust_anchor,
-                replay_worker_token=replay_worker_token,
-            )
+        parsed_executor_attestation_trust_anchor = _parse_executor_attestation_anchor(
+            executor_attestation_trust_anchor,
+            replay_worker_token=replay_worker_token,
+        )
+        parsed_target_attestation_trust_anchor = _parse_target_attestation_anchor(
+            target_attestation_trust_anchor
         )
         if replay_worker_token is not None and replay_worker_token in {
             operator_token,
@@ -640,9 +654,8 @@ class ControlPlaneSettings:
             replay_attestation_key_id=replay_attestation_key_id,
             replay_attestation_private_key=parsed_attestation_private_key,
             replay_attestation_trust_anchor=parsed_attestation_trust_anchor,
-            executor_attestation_trust_anchor=(
-                parsed_executor_attestation_trust_anchor
-            ),
+            executor_attestation_trust_anchor=(parsed_executor_attestation_trust_anchor),
+            target_attestation_trust_anchor=parsed_target_attestation_trust_anchor,
             request_body_timeout_seconds=float(
                 os.environ.get(
                     "PAJIN_CP_REQUEST_BODY_TIMEOUT_SECONDS",
@@ -705,9 +718,8 @@ def _build_application_context(
         replay_executor_profiles=settings.replay_executor_profiles,
         artifact_repository=artifact_repository,
         replay_attestor=replay_attestor,
-        executor_attestation_trust_anchor=(
-            settings.executor_attestation_trust_anchor
-        ),
+        executor_attestation_trust_anchor=(settings.executor_attestation_trust_anchor),
+        target_attestation_trust_anchor=settings.target_attestation_trust_anchor,
     )
     return _ControlPlaneApplicationContext(
         settings=settings,
