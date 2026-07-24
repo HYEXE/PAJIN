@@ -588,6 +588,7 @@ def test_create_replay_batch_rejects_caller_authored_authority(
         "source",
         "retest_source",
         "claim_projection",
+        "portable_attestation",
         "idempotency_key",
     }
 
