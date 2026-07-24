@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from pajin.domain.models import AgentPlan, CampaignManifest, ToolRequest
 from pajin.domain.replay import (
@@ -123,6 +123,9 @@ def _build_confirmation_projection(
     verified_results: list[VerifiedReplayResult],
     evaluated_at: datetime,
     successful_replay_disposition: _SuccessfulDisposition | None = None,
+    confirmation_semantics: Literal[
+        "verified-replay-evidence", "verified-independent-replay"
+    ] = "verified-replay-evidence",
 ) -> _ConfirmationProjection:
     """Derive the complete projection from sealed source and replay inputs."""
 
@@ -231,6 +234,7 @@ def _build_confirmation_projection(
     index = VersionedValidationIndex(
         sourceRunId=source_run_id,
         candidateSourceRootDigest=candidate_source_root_digest,
+        confirmationSemantics=confirmation_semantics,
         claimReplaysPath="validation/v1alpha1/claim-replays.json",
         dispositions=dispositions,
         publicStates=public_states,
@@ -243,6 +247,7 @@ def _build_confirmation_projection(
     )
     finding_set = VersionedConfirmedFindingSet(
         sourceRunId=source_run_id,
+        confirmationSemantics=confirmation_semantics,
         findings=validation.confirmed_findings,
     )
     claim_replay_set = VersionedClaimReplaySet(

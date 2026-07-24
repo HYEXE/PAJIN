@@ -148,6 +148,7 @@ def _build_independently_attested_confirmation_projection(
         verified_results=verified_results,
         evaluated_at=evaluated_at,
         successful_replay_disposition=_independently_attested_successful_replay_disposition,
+        confirmation_semantics="verified-independent-replay",
     )
 
 

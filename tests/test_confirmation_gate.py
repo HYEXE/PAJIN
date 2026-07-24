@@ -389,6 +389,36 @@ def test_confirmed_gate_selects_independently_attested_projection(
     ]
 
 
+def test_independently_attested_projection_marks_versioned_semantics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    expected = object()
+
+    def _capture_semantics(**kwargs: object) -> object:
+        captured.update(kwargs)
+        return expected
+
+    monkeypatch.setattr(
+        confirmation._policy,
+        "_build_confirmation_projection",
+        _capture_semantics,
+    )
+
+    result = confirmation._build_independently_attested_confirmation_projection(
+        root=Path("source"),
+        source_run_id="run_source_1",
+        source_validation=object(),  # type: ignore[arg-type]
+        campaign=object(),  # type: ignore[arg-type]
+        plan=object(),  # type: ignore[arg-type]
+        verified_results=[],
+        evaluated_at=NOW,
+    )
+
+    assert result is expected
+    assert captured["confirmation_semantics"] == "verified-independent-replay"
+
+
 def test_independent_attestation_cannot_override_oracle_contradiction() -> None:
     decision = _decide(
         oracle_verdict=ReplayOracleVerdict.CONTRADICTS,
