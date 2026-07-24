@@ -22,7 +22,7 @@ The implementation baseline as of 2026-07-23 is:
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. An additional opt-in seals an Ed25519 Claim-receipt verifier bundle with active/retired/revoked key lifecycle and explicit external trust-anchor verification. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, independent executor/target attestation and multi-host/object-store Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, target-issued execution attestation and large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -223,8 +223,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   staging capability, attempt, and fence. Any permit, staged output, missing capability, authority
   mismatch, or exhausted attempt count fails closed; the same Job or ticket is never redispatched.
   Schema v11/v12 aggregate projection now covers both confirmation and exact dual-source negative
-  Control Plane retest; exact Claim receipts can optionally carry portable Ed25519 proof, while
-  independent executor/target attestation and multi-host transfer remain incomplete.
+  Control Plane retest; exact Claim receipts can optionally carry portable Ed25519 proof. A separate
+  executor workload key now attests the exact permit set and bounded portable Artifact bytes across
+  hosts, while target-issued execution proof and large object-store/multipart transfer remain
+  incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -940,6 +942,8 @@ $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_KEY_ID='<active-key-id>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-seed>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
+# Optional B2.8a executor transport; the Control Plane receives public trust only:
+$env:PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR='<one-line-executor-trust-anchor-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -952,6 +956,13 @@ never accepted from an Artifact consumer. If the pair is omitted, managed Artifa
 Replay-batch source resolution remain unavailable and fail closed. Current durable admission also
 requires a POSIX filesystem/runtime with directory `fsync` support; unsupported environments fail
 closed.
+
+When the executor signer and Control Plane public anchor are configured, Replay finalization carries
+a content-addressed bundle instead of depending on a shared staging volume. This first transport is
+bounded to 2 MiB raw total, 1 MiB per file, 256 files, and depth 24. The Control Plane verifies the
+external signature before copying bytes and then reverifies the normal Run, receipt, and seals.
+This is executor observation evidence, not a target-issued receipt, so it does not lift the
+`needs-review` confirmation ceiling.
 
 An Operator credential can use the public Replay admission surface:
 
@@ -1174,9 +1185,11 @@ automatically dispatched again; the external destination still provides no exact
 or rollback. Exact response-loss retries of an identical ordinal-bound permit request and the
 server-side finalize request are idempotent; neither path redispatches a Tool.
 The current executor is limited to the explicit M03, M06, and A04 `ai.chat-probe` confirmation
-contracts, forbids Secret Leases, and uses one host's shared POSIX filesystem and Docker daemon. It
-is not a generic Replay executor, negative-retest worker, multi-host transfer protocol, or portable
-attestation.
+contracts, forbids Secret Leases, and uses one host's Docker daemon. The legacy path uses shared
+POSIX staging; with the separate executor workload key configured, the bounded portable path signs
+the exact permit set and sealed Run bytes from Worker-local staging and sends them to a Control
+Plane on another host. It is not a generic Replay executor, negative-retest worker, target-issued
+response proof, or large object-store transport.
 
 The Compose lab now builds the fixed Tool Worker and egress-proxy images, starts an owner-only volume
 initializer, the API, the generic daemon, and the dedicated Replay daemon. The API and Replay daemon
@@ -1218,7 +1231,8 @@ network.
 | `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `true` only in bundled Compose; default `false` | Narrow local-lab exception for `http://control-plane:8090`; remote HTTP remains rejected and production must use HTTPS |
 | `PAJIN_REPLAY_WORKER_ID` | `pajin-compose-replay-worker-1` | Status identity only; the Bearer principal is the authorization identity |
 | `PAJIN_REPLAY_EXECUTOR_PROFILE` | `kisa-exact-v1` | Literal-only, matching `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` |
-| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only shared root; claims carry only an opaque `stage_<uuid>` |
+| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only root; shared by the legacy path, or Worker-local when portable executor attestation is configured; claims carry only an opaque `stage_<uuid>` |
+| `PAJIN_REPLAY_EXECUTOR_ATTESTATION_KEY_ID`, `PAJIN_REPLAY_EXECUTOR_ATTESTATION_PRIVATE_KEY`, `PAJIN_REPLAY_EXECUTOR_ATTESTATION_TRUST_ANCHOR`, `PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR` | unset | All three Worker values are required together for the bounded portable transport; only the public anchor is configured on the Control Plane, and it must match the Worker key without exposing the private seed |
 | `PAJIN_REPLAY_LEASE_SECONDS`, `PAJIN_REPLAY_HEARTBEAT_SECONDS`, `PAJIN_REPLAY_LONG_POLL_SECONDS` | 30, 5, 10 | Lease is 5-300 seconds; heartbeat must be less than half of it; long poll is at most 20 seconds |
 | `PAJIN_REPLAY_IDLE_DELAY_SECONDS` | 0.2 | Bounds empty-queue polling between long polls |
 | `PAJIN_REPLAY_RETRY_BASE_SECONDS`, `PAJIN_REPLAY_RETRY_MAX_SECONDS` | 0.25, 5 | Bounded identical permit/finalize response-loss backoff, never Tool redispatch authority |

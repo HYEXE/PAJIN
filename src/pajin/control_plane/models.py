@@ -13,6 +13,11 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BeforeValidator, ConfigDict, Field, field_validator, model_validator
 
+from pajin.control_plane.artifact_transfer import (
+    PortableArtifactBundle,
+    PortableArtifactTransportReceipt,
+)
+from pajin.control_plane.execution_attestation import ExecutorExecutionAttestation
 from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRiskTier
 from pajin.domain.replay import ReplayClaimBinding, ReplayCompilation, ReplayPurpose
 from pajin.domain.validation import AtomicClaimType, ValidationDecision
@@ -747,11 +752,12 @@ class ReplayToolPermitRequest(StrictModel):
 
 
 class ReplayFinalizeRequest(StrictModel):
-    """Lease/fence plus the server-owned opaque output capability only.
+    """Lease/fence plus one server-owned output capability.
 
-    Worker-authored result, verdict, digest, or filesystem path fields are not part
-    of this contract. The Control Plane derives every authoritative value by
-    importing and re-verifying the sealed staging tree.
+    The legacy form references a shared staging reservation. The portable form
+    carries a bounded content-addressed tree plus an independently keyed executor
+    receipt. Both forms remain untrusted until the Control Plane imports and
+    re-verifies the sealed Run; neither accepts a Worker-authored verdict.
     """
 
     executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
@@ -759,6 +765,17 @@ class ReplayFinalizeRequest(StrictModel):
     ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
     fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
     output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
+    artifact_bundle: PortableArtifactBundle | None = None
+    executor_attestation: ExecutorExecutionAttestation | None = None
+
+    @model_validator(mode="after")
+    def require_complete_portable_transport(self) -> ReplayFinalizeRequest:
+        if (self.artifact_bundle is None) != (self.executor_attestation is None):
+            raise ValueError(
+                "portable Replay Artifact bundle and executor attestation "
+                "must be supplied together"
+            )
+        return self
 
 
 class LeaseRequest(StrictModel):
@@ -1293,6 +1310,8 @@ class ReplayFinalizationView(StrictModel):
     artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    artifact_transport: PortableArtifactTransportReceipt | None = None
+    executor_attestation: ExecutorExecutionAttestation | None = None
     gate_decision: ValidationDecision
     result_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     finalized_by: str = Field(min_length=1, max_length=200)
@@ -1316,6 +1335,16 @@ class ReplayFinalizationView(StrictModel):
             or self.artifact.producer_run_id != self.job.run_id
             or self.artifact.run_id != self.job.run_id
             or self.gate_decision.candidate_id != self.item.candidate_id
+            or (
+                (self.artifact_transport is None)
+                != (self.executor_attestation is None)
+            )
+            or (
+                self.artifact_transport is not None
+                and self.executor_attestation is not None
+                and self.artifact_transport.manifest_sha256
+                != self.executor_attestation.statement.artifact_bundle_manifest_sha256
+            )
         ):
             raise ValueError("Replay finalization view authority binding is inconsistent")
         return self
@@ -1337,6 +1366,16 @@ class ReplayProjectionItemAuthority(StrictModel):
     receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     gate_decision_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     result_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    artifact_transport_digest: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+    executor_attestation_digest: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
     finalized_at: datetime
 
     @model_validator(mode="after")
@@ -1345,6 +1384,13 @@ class ReplayProjectionItemAuthority(StrictModel):
             raise ValueError("Replay projection finalization time must be timezone-aware")
         if self.output.run_id != self.replay_run_id:
             raise ValueError("Replay projection output belongs to another Replay Run")
+        if (self.artifact_transport_digest is None) != (
+            self.executor_attestation_digest is None
+        ):
+            raise ValueError(
+                "Replay projection portable transport and executor attestation "
+                "digests must be supplied together"
+            )
         return self
 
 

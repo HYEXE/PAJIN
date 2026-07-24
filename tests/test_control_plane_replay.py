@@ -71,6 +71,13 @@ from pajin.control_plane.database import (
     ReplayToolPermitRecord,
     RunRecord,
 )
+from pajin.control_plane.execution_attestation import (
+    ExecutorAttestationKeyState,
+    ExecutorAttestationTrustAnchor,
+    ExecutorAttestationVerificationKey,
+    ExecutorExecutionAttestor,
+    executor_public_key_base64url,
+)
 from pajin.control_plane.kisa_derivation import (
     KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_MAX_ATTEMPTS,
@@ -405,6 +412,7 @@ def _service(
     *,
     replay_executor_profiles: dict[str, frozenset[str]] | None = None,
     replay_attestor: ReplayAttestor | None = None,
+    executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
 ) -> tuple[ControlPlaneRepository, ControlPlaneService]:
     repository = ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
     repository.initialize()
@@ -425,6 +433,31 @@ def _service(
             repository_root=artifact_root,
         ),
         replay_attestor=replay_attestor,
+        executor_attestation_trust_anchor=executor_attestation_trust_anchor,
+    )
+
+
+def _executor_attestation_authority() -> tuple[
+    ExecutorAttestationTrustAnchor,
+    ExecutorExecutionAttestor,
+]:
+    private_key = bytes(range(32))
+    anchor = ExecutorAttestationTrustAnchor(
+        trust_domain="tests.example/pajin-replay-executor",
+        issuer="spiffe://tests.example/replay-worker",
+        keys=[
+            ExecutorAttestationVerificationKey(
+                key_id="test-executor-attestation-2026",
+                public_key_base64url=executor_public_key_base64url(private_key),
+                state=ExecutorAttestationKeyState.ACTIVE,
+                not_before=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    return anchor, ExecutorExecutionAttestor.from_private_key_bytes(
+        active_key_id="test-executor-attestation-2026",
+        private_key=private_key,
+        trust_anchor=anchor,
     )
 
 
@@ -4777,6 +4810,84 @@ def test_kisa_exact_executor_uses_durable_permits_and_server_finalizes_one_item(
             )
             assert replay_event_types.count("replay.output.verified") == 1
             assert replay_event_types.count("replay.confirmation.gated") == 1
+    finally:
+        repository.close()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable Artifact repository requires POSIX fsync")
+def test_executor_attested_portable_artifact_crosses_separate_worker_storage(
+    tmp_path: Path,
+) -> None:
+    database_path = tmp_path / "portable-executor-attestation.db"
+    trust_anchor, execution_attestor = _executor_attestation_authority()
+    repository, service = _service(
+        database_path,
+        executor_attestation_trust_anchor=trust_anchor,
+    )
+    actor = "replay-worker-a"
+    worker_staging_root = tmp_path / "remote-worker-staging"
+    worker_staging_root.mkdir(mode=0o700)
+    try:
+        _create_batch(
+            repository,
+            service,
+            "portable-executor-attestation",
+            required_attempts=KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+            max_attempts=KISA_CONFIRMATION_MAX_ATTEMPTS,
+        )
+        claim = _claim(service, actor=actor)
+        control_plane_staging_root, _artifact_root = _artifact_roots(database_path)
+        executor = KISAExactReplayExecutor(
+            client=_ReplayServicePort(service, actor=actor),
+            staging_root=worker_staging_root,
+            worker=_trusted_replay_backend(),
+            execution_attestor=execution_attestor,
+        )
+
+        finalize_request = asyncio.run(executor.execute(claim))
+
+        assert finalize_request.artifact_bundle is not None
+        assert finalize_request.executor_attestation is not None
+        assert finalize_request.executor_attestation.statement.job_id == claim.job.job_id
+        assert finalize_request.executor_attestation.statement.permit_digests
+        assert not (
+            worker_staging_root / finalize_request.output_staging_id
+        ).exists()
+        assert (
+            control_plane_staging_root / finalize_request.output_staging_id
+        ).is_dir()
+
+        finalized = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+        repeated = service.finalize_replay_job(
+            claim.job.job_id,
+            finalize_request,
+            actor=actor,
+        )
+
+        assert repeated == finalized
+        assert finalized.artifact_transport is not None
+        assert finalized.executor_attestation == finalize_request.executor_attestation
+        assert finalized.artifact_transport.manifest_sha256 == (
+            finalized.artifact.content_digest
+        )
+        assert finalized.gate_decision.disposition is FindingDisposition.NEEDS_REVIEW
+        assert finalized.gate_decision.reason_codes == [
+            ValidationReasonCode.INDEPENDENT_EXECUTION_ATTESTATION_MISSING
+        ]
+        assert finalized.job.result is not None
+        assert finalized.job.result["executorAttestationDigest"] == (
+            finalize_request.executor_attestation.digest
+        )
+        assert finalized.job.result["executorAttestationTrustAnchorDigest"] == (
+            trust_anchor.digest
+        )
+        assert not (
+            control_plane_staging_root / finalize_request.output_staging_id
+        ).exists()
     finally:
         repository.close()
 

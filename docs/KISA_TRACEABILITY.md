@@ -63,8 +63,10 @@
 > baseline과 부모 Retest를 1:1 결박하고 전체 음성 receipt·정상 기능 회귀를 서버가 재검증한
 > `kisa-retest.json`을 봉인한다. Schema v13은 exact KISA M03·M06·A04의 validity·impact·severity
 > Claim을 append-only 원장과 v3 public projection까지 보존한다. 명시적 v3 정책은 이 receipt
-> 권위를 Ed25519 bundle로 봉인해 외부 trust anchor로 off-host 검증할 수 있다. 독립
-> executor·target issuer와 multi-host Artifact 전송은 후속이므로 M6-07B 전체는 아직 미완료다.
+> 권위를 Ed25519 bundle로 봉인해 외부 trust anchor로 off-host 검증할 수 있다. B2.8a는 별도
+> executor workload key가 exact permit set·sealed output과 bounded portable bundle을 서명하고
+> 다른 host의 Control Plane이 bytes 복사 전후로 재검증하게 한다. target issuer와 대형
+> object-store/multipart Artifact 전송은 후속이므로 M6-07B 전체는 아직 미완료다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -119,8 +121,8 @@ flowchart LR
 | 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
 | 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
 | 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed 분리 | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | 구현: 같은 sealed Run의 terminal-success repetition 전체가 있을 때만 executed로 집계하며 FAILED/CANCELLED Run은 실행 성공·비율을 주장하지 않음 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim receipt attestor·외부 trust-anchor verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization·Retest-source·Claim-binding 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, public Replay admission/read API, fresh-identity retry, Control Plane M03·M06·A04 claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation projection, schema-v12 dual-source Retest projection, portable Claim receipt proof와 Compose daemon 구현; 독립 executor·target issuer와 조직 영향 분석은 후속 |
-| 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal, Control Plane Ed25519 Claim receipt bundle | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json` | 로컬 SQLite DB/OS 신뢰 경계와 Control Plane receipt 공개키 검증 구현; 독립 executor·target attestation과 transparency log는 후속 |
+| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim receipt attestor·외부 trust-anchor verifier, executor workload attestor·bounded portable transport verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization·Retest-source·Claim-binding 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, public Replay admission/read API, fresh-identity retry, Control Plane M03·M06·A04 claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation projection, schema-v12 dual-source Retest projection, portable Claim receipt proof, executor 서명 기반 bounded multi-host Artifact와 Compose daemon 구현; target issuer와 조직 영향 분석은 후속 |
+| 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal, Control Plane Ed25519 Claim receipt bundle, executor workload attestation | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | 로컬 SQLite DB/OS 신뢰 경계, Control Plane receipt 공개키 검증과 executor 외부 trust-anchor 검증 구현; target-issued attestation과 transparency log는 후속 |
 | 결과 분석·보고 | 41-44 | `KISAModePack` sealed Campaign·Plan·Agent·TaskGraph·Gateway evidence exact binding과 보고 생성 | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | 구현: 계획 시나리오와 실제 완결 시나리오를 분리하고 다른 Run 또는 caller 위조 결과를 거부 |
 | 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
 | 테스트 계획(표 28) | 64 | `_test_plan` | `kisa-test-plan.json` | 구현 |
@@ -402,8 +404,9 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   Artifact·Job/ticket/item/batch/Run finalization을 원자적으로 확정한다. Permit 뒤 failure는 그
   ticket에 terminal이다. Compose는 일반 Worker와 함께 전용 daemon을 활성화한다. Public Replay
   admission/read API, fresh-identity retry 발행, schema-v11 multi-item projection, schema-v12 dual-source
-  negative Control Plane retest, schema-v13 exact Claim별 공개 projection과 Ed25519 portable Claim
-  receipt proof는 구현됐다. 독립 executor·target issuer와 multi-host Artifact 전송은 남아 있다.
+  negative Control Plane retest, schema-v13 exact Claim별 공개 projection, Ed25519 portable Claim
+  receipt proof와 executor 서명 기반 bounded multi-host Artifact 전송은 구현됐다. target issuer와
+  대형 object-store/multipart Artifact 전송은 남아 있다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

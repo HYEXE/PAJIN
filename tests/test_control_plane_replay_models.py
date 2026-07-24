@@ -141,6 +141,8 @@ def test_retest_projection_input_authority_round_trips_database_json_version() -
 
     assert stored["api_version"] == "pajin.control-plane.replay-projection-inputs/v2"
     assert "apiVersion" not in stored
+    assert "artifact_transport_digest" not in stored["items"][0]
+    assert "executor_attestation_digest" not in stored["items"][0]
     assert ReplayRetestProjectionInputAuthority.model_validate(stored) == authority
 
 

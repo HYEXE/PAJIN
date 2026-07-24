@@ -160,8 +160,9 @@ the terminal authority graph and appends a fresh Run, compilation, context, rese
   Defensive responses remain `inconclusive` without independent remediation attestation. On 2026-07-24,
   schema v13 and the explicit `pajin.kisa-claim-attestation:v3` policy began sealing exact Claim-specific receipt
   authority into an Ed25519 bundle in the same projection transaction, with an off-host verifier that requires an
-  external trust anchor. This proves that the Control Plane signed the receipt set, not execution by an independent
-  executor or target. Materializers and Oracles for other Modes, independent executor/target issuers, multi-host
+  external trust anchor. A separate executor workload key now signs the exact permit set and sealed output and
+  transports a bounded portable bundle to a Control Plane on another host. This is still not target-issued
+  execution proof. Materializers and Oracles for other Modes, a target issuer, large object-store/multipart
   Artifact transfer, and structured collaboration memory are follow-on work.
 The 2026-07-23 Agentic Discovery A1 contract slice adds versioned `SurfaceObservation`,
 `AttackSurface`, and `AttackSurfaceSet` artifacts, canonical HTTP-operation and schema-bound
@@ -983,6 +984,18 @@ remain valid within its window, revoked keys always fail closed, and
 portable proof that the Control Plane signed the Claim receipt set, not proof of execution by an
 independent executor or target, so the `needs-review` ceiling remains.
 
+[`ADR-0039`](adr/0039-executor-attested-portable-artifact-transport.en.md) adds the first B2.8a
+vertical slice. A separate executor workload Ed25519 key is verified by a public-key trust anchor
+held by the Control Plane. Its statement signs the exact batch, item, Job, ticket, fence,
+compilation, execution context, canonical permit set and Replay request IDs, sealed output
+digests, and both seal roots. A content-addressed bundle bounded to 2 MiB raw, 1 MiB per file,
+256 files, and depth 24 transfers the Run into an opaque server-owned staging reservation without
+a shared volume. The Control Plane verifies signature and issued authority before copying bytes,
+then reuses managed Artifact admission to reverify the tree, Run, receipt, and seals. Transport and
+attestation digests are bound into finalization and projection authority, and the full attestation
+is sealed into the projection. This proves an executor observation, not a target-issued execution
+receipt, so `needs-review` remains and a B2.8b target-side signed receipt is the next boundary.
+
 These stages themselves only harden Candidate admission and original evidence review.
 Under [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.en.md), a Candidate that only passes
 Semantic Validator agreement and the objective gate can be at most `needs-review`, and it cannot be promoted to
@@ -1350,8 +1363,9 @@ slot, and payload/claim/profile/permit transitive binding. The schema-v9 slice n
 server-owned import and typed finalization, and the one-item common Gate; Compose enables that daemon with a
   credential distinct from the generic Worker. Opaque public source/batch admission, role-scoped state reads,
   zero-permit fresh-identity retry issuance, schema-v11 multi-item projection, and schema-v12 dual-source negative
-  Retest projection, schema-v13 Claim-specific projection, and Ed25519 portable receipt proof are also
-  implemented. Independent executor/target issuers and multi-host transfer remain separate completion criteria.
+  Retest projection, schema-v13 Claim-specific projection, Ed25519 portable receipt proof, and a
+  separate executor workload key for bounded multi-host Artifact transfer are also implemented.
+  Target-issued attestation and large object-store/multipart transfer remain separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1481,9 +1495,10 @@ finalization and the one-item common Gate. Bounded identical permit/finalize res
 redispatch a Tool, and any failure after permit issuance is terminal for that ticket. Compose enables the daemon.
   Opaque public source/batch admission, role-scoped state reads, zero-permit fresh-identity retry issuance,
   schema-v11 multi-item projection, schema-v12 dual-source negative Retest projection, and
-  schema-v13 opt-in exact Claim-specific public projection and Ed25519 portable receipt proof are also
-  implemented. Independent executor/target issuers and multi-host transfer remain outstanding, so full
-  completion cannot be claimed. The Accepted ADR
+  schema-v13 opt-in exact Claim-specific public projection, Ed25519 portable receipt proof, and
+  B2.8a executor-attested bounded multi-host Artifact transfer are also implemented. Target-issued
+  attestation and large object-store/multipart transfer remain outstanding, so full completion
+  cannot be claimed. The Accepted ADR
 defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
@@ -1500,7 +1515,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Claim-specific Replay authority and public partial-validation states, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation/negative-retest projection, fresh-identity retry, and an Ed25519 portable Claim-receipt verifier bundle are implemented; Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, independent executor/target attestation and multi-host Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1 versioned Surface contracts and canonicalization, A2 Trusted Surface admission and append-only projection, the A3 opt-in single MCP Recon Wave, the A4 deterministic Hypothesis Compiler and fresh-Capability Dynamic Specialist Wave, the A5 append-only Observation Graph and at-most-two-wave bounded-replanning vertical slice, Candidate admission, the Candidate-aware Provider Validator and validity/impact/severity Atomic Claim Decisions, metadata-minimized Blind Evidence Review and deterministic reconciliation, optional separate-Provider/model Blind Review and independent severity derivation, registered M03/M06/A04 fresh-capability Baseline/Negative Control/Counterfactual execution, Claim-specific Replay authority and public partial-validation states, Replay contract, Compiler, dedicated Grant, Restricted Reproducer, common Gate, exact KISA fresh-session Oracle/coordinator, baseline-bound negative retest, local KISA durable SQLite tickets, explicit Local orchestration, authority attenuation, budget, cancellation, approval, opaque public admission/read APIs, the Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim-specific confirmation/negative-retest projection, fresh-identity retry, an Ed25519 portable Claim-receipt verifier bundle, and executor-attested bounded multi-host Artifact transfer are implemented; Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, target-issued attestation and large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1550,8 +1565,11 @@ defines at least the following.
   retaining v1/v2 compatibility and the validity-only confirmation invariant
 - B2.7 first vertical slice: a `portable_attestation` opt-in, domain-separated Ed25519 statement,
   sealed verifier bundle, active/retired/revoked key lifecycle, and separate trust anchor make exact
-  Claim receipt authority verifiable off-host; independent executor/target attestation remains
-  follow-on work
+  Claim receipt authority verifiable off-host
+- B2.8a first vertical slice: a separate executor workload key signs the exact issued authority,
+  canonical permit set, sealed-output digests, and bounded portable bundle. The Control Plane
+  verifies the external trust anchor before copying bytes, rebinds the proof after managed Artifact
+  import, and preserves legacy projection digests. Target-issued attestation remains follow-on work
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
@@ -1638,8 +1656,8 @@ defines at least the following.
   fresh-Capability Wave under a distinct Compiler/rule authority. The runtime enforces at most two
   waves and one replan, blocks repeated state, and shares Campaign agent, Tool-call, cost, time, and
   rate limits. None of these inputs are passed to the existing Planner
-- Remaining ADR-0029 scope: portable or off-host signed proof,
-  session-bearing driver and Oracle
+- Remaining ADR-0029 scope: a challenge-bound target-issued receipt, large object-store/multipart
+  Artifact transfer, session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, a structured persistence layer for Campaign
   Facts and Agent Working Memory, trusted new-Surface admission, ranking and information value,
   parallel-safe grouping, and three-or-more-wave replanning
@@ -1713,7 +1731,7 @@ defines at least the following.
 
 ## 24. Open Decisions
 
-The execution boundary and technical structure are recorded across ADR-0001 through ADR-0038, all of which are
+The execution boundary and technical structure are recorded across ADR-0001 through ADR-0039, all of which are
 Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice,
 M6-07B-2A managed Artifact admission, M6-07B-2B server-derived exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation plus fresh-authority-bound internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6
@@ -1724,8 +1742,10 @@ server-owned import/typed finalization, and one-item common Gate are also implem
 distinct Replay Worker credential. Opaque public source/batch admission, role-scoped state reads, and automatic
 fresh-identity retry issuance are also implemented. Schema-v11 multi-item projection, schema-v12 dual-source
 negative Control Plane retest, schema-v13 Claim-specific public projection, and the Ed25519 portable Claim-receipt
-verifier bundle are implemented. M6-07B remains incomplete pending independent executor/target issuers and
-multi-host Artifact transfer. The following items need additional decisions before further Phase 3-4 work proceeds.
+verifier bundle are implemented. B2.8a also signs exact permits, sealed output, and a bounded portable Artifact
+with a separate executor workload key for transfer to a Control Plane on another host. M6-07B remains incomplete
+pending a target issuer and large object-store/multipart Artifact transfer. The following items need additional
+decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
 2. Authentication, sessions, organization and project isolation, and multi-tenancy boundary for the Web UI
@@ -1820,7 +1840,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0038 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, Claim-specific execution/public projection, and portable receipt-attestation decisions
+4. ADR-0001 through ADR-0039 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, Claim-specific execution/public projection, portable receipt attestation, and executor-attested bounded Artifact transport decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

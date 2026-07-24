@@ -17,6 +17,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
+from pajin.control_plane.artifact_transfer import (
+    PortableArtifactTransportReceipt,
+)
 from pajin.control_plane.artifacts import (
     ArtifactNotFound,
     ArtifactRepositoryError,
@@ -75,6 +78,13 @@ from pajin.control_plane.errors import (
     ResourceNotFound,
     RunCancelled,
     StateConflict,
+)
+from pajin.control_plane.execution_attestation import (
+    ExecutorAttestationTrustAnchor,
+    ExecutorExecutionAttestation,
+    ExecutorExecutionVerificationResult,
+    executor_execution_attestation_bytes,
+    verify_executor_execution_attestation,
 )
 from pajin.control_plane.kisa_derivation import (
     KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS,
@@ -167,7 +177,7 @@ from pajin.modes.ai_redteam.replay import KISAReplayBatchOutcome
 from pajin.modes.ai_redteam.retest import KISARetestService
 from pajin.replay.runtime import VerifiedReplayResult, inspect_sealed_replay_result
 from pajin.replay.tickets import replay_context_digest
-from pajin.runtime.store import VerifiedRunSnapshot, load_verified_run_artifacts
+from pajin.runtime.store import RunStore, VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.tools.ai import AIChatProbeTool
 from pajin.workflow.confirmation import apply_confirmed_gate, decide_replay_confirmation
 from pajin.workflow.validation_artifacts import load_source_validation_artifacts
@@ -186,6 +196,7 @@ _CANCELLABLE_JOB_STATES = frozenset({JobState.QUEUED.value, JobState.LEASED.valu
 _REVOCABLE_APPROVAL_STATES = frozenset({ApprovalState.PENDING.value, ApprovalState.APPROVED.value})
 _INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
 _REPLAY_TOOL_PERMIT_TTL = timedelta(seconds=30)
+_EXECUTOR_ATTESTATION_MAX_CLOCK_SKEW = timedelta(seconds=30)
 _REPLAY_RETRY_ISSUER_ACTOR = "control-plane:replay-retry"
 _SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
 _SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
@@ -209,6 +220,15 @@ class _ReplayFinalizationPreflight:
 
 
 @dataclass(frozen=True, slots=True)
+class _PortableReplayFinalizationProof:
+    transport: PortableArtifactTransportReceipt
+    transport_digest: str
+    attestation: ExecutorExecutionAttestation
+    attestation_digest: str
+    verification: ExecutorExecutionVerificationResult
+
+
+@dataclass(frozen=True, slots=True)
 class _ReplayProjectionSnapshot:
     authority: (
         ReplayProjectionInputAuthority
@@ -220,6 +240,7 @@ class _ReplayProjectionSnapshot:
     retest_source_storage_key: str | None
     output_storage_keys: tuple[str, ...]
     retest_contexts: Mapping[str, ReplayRetestContext]
+    executor_attestations: Mapping[str, ExecutorExecutionAttestation]
     decided_at: datetime
     portable_attestation: bool
 
@@ -290,6 +311,7 @@ class ControlPlaneService:
         replay_executor_profiles: Mapping[str, frozenset[str]] | None = None,
         artifact_repository: ManagedArtifactRepository | None = None,
         replay_attestor: ReplayAttestor | None = None,
+        executor_attestation_trust_anchor: ExecutorAttestationTrustAnchor | None = None,
     ) -> None:
         self.repository = repository
         self.signer = signer
@@ -299,6 +321,7 @@ class ControlPlaneService:
         }
         self._artifact_repository = artifact_repository
         self._replay_attestor = replay_attestor
+        self._executor_attestation_trust_anchor = executor_attestation_trust_anchor
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -1518,12 +1541,21 @@ class ControlPlaneService:
         authority = attempt.authority
         source_ref = preflight.source_ref
 
+        executor_preverification = self._preverify_portable_replay_finalization(
+            authority=authority,
+            request=request,
+            now=utc_now(),
+        )
         source_snapshot = self._resolve_managed_artifact(
             artifact_repository,
             source_ref,
             expected_storage_key=preflight.source_storage_key,
         )
         try:
+            transport_receipt = self._materialize_replay_output(
+                artifact_repository,
+                request=request,
+            )
             output_snapshot = artifact_repository.import_run(
                 staging_id=request.output_staging_id,
                 producer_run_id=job.run_id,
@@ -1537,6 +1569,14 @@ class ControlPlaneService:
         except (ArtifactRepositoryError, ValueError) as exc:
             raise StateConflict("staged Replay output failed authoritative verification") from exc
 
+        verification_time = utc_now()
+        portable_proof = self._verify_portable_replay_finalization(
+            request=request,
+            transport_receipt=transport_receipt,
+            output_snapshot=output_snapshot,
+            verified=verified,
+            preverification=executor_preverification,
+        )
         gate_decision = self._verify_replay_output_and_gate(
             authority=authority,
             batch=batch,
@@ -1545,7 +1585,7 @@ class ControlPlaneService:
             output_snapshot=output_snapshot,
             verified=verified,
             source_snapshot=source_snapshot,
-            now=utc_now(),
+            now=verification_time,
         )
         gate_payload = gate_decision.model_dump(mode="json", by_alias=True)
         gate_digest = replay_context_digest(gate_payload)
@@ -1562,6 +1602,16 @@ class ControlPlaneService:
             "receiptSealRootDigest": verified.receipt_seal_root_digest,
             "ticketId": ticket.ticket_id,
         }
+        if portable_proof is not None:
+            finalization_material.update(
+                {
+                    "artifactTransportDigest": portable_proof.transport_digest,
+                    "executorAttestationDigest": portable_proof.attestation_digest,
+                    "executorAttestationTrustAnchorDigest": (
+                        portable_proof.verification.trust_anchor_digest
+                    ),
+                }
+            )
         result_digest = replay_context_digest(finalization_material)
         admission_digest = replay_context_digest(
             {
@@ -1652,7 +1702,7 @@ class ControlPlaneService:
                 locked_ticket.finalized_at = finalized_at
                 locked_ticket.updated_at = finalized_at
                 locked_job.state = JobState.SUCCEEDED.value
-                locked_job.result = {
+                job_result: dict[str, object] = {
                     "kind": "pajin.replay.finalization.v1",
                     "finalizationId": finalization.finalization_id,
                     "artifactId": artifact.artifact_id,
@@ -1660,6 +1710,25 @@ class ControlPlaneService:
                     "gateDecisionId": gate_decision.decision_id,
                     "resultDigest": result_digest,
                 }
+                if portable_proof is not None:
+                    job_result.update(
+                        {
+                            "artifactTransport": portable_proof.transport.model_dump(
+                                mode="json",
+                                by_alias=True,
+                            ),
+                            "artifactTransportDigest": portable_proof.transport_digest,
+                            "executorAttestation": portable_proof.attestation.model_dump(
+                                mode="json",
+                                by_alias=True,
+                            ),
+                            "executorAttestationDigest": portable_proof.attestation_digest,
+                            "executorAttestationTrustAnchorDigest": (
+                                portable_proof.verification.trust_anchor_digest
+                            ),
+                        }
+                    )
+                locked_job.result = job_result
                 locked_job.error = None
                 locked_job.lease_deadline_at = None
                 locked_job.heartbeat_event_at = None
@@ -1677,6 +1746,17 @@ class ControlPlaneService:
                         "artifactId": artifact.artifact_id,
                         "artifactSetDigest": verified.receipt.artifact_set_digest,
                         "receiptSealRootDigest": verified.receipt_seal_root_digest,
+                        **(
+                            {
+                                "artifactTransportDigest": portable_proof.transport_digest,
+                                "executorAttestationDigest": portable_proof.attestation_digest,
+                                "executorAttestationKeyId": (
+                                    portable_proof.verification.key_id
+                                ),
+                            }
+                            if portable_proof is not None
+                            else {}
+                        ),
                     },
                     item=locked_item,
                     ticket=locked_ticket,
@@ -1760,6 +1840,19 @@ class ControlPlaneService:
             if refreshed is None:
                 raise StateConflict("Replay finalization authority disappeared") from exc
             return refreshed
+
+    @staticmethod
+    def _materialize_replay_output(
+        repository: ManagedArtifactRepository,
+        *,
+        request: ReplayFinalizeRequest,
+    ) -> PortableArtifactTransportReceipt | None:
+        if request.artifact_bundle is None:
+            return None
+        return repository.materialize_portable_bundle(
+            staging_id=request.output_staging_id,
+            bundle=request.artifact_bundle,
+        )
 
     def _replay_retest_artifact(
         self,
@@ -1884,6 +1977,11 @@ class ControlPlaneService:
                     staged_projection_path,
                     replay_batch,
                 )
+                self._seal_retest_executor_attestations(
+                    staged_projection_path,
+                    run_id=projection_source.ref.run_id,
+                    artifacts=additional_artifacts,
+                )
             else:
                 apply_confirmed_gate(
                     source_run_path=staged_projection_path,
@@ -1962,6 +2060,7 @@ class ControlPlaneService:
                 or current_snapshot.retest_source_storage_key != snapshot.retest_source_storage_key
                 or current_snapshot.output_storage_keys != snapshot.output_storage_keys
                 or current_snapshot.retest_contexts != snapshot.retest_contexts
+                or current_snapshot.executor_attestations != snapshot.executor_attestations
                 or current_snapshot.portable_attestation != snapshot.portable_attestation
             ):
                 raise StateConflict("Replay projection authority changed before publication")
@@ -2059,10 +2158,17 @@ class ControlPlaneService:
         self,
         snapshot: _ReplayProjectionSnapshot,
     ) -> dict[str, bytes]:
-        """Derive deterministic sealed bytes only for the explicit v3 policy."""
+        """Seal external executor proofs and the optional Control Plane receipt proof."""
 
+        artifacts = {
+            (
+                "validation/v1alpha1/executor-attestations/"
+                f"{item_id}.json"
+            ): executor_execution_attestation_bytes(attestation)
+            for item_id, attestation in sorted(snapshot.executor_attestations.items())
+        }
         if not snapshot.portable_attestation:
-            return {}
+            return artifacts
         if not isinstance(
             snapshot.authority,
             ReplayClaimProjectionInputAuthority,
@@ -2075,9 +2181,34 @@ class ControlPlaneService:
             authority_digest=snapshot.authority_digest,
             issued_at=snapshot.decided_at,
         )
-        return {
-            PORTABLE_REPLAY_ATTESTATION_PATH.as_posix(): (portable_replay_attestation_bytes(bundle))
-        }
+        artifacts[PORTABLE_REPLAY_ATTESTATION_PATH.as_posix()] = (
+            portable_replay_attestation_bytes(bundle)
+        )
+        return artifacts
+
+    @staticmethod
+    def _seal_retest_executor_attestations(
+        root: Path,
+        *,
+        run_id: str,
+        artifacts: Mapping[str, bytes],
+    ) -> None:
+        """Append executor proofs after the Retest service seals its assessment."""
+
+        if not artifacts:
+            return
+        store = RunStore(run_id, root)
+        for relative_path, content in sorted(artifacts.items()):
+            if not relative_path.startswith(
+                "validation/v1alpha1/executor-attestations/"
+            ):
+                raise StateConflict("Retest projection received an invalid executor proof path")
+            try:
+                text = content.decode("utf-8")
+            except UnicodeDecodeError as exc:  # pragma: no cover - generated JSON invariant
+                raise StateConflict("Retest executor proof is not UTF-8 JSON") from exc
+            store.write_text(relative_path, text)
+        store.seal()
 
     @staticmethod
     def _replay_projection_compilation_context(
@@ -2165,11 +2296,14 @@ class ControlPlaneService:
         claim_authority_items: list[ReplayClaimProjectionItemAuthority] = []
         output_storage_keys: list[str] = []
         retest_contexts: dict[str, ReplayRetestContext] = {}
+        executor_attestations: dict[str, ExecutorExecutionAttestation] = {}
         for item in items:
             finalization = finalizations_by_item.get(item.item_id)
             if finalization is None:
                 raise StateConflict("Replay projection item has no finalization")
             ticket = self._records.replay_ticket(session, finalization.ticket_id, lock=lock)
+            job = self._records.job(session, ticket.job_id, lock=lock)
+            stored_portable = self._stored_portable_replay_finalization(job)
             output_artifact = self._records.artifact(
                 session,
                 ArtifactLocator(
@@ -2222,8 +2356,21 @@ class ControlPlaneService:
                 receipt_seal_root_digest=finalization.receipt_seal_root_digest,
                 gate_decision_digest=finalization.gate_decision_digest,
                 result_digest=finalization.result_digest,
+                artifact_transport_digest=(
+                    stored_portable[1] if stored_portable is not None else None
+                ),
+                executor_attestation_digest=(
+                    stored_portable[3] if stored_portable is not None else None
+                ),
                 finalized_at=_aware(finalization.finalized_at),
             )
+            if stored_portable is not None:
+                transport, _transport_digest, attestation, _attestation_digest = stored_portable
+                if transport.manifest_sha256 != output_ref.content_digest:
+                    raise StateConflict(
+                        "portable Replay transport differs from projection output"
+                    )
+                executor_attestations[item.item_id] = attestation
             if batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS:
                 claim = compilation.spec.binding.claim
                 if (
@@ -2298,6 +2445,7 @@ class ControlPlaneService:
             retest_source_storage_key=retest_source_storage_key,
             output_storage_keys=tuple(output_storage_keys),
             retest_contexts=retest_contexts,
+            executor_attestations=executor_attestations,
             decided_at=_aware(batch.updated_at),
             portable_attestation=(
                 batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
@@ -2826,6 +2974,116 @@ class ControlPlaneService:
             authority=authority,
         )
 
+    def _preverify_portable_replay_finalization(
+        self,
+        *,
+        authority: ReplayBindingAuthority,
+        request: ReplayFinalizeRequest,
+        now: datetime,
+    ) -> ExecutorExecutionVerificationResult | None:
+        """Reject an untrusted signer before copying any caller-supplied Artifact bytes."""
+
+        if request.artifact_bundle is None or request.executor_attestation is None:
+            return None
+        trust_anchor = self._executor_attestation_trust_anchor
+        if trust_anchor is None:
+            raise StateConflict("executor attestation trust anchor is not configured")
+        try:
+            verification = verify_executor_execution_attestation(
+                request.executor_attestation,
+                trust_anchor=trust_anchor,
+            )
+        except ValueError as exc:
+            raise StateConflict("executor execution attestation is not trusted") from exc
+
+        statement = request.executor_attestation.statement
+        permits = sorted(authority.permits, key=lambda permit: permit.call_ordinal)
+        if not permits:
+            raise StateConflict("executor attestation has no issued Replay permits")
+        permit_digests = [permit.permit_digest for permit in permits]
+        replay_request_ids = [permit.replay_request_id for permit in permits]
+        issued_at = _aware(statement.issued_at)
+        earliest_issue_time = max(
+            [_aware(authority.execution_context.created_at)]
+            + [_aware(permit.issued_at) for permit in permits]
+        )
+        exact = (
+            verification.artifact_bundle_manifest_sha256
+            == request.artifact_bundle.manifest_sha256
+            and statement.executor_profile == request.executor_profile
+            and statement.batch_id == authority.payload.batch_id
+            and statement.item_id == authority.payload.item_id
+            and statement.job_id == permits[0].job_id
+            and statement.ticket_id == authority.payload.ticket_id == request.ticket_id
+            and statement.fencing_value
+            == authority.payload.fencing_value
+            == request.fencing_value
+            and statement.replay_run_id == authority.payload.replay_run_id
+            and statement.source_root_digest == authority.payload.source.integrity_root_digest
+            and statement.compilation_digest == authority.payload.compilation_digest
+            and statement.execution_context_digest
+            == authority.payload.execution_context_digest
+            and statement.permit_digests == permit_digests
+            and statement.replay_request_ids == replay_request_ids
+            and statement.artifact_bundle_file_count
+            == request.artifact_bundle.file_count
+            and statement.artifact_bundle_total_bytes
+            == request.artifact_bundle.total_bytes
+            and earliest_issue_time <= issued_at <= (
+                now + _EXECUTOR_ATTESTATION_MAX_CLOCK_SKEW
+            )
+        )
+        if not exact:
+            raise StateConflict(
+                "executor attestation differs from the issued Replay authority or bundle"
+            )
+        return verification
+
+    @staticmethod
+    def _verify_portable_replay_finalization(
+        *,
+        request: ReplayFinalizeRequest,
+        transport_receipt: PortableArtifactTransportReceipt | None,
+        output_snapshot: ManagedArtifactSnapshot,
+        verified: VerifiedReplayResult,
+        preverification: ExecutorExecutionVerificationResult | None,
+    ) -> _PortableReplayFinalizationProof | None:
+        """Bind the preverified executor observation to the reloaded sealed output."""
+
+        if request.artifact_bundle is None or request.executor_attestation is None:
+            if transport_receipt is not None or preverification is not None:
+                raise StateConflict("legacy Replay finalization has portable transport state")
+            return None
+        if transport_receipt is None or preverification is None:
+            raise StateConflict("portable Replay finalization has no verified transport")
+        statement = request.executor_attestation.statement
+        exact = (
+            transport_receipt.output_staging_id == request.output_staging_id
+            and transport_receipt.manifest_sha256
+            == request.artifact_bundle.manifest_sha256
+            == output_snapshot.ref.content_digest
+            and transport_receipt.file_count == request.artifact_bundle.file_count
+            and transport_receipt.total_bytes == request.artifact_bundle.total_bytes
+            and statement.artifact_set_digest == verified.receipt.artifact_set_digest
+            and statement.artifact_seal_root_digest
+            == verified.receipt.artifact_seal_root_digest
+            and statement.receipt_seal_root_digest == verified.receipt_seal_root_digest
+        )
+        if not exact:
+            raise StateConflict(
+                "executor attestation differs from the materialized sealed Replay output"
+            )
+        transport_digest = replay_context_digest(
+            transport_receipt.model_dump(mode="json", by_alias=True)
+        )
+        return _PortableReplayFinalizationProof(
+            transport=transport_receipt,
+            transport_digest=transport_digest,
+            attestation=request.executor_attestation,
+            attestation_digest=preverification.attestation_digest,
+            verification=preverification,
+        )
+
     @staticmethod
     def _verify_replay_output_and_gate(
         *,
@@ -3335,6 +3593,26 @@ class ControlPlaneService:
                 repository_version=record.repository_version,
             ),
         )
+        stored_portable = self._stored_portable_replay_finalization(job)
+        if stored_portable is None:
+            portable_request_matches = (
+                request.artifact_bundle is None and request.executor_attestation is None
+            )
+        else:
+            (
+                stored_transport,
+                _stored_transport_digest,
+                stored_attestation,
+                _stored_attestation_digest,
+            ) = stored_portable
+            portable_request_matches = (
+                request.artifact_bundle is not None
+                and request.executor_attestation == stored_attestation
+                and request.artifact_bundle.manifest_sha256
+                == stored_transport.manifest_sha256
+                and request.artifact_bundle.file_count == stored_transport.file_count
+                and request.artifact_bundle.total_bytes == stored_transport.total_bytes
+            )
         supplied_digest = token_digest(request.lease_token)
         if not (
             request.ticket_id == record.ticket_id == ticket.ticket_id
@@ -3346,9 +3624,17 @@ class ControlPlaneService:
             and ticket.lease_token_hash is not None
             and hmac.compare_digest(job.lease_token_hash, supplied_digest)
             and hmac.compare_digest(ticket.lease_token_hash, supplied_digest)
+            and portable_request_matches
         ):
             raise StateConflict("Replay finalization idempotency authority does not match")
         artifact_ref = self._views.artifact(artifact)
+        if (
+            stored_portable is not None
+            and stored_portable[0].manifest_sha256 != artifact_ref.content_digest
+        ):
+            raise StateConflict(
+                "stored portable Replay transport differs from its managed Artifact"
+            )
         self._resolve_managed_artifact(
             artifact_repository,
             artifact_ref,
@@ -3365,3 +3651,46 @@ class ControlPlaneService:
             claim_authority=self._records.replay_claim_binding(session, item.item_id),
             retest_artifact=retest_artifact,
         )
+
+    def _stored_portable_replay_finalization(
+        self,
+        job: JobRecord,
+    ) -> tuple[
+        PortableArtifactTransportReceipt,
+        str,
+        ExecutorExecutionAttestation,
+        str,
+    ] | None:
+        result = job.result
+        if not isinstance(result, dict):
+            raise StateConflict("Replay finalization Job result is invalid")
+        fields = (
+            result.get("artifactTransport"),
+            result.get("artifactTransportDigest"),
+            result.get("executorAttestation"),
+            result.get("executorAttestationDigest"),
+            result.get("executorAttestationTrustAnchorDigest"),
+        )
+        if all(value is None for value in fields):
+            return None
+        if any(value is None for value in fields):
+            raise StateConflict("portable Replay finalization Job result is incomplete")
+        try:
+            transport = PortableArtifactTransportReceipt.model_validate(fields[0])
+            attestation = ExecutorExecutionAttestation.model_validate(fields[2])
+        except ValueError as exc:
+            raise StateConflict("portable Replay finalization Job result is invalid") from exc
+        transport_digest = replay_context_digest(
+            transport.model_dump(mode="json", by_alias=True)
+        )
+        attestation_digest = attestation.digest
+        anchor_digest = fields[4]
+        if (
+            fields[1] != transport_digest
+            or fields[3] != attestation_digest
+            or not isinstance(anchor_digest, str)
+            or len(anchor_digest) != 64
+            or any(character not in "0123456789abcdef" for character in anchor_digest)
+        ):
+            raise StateConflict("portable Replay finalization Job digests are inconsistent")
+        return transport, transport_digest, attestation, attestation_digest

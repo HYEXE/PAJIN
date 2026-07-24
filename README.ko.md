@@ -24,7 +24,7 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
 | Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을, schema v12는 confirmed baseline과 부모 Retest Artifact를 결박한 `kisa-retest.json`을 발행하며, schema v13은 append-only exact Claim binding과 KISA M03·M06·A04용 opt-in v3 Claim별 공개 projection을 추가합니다. 추가 opt-in은 active·retired·revoked key lifecycle과 명시적 외부 trust anchor 검증을 가진 Ed25519 Claim receipt verifier bundle을 봉인합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, 독립 executor·target attestation과 multi-host/object-store Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, target 발행 실행 attestation과 대형 object-store/multipart Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -915,6 +915,8 @@ $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_KEY_ID='<active-key-id>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-seed>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
+# 선택적 B2.8a executor transport이며 Control Plane에는 공개 trust만 설정합니다.
+$env:PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR='<one-line-executor-trust-anchor-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -926,6 +928,12 @@ Control Plane service account만 접근할 수 있게 하고 Worker 또는 사�
 consumer에게서 입력받지 않습니다. 두 값을 생략하면 managed Artifact admission과 Replay-batch
 source resolution은 사용할 수 없으며 fail closed합니다. 현재 durable admission은 directory
 `fsync`를 지원하는 POSIX filesystem/runtime도 필요하며, 미지원 환경에서는 fail closed합니다.
+
+executor signer와 Control Plane 공개 anchor를 설정하면 Replay finalization은 shared staging
+volume에 의존하는 대신 content-addressed bundle을 운반합니다. 첫 transport 상한은 raw 전체
+2 MiB, file당 1 MiB, 256 files, depth 24입니다. Control Plane은 bytes를 복사하기 전에 외부
+서명을 검증하고 기존 Run·receipt·seal을 다시 검증합니다. 이는 executor 관찰 증거이지
+target-issued receipt가 아니므로 `needs-review` confirmation 상한을 해제하지 않습니다.
 
 Operator credential은 다음 공개 Replay admission API를 사용할 수 있습니다.
 
@@ -1146,8 +1154,11 @@ proof입니다. Permit이 하나라도 생긴 뒤 실행이 실패하면 해당 
 제공하지 않습니다. 동일한 ordinal-bound permit 요청과 서버 finalize 요청의 정확한 response-loss
 retry는 모두 멱등이며 어느 경로도 Tool을 다시 dispatch하지 않습니다. 현재 executor는
 명시적인 M03, M06, A04 `ai.chat-probe` confirmation 계약만 지원하고 Secret Lease를 금지하며, 한
-host의 shared POSIX filesystem과 Docker daemon을 사용합니다. Generic Replay executor, negative
-retest Worker, multi-host 전송 protocol 또는 독립 executor·target attestation이 아닙니다.
+host의 Docker daemon을 사용합니다. 기존 경로는 shared POSIX staging을 사용하지만, 별도 executor
+workload key를 설정한 bounded portable 경로는 Worker-local staging에서 sealed Run bytes와 exact
+permit set을 서명해 다른 Control Plane host로 전달할 수 있습니다. 이 경로도 target이 직접 발행한
+응답 증명은 아니며 Generic Replay executor, negative retest Worker 또는 대형 object-store 전송이
+아닙니다.
 
 Compose lab은 고정 Tool Worker 및 egress-proxy image를 build하고 owner-only volume initializer,
 API, 일반 daemon, 전용 Replay daemon을 시작합니다. API와 Replay daemon은 모두 `10001:10001`로
@@ -1188,7 +1199,8 @@ Worker는 호출별 internal network에 남습니다.
 | `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | 번들 Compose에서만 `true`; 기본 `false` | `http://control-plane:8090`을 위한 좁은 local-lab 예외이며 원격 HTTP는 계속 거부되고 production은 HTTPS를 사용해야 함 |
 | `PAJIN_REPLAY_WORKER_ID` | `pajin-compose-replay-worker-1` | Status identity일 뿐이고 Bearer principal이 authorization identity |
 | `PAJIN_REPLAY_EXECUTOR_PROFILE` | `kisa-exact-v1` | Literal-only이며 `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`와 일치해야 함 |
-| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only shared root이며 claim에는 opaque `stage_<uuid>`만 포함 |
+| `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only root이며 legacy 경로는 공유하고 portable executor attestation 설정 시 Worker-local로 사용할 수 있으며 claim에는 opaque `stage_<uuid>`만 포함 |
+| `PAJIN_REPLAY_EXECUTOR_ATTESTATION_KEY_ID`, `PAJIN_REPLAY_EXECUTOR_ATTESTATION_PRIVATE_KEY`, `PAJIN_REPLAY_EXECUTOR_ATTESTATION_TRUST_ANCHOR`, `PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR` | unset | bounded portable transport에서는 Worker 세 값을 모두 함께 설정하고 Control Plane에는 공개 anchor만 설정하며 private seed를 노출하지 않은 채 서로 일치해야 함 |
 | `PAJIN_REPLAY_LEASE_SECONDS`, `PAJIN_REPLAY_HEARTBEAT_SECONDS`, `PAJIN_REPLAY_LONG_POLL_SECONDS` | 30, 5, 10 | Lease 범위는 5-300초, heartbeat는 lease 절반 미만, long poll은 최대 20초 |
 | `PAJIN_REPLAY_IDLE_DELAY_SECONDS` | 0.2 | 빈 queue long poll 사이의 polling 제한 |
 | `PAJIN_REPLAY_RETRY_BASE_SECONDS`, `PAJIN_REPLAY_RETRY_MAX_SECONDS` | 0.25, 5 | 동일한 permit/finalize response-loss 요청의 제한된 backoff이며 Tool redispatch 권위가 아님 |

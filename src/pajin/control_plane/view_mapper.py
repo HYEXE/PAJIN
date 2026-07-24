@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
+from pajin.control_plane.artifact_transfer import PortableArtifactTransportReceipt
 from pajin.control_plane.database import (
     ApprovalRecord,
     ArtifactRecord,
@@ -22,6 +23,7 @@ from pajin.control_plane.database import (
     RunRecord,
 )
 from pajin.control_plane.errors import StateConflict
+from pajin.control_plane.execution_attestation import ExecutorExecutionAttestation
 from pajin.control_plane.models import (
     ApprovalIntent,
     ApprovalState,
@@ -286,6 +288,93 @@ class ControlPlaneViewMapper:
         except ValueError as exc:
             raise StateConflict("durable Replay Gate decision is invalid") from exc
         gate_digest = replay_context_digest(decision.model_dump(mode="json", by_alias=True))
+        if not isinstance(job.result, dict):
+            raise StateConflict("durable Replay finalization Job result is invalid")
+        portable_fields = (
+            job.result.get("artifactTransport"),
+            job.result.get("artifactTransportDigest"),
+            job.result.get("executorAttestation"),
+            job.result.get("executorAttestationDigest"),
+            job.result.get("executorAttestationTrustAnchorDigest"),
+        )
+        artifact_transport: PortableArtifactTransportReceipt | None
+        executor_attestation: ExecutorExecutionAttestation | None
+        if all(value is None for value in portable_fields):
+            artifact_transport = None
+            executor_attestation = None
+        elif any(value is None for value in portable_fields):
+            raise StateConflict("durable portable Replay finalization is incomplete")
+        else:
+            try:
+                artifact_transport = PortableArtifactTransportReceipt.model_validate(
+                    portable_fields[0]
+                )
+                executor_attestation = ExecutorExecutionAttestation.model_validate(
+                    portable_fields[2]
+                )
+            except ValueError as exc:
+                raise StateConflict(
+                    "durable portable Replay finalization is invalid"
+                ) from exc
+            statement = executor_attestation.statement
+            anchor_digest = portable_fields[4]
+            if not (
+                portable_fields[1]
+                == replay_context_digest(
+                    artifact_transport.model_dump(mode="json", by_alias=True)
+                )
+                and portable_fields[3] == executor_attestation.digest
+                and isinstance(anchor_digest, str)
+                and len(anchor_digest) == 64
+                and all(
+                    character in "0123456789abcdef"
+                    for character in anchor_digest
+                )
+                and artifact_transport.output_staging_id == record.output_staging_id
+                and artifact_transport.manifest_sha256 == artifact.content_digest
+                and statement.artifact_bundle_manifest_sha256
+                == artifact_transport.manifest_sha256
+                and statement.artifact_bundle_file_count == artifact_transport.file_count
+                and statement.artifact_bundle_total_bytes == artifact_transport.total_bytes
+                and statement.batch_id == batch.batch_id
+                and statement.item_id == item.item_id
+                and statement.job_id == job.job_id
+                and statement.ticket_id == ticket.ticket_id
+                and statement.fencing_value == ticket.fencing_value
+                and statement.replay_run_id == record.replay_run_id
+                and statement.compilation_digest == item.compilation_digest
+                and statement.artifact_set_digest == record.artifact_set_digest
+                and statement.artifact_seal_root_digest
+                == record.artifact_seal_root_digest
+                and statement.receipt_seal_root_digest
+                == record.receipt_seal_root_digest
+            ):
+                raise StateConflict(
+                    "durable portable Replay finalization graph is inconsistent"
+                )
+        artifact_ref = cls.artifact(artifact)
+        finalization_material: dict[str, object] = {
+            "artifact": artifact_ref.model_dump(mode="json"),
+            "artifactSetDigest": record.artifact_set_digest,
+            "artifactSealRootDigest": record.artifact_seal_root_digest,
+            "batchId": batch.batch_id,
+            "compilationId": ticket.compilation_id,
+            "fencingValue": ticket.fencing_value,
+            "gateDecisionDigest": gate_digest,
+            "itemId": item.item_id,
+            "jobId": job.job_id,
+            "receiptSealRootDigest": record.receipt_seal_root_digest,
+            "ticketId": ticket.ticket_id,
+        }
+        if artifact_transport is not None:
+            finalization_material.update(
+                {
+                    "artifactTransportDigest": portable_fields[1],
+                    "executorAttestationDigest": portable_fields[3],
+                    "executorAttestationTrustAnchorDigest": portable_fields[4],
+                }
+            )
+        expected_result_digest = replay_context_digest(finalization_material)
         if not (
             record.job_id == job.job_id
             and record.batch_id == batch.batch_id
@@ -298,6 +387,7 @@ class ControlPlaneViewMapper:
             and record.artifact_id == artifact.artifact_id
             and record.repository_version == artifact.repository_version
             and record.gate_decision_digest == gate_digest
+            and record.result_digest == expected_result_digest
             and ticket.result_digest == record.result_digest
             and isinstance(job.result, dict)
             and job.result.get("finalizationId") == record.finalization_id
@@ -310,10 +400,12 @@ class ControlPlaneViewMapper:
             batch=cls.replay_batch(batch, retest_artifact=retest_artifact),
             item=cls.replay_item(item, claim_authority=claim_authority),
             ticket=cls.replay_ticket(ticket),
-            artifact=cls.artifact(artifact),
+            artifact=artifact_ref,
             artifact_set_digest=record.artifact_set_digest,
             artifact_seal_root_digest=record.artifact_seal_root_digest,
             receipt_seal_root_digest=record.receipt_seal_root_digest,
+            artifact_transport=artifact_transport,
+            executor_attestation=executor_attestation,
             gate_decision=decision,
             result_digest=record.result_digest,
             finalized_by=record.finalized_by,

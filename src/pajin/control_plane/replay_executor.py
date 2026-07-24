@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shutil
 import stat
 from collections.abc import Callable
+from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
+from pajin.control_plane.artifact_transfer import PortableArtifactBundle
+from pajin.control_plane.artifacts import build_portable_artifact_bundle
 from pajin.control_plane.client import (
     ControlPlaneAuthenticationError,
     ControlPlaneLeaseLost,
@@ -18,6 +23,10 @@ from pajin.control_plane.client import (
     ControlPlaneTransientError,
 )
 from pajin.control_plane.error_safety import control_plane_cancellation_reason
+from pajin.control_plane.execution_attestation import (
+    ExecutorExecutionAttestation,
+    ExecutorExecutionAttestor,
+)
 from pajin.control_plane.models import (
     KISA_EXACT_REPLAY_EXECUTOR_PROFILE,
     ReplayExecutionClaimView,
@@ -32,6 +41,7 @@ from pajin.policy.engine import PolicyEngine
 from pajin.replay.runtime import (
     GatewayRestrictedReproducerRuntime,
     ReplayDispatchAuthority,
+    VerifiedReplayResult,
 )
 from pajin.replay.tickets import (
     ClaimedReplayExecution,
@@ -58,6 +68,13 @@ class ReplayExecutorControlPlanePort(Protocol):
         job_id: str,
         request: ReplayToolPermitRequest,
     ) -> ReplayToolPermitView: ...
+
+
+@dataclass(frozen=True, slots=True)
+class _LocalPortableStage:
+    path: Path
+    device: int
+    inode: int
 
 
 class _ClaimTicketBackend:
@@ -168,6 +185,7 @@ class _ControlPlaneDispatchAuthorizer:
         self._permit_attempts = permit_attempts
         self._retry_base_seconds = retry_base_seconds
         self._retry_max_seconds = retry_max_seconds
+        self._permits: list[ReplayToolPermitView] = []
 
     async def authorize(
         self,
@@ -241,6 +259,11 @@ class _ControlPlaneDispatchAuthorizer:
             raise ControlPlaneProtocolError(
                 "durable Replay Tool permit differs from the exact dispatch"
             )
+        if len(self._permits) != call_ordinal - 1:
+            raise ControlPlaneProtocolError(
+                "durable Replay Tool permits were not consumed in canonical order"
+            )
+        self._permits.append(permit)
         return ReplayDispatchAuthority(
             request_id=permit.replay_request_id,
             expires_at=permit.expires_at,
@@ -262,6 +285,10 @@ class _ControlPlaneDispatchAuthorizer:
         return bool(spec.ephemeral_argument_fields) or (
             replay_argument_digest(request.arguments) == spec.argument_digest
         )
+
+    @property
+    def permits(self) -> tuple[ReplayToolPermitView, ...]:
+        return tuple(self._permits)
 
 
 class _ReplayAIChatProbeTool(AIChatProbeTool):
@@ -295,6 +322,7 @@ class KISAExactReplayExecutor:
         permit_attempts: int = 3,
         retry_base_seconds: float = 0.25,
         retry_max_seconds: float = 5,
+        execution_attestor: ExecutorExecutionAttestor | None = None,
     ) -> None:
         if (
             type(permit_attempts) is not int
@@ -321,6 +349,7 @@ class KISAExactReplayExecutor:
         self._permit_attempts = permit_attempts
         self._retry_base_seconds = float(retry_base_seconds)
         self._retry_max_seconds = float(retry_max_seconds)
+        self._execution_attestor = execution_attestor
 
     async def execute(
         self,
@@ -333,11 +362,19 @@ class KISAExactReplayExecutor:
             or claim.ticket.executor_profile != self.profile
         ):
             raise PermissionError("Replay claim requires a different executor profile")
-        store = self._staging_store(claim)
+        store, local_portable_stage = self._staging_store(claim)
         tools = ToolRegistry()
         tools.register(self._replay_tool)
         materializers, oracles = kisa_replay_registries(purpose=claim.batch.purpose)
         ticket_backend = _ClaimTicketBackend(claim)
+        dispatch_authorizer = _ControlPlaneDispatchAuthorizer(
+            client=self._client,
+            claim=claim,
+            clock=self._clock,
+            permit_attempts=self._permit_attempts,
+            retry_base_seconds=self._retry_base_seconds,
+            retry_max_seconds=self._retry_max_seconds,
+        )
         runtime = GatewayRestrictedReproducerRuntime(
             tools=tools,
             policy=self._policy,
@@ -349,14 +386,7 @@ class KISAExactReplayExecutor:
             budget=BudgetController(claim.execution_context.campaign.spec.budgets),
             rate_limits=RequestRateLimitLedger(),
             clock=self._clock,
-            dispatch_authorizer=_ControlPlaneDispatchAuthorizer(
-                client=self._client,
-                claim=claim,
-                clock=self._clock,
-                permit_attempts=self._permit_attempts,
-                retry_base_seconds=self._retry_base_seconds,
-                retry_max_seconds=self._retry_max_seconds,
-            ),
+            dispatch_authorizer=dispatch_authorizer,
         )
         replay_cancellation = (
             cancellation.fork_for_run(
@@ -367,8 +397,9 @@ class KISAExactReplayExecutor:
             if cancellation is not None
             else None
         )
+        verified: VerifiedReplayResult | None = None
         try:
-            await runtime.reproduce(
+            verified = await runtime.reproduce(
                 claim.execution_context.campaign,
                 ReplayExecutionTicket(claim.ticket.ticket_id),
                 candidate_source_root_digest=claim.batch.source.integrity_root_digest,
@@ -393,15 +424,77 @@ class KISAExactReplayExecutor:
         finally:
             if replay_cancellation is not None and replay_cancellation.active:
                 seal_executor_quiescence(replay_cancellation)
+            if verified is None and local_portable_stage is not None:
+                with suppress(PermissionError):
+                    self._remove_local_portable_stage(local_portable_stage)
+                local_portable_stage = None
+        if verified is None:  # pragma: no cover - every unsuccessful path raises
+            raise RuntimeError("Replay execution returned without a verified result")
+        try:
+            artifact_bundle, executor_attestation = self._portable_finalization(
+                claim=claim,
+                verified=verified,
+                permits=dispatch_authorizer.permits,
+                store=store,
+            )
+        finally:
+            if local_portable_stage is not None:
+                self._remove_local_portable_stage(local_portable_stage)
         return ReplayFinalizeRequest(
             executor_profile=self.profile,
             lease_token=claim.lease_token,
             ticket_id=claim.ticket.ticket_id,
             fencing_value=claim.ticket.fencing_value,
             output_staging_id=claim.execution_context.output_staging_id,
+            artifact_bundle=artifact_bundle,
+            executor_attestation=executor_attestation,
         )
 
-    def _staging_store(self, claim: ReplayExecutionClaimView) -> RunStore:
+    def _portable_finalization(
+        self,
+        *,
+        claim: ReplayExecutionClaimView,
+        verified: VerifiedReplayResult,
+        permits: tuple[ReplayToolPermitView, ...],
+        store: RunStore,
+    ) -> tuple[PortableArtifactBundle | None, ExecutorExecutionAttestation | None]:
+        attestor = self._execution_attestor
+        if attestor is None:
+            return None, None
+        if len(permits) != claim.compilation.spec.repetitions:
+            raise ControlPlaneProtocolError(
+                "executor attestation requires the exact Replay Tool permit set"
+            )
+        bundle = build_portable_artifact_bundle(store.path)
+        attestation = attestor.attest(
+            {
+                "executor_profile": self.profile,
+                "batch_id": claim.batch.batch_id,
+                "item_id": claim.item.item_id,
+                "job_id": claim.job.job_id,
+                "ticket_id": claim.ticket.ticket_id,
+                "fencing_value": claim.ticket.fencing_value,
+                "replay_run_id": claim.item.replay_run_id,
+                "source_root_digest": claim.batch.source.integrity_root_digest,
+                "compilation_digest": claim.item.compilation_digest,
+                "execution_context_digest": claim.execution_context_digest,
+                "permit_digests": [permit.permit_digest for permit in permits],
+                "replay_request_ids": [permit.replay_request_id for permit in permits],
+                "artifact_bundle_manifest_sha256": bundle.manifest_sha256,
+                "artifact_bundle_file_count": bundle.file_count,
+                "artifact_bundle_total_bytes": bundle.total_bytes,
+                "artifact_set_digest": verified.receipt.artifact_set_digest,
+                "artifact_seal_root_digest": verified.receipt.artifact_seal_root_digest,
+                "receipt_seal_root_digest": verified.receipt_seal_root_digest,
+            },
+            issued_at=self._clock(),
+        )
+        return bundle, attestation
+
+    def _staging_store(
+        self,
+        claim: ReplayExecutionClaimView,
+    ) -> tuple[RunStore, _LocalPortableStage | None]:
         staging_id = claim.execution_context.output_staging_id
         root = self._resolve_private_directory(
             self._staging_root_input,
@@ -414,6 +507,17 @@ class KISAExactReplayExecutor:
         ):
             raise PermissionError("Replay staging root identity changed after startup")
         stage_input = root / staging_id
+        created_local_stage = False
+        if not os.path.lexists(stage_input):
+            if self._execution_attestor is None:
+                raise PermissionError("Replay staging capability is unavailable")
+            try:
+                stage_input.mkdir(mode=0o700, exist_ok=False)
+                created_local_stage = True
+            except OSError as exc:
+                raise PermissionError(
+                    "portable Replay staging capability cannot be created"
+                ) from exc
         stage = self._resolve_private_directory(
             stage_input,
             label="Replay staging capability",
@@ -429,7 +533,55 @@ class KISAExactReplayExecutor:
         current = stage.stat()
         if (current.st_dev, current.st_ino) != (observed.st_dev, observed.st_ino):
             raise PermissionError("Replay staging capability identity changed during setup")
-        return RunStore(claim.item.replay_run_id, stage)
+        if not os.path.lexists(stage_input):
+            raise PermissionError("Replay staging capability disappeared during setup")
+        local_portable_stage = (
+            _LocalPortableStage(
+                path=stage,
+                device=observed.st_dev,
+                inode=observed.st_ino,
+            )
+            if created_local_stage
+            else None
+        )
+        return RunStore(claim.item.replay_run_id, stage), local_portable_stage
+
+    def _remove_local_portable_stage(self, stage: _LocalPortableStage) -> None:
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise PermissionError("portable Replay staging cleanup is not symlink-safe")
+        root = self._resolve_private_directory(
+            self._staging_root_input,
+            label="Replay staging root",
+        )
+        observed_root = root.stat()
+        if (
+            root != self._staging_root
+            or (observed_root.st_dev, observed_root.st_ino)
+            != self._staging_root_identity
+            or stage.path.parent != root
+        ):
+            raise PermissionError("Replay staging root changed before local cleanup")
+        try:
+            observed = stage.path.lstat()
+        except OSError as exc:
+            raise PermissionError(
+                "local portable Replay staging disappeared before cleanup"
+            ) from exc
+        if (
+            not stat.S_ISDIR(observed.st_mode)
+            or (observed.st_dev, observed.st_ino) != (stage.device, stage.inode)
+        ):
+            raise PermissionError(
+                "local portable Replay staging identity changed before cleanup"
+            )
+        try:
+            shutil.rmtree(stage.path)
+        except OSError as exc:
+            raise PermissionError(
+                "local portable Replay staging cleanup failed"
+            ) from exc
+        if os.path.lexists(stage.path):
+            raise PermissionError("local portable Replay staging cleanup was incomplete")
 
     @staticmethod
     def _cancellation_kind(exception: BaseException) -> CancellationKind:

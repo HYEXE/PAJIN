@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import errno
 import json
 import os
@@ -15,7 +16,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path, PurePosixPath
 from tempfile import mkdtemp
-from typing import Self
+from typing import TYPE_CHECKING, Self
 from uuid import uuid4
 
 if sys.platform != "win32":
@@ -25,6 +26,12 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 
 from pajin.control_plane.models import ArtifactRef
 from pajin.runtime.store import RunIntegrityError, verify_run_integrity
+
+if TYPE_CHECKING:
+    from pajin.control_plane.artifact_transfer import (
+        PortableArtifactBundle,
+        PortableArtifactTransportReceipt,
+    )
 
 _STAGING_ID_PATTERN = r"^stage_[0-9a-f]{32}$"
 _STAGING_ID_LENGTH = len("stage_") + 32
@@ -386,6 +393,7 @@ class _DescriptorTreeScanner:
         *,
         copy_to: Path | None = None,
         reject_untracked_directories: bool | None = None,
+        collect_to: dict[str, bytes] | None = None,
     ) -> _ScannedTree:
         source_fd, root_opened = self._open_root(root, label="Run tree root")
         destination_fd: int | None = None
@@ -402,7 +410,7 @@ class _DescriptorTreeScanner:
                 entries=[],
                 directories=set(),
             )
-            self._walk(source_fd, destination_fd, (), state)
+            self._walk(source_fd, destination_fd, (), state, collect_to)
             self._verify_root(root, source_fd, root_opened)
             if destination_fd is not None and destination_opened is not None:
                 assert copy_to is not None
@@ -440,6 +448,7 @@ class _DescriptorTreeScanner:
         destination_fd: int | None,
         relative_parts: tuple[str, ...],
         state: _TreeScanState,
+        collect_to: dict[str, bytes] | None,
     ) -> bool:
         contains_file = False
         try:
@@ -451,6 +460,7 @@ class _DescriptorTreeScanner:
                         relative_parts,
                         entry.name,
                         state,
+                        collect_to,
                     )
             if destination_fd is not None:
                 _fsync_open_directory(destination_fd, label="copied Run directory")
@@ -465,6 +475,7 @@ class _DescriptorTreeScanner:
         relative_parts: tuple[str, ...],
         name: str,
         state: _TreeScanState,
+        collect_to: dict[str, bytes] | None,
     ) -> bool:
         relative = (*relative_parts, name)
         if not relative_parts and name == _TRANSIENT_RUN_LOCK_NAME:
@@ -486,6 +497,7 @@ class _DescriptorTreeScanner:
                 name,
                 observed,
                 state,
+                collect_to,
             )
         if not stat.S_ISREG(observed.st_mode):
             raise ArtifactValidationError("Run trees cannot contain special files")
@@ -496,6 +508,7 @@ class _DescriptorTreeScanner:
             name,
             observed,
             state,
+            collect_to,
         )
 
     @staticmethod
@@ -513,6 +526,7 @@ class _DescriptorTreeScanner:
         name: str,
         observed: os.stat_result,
         state: _TreeScanState,
+        collect_to: dict[str, bytes] | None,
     ) -> bool:
         child_source_fd = self._open_child_directory(source_fd, name, observed)
         child_destination_fd: int | None = None
@@ -525,6 +539,7 @@ class _DescriptorTreeScanner:
                 child_destination_fd,
                 relative,
                 state,
+                collect_to,
             )
             self._verify_child_directory(source_fd, child_source_fd, name, observed)
         except OSError as exc:
@@ -581,18 +596,23 @@ class _DescriptorTreeScanner:
         name: str,
         observed: os.stat_result,
         state: _TreeScanState,
+        collect_to: dict[str, bytes] | None,
     ) -> bool:
         if observed.st_nlink != 1:
             raise ArtifactValidationError("Run trees cannot contain hard-linked files")
         state.require_regular_file_capacity(observed)
-        digest, size = self._stream_file(
+        digest, size, content = self._stream_file(
             source_fd,
             name,
             destination_fd,
             initial_stat=observed,
             total_before=state.byte_length,
+            collect=collect_to is not None,
         )
         state.add_regular_file(path=relative_path, size=size, digest=digest)
+        if collect_to is not None:
+            assert content is not None
+            collect_to[relative_path] = content
         return True
 
     def _stream_file(
@@ -603,7 +623,8 @@ class _DescriptorTreeScanner:
         *,
         initial_stat: os.stat_result,
         total_before: int,
-    ) -> tuple[str, int]:
+        collect: bool,
+    ) -> tuple[str, int, bytes | None]:
         source_fd = self._open_source_file(source_directory_fd, name)
         destination_fd: int | None = None
         try:
@@ -614,10 +635,11 @@ class _DescriptorTreeScanner:
                     destination_directory_fd,
                     name,
                 )
-            digest, size = self._copy_file_contents(
+            digest, size, content = self._copy_file_contents(
                 source_fd,
                 destination_fd,
                 total_before=total_before,
+                collect=collect,
             )
             self._verify_streamed_file(
                 source_directory_fd,
@@ -628,7 +650,7 @@ class _DescriptorTreeScanner:
             )
             if destination_fd is not None:
                 os.fsync(destination_fd)
-            return digest, size
+            return digest, size, content
         except OSError as exc:
             raise ArtifactValidationError("Run file changed while being scanned") from exc
         finally:
@@ -664,16 +686,20 @@ class _DescriptorTreeScanner:
         destination_fd: int | None,
         *,
         total_before: int,
-    ) -> tuple[str, int]:
+        collect: bool,
+    ) -> tuple[str, int, bytes | None]:
         digest = sha256()
         size = 0
+        chunks: list[bytes] | None = [] if collect else None
         while chunk := os.read(source_fd, _COPY_CHUNK_BYTES):
             size += len(chunk)
             self._require_stream_capacity(size=size, total_before=total_before)
             digest.update(chunk)
             if destination_fd is not None:
                 _write_all(destination_fd, chunk)
-        return digest.hexdigest(), size
+            if chunks is not None:
+                chunks.append(chunk)
+        return digest.hexdigest(), size, (b"".join(chunks) if chunks is not None else None)
 
     def _require_stream_capacity(self, *, size: int, total_before: int) -> None:
         if size > self._limits.max_file_bytes:
@@ -799,6 +825,48 @@ class _BoundedRegularFileReader:
             return path.lstat()
         except OSError as exc:
             raise ArtifactValidationError(f"{label} changed while being read") from exc
+
+
+def build_portable_artifact_bundle(root: Path) -> PortableArtifactBundle:
+    """Snapshot one small sealed Run into an in-memory, content-addressed bundle."""
+
+    from pajin.control_plane.artifact_transfer import (
+        MAX_PORTABLE_ARTIFACT_DEPTH,
+        MAX_PORTABLE_ARTIFACT_FILE_BYTES,
+        MAX_PORTABLE_ARTIFACT_FILES,
+        MAX_PORTABLE_ARTIFACT_TOTAL_BYTES,
+        PortableArtifactBundle,
+        PortableArtifactFile,
+        portable_artifact_manifest_sha256,
+    )
+
+    limits = ArtifactRepositoryLimits(
+        max_file_bytes=MAX_PORTABLE_ARTIFACT_FILE_BYTES,
+        max_total_bytes=MAX_PORTABLE_ARTIFACT_TOTAL_BYTES,
+        max_files=MAX_PORTABLE_ARTIFACT_FILES,
+        max_entries=MAX_PORTABLE_ARTIFACT_FILES * (MAX_PORTABLE_ARTIFACT_DEPTH + 1),
+        max_depth=MAX_PORTABLE_ARTIFACT_DEPTH,
+    )
+    collected: dict[str, bytes] = {}
+    tree = _DescriptorTreeScanner(limits).scan(
+        root,
+        collect_to=collected,
+    )
+    files = [
+        PortableArtifactFile(
+            path=entry.path,
+            size=entry.size,
+            sha256=entry.sha256,
+            content_base64=base64.b64encode(collected[entry.path]).decode("ascii"),
+        )
+        for entry in tree.entries
+    ]
+    return PortableArtifactBundle(
+        files=files,
+        file_count=len(files),
+        total_bytes=tree.byte_length,
+        manifest_sha256=portable_artifact_manifest_sha256(files),
+    )
 
 
 class ManagedArtifactRepository:
@@ -1037,6 +1105,96 @@ class ManagedArtifactRepository:
         )
         self._fsync_directory(destination, label="reserved staging directory")
         self._fsync_directory(self.staging_root, label="staging root")
+
+    def materialize_portable_bundle(
+        self,
+        *,
+        staging_id: str,
+        bundle: PortableArtifactBundle,
+    ) -> PortableArtifactTransportReceipt:
+        """Publish an exact portable bundle into a server-owned staging reservation."""
+
+        from pajin.control_plane.artifact_transfer import (
+            PortableArtifactBundle,
+            PortableArtifactTransportReceipt,
+        )
+
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            raise ArtifactRepositoryError(
+                "durable portable Artifact materialization requires POSIX directory fsync support"
+            )
+        trusted = PortableArtifactBundle.model_validate(
+            bundle.model_dump(mode="python")
+        )
+        self._require_repository_layout()
+        self._validate_staging_id(staging_id)
+        destination = self.staging_root / staging_id
+        temporary_root = Path(mkdtemp(prefix=".portable-bundle-", dir=self.staging_root))
+        published = False
+        try:
+            created_directories: set[Path] = {temporary_root}
+            for item in trusted.files:
+                relative = PurePosixPath(item.path)
+                target = temporary_root.joinpath(*relative.parts)
+                parent = target.parent
+                parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                cursor = parent
+                while cursor != temporary_root:
+                    created_directories.add(cursor)
+                    cursor = cursor.parent
+                self._write_exclusive(target, item.content)
+            for directory in sorted(
+                created_directories,
+                key=lambda path: len(path.parts),
+                reverse=True,
+            ):
+                self._require_private_owner_directory(
+                    directory,
+                    label="portable Artifact materialization directory",
+                )
+                self._fsync_directory(
+                    directory,
+                    label="portable Artifact materialization directory",
+                )
+            observed = build_portable_artifact_bundle(temporary_root)
+            if observed != trusted:
+                raise ArtifactValidationError(
+                    "portable Artifact changed during materialization"
+                )
+            with self._locked_staging_root():
+                self._require_directory(destination, label="reserved staging directory")
+                self._require_private_owner_directory(
+                    destination,
+                    label="reserved staging directory",
+                )
+                if any(destination.iterdir()):
+                    existing = build_portable_artifact_bundle(destination)
+                    if existing != trusted:
+                        raise ArtifactConflict(
+                            "reserved staging capability contains a different portable Artifact"
+                        )
+                else:
+                    try:
+                        destination.rmdir()
+                        os.rename(temporary_root, destination)
+                        published = True
+                    except OSError as exc:
+                        if not self._lexists(destination):
+                            destination.mkdir(mode=0o700, exist_ok=True)
+                        raise ArtifactRepositoryError(
+                            "portable Artifact staging publish failed"
+                        ) from exc
+                    self._fsync_directory(destination, label="portable staged Run")
+                    self._fsync_directory(self.staging_root, label="staging root")
+            return PortableArtifactTransportReceipt(
+                output_staging_id=staging_id,
+                manifest_sha256=trusted.manifest_sha256,
+                file_count=trusted.file_count,
+                total_bytes=trusted.total_bytes,
+            )
+        finally:
+            if not published and self._lexists(temporary_root):
+                shutil.rmtree(temporary_root)
 
     def stage_managed_run_copy(self, *, staging_id: str, source: ArtifactRef) -> Path:
         """Atomically stage a private mutable copy of one verified managed Run.

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 from pathlib import Path
 
@@ -15,6 +16,11 @@ from pajin.control_plane.daemon_runtime import (
     literal_bool_env,
     required_env,
 )
+from pajin.control_plane.execution_attestation import (
+    ExecutorExecutionAttestor,
+    executor_private_key_bytes_from_base64url,
+    parse_executor_attestation_trust_anchor,
+)
 from pajin.control_plane.models import KISA_EXACT_REPLAY_EXECUTOR_PROFILE
 from pajin.control_plane.replay_executor import KISAExactReplayExecutor
 from pajin.control_plane.replay_worker import ReplayWorkerConfig, ReplayWorkerDaemon
@@ -23,6 +29,13 @@ from pajin.runtime.worker import DockerWorkerBackend
 
 _DOCKER_CLEANUP_BOUND_SECONDS = 20.0
 _PLAINTEXT_LAB_ENV = "PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB"
+_EXECUTOR_ATTESTATION_KEY_ID_ENV = "PAJIN_REPLAY_EXECUTOR_ATTESTATION_KEY_ID"
+_EXECUTOR_ATTESTATION_PRIVATE_KEY_ENV = (
+    "PAJIN_REPLAY_EXECUTOR_ATTESTATION_PRIVATE_KEY"
+)
+_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = (
+    "PAJIN_REPLAY_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
+)
 
 
 def _required_env(name: str) -> str:
@@ -43,6 +56,33 @@ def _float_env(name: str, default: float) -> float:
 
 def _plaintext_http_for_lab_enabled() -> bool:
     return literal_bool_env(_PLAINTEXT_LAB_ENV, owner="Replay Worker")
+
+
+def _execution_attestor_from_env() -> ExecutorExecutionAttestor | None:
+    key_id = os.environ.get(_EXECUTOR_ATTESTATION_KEY_ID_ENV)
+    private_key = os.environ.get(_EXECUTOR_ATTESTATION_PRIVATE_KEY_ENV)
+    trust_anchor = os.environ.get(_EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV)
+    values = (key_id, private_key, trust_anchor)
+    if not any(value is not None for value in values):
+        return None
+    if not all(value is not None for value in values):
+        raise RuntimeError(
+            "Replay executor attestation key ID, private key, and trust anchor "
+            "must be configured together"
+        )
+    assert key_id is not None
+    assert private_key is not None
+    assert trust_anchor is not None
+    try:
+        return ExecutorExecutionAttestor.from_private_key_bytes(
+            active_key_id=key_id,
+            private_key=executor_private_key_bytes_from_base64url(private_key),
+            trust_anchor=parse_executor_attestation_trust_anchor(
+                trust_anchor.encode("utf-8")
+            ),
+        )
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError("Replay executor attestation configuration is invalid") from exc
 
 
 async def run_from_env() -> None:
@@ -97,6 +137,7 @@ async def run_from_env() -> None:
         external_network=_env("PAJIN_REPLAY_EXTERNAL_NETWORK", "bridge"),
     )
     stop = install_stop_event()
+    execution_attestor = _execution_attestor_from_env()
 
     async with ControlPlaneClient(
         base_url=_required_env("PAJIN_CP_URL"),
@@ -110,6 +151,7 @@ async def run_from_env() -> None:
             worker_image=worker_image,
             retry_base_seconds=config.retry_base_seconds,
             retry_max_seconds=config.retry_max_seconds,
+            execution_attestor=execution_attestor,
         )
         daemon = ReplayWorkerDaemon(client=client, executor=executor, config=config)
         await daemon.run_forever(stop)
