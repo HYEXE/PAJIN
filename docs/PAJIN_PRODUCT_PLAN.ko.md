@@ -2,22 +2,23 @@
 
 # PAJIN 제품 기획서
 
-## 2026-07-24 B2.8c 구현 상태
+## 2026-07-24 B2.8d 구현 상태
 
-[`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.ko.md)에 따라
-Target-attested Replay를 HTTPS-aware transport와 versioned multi-Target trust registry로
-확장했다. HTTPS proxy receipt는 application bytes를 관찰했다고 주장하지 않고 canonical
-CONNECT authority, 선택된 IP, 연속 sequence와 `applicationVisibility=opaque`만 기록한다.
-Executor는 이 route를 Target 서명 exact application exchange와 결합하고, Control Plane은
-permit-derived target digest와 transcript, Target key lifecycle을 함께 재검증한다.
+[`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.ko.md)에 따라 HTTPS
+Target-attested Replay의 endpoint key를 exact registry route에 결박했다. registry v2의
+HTTPS entry는 `tls_leaf_spki_sha256`이 필수다. Worker는 표준 PKIX·hostname 검증을 통과한
+peer leaf certificate의 SPKI SHA-256을 관찰하고, Executor는 이를 CONNECT route·Target
+receipt와 함께 TLS binding v2로 서명한다. Control Plane은 exact pin 불일치와 TLS binding
+v1 downgrade를 fail closed 한다.
 
-`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY`는 최대 128개의 canonical exact URL을 독립
-anchor에 연결하며 wildcard·fallback을 금지한다. 기존 단일 anchor 설정과는 상호 배타적이고,
-finalization에는 registry ID/digest와 선택된 anchor digest가 보존된다. 개발 Target은 인증서와
-private key가 함께 주어질 때 TLS 1.2 이상으로 기동한다.
+registry v1과 기존 단일 anchor 경로는 직렬화·검증 호환성을 유지한다. registry v2 성공
+summary와 finalization/projection authority에는 registry ID/digest, 선택된 anchor digest와
+검증한 SPKI digest가 보존된다. SPKI pin은 endpoint key 결박이며 full certificate chain,
+revocation·CT 또는 특정 TLS session의 handshake/application bytes를 증명하지 않는다.
 
-남은 한계는 certificate/exporter pinning, mTLS/HSM/KMS, registry 배포·회전 자동화,
-transparency/federation과 object-store/multipart Artifact 전송이다.
+다음 개발 순서는 signed registry 배포, monotonic anti-rollback과 old/new pin overlap
+rotation, TLS exporter 또는 동등한 session binding이며, 그 뒤 object-store/multipart
+Artifact 전송으로 이어진다. mTLS/HSM/KMS와 transparency/federation도 후속 경계다.
 
 > 자율형 멀티 에이전트 AI 레드팀·보안 검증 오케스트레이션 플랫폼
 

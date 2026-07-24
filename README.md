@@ -21,8 +21,8 @@ The implementation baseline as of 2026-07-24 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, and bind a v4 Control Plane challenge to a Target-issued receipt, host proxy observation, and executor signature. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, HTTPS-aware and multi-Target execution attestation, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, bind a v4 Control Plane challenge to a Target-issued receipt and host proxy observation, and require an exact Worker-observed TLS leaf SPKI pin for HTTPS registry v2 routes. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, signed registry distribution with monotonic anti-rollback and old/new pin overlap rotation, TLS exporter session binding, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -948,7 +948,7 @@ $env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
 $env:PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR='<one-line-executor-trust-anchor-json>'
 # Optional B2.8b target execution proof; the Control Plane receives public trust only:
 $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR='<one-line-target-trust-anchor-json>'
-# B2.8c alternative for multiple exact Target URLs; mutually exclusive with the anchor above:
+# B2.8d alternative for exact Target URLs; registry v2 HTTPS entries require a leaf SPKI pin:
 $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY='<one-line-versioned-target-registry-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
@@ -974,10 +974,14 @@ confirmation ceiling. B2.8b additionally configures the Target process with
 `PAJIN_TARGET_ATTESTATION_PROFILE`. Keep that private key out of the Control Plane. The Control
 Plane receives only the matching anchor above and validates its key lifecycle.
 For multiple Targets, configure the versioned registry instead of the single anchor. Routes are
-canonical exact URLs with no wildcard or fallback. HTTPS target-attested Replay joins an opaque,
-host-observed CONNECT authority/IP receipt to the Target-signed application exchange; it does not
-claim that the proxy observed TLS plaintext or the server certificate. The development Target can
-optionally enable TLS with `PAJIN_TARGET_TLS_CERTIFICATE` and `PAJIN_TARGET_TLS_PRIVATE_KEY`.
+canonical exact URLs with no wildcard or fallback. Registry v2 requires
+`tls_leaf_spki_sha256` on each HTTPS entry. After normal PKIX and hostname validation, the Worker
+observes the peer leaf SPKI digest; the Executor signs it with the opaque CONNECT route and Target
+receipt, and the Control Plane rejects pin mismatches and TLS binding v1 downgrade. This does not
+claim TLS-exporter session binding, revocation, or Certificate Transparency proof. The development
+Target can optionally enable TLS with `PAJIN_TARGET_TLS_CERTIFICATE` and
+`PAJIN_TARGET_TLS_PRIVATE_KEY`. See
+[ADR-0042](docs/adr/0042-worker-observed-tls-leaf-spki-binding.en.md).
 
 An Operator credential can use the public Replay admission surface:
 

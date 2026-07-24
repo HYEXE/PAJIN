@@ -14,12 +14,16 @@ from contextlib import suppress
 from dataclasses import dataclass, field
 from hashlib import sha256
 from hmac import compare_digest
+from http.client import HTTPResponse, HTTPSConnection
 from re import fullmatch
 from threading import Thread
 from typing import IO, Any, BinaryIO, TextIO
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlsplit, urlunsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.request import HTTPRedirectHandler, HTTPSHandler, Request, build_opener
+
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
 
 MAX_AI_RESPONSE_BYTES = 65_536
 MAX_HTTP_GET_RESPONSE_BYTES = 4_096
@@ -126,7 +130,44 @@ class _NoRedirectHandler(HTTPRedirectHandler):
         return None
 
 
-_HTTP_OPENER = build_opener(_NoRedirectHandler())
+def _tls_leaf_spki_sha256(certificate_der: bytes) -> str:
+    if not isinstance(certificate_der, bytes) or not 1 <= len(certificate_der) <= 64 * 1024:
+        raise ValueError("TLS peer leaf certificate is missing or exceeds its byte limit")
+    try:
+        certificate = x509.load_der_x509_certificate(certificate_der)
+        spki = certificate.public_key().public_bytes(
+            encoding=serialization.Encoding.DER,
+            format=serialization.PublicFormat.SubjectPublicKeyInfo,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ValueError("TLS peer leaf certificate cannot be decoded") from exc
+    return sha256(spki).hexdigest()
+
+
+class _ObservingHTTPSConnection(HTTPSConnection):
+    """Attach the verified peer leaf SPKI digest before the socket can be released."""
+
+    def getresponse(self) -> HTTPResponse:
+        if self.sock is None:
+            raise ValueError("HTTPS connection has no verified peer socket")
+        certificate_der = self.sock.getpeercert(binary_form=True)
+        peer_leaf_spki_sha256 = _tls_leaf_spki_sha256(certificate_der)
+        response = super().getresponse()
+        response.pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
+        return response
+
+
+class _ObservingHTTPSHandler(HTTPSHandler):
+    def https_open(self, request: Request) -> Any:
+        return self.do_open(
+            _ObservingHTTPSConnection,
+            request,
+            context=self._context,
+            check_hostname=self._check_hostname,
+        )
+
+
+_HTTP_OPENER = build_opener(_NoRedirectHandler(), _ObservingHTTPSHandler())
 
 
 def _open_http(request: Request, *, timeout: int) -> Any:
@@ -581,7 +622,10 @@ def ctf_crypto_single_byte_xor(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _post_ai_turn(target: str, payload: dict[str, Any]) -> tuple[dict[str, Any], float]:
+def _post_ai_turn(
+    target: str,
+    payload: dict[str, Any],
+) -> tuple[dict[str, Any], float, str | None]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("AI target must be an absolute HTTP(S) URL")
@@ -603,6 +647,16 @@ def _post_ai_turn(target: str, payload: dict[str, Any]) -> tuple[dict[str, Any],
         with _open_http(request, timeout=10) as response:
             body = response.read(MAX_AI_RESPONSE_BYTES + 1)
             status = response.status
+            tls_peer_leaf_spki_sha256 = (
+                getattr(response, "pajin_tls_peer_leaf_spki_sha256", None)
+                if parsed.scheme == "https"
+                else None
+            )
+            if parsed.scheme == "https" and (
+                not isinstance(tls_peer_leaf_spki_sha256, str)
+                or fullmatch(r"[a-f0-9]{64}", tls_peer_leaf_spki_sha256) is None
+            ):
+                raise ValueError("HTTPS response omitted its verified peer leaf SPKI digest")
     except HTTPError as exc:
         exc.read(4_096)
         raise ValueError(f"AI target returned HTTP {exc.code}") from exc
@@ -622,7 +676,7 @@ def _post_ai_turn(target: str, payload: dict[str, Any]) -> tuple[dict[str, Any],
         or not isinstance(message.get("content"), str)
     ):
         raise TypeError("AI target response requires message.content")
-    return result, time.perf_counter() - started
+    return result, time.perf_counter() - started, tls_peer_leaf_spki_sha256
 
 
 def _probe_check_matches(check: dict[str, Any], turns: list[dict[str, Any]]) -> bool:
@@ -735,7 +789,10 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
                 ),
             },
         }
-        response, response_latency = _post_ai_turn(probe.target, request_payload)
+        response, response_latency, tls_peer_leaf_spki_sha256 = _post_ai_turn(
+            probe.target,
+            request_payload,
+        )
         response_latencies.append(response_latency)
         turn_records.append(
             {
@@ -744,6 +801,11 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
                 "request": request_payload,
                 "response": response,
                 "responseLatencySeconds": response_latency,
+                **(
+                    {"tlsPeerLeafSpkiSha256": tls_peer_leaf_spki_sha256}
+                    if tls_peer_leaf_spki_sha256 is not None
+                    else {}
+                ),
             }
         )
     return turn_records, response_latencies

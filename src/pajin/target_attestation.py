@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from hashlib import sha256
 from typing import Literal, Self
+from urllib.parse import urlsplit
 
 from cryptography.exceptions import InvalidSignature
 from cryptography.hazmat.primitives import serialization
@@ -128,6 +129,11 @@ class TargetAttestationTrustRegistryEntry(StrictModel):
 
     target: str = Field(min_length=1, max_length=2_000)
     trust_anchor: TargetAttestationTrustAnchor
+    tls_leaf_spki_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("target")
     @classmethod
@@ -147,7 +153,10 @@ class TargetAttestationTrustRegistryEntry(StrictModel):
 class TargetAttestationTrustRegistry(StrictModel):
     """Versioned, fail-closed mapping from exact Target URLs to public anchors."""
 
-    api_version: Literal["pajin.replay.target-attestation-trust-registry/v1"] = (
+    api_version: Literal[
+        "pajin.replay.target-attestation-trust-registry/v1",
+        "pajin.replay.target-attestation-trust-registry/v2",
+    ] = (
         "pajin.replay.target-attestation-trust-registry/v1"
     )
     registry_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
@@ -158,12 +167,25 @@ class TargetAttestationTrustRegistry(StrictModel):
         targets = [entry.target for entry in self.entries]
         if targets != sorted(targets) or len(targets) != len(set(targets)):
             raise ValueError("target trust registry routes must be uniquely sorted")
+        if self.api_version == "pajin.replay.target-attestation-trust-registry/v1":
+            if any(entry.tls_leaf_spki_sha256 is not None for entry in self.entries):
+                raise ValueError("target trust registry v1 cannot carry TLS certificate pins")
+            return self
+        for entry in self.entries:
+            scheme = urlsplit(entry.target).scheme
+            if scheme == "https" and entry.tls_leaf_spki_sha256 is None:
+                raise ValueError("target trust registry v2 requires an HTTPS TLS leaf SPKI pin")
+            if scheme != "https" and entry.tls_leaf_spki_sha256 is not None:
+                raise ValueError("target trust registry v2 allows TLS pins only for HTTPS routes")
         return self
 
     def resolve(self, target: str) -> TargetAttestationTrustAnchor:
+        return self.resolve_entry(target).trust_anchor
+
+    def resolve_entry(self, target: str) -> TargetAttestationTrustRegistryEntry:
         for entry in self.entries:
             if entry.target == target:
-                return entry.trust_anchor
+                return entry
         raise ValueError("target is absent from the exact trust registry")
 
     @property
@@ -363,12 +385,7 @@ class TargetExecutionProxyBinding(StrictModel):
         return canonical_target_json_sha256(self.model_dump(mode="json"))
 
 
-class TargetExecutionTLSBinding(StrictModel):
-    """Executor-signed join of opaque TLS routing and Target-signed application data."""
-
-    api_version: Literal["pajin.replay.target-tls-binding/v1"] = (
-        "pajin.replay.target-tls-binding/v1"
-    )
+class _TargetExecutionTLSBindingBase(StrictModel):
     replay_request_id: str = Field(pattern=r"^tool_replay_[0-9a-f]{32}$")
     exchange_ordinal: int = Field(strict=True, ge=1, le=20)
     challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -387,7 +404,26 @@ class TargetExecutionTLSBinding(StrictModel):
         return canonical_target_json_sha256(self.model_dump(mode="json"))
 
 
-TargetExecutionTransportBinding = TargetExecutionProxyBinding | TargetExecutionTLSBinding
+class TargetExecutionTLSBinding(_TargetExecutionTLSBindingBase):
+    """Executor-signed join of opaque TLS routing and Target-signed application data."""
+
+    api_version: Literal["pajin.replay.target-tls-binding/v1"] = (
+        "pajin.replay.target-tls-binding/v1"
+    )
+
+
+class TargetExecutionTLSBindingV2(_TargetExecutionTLSBindingBase):
+    """Executor-signed HTTPS route plus the Worker-observed peer leaf SPKI."""
+
+    api_version: Literal["pajin.replay.target-tls-binding/v2"] = (
+        "pajin.replay.target-tls-binding/v2"
+    )
+    tls_peer_leaf_spki_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+TargetExecutionTransportBinding = (
+    TargetExecutionProxyBinding | TargetExecutionTLSBinding | TargetExecutionTLSBindingV2
+)
 
 
 class TargetExecutionVerificationSummary(StrictModel):
@@ -407,6 +443,11 @@ class TargetExecutionVerificationSummary(StrictModel):
     receipt_count: int = Field(strict=True, ge=1, le=400)
     receipt_digests: list[str] = Field(min_length=1, max_length=400)
     key_ids: list[str] = Field(min_length=1, max_length=32)
+    tls_peer_leaf_spki_sha256_digests: list[str] = Field(
+        default_factory=list,
+        max_length=128,
+        exclude_if=lambda value: not value,
+    )
 
     @field_validator("receipt_digests")
     @classmethod
@@ -425,6 +466,18 @@ class TargetExecutionVerificationSummary(StrictModel):
     def require_sorted_key_ids(cls, value: list[str]) -> list[str]:
         if value != sorted(value) or len(value) != len(set(value)):
             raise ValueError("target receipt key IDs must be uniquely sorted")
+        return value
+
+    @field_validator("tls_peer_leaf_spki_sha256_digests")
+    @classmethod
+    def require_sorted_tls_leaf_spki_digests(cls, value: list[str]) -> list[str]:
+        if any(
+            len(item) != 64 or any(character not in "0123456789abcdef" for character in item)
+            for item in value
+        ):
+            raise ValueError("TLS peer leaf SPKI digests must be lowercase SHA-256")
+        if value != sorted(value) or len(value) != len(set(value)):
+            raise ValueError("TLS peer leaf SPKI digests must be uniquely sorted")
         return value
 
     @model_validator(mode="after")

@@ -2,13 +2,13 @@
 
 # KISA AI Security Red Teaming Guide Traceability
 
-> 2026-07-24 B2.8c: target-attested Replay now joins an HTTPS CONNECT authority/IP receipt to the
-> Target-signed application exchange and selects each Target anchor from a versioned exact-URL
-> trust registry. The registry ID/digest and selected anchor digest are preserved in finalization
-> and projection authority. This does not claim observation of TLS plaintext or a certificate
-> fingerprint. Certificate/exporter binding, automated registry rotation, and object-store
-> Artifact transport remain follow-up work. See
-> [`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.en.md).
+> 2026-07-24 B2.8d: every registry v2 HTTPS entry requires a leaf SPKI SHA-256 pin for its exact
+> Target URL. After standard PKIX and hostname validation, the Worker observes the peer leaf SPKI;
+> the Executor signs it with the CONNECT route and Target receipt in TLS binding v2, and the
+> Control Plane rejects pin mismatch and v1 downgrade. This is endpoint-key binding, not proof of
+> the full chain, revocation or CT, or TLS-exporter session binding. Registry anti-rollback,
+> overlap rotation, and object-store Artifact transport remain follow-up work. See
+> [`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.en.md).
 
 ## 1. Purpose and Baseline
 

@@ -2,22 +2,24 @@
 
 # PAJIN Product Plan
 
-## 2026-07-24 B2.8c implementation status
+## 2026-07-24 B2.8d implementation status
 
-[`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.en.md) extends
-target-attested Replay with HTTPS-aware transport and a versioned multi-Target trust registry. The
-HTTPS proxy receipt does not claim application-byte visibility. It records only the canonical
-CONNECT authority, selected IP, contiguous sequence, and `applicationVisibility=opaque`. The
-Executor joins that route to the exact Target-signed application exchange, and the Control Plane
-rechecks the permit-derived Target digest, transcript, and Target key lifecycle.
+[`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.en.md) binds the endpoint key of HTTPS
+target-attested Replay to the exact registry route. Each HTTPS registry v2 entry requires
+`tls_leaf_spki_sha256`. After standard PKIX and hostname validation, the Worker observes the peer
+leaf certificate SPKI SHA-256. The Executor signs it with the CONNECT route and Target receipt in
+TLS binding v2, and the Control Plane fails closed on an exact pin mismatch or a TLS binding v1
+downgrade.
 
-`PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY` maps up to 128 canonical exact URLs to independent
-anchors with no wildcard or fallback. It is mutually exclusive with the legacy single anchor, and
-finalization preserves the registry ID/digest and selected anchor digest. The development Target
-starts with TLS 1.2 or newer when its certificate and private key are supplied together.
+Registry v1 and the legacy single-anchor route preserve serialization and verification
+compatibility. A successful registry v2 summary and finalization/projection authority preserve the
+registry ID/digest, selected anchor digest, and verified SPKI digest. An SPKI pin is endpoint-key
+binding; it does not prove the full certificate chain, revocation or CT, or one TLS session's
+handshake and application bytes.
 
-Remaining boundaries are certificate/exporter pinning, mTLS/HSM/KMS, automated registry
-distribution and rotation, transparency/federation, and object-store/multipart Artifact transport.
+The next sequence is signed registry distribution, monotonic anti-rollback, old/new pin overlap
+rotation, and TLS exporter or equivalent session binding, followed by object-store/multipart
+Artifact transport. mTLS/HSM/KMS and transparency/federation remain later boundaries.
 
 > Autonomous multi-agent AI red team and security validation orchestration platform
 

@@ -16,6 +16,7 @@ from pajin.target_attestation import (
     TargetExecutionProxyBinding,
     TargetExecutionReceipt,
     TargetExecutionTLSBinding,
+    TargetExecutionTLSBindingV2,
     TargetExecutionTransportBinding,
 )
 from pajin.tools.base import (
@@ -186,6 +187,12 @@ class AIChatProbeTurnRecord(StrictModel):
         alias="responseLatencySeconds",
         strict=True,
         ge=0,
+    )
+    tls_peer_leaf_spki_sha256: str | None = Field(
+        default=None,
+        alias="tlsPeerLeafSpkiSha256",
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
     )
 
 
@@ -642,6 +649,55 @@ def verify_ai_chat_proxy_receipts(
     return True
 
 
+def _target_execution_tls_binding(
+    request: ToolRequest,
+    *,
+    expected_challenge: TargetExecutionChallenge,
+    transport_receipt: HTTPSConnectProxyReceipt,
+    typed_turn: AIChatProbeTurnRecord,
+    raw_turn: dict[str, object],
+    index: int,
+    target_receipt: TargetExecutionReceipt,
+    request_digest: str,
+    full_response_digest: str,
+) -> TargetExecutionTLSBinding | TargetExecutionTLSBindingV2:
+    expected_authority = https_connect_authority(request.target)
+    if (
+        transport_receipt.sequence != index
+        or transport_receipt.authority != expected_authority
+        or transport_receipt.authority_sha256
+        != sha256(expected_authority.encode("utf-8")).hexdigest()
+    ):
+        raise ValueError("HTTPS Target receipt differs from its observed CONNECT route")
+    raw_tls_peer_leaf_spki_sha256 = raw_turn.get("tlsPeerLeafSpkiSha256")
+    if typed_turn.tls_peer_leaf_spki_sha256 != raw_tls_peer_leaf_spki_sha256:
+        raise ValueError(
+            "typed HTTPS peer leaf SPKI digest differs from the raw Worker observation"
+        )
+    binding_fields: dict[str, object] = {
+        "replay_request_id": request.request_id,
+        "exchange_ordinal": index,
+        "challenge_sha256": expected_challenge.digest,
+        "target_receipt_sha256": target_receipt.digest,
+        "target_sha256": expected_challenge.target_sha256,
+        "connect_sequence": transport_receipt.sequence,
+        "connect_authority": transport_receipt.authority,
+        "connect_authority_sha256": transport_receipt.authority_sha256,
+        "connect_address": transport_receipt.address,
+        "application_method": "POST",
+        "transcript_request_json_sha256": request_digest,
+        "transcript_response_json_sha256": full_response_digest,
+    }
+    if raw_tls_peer_leaf_spki_sha256 is None:
+        return TargetExecutionTLSBinding.model_validate(binding_fields)
+    return TargetExecutionTLSBindingV2.model_validate(
+        {
+            **binding_fields,
+            "tls_peer_leaf_spki_sha256": raw_tls_peer_leaf_spki_sha256,
+        }
+    )
+
+
 def target_execution_proxy_bindings(
     request: ToolRequest,
     worker_result: WorkerResult,
@@ -758,28 +814,17 @@ def target_execution_proxy_bindings(
                 )
             )
         else:
-            expected_authority = https_connect_authority(request.target)
-            if (
-                transport_receipt.sequence != index
-                or transport_receipt.authority != expected_authority
-                or transport_receipt.authority_sha256
-                != sha256(expected_authority.encode("utf-8")).hexdigest()
-            ):
-                raise ValueError("HTTPS Target receipt differs from its observed CONNECT route")
             bindings.append(
-                TargetExecutionTLSBinding(
-                    replay_request_id=request.request_id,
-                    exchange_ordinal=index,
-                    challenge_sha256=expected_challenge.digest,
-                    target_receipt_sha256=target_receipt.digest,
-                    target_sha256=expected_challenge.target_sha256,
-                    connect_sequence=transport_receipt.sequence,
-                    connect_authority=transport_receipt.authority,
-                    connect_authority_sha256=transport_receipt.authority_sha256,
-                    connect_address=transport_receipt.address,
-                    application_method="POST",
-                    transcript_request_json_sha256=request_digest,
-                    transcript_response_json_sha256=full_response_digest,
+                _target_execution_tls_binding(
+                    request,
+                    expected_challenge=expected_challenge,
+                    transport_receipt=transport_receipt,
+                    typed_turn=typed_turn,
+                    raw_turn=raw_turn,
+                    index=index,
+                    target_receipt=target_receipt,
+                    request_digest=request_digest,
+                    full_response_digest=full_response_digest,
                 )
             )
     return bindings

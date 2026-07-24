@@ -3,10 +3,13 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from types import SimpleNamespace
 
 import pytest
+from pydantic import TypeAdapter
 
 from pajin.control_plane.api import ControlPlaneSettings
+from pajin.control_plane.service import _target_transport_binding_matches
 from pajin.target_attestation import (
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
@@ -15,6 +18,9 @@ from pajin.target_attestation import (
     TargetAttestationVerificationKey,
     TargetExecutionAttestor,
     TargetExecutionChallenge,
+    TargetExecutionTLSBinding,
+    TargetExecutionTLSBindingV2,
+    TargetExecutionTransportBinding,
     canonical_target_json,
     derive_target_execution_challenge,
     parse_target_attestation_trust_registry,
@@ -205,6 +211,7 @@ def test_target_trust_registry_routes_only_exact_canonical_targets() -> None:
         )
         == registry
     )
+    assert "tls_leaf_spki_sha256" not in registry.model_dump(mode="json")["entries"][1]
     assert len(registry.digest) == 64
 
 
@@ -231,6 +238,134 @@ def test_target_trust_registry_rejects_unsorted_or_noncanonical_routes() -> None
             target="https://AI.EXAMPLE.TEST/v1/chat",
             trust_anchor=anchor,
         )
+
+
+def test_target_trust_registry_v2_requires_exact_https_leaf_spki_pins() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    anchor, _attestor = _authority(now)
+    pinned = TargetAttestationTrustRegistry(
+        api_version="pajin.replay.target-attestation-trust-registry/v2",
+        registry_id="pajin-targets-2026-07-pinned",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="https://ai.example.test/v1/chat",
+                trust_anchor=anchor,
+                tls_leaf_spki_sha256="c" * 64,
+            )
+        ],
+    )
+
+    assert pinned.resolve_entry("https://ai.example.test/v1/chat").tls_leaf_spki_sha256 == (
+        "c" * 64
+    )
+    assert (
+        parse_target_attestation_trust_registry(
+            json.dumps(pinned.model_dump(mode="json"), separators=(",", ":")).encode()
+        )
+        == pinned
+    )
+    with pytest.raises(ValueError, match="v1 cannot carry TLS certificate pins"):
+        TargetAttestationTrustRegistry(
+            registry_id="pajin-targets-legacy-pinned",
+            entries=pinned.entries,
+        )
+    with pytest.raises(ValueError, match="requires an HTTPS TLS leaf SPKI pin"):
+        TargetAttestationTrustRegistry(
+            api_version="pajin.replay.target-attestation-trust-registry/v2",
+            registry_id="pajin-targets-missing-pin",
+            entries=[
+                TargetAttestationTrustRegistryEntry(
+                    target="https://ai.example.test/v1/chat",
+                    trust_anchor=anchor,
+                )
+            ],
+        )
+    with pytest.raises(ValueError, match="only for HTTPS routes"):
+        TargetAttestationTrustRegistry(
+            api_version="pajin.replay.target-attestation-trust-registry/v2",
+            registry_id="pajin-targets-http-pin",
+            entries=[
+                TargetAttestationTrustRegistryEntry(
+                    target="http://ai-target:8080/v1/chat",
+                    trust_anchor=anchor,
+                    tls_leaf_spki_sha256="d" * 64,
+                )
+            ],
+        )
+
+
+def test_control_plane_rejects_tls_pin_mismatch_and_v1_binding_downgrade() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    target = "https://ai.example.test/v1/chat"
+    challenge = derive_target_execution_challenge(
+        permit_digest="a" * 64,
+        replay_request_id=f"tool_replay_{'1' * 32}",
+        batch_id=f"replay-batch_{'2' * 32}",
+        item_id=f"replay-item_{'3' * 32}",
+        ticket_id=f"replay-ticket_{'4' * 32}",
+        fencing_value=1,
+        call_ordinal=1,
+        target=target,
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=20),
+    )
+    permit = SimpleNamespace(
+        replay_request_id=challenge.replay_request_id,
+        target=target,
+        method="POST",
+    )
+    binding_fields = {
+        "replay_request_id": challenge.replay_request_id,
+        "exchange_ordinal": 1,
+        "challenge_sha256": challenge.digest,
+        "target_receipt_sha256": "c" * 64,
+        "target_sha256": challenge.target_sha256,
+        "connect_sequence": 1,
+        "connect_authority": "ai.example.test:443",
+        "connect_authority_sha256": sha256(b"ai.example.test:443").hexdigest(),
+        "connect_address": "203.0.113.10",
+        "application_method": "POST",
+        "transcript_request_json_sha256": "d" * 64,
+        "transcript_response_json_sha256": "e" * 64,
+    }
+    pinned = TargetExecutionTLSBindingV2(
+        **binding_fields,
+        tls_peer_leaf_spki_sha256="f" * 64,
+    )
+    legacy = TargetExecutionTLSBinding(**binding_fields)
+    assert isinstance(
+        TypeAdapter(TargetExecutionTransportBinding).validate_python(
+            pinned.model_dump(mode="json")
+        ),
+        TargetExecutionTLSBindingV2,
+    )
+
+    arguments = {
+        "permit": permit,
+        "challenge": challenge,
+        "exchange_ordinal": 1,
+        "receipt_digest": "c" * 64,
+        "status": 200,
+        "request_digest": "d" * 64,
+        "response_digest": "e" * 64,
+    }
+    assert _target_transport_binding_matches(
+        pinned,
+        **arguments,
+        expected_tls_leaf_spki_sha256="f" * 64,
+    )
+    assert not _target_transport_binding_matches(
+        pinned,
+        **arguments,
+        expected_tls_leaf_spki_sha256="0" * 64,
+    )
+    assert not _target_transport_binding_matches(
+        legacy,
+        **arguments,
+        expected_tls_leaf_spki_sha256="f" * 64,
+    )
 
 
 def test_control_plane_loads_only_target_public_trust_anchor(

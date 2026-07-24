@@ -15,6 +15,7 @@ from pajin.target_attestation import (
     TargetAttestationVerificationKey,
     TargetExecutionAttestor,
     TargetExecutionTLSBinding,
+    TargetExecutionTLSBindingV2,
     canonical_target_json_sha256,
     derive_target_execution_challenge,
     target_public_key_base64url,
@@ -615,7 +616,19 @@ def test_trusted_ai_transcript_rechecks_reject_duplicate_worker_json() -> None:
         )
 
 
-def test_target_attested_https_binds_opaque_connect_to_signed_application_exchange() -> None:
+@pytest.mark.parametrize(
+    ("tls_peer_leaf_spki_sha256", "expected_binding_type"),
+    [
+        (None, TargetExecutionTLSBinding),
+        ("c" * 64, TargetExecutionTLSBindingV2),
+    ],
+)
+def test_target_attested_https_binds_opaque_connect_to_signed_application_exchange(
+    tls_peer_leaf_spki_sha256: str | None,
+    expected_binding_type: (
+        type[TargetExecutionTLSBinding] | type[TargetExecutionTLSBindingV2]
+    ),
+) -> None:
     now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
     private_key = bytes(range(32))
     anchor = TargetAttestationTrustAnchor(
@@ -686,6 +699,8 @@ def test_target_attested_https_binds_opaque_connect_to_signed_application_exchan
     raw_request = raw_turns[0]["request"]
     raw_response = raw_turns[0]["response"]
     assert isinstance(raw_request, dict) and isinstance(raw_response, dict)
+    if tls_peer_leaf_spki_sha256 is not None:
+        raw_turns[0]["tlsPeerLeafSpkiSha256"] = tls_peer_leaf_spki_sha256
     metadata = raw_request["metadata"]
     assert isinstance(metadata, dict)
     metadata["targetChallenge"] = challenge.model_dump(mode="json")
@@ -758,6 +773,8 @@ def test_target_attested_https_binds_opaque_connect_to_signed_application_exchan
     )
 
     assert len(bindings) == 1
-    assert isinstance(bindings[0], TargetExecutionTLSBinding)
+    assert type(bindings[0]) is expected_binding_type
     assert bindings[0].connect_authority == authority
     assert bindings[0].target_receipt_sha256 == receipt.digest
+    if isinstance(bindings[0], TargetExecutionTLSBindingV2):
+        assert bindings[0].tls_peer_leaf_spki_sha256 == tls_peer_leaf_spki_sha256

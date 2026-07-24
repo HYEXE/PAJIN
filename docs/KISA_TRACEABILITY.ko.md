@@ -2,13 +2,13 @@
 
 # KISA AI 보안 레드티밍 가이드 추적성
 
-> 2026-07-24 B2.8c: Target-attested Replay는 HTTPS CONNECT authority/IP receipt와 Target
-> 서명 application exchange를 결합하고, versioned exact-URL trust registry에서 Target별
-> anchor를 선택한다. registry ID/digest와 선택된 anchor digest는 finalization/projection
-> authority에 보존된다. 이 증명은 TLS plaintext나 certificate fingerprint 관찰을 주장하지
-> 않으며 certificate/exporter binding, registry 자동 회전과 object-store Artifact 전송은
-> 후속 범위다. 자세한 결정은
-> [`ADR-0041`](adr/0041-https-attested-transport-and-target-trust-registry.ko.md)을 참조한다.
+> 2026-07-24 B2.8d: registry v2 HTTPS entry는 exact Target URL별 leaf SPKI SHA-256 pin을
+> 요구한다. Worker가 표준 PKIX·hostname 검증 뒤 관찰한 peer leaf SPKI를 Executor가 CONNECT
+> route·Target receipt와 함께 TLS binding v2로 서명하고, Control Plane은 pin 불일치와 v1
+> downgrade를 거부한다. 이 증명은 endpoint key 결박이며 full chain, revocation·CT 또는 TLS
+> exporter session binding을 주장하지 않는다. registry anti-rollback·overlap rotation과
+> object-store Artifact 전송은 후속 범위다. 자세한 결정은
+> [`ADR-0042`](adr/0042-worker-observed-tls-leaf-spki-binding.ko.md)을 참조한다.
 
 ## 1. 목적과 기준선
 

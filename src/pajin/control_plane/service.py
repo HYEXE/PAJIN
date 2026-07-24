@@ -185,6 +185,7 @@ from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
     TargetExecutionTLSBinding,
+    TargetExecutionTLSBindingV2,
     TargetExecutionTransportBinding,
     TargetExecutionVerificationSummary,
     canonical_target_json_sha256,
@@ -275,6 +276,7 @@ def _target_transport_binding_matches(
     status: int,
     request_digest: str,
     response_digest: str,
+    expected_tls_leaf_spki_sha256: str | None,
 ) -> bool:
     if isinstance(proof, TargetExecutionProxyBinding):
         return (
@@ -290,9 +292,9 @@ def _target_transport_binding_matches(
             and proof.proxy_request_json_sha256 == request_digest
             and proof.proxy_response_json_sha256 == response_digest
         )
-    if isinstance(proof, TargetExecutionTLSBinding):
+    if isinstance(proof, (TargetExecutionTLSBinding, TargetExecutionTLSBindingV2)):
         expected_authority = https_connect_authority(permit.target)
-        return (
+        exact = (
             proof.replay_request_id == permit.replay_request_id
             and proof.exchange_ordinal == exchange_ordinal
             and proof.challenge_sha256 == challenge.digest
@@ -305,6 +307,13 @@ def _target_transport_binding_matches(
             and proof.application_method == permit.method
             and proof.transcript_request_json_sha256 == request_digest
             and proof.transcript_response_json_sha256 == response_digest
+        )
+        if expected_tls_leaf_spki_sha256 is None:
+            return exact
+        return (
+            exact
+            and isinstance(proof, TargetExecutionTLSBindingV2)
+            and proof.tls_peer_leaf_spki_sha256 == expected_tls_leaf_spki_sha256
         )
     return False
 
@@ -322,19 +331,20 @@ def _target_attempt_transcript(
     return transcript
 
 
-def _target_trust_anchor_for(
+def _target_trust_material_for(
     target: str,
     *,
     trust_anchor: TargetAttestationTrustAnchor | None,
     trust_registry: TargetAttestationTrustRegistry | None,
-) -> TargetAttestationTrustAnchor:
+) -> tuple[TargetAttestationTrustAnchor, str | None]:
     if trust_anchor is not None:
-        return trust_anchor
+        return trust_anchor, None
     assert trust_registry is not None
     try:
-        return trust_registry.resolve(target)
+        entry = trust_registry.resolve_entry(target)
     except ValueError as exc:
         raise StateConflict("Replay target is absent from the exact trust registry") from exc
+    return entry.trust_anchor, entry.tls_leaf_spki_sha256
 
 
 @dataclass(slots=True)
@@ -3302,6 +3312,7 @@ class ControlPlaneService:
         receipt_digests: list[str] = []
         key_ids: set[str] = set()
         trust_anchor_digests: set[str] = set()
+        tls_peer_leaf_spki_sha256_digests: set[str] = set()
         for permit, attempt in zip(permits, attempts, strict=True):
             challenge = derive_target_execution_challenge(
                 permit_digest=permit.permit_digest,
@@ -3348,6 +3359,11 @@ class ControlPlaneService:
                 response_payload_digest = canonical_target_json_sha256(response_payload)
                 response_digest = canonical_target_json_sha256(response_with_receipt)
                 statement = receipt.statement
+                selected_anchor, expected_tls_leaf_spki_sha256 = _target_trust_material_for(
+                    permit.target,
+                    trust_anchor=trust_anchor,
+                    trust_registry=trust_registry,
+                )
                 exact_statement = (
                     statement.challenge_id == challenge.challenge_id
                     and statement.challenge_sha256 == challenge.digest
@@ -3374,16 +3390,12 @@ class ControlPlaneService:
                     status=statement.status,
                     request_digest=request_digest,
                     response_digest=response_digest,
+                    expected_tls_leaf_spki_sha256=expected_tls_leaf_spki_sha256,
                 )
                 if not exact_statement or not exact_transport:
                     raise StateConflict(
                         "target receipt differs from Replay authority or proxy observation"
                     )
-                selected_anchor = _target_trust_anchor_for(
-                    permit.target,
-                    trust_anchor=trust_anchor,
-                    trust_registry=trust_registry,
-                )
                 try:
                     key_id = verify_target_execution_receipt(
                         receipt,
@@ -3394,6 +3406,8 @@ class ControlPlaneService:
                 receipt_digests.append(receipt.digest)
                 key_ids.add(key_id)
                 trust_anchor_digests.add(selected_anchor.digest)
+                if expected_tls_leaf_spki_sha256 is not None:
+                    tls_peer_leaf_spki_sha256_digests.add(expected_tls_leaf_spki_sha256)
         if proof_index != len(proofs):
             raise StateConflict("target execution proof set contains unbound exchanges")
         if len(trust_anchor_digests) != 1:
@@ -3408,6 +3422,9 @@ class ControlPlaneService:
             receipt_count=len(receipt_digests),
             receipt_digests=receipt_digests,
             key_ids=sorted(key_ids),
+            tls_peer_leaf_spki_sha256_digests=sorted(
+                tls_peer_leaf_spki_sha256_digests
+            ),
         )
 
     @staticmethod

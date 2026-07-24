@@ -1,9 +1,11 @@
 import errno
 import importlib.util
+import json
 import subprocess
 import sys
 import time
 from base64 import b64encode
+from datetime import UTC, datetime, timedelta
 from email.message import Message
 from hashlib import sha256
 from io import BytesIO, StringIO
@@ -13,6 +15,10 @@ from urllib.error import HTTPError
 from urllib.request import Request
 
 import pytest
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
+from cryptography.x509.oid import NameOID
 
 TARGET = "https://example.invalid/api/report"
 
@@ -46,6 +52,111 @@ def test_http_worker_installs_a_redirect_refusing_handler() -> None:
     )
 
     assert redirected is None
+
+
+def test_http_worker_installs_verified_https_peer_observation() -> None:
+    worker = _worker_entry()
+
+    assert any(
+        isinstance(installed, worker._ObservingHTTPSHandler)
+        for installed in worker._HTTP_OPENER.handlers
+    )
+
+    private_key = rsa.generate_private_key(public_exponent=65_537, key_size=2_048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "ai.example.test")])
+    certificate = (
+        x509.CertificateBuilder()
+        .subject_name(subject)
+        .issuer_name(subject)
+        .public_key(private_key.public_key())
+        .serial_number(x509.random_serial_number())
+        .not_valid_before(datetime.now(UTC) - timedelta(minutes=1))
+        .not_valid_after(datetime.now(UTC) + timedelta(days=1))
+        .sign(private_key, hashes.SHA256())
+    )
+    expected_spki = private_key.public_key().public_bytes(
+        encoding=serialization.Encoding.DER,
+        format=serialization.PublicFormat.SubjectPublicKeyInfo,
+    )
+
+    assert worker._tls_leaf_spki_sha256(
+        certificate.public_bytes(serialization.Encoding.DER)
+    ) == sha256(expected_spki).hexdigest()
+
+
+def test_ai_worker_exports_verified_https_peer_leaf_spki(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _worker_entry()
+    peer_leaf_spki_sha256 = "c" * 64
+
+    class HTTPSResponse:
+        status = 200
+        pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(
+                {
+                    "sessionId": "pajin:test:https-worker",
+                    "message": {"role": "assistant", "content": "ok"},
+                }
+            ).encode()
+
+    class HTTPSOpener:
+        def open(self, _request: Request, timeout: int) -> HTTPSResponse:
+            assert timeout == 10
+            return HTTPSResponse()
+
+    monkeypatch.setattr(worker, "_HTTP_OPENER", HTTPSOpener())
+
+    response, latency, observed_spki = worker._post_ai_turn(
+        "https://ai.example.test/v1/chat",
+        {
+            "sessionId": "pajin:test:https-worker",
+            "messages": [{"role": "user", "content": "hello"}],
+        },
+    )
+
+    assert response["message"]["content"] == "ok"
+    assert latency >= 0
+    assert observed_spki == peer_leaf_spki_sha256
+
+
+def test_ai_worker_rejects_https_response_without_peer_leaf_spki(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _worker_entry()
+
+    class HTTPSResponse:
+        status = 200
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"message":{"role":"assistant","content":"ok"}}'
+
+    class HTTPSOpener:
+        def open(self, _request: Request, timeout: int) -> HTTPSResponse:
+            assert timeout == 10
+            return HTTPSResponse()
+
+    monkeypatch.setattr(worker, "_HTTP_OPENER", HTTPSOpener())
+
+    with pytest.raises(ValueError, match="omitted its verified peer leaf SPKI"):
+        worker._post_ai_turn(
+            "https://ai.example.test/v1/chat",
+            {"messages": [{"role": "user", "content": "hello"}]},
+        )
 
 
 @pytest.mark.parametrize(
