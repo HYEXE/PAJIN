@@ -1,5 +1,19 @@
 # PAJIN
 
+## B2.8f Target-signed TLS session binding
+
+Signed Target registry v4 can now require `tls-unique-sha256` for each HTTPS exact URL. In the
+bounded TLS 1.2 lab profile, the Target signs its channel-binding digest in receipt statement v2
+while the Executor independently signs the Worker-observed digest, leaf SPKI, and CONNECT route in
+TLS binding v3. The Control Plane requires an exact digest, type, version, and pin match; receipt
+v1, binding v1/v2 downgrade, and cross-session proof assembly fail closed.
+
+Python 3.12 does not expose RFC 9266 `tls-exporter`, so this slice deliberately limits the new
+profile to TLS 1.2 `tls-unique` instead of overstating TLS 1.3 support. Registry v1-v3 and all
+legacy receipt/binding versions retain their existing behavior. Production TLS 1.3 exporter
+support, full handshake policy, and mTLS remain follow-up work. See
+[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.en.md).
+
 ## B2.8e signed Target registry distribution
 
 Target registry v3 can now be distributed as a separately domain-signed Ed25519 bundle. The
@@ -12,7 +26,7 @@ pin is still accepted, and the verification summary records the pin actually obs
 
 The Control Plane accepts an inline bundle or fetches it once at startup from a redirect-free
 absolute HTTPS URL, bounded to 512 KiB. The distribution trust anchor remains an out-of-band public
-configuration. Runtime refresh, TLS-exporter session binding, CT/revocation, and recovery of the
+configuration. Runtime refresh, TLS 1.3 exporter binding, CT/revocation, and recovery of the
 anti-rollback baseline after loss of the database and its backups remain outside this slice. See
 [ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
 
@@ -37,8 +51,8 @@ The implementation baseline as of 2026-07-24 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, and support a signed registry v3 with bounded old/new pin overlap. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS exporter session binding, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, support signed registry rotation, and bind the Target-signed application exchange to the Worker-observed TLS 1.2 channel. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -242,9 +256,10 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   Control Plane retest; exact Claim receipts can optionally carry portable Ed25519 proof. A separate
   executor workload key now attests the exact permit set and bounded portable Artifact bytes across
   hosts. A further opt-in binds each permit-derived challenge to a Target-issued Ed25519 receipt,
-  the host-observed proxy exchange, and that executor signature. Only this exact v4 chain can remove
-  the independent-execution confirmation ceiling. HTTPS CONNECT observation, a multi-Target trust
-  registry, and large object-store/multipart transfer remain incomplete.
+  the host-observed proxy exchange, and that executor signature. HTTPS CONNECT and leaf-SPKI,
+  signed registry-v3 anti-rollback and bounded pin rotation, and registry-v4 TLS 1.2 dual-observer
+  session binding complete that exact confirmation chain. TLS 1.3 RFC 9266 exporter support and
+  large object-store/multipart transfer remain incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -971,6 +986,9 @@ $env:PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR='<one-line-registry-distr
 $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE='<one-line-signed-registry-bundle-json>'
 # Or, instead of the inline bundle:
 # $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL='https://registry.example/bundle.json'
+# B2.8f: use a signed registry v4 HTTPS entry with
+# "tls_session_binding":"tls-unique-sha256" and configure the lab Target:
+# $env:PAJIN_TARGET_TLS_SESSION_BINDING='tls-unique-sha256'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -999,7 +1017,7 @@ canonical exact URLs with no wildcard or fallback. Registry v2 requires
 `tls_leaf_spki_sha256` on each HTTPS entry. After normal PKIX and hostname validation, the Worker
 observes the peer leaf SPKI digest; the Executor signs it with the opaque CONNECT route and Target
 receipt, and the Control Plane rejects pin mismatches and TLS binding v1 downgrade. This does not
-claim TLS-exporter session binding, revocation, or Certificate Transparency proof.
+claim TLS session binding, revocation, or Certificate Transparency proof.
 Registry v3 is accepted only inside a separately signed distribution bundle. Its sequence starts
 at one and must bind the immediately preceding bundle digest. The append-only schema-v14 ledger
 rejects rollback, gaps, and equivocation across restarts and replicas. A v3 HTTPS entry may include
@@ -1010,6 +1028,12 @@ Target can optionally enable TLS with `PAJIN_TARGET_TLS_CERTIFICATE` and
 `PAJIN_TARGET_TLS_PRIVATE_KEY`. See
 [ADR-0042](docs/adr/0042-worker-observed-tls-leaf-spki-binding.en.md) and
 [ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
+Registry v4 additionally requires `tls_session_binding: tls-unique-sha256` on every HTTPS route.
+When the Target also sets `PAJIN_TARGET_TLS_SESSION_BINDING=tls-unique-sha256`, the lab caps TLS at
+1.2 and signs the server-side channel-binding digest in receipt statement v2. The Worker records
+the same connection's digest, and Executor TLS binding v3 seals it with the SPKI and CONNECT route.
+The Control Plane rejects missing, downgraded, or cross-session evidence. See
+[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.en.md).
 
 An Operator credential can use the public Replay admission surface:
 

@@ -2,6 +2,19 @@
 
 # PAJIN
 
+## B2.8f Target 서명 TLS session binding
+
+signed Target registry v4는 HTTPS exact URL마다 `tls-unique-sha256` session binding을
+요구할 수 있습니다. 제한된 TLS 1.2 lab profile에서 Target은 receipt statement v2에 자신의
+channel-binding digest를 서명하고, Executor는 Worker가 관찰한 digest·leaf SPKI·CONNECT
+route를 TLS binding v3로 별도 서명합니다. Control Plane은 digest·type·version·pin의 exact
+일치를 요구하며 receipt v1, binding v1/v2 downgrade와 cross-session proof 조합을 거부합니다.
+
+Python 3.12 표준 API는 RFC 9266 `tls-exporter`를 노출하지 않으므로 이 조각은 TLS 1.3 지원을
+과장하지 않고 TLS 1.2 `tls-unique` profile로 제한합니다. registry v1~v3와 기존 receipt·binding
+버전의 동작은 유지합니다. 운영 TLS 1.3 exporter, 전체 handshake 정책과 mTLS는 후속입니다.
+자세한 경계는 [ADR-0044](docs/adr/0044-target-signed-tls-session-binding.ko.md)를 참조하십시오.
+
 ## B2.8e 서명된 Target registry 배포
 
 registry v3는 별도 Ed25519 배포 trust anchor가 서명한 번들 안에서만 사용할 수 있습니다.
@@ -14,7 +27,7 @@ SPKI pin 하나를 최대 24시간만 중첩할 수 있고 Target receipt 발행
 
 Control Plane은 inline 번들 또는 redirect 없는 absolute HTTPS URL에서 최대 512 KiB를
 시작 시 한 번 읽습니다. 배포 trust anchor는 out-of-band 공개 설정입니다. runtime refresh,
-TLS exporter session binding, CT·revocation, DB와 백업 소실 뒤 anti-rollback 복구는 아직
+TLS 1.3 exporter binding, CT·revocation, DB와 백업 소실 뒤 anti-rollback 복구는 아직
 증명하지 않습니다. 자세한 경계는
 [ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.ko.md)을 참조하십시오.
 
@@ -39,8 +52,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 exact M03·M06·A04 validity·impact·severity Claim별 fresh-session Replay 권위, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 validation Control, Claim replay projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 multi-item projection을, schema v12는 baseline-bound Retest를, schema v13은 exact Claim binding을, schema v14는 signed Target registry anti-rollback 원장을 추가합니다. 추가 opt-in은 Ed25519 Claim receipt, executor-attested portable Artifact, Target-issued receipt와 HTTPS CONNECT 증명, exact endpoint SPKI와 제한된 old/new pin overlap을 결박합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, live registry refresh와 외부 transparency/federation anchor, TLS exporter session binding, 대형 object-store/multipart Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 multi-item projection을, schema v12는 baseline-bound Retest를, schema v13은 exact Claim binding을, schema v14는 signed Target registry anti-rollback 원장을 추가합니다. 추가 opt-in은 Ed25519 Claim receipt, executor-attested portable Artifact, Target-issued receipt와 HTTPS CONNECT 증명, exact endpoint SPKI, 제한된 old/new pin overlap과 Target 서명 application exchange의 Worker 관찰 TLS 1.2 channel 결박을 제공합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, live registry refresh와 외부 transparency/federation anchor, TLS 1.3 RFC 9266 exporter 지원, 대형 object-store/multipart Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -229,7 +242,11 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
   보존하고 fresh Replay Run, compilation, execution context, reservation, one-shot Job, ticket, staging
   capability, attempt와 fence를 append합니다. Permit, staged output, 누락 capability, authority 불일치
   또는 시도 소진이 하나라도 있으면 fail closed하며 같은 Job이나 ticket을 다시 dispatch하지
-  않습니다. Negative Control Plane retest는 아직 완료되지 않았습니다.
+  않습니다. Schema v11/v12 aggregate projection과 dual-source negative Control Plane retest,
+  schema v13 exact Claim별 projection, Ed25519 portable Claim receipt, executor-attested portable
+  Artifact, Target-issued exact exchange, HTTPS CONNECT·leaf SPKI, signed registry v3 anti-rollback·
+  제한된 pin rotation과 registry v4 TLS 1.2 양측 session binding까지 구현됐습니다. TLS 1.3
+  RFC 9266 exporter와 대형 object-store/multipart 전송은 아직 남아 있습니다.
 - Audit Event는 순서를 확인하는 SHA-256 chain을 구성하고, 완료된 Run artifact는 append-only
   integrity seal에 담깁니다. Mode Pack output은 이전 root를 덮어쓰지 않고 확장합니다.
 

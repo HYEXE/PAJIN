@@ -187,8 +187,11 @@ from pajin.target_attestation import (
     TargetAttestationTrustRegistry,
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
+    TargetExecutionReceiptStatement,
+    TargetExecutionReceiptStatementV2,
     TargetExecutionTLSBinding,
     TargetExecutionTLSBindingV2,
+    TargetExecutionTLSBindingV3,
     TargetExecutionTransportBinding,
     TargetExecutionVerificationSummary,
     canonical_target_json_sha256,
@@ -281,6 +284,8 @@ def _target_transport_binding_matches(
     request_digest: str,
     response_digest: str,
     expected_tls_leaf_spki_sha256: str | frozenset[str] | None,
+    expected_tls_session_binding: str | None = None,
+    receipt_tls_session_binding_sha256: str | None = None,
 ) -> bool:
     expected_pins = (
         frozenset()
@@ -293,7 +298,9 @@ def _target_transport_binding_matches(
     )
     if isinstance(proof, TargetExecutionProxyBinding):
         return (
-            proof.replay_request_id == permit.replay_request_id
+            expected_tls_session_binding is None
+            and receipt_tls_session_binding_sha256 is None
+            and proof.replay_request_id == permit.replay_request_id
             and proof.exchange_ordinal == exchange_ordinal
             and proof.challenge_sha256 == challenge.digest
             and proof.target_receipt_sha256 == receipt_digest
@@ -305,7 +312,14 @@ def _target_transport_binding_matches(
             and proof.proxy_request_json_sha256 == request_digest
             and proof.proxy_response_json_sha256 == response_digest
         )
-    if isinstance(proof, (TargetExecutionTLSBinding, TargetExecutionTLSBindingV2)):
+    if isinstance(
+        proof,
+        (
+            TargetExecutionTLSBinding,
+            TargetExecutionTLSBindingV2,
+            TargetExecutionTLSBindingV3,
+        ),
+    ):
         expected_authority = https_connect_authority(permit.target)
         exact = (
             proof.replay_request_id == permit.replay_request_id
@@ -322,11 +336,28 @@ def _target_transport_binding_matches(
             and proof.transcript_response_json_sha256 == response_digest
         )
         if not expected_pins:
-            return exact
+            return (
+                exact
+                and expected_tls_session_binding is None
+                and receipt_tls_session_binding_sha256 is None
+            )
+        if expected_tls_session_binding is None:
+            return (
+                exact
+                and isinstance(proof, TargetExecutionTLSBindingV2)
+                and proof.tls_peer_leaf_spki_sha256 in expected_pins
+                and receipt_tls_session_binding_sha256 is None
+            )
         return (
             exact
-            and isinstance(proof, TargetExecutionTLSBindingV2)
+            and expected_tls_session_binding == "tls-unique-sha256"
+            and isinstance(proof, TargetExecutionTLSBindingV3)
             and proof.tls_peer_leaf_spki_sha256 in expected_pins
+            and proof.tls_version == "TLSv1.2"
+            and proof.tls_session_binding == expected_tls_session_binding
+            and receipt_tls_session_binding_sha256 is not None
+            and proof.tls_session_binding_sha256
+            == receipt_tls_session_binding_sha256
         )
     return False
 
@@ -344,21 +375,52 @@ def _target_attempt_transcript(
     return transcript
 
 
+def _target_receipt_tls_session_binding_sha256(
+    statement: TargetExecutionReceiptStatement | TargetExecutionReceiptStatementV2,
+) -> str | None:
+    if isinstance(statement, TargetExecutionReceiptStatementV2):
+        return statement.tls_session_binding_sha256
+    return None
+
+
+def _target_tls_verification_observations(
+    proof: TargetExecutionTransportBinding,
+    *,
+    expected_tls_leaf_spki_sha256: frozenset[str],
+    expected_tls_session_binding: str | None,
+) -> tuple[set[str], set[str], bool]:
+    if not expected_tls_leaf_spki_sha256:
+        return set(), set(), False
+    if expected_tls_session_binding is None:
+        assert isinstance(proof, TargetExecutionTLSBindingV2)
+        return {proof.tls_peer_leaf_spki_sha256}, set(), False
+    assert isinstance(proof, TargetExecutionTLSBindingV3)
+    return (
+        {proof.tls_peer_leaf_spki_sha256},
+        {proof.tls_session_binding_sha256},
+        True,
+    )
+
+
 def _target_trust_material_for(
     target: str,
     *,
     receipt_issued_at: datetime,
     trust_anchor: TargetAttestationTrustAnchor | None,
     trust_registry: TargetAttestationTrustRegistry | None,
-) -> tuple[TargetAttestationTrustAnchor, frozenset[str]]:
+) -> tuple[TargetAttestationTrustAnchor, frozenset[str], str | None]:
     if trust_anchor is not None:
-        return trust_anchor, frozenset()
+        return trust_anchor, frozenset(), None
     assert trust_registry is not None
     try:
         entry = trust_registry.resolve_entry(target)
     except ValueError as exc:
         raise StateConflict("Replay target is absent from the exact trust registry") from exc
-    return entry.trust_anchor, entry.accepted_tls_leaf_spki_sha256(receipt_issued_at)
+    return (
+        entry.trust_anchor,
+        entry.accepted_tls_leaf_spki_sha256(receipt_issued_at),
+        entry.tls_session_binding,
+    )
 
 
 @dataclass(slots=True)
@@ -3460,6 +3522,8 @@ class ControlPlaneService:
         key_ids: set[str] = set()
         trust_anchor_digests: set[str] = set()
         tls_peer_leaf_spki_sha256_digests: set[str] = set()
+        tls_session_binding_sha256_digests: set[str] = set()
+        tls_session_binding_observed = False
         for permit, attempt in zip(permits, attempts, strict=True):
             challenge = derive_target_execution_challenge(
                 permit_digest=permit.permit_digest,
@@ -3506,11 +3570,18 @@ class ControlPlaneService:
                 response_payload_digest = canonical_target_json_sha256(response_payload)
                 response_digest = canonical_target_json_sha256(response_with_receipt)
                 statement = receipt.statement
-                selected_anchor, expected_tls_leaf_spki_sha256 = _target_trust_material_for(
+                (
+                    selected_anchor,
+                    expected_tls_leaf_spki_sha256,
+                    expected_tls_session_binding,
+                ) = _target_trust_material_for(
                     permit.target,
                     receipt_issued_at=statement.issued_at,
                     trust_anchor=trust_anchor,
                     trust_registry=trust_registry,
+                )
+                receipt_tls_session_binding_sha256 = (
+                    _target_receipt_tls_session_binding_sha256(statement)
                 )
                 exact_statement = (
                     statement.challenge_id == challenge.challenge_id
@@ -3539,6 +3610,10 @@ class ControlPlaneService:
                     request_digest=request_digest,
                     response_digest=response_digest,
                     expected_tls_leaf_spki_sha256=expected_tls_leaf_spki_sha256,
+                    expected_tls_session_binding=expected_tls_session_binding,
+                    receipt_tls_session_binding_sha256=(
+                        receipt_tls_session_binding_sha256
+                    ),
                 )
                 if not exact_statement or not exact_transport:
                     raise StateConflict(
@@ -3554,11 +3629,20 @@ class ControlPlaneService:
                 receipt_digests.append(receipt.digest)
                 key_ids.add(key_id)
                 trust_anchor_digests.add(selected_anchor.digest)
-                if expected_tls_leaf_spki_sha256:
-                    assert isinstance(proof, TargetExecutionTLSBindingV2)
-                    tls_peer_leaf_spki_sha256_digests.add(
-                        proof.tls_peer_leaf_spki_sha256
-                    )
+                (
+                    observed_spki_digests,
+                    observed_session_digests,
+                    observed_session_binding,
+                ) = _target_tls_verification_observations(
+                    proof,
+                    expected_tls_leaf_spki_sha256=expected_tls_leaf_spki_sha256,
+                    expected_tls_session_binding=expected_tls_session_binding,
+                )
+                tls_peer_leaf_spki_sha256_digests.update(observed_spki_digests)
+                tls_session_binding_sha256_digests.update(
+                    observed_session_digests
+                )
+                tls_session_binding_observed |= observed_session_binding
         if proof_index != len(proofs):
             raise StateConflict("target execution proof set contains unbound exchanges")
         if len(trust_anchor_digests) != 1:
@@ -3575,6 +3659,12 @@ class ControlPlaneService:
             key_ids=sorted(key_ids),
             tls_peer_leaf_spki_sha256_digests=sorted(
                 tls_peer_leaf_spki_sha256_digests
+            ),
+            tls_session_binding=(
+                "tls-unique-sha256" if tls_session_binding_observed else None
+            ),
+            tls_session_binding_sha256_digests=sorted(
+                tls_session_binding_sha256_digests
             ),
         )
 

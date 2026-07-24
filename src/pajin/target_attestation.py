@@ -148,6 +148,10 @@ class TargetAttestationTrustRegistryEntry(StrictModel):
         default=None,
         exclude_if=lambda value: value is None,
     )
+    tls_session_binding: Literal["tls-unique-sha256"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
 
     @field_validator("target")
     @classmethod
@@ -211,6 +215,7 @@ class TargetAttestationTrustRegistry(StrictModel):
         "pajin.replay.target-attestation-trust-registry/v1",
         "pajin.replay.target-attestation-trust-registry/v2",
         "pajin.replay.target-attestation-trust-registry/v3",
+        "pajin.replay.target-attestation-trust-registry/v4",
     ] = (
         "pajin.replay.target-attestation-trust-registry/v1"
     )
@@ -226,9 +231,13 @@ class TargetAttestationTrustRegistry(StrictModel):
             if any(
                 entry.tls_leaf_spki_sha256 is not None
                 or entry.retiring_tls_leaf_spki_sha256 is not None
+                or entry.tls_session_binding is not None
                 for entry in self.entries
             ):
-                raise ValueError("target trust registry v1 cannot carry TLS certificate pins")
+                raise ValueError(
+                    "target trust registry v1 cannot carry TLS certificate pins "
+                    "or session bindings"
+                )
             return self
         for entry in self.entries:
             scheme = urlsplit(entry.target).scheme
@@ -237,13 +246,25 @@ class TargetAttestationTrustRegistry(StrictModel):
             if scheme != "https" and (
                 entry.tls_leaf_spki_sha256 is not None
                 or entry.retiring_tls_leaf_spki_sha256 is not None
+                or entry.tls_session_binding is not None
             ):
-                raise ValueError("target trust registry allows TLS pins only for HTTPS routes")
+                raise ValueError(
+                    "target trust registry allows TLS bindings only for HTTPS routes"
+                )
             if (
                 self.api_version == "pajin.replay.target-attestation-trust-registry/v2"
                 and entry.retiring_tls_leaf_spki_sha256 is not None
             ):
                 raise ValueError("target trust registry v2 cannot carry a retiring TLS pin")
+            if self.api_version != "pajin.replay.target-attestation-trust-registry/v4":
+                if entry.tls_session_binding is not None:
+                    raise ValueError(
+                        "target trust registry v1-v3 cannot carry a TLS session binding"
+                    )
+            elif scheme == "https" and entry.tls_session_binding != "tls-unique-sha256":
+                raise ValueError(
+                    "target trust registry v4 requires HTTPS TLS session binding"
+                )
         return self
 
     def resolve(self, target: str) -> TargetAttestationTrustAnchor:
@@ -321,8 +342,11 @@ class TargetAttestationRegistryStatement(StrictModel):
                 "target registry sequence one must start the chain and later versions "
                 "must bind their predecessor"
             )
-        if self.registry.api_version != "pajin.replay.target-attestation-trust-registry/v3":
-            raise ValueError("signed target registry bundle requires registry v3")
+        if self.registry.api_version not in {
+            "pajin.replay.target-attestation-trust-registry/v3",
+            "pajin.replay.target-attestation-trust-registry/v4",
+        }:
+            raise ValueError("signed target registry bundle requires registry v3 or v4")
         for entry in self.registry.entries:
             if entry.retiring_tls_leaf_spki_not_after is None:
                 continue
@@ -597,13 +621,51 @@ class TargetExecutionReceiptStatement(StrictModel):
         return self
 
 
+class TargetExecutionReceiptStatementV2(StrictModel):
+    """Target-signed application exchange bound to one TLS 1.2 channel."""
+
+    api_version: Literal["pajin.replay.target-execution-statement/v2"] = (
+        "pajin.replay.target-execution-statement/v2"
+    )
+    predicate_type: Literal["pajin.replay.target-observed-http-exchange/v2"] = (
+        "pajin.replay.target-observed-http-exchange/v2"
+    )
+    trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+    issuer: str = Field(min_length=1, max_length=200)
+    target_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    challenge_id: str = Field(pattern=r"^target-challenge_[a-f0-9]{32}$")
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    replay_request_id: str = Field(pattern=r"^tool_replay_[0-9a-f]{32}$")
+    batch_id: str = Field(pattern=r"^replay-batch_[0-9a-f]{32}$")
+    item_id: str = Field(pattern=r"^replay-item_[0-9a-f]{32}$")
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    call_ordinal: int = Field(strict=True, ge=1, le=20)
+    exchange_ordinal: int = Field(strict=True, ge=1, le=20)
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: Literal["POST"]
+    request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    response_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal[200] = 200
+    tls_version: Literal["TLSv1.2"]
+    tls_session_binding: Literal["tls-unique-sha256"]
+    tls_session_binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    issued_at: datetime
+
+    @model_validator(mode="after")
+    def require_aware_issue_time(self) -> Self:
+        _require_aware_utc(self.issued_at, label="target receipt issue time")
+        return self
+
+
 class TargetExecutionReceipt(StrictModel):
     api_version: Literal["pajin.replay.target-execution-receipt/v1"] = (
         "pajin.replay.target-execution-receipt/v1"
     )
     algorithm: Literal["Ed25519"] = "Ed25519"
     key_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
-    statement: TargetExecutionReceiptStatement
+    statement: TargetExecutionReceiptStatement | TargetExecutionReceiptStatementV2
     statement_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     signature_base64url: str = Field(pattern=r"^[A-Za-z0-9_-]{86}$")
 
@@ -685,8 +747,23 @@ class TargetExecutionTLSBindingV2(_TargetExecutionTLSBindingBase):
     tls_peer_leaf_spki_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
 
+class TargetExecutionTLSBindingV3(_TargetExecutionTLSBindingBase):
+    """Executor-signed HTTPS route plus endpoint and TLS channel observations."""
+
+    api_version: Literal["pajin.replay.target-tls-binding/v3"] = (
+        "pajin.replay.target-tls-binding/v3"
+    )
+    tls_peer_leaf_spki_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    tls_version: Literal["TLSv1.2"]
+    tls_session_binding: Literal["tls-unique-sha256"]
+    tls_session_binding_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
 TargetExecutionTransportBinding = (
-    TargetExecutionProxyBinding | TargetExecutionTLSBinding | TargetExecutionTLSBindingV2
+    TargetExecutionProxyBinding
+    | TargetExecutionTLSBinding
+    | TargetExecutionTLSBindingV2
+    | TargetExecutionTLSBindingV3
 )
 
 
@@ -710,6 +787,15 @@ class TargetExecutionVerificationSummary(StrictModel):
     tls_peer_leaf_spki_sha256_digests: list[str] = Field(
         default_factory=list,
         max_length=128,
+        exclude_if=lambda value: not value,
+    )
+    tls_session_binding: Literal["tls-unique-sha256"] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+    )
+    tls_session_binding_sha256_digests: list[str] = Field(
+        default_factory=list,
+        max_length=400,
         exclude_if=lambda value: not value,
     )
 
@@ -744,12 +830,30 @@ class TargetExecutionVerificationSummary(StrictModel):
             raise ValueError("TLS peer leaf SPKI digests must be uniquely sorted")
         return value
 
+    @field_validator("tls_session_binding_sha256_digests")
+    @classmethod
+    def require_sorted_tls_session_binding_digests(cls, value: list[str]) -> list[str]:
+        if any(
+            len(item) != 64 or any(character not in "0123456789abcdef" for character in item)
+            for item in value
+        ):
+            raise ValueError("TLS session binding digests must be lowercase SHA-256")
+        if value != sorted(value) or len(value) != len(set(value)):
+            raise ValueError("TLS session binding digests must be uniquely sorted")
+        return value
+
     @model_validator(mode="after")
     def require_exact_count(self) -> Self:
         if self.receipt_count != len(self.receipt_digests):
             raise ValueError("target receipt count differs from its digest set")
         if (self.trust_registry_id is None) != (self.trust_registry_digest is None):
             raise ValueError("target trust registry identity and digest must be present together")
+        if (self.tls_session_binding is None) != (
+            not self.tls_session_binding_sha256_digests
+        ):
+            raise ValueError(
+                "TLS session binding type and observed digest set must be present together"
+            )
         return self
 
     @property
@@ -816,7 +920,17 @@ class TargetExecutionAttestor:
             label="key not-after time",
         ):
             raise ValueError("target signing key is not valid at the issue time")
-        statement = TargetExecutionReceiptStatement.model_validate(
+        statement_type = (
+            TargetExecutionReceiptStatementV2
+            if {
+                "tls_version",
+                "tls_session_binding",
+                "tls_session_binding_sha256",
+            }
+            & statement_fields.keys()
+            else TargetExecutionReceiptStatement
+        )
+        statement = statement_type.model_validate(
             {
                 **statement_fields,
                 "trust_domain": self.trust_anchor.trust_domain,

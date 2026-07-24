@@ -2,26 +2,23 @@
 
 # PAJIN Product Plan
 
-## 2026-07-24 B2.8e implementation status
+## 2026-07-24 B2.8f implementation status
 
-[`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.en.md) introduces registry
-v3 in a bundle signed by a separate Ed25519 distribution trust anchor. It binds a contiguous
-sequence, predecessor digest, a lifetime of at most seven days, and the complete exact-URL
-registry. Schema v14 append-only `cp_target_attestation_registry_versions` records activation per
-trust domain and rejects rollback, gaps, predecessor mismatch, and equivocation across restarts and
-replicas.
+[`ADR-0044`](adr/0044-target-signed-tls-session-binding.en.md) lets a signed registry-v4 HTTPS
+exact-URL entry require `tls-unique-sha256` session binding. The PAJIN lab Target and Worker
+domain-separate and SHA-256 the `tls-unique` value from the same TLS 1.2 socket. Target receipt
+statement v2 and Executor TLS binding v3 sign their respective digest. The Control Plane exact
+matches both digests, binding type, TLS version, and observed SPKI, rejecting downgrades and
+cross-session proof composition.
 
-An HTTPS entry may carry one retiring pin for at most 24 hours. Receipt issue time determines
-whether it remains accepted, and summaries preserve the SPKI actually observed and verified. The
-Control Plane reads an inline bundle or at most 512 KiB once at startup from a redirect-free
-absolute HTTPS URL, then activates it only after signature, key-lifecycle, and current-validity
-verification. Registry v1/v2 and the legacy single anchor remain compatible; unsigned inline v3 is
-rejected.
+Registry v1 through v3, receipt v1, and TLS binding v1/v2 retain their existing meaning. Registry
+v4 is valid only inside a signed distribution bundle and fails closed on TLS 1.3 or runtimes
+without channel binding. The Python standard `ssl` module exposes no exporter API, so production
+TLS 1.3 RFC 9266 `tls-exporter` support remains a later boundary.
 
-TLS exporter or equivalent session binding is next, followed by object-store/multipart Artifact
-transport. Runtime registry refresh, transparency/federation for the distribution anchor, an
-external anti-rollback baseline after database and backup loss, and mTLS/HSM/KMS remain later
-boundaries.
+The next development priority is object-store/multipart transport for portable Artifacts over
+2 MiB. Runtime registry refresh, transparency/federation for the distribution anchor, an external
+anti-rollback baseline after database and backup loss, and mTLS/HSM/KMS remain later boundaries.
 
 > Autonomous multi-agent AI red team and security validation orchestration platform
 
@@ -182,9 +179,11 @@ the terminal authority graph and appends a fresh Run, compilation, context, rese
   schema v13 and the explicit `pajin.kisa-claim-attestation:v3` policy began sealing exact Claim-specific receipt
   authority into an Ed25519 bundle in the same projection transaction, with an off-host verifier that requires an
   external trust anchor. A separate executor workload key now signs the exact permit set and sealed output and
-  transports a bounded portable bundle to a Control Plane on another host. This is still not target-issued
-  execution proof. Materializers and Oracles for other Modes, a target issuer, large object-store/multipart
-  Artifact transfer, and structured collaboration memory are follow-on work.
+  transports a bounded portable bundle to a Control Plane on another host. B2.8b through B2.8f add
+  Target-issued exact-exchange receipts, Worker-observed HTTPS CONNECT and leaf SPKI, a signed
+  multi-Target registry, and TLS 1.2 dual-observer session binding to that chain. Materializers and
+  Oracles for other Modes, TLS 1.3 RFC 9266 exporter support, large object-store/multipart Artifact
+  transfer, and structured collaboration memory are follow-on work.
 The 2026-07-23 Agentic Discovery A1 contract slice adds versioned `SurfaceObservation`,
 `AttackSurface`, and `AttackSurfaceSet` artifacts, canonical HTTP-operation and schema-bound
 Tool-interface locators, domain-separated identities, and exact evidence-lineage validation. A2
@@ -1399,8 +1398,9 @@ server-owned import and typed finalization, and the one-item common Gate; Compos
   Retest projection, schema-v13 Claim-specific projection, Ed25519 portable receipt proof, a
   separate executor workload key for bounded multi-host Artifact transfer, Target-issued exact
   exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 schema-v14
-  anti-rollback with bounded pin rotation are implemented. TLS session binding and large
-  object-store/multipart transfer remain separate completion criteria.
+  anti-rollback with bounded pin rotation, and registry-v4 TLS 1.2 dual-observer session binding
+  are implemented. TLS 1.3 RFC 9266 exporter support and large object-store/multipart transfer
+  remain separate completion criteria.
 
 ### 20.4 M6-05 Hardened KISA Retest Exit Gate
 
@@ -1531,9 +1531,10 @@ redispatch a Tool, and any failure after permit issuance is terminal for that ti
   Opaque public source/batch admission, role-scoped state reads, zero-permit fresh-identity retry issuance,
   schema-v11 multi-item projection, schema-v12 dual-source negative Retest projection, and
   schema-v13 opt-in exact Claim-specific public projection, Ed25519 portable receipt proof, and
-  B2.8a executor-attested bounded multi-host Artifact transfer are also implemented. Target-issued
-  attestation and large object-store/multipart transfer remain outstanding, so full completion
-  cannot be claimed. The Accepted ADR
+  B2.8a executor-attested bounded multi-host Artifact transfer, Target-issued exact exchanges,
+  signed registry, and TLS 1.2 dual-observer session binding are also implemented. Large
+  object-store/multipart transfer and TLS 1.3 RFC 9266 exporter support remain outstanding, so
+  M6-07B full completion cannot be claimed. The Accepted ADR
 defines at least the following.
 
 - Verifiable identity and storage-to-storage handoff of sealed source and replay Artifacts;
@@ -1550,7 +1551,7 @@ defines at least the following.
 | --- | --- | --- |
 | Phase 0 | Complete | Established baselines for planning, schemas, the threat model, ADRs, and synthetic targets |
 | Phase 1 | Complete | Established end-to-end CLI, Campaign, Tool Gateway, Docker Worker, reporting, and evidence execution |
-| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claims and Blind Review, registered M03/M06/A04 Validation Controls and Claim-specific Replay, common Gate, exact-KISA fresh-session Oracle, baseline-bound retest, durable SQLite tickets, explicit Local orchestration, attenuated authority, budget, cancellation, approval, opaque public admission/read APIs, schema-v13 Claim projection, Ed25519 portable Claim receipts, executor-attested bounded multi-host Artifacts, Target-issued challenge-bound receipts, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 with schema-v14 anti-rollback and bounded pin rotation are implemented; Validation Controls and Claim Replay beyond the three registered scenarios, TLS-exporter session binding, runtime registry refresh and transparency/federation, large object-store/multipart transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
+| Phase 2 | In progress | Role separation, dynamic Specialists, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claims and Blind Review, registered M03/M06/A04 Validation Controls and Claim-specific Replay, common Gate, exact-KISA fresh-session Oracle, baseline-bound retest, durable SQLite tickets, explicit Local orchestration, attenuated authority, budget, cancellation, approval, opaque public admission/read APIs, schema-v13 Claim projection, Ed25519 portable Claim receipts, executor-attested bounded multi-host Artifacts, Target-issued challenge-bound receipts, HTTPS CONNECT and leaf-SPKI binding, signed registry-v3 schema-v14 anti-rollback and bounded pin rotation, and registry-v4 TLS 1.2 dual-observer session binding are implemented; Validation Controls and Claim Replay beyond the three registered scenarios, TLS 1.3 RFC 9266 exporter support, runtime registry refresh and transparency/federation, large object-store/multipart transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, trusted new-Surface admission, ranking and information value, parallel and three-or-more-wave replanning, and structured collaboration memory are follow-on work |
 | Phase 3 | In progress | All three Mode Packs are executable and Linux repository-quality CI is implemented, but scenario breadth and Campaign or live-infrastructure CI integration remain limited |
 | Phase 4 | Initial implementation | PostgreSQL Control Plane, generic and dedicated exact-KISA Replay Worker daemons, and the approve, resume, and cancel Web Console vertical flow are implemented |
 
@@ -1610,6 +1611,8 @@ defines at least the following.
 - B2.8d: exact-match registry-v2 HTTPS leaf-SPKI pins against Worker-observed TLS binding v2
 - B2.8e: separately signed registry v3, schema-v14 monotonic anti-rollback, at most 24-hour old/new
   pin overlap, and bounded startup HTTPS distribution
+- B2.8f: signed registry-v4 opt-in TLS 1.2 `tls-unique-sha256`, dual Target receipt-v2 and
+  Executor TLS-binding-v3 signatures, and exact Control Plane session-digest verification
 - Kill Switch, budget, retry, and checkpoint
 - Versioned contracts for Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Attempt, Oracle, and Outcome
 - Deterministic Replay Compiler and a non-delegable Replay Capability Grant for one Tool, one Target, and at most five minutes
@@ -1696,8 +1699,8 @@ defines at least the following.
   fresh-Capability Wave under a distinct Compiler/rule authority. The runtime enforces at most two
   waves and one replan, blocks repeated state, and shares Campaign agent, Tool-call, cost, time, and
   rate limits. None of these inputs are passed to the existing Planner
-- Remaining ADR-0029 scope: a challenge-bound target-issued receipt, large object-store/multipart
-  Artifact transfer, session-bearing driver and Oracle
+- Remaining ADR-0029 scope: large object-store/multipart Artifact transfer, TLS 1.3 RFC 9266
+  exporter support, session-bearing driver and Oracle
   linkage for non-KISA Local and Control Plane paths, a structured persistence layer for Campaign
   Facts and Agent Working Memory, trusted new-Surface admission, ranking and information value,
   parallel-safe grouping, and three-or-more-wave replanning
@@ -1771,7 +1774,7 @@ defines at least the following.
 
 ## 24. Open Decisions
 
-The execution boundary and technical structure are recorded across ADR-0001 through ADR-0039, all of which are
+The execution boundary and technical structure are recorded across ADR-0001 through ADR-0044, all of which are
 Accepted. ADR-0029 defines the M6-07B Control Plane replay orchestration boundary. Its first authority-state slice,
 M6-07B-2A managed Artifact admission, M6-07B-2B server-derived exact KISA planned proof, M6-07B-2C schema-v5
 durable reservation plus fresh-authority-bound internal first-attempt Job/ticket issuance, and M6-07B-2D schema-v6
@@ -1783,9 +1786,10 @@ distinct Replay Worker credential. Opaque public source/batch admission, role-sc
 fresh-identity retry issuance are also implemented. Schema-v11 multi-item projection, schema-v12 dual-source
 negative Control Plane retest, schema-v13 Claim-specific projection, Ed25519 portable Claim receipts,
 executor-attested portable Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and
-leaf-SPKI binding, and signed registry v3 schema-v14 anti-rollback with bounded pin rotation are
-implemented. M6-07B remains incomplete pending TLS-exporter session binding and large
-object-store/multipart Artifact transfer. The following items need additional
+leaf-SPKI binding, signed registry-v3 schema-v14 anti-rollback with bounded pin rotation, and
+registry-v4 TLS 1.2 dual-observer session binding are implemented. M6-07B remains incomplete
+pending TLS 1.3 RFC 9266 exporter support and large object-store/multipart Artifact transfer.
+The following items need additional
 decisions before further Phase 3-4 work proceeds.
 
 1. Placement, scaling, backpressure, and idempotency policy for at-least-once external side effects in the operational Worker fleet
@@ -1881,7 +1885,7 @@ The current English localized document set is as follows. Document authority is 
 1. `README.en.md` - installation, execution, safety boundaries, Mode Pack, and Control Plane operational contract
 2. `docs/PAJIN_PRODUCT_PLAN.en.md` - product direction, requirements, current baseline, and roadmap
 3. `docs/KISA_TRACEABILITY.en.md` - linkage among KISA requirements, code, evidence, and execution coverage
-4. ADR-0001 through ADR-0039 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, Claim-specific execution/public projection, portable receipt attestation, and executor-attested bounded Artifact transport decisions
+4. ADR-0001 through ADR-0044 - Accepted runtime, policy, Mode Pack, Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence independent-review, registered validation Control, diverse Provider/model independent severity, replay orchestration, Claim-specific authority and portable attestation, Target registry, and TLS session-binding decisions
 
 The following documents will be split into separate baselines before Phase 4 productization.
 

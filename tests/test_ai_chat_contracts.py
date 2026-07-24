@@ -16,6 +16,7 @@ from pajin.target_attestation import (
     TargetExecutionAttestor,
     TargetExecutionTLSBinding,
     TargetExecutionTLSBindingV2,
+    TargetExecutionTLSBindingV3,
     canonical_target_json_sha256,
     derive_target_execution_challenge,
     target_public_key_base64url,
@@ -617,17 +618,30 @@ def test_trusted_ai_transcript_rechecks_reject_duplicate_worker_json() -> None:
 
 
 @pytest.mark.parametrize(
-    ("tls_peer_leaf_spki_sha256", "expected_binding_type"),
+    (
+        "tls_peer_leaf_spki_sha256",
+        "tls_session_binding_sha256",
+        "receipt_tls_session_binding_sha256",
+        "expected_binding_type",
+        "expected_error",
+    ),
     [
-        (None, TargetExecutionTLSBinding),
-        ("c" * 64, TargetExecutionTLSBindingV2),
+        (None, None, None, TargetExecutionTLSBinding, False),
+        ("c" * 64, None, None, TargetExecutionTLSBindingV2, False),
+        ("c" * 64, "d" * 64, "d" * 64, TargetExecutionTLSBindingV3, False),
+        ("c" * 64, "d" * 64, "e" * 64, TargetExecutionTLSBindingV3, True),
     ],
 )
 def test_target_attested_https_binds_opaque_connect_to_signed_application_exchange(
     tls_peer_leaf_spki_sha256: str | None,
+    tls_session_binding_sha256: str | None,
+    receipt_tls_session_binding_sha256: str | None,
     expected_binding_type: (
-        type[TargetExecutionTLSBinding] | type[TargetExecutionTLSBindingV2]
+        type[TargetExecutionTLSBinding]
+        | type[TargetExecutionTLSBindingV2]
+        | type[TargetExecutionTLSBindingV3]
     ),
+    expected_error: bool,
 ) -> None:
     now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
     private_key = bytes(range(32))
@@ -701,29 +715,38 @@ def test_target_attested_https_binds_opaque_connect_to_signed_application_exchan
     assert isinstance(raw_request, dict) and isinstance(raw_response, dict)
     if tls_peer_leaf_spki_sha256 is not None:
         raw_turns[0]["tlsPeerLeafSpkiSha256"] = tls_peer_leaf_spki_sha256
+    if tls_session_binding_sha256 is not None:
+        raw_turns[0]["tlsSessionBindingSha256"] = tls_session_binding_sha256
     metadata = raw_request["metadata"]
     assert isinstance(metadata, dict)
     metadata["targetChallenge"] = challenge.model_dump(mode="json")
     metadata["targetExchangeOrdinal"] = 1
-    receipt = attestor.attest(
-        {
-            "challenge_id": challenge.challenge_id,
-            "challenge_sha256": challenge.digest,
-            "permit_digest": challenge.permit_digest,
-            "replay_request_id": challenge.replay_request_id,
-            "batch_id": challenge.batch_id,
-            "item_id": challenge.item_id,
-            "ticket_id": challenge.ticket_id,
-            "fencing_value": challenge.fencing_value,
-            "call_ordinal": challenge.call_ordinal,
-            "exchange_ordinal": 1,
-            "target_sha256": challenge.target_sha256,
-            "method": challenge.method,
-            "request_json_sha256": canonical_target_json_sha256(raw_request),
-            "response_payload_sha256": canonical_target_json_sha256(raw_response),
-            "status": 200,
-        }
-    )
+    statement_fields: dict[str, object] = {
+        "challenge_id": challenge.challenge_id,
+        "challenge_sha256": challenge.digest,
+        "permit_digest": challenge.permit_digest,
+        "replay_request_id": challenge.replay_request_id,
+        "batch_id": challenge.batch_id,
+        "item_id": challenge.item_id,
+        "ticket_id": challenge.ticket_id,
+        "fencing_value": challenge.fencing_value,
+        "call_ordinal": challenge.call_ordinal,
+        "exchange_ordinal": 1,
+        "target_sha256": challenge.target_sha256,
+        "method": challenge.method,
+        "request_json_sha256": canonical_target_json_sha256(raw_request),
+        "response_payload_sha256": canonical_target_json_sha256(raw_response),
+        "status": 200,
+    }
+    if receipt_tls_session_binding_sha256 is not None:
+        statement_fields.update(
+            {
+                "tls_version": "TLSv1.2",
+                "tls_session_binding": "tls-unique-sha256",
+                "tls_session_binding_sha256": receipt_tls_session_binding_sha256,
+            }
+        )
+    receipt = attestor.attest(statement_fields)
     raw_response["targetReceipt"] = receipt.model_dump(mode="json")
     output = AIChatProbeOutput.model_validate(raw)
     authority = "ai.example.test:443"
@@ -764,6 +787,16 @@ def test_target_attested_https_binds_opaque_connect_to_signed_application_exchan
         network_log_trusted=True,
         allow_target_attested_https=True,
     )
+    if expected_error:
+        with pytest.raises(ValueError, match="Target-signed TLS session binding"):
+            target_execution_proxy_bindings(
+                request,
+                worker_result,
+                output,
+                expected_challenge=challenge,
+                network_log_trusted=True,
+            )
+        return
     bindings = target_execution_proxy_bindings(
         request,
         worker_result,
@@ -776,5 +809,7 @@ def test_target_attested_https_binds_opaque_connect_to_signed_application_exchan
     assert type(bindings[0]) is expected_binding_type
     assert bindings[0].connect_authority == authority
     assert bindings[0].target_receipt_sha256 == receipt.digest
-    if isinstance(bindings[0], TargetExecutionTLSBindingV2):
+    if isinstance(bindings[0], (TargetExecutionTLSBindingV2, TargetExecutionTLSBindingV3)):
         assert bindings[0].tls_peer_leaf_spki_sha256 == tls_peer_leaf_spki_sha256
+    if isinstance(bindings[0], TargetExecutionTLSBindingV3):
+        assert bindings[0].tls_session_binding_sha256 == tls_session_binding_sha256

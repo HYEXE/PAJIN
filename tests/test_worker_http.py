@@ -89,10 +89,12 @@ def test_ai_worker_exports_verified_https_peer_leaf_spki(
 ) -> None:
     worker = _worker_entry()
     peer_leaf_spki_sha256 = "c" * 64
+    tls_session_binding_sha256 = "d" * 64
 
     class HTTPSResponse:
         status = 200
         pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
+        pajin_tls_session_binding_sha256 = tls_session_binding_sha256
 
         def __enter__(self) -> object:
             return self
@@ -115,7 +117,7 @@ def test_ai_worker_exports_verified_https_peer_leaf_spki(
 
     monkeypatch.setattr(worker, "_HTTP_OPENER", HTTPSOpener())
 
-    response, latency, observed_spki = worker._post_ai_turn(
+    response, latency, observed_spki, observed_session_binding = worker._post_ai_turn(
         "https://ai.example.test/v1/chat",
         {
             "sessionId": "pajin:test:https-worker",
@@ -126,6 +128,31 @@ def test_ai_worker_exports_verified_https_peer_leaf_spki(
     assert response["message"]["content"] == "ok"
     assert latency >= 0
     assert observed_spki == peer_leaf_spki_sha256
+    assert observed_session_binding == tls_session_binding_sha256
+
+
+def test_ai_worker_hashes_only_tls12_unique_channel_binding() -> None:
+    worker = _worker_entry()
+
+    class TLS12Socket:
+        def version(self) -> str:
+            return "TLSv1.2"
+
+        def get_channel_binding(self, binding_type: str) -> bytes:
+            assert binding_type == "tls-unique"
+            return b"worker-and-target-finished"
+
+    class TLS13Socket:
+        def version(self) -> str:
+            return "TLSv1.3"
+
+        def get_channel_binding(self, _binding_type: str) -> bytes:
+            raise AssertionError("TLS 1.3 must not use RFC 5929 tls-unique")
+
+    assert worker._tls_unique_binding_sha256(TLS12Socket()) == sha256(
+        worker._TLS_UNIQUE_BINDING_DOMAIN + b"worker-and-target-finished"
+    ).hexdigest()
+    assert worker._tls_unique_binding_sha256(TLS13Socket()) is None
 
 
 def test_ai_worker_rejects_https_response_without_peer_leaf_spki(

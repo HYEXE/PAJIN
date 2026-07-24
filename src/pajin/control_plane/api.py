@@ -602,9 +602,12 @@ class ControlPlaneSettings:
         if (
             self.target_attestation_trust_registry is not None
             and self.target_attestation_trust_registry.api_version
-            == "pajin.replay.target-attestation-trust-registry/v3"
+            in {
+                "pajin.replay.target-attestation-trust-registry/v3",
+                "pajin.replay.target-attestation-trust-registry/v4",
+            }
         ):
-            raise ValueError("target trust registry v3 requires a signed distribution bundle")
+            raise ValueError("target trust registry v3-v4 requires a signed distribution bundle")
         if self.target_attestation_registry_bundle is not None:
             assert self.target_attestation_registry_trust_anchor is not None
             verify_target_attestation_registry_bundle(
@@ -765,9 +768,14 @@ class ControlPlaneSettings:
             )
         if parsed_target_attestation_trust_registry is not None and (
             parsed_target_attestation_trust_registry.api_version
-            == "pajin.replay.target-attestation-trust-registry/v3"
+            in {
+                "pajin.replay.target-attestation-trust-registry/v3",
+                "pajin.replay.target-attestation-trust-registry/v4",
+            }
         ):
-            raise RuntimeError("target trust registry v3 requires a signed distribution bundle")
+            raise RuntimeError(
+                "target trust registry v3-v4 requires a signed distribution bundle"
+            )
         if parsed_target_attestation_registry_bundle is not None:
             assert parsed_target_attestation_registry_trust_anchor is not None
             try:

@@ -5,6 +5,7 @@ import json
 import os
 import signal
 import socket
+import ssl
 import subprocess
 import sys
 import time
@@ -41,6 +42,7 @@ _WORKER_INPUT_CHUNK_CHARS = 8_192
 _MCP_STREAM_CHUNK_BYTES = 65_536
 _MCP_READER_JOIN_SECONDS = 5
 _MCP_PROCESS_REAP_SECONDS = 5
+_TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
 
 
 def _reject_json_constant(value: str) -> None:
@@ -144,16 +146,31 @@ def _tls_leaf_spki_sha256(certificate_der: bytes) -> str:
     return sha256(spki).hexdigest()
 
 
+def _tls_unique_binding_sha256(peer_socket: ssl.SSLSocket) -> str | None:
+    """Return a bounded TLS 1.2 channel-binding digest when the runtime exposes one."""
+
+    if peer_socket.version() != "TLSv1.2":
+        return None
+    binding = peer_socket.get_channel_binding("tls-unique")
+    if binding is None:
+        return None
+    if not isinstance(binding, bytes) or not 1 <= len(binding) <= 1_024:
+        raise ValueError("TLS unique channel binding is missing or exceeds its byte limit")
+    return sha256(_TLS_UNIQUE_BINDING_DOMAIN + binding).hexdigest()
+
+
 class _ObservingHTTPSConnection(HTTPSConnection):
-    """Attach the verified peer leaf SPKI digest before the socket can be released."""
+    """Attach endpoint and channel observations before the socket can be released."""
 
     def getresponse(self) -> HTTPResponse:
         if self.sock is None:
             raise ValueError("HTTPS connection has no verified peer socket")
         certificate_der = self.sock.getpeercert(binary_form=True)
         peer_leaf_spki_sha256 = _tls_leaf_spki_sha256(certificate_der)
+        tls_session_binding_sha256 = _tls_unique_binding_sha256(self.sock)
         response = super().getresponse()
         response.pajin_tls_peer_leaf_spki_sha256 = peer_leaf_spki_sha256
+        response.pajin_tls_session_binding_sha256 = tls_session_binding_sha256
         return response
 
 
@@ -625,7 +642,7 @@ def ctf_crypto_single_byte_xor(payload: dict[str, Any]) -> dict[str, Any]:
 def _post_ai_turn(
     target: str,
     payload: dict[str, Any],
-) -> tuple[dict[str, Any], float, str | None]:
+) -> tuple[dict[str, Any], float, str | None, str | None]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ValueError("AI target must be an absolute HTTP(S) URL")
@@ -652,11 +669,21 @@ def _post_ai_turn(
                 if parsed.scheme == "https"
                 else None
             )
+            tls_session_binding_sha256 = (
+                getattr(response, "pajin_tls_session_binding_sha256", None)
+                if parsed.scheme == "https"
+                else None
+            )
             if parsed.scheme == "https" and (
                 not isinstance(tls_peer_leaf_spki_sha256, str)
                 or fullmatch(r"[a-f0-9]{64}", tls_peer_leaf_spki_sha256) is None
             ):
                 raise ValueError("HTTPS response omitted its verified peer leaf SPKI digest")
+            if tls_session_binding_sha256 is not None and (
+                not isinstance(tls_session_binding_sha256, str)
+                or fullmatch(r"[a-f0-9]{64}", tls_session_binding_sha256) is None
+            ):
+                raise ValueError("HTTPS response exposed an invalid TLS session binding digest")
     except HTTPError as exc:
         exc.read(4_096)
         raise ValueError(f"AI target returned HTTP {exc.code}") from exc
@@ -676,7 +703,12 @@ def _post_ai_turn(
         or not isinstance(message.get("content"), str)
     ):
         raise TypeError("AI target response requires message.content")
-    return result, time.perf_counter() - started, tls_peer_leaf_spki_sha256
+    return (
+        result,
+        time.perf_counter() - started,
+        tls_peer_leaf_spki_sha256,
+        tls_session_binding_sha256,
+    )
 
 
 def _probe_check_matches(check: dict[str, Any], turns: list[dict[str, Any]]) -> bool:
@@ -789,7 +821,12 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
                 ),
             },
         }
-        response, response_latency, tls_peer_leaf_spki_sha256 = _post_ai_turn(
+        (
+            response,
+            response_latency,
+            tls_peer_leaf_spki_sha256,
+            tls_session_binding_sha256,
+        ) = _post_ai_turn(
             probe.target,
             request_payload,
         )
@@ -804,6 +841,11 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
                 **(
                     {"tlsPeerLeafSpkiSha256": tls_peer_leaf_spki_sha256}
                     if tls_peer_leaf_spki_sha256 is not None
+                    else {}
+                ),
+                **(
+                    {"tlsSessionBindingSha256": tls_session_binding_sha256}
+                    if tls_session_binding_sha256 is not None
                     else {}
                 ),
             }

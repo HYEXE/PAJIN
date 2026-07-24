@@ -1,24 +1,22 @@
 # PAJIN 제품 기획서
 
-## 2026-07-24 B2.8e 구현 상태
+## 2026-07-24 B2.8f 구현 상태
 
-[`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.md)에 따라 registry
-v3를 별도 Ed25519 배포 trust anchor가 서명하는 번들로 도입했다. 번들은 연속 sequence,
-이전 번들 digest, 최대 7일의 유효기간과 exact-URL registry 전체를 결박한다. schema v14
-append-only `cp_target_attestation_registry_versions`는 trust domain별 활성화를 기록해
-재시작·다중 replica에서도 rollback, gap, predecessor 불일치와 equivocation을 거부한다.
+[`ADR-0044`](adr/0044-target-signed-tls-session-binding.md)에 따라 signed registry v4의
+HTTPS exact-URL entry가 `tls-unique-sha256` session binding을 요구할 수 있다. PAJIN lab
+Target과 Worker는 동일한 TLS 1.2 socket에서 얻은 `tls-unique`를 domain-separated
+SHA-256하고, Target receipt statement v2와 Executor TLS binding v3가 각각 그 digest를
+서명한다. Control Plane은 양측 digest·binding type·TLS version·실제 관찰 SPKI를 exact
+비교해 downgrade와 서로 다른 session의 proof 조합을 거부한다.
 
-HTTPS entry는 현재 pin 외에 이전 pin 하나를 최대 24시간만 포함할 수 있다. Target receipt
-발행 시각이 cutoff 전일 때만 이전 pin을 허용하며 summary에는 실제 관찰·검증한 SPKI를
-보존한다. Control Plane은 inline 번들 또는 redirect 없는 absolute HTTPS URL에서 최대
-512 KiB를 시작 시 한 번 읽고, 서명·key lifecycle·현재 유효기간 검증 뒤에만 활성화한다.
-registry v1/v2와 기존 단일 anchor는 호환성을 유지하지만 v3는 unsigned inline 설정을
-거부한다.
+registry v1~v3, receipt v1과 TLS binding v1/v2는 기존 의미로 호환된다. registry v4는
+signed distribution bundle에서만 허용하며 TLS 1.3 또는 channel binding 미지원 runtime에서
+약화하지 않고 fail closed 한다. Python 표준 `ssl`에 exporter API가 없어 운영 TLS 1.3
+RFC 9266 `tls-exporter`는 후속 경계로 유지한다.
 
-다음 개발 순서는 TLS exporter 또는 동등한 session binding이며, 그 뒤
-object-store/multipart Artifact 전송으로 이어진다. runtime registry refresh, 배포 anchor
-transparency/federation, DB·백업 소실 뒤 외부 anti-rollback 기준과 mTLS/HSM/KMS도 후속
-경계다.
+다음 개발 순서는 2 MiB를 넘는 object-store/multipart portable Artifact 전송이다. runtime
+registry refresh, 배포 anchor transparency/federation, DB·백업 소실 뒤 외부 anti-rollback
+기준과 mTLS/HSM/KMS도 후속 경계다.
 
 > 자율형 멀티 에이전트 AI 레드팀·보안 검증 오케스트레이션 플랫폼
 
@@ -173,9 +171,11 @@ projection을 발행한다. 독립 remediation attestation이 없으므로 방�
 `inconclusive`다. 2026-07-24 schema-v13과 명시적 `pajin.kisa-claim-attestation:v3` 정책은 exact
 Claim별 receipt authority를 Ed25519 bundle로 같은 projection transaction에 봉인하고 외부 trust
 anchor를 사용하는 off-host verifier를 제공한다. 별도 executor workload key는 exact permit과
-sealed output을 서명하고 bounded portable bundle로 다른 host의 Control Plane에 전송한다. 이는
-target이 직접 발행한 실행 증명은 아니다. 다른 Mode의 materializer·Oracle, target issuer,
-대형 object-store/multipart Artifact 전송과 구조화 협업 메모리는 후속 과제다.
+sealed output을 서명하고 bounded portable bundle로 다른 host의 Control Plane에 전송한다.
+B2.8b~f는 Target 발행 exact exchange receipt, Worker 관찰 HTTPS CONNECT·leaf SPKI, signed
+multi-Target registry와 TLS 1.2 양측 session binding을 그 체인에 추가했다. 다른 Mode의
+materializer·Oracle, TLS 1.3 RFC 9266 exporter, 대형 object-store/multipart Artifact 전송과
+구조화 협업 메모리는 후속 과제다.
 2026-07-23 Agentic Discovery A1 계약 조각은 versioned
 `SurfaceObservation`, `AttackSurface`, `AttackSurfaceSet`, canonical HTTP operation과
 schema-bound Tool interface locator, 도메인 분리 identity와 exact evidence lineage 검증을 추가했다.
@@ -1373,8 +1373,8 @@ Worker와 다른 credential로 이 daemon을 활성화한다. Opaque public sour
 negative Control Plane retest, Claim별 public projection, Ed25519 portable receipt proof,
 별도 executor workload key 기반 bounded multi-host Artifact 전송, Target-issued challenge-bound
 receipt, HTTPS CONNECT·leaf SPKI 결박과 signed registry v3의 schema-v14 anti-rollback·제한된
-pin rotation까지 구현됐다. TLS session binding과 대형 object-store/multipart 전송은 별도
-완료 기준으로 남아 있다.
+pin rotation, registry v4 TLS 1.2 양측 session binding까지 구현됐다. TLS 1.3 RFC 9266
+exporter와 대형 object-store/multipart 전송은 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 hardened KISA retest Exit Gate
 
@@ -1506,7 +1506,10 @@ permit lineage를 import·재검증하고 typed finalization과 one-item 공통 
 동일 permit/finalize의 bounded response-loss retry는 Tool을 재dispatch하지 않으며 permit 뒤 failure는
 해당 ticket에 terminal이다. Compose는 이 daemon을 활성화한다. Opaque public source/batch admission,
 역할 기반 상태 조회 API와 permit 0개 fresh-identity retry 발행도 구현됐다. Multi-item versioned
-projection publication과 negative Control Plane retest는 남아 있으므로 전체 완료를 주장할 수 없다.
+projection publication, negative Control Plane retest, exact Claim별 portable receipt,
+executor-attested portable Artifact, Target-issued exact exchange, signed registry와 TLS 1.2
+양측 session binding도 구현됐다. 대형 object-store/multipart 전송과 TLS 1.3 RFC 9266
+exporter는 남아 있으므로 M6-07B 전체 완료를 주장할 수 없다.
 Accepted ADR은 최소한 다음을 결정한다.
 
 - sealed source/replay Artifact의 저장소 간 handoff와 검증 가능한 identity;
@@ -1523,7 +1526,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claim·Blind Review, 등록형 M03·M06·A04 Validation Control과 Claim별 Replay, 공통 Gate, exact KISA fresh-session Oracle, baseline-bound retest, durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API, schema-v13 Claim projection, Ed25519 portable Claim receipt, executor 서명 기반 bounded multi-host Artifact, Target-issued challenge-bound receipt, HTTPS CONNECT·leaf SPKI 결박, signed registry v3와 schema-v14 anti-rollback·제한된 pin rotation을 구현; 등록된 세 시나리오 밖의 Validation Control·Claim Replay, TLS exporter session binding, runtime registry refresh·transparency/federation, 대형 object-store/multipart Artifact, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning과 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1-A5 bounded replanning, Candidate-aware Atomic Claim·Blind Review, 등록형 M03·M06·A04 Validation Control과 Claim별 Replay, 공통 Gate, exact KISA fresh-session Oracle, baseline-bound retest, durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API, schema-v13 Claim projection, Ed25519 portable Claim receipt, executor 서명 기반 bounded multi-host Artifact, Target-issued challenge-bound receipt, HTTPS CONNECT·leaf SPKI 결박, signed registry v3의 schema-v14 anti-rollback·제한된 pin rotation과 registry v4의 TLS 1.2 양측 session binding을 구현; 등록된 세 시나리오 밖의 Validation Control·Claim Replay, TLS 1.3 RFC 9266 exporter, runtime registry refresh·transparency/federation, 대형 object-store/multipart Artifact, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning과 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1581,6 +1584,8 @@ Accepted ADR은 최소한 다음을 결정한다.
 - B2.8d: registry v2 HTTPS entry의 leaf SPKI pin과 Worker 관찰 TLS binding v2를 exact match
 - B2.8e: 별도 배포 anchor가 서명한 registry v3, schema-v14 monotonic anti-rollback 원장,
   최대 24시간 old/new pin overlap과 시작 시 bounded HTTPS 배포
+- B2.8f: signed registry v4 opt-in TLS 1.2 `tls-unique-sha256`, Target receipt v2와
+  Executor TLS binding v3 양측 서명, Control Plane exact session digest 검증
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
@@ -1664,8 +1669,8 @@ Accepted ADR은 최소한 다음을 결정한다.
   봉인하고, 신규성 임계값을 넘는 exact 등록 transition에 한해 서로 다른 Compiler·rule의 두 번째
   fresh-Capability Wave를 한 번 실행. 최대 2 wave·1 replan, 동일 상태 반복 차단과 Campaign 공유
   Agent·Tool call·cost·time·rate limit을 runtime이 강제하며 기존 Planner에는 입력하지 않음
-- 남은 ADR 0029 범위: target issuer의 challenge-bound signed receipt와 대형
-  object-store/multipart Artifact 전송, KISA 외
+- 남은 ADR 0029 범위: 대형 object-store/multipart Artifact 전송, TLS 1.3 RFC 9266 exporter,
+  KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Agent Working Memory의 구조화된 영속 계층, trusted new-Surface admission, ranking·정보가치,
   병렬-safe grouping과 3개 이상 wave replanning
@@ -1739,7 +1744,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 
 ## 24. 오픈 의사결정
 
-초기 질문 중 실행 경계와 기술 구조는 Accepted 상태인 ADR-0001부터 ADR-0039까지에서 확정했다.
+초기 질문 중 실행 경계와 기술 구조는 Accepted 상태인 ADR-0001부터 ADR-0044까지에서 확정했다.
 ADR-0029의 첫 M6-07B authority-state 조각, M6-07B-2A managed Artifact admission, M6-07B-2B 서버
 파생 exact KISA planned proof, M6-07B-2C schema-v5 durable reservation 및 fresh authority-bound 내부
 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장과 내부 서비스 발급은
@@ -1750,9 +1755,10 @@ daemon, pre-dispatch permit, opaque staging 이중 봉인, server-owned import·
 source/batch admission, 역할 기반 상태 조회 API와 자동 fresh-identity retry 발행도 구현됐다. Schema-v11
 multi-item projection, schema-v12 dual-source negative Control Plane retest와 schema-v13
 opt-in exact Claim별 공개 projection, Ed25519 portable Claim receipt, executor-attested portable
-Artifact, Target-issued exact exchange receipt, HTTPS CONNECT·leaf SPKI 결박과 signed registry
-v3의 schema-v14 anti-rollback·제한된 pin rotation도 구현됐다. TLS exporter session binding과
-대형 object-store/multipart Artifact 전송이 남아 있어 M6-07B 전체는 미완료다.
+Artifact, Target-issued exact exchange receipt, HTTPS CONNECT·leaf SPKI 결박, signed registry
+v3의 schema-v14 anti-rollback·제한된 pin rotation과 registry v4 TLS 1.2 양측 session
+binding도 구현됐다. TLS 1.3 RFC 9266 exporter와 대형 object-store/multipart Artifact
+전송이 남아 있어 M6-07B 전체는 미완료다.
 다음 항목은 Phase 3-4 진행 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책
@@ -1849,7 +1855,7 @@ XBOW의 공식 공개 저장소에서는 핵심 플랫폼 구현을 제공하지
 1. `README.md` — 설치, 실행, 안전 경계, Mode Pack과 Control Plane 운영 계약
 2. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 방향, 요구사항, 현재 기준선과 로드맵
 3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항, 코드, 증적, 실행 커버리지 연결
-4. `docs/adr/0001-0036` — 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, 등록형 Validation Control, 다양한 Provider/model 기반 독립 severity, Replay orchestration과 Claim별 실행 권위 설계에 관한 Accepted 의사결정
+4. `docs/adr/0001-0044` — 런타임·정책·Mode Pack·Control Plane, Candidate-aware Atomic Claim Validator, Blind Evidence 독립 검토, 등록형 Validation Control, 다양한 Provider/model 기반 독립 severity, Replay orchestration, Claim별 실행 권위·portable attestation, Target registry와 TLS session binding에 관한 Accepted 의사결정
 
 다음 문서는 Phase 4 제품화 전에 별도 기준선으로 분리한다.
 

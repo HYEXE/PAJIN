@@ -107,6 +107,23 @@ def test_ai_target_signs_exact_challenge_bound_exchange(
     assert receipt.statement.request_json_sha256 == canonical_target_json_sha256(request)
     assert receipt.statement.response_payload_sha256 == canonical_target_json_sha256(response)
 
+    session_bound = TargetExecutionReceipt.model_validate(
+        target._target_attested_response(
+            request,
+            response,
+            tls_session_binding_sha256="c" * 64,
+            now=now + timedelta(seconds=1),
+        )["targetReceipt"]
+    )
+    assert session_bound.statement.api_version == (
+        "pajin.replay.target-execution-statement/v2"
+    )
+    assert session_bound.statement.tls_session_binding_sha256 == "c" * 64
+    assert verify_target_execution_receipt(
+        session_bound,
+        trust_anchor=anchor,
+    ) == "target-key-2026-01"
+
 
 def test_ai_target_rejects_expired_execution_challenge(
     monkeypatch: pytest.MonkeyPatch,
@@ -367,6 +384,50 @@ def test_ai_target_requires_complete_optional_tls_configuration(
         target.main()
 
 
+def test_ai_target_hashes_tls12_unique_channel_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _load_target()
+
+    class FakeTLS12Socket:
+        def version(self) -> str:
+            return "TLSv1.2"
+
+        def get_channel_binding(self, binding_type: str) -> bytes:
+            assert binding_type == "tls-unique"
+            return b"worker-and-target-finished"
+
+    monkeypatch.setattr(target.ssl, "SSLSocket", FakeTLS12Socket)
+    monkeypatch.setenv(
+        "PAJIN_TARGET_TLS_SESSION_BINDING",
+        "tls-unique-sha256",
+    )
+
+    assert target._target_tls_session_binding(FakeTLS12Socket()) == (
+        target.sha256(
+            target.TARGET_TLS_UNIQUE_BINDING_DOMAIN + b"worker-and-target-finished"
+        ).hexdigest()
+    )
+
+
+def test_ai_target_tls_session_binding_requires_tls_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = _load_target()
+
+    class FakeServer:
+        socket = object()
+
+    monkeypatch.setattr(target, "ThreadingHTTPServer", lambda *_args: FakeServer())
+    monkeypatch.setenv(
+        "PAJIN_TARGET_TLS_SESSION_BINDING",
+        "tls-unique-sha256",
+    )
+
+    with pytest.raises(RuntimeError, match="requires TLS certificate"):
+        target.main()
+
+
 def test_ai_target_wraps_listener_when_tls_is_configured(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -382,12 +443,20 @@ def test_ai_target_wraps_listener_when_tls_is_configured(
 
     class FakeTLSContext:
         minimum_version: object = None
+        maximum_version: object = None
 
         def load_cert_chain(self, certificate: str, private_key: str) -> None:
             events.append((certificate, private_key))
 
         def wrap_socket(self, listener: object, *, server_side: bool) -> object:
-            events.append((listener, server_side, self.minimum_version))
+            events.append(
+                (
+                    listener,
+                    server_side,
+                    self.minimum_version,
+                    self.maximum_version,
+                )
+            )
             return "tls-listener"
 
     server = FakeServer()
@@ -395,11 +464,20 @@ def test_ai_target_wraps_listener_when_tls_is_configured(
     monkeypatch.setattr(target.ssl, "SSLContext", lambda _protocol: FakeTLSContext())
     monkeypatch.setenv("PAJIN_TARGET_TLS_CERTIFICATE", "/run/secrets/target.crt")
     monkeypatch.setenv("PAJIN_TARGET_TLS_PRIVATE_KEY", "/run/secrets/target.key")
+    monkeypatch.setenv(
+        "PAJIN_TARGET_TLS_SESSION_BINDING",
+        "tls-unique-sha256",
+    )
 
     target.main()
 
     ready = json.loads(capsys.readouterr().out)
     assert ready["transport"] == "https"
+    assert ready["tlsSessionBinding"] == "tls-unique-sha256"
     assert server.socket == "tls-listener"
     assert events[0] == ("/run/secrets/target.crt", "/run/secrets/target.key")
+    assert events[1][-2:] == (
+        target.ssl.TLSVersion.TLSv1_2,
+        target.ssl.TLSVersion.TLSv1_2,
+    )
     assert events[-1] == "served"

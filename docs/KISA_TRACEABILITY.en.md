@@ -2,14 +2,14 @@
 
 # KISA AI Security Red Teaming Guide Traceability
 
-> 2026-07-24 B2.8e: a separate Ed25519 distribution anchor signs registry v3 sequence,
-> predecessor digest, validity window, and complete exact-URL registry. The schema-v14 append-only
-> activation ledger rejects rollback, gaps, predecessor mismatch, and equivocation. An old HTTPS
-> SPKI pin may overlap for at most 24 hours, with the cutoff evaluated against receipt issue time.
-> The Control Plane verifies an inline or redirect-free HTTPS bundle once at startup. This proves
-> registry order and endpoint-key rotation, not TLS-exporter session binding, CT/revocation,
-> runtime refresh, or an external anti-rollback baseline after database and backup loss. See
-> [`ADR-0043`](adr/0043-signed-target-registry-distribution-and-rotation.en.md).
+> 2026-07-24 B2.8f: a signed registry-v4 HTTPS entry requires TLS 1.2
+> `tls-unique-sha256`. Target receipt v2 and Executor TLS binding v3 separately sign the session
+> digest observed by both endpoints on the same socket. The Control Plane exact matches digest,
+> binding type, TLS version, and SPKI to reject downgrade and cross-session proof composition.
+> Registry v1 through v3 remain compatible; v4 fails closed on TLS 1.3 or runtimes without channel
+> binding. This proves the lab TLS 1.2 session binding, not TLS 1.3 RFC 9266 exporter support,
+> CT/revocation, runtime refresh, or an external anti-rollback baseline. See
+> [`ADR-0044`](adr/0044-target-signed-tls-session-binding.en.md).
 
 ## 1. Purpose and Baseline
 
@@ -87,9 +87,10 @@ the attached PDF.
 > workload key that signs the exact permit set, sealed output, and bounded portable bundle for
 > verification before and after transfer to a Control Plane on another host. B2.8b verifies a
 > permit-derived challenge, Target-issued Ed25519 receipt, host proxy observation, and executor
-> binding before allowing an exact validity Claim to reach `VERIFIED_INDEPENDENT_REPLAY`. HTTPS
-> observation, a multi-Target registry, and large object-store/multipart Artifact transfer remain
-> follow-up work, so M6-07B is not complete.
+> binding before allowing an exact validity Claim to reach `VERIFIED_INDEPENDENT_REPLAY`. B2.8c
+> through B2.8f verify HTTPS CONNECT and leaf SPKI, a signed multi-Target registry, and TLS 1.2
+> dual-observer session binding. TLS 1.3 exporter support and large object-store/multipart Artifact
+> transfer remain follow-up work, so M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
 omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
@@ -144,7 +145,7 @@ flowchart LR
 | Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
 | Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
 | Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed projection | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | Implemented: a scenario is executed only when every required terminal-success repetition is present in the same sealed Run; FAILED/CANCELLED Runs do not claim execution success or rates |
-| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim-receipt attestor and external-trust-anchor verifier, executor workload attestor and bounded portable-transport verifier, Target execution, HTTPS leaf-SPKI, and signed-registry verifiers, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, Claim-binding, and registry-version ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | Supported KISA contracts, explicit Local orchestration, public Replay APIs, fresh-identity retry, schema-v13 Claim projection, portable Claim receipts, executor-attested Artifacts, Target-issued exact exchanges, HTTPS CONNECT and leaf-SPKI binding, and signed registry v3 schema-v14 anti-rollback with bounded pin rotation are implemented; TLS-exporter session binding and organizational impact analysis remain follow-up work |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim-receipt attestor and external-trust-anchor verifier, executor workload attestor and bounded portable-transport verifier, Target execution, HTTPS leaf-SPKI, signed-registry, and TLS-session verifiers, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, Claim-binding, and registry-version ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | Supported KISA contracts, explicit Local orchestration, public Replay APIs, fresh-identity retry, schema-v13 Claim projection, portable Claim receipts, executor-attested Artifacts, Target-issued exact exchanges, HTTPS CONNECT and leaf-SPKI binding, signed registry-v3 schema-v14 anti-rollback with bounded pin rotation, and registry-v4 TLS 1.2 dual-observer session binding are implemented; TLS 1.3 RFC 9266 exporter support and organizational impact analysis remain follow-up work |
 | Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal, Control Plane Ed25519 Claim-receipt bundle, executor workload attestation, Target-issued execution receipt | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | Local SQLite DB/OS trust boundary plus Control Plane receipt, executor, and Target external-trust-anchor verification are implemented; a transparency log remains follow-up work |
 | Result analysis and reporting | 41-44 | `KISAModePack` exact binding of sealed Campaign, Plan, Agents, TaskGraph, Gateway evidence, and report generation | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | Implemented: planned and actually completed scenarios are separated; foreign-Run or caller-forged inputs are rejected |
 | Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
@@ -452,8 +453,9 @@ KISA threats remain `not assessed`.
   projection, schema-v12 dual-source negative Control Plane retest, schema-v13 exact
   Claim-specific projection, Ed25519 portable Claim receipts, executor-attested portable
   Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed
-  registry v3 schema-v14 anti-rollback with bounded pin rotation are implemented. TLS-exporter
-  session binding and large object-store/multipart Artifact transfer remain outstanding.
+  registry-v3 schema-v14 anti-rollback with bounded pin rotation, and registry-v4 TLS 1.2
+  dual-observer session binding are implemented. TLS 1.3 RFC 9266 exporter support and large
+  object-store/multipart Artifact transfer remain outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific
@@ -474,5 +476,6 @@ Validator state and confirmation boundaries follow
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.en.md),
 [ADR 0031](adr/0031-blind-evidence-review-boundary.en.md), and
 [ADR 0034](adr/0034-diverse-independent-severity-review.en.md), and
-[ADR 0035](adr/0035-claim-replay-public-state-projection.en.md), and
-[ADR 0036](adr/0036-claim-bound-replay-execution-authority.en.md).
+[ADR 0035](adr/0035-claim-replay-public-state-projection.en.md),
+[ADR 0036](adr/0036-claim-bound-replay-execution-authority.en.md), and
+[ADR 0044](adr/0044-target-signed-tls-session-binding.en.md).

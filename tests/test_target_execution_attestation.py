@@ -38,7 +38,9 @@ from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionTLSBinding,
     TargetExecutionTLSBindingV2,
+    TargetExecutionTLSBindingV3,
     TargetExecutionTransportBinding,
+    TargetExecutionVerificationSummary,
     canonical_target_json,
     derive_target_execution_challenge,
     parse_target_attestation_registry_bundle,
@@ -375,6 +377,40 @@ def test_target_trust_registry_v2_requires_exact_https_leaf_spki_pins() -> None:
         )
 
 
+def test_target_trust_registry_v4_requires_https_session_binding() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    anchor, _attestor = _authority(now)
+    entry = TargetAttestationTrustRegistryEntry(
+        target="https://ai.example.test/v1/chat",
+        trust_anchor=anchor,
+        tls_leaf_spki_sha256="c" * 64,
+        tls_session_binding="tls-unique-sha256",
+    )
+    registry = TargetAttestationTrustRegistry(
+        api_version="pajin.replay.target-attestation-trust-registry/v4",
+        registry_id="pajin-targets-2026-07-session-bound",
+        entries=[entry],
+    )
+
+    assert registry.resolve_entry(entry.target).tls_session_binding == (
+        "tls-unique-sha256"
+    )
+    with pytest.raises(ValueError, match="v1-v3 cannot carry a TLS session binding"):
+        TargetAttestationTrustRegistry(
+            api_version="pajin.replay.target-attestation-trust-registry/v3",
+            registry_id="pajin-targets-invalid-session-binding",
+            entries=[entry],
+        )
+    with pytest.raises(ValueError, match="v4 requires HTTPS TLS session binding"):
+        TargetAttestationTrustRegistry(
+            api_version="pajin.replay.target-attestation-trust-registry/v4",
+            registry_id="pajin-targets-missing-session-binding",
+            entries=[
+                entry.model_copy(update={"tls_session_binding": None}),
+            ],
+        )
+
+
 def test_signed_registry_bundle_limits_rotation_and_verifies_distribution_signature() -> None:
     now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
     distribution_anchor, bundle = _signed_registry_bundle(now)
@@ -415,6 +451,39 @@ def test_signed_registry_bundle_limits_rotation_and_verifies_distribution_signat
             trust_anchor=distribution_anchor,
             now=now,
         )
+
+
+def test_signed_registry_bundle_accepts_session_bound_registry_v4() -> None:
+    now = datetime(2026, 7, 24, 1, 2, 3, tzinfo=UTC)
+    target_anchor, _target_attestor = _authority(now)
+    distribution_anchor, signer = _registry_distribution_authority(now)
+    registry = TargetAttestationTrustRegistry(
+        api_version="pajin.replay.target-attestation-trust-registry/v4",
+        registry_id="pajin-targets-session-bound",
+        entries=[
+            TargetAttestationTrustRegistryEntry(
+                target="https://ai.example.test/v1/chat",
+                trust_anchor=target_anchor,
+                tls_leaf_spki_sha256="c" * 64,
+                tls_session_binding="tls-unique-sha256",
+            )
+        ],
+    )
+
+    bundle = signer.sign(
+        registry=registry,
+        sequence=1,
+        previous_bundle_sha256=None,
+        issued_at=now,
+        not_before=now,
+        expires_at=now + timedelta(days=1),
+    )
+
+    assert verify_target_attestation_registry_bundle(
+        bundle,
+        trust_anchor=distribution_anchor,
+        now=now + timedelta(minutes=1),
+    ) == "registry-key-2026-01"
 
 
 def test_signed_registry_bundle_rejects_unbounded_or_unsigned_v3_rotation() -> None:
@@ -683,12 +752,25 @@ def test_control_plane_rejects_tls_pin_mismatch_and_v1_binding_downgrade() -> No
         **binding_fields,
         tls_peer_leaf_spki_sha256="f" * 64,
     )
+    session_bound = TargetExecutionTLSBindingV3(
+        **binding_fields,
+        tls_peer_leaf_spki_sha256="f" * 64,
+        tls_version="TLSv1.2",
+        tls_session_binding="tls-unique-sha256",
+        tls_session_binding_sha256="0" * 64,
+    )
     legacy = TargetExecutionTLSBinding(**binding_fields)
     assert isinstance(
         TypeAdapter(TargetExecutionTransportBinding).validate_python(
             pinned.model_dump(mode="json")
         ),
         TargetExecutionTLSBindingV2,
+    )
+    assert isinstance(
+        TypeAdapter(TargetExecutionTransportBinding).validate_python(
+            session_bound.model_dump(mode="json")
+        ),
+        TargetExecutionTLSBindingV3,
     )
 
     arguments = {
@@ -720,6 +802,48 @@ def test_control_plane_rejects_tls_pin_mismatch_and_v1_binding_downgrade() -> No
         **arguments,
         expected_tls_leaf_spki_sha256="f" * 64,
     )
+    assert _target_transport_binding_matches(
+        session_bound,
+        **arguments,
+        expected_tls_leaf_spki_sha256="f" * 64,
+        expected_tls_session_binding="tls-unique-sha256",
+        receipt_tls_session_binding_sha256="0" * 64,
+    )
+    assert not _target_transport_binding_matches(
+        pinned,
+        **arguments,
+        expected_tls_leaf_spki_sha256="f" * 64,
+        expected_tls_session_binding="tls-unique-sha256",
+        receipt_tls_session_binding_sha256="0" * 64,
+    )
+    assert not _target_transport_binding_matches(
+        session_bound,
+        **arguments,
+        expected_tls_leaf_spki_sha256="f" * 64,
+        expected_tls_session_binding="tls-unique-sha256",
+        receipt_tls_session_binding_sha256="1" * 64,
+    )
+
+    summary = TargetExecutionVerificationSummary(
+        trust_anchor_digest="a" * 64,
+        trust_registry_id="pajin-targets-session-bound",
+        trust_registry_digest="b" * 64,
+        proof_set_digest="c" * 64,
+        receipt_count=1,
+        receipt_digests=["d" * 64],
+        key_ids=["target-key-2026-01"],
+        tls_peer_leaf_spki_sha256_digests=["f" * 64],
+        tls_session_binding="tls-unique-sha256",
+        tls_session_binding_sha256_digests=["0" * 64],
+    )
+    assert summary.tls_session_binding_sha256_digests == ["0" * 64]
+    with pytest.raises(ValueError, match="must be present together"):
+        TargetExecutionVerificationSummary.model_validate(
+            {
+                **summary.model_dump(mode="json"),
+                "tls_session_binding": None,
+            }
+        )
 
 
 def test_control_plane_loads_only_target_public_trust_anchor(

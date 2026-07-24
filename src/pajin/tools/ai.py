@@ -15,8 +15,10 @@ from pajin.target_attestation import (
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
     TargetExecutionReceipt,
+    TargetExecutionReceiptStatementV2,
     TargetExecutionTLSBinding,
     TargetExecutionTLSBindingV2,
+    TargetExecutionTLSBindingV3,
     TargetExecutionTransportBinding,
 )
 from pajin.tools.base import (
@@ -194,6 +196,21 @@ class AIChatProbeTurnRecord(StrictModel):
         pattern=r"^[a-f0-9]{64}$",
         exclude_if=lambda value: value is None,
     )
+    tls_session_binding_sha256: str | None = Field(
+        default=None,
+        alias="tlsSessionBindingSha256",
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="after")
+    def require_tls_endpoint_for_session_binding(self) -> AIChatProbeTurnRecord:
+        if (
+            self.tls_session_binding_sha256 is not None
+            and self.tls_peer_leaf_spki_sha256 is None
+        ):
+            raise ValueError("TLS session binding requires a peer leaf SPKI observation")
+        return self
 
 
 class AIChatProbeCheckRecord(StrictModel):
@@ -660,7 +677,7 @@ def _target_execution_tls_binding(
     target_receipt: TargetExecutionReceipt,
     request_digest: str,
     full_response_digest: str,
-) -> TargetExecutionTLSBinding | TargetExecutionTLSBindingV2:
+) -> TargetExecutionTLSBinding | TargetExecutionTLSBindingV2 | TargetExecutionTLSBindingV3:
     expected_authority = https_connect_authority(request.target)
     if (
         transport_receipt.sequence != index
@@ -673,6 +690,11 @@ def _target_execution_tls_binding(
     if typed_turn.tls_peer_leaf_spki_sha256 != raw_tls_peer_leaf_spki_sha256:
         raise ValueError(
             "typed HTTPS peer leaf SPKI digest differs from the raw Worker observation"
+        )
+    raw_tls_session_binding_sha256 = raw_turn.get("tlsSessionBindingSha256")
+    if typed_turn.tls_session_binding_sha256 != raw_tls_session_binding_sha256:
+        raise ValueError(
+            "typed HTTPS session binding digest differs from the raw Worker observation"
         )
     binding_fields: dict[str, object] = {
         "replay_request_id": request.request_id,
@@ -688,6 +710,26 @@ def _target_execution_tls_binding(
         "transcript_request_json_sha256": request_digest,
         "transcript_response_json_sha256": full_response_digest,
     }
+    statement = target_receipt.statement
+    if isinstance(statement, TargetExecutionReceiptStatementV2):
+        if (
+            raw_tls_peer_leaf_spki_sha256 is None
+            or raw_tls_session_binding_sha256 is None
+            or raw_tls_session_binding_sha256
+            != statement.tls_session_binding_sha256
+        ):
+            raise ValueError(
+                "Target-signed TLS session binding differs from the Worker observation"
+            )
+        return TargetExecutionTLSBindingV3.model_validate(
+            {
+                **binding_fields,
+                "tls_peer_leaf_spki_sha256": raw_tls_peer_leaf_spki_sha256,
+                "tls_version": statement.tls_version,
+                "tls_session_binding": statement.tls_session_binding,
+                "tls_session_binding_sha256": raw_tls_session_binding_sha256,
+            }
+        )
     if raw_tls_peer_leaf_spki_sha256 is None:
         return TargetExecutionTLSBinding.model_validate(binding_fields)
     return TargetExecutionTLSBindingV2.model_validate(

@@ -20,6 +20,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 MAX_REQUEST_BYTES = 65_536
 TARGET_RECEIPT_SIGNATURE_DOMAIN = b"pajin.replay.target-execution-receipt/v1\0"
 TARGET_CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
+TARGET_TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
+TARGET_TLS_SESSION_BINDING = "tls-unique-sha256"
 TARGET_CHALLENGE_FIELDS = {
     "api_version",
     "challenge_id",
@@ -112,10 +114,25 @@ def _target_signer_from_env() -> tuple[str, Ed25519PrivateKey, str, str, str] | 
     )
 
 
+def _target_tls_session_binding(connection: object) -> str | None:
+    mode = os.environ.get("PAJIN_TARGET_TLS_SESSION_BINDING")
+    if mode is None:
+        return None
+    if mode != TARGET_TLS_SESSION_BINDING:
+        raise ValueError("target TLS session binding mode is unsupported")
+    if not isinstance(connection, ssl.SSLSocket) or connection.version() != "TLSv1.2":
+        raise ValueError("target TLS session binding requires a TLS 1.2 connection")
+    binding = connection.get_channel_binding("tls-unique")
+    if not isinstance(binding, bytes) or not 1 <= len(binding) <= 1_024:
+        raise ValueError("target TLS session binding is unavailable or exceeds its byte limit")
+    return sha256(TARGET_TLS_UNIQUE_BINDING_DOMAIN + binding).hexdigest()
+
+
 def _target_attested_response(
     request_payload: dict[str, Any],
     response_payload: dict[str, Any],
     *,
+    tls_session_binding_sha256: str | None = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     metadata = request_payload.get("metadata")
@@ -159,8 +176,16 @@ def _target_attested_response(
 
     key_id, private_key, trust_domain, issuer, target_profile = signer
     statement = {
-        "api_version": "pajin.replay.target-execution-statement/v1",
-        "predicate_type": "pajin.replay.target-observed-http-exchange/v1",
+        "api_version": (
+            "pajin.replay.target-execution-statement/v2"
+            if tls_session_binding_sha256 is not None
+            else "pajin.replay.target-execution-statement/v1"
+        ),
+        "predicate_type": (
+            "pajin.replay.target-observed-http-exchange/v2"
+            if tls_session_binding_sha256 is not None
+            else "pajin.replay.target-observed-http-exchange/v1"
+        ),
         "trust_domain": trust_domain,
         "issuer": issuer,
         "target_profile": target_profile,
@@ -179,6 +204,15 @@ def _target_attested_response(
         "request_json_sha256": sha256(_canonical_json(request_payload)).hexdigest(),
         "response_payload_sha256": sha256(_canonical_json(response_payload)).hexdigest(),
         "status": 200,
+        **(
+            {
+                "tls_version": "TLSv1.2",
+                "tls_session_binding": TARGET_TLS_SESSION_BINDING,
+                "tls_session_binding_sha256": tls_session_binding_sha256,
+            }
+            if tls_session_binding_sha256 is not None
+            else {}
+        ),
         "issued_at": observed_at.isoformat().replace("+00:00", "Z"),
     }
     canonical_statement = _canonical_json(statement)
@@ -576,7 +610,13 @@ class Handler(BaseHTTPRequestHandler):
             response_payload = respond(payload, profile=profile)
             self._json(
                 HTTPStatus.OK,
-                _target_attested_response(payload, response_payload),
+                _target_attested_response(
+                    payload,
+                    response_payload,
+                    tls_session_binding_sha256=_target_tls_session_binding(
+                        self.connection
+                    ),
+                ),
             )
         except (json.JSONDecodeError, TypeError, ValueError):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid request"})
@@ -761,16 +801,37 @@ def main() -> None:
     server = ThreadingHTTPServer(("0.0.0.0", 8080), Handler)
     certificate = os.environ.get("PAJIN_TARGET_TLS_CERTIFICATE")
     private_key = os.environ.get("PAJIN_TARGET_TLS_PRIVATE_KEY")
+    tls_session_binding = os.environ.get("PAJIN_TARGET_TLS_SESSION_BINDING")
     if (certificate is None) != (private_key is None):
         raise RuntimeError("Target TLS certificate and private key must be configured together")
+    if tls_session_binding is not None and tls_session_binding != TARGET_TLS_SESSION_BINDING:
+        raise RuntimeError("Target TLS session binding mode is unsupported")
+    if tls_session_binding is not None and certificate is None:
+        raise RuntimeError("Target TLS session binding requires TLS certificate configuration")
     transport = "http"
     if certificate is not None and private_key is not None:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2
+        if tls_session_binding is not None:
+            context.maximum_version = ssl.TLSVersion.TLSv1_2
         context.load_cert_chain(certificate, private_key)
         server.socket = context.wrap_socket(server.socket, server_side=True)
         transport = "https"
-    print(json.dumps({"event": "ready", "port": 8080, "transport": transport}), flush=True)
+    print(
+        json.dumps(
+            {
+                "event": "ready",
+                "port": 8080,
+                "transport": transport,
+                **(
+                    {"tlsSessionBinding": tls_session_binding}
+                    if tls_session_binding is not None
+                    else {}
+                ),
+            }
+        ),
+        flush=True,
+    )
     server.serve_forever()
 
 
