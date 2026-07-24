@@ -60,8 +60,9 @@ CAS after every item is verified; a retry after response loss returns the same c
 - Local seals, the PostgreSQL append-only ledger, and managed Artifacts provide content, lineage,
   and restart recovery, not cryptographic attestation of execution by another organization or
   off-host system.
-- The next priority is portable/off-host attestation: public-key receipt signatures, key rotation
-  and revocation, a verifier bundle, and an external trust anchor.
+- [ADR 0038](0038-portable-claim-receipt-attestation.en.md) implements this follow-up for Control
+  Plane receipts with public-key signatures, key rotation and revocation, a verifier bundle, and
+  an external trust anchor. Independent executor/target execution attestation remains follow-up.
 
 ## Verification Requirements
 

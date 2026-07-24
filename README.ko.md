@@ -23,8 +23,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 exact M03·M06·A04 validity·impact·severity Claim별 fresh-session Replay 권위, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 validation Control, Claim replay projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을, schema v12는 confirmed baseline과 부모 Retest Artifact를 결박한 `kisa-retest.json`을 발행하며, schema v13은 append-only exact Claim binding과 KISA M03·M06·A04용 opt-in v3 Claim별 공개 projection을 추가합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, portable/off-host replay attestation과 multi-host/object-store Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 batch/item/ticket/finalization/projection 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 CAS-fenced multi-item projection을, schema v12는 confirmed baseline과 부모 Retest Artifact를 결박한 `kisa-retest.json`을 발행하며, schema v13은 append-only exact Claim binding과 KISA M03·M06·A04용 opt-in v3 Claim별 공개 projection을 추가합니다. 추가 opt-in은 active·retired·revoked key lifecycle과 명시적 외부 trust anchor 검증을 가진 Ed25519 Claim receipt verifier bundle을 봉인합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, 독립 executor·target attestation과 multi-host/object-store Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
@@ -911,6 +911,10 @@ $env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
 $env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
 $env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+# portable_attestation batch에서만 세 값을 모두 함께 설정합니다.
+$env:PAJIN_CP_REPLAY_ATTESTATION_KEY_ID='<active-key-id>'
+$env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-seed>'
+$env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -935,14 +939,31 @@ Operator credential은 다음 공개 Replay admission API를 사용할 수 있�
   `planned` 상태로 파생합니다. Confirmation에서만 명시적 `claim_projection: true`를 사용하면
   exact KISA M03·M06·A04의 validity·impact·severity item을 각각 파생하고 v3 Claim별 projection
   authority와 `claim-replays.json`을 발행합니다. 부모 Retest locator와 함께 사용할 수 없습니다.
+  `portable_attestation: true`를 추가하면 `pajin.kisa-claim-attestation:v3` 정책을 선택하고 전체
+  Claim receipt authority에 대한 Ed25519 bundle을 봉인합니다. 세 attestation 설정이 모두 있고
+  서로 일치하지 않으면 fail closed합니다.
 
 `GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
-`/tickets/{ticket_id}/finalization` 및 `/batches/{batch_id}/projection` 조회는 Operator, Approver,
+`/tickets/{ticket_id}/finalization`, `/batches/{batch_id}/projection`,
+`/batches/{batch_id}/attestation` 및 `/v1/replay/attestation/trust-anchor` 조회는 Operator, Approver,
 Auditor가 사용할 수 있습니다.
 응답에는 staging ID, repository storage key, lease token이 포함되지 않습니다. 이 공개 표면은 raw
 path/URL, caller-authored Candidate·contract·Capability·Tool request·verdict 또는 내부 Replay Job kind를
 받지 않습니다. 첫 시도 Job/ticket 발행은 계속 신뢰된 내부 service operation이며 공개 admission이
 암시적으로 Tool을 dispatch하지 않습니다.
+
+trust-anchor endpoint는 공개 material을 운반할 뿐 신뢰를 설정하지 않습니다. 별도 운영 채널로
+anchor를 export·pin한 뒤 내려받은 bundle을 다른 host에서 검증합니다.
+
+```powershell
+.venv\Scripts\pajin replay-attestation-verify .\bundle.json `
+  --trust-anchor .\pinned-trust-anchor.json
+```
+
+회전 시 이전 공개키는 `retired`, 새 key 하나만 `active`로 둡니다. `retired` key는 유효 기간 안의
+과거 bundle을 검증할 수 있고 `revoked` key는 항상 fail closed합니다. 이 proof는 선택한 Control
+Plane trust domain이 exact Claim receipts에 서명했다는 뜻이며, 별도 조직·Worker·target이
+실행하거나 attest했다는 뜻은 아닙니다.
 
 SQLite는 로컬 compatibility store이며 production multi-Worker queue가 아닙니다. SQLite 변경
 transaction은 즉시 writer reservation을 획득해 프로세스 간 claim 및 completion state machine을
@@ -1126,7 +1147,7 @@ proof입니다. Permit이 하나라도 생긴 뒤 실행이 실패하면 해당 
 retry는 모두 멱등이며 어느 경로도 Tool을 다시 dispatch하지 않습니다. 현재 executor는
 명시적인 M03, M06, A04 `ai.chat-probe` confirmation 계약만 지원하고 Secret Lease를 금지하며, 한
 host의 shared POSIX filesystem과 Docker daemon을 사용합니다. Generic Replay executor, negative
-retest Worker, multi-host 전송 protocol 또는 portable attestation이 아닙니다.
+retest Worker, multi-host 전송 protocol 또는 독립 executor·target attestation이 아닙니다.
 
 Compose lab은 고정 Tool Worker 및 egress-proxy image를 build하고 owner-only volume initializer,
 API, 일반 daemon, 전용 Replay daemon을 시작합니다. API와 Replay daemon은 모두 `10001:10001`로

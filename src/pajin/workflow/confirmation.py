@@ -7,7 +7,7 @@ The stable import surface remains here.  Pure reason-matrix evaluation lives in
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 
@@ -56,6 +56,7 @@ def apply_confirmed_gate(
     replay_run_paths: Sequence[Path],
     tickets: ReplayTicketFinalizationVerifier,
     decided_at: datetime | None = None,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> LoadedValidationSnapshot:
     """Apply or recover one cross-process serialized confirmation projection."""
 
@@ -66,6 +67,7 @@ def apply_confirmed_gate(
         build_projection=_build_confirmation_projection,
         fsync_file=_fsync_file,
         decided_at=decided_at,
+        additional_artifacts=additional_artifacts,
     )
 
 

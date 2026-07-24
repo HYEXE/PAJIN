@@ -704,6 +704,7 @@ class CreateReplayBatchRequest(StrictModel):
     source: ArtifactLocator
     retest_source: ArtifactLocator | None = None
     claim_projection: bool = False
+    portable_attestation: bool = False
     idempotency_key: str = Field(min_length=8, max_length=200)
 
     @model_validator(mode="after")
@@ -712,6 +713,8 @@ class CreateReplayBatchRequest(StrictModel):
             raise ValueError("baseline and parent Retest Artifacts must be distinct")
         if self.retest_source is not None and self.claim_projection:
             raise ValueError("Claim projection is not supported for remediation Retest batches")
+        if self.portable_attestation and not self.claim_projection:
+            raise ValueError("portable attestation requires a Claim projection")
         return self
 
 
@@ -1201,10 +1204,7 @@ class ReplayExecutionClaimView(ReplayClaimView):
             or context.scenario.tool_id != binding.tool_id
             or context.scenario.method.upper() != compilation.spec.method
             or context.tool_spec.tool_id != binding.tool_id
-            or (
-                self.batch.purpose is ReplayPurpose.CONFIRMATION
-                and retest_context is not None
-            )
+            or (self.batch.purpose is ReplayPurpose.CONFIRMATION and retest_context is not None)
             or (
                 self.batch.purpose is ReplayPurpose.REMEDIATION_RETEST
                 and (
@@ -1434,14 +1434,10 @@ class ReplayClaimProjectionInputAuthority(StrictModel):
         ):
             values = [getattr(item, attribute) for item in self.items]
             if len(values) != len(set(values)):
-                raise ValueError(
-                    f"Replay Claim projection {attribute} values must be unique"
-                )
+                raise ValueError(f"Replay Claim projection {attribute} values must be unique")
         claim_ids = [item.claim.claim_id for item in self.items]
         claim_digests = [item.claim.claim_digest for item in self.items]
-        if len(claim_ids) != len(set(claim_ids)) or len(claim_digests) != len(
-            set(claim_digests)
-        ):
+        if len(claim_ids) != len(set(claim_ids)) or len(claim_digests) != len(set(claim_digests)):
             raise ValueError("Replay Claim projection must bind unique Atomic Claims")
 
         grouped: dict[str, list[ReplayClaimProjectionItemAuthority]] = {}
@@ -1449,14 +1445,10 @@ class ReplayClaimProjectionInputAuthority(StrictModel):
             grouped.setdefault(item.candidate_id, []).append(item)
         for candidate_items in grouped.values():
             if {item.claim.claim_type for item in candidate_items} != set(AtomicClaimType):
-                raise ValueError(
-                    "Replay Claim projection must cover every Candidate Atomic Claim"
-                )
+                raise ValueError("Replay Claim projection must cover every Candidate Atomic Claim")
             if len({item.candidate_digest for item in candidate_items}) != 1:
                 raise ValueError("Replay Claim projection changed its Candidate digest")
-            if len(
-                {item.claim.candidate_claim_digest for item in candidate_items}
-            ) != 1:
+            if len({item.claim.candidate_claim_digest for item in candidate_items}) != 1:
                 raise ValueError("Replay Claim projection changed its Candidate Claim digest")
         return self
 

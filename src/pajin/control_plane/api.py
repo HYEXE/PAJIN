@@ -26,6 +26,12 @@ from pajin.control_plane.api_routes import (
     register_control_plane_routes,
 )
 from pajin.control_plane.artifacts import ManagedArtifactRepository
+from pajin.control_plane.attestation import (
+    ReplayAttestationTrustAnchor,
+    ReplayAttestor,
+    parse_replay_attestation_trust_anchor,
+    private_key_bytes_from_base64url,
+)
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.errors import (
     ControlPlaneError,
@@ -52,6 +58,9 @@ from pajin.control_plane.service import ControlPlaneService
 from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
+_REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"
+_REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
+_REPLAY_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR"
 _REPLAY_EXECUTOR_PROFILE_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")
 _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_BYTES = 64 * 1024
@@ -395,6 +404,9 @@ class ControlPlaneSettings:
     artifact_staging_root: Path | None = None
     artifact_repository_root: Path | None = None
     replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
+    replay_attestation_key_id: str | None = None
+    replay_attestation_private_key: bytes | None = field(default=None, repr=False)
+    replay_attestation_trust_anchor: ReplayAttestationTrustAnchor | None = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -422,6 +434,25 @@ class ControlPlaneSettings:
             self.replay_executor_profiles,
             credentials=credentials,
         )
+        attestation_values = (
+            self.replay_attestation_key_id,
+            self.replay_attestation_private_key,
+            self.replay_attestation_trust_anchor,
+        )
+        if any(value is not None for value in attestation_values):
+            if not all(value is not None for value in attestation_values):
+                raise ValueError(
+                    "Replay attestation key ID, private key, and trust anchor "
+                    "must be configured together"
+                )
+            assert self.replay_attestation_key_id is not None
+            assert self.replay_attestation_private_key is not None
+            assert self.replay_attestation_trust_anchor is not None
+            ReplayAttestor.from_private_key_bytes(
+                active_key_id=self.replay_attestation_key_id,
+                private_key=self.replay_attestation_private_key,
+                trust_anchor=self.replay_attestation_trust_anchor,
+            )
         object.__setattr__(self, "credentials", MappingProxyType(credentials))
         object.__setattr__(self, "replay_executor_profiles", normalized)
 
@@ -433,6 +464,9 @@ class ControlPlaneSettings:
         replay_worker_token = os.environ.get("PAJIN_CP_REPLAY_WORKER_TOKEN")
         replay_worker_subject_setting = os.environ.get("PAJIN_CP_REPLAY_WORKER_SUBJECT")
         raw_replay_profiles = os.environ.get(_REPLAY_EXECUTOR_PROFILES_ENV)
+        replay_attestation_key_id = os.environ.get(_REPLAY_ATTESTATION_KEY_ID_ENV)
+        replay_attestation_private_key = os.environ.get(_REPLAY_ATTESTATION_PRIVATE_KEY_ENV)
+        replay_attestation_trust_anchor = os.environ.get(_REPLAY_ATTESTATION_TRUST_ANCHOR_ENV)
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
@@ -462,6 +496,34 @@ class ControlPlaneSettings:
             raise RuntimeError(
                 "PAJIN_CP_REPLAY_EXECUTOR_PROFILES requires a distinct PAJIN_CP_REPLAY_WORKER_TOKEN"
             )
+        replay_attestation_values = (
+            replay_attestation_key_id,
+            replay_attestation_private_key,
+            replay_attestation_trust_anchor,
+        )
+        if any(value is not None for value in replay_attestation_values) and not all(
+            value is not None for value in replay_attestation_values
+        ):
+            raise RuntimeError(
+                "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID, "
+                "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY, and "
+                "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR must be configured together"
+            )
+        parsed_attestation_private_key: bytes | None = None
+        parsed_attestation_trust_anchor: ReplayAttestationTrustAnchor | None = None
+        if replay_attestation_private_key is not None:
+            assert replay_attestation_trust_anchor is not None
+            try:
+                parsed_attestation_private_key = private_key_bytes_from_base64url(
+                    replay_attestation_private_key
+                )
+                parsed_attestation_trust_anchor = parse_replay_attestation_trust_anchor(
+                    replay_attestation_trust_anchor.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    "Replay attestation configuration is not a valid Ed25519 key and trust anchor"
+                ) from exc
         if replay_worker_token is not None and replay_worker_token in {
             operator_token,
             approver_token,
@@ -540,6 +602,9 @@ class ControlPlaneSettings:
                 Path(artifact_repository_root) if artifact_repository_root is not None else None
             ),
             replay_executor_profiles=replay_executor_profiles,
+            replay_attestation_key_id=replay_attestation_key_id,
+            replay_attestation_private_key=parsed_attestation_private_key,
+            replay_attestation_trust_anchor=parsed_attestation_trust_anchor,
             request_body_timeout_seconds=float(
                 os.environ.get(
                     "PAJIN_CP_REQUEST_BODY_TIMEOUT_SECONDS",
@@ -587,11 +652,21 @@ def _build_application_context(
         keys=settings.checkpoint_keys,
     )
     artifact_repository = _build_artifact_repository(settings)
+    replay_attestor: ReplayAttestor | None = None
+    if settings.replay_attestation_key_id is not None:
+        assert settings.replay_attestation_private_key is not None
+        assert settings.replay_attestation_trust_anchor is not None
+        replay_attestor = ReplayAttestor.from_private_key_bytes(
+            active_key_id=settings.replay_attestation_key_id,
+            private_key=settings.replay_attestation_private_key,
+            trust_anchor=settings.replay_attestation_trust_anchor,
+        )
     service = ControlPlaneService(
         repository,
         signer,
         replay_executor_profiles=settings.replay_executor_profiles,
         artifact_repository=artifact_repository,
+        replay_attestor=replay_attestor,
     )
     return _ControlPlaneApplicationContext(
         settings=settings,

@@ -33,6 +33,15 @@ import pajin.control_plane.replay_authority as replay_authority_module
 import pajin.control_plane.service as control_plane_service_module
 from pajin.control_plane.api import ControlPlaneSettings, create_app
 from pajin.control_plane.artifacts import ManagedArtifactRepository
+from pajin.control_plane.attestation import (
+    PORTABLE_REPLAY_ATTESTATION_PATH,
+    ReplayAttestationKeyState,
+    ReplayAttestationTrustAnchor,
+    ReplayAttestationVerificationKey,
+    ReplayAttestor,
+    public_key_base64url,
+    verify_portable_replay_attestation,
+)
 from pajin.control_plane.client import (
     ControlPlaneLeaseLost,
     ControlPlaneLocalLeaseDeadlineExceeded,
@@ -67,6 +76,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+    KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
 )
 from pajin.control_plane.lease_deadline import MonotonicLeaseDeadline
@@ -394,6 +404,7 @@ def _service(
     path: Path,
     *,
     replay_executor_profiles: dict[str, frozenset[str]] | None = None,
+    replay_attestor: ReplayAttestor | None = None,
 ) -> tuple[ControlPlaneRepository, ControlPlaneService]:
     repository = ControlPlaneRepository(f"sqlite:///{path.as_posix()}")
     repository.initialize()
@@ -413,6 +424,28 @@ def _service(
             staging_root=staging_root,
             repository_root=artifact_root,
         ),
+        replay_attestor=replay_attestor,
+    )
+
+
+def _portable_replay_attestor() -> ReplayAttestor:
+    private_key = bytes(range(32))
+    anchor = ReplayAttestationTrustAnchor(
+        trust_domain="tests.example/pajin",
+        issuer="test-control-plane",
+        keys=[
+            ReplayAttestationVerificationKey(
+                key_id="test-attestation-2026",
+                public_key_base64url=public_key_base64url(private_key),
+                state=ReplayAttestationKeyState.ACTIVE,
+                not_before=datetime(2020, 1, 1, tzinfo=UTC),
+            )
+        ],
+    )
+    return ReplayAttestor.from_private_key_bytes(
+        active_key_id="test-attestation-2026",
+        private_key=private_key,
+        trust_anchor=anchor,
     )
 
 
@@ -856,10 +889,12 @@ def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_rout
         paths = app.openapi()["paths"]
         assert {path for path in paths if path.startswith("/v1/replay")} == {
             "/v1/replay/source-artifacts",
-                "/v1/replay/batches",
-                "/v1/replay/batches/{batch_id}",
-                "/v1/replay/batches/{batch_id}/projection",
-                "/v1/replay/items/{item_id}",
+            "/v1/replay/batches",
+            "/v1/replay/batches/{batch_id}",
+            "/v1/replay/batches/{batch_id}/attestation",
+            "/v1/replay/batches/{batch_id}/projection",
+            "/v1/replay/attestation/trust-anchor",
+            "/v1/replay/items/{item_id}",
             "/v1/replay/tickets/{ticket_id}",
             "/v1/replay/tickets/{ticket_id}/finalization",
         }
@@ -4836,11 +4871,14 @@ def test_multi_item_finalization_publishes_one_versioned_projection(
 
 
 @pytest.mark.skipif(os.name != "posix", reason="durable Artifact repository requires POSIX fsync")
+@pytest.mark.parametrize("portable_attestation", [False, True], ids=["v2", "v3-portable"])
 def test_claim_specific_confirmation_publishes_exact_public_projection(
     tmp_path: Path,
+    portable_attestation: bool,
 ) -> None:
     database_path = tmp_path / "claim-specific-projection.db"
-    repository, service = _service(database_path)
+    attestor = _portable_replay_attestor() if portable_attestation else None
+    repository, service = _service(database_path, replay_attestor=attestor)
     actor = "replay-worker-a"
     try:
         source = build_kisa_control_plane_source(
@@ -4860,11 +4898,16 @@ def test_claim_specific_confirmation_publishes_exact_public_projection(
                     repository_version=admitted.repository_version,
                 ),
                 claim_projection=True,
-                idempotency_key="claim-specific-projection",
+                portable_attestation=portable_attestation,
+                idempotency_key=f"claim-specific-projection-{portable_attestation}",
             ),
             actor="trusted-replay-admission",
         )
-        assert planned.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+        assert planned.policy_version == (
+            KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+            if portable_attestation
+            else KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+        )
 
         issued = service.issue_replay_batch(
             planned.batch_id,
@@ -4915,38 +4958,46 @@ def test_claim_specific_confirmation_publishes_exact_public_projection(
             "pajin.control-plane.replay-projection-inputs/v3"
         )
         assert len(projection.input_authority.items) == len(AtomicClaimType)
-        assert {
-            item.claim.claim_type for item in projection.input_authority.items
-        } == set(AtomicClaimType)
-        assert {
-            item.candidate_id for item in projection.input_authority.items
-        } == {candidate_id}
-        assert len(
-            {item.finalization_id for item in projection.input_authority.items}
-        ) == len(AtomicClaimType)
-        assert len(
-            {item.replay_run_id for item in projection.input_authority.items}
-        ) == len(AtomicClaimType)
+        assert {item.claim.claim_type for item in projection.input_authority.items} == set(
+            AtomicClaimType
+        )
+        assert {item.candidate_id for item in projection.input_authority.items} == {candidate_id}
+        assert len({item.finalization_id for item in projection.input_authority.items}) == len(
+            AtomicClaimType
+        )
+        assert len({item.replay_run_id for item in projection.input_authority.items}) == len(
+            AtomicClaimType
+        )
 
         managed = ManagedArtifactRepository(
             staging_root=staging_root,
             repository_root=artifact_root,
         )
         projection_snapshot = managed.resolve(projection.artifact)
-        assert (
-            projection_snapshot.path / VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH
-        ).is_file()
+        assert (projection_snapshot.path / VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH).is_file()
         validation = load_validation_snapshot(projection_snapshot.path)
         assert validation.claim_replays is not None
         assert len(validation.claim_replays.assessments) == len(AtomicClaimType)
         assert {
-            assessment.claim_type
-            for assessment in validation.claim_replays.assessments
+            assessment.claim_type for assessment in validation.claim_replays.assessments
         } == set(AtomicClaimType)
-        assert validation.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [
-            candidate_id
-        ]
+        assert validation.public_states[PublicFindingState.PARTIALLY_CONFIRMED] == [candidate_id]
         assert validation.public_states[PublicFindingState.CONFIRMED] == []
+        attestation = service.get_replay_attestation(planned.batch_id)
+        if portable_attestation:
+            assert attestation is not None
+            assert attestor is not None
+            assert (projection_snapshot.path / PORTABLE_REPLAY_ATTESTATION_PATH).is_file()
+            verified_attestation = verify_portable_replay_attestation(
+                attestation,
+                trust_anchor=attestor.trust_anchor,
+            )
+            assert verified_attestation.batch_id == planned.batch_id
+            assert verified_attestation.receipt_count == len(AtomicClaimType)
+            assert service.get_replay_attestation_trust_anchor() == attestor.trust_anchor
+        else:
+            assert attestation is None
+            assert not (projection_snapshot.path / PORTABLE_REPLAY_ATTESTATION_PATH).exists()
         repeated = service.finalize_replay_job(
             claims[-1].job.job_id,
             ReplayFinalizeRequest(
@@ -4964,18 +5015,12 @@ def test_claim_specific_confirmation_publishes_exact_public_projection(
         with repository.read_transaction() as session:
             bindings = list(
                 session.scalars(
-                    select(ReplayClaimBindingRecord).order_by(
-                        ReplayClaimBindingRecord.claim_id
-                    )
+                    select(ReplayClaimBindingRecord).order_by(ReplayClaimBindingRecord.claim_id)
                 ).all()
             )
             assert len(bindings) == len(AtomicClaimType)
-            assert {binding.source_candidate_id for binding in bindings} == {
-                candidate_id
-            }
-            assert len({binding.claim_id for binding in bindings}) == len(
-                AtomicClaimType
-            )
+            assert {binding.source_candidate_id for binding in bindings} == {candidate_id}
+            assert len({binding.claim_id for binding in bindings}) == len(AtomicClaimType)
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 1
     finally:
         repository.close()
@@ -5083,10 +5128,7 @@ def test_negative_retest_projection_is_server_derived_from_two_sealed_sources(
         assert assessment.summary.new_findings == 0
         assert assessment.summary.regression is RegressionStatus.PASS
         assert assessment.finding_results[0].status is RetestFindingStatus.INCONCLUSIVE
-        assert (
-            assessment.finding_results[0].oracle_verdict
-            is ReplayOracleVerdict.INCONCLUSIVE
-        )
+        assert assessment.finding_results[0].oracle_verdict is ReplayOracleVerdict.INCONCLUSIVE
         assert assessment.finding_results[0].all_replay_attempts_succeeded
 
         repeated = service.finalize_replay_job(
@@ -5173,9 +5215,7 @@ def test_projection_cas_drift_prevents_publication_until_exact_retry(
             assert session.scalar(select(func.count()).select_from(ReplayProjectionRecord)) == 0
             states = set(
                 session.scalars(
-                    select(ReplayItemRecord.state).where(
-                        ReplayItemRecord.batch_id == batch_id
-                    )
+                    select(ReplayItemRecord.state).where(ReplayItemRecord.batch_id == batch_id)
                 ).all()
             )
             assert states == {ReplayItemState.VERIFIED.value}

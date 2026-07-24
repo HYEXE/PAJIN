@@ -16,11 +16,11 @@ import stat
 import sys
 import tempfile
 import time
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from hashlib import sha256
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Protocol
 
 if sys.platform != "win32":
@@ -110,10 +110,12 @@ def apply_confirmed_gate(
     build_projection: _ProjectionBuilder,
     fsync_file: _FsyncFile,
     decided_at: datetime | None = None,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> LoadedValidationSnapshot:
     """Apply or recover one cross-process serialized confirmation projection."""
 
     root = source_run_path.resolve()
+    validated_additional_artifacts = _validated_additional_artifacts(additional_artifacts)
     with _confirmation_projection_lock(root):
         if _recover_confirmation_projection(
             root,
@@ -121,6 +123,7 @@ def apply_confirmed_gate(
             tickets=tickets,
             build_projection=build_projection,
             fsync_file=fsync_file,
+            additional_artifacts=validated_additional_artifacts,
         ):
             return load_validation_snapshot(root)
         return _apply_confirmed_gate_locked(
@@ -130,6 +133,7 @@ def apply_confirmed_gate(
             build_projection=build_projection,
             fsync_file=fsync_file,
             decided_at=decided_at,
+            additional_artifacts=validated_additional_artifacts,
         )
 
 
@@ -141,6 +145,7 @@ def _apply_confirmed_gate_locked(
     build_projection: _ProjectionBuilder,
     fsync_file: _FsyncFile,
     decided_at: datetime | None = None,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> LoadedValidationSnapshot:
     """Reload verified receipts, derive one gate, then append a sealed v1 projection."""
 
@@ -190,6 +195,7 @@ def _apply_confirmed_gate_locked(
         projection=projection,
         verified_results=verified_results,
         fsync_file=fsync_file,
+        additional_artifacts=additional_artifacts,
     )
     return load_validation_snapshot(root)
 
@@ -382,6 +388,7 @@ def _commit_confirmation_projection(
     projection: _ConfirmationProjection,
     verified_results: list[VerifiedReplayResult],
     fsync_file: _FsyncFile,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> None:
     """Atomically install all files, then append their event and seal as one extension."""
 
@@ -389,6 +396,7 @@ def _commit_confirmation_projection(
     if destination.exists():
         raise ValueError("source Run already contains confirmation projection artifacts")
     artifacts = _projection_artifact_bytes(projection)
+    artifacts.update(_validated_additional_artifacts(additional_artifacts))
     transaction = _transaction_payload(
         source_run_id=source_run_id,
         source_root_digest=source_root_digest,
@@ -451,6 +459,7 @@ def _recover_confirmation_projection(
     tickets: ReplayTicketFinalizationVerifier,
     build_projection: _ProjectionBuilder,
     fsync_file: _FsyncFile,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> bool:
     """Finish an interrupted projection only after independently re-deriving every byte."""
 
@@ -465,6 +474,7 @@ def _recover_confirmation_projection(
                 run_id=verification.run_id,
                 replay_run_paths=replay_run_paths,
                 tickets=tickets,
+                additional_artifacts=additional_artifacts,
             )
             return True
         if (root / "validation" / "v1alpha1").exists():
@@ -488,6 +498,7 @@ def _recover_confirmation_projection(
         VERSIONED_VALIDATION_REPORT_PATH,
         _PROJECTION_TRANSACTION_PATH,
     }
+    expected_paths.update(_validated_additional_artifacts(additional_artifacts))
     _require_exact_projection_extension(
         state=state,
         source_run_id=source_run_id,
@@ -515,6 +526,7 @@ def _recover_confirmation_projection(
         evaluated_at=evaluated_at,
     )
     artifacts = _projection_artifact_bytes(projection)
+    artifacts.update(_validated_additional_artifacts(additional_artifacts))
     expected_transaction = _transaction_payload(
         source_run_id=source_run_id,
         source_root_digest=source_root_digest,
@@ -563,6 +575,7 @@ def _require_completed_projection_inputs(
     run_id: str,
     replay_run_paths: Sequence[Path],
     tickets: ReplayTicketFinalizationVerifier,
+    additional_artifacts: Mapping[str, bytes] | None = None,
 ) -> None:
     """Keep successful retries exactly bound to the replay receipts used originally."""
 
@@ -573,12 +586,68 @@ def _require_completed_projection_inputs(
         load_verified_replay_result(path, tickets=tickets) for path in resolved_replay_paths
     ]
     _, transaction = _read_projection_transaction(root)
+    expected_additional_artifacts = _validated_additional_artifacts(additional_artifacts)
+    transaction_artifacts = transaction.get("artifacts")
     if (
         transaction.get("apiVersion") != _PROJECTION_TRANSACTION_VERSION
         or transaction.get("sourceRunId") != run_id
         or transaction.get("replayRuns") != _replay_run_material(verified_results)
+        or not isinstance(transaction_artifacts, dict)
+        or any(
+            transaction_artifacts.get(path) != sha256(content).hexdigest()
+            for path, content in expected_additional_artifacts.items()
+        )
     ):
         raise ValueError("completed confirmation projection was created from different inputs")
+    for relative_path, expected_content in expected_additional_artifacts.items():
+        try:
+            observed_content = read_bounded_regular_bytes(
+                root / relative_path,
+                max_bytes=_MAX_SEALED_ARTIFACT_BYTES,
+                label="confirmation projection additional artifact",
+            )
+        except (OSError, ValueError) as exc:
+            raise ValueError(
+                "completed confirmation projection additional artifact is missing"
+            ) from exc
+        if observed_content != expected_content:
+            raise ValueError("completed confirmation projection additional artifact differs")
+
+
+def _validated_additional_artifacts(
+    artifacts: Mapping[str, bytes] | None,
+) -> dict[str, bytes]:
+    """Confine caller-provided sealed bytes to unused validation paths."""
+
+    if artifacts is None:
+        return {}
+    reserved = {
+        VERSIONED_VALIDATION_CLAIM_REPLAYS_PATH,
+        VERSIONED_VALIDATION_DECISIONS_PATH,
+        VERSIONED_VALIDATION_FINDINGS_PATH,
+        VERSIONED_VALIDATION_INDEX_PATH,
+        VERSIONED_VALIDATION_REPORT_PATH,
+        _PROJECTION_TRANSACTION_PATH,
+    }
+    validated: dict[str, bytes] = {}
+    for raw_path, content in artifacts.items():
+        if not isinstance(raw_path, str) or "\\" in raw_path:
+            raise ValueError("confirmation additional Artifact path must use portable separators")
+        path = PurePosixPath(raw_path)
+        if (
+            path.is_absolute()
+            or len(path.parts) < 3
+            or path.parts[:2] != ("validation", "v1alpha1")
+            or any(part in {"", ".", ".."} for part in path.parts)
+            or path.as_posix() != raw_path
+            or raw_path in reserved
+            or raw_path in validated
+        ):
+            raise ValueError("confirmation additional Artifact path is outside its namespace")
+        if not isinstance(content, bytes) or len(content) > _MAX_SEALED_ARTIFACT_BYTES:
+            raise ValueError("confirmation additional Artifact content is not bounded bytes")
+        validated[raw_path] = content
+    return dict(sorted(validated.items()))
 
 
 def _read_projection_transaction(root: Path) -> tuple[bytes, dict[str, Any]]:

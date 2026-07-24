@@ -20,6 +20,7 @@ from pajin.control_plane.kisa_derivation import (
     KISA_CONFIRMATION_MAX_ATTEMPTS,
     KISA_CONFIRMATION_POLICY_VERSION,
     KISA_CONFIRMATION_REQUIRED_ATTEMPTS,
+    KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
     derive_kisa_confirmation_batch,
     derive_kisa_retest_batch,
@@ -83,8 +84,18 @@ def test_derives_stable_canonical_compilations_from_only_the_sealed_source(
         assert not hasattr(item, "ticket")
 
 
+@pytest.mark.parametrize(
+    ("portable_attestation", "expected_policy"),
+    [
+        (False, KISA_CLAIM_CONFIRMATION_POLICY_VERSION),
+        (True, KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION),
+    ],
+    ids=["v2", "v3-portable"],
+)
 def test_derives_one_exact_replay_per_atomic_claim_when_projection_is_requested(
     tmp_path: Path,
+    portable_attestation: bool,
+    expected_policy: str,
 ) -> None:
     source = build_kisa_control_plane_source(tmp_path / "claim-source", scenario_count=1)
     replay_ids = tuple(f"run_{index:032x}" for index in range(1, 4))
@@ -96,9 +107,10 @@ def test_derives_one_exact_replay_per_atomic_claim_when_projection_is_requested(
         replay_run_id_factory=lambda: next(ids),
         clock=lambda: source.compilation_time,
         claim_projection=True,
+        portable_attestation=portable_attestation,
     )
 
-    assert derived.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+    assert derived.policy_version == expected_policy
     assert derived.used_tool_calls == 2
     assert derived.required_tool_calls == 6
     assert derived.max_tool_calls == 24
@@ -155,10 +167,7 @@ def test_derives_negative_retest_from_exact_baseline_and_parent_sources(
     context = item.compilation.validation_packet.retest_context
     assert context is not None
     assert context.retest_run_id == sources.retest.artifact_ref.run_id
-    assert (
-        context.retest_source_root_digest
-        == sources.retest.artifact_ref.integrity_root_digest
-    )
+    assert context.retest_source_root_digest == sources.retest.artifact_ref.integrity_root_digest
 
 
 @pytest.mark.parametrize("malformation", ["duplicate-key", "nan", "deep-nesting"])

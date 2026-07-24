@@ -62,7 +62,8 @@ invariant를 만족할 때만 생성된다. terminal 실패·취소·시간초�
 - negative retest는 보수적으로 기존 Candidate/validity 경계를 유지한다.
 - Control Plane Claim별 public projection은
   [ADR 0037](0037-control-plane-claim-specific-public-projection.md)에서 구현됐다.
-  portable/off-host attestation은 여전히 Claim별 실행 권위를 외부 trust anchor까지 전달하지 않는다.
+  [ADR 0038](0038-portable-claim-receipt-attestation.md)은 Control Plane receipt 권위를 외부
+  trust anchor까지 전달한다. 독립 executor·target의 실행 attestation은 여전히 별도 범위다.
 - 로컬 seal과 receipt는 계보와 내용 일관성을 증명하지만 별도 조직·인프라의 실행을 암호학적으로
   attest하지 않는다.
 

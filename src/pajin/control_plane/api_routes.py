@@ -14,6 +14,10 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Query, Response, status
 from sqlalchemy import text
 
+from pajin.control_plane.attestation import (
+    PortableReplayAttestationBundle,
+    ReplayAttestationTrustAnchor,
+)
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
@@ -345,6 +349,25 @@ def register_public_replay_routes(
         _principal: Annotated[Principal, Depends(require_reader)],
     ) -> ReplayProjectionView | None:
         return service.get_replay_projection(batch_id)
+
+    @app.get(
+        "/v1/replay/batches/{batch_id}/attestation",
+        response_model=PortableReplayAttestationBundle | None,
+    )
+    def get_replay_attestation(
+        batch_id: str,
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> PortableReplayAttestationBundle | None:
+        return service.get_replay_attestation(batch_id)
+
+    @app.get(
+        "/v1/replay/attestation/trust-anchor",
+        response_model=ReplayAttestationTrustAnchor | None,
+    )
+    def get_replay_attestation_trust_anchor(
+        _principal: Annotated[Principal, Depends(require_reader)],
+    ) -> ReplayAttestationTrustAnchor | None:
+        return service.get_replay_attestation_trust_anchor()
 
     @app.get("/v1/replay/items/{item_id}", response_model=ReplayItemView)
     def get_replay_item(

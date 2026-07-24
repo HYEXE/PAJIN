@@ -42,7 +42,9 @@ from pajin.control_plane.database import (
 from pajin.control_plane.errors import ResourceNotFound, StateConflict
 from pajin.control_plane.kisa_derivation import (
     KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS,
     KISA_CONFIRMATION_POLICY_VERSION,
+    KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     KISA_RETEST_POLICY_VERSION,
     DerivedKISAReplayBatch,
     DerivedKISAReplayItem,
@@ -113,6 +115,7 @@ class ReplayBatchDeriver(Protocol):
         retest_root: Path | None = None,
         retest_artifact_ref: ArtifactRef | None = None,
         claim_projection: bool = False,
+        portable_attestation: bool = False,
     ) -> DerivedKISAReplayBatch: ...
 
 
@@ -240,6 +243,7 @@ class ReplayIssuanceService:
                     retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                     retest_artifact_ref=retest_source,
                     claim_projection=request.claim_projection,
+                    portable_attestation=request.portable_attestation,
                 )
             except (OSError, ValueError) as exc:
                 raise StateConflict("managed source is not eligible for KISA Replay") from exc
@@ -339,9 +343,13 @@ class ReplayIssuanceService:
                     KISA_RETEST_POLICY_VERSION
                     if retest_source is not None
                     else (
-                        KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                        if request.claim_projection
-                        else KISA_CONFIRMATION_POLICY_VERSION
+                        KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+                        if request.portable_attestation
+                        else (
+                            KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                            if request.claim_projection
+                            else KISA_CONFIRMATION_POLICY_VERSION
+                        )
                     )
                 )
                 if (
@@ -595,8 +603,9 @@ class ReplayIssuanceService:
                 else None
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
-            claim_projection = (
-                batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+            claim_projection = batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS
+            portable_attestation = (
+                batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
             )
 
         snapshot = self._resolve_managed_artifact(
@@ -620,6 +629,7 @@ class ReplayIssuanceService:
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
                 claim_projection=claim_projection,
+                portable_attestation=portable_attestation,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict("managed source is not eligible for KISA Replay issuance") from exc
@@ -985,8 +995,9 @@ class ReplayIssuanceService:
                 else None
             )
             retest_storage_key = self._artifact_storage_key(session, retest_source)
-            claim_projection = (
-                batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+            claim_projection = batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS
+            portable_attestation = (
+                batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
             )
 
         snapshot = self._resolve_managed_artifact(
@@ -1010,6 +1021,7 @@ class ReplayIssuanceService:
                 retest_root=(retest_snapshot.path if retest_snapshot is not None else None),
                 retest_artifact_ref=retest_source,
                 claim_projection=claim_projection,
+                portable_attestation=portable_attestation,
             )
         except (OSError, ValueError) as exc:
             raise StateConflict(
@@ -1110,9 +1122,7 @@ class ReplayIssuanceService:
     ) -> list[_ReplayRetryAttempt]:
         derived_by_candidate = {
             (
-                admitted.claim.claim_id
-                if admitted.claim is not None
-                else admitted.candidate_id
+                admitted.claim.claim_id if admitted.claim is not None else admitted.candidate_id
             ): admitted
             for admitted in retry.derived.items
         }
@@ -1664,9 +1674,13 @@ class ReplayIssuanceService:
             KISA_RETEST_POLICY_VERSION
             if request.retest_source is not None
             else (
-                KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-                if request.claim_projection
-                else KISA_CONFIRMATION_POLICY_VERSION
+                KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+                if request.portable_attestation
+                else (
+                    KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                    if request.claim_projection
+                    else KISA_CONFIRMATION_POLICY_VERSION
+                )
             )
         )
         batch_matches = (
@@ -1684,8 +1698,7 @@ class ReplayIssuanceService:
                     request.retest_source is not None
                     and retest_source is not None
                     and request.retest_source.artifact_id == retest_source.artifact_id
-                    and request.retest_source.repository_version
-                    == retest_source.repository_version
+                    and request.retest_source.repository_version == retest_source.repository_version
                 )
             )
         )
@@ -1935,9 +1948,7 @@ class ReplayIssuanceService:
 
         budget_account = session.scalar(
             select(ReplayBudgetAccountRecord)
-            .where(
-                ReplayBudgetAccountRecord.source_run_id == capacity_source.producer_run_id
-            )
+            .where(ReplayBudgetAccountRecord.source_run_id == capacity_source.producer_run_id)
             .with_for_update()
         )
         if budget_account is None:

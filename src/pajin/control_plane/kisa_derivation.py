@@ -90,6 +90,13 @@ from pajin.workflow.validation_artifacts import (
 
 KISA_CONFIRMATION_POLICY_VERSION = "pajin.kisa-confirmation:v1"
 KISA_CLAIM_CONFIRMATION_POLICY_VERSION = "pajin.kisa-claim-confirmation:v2"
+KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION = "pajin.kisa-claim-attestation:v3"
+KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS = frozenset(
+    {
+        KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
+        KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
+    }
+)
 KISA_RETEST_POLICY_VERSION = "pajin.kisa-negative-retest:v1"
 KISA_CONFIRMATION_REPETITIONS = 2
 KISA_CONFIRMATION_REQUIRED_SUCCESSES = 2
@@ -262,11 +269,14 @@ def derive_kisa_confirmation_batch(
     source_root: Path,
     artifact_ref: ArtifactRef,
     claim_projection: bool = False,
+    portable_attestation: bool = False,
     replay_run_id_factory: Callable[[], str] = lambda: f"run_{uuid4().hex}",
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> DerivedKISAReplayBatch:
     """Compile all exact eligible KISA Candidates without issuing execution tickets."""
 
+    if portable_attestation and not claim_projection:
+        raise ValueError("portable attestation requires Claim-specific Replay derivation")
     root = source_root.resolve()
     snapshot = _load_kisa_source_snapshot(root)
     verification = snapshot.verification
@@ -405,8 +415,7 @@ def derive_kisa_confirmation_batch(
             )
             canonical_compilation = canonical_replay_compilation_bytes(compilation)
             required_request_units = (
-                probe_tool.network_request_cost(compilation.original_request)
-                * contract.repetitions
+                probe_tool.network_request_cost(compilation.original_request) * contract.repetitions
             )
             items.append(
                 DerivedKISAReplayItem(
@@ -444,9 +453,13 @@ def derive_kisa_confirmation_batch(
         mode=CampaignMode.AI_REDTEAM,
         purpose=ReplayPurpose.CONFIRMATION,
         policy_version=(
-            KISA_CLAIM_CONFIRMATION_POLICY_VERSION
-            if claim_projection
-            else KISA_CONFIRMATION_POLICY_VERSION
+            KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+            if portable_attestation
+            else (
+                KISA_CLAIM_CONFIRMATION_POLICY_VERSION
+                if claim_projection
+                else KISA_CONFIRMATION_POLICY_VERSION
+            )
         ),
         compiled_at=compiled_at,
         used_tool_calls=budget.tool_calls,
@@ -568,7 +581,8 @@ def derive_kisa_retest_batch(
         replay_run_id = replay_run_id_factory()
         if (
             not _REPLAY_RUN_ID.fullmatch(replay_run_id)
-            or replay_run_id in {
+            or replay_run_id
+            in {
                 baseline_verification.run_id,
                 parent_verification.run_id,
             }

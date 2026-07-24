@@ -84,6 +84,11 @@ from pajin.cli_support.tool_loop_contracts import (
     tool_loop_approval_checks,
     tool_loop_checks,
 )
+from pajin.control_plane.attestation import (
+    load_portable_replay_attestation_file,
+    load_replay_attestation_trust_anchor,
+    verify_portable_replay_attestation,
+)
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
@@ -592,8 +597,7 @@ def run_provider_backed_agents(
             review_credential = os.environ.get(review_secret_env)
             if not review_credential:
                 raise ValueError(
-                    "review provider credential environment variable is unset: "
-                    f"{review_secret_env}"
+                    f"review provider credential environment variable is unset: {review_secret_env}"
                 )
             review_registration = ProviderRegistration.model_validate(
                 {
@@ -642,11 +646,7 @@ def run_provider_backed_agents(
         checks = _provider_agent_checks(
             outcome,
             credential=credential,
-            additional_credentials=(
-                (review_credential,)
-                if review_credential is not None
-                else ()
-            ),
+            additional_credentials=((review_credential,) if review_credential is not None else ()),
         )
     _print_check_table("PAJIN Provider-Backed Multi-Agent Runtime", checks)
     _print_cli_field("Run", outcome.run_id)
@@ -999,10 +999,7 @@ def run_kisa_ai_redteam(
             if confirmation_results:
                 confirmation = apply_confirmed_gate(
                     source_run_path=outcome.run_path,
-                    replay_run_paths=[
-                        result.run_path
-                        for result in confirmation_results.values()
-                    ],
+                    replay_run_paths=[result.run_path for result in confirmation_results.values()],
                     tickets=replay_batch.tickets,
                 )
                 outcome = outcome.model_copy(
@@ -1694,6 +1691,37 @@ def verify_replay_ticket(
     table.add_row("Verification", "VALID")
     console.print(table)
     _print_cli_field("Root digest", verified.receipt_seal_root_digest)
+
+
+@app.command("replay-attestation-verify")
+def verify_replay_attestation(
+    bundle: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    trust_anchor: Annotated[
+        Path,
+        typer.Option("--trust-anchor", exists=True, readable=True, dir_okay=False),
+    ],
+) -> None:
+    """Verify a portable Claim receipt bundle against explicit out-of-band trust."""
+
+    with _cli_error_boundary("Replay attestation verification failed", exit_code=1):
+        parsed_bundle = load_portable_replay_attestation_file(bundle)
+        parsed_anchor = load_replay_attestation_trust_anchor(trust_anchor)
+        verified = verify_portable_replay_attestation(
+            parsed_bundle,
+            trust_anchor=parsed_anchor,
+        )
+
+    table = Table(title="PAJIN Portable Replay Attestation")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Batch", _plain_cli_value(verified.batch_id))
+    table.add_row("Signing key", _plain_cli_value(verified.key_id))
+    table.add_row("Key state", verified.key_state.value)
+    table.add_row("Claim receipts", str(verified.receipt_count))
+    table.add_row("Verification", "VALID")
+    console.print(table)
+    _print_cli_field("Input authority digest", verified.input_authority_digest)
+    _print_cli_field("Trust anchor digest", verified.trust_anchor_digest)
 
 
 @app.command("worker-check")

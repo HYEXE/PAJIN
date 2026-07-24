@@ -23,6 +23,14 @@ from pajin.control_plane.artifacts import (
     ManagedArtifactRepository,
     ManagedArtifactSnapshot,
 )
+from pajin.control_plane.attestation import (
+    PORTABLE_REPLAY_ATTESTATION_PATH,
+    PortableReplayAttestationBundle,
+    ReplayAttestationTrustAnchor,
+    ReplayAttestor,
+    load_portable_replay_attestation,
+    portable_replay_attestation_bytes,
+)
 from pajin.control_plane.claim_service import (
     _MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES as _MAX_REPLAY_RATE_LIMIT_SNAPSHOT_BYTES,
 )
@@ -69,7 +77,8 @@ from pajin.control_plane.errors import (
     StateConflict,
 )
 from pajin.control_plane.kisa_derivation import (
-    KISA_CLAIM_CONFIRMATION_POLICY_VERSION,
+    KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS,
+    KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION,
     DerivedKISAReplayBatch,
     derive_kisa_confirmation_batch,
     derive_kisa_retest_batch,
@@ -186,6 +195,8 @@ _REPLAY_PROJECTION_ACTOR = "control-plane:replay-projection"
 _ACTIVE_REPLAY_TICKET_STATES = frozenset(
     {ReplayTicketState.ISSUED.value, ReplayTicketState.CLAIMED.value}
 )
+
+
 def _aware(value: datetime) -> datetime:
     return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
 
@@ -210,6 +221,7 @@ class _ReplayProjectionSnapshot:
     output_storage_keys: tuple[str, ...]
     retest_contexts: Mapping[str, ReplayRetestContext]
     decided_at: datetime
+    portable_attestation: bool
 
 
 class _ReplayProjectionTicketVerifier:
@@ -277,6 +289,7 @@ class ControlPlaneService:
         *,
         replay_executor_profiles: Mapping[str, frozenset[str]] | None = None,
         artifact_repository: ManagedArtifactRepository | None = None,
+        replay_attestor: ReplayAttestor | None = None,
     ) -> None:
         self.repository = repository
         self.signer = signer
@@ -285,6 +298,7 @@ class ControlPlaneService:
             for subject, profiles in (replay_executor_profiles or {}).items()
         }
         self._artifact_repository = artifact_repository
+        self._replay_attestor = replay_attestor
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -328,6 +342,7 @@ class ControlPlaneService:
             retest_root: Path | None = None,
             retest_artifact_ref: ArtifactRef | None = None,
             claim_projection: bool = False,
+            portable_attestation: bool = False,
         ) -> DerivedKISAReplayBatch:
             if retest_root is not None and retest_artifact_ref is not None:
                 if claim_projection:
@@ -344,6 +359,7 @@ class ControlPlaneService:
                 source_root=source_root,
                 artifact_ref=artifact_ref,
                 claim_projection=claim_projection,
+                portable_attestation=portable_attestation,
             )
 
         def load_run_artifacts(
@@ -707,6 +723,8 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ReplayBatchView:
+        if request.portable_attestation and self._replay_attestor is None:
+            raise StateConflict("portable Replay attestation signer is not configured")
         return self._replay_issuance.create_replay_batch(request, actor=actor)
 
     def issue_replay_batch(
@@ -739,6 +757,59 @@ class ControlPlaneService:
 
     def get_replay_projection(self, batch_id: str) -> ReplayProjectionView | None:
         return self._replay_reads.get_projection(batch_id)
+
+    def get_replay_attestation(
+        self,
+        batch_id: str,
+    ) -> PortableReplayAttestationBundle | None:
+        """Return the sealed bundle only for the explicit portable-attestation policy."""
+
+        projection = self.get_replay_projection(batch_id)
+        if projection is None:
+            return None
+        if projection.batch.policy_version != KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION:
+            return None
+        if not isinstance(
+            projection.input_authority,
+            ReplayClaimProjectionInputAuthority,
+        ):
+            raise StateConflict("portable Replay attestation has no Claim input authority")
+        artifact_repository = self._require_artifact_repository()
+        with self.repository.read_transaction() as session:
+            artifact = self._records.artifact(
+                session,
+                ArtifactLocator(
+                    artifact_id=projection.artifact.artifact_id,
+                    repository_version=projection.artifact.repository_version,
+                ),
+            )
+            storage_key = artifact.storage_key
+        snapshot = self._resolve_managed_artifact(
+            artifact_repository,
+            projection.artifact,
+            expected_storage_key=storage_key,
+        )
+        try:
+            bundle = load_portable_replay_attestation(snapshot.path)
+        except (OSError, ValueError) as exc:
+            raise StateConflict("portable Replay attestation Artifact is invalid") from exc
+        if (
+            bundle.statement.batch_id != batch_id
+            or bundle.statement.input_authority != projection.input_authority
+            or bundle.statement.input_authority_digest != projection.input_authority_digest
+            or bundle.statement.policy_version != projection.batch.policy_version
+        ):
+            raise StateConflict("portable Replay attestation publication binding is inconsistent")
+        return bundle
+
+    def get_replay_attestation_trust_anchor(
+        self,
+    ) -> ReplayAttestationTrustAnchor | None:
+        """Expose public key material for transport, not as an implicit verifier trust source."""
+
+        if self._replay_attestor is None:
+            return None
+        return self._replay_attestor.trust_anchor
 
     def get_run(self, run_id: str) -> RunView:
         with self.repository.read_transaction() as session:
@@ -1799,6 +1870,7 @@ class ControlPlaneService:
             )
             tickets = _ReplayProjectionTicketVerifier(snapshot.authority)
             replay_run_paths = [output.path for output in output_snapshots]
+            additional_artifacts = self._portable_replay_attestation_artifacts(snapshot)
             if isinstance(snapshot.authority, ReplayRetestProjectionInputAuthority):
                 replay_batch = KISAReplayBatchOutcome.from_verified_retest_results(
                     source_snapshot.path,
@@ -1818,6 +1890,7 @@ class ControlPlaneService:
                     replay_run_paths=replay_run_paths,
                     tickets=tickets,
                     decided_at=snapshot.decided_at,
+                    additional_artifacts=additional_artifacts,
                 )
             projection_snapshot = artifact_repository.import_run(
                 staging_id=projection_staging_id,
@@ -1886,10 +1959,10 @@ class ControlPlaneService:
                 or current_snapshot.authority != snapshot.authority
                 or current_snapshot.authority_digest != snapshot.authority_digest
                 or current_snapshot.source_storage_key != snapshot.source_storage_key
-                or current_snapshot.retest_source_storage_key
-                != snapshot.retest_source_storage_key
+                or current_snapshot.retest_source_storage_key != snapshot.retest_source_storage_key
                 or current_snapshot.output_storage_keys != snapshot.output_storage_keys
                 or current_snapshot.retest_contexts != snapshot.retest_contexts
+                or current_snapshot.portable_attestation != snapshot.portable_attestation
             ):
                 raise StateConflict("Replay projection authority changed before publication")
 
@@ -1981,6 +2054,30 @@ class ControlPlaneService:
                 artifact=artifact,
                 retest_artifact=locked_retest_artifact,
             )
+
+    def _portable_replay_attestation_artifacts(
+        self,
+        snapshot: _ReplayProjectionSnapshot,
+    ) -> dict[str, bytes]:
+        """Derive deterministic sealed bytes only for the explicit v3 policy."""
+
+        if not snapshot.portable_attestation:
+            return {}
+        if not isinstance(
+            snapshot.authority,
+            ReplayClaimProjectionInputAuthority,
+        ):
+            raise StateConflict("portable Replay attestation requires Claim projection authority")
+        if self._replay_attestor is None:
+            raise StateConflict("portable Replay attestation signer is not configured")
+        bundle = self._replay_attestor.attest(
+            snapshot.authority,
+            authority_digest=snapshot.authority_digest,
+            issued_at=snapshot.decided_at,
+        )
+        return {
+            PORTABLE_REPLAY_ATTESTATION_PATH.as_posix(): (portable_replay_attestation_bytes(bundle))
+        }
 
     @staticmethod
     def _replay_projection_compilation_context(
@@ -2127,15 +2224,14 @@ class ControlPlaneService:
                 result_digest=finalization.result_digest,
                 finalized_at=_aware(finalization.finalized_at),
             )
-            if batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION:
+            if batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS:
                 claim = compilation.spec.binding.claim
                 if (
                     claim is None
                     or claim_authority is None
                     or claim_authority.item_id != item.item_id
                     or claim_authority.batch_id != batch.batch_id
-                    or claim_authority.source_candidate_id
-                    != compilation.spec.binding.candidate_id
+                    or claim_authority.source_candidate_id != compilation.spec.binding.candidate_id
                     or claim_authority.claim_id != item.candidate_id
                     or claim_authority.claim_id != claim.claim_id
                     or claim_authority.claim_binding != claim.model_dump(mode="json")
@@ -2163,7 +2259,7 @@ class ControlPlaneService:
                 | ReplayRetestProjectionInputAuthority
                 | ReplayClaimProjectionInputAuthority
             )
-            if batch.policy_version == KISA_CLAIM_CONFIRMATION_POLICY_VERSION:
+            if batch.policy_version in KISA_CLAIM_CONFIRMATION_POLICY_VERSIONS:
                 if authority_items or len(claim_authority_items) != len(items):
                     raise StateConflict("Replay Claim projection authority is incomplete")
                 authority = ReplayClaimProjectionInputAuthority(
@@ -2203,6 +2299,9 @@ class ControlPlaneService:
             output_storage_keys=tuple(output_storage_keys),
             retest_contexts=retest_contexts,
             decided_at=_aware(batch.updated_at),
+            portable_attestation=(
+                batch.policy_version == KISA_PORTABLE_CLAIM_ATTESTATION_POLICY_VERSION
+            ),
         )
 
     @staticmethod

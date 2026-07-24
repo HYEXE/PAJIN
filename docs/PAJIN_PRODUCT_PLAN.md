@@ -76,7 +76,7 @@ PAJIN의 경쟁력은 단순히 많은 공격 도구를 연결하는 데 있지 
 
 ### 1.1 현재 구현 기준선
 
-2026-07-23 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
+2026-07-24 기준 PAJIN은 **CLI 기반 정책 통제 멀티 에이전트 보안 검증 백엔드 MVP를 구축 중**이다.
 Phase 0-1은 완료되었고 Phase 2의 실행 코어, Replay 계약·Compiler·단일 사용 ticket·
 Restricted Reproducer와 exact KISA M03·M06·A04 fresh-session materializer·live transcript
 Oracle·runner coordinator, verified receipt 재로딩 공통 Gate와 append-only
@@ -150,8 +150,12 @@ append한다. Schema v11 multi-item projection publication은 전체 receipt를 
 projection을 발행한다. Schema v12는 confirmed baseline과 부모 Retest Artifact를 1:1 결박하고 부모의
 budget/rate capacity, 음성 replay receipt와 정상 기능 회귀를 서버가 재검증한 `kisa-retest.json`
 projection을 발행한다. 독립 remediation attestation이 없으므로 방어 응답은 `fixed`가 아니라
-`inconclusive`다. Portable/off-host 서명 proof, 다른 Mode의 materializer·Oracle과 구조화 협업 메모리는
-후속 과제다. 2026-07-23 Agentic Discovery A1 계약 조각은 versioned
+`inconclusive`다. 2026-07-24 schema-v13과 명시적 `pajin.kisa-claim-attestation:v3` 정책은 exact
+Claim별 receipt authority를 Ed25519 bundle로 같은 projection transaction에 봉인하고 외부 trust
+anchor를 사용하는 off-host verifier를 제공한다. 이는 Control Plane이 해당 receipt 집합에
+서명했다는 증명이며 독립 executor·target 실행 증명은 아니다. 다른 Mode의 materializer·Oracle,
+독립 executor·target issuer, multi-host Artifact 전송과 구조화 협업 메모리는 후속 과제다.
+2026-07-23 Agentic Discovery A1 계약 조각은 versioned
 `SurfaceObservation`, `AttackSurface`, `AttackSurfaceSet`, canonical HTTP operation과
 schema-bound Tool interface locator, 도메인 분리 identity와 exact evidence lineage 검증을 추가했다.
 A2는 integrity-verified Campaign·Gateway evidence 전용 Trusted Surface Producer, exact
@@ -914,7 +918,7 @@ validity·선택적 impact Packet만으로 등급을 새로 도출한다. 결정
 독립 도출을 `corroborated`·`contested`·`inconclusive`로 비교하지만 항상 information-only이며
 Candidate·Finding·confirmation을 변경하지 않는다. 이 Provider/model 차이는 설정 계약일 뿐
 별도 조직·인프라를 암호학적으로 attest하지 않으며, calibration·다수 Reviewer/Human 합의와
-portable attestation은 후속 범위다.
+독립 Reviewer/Provider issuer attestation은 후속 범위다.
 
 [`ADR-0035`](adr/0035-claim-replay-public-state-projection.md)의 B2.4 첫 수직 조각은 기존
 Candidate 단위 Restricted Replay를 정확한 validity Atomic Claim에 결박한 별도
@@ -944,6 +948,17 @@ Run·finalization·output·receipt 계보를 함께 봉인하며, 세 Atomic Cla
 fail closed한다. 서버는 모든 Claim output을 재검증해 `claim-replays.json`과 공개 상태를
 발행하지만 validity만 confirmation을 구동하고 impact·severity는 계속 정보 전용이다. 기존 v1
 confirmation과 v2 negative Retest projection은 그대로 읽을 수 있다.
+
+[`ADR-0038`](adr/0038-portable-claim-receipt-attestation.md)의 B2.7 첫 수직 조각은 명시적
+`portable_attestation` opt-in에 `pajin.kisa-claim-attestation:v3` 정책을 부여한다. Control
+Plane은 projection input authority v3의 전체 Claim identity·output Artifact·receipt seal root를
+Ed25519 statement에 결박하고, bundle을 기존 confirmation transaction과 Run seal 안에 함께
+봉인한다. verifier는 bundle이 제공하는 key를 신뢰하지 않고 별도 전달된 issuer·trust
+domain·active/retired/revoked 공개키 trust anchor를 요구한다. `retired` key의 과거 서명은
+유효 기간 안에서 허용하고 `revoked` key는 항상 거부하며,
+`pajin replay-attestation-verify`가 서버 비밀 없이 같은 검증을 수행한다. 이는 Control Plane이
+Claim receipt 집합에 서명했다는 portable proof이며, 별도 조직의 executor·target 실행을
+증명하지 않으므로 `needs-review` 상한은 유지한다.
 
 이 단계들 자체는 Candidate admission과 원 증거 심사만 강화한다.
 [`ADR-0027`](adr/0027-independent-reproduction-confirmation-boundary.md)에 따라 Semantic
@@ -1310,8 +1325,9 @@ execution context, 발급 시 Campaign/KISA Scenario/canonical ToolSpec componen
 추가한다. Schema-v9 slice는 전용 `kisa-exact-v1` daemon, permit-before-dispatch 집행, opaque staging
 slot execute/seal, server-owned import·typed finalization과 one-item 공통 Gate를 제공하며 Compose는 일반
 Worker와 다른 credential로 이 daemon을 활성화한다. Opaque public source/batch admission, 역할 기반
-상태 조회 API와 permit 0개 fresh-identity retry 발행도 구현됐다. Multi-item versioned projection
-publication, negative Control Plane retest와 portable/off-host proof는 별도 완료 기준으로 남아 있다.
+상태 조회 API와 permit 0개 fresh-identity retry 발행도 구현됐다. Multi-item versioned projection,
+negative Control Plane retest, Claim별 public projection과 Ed25519 portable receipt proof가
+구현됐다. 독립 executor·target issuer와 multi-host 전송은 별도 완료 기준으로 남아 있다.
 
 ### 20.4 M6-05 hardened KISA retest Exit Gate
 
@@ -1456,11 +1472,11 @@ Accepted ADR은 최소한 다음을 결정한다.
 
 ## 21. 단계별 로드맵
 
-| 단계 | 상태 | 2026-07-23 기준 판단 |
+| 단계 | 상태 | 2026-07-24 기준 판단 |
 | --- | --- | --- |
 | Phase 0 | 완료 | 기획·스키마·위협 모델·ADR·합성 타깃 기준선 확보 |
 | Phase 1 | 완료 | CLI, Campaign, Tool Gateway, Docker Worker, 보고·증적 수직 실행 확보 |
-| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Provider Validator와 validity·impact·severity Atomic Claim/Decision, metadata-minimized Blind Evidence Review·결정론적 reconciliation, 선택형 별도 Provider/model Blind Review·독립 severity 도출, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Claim별 Replay 실행 권위·공개 부분 검증 상태, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API와 Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation·negative-retest projection 및 fresh-identity retry slice를 구현; 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning, portable/off-host attestation과 구조화 협업 메모리는 후속 |
+| Phase 2 | 진행 중 | 역할 분리, 동적 Specialist, Agentic Discovery A1 versioned Surface 계약·canonicalization, A2 Trusted Surface admission·append-only projection, A3 opt-in 단일 MCP Recon Wave, A4 deterministic Hypothesis Compiler·fresh-Capability Dynamic Specialist Wave와 A5 append-only Observation Graph·최대 2-wave bounded replanning 수직 조각, Candidate admission, Candidate-aware Provider Validator와 validity·impact·severity Atomic Claim/Decision, metadata-minimized Blind Evidence Review·결정론적 reconciliation, 선택형 별도 Provider/model Blind Review·독립 severity 도출, M03·M06·A04 등록형 fresh-capability Baseline·Negative Control·Counterfactual, Claim별 Replay 실행 권위·공개 부분 검증 상태, Replay 계약·Compiler·전용 Grant·Restricted Reproducer, 공통 Gate, exact KISA fresh-session Oracle/coordinator와 baseline-bound negative retest, 로컬 KISA durable SQLite ticket, 명시적 Local orchestration, 권한 감쇠·예산·취소·승인, opaque public admission/read API, Control Plane exact-KISA claim→permit→execute/seal→server import/finalize→schema-v13 Claim별 confirmation·negative-retest projection, fresh-identity retry와 Ed25519 portable Claim receipt verifier bundle을 구현; 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, 독립 executor·target attestation과 multi-host Artifact 전송, 검증 가능한 운영 Provider 다양성·severity calibration·다수 Reviewer/Human 합의, trusted new-Surface admission, ranking·정보가치, 병렬·3-wave 이상 replanning과 구조화 협업 메모리는 후속 |
 | Phase 3 | 진행 중 | 세 Mode Pack이 실행 가능하고 Linux repository quality CI가 구현됐으나 시나리오 범위와 Campaign·live infrastructure CI 연동은 제한적 |
 | Phase 4 | 초기 구현 | PostgreSQL Control Plane, 일반 Worker와 전용 exact-KISA Replay Worker daemon, 승인·재개·취소 Web Console 수직 흐름 구현 |
 
@@ -1507,6 +1523,9 @@ Accepted ADR은 최소한 다음을 결정한다.
   Claim binding 원장과 v3 projection authority로 exact KISA M03·M06·A04의 세 Claim을
   claim→permit→finalize→`claim-replays.json` 공개 projection까지 보존. 기존 v1/v2 경로와
   validity-only confirmation invariant 유지
+- B2.7 첫 수직 조각: `portable_attestation` opt-in, Ed25519 domain-separated statement,
+  sealed verifier bundle, active·retired·revoked key lifecycle과 별도 trust anchor를 통해 exact
+  Claim receipt authority를 off-host에서 검증. 독립 executor·target attestation은 후속
 - Kill Switch, 예산, 재시도, 체크포인트
 - 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Attempt·Oracle·Outcome 계약
 - 결정론적 Replay Compiler와 5분 이하·비위임·단일 Tool·Target Replay Capability Grant
@@ -1590,7 +1609,7 @@ Accepted ADR은 최소한 다음을 결정한다.
   봉인하고, 신규성 임계값을 넘는 exact 등록 transition에 한해 서로 다른 Compiler·rule의 두 번째
   fresh-Capability Wave를 한 번 실행. 최대 2 wave·1 replan, 동일 상태 반복 차단과 Campaign 공유
   Agent·Tool call·cost·time·rate limit을 runtime이 강제하며 기존 Planner에는 입력하지 않음
-- 남은 ADR 0029 범위: portable/off-host 서명 proof, KISA 외
+- 남은 ADR 0029 범위: 독립 executor·target issuer와 multi-host Artifact 전송, KISA 외
   Local·Control Plane 경로의 session-bearing driver·Oracle 연결, Campaign
   Facts·Agent Working Memory의 구조화된 영속 계층, trusted new-Surface admission, ranking·정보가치,
   병렬-safe grouping과 3개 이상 wave replanning
@@ -1664,7 +1683,7 @@ Accepted ADR은 최소한 다음을 결정한다.
 
 ## 24. 오픈 의사결정
 
-초기 질문 중 실행 경계와 기술 구조는 Accepted 상태인 ADR-0001부터 ADR-0037까지에서 확정했다.
+초기 질문 중 실행 경계와 기술 구조는 Accepted 상태인 ADR-0001부터 ADR-0038까지에서 확정했다.
 ADR-0029의 첫 M6-07B authority-state 조각, M6-07B-2A managed Artifact admission, M6-07B-2B 서버
 파생 exact KISA planned proof, M6-07B-2C schema-v5 durable reservation 및 fresh authority-bound 내부
 첫 시도 Job/ticket 발행, M6-07B-2D schema-v6 append-only 일회성 호출별 permit 원장과 내부 서비스 발급은
@@ -1674,8 +1693,8 @@ daemon, pre-dispatch permit, opaque staging 이중 봉인, server-owned import·
 공통 Gate도 구현됐고 Compose는 별도 Replay Worker credential로 daemon을 활성화한다. Opaque public
 source/batch admission, 역할 기반 상태 조회 API와 자동 fresh-identity retry 발행도 구현됐다. Schema-v11
 multi-item projection, schema-v12 dual-source negative Control Plane retest와 schema-v13
-opt-in exact Claim별 공개 projection도 구현됐으며
-portable/off-host proof가 남아 있어 M6-07B 전체는 미완료다.
+opt-in exact Claim별 공개 projection과 Ed25519 portable Claim receipt verifier bundle도 구현됐다.
+독립 executor·target issuer와 multi-host Artifact 전송이 남아 있어 M6-07B 전체는 미완료다.
 다음 항목은 Phase 3-4 진행 전에 추가 결정이 필요하다.
 
 1. 운영 Worker fleet의 배치·확장·backpressure와 at-least-once 외부 부작용의 멱등성 정책

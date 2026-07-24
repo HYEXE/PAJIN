@@ -56,8 +56,9 @@ append-only binding 원장 양쪽에서 일치해야 한다. Worker가 Candidate
   `partially-confirmed`일 수 있다.
 - local seal, PostgreSQL append-only 원장, managed Artifact는 내용·계보·재시작 복구를
   보장하지만 별도 조직이나 off-host 실행의 암호학적 attestation은 아니다.
-- 다음 우선순위는 receipt 공개키 서명, key rotation·revocation, verifier bundle과 외부
-  trust anchor를 포함하는 portable/off-host attestation이다.
+- 이 후속 범위의 Control Plane receipt 공개키 서명, key rotation·revocation, verifier bundle과
+  외부 trust anchor는 [ADR 0038](0038-portable-claim-receipt-attestation.md)에서 구현됐다.
+  독립 executor·target 실행 attestation은 계속 후속 범위다.
 
 ## 검증 요구 사항
 

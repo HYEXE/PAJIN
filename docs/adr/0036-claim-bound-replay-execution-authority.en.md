@@ -66,8 +66,10 @@ timeout, target unavailability, and Oracle indecision remain `inconclusive`, nev
   consensus, or Human agreement.
 - Negative retest conservatively retains the existing Candidate/validity boundary.
 - Control Plane Claim-specific public projection is implemented by
-  [ADR 0037](0037-control-plane-claim-specific-public-projection.en.md). Portable/off-host
-  attestation still does not carry that authority to an external trust anchor.
+  [ADR 0037](0037-control-plane-claim-specific-public-projection.en.md).
+  [ADR 0038](0038-portable-claim-receipt-attestation.en.md) carries Control Plane receipt
+  authority to an external trust anchor; independent executor/target execution attestation
+  remains separate scope.
 - Local seals and receipts prove lineage and content consistency, not cryptographically attested
   execution by a separate organization or infrastructure.
 

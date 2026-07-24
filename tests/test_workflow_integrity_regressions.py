@@ -49,6 +49,7 @@ from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.mock import MockAgentProbe
 from pajin.workflow import confirmation as confirmation_module
+from pajin.workflow import confirmation_projection as confirmation_projection_module
 from pajin.workflow.confirmation import (
     _render_confirmation_report,
     _semantic_supported,
@@ -78,6 +79,25 @@ class _BlockingPlanner(DeterministicAgentRuntime):
         except asyncio.CancelledError:
             self.cancelled = True
             raise
+
+
+@pytest.mark.parametrize(
+    "relative_path",
+    [
+        "validation/v1alpha1",
+        "validation/v1alpha1/./bundle.json",
+        "validation//v1alpha1/bundle.json",
+        "validation/v1alpha1/bundle.json/",
+        "validation/v1alpha1/../bundle.json",
+    ],
+)
+def test_confirmation_additional_artifacts_require_canonical_file_paths(
+    relative_path: str,
+) -> None:
+    with pytest.raises(ValueError, match="outside its namespace"):
+        confirmation_projection_module._validated_additional_artifacts(
+            {relative_path: b"sealed"}
+        )
         raise AssertionError("blocking planner unexpectedly resumed")
 
 

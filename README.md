@@ -21,8 +21,8 @@ The implementation baseline as of 2026-07-23 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, portable/off-host replay attestation and multi-host/object-store Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection for KISA M03/M06/A04. An additional opt-in seals an Ed25519 Claim-receipt verifier bundle with active/retired/revoked key lifecycle and explicit external trust-anchor verification. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, independent executor/target attestation and multi-host/object-store Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
@@ -223,7 +223,8 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   staging capability, attempt, and fence. Any permit, staged output, missing capability, authority
   mismatch, or exhausted attempt count fails closed; the same Job or ticket is never redispatched.
   Schema v11/v12 aggregate projection now covers both confirmation and exact dual-source negative
-  Control Plane retest; portable/off-host proof remains incomplete.
+  Control Plane retest; exact Claim receipts can optionally carry portable Ed25519 proof, while
+  independent executor/target attestation and multi-host transfer remain incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -935,6 +936,10 @@ $env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
 $env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
 $env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+# Optional, required together only for portable_attestation batches:
+$env:PAJIN_CP_REPLAY_ATTESTATION_KEY_ID='<active-key-id>'
+$env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-seed>'
+$env:PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR='<one-line-trust-anchor-json>'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 .venv\Scripts\pajin-control-plane
@@ -961,15 +966,32 @@ An Operator credential can use the public Replay admission surface:
   state. For confirmation only, explicit `claim_projection: true` derives separate validity,
   impact, and severity items for exact KISA M03/M06/A04 and publishes v3 Claim-specific projection
   authority plus `claim-replays.json`; it cannot be combined with a parent Retest locator.
+  Adding `portable_attestation: true` selects policy `pajin.kisa-claim-attestation:v3` and seals an
+  Ed25519 bundle over the complete Claim receipt authority. It fails closed unless all three
+  attestation settings are present and mutually consistent.
 
 Operator, Approver, and Auditor credentials can read
 `GET /v1/replay/batches/{batch_id}`, `/items/{item_id}`, `/tickets/{ticket_id}`,
-`/tickets/{ticket_id}/finalization`, and `/batches/{batch_id}/projection`. Responses omit staging
+`/tickets/{ticket_id}/finalization`, `/batches/{batch_id}/projection`,
+`/batches/{batch_id}/attestation`, and `/v1/replay/attestation/trust-anchor`. Responses omit staging
 IDs, repository storage keys, and lease
 tokens. This public surface never accepts a raw path or URL, caller-authored Candidate, contract,
 Capability, Tool request, verdict, or internal Replay Job kind. First-attempt Job/ticket issuance
 remains a trusted internal service operation, so public admission does not implicitly dispatch a
 Tool.
+
+The trust-anchor endpoint distributes public material but does not establish trust. Export and pin
+the anchor through a separate administrative channel, then verify a downloaded bundle off-host:
+
+```powershell
+.venv\Scripts\pajin replay-attestation-verify .\bundle.json `
+  --trust-anchor .\pinned-trust-anchor.json
+```
+
+Rotation marks the previous public key `retired` and adds exactly one new `active` key. A
+`retired` key can verify historical bundles within its validity window; `revoked` keys always fail
+closed. This proves that the selected Control Plane trust domain signed the exact Claim receipts,
+not that an independent organization, Worker, or target executed or attested them.
 
 SQLite is a local compatibility store, not a production multi-Worker queue. SQLite mutation
 transactions take an immediate writer reservation so claim and completion state machines remain
