@@ -104,7 +104,7 @@ This spike does not implement:
 
 - a durable RunStore or separate Graph Store adapter;
 - cross-process leader election, database transaction/CAS, or crash recovery;
-- Graph Projection, revision, immutable Snapshot, or snapshot-bound decisions;
+- durable Graph Projection/Snapshot storage or snapshot-bound decisions;
 - semantic duplicate folding, contradiction state transitions, or stale-decision handling;
 - live adapters from sealed Run, Scope, Capability Registry, or legacy A5 artifacts; or
 - Supervisor scheduling and B2.9 fact/snapshot/handoff projections.
@@ -116,8 +116,8 @@ adapter measurements and conformance tests exist.
 
 ## Next step
 
-GRAPH-003 adds the Projection, atomic revision, and immutable Snapshot rebuilt only from admitted
-events. It must bind each snapshot to Campaign, schema version, revision, Event Log head digest,
-node/edge projection digest, and creation reason. GRAPH-004 then exercises duplicate,
-contradiction, concurrent admission, partial-write recovery, and stale-decision races against the
-chosen transactional boundary.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.en.md) now implements the in-memory
+reference Projection, revision/head compare-and-set, and immutable Snapshot chain rebuilt from the
+complete admission/rejection Event Log. GRAPH-004 next exercises duplicate and contradiction
+semantics, concurrent admission/projection, partial-write recovery, and stale-decision races
+against the candidate durable transaction boundary.

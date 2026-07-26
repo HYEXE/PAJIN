@@ -17,14 +17,18 @@ Adaptive Supervisor는 Graph와 benchmark 계약이 준비될 때까지 의도�
 [ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.ko.md),
 [ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.ko.md)을 참조하십시오.
 
-검증된 구현 기준선은 계속 `main@a4d0582`입니다. 로컬 Architecture v2 작업에는
+로컬과 원격 `main`의 커밋 기준선은 `42dd0a0`입니다. Architecture v2 작업에는
 [BENCH-001 manifest·ground-truth·result·comparison 계약](docs/benchmark/BENCH-001-benchmark-contract.ko.md)까지
 포함됐습니다. [GRAPH-001의 6개 Node·8개 relation·3개 Proposal 계약](docs/graph/GRAPH-001-minimum-canonical-graph-model.ko.md)도
 로컬에 구현했습니다. [GRAPH-002 단일 Admission Authority와 append-only Event Log reference
 spike](docs/graph/GRAPH-002-single-admission-event-log.ko.md)는 단일 writer capability, 등록
 producer와 exact lineage 검증, 멱등 retry/equivocation, canonical materialization,
-hash-chained in-memory Event Log를 추가했습니다. 다음 구현 단위는 GRAPH-003 projection,
-revision, immutable Snapshot입니다. 이 변경과 아래 B2.8g는 커밋·CI 검증 전까지 로컬 WIP입니다.
+hash-chained in-memory Event Log를 추가했습니다.
+[GRAPH-003 Projection·Revision·Immutable Snapshot reference spike](docs/graph/GRAPH-003-projection-revision-immutable-snapshot.ko.md)는
+deterministic exact-prefix replay, projection CAS, content-addressed Snapshot chain, exact
+Snapshot reference resolution을 추가했습니다. 다음 단위는 GRAPH-004 concurrency, partial
+recovery, contradiction, stale-decision conformance입니다. GRAPH-003은 로컬 검증을
+통과했으며 Linux CI 확인은 남아 있습니다.
 
 ## B2.8g 재개 가능한 multipart portable Artifact 전송
 

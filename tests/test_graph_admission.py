@@ -350,6 +350,8 @@ def test_admission_rejects_untrusted_producer_and_campaign_contracts(
     assert result.event.decision is GraphAdmissionDecision.REJECTED
     assert result.event.reason is reason
     assert result.event.admitted_nodes == []
+    assert result.event.campaign_id == CAMPAIGN
+    assert result.event.proposal_campaign_id == proposal.lineage.campaign_id
     assert len(event_log.events()) == 1
 
 

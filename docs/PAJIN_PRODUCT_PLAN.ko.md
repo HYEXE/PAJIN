@@ -37,9 +37,13 @@ aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했�
 CampaignFact validation state를 지정할 수 없다. 로컬
 [`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.ko.md) reference spike는 단일 write
 authority, 등록 producer와 exact lineage gate, 멱등 retry/equivocation, canonical
-materialization, hash-chained append-only Event Log를 추가했다. 검증된 구현 기준선은
-`main@a4d0582`이며 이 변경과 아래 B2.8g는 아직 로컬 WIP다. 다음 구현 순서는 GRAPH-003
-projection, atomic revision, immutable Snapshot이다.
+materialization, hash-chained append-only Event Log를 추가했다.
+[`GRAPH-003`](graph/GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 deterministic
+exact-prefix projection, revision/head CAS, content-addressed immutable Snapshot chain, exact
+Snapshot reference resolution을 추가했다. 원격 commit 기준선은 `main@42dd0a0`이다.
+GRAPH-003은 로컬 검증을 통과했고 Linux CI 확인은 남아
+있다. 다음 순서는 GRAPH-004 concurrency, partial recovery, contradiction, stale-decision
+conformance다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

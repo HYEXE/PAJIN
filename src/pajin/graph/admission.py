@@ -229,6 +229,12 @@ class GraphAdmissionEvent(StrictModel):
         max_length=80,
         pattern=r"^[a-z0-9][a-z0-9-]*$",
     )
+    proposal_campaign_id: _Identifier = Field(
+        alias="proposalCampaignId",
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
     run_id: _Identifier = Field(alias="runId", min_length=1, max_length=200)
     agent_id: _Identifier = Field(alias="agentId", min_length=1, max_length=200)
     task_id: _Identifier = Field(alias="taskId", min_length=1, max_length=200)
@@ -298,6 +304,8 @@ class GraphAdmissionEvent(StrictModel):
             raise ValueError("rejected Graph event cannot contain admitted material")
         if admitted and not self.admitted_nodes:
             raise ValueError("admitted Graph event requires canonical node material")
+        if admitted and self.proposal_campaign_id != self.campaign_id:
+            raise ValueError("admitted Graph event contains a foreign Proposal Campaign")
         if self.occurred_at < self.produced_at:
             raise ValueError("Graph admission event predates its Proposal")
         if (self.action_permit_id is None) is not (self.action_permit_digest is None):
@@ -737,7 +745,8 @@ class GraphAdmissionAuthority:
             producerId=proposal.producer_id,
             producerVersion=proposal.producer_version,
             producerDigest=proposal.producer_digest,
-            campaignId=lineage.campaign_id,
+            campaignId=self._campaign_id,
+            proposalCampaignId=lineage.campaign_id,
             runId=lineage.run_id,
             agentId=lineage.agent_id,
             taskId=lineage.task_id,

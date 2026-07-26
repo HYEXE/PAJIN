@@ -38,9 +38,12 @@ and `SurfaceProposal`, `ObservationProposal`, and `CampaignFactProposal`. An Age
 CampaignFact validation state. The local
 [`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.en.md) reference spike adds the single
 write authority, registered producer and exact lineage gates, idempotency/equivocation handling,
-canonical materialization, and a hash-chained append-only Event Log. The verified implementation
-baseline remains `main@a4d0582`; these changes and B2.8g below are still local WIP. GRAPH-003
-projection, atomic revision, and immutable Snapshot are next.
+canonical materialization, and a hash-chained append-only Event Log.
+[`GRAPH-003`](graph/GRAPH-003-projection-revision-immutable-snapshot.en.md) adds deterministic
+exact-prefix projection, revision/head compare-and-set, content-addressed immutable Snapshot
+chaining, and exact Snapshot reference resolution. The remote committed baseline is
+`main@42dd0a0` before this slice. GRAPH-003 is locally verified and Linux CI remains pending.
+GRAPH-004 concurrency, partial recovery, contradiction, and stale-decision conformance is next.
 
 ## 2026-07-25 B2.8g implementation status
 

@@ -16,14 +16,16 @@ See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
 [ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
 [ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md).
 
-The verified implementation baseline remains `main@a4d0582`. The local Architecture v2 work now
+The committed baseline on local and remote `main` is `42dd0a0`. The Architecture v2 work
 includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
 It also includes the [GRAPH-001 six-node, eight-relation, and three-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
 The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
 now adds one writer capability, registered producer and exact lineage verification, idempotent
 retry/equivocation handling, canonical materialization, and a hash-chained in-memory Event Log.
-GRAPH-003 projection, revision, and immutable Snapshot are next. These changes and B2.8g below
-remain local work in progress until committed and verified by CI.
+The [GRAPH-003 projection, atomic revision, and immutable Snapshot reference spike](docs/graph/GRAPH-003-projection-revision-immutable-snapshot.en.md)
+now adds deterministic exact-prefix replay, projection CAS, content-addressed Snapshot chaining,
+and exact Snapshot reference resolution. GRAPH-004 concurrency, partial recovery, contradiction,
+and stale-decision conformance is next. GRAPH-003 is locally verified; Linux CI remains pending.
 
 ## B2.8g resumable multipart portable Artifact transport
 

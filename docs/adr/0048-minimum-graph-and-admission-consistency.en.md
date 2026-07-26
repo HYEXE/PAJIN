@@ -109,9 +109,12 @@ batching, partitioning, and read models without weakening semantic consistency.
 
 [GRAPH-002](../graph/GRAPH-002-single-admission-event-log.en.md) implements the process-local
 single writer, append-only hash chain, registered producer and exact lineage gate, retry,
-equivocation, materialization, and dangling-edge checks. Projection/revision/Snapshot,
-cross-process CAS, contradiction transitions, partial-write recovery, and stale-decision tests
-remain GRAPH-003/004 work.
+equivocation, materialization, and dangling-edge checks.
+[GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.en.md) implements
+deterministic exact-prefix projection, atomic process-local revision/head CAS, content-addressed
+Snapshot chaining, and exact Snapshot reference resolution. Durable cross-process CAS,
+event/projection crash recovery, contradiction transitions, and stale-decision dispatch tests
+remain GRAPH-004 work.
 
 ## Related documents
 

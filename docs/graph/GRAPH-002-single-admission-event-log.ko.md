@@ -103,7 +103,7 @@ GRAPH-001/002 test는 다음을 검증한다.
 
 - 영구 RunStore 또는 별도 Graph Store adapter
 - cross-process leader election, database transaction/CAS, crash recovery
-- Graph Projection, revision, immutable Snapshot, snapshot-bound decision
+- durable Graph Projection/Snapshot 저장소, snapshot-bound decision
 - semantic duplicate folding, contradiction state transition, stale-decision 처리
 - sealed Run, Scope, Capability Registry, legacy A5 artifact의 live adapter
 - Supervisor scheduling과 B2.9 fact/snapshot/handoff projection
@@ -115,8 +115,8 @@ test가 나오기 전까지 두 선택지를 열어 둔다.
 
 ## 다음 단계
 
-GRAPH-003은 admitted event만으로 재구성하는 Projection, atomic revision, immutable Snapshot을
-추가한다. 각 snapshot은 Campaign, schema version, revision, Event Log head digest, node/edge
-projection digest, creation reason에 결박해야 한다. GRAPH-004는 선택한 transaction 경계에서
-duplicate, contradiction, concurrent admission, partial-write recovery, stale-decision race를
-검증한다.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 전체 admission/rejection
+Event Log에서 재구성하는 in-memory reference Projection, revision/head CAS, immutable
+Snapshot chain을 구현했다. 다음 GRAPH-004는 후보 durable transaction 경계에서
+duplicate·contradiction semantics, concurrent admission/projection, partial-write recovery,
+stale-decision race를 검증한다.

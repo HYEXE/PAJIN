@@ -110,9 +110,12 @@ B2.9 facts/snapshot/handoff는 Event Log의 projection이다. 별도 free-form m
 
 [GRAPH-002](../graph/GRAPH-002-single-admission-event-log.ko.md)는 process-local 단일 writer,
 append-only hash chain, 등록 producer와 exact lineage gate, retry, equivocation,
-materialization, dangling-edge 검사를 구현했다. Projection/revision/Snapshot, cross-process
-CAS, contradiction transition, partial-write recovery, stale-decision test는 GRAPH-003/004
-범위로 남아 있다.
+materialization, dangling-edge 검사를 구현했다.
+[GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 deterministic
+exact-prefix projection, process-local atomic revision/head CAS, content-addressed Snapshot
+chain, exact Snapshot reference resolution을 구현했다. Durable cross-process CAS,
+event/projection crash recovery, contradiction transition, stale-decision dispatch test는
+GRAPH-004 범위로 남아 있다.
 
 ## 관련 문서
 
