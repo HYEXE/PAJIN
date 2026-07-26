@@ -31,7 +31,9 @@ The detailed contract and migration/rollback criteria are in
 [`ADR-0046`](adr/0046-common-engine-and-campaign-profiles.en.md),
 [`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
 [`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.en.md) and the durable storage
-decision is in [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.en.md). The local
+decision is in [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.en.md). The
+consumed dispatch-claim decision is in
+[`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.en.md). The local
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
@@ -48,8 +50,12 @@ duplicate/contradiction analysis, bounded CAS reconciliation, and exact Snapshot
 stale-decision preflight.
 [`GRAPH-005`](graph/GRAPH-005-durable-sqlite-graph-store.en.md) adds a separate single-Campaign
 SQLite store for the Event Log, append-only Projection history, immutable Snapshots,
-cross-process host-local CAS, and reopen reconciliation. Local `main@827404c` contains GRAPH-004;
-remote `main` remains `42dd0a0`, GRAPH-005 is locally verified, and Linux CI remains pending.
+cross-process host-local CAS, and reopen reconciliation.
+[`GRAPH-006`](graph/GRAPH-006-atomic-action-permit-authority.en.md) adds canonical
+MissionEnvelope/ActionProposal/registered Capability contracts, SQLite schema-v2 migration, a
+consumed-on-issuance ActionPermit transaction that rechecks the latest durable revision and
+budgets/rates, and cross-process exact-retry no-redispatch semantics. `main@bc9f28f` is synchronized
+with `origin/main`; GRAPH-006 is locally verified, while commit and Linux CI remain pending.
 
 ## 2026-07-25 B2.8g implementation status
 

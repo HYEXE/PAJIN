@@ -67,6 +67,15 @@ more explicit and narrower. Atomic consumption and snapshot re-verification add 
 Later slices choose concrete wire schemas and Capability Registry storage without relaxing this
 algebra.
 
+## Implementation status
+
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.en.md) and
+[ADR-0050](0050-consumed-action-permit-dispatch-claim.en.md) implement canonical
+MissionEnvelope, ActionProposal, registered Capability, and ActionPermit contracts plus the
+SQLite schema-v2 final authority transaction. The first Permit is a non-bearer proof that combines
+issuance and consumption, and exact retry cannot redispatch. Tool Gateway wiring, dispatch
+lifecycle events, and a durable Capability Registry remain follow-up work.
+
 ## Related documents
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.en.md)

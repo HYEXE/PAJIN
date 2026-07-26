@@ -136,15 +136,16 @@ deterministic ActionPermit compiler가 dispatch transaction 안에서 비교하�
 
 ## 남은 경계
 
-GRAPH-005가 첫 durable Event/Projection/Snapshot adapter와 host-local CAS 경계를 닫았다.
-다음은 남아 있다.
+GRAPH-005가 첫 durable Event/Projection/Snapshot adapter와 host-local CAS 경계를 닫았고,
+GRAPH-006이 final latest-revision 검사와 consumed ActionPermit dispatch claim을 같은
+transaction에 결합했다. 다음은 남아 있다.
 
 - multi-host leader fencing·lease expiry·PostgreSQL/HA storage
 - fsync 경계의 process-kill/fault-injection test
-- atomic preflight + ActionPermit 발급/소비
 - semantic CampaignFact corroboration/invalidation workflow
 - retention, compaction, backup, restore, 외부 integrity anchoring
 - sealed Run/Scope/Capability live adapter, B2.9 Handoff projection, Supervisor 실행
 
-Runtime dispatch 통합은 별도 trust-boundary 변경으로 남는다. 이전 preflight를 신뢰하지 말고
-ActionPermit 발급·소비 안에서 latest durable revision을 다시 검사해야 한다.
+GRAPH-006은 이전 preflight를 신뢰하지 않고 ActionPermit 발급·소비 안에서 latest durable
+revision을 다시 검사한다. Tool Gateway/Worker runtime wiring과 lifecycle event는 별도
+trust-boundary 변경으로 남는다.

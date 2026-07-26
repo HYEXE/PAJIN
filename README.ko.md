@@ -16,9 +16,10 @@ Adaptive Supervisor는 Graph와 benchmark 계약이 준비될 때까지 의도�
 [ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.ko.md),
 [ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.ko.md),
 [ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.ko.md),
-[ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)를 참조하십시오.
+[ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.ko.md),
+[ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.ko.md)을 참조하십시오.
 
-로컬 commit 기준선은 `main@827404c`이고 원격 `main`은 push 전까지 `42dd0a0`입니다.
+commit 기준선은 `main@bc9f28f`이고 `origin/main`과 동기화되어 있습니다.
 Architecture v2 작업에는
 [BENCH-001 manifest·ground-truth·result·comparison 계약](docs/benchmark/BENCH-001-benchmark-contract.ko.md)까지
 포함됐습니다. [GRAPH-001의 6개 Node·8개 relation·4개 Proposal 계약](docs/graph/GRAPH-001-minimum-canonical-graph-model.ko.md)도
@@ -34,8 +35,12 @@ Hypothesis admission, duplicate/contradiction 분석, bounded projection recover
 Snapshot-bound stale-decision preflight를 추가했습니다.
 [GRAPH-005 durable SQLite Graph Store](docs/graph/GRAPH-005-durable-sqlite-graph-store.ko.md)는
 한 Campaign의 Event Log, append-only Projection history, immutable Snapshot chain을 보존하고
-cross-process host-local CAS와 reopen recovery를 제공합니다. GRAPH-004는 로컬 커밋 완료,
-GRAPH-005는 로컬 검증 완료이며 Linux CI 확인은 남아 있습니다.
+cross-process host-local CAS와 reopen recovery를 제공합니다.
+[GRAPH-006 atomic ActionPermit authority](docs/graph/GRAPH-006-atomic-action-permit-authority.ko.md)는
+canonical Mission/Proposal/Capability 계약, SQLite schema v2 migration, latest revision과
+budget/rate의 최종 transaction, consumed-on-issuance dispatch claim, cross-process exact
+retry no-redispatch를 추가했습니다. GRAPH-006은 로컬 검증 완료이며 commit과 Linux CI 확인은
+남아 있습니다.
 
 ## B2.8g 재개 가능한 multipart portable Artifact 전송
 

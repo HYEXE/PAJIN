@@ -61,6 +61,15 @@ Agent의 탐색 자유도는 등록된 권위 공간 안에서 커질 수 있지
 좁아진다. 저장소의 원자적 소비와 snapshot 재검증 비용이 추가된다. 구체 wire schema와
 Capability Registry 저장 방식은 후속 수직 조각에서 결정하되 이 대수를 완화할 수 없다.
 
+## 구현 상태
+
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.md)과
+[ADR-0050](0050-consumed-action-permit-dispatch-claim.md)은 canonical MissionEnvelope,
+ActionProposal, registered Capability, ActionPermit과 SQLite schema-v2 final authority
+transaction을 구현한다. 첫 구현은 issuance와 consumption을 결합한 non-bearer Permit이며
+exact retry는 재dispatch하지 않는다. Tool Gateway wiring, dispatch lifecycle event와
+durable Capability Registry는 남아 있다.
+
 ## 관련 문서
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

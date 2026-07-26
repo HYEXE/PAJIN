@@ -130,17 +130,17 @@ and verify its exact Event chain; deleting or rewriting admitted history is not 
 
 ## Remaining boundary
 
-GRAPH-005 does not implement:
+GRAPH-006 now combines the latest-revision comparison with a consumed-on-issuance ActionPermit
+dispatch claim in one SQLite transaction. The following remain after GRAPH-005/006:
 
 - multi-host leader election, leases, or PostgreSQL/HA storage;
-- an atomic transaction spanning Graph preflight, ActionPermit issuance, consumption, and Worker
-  dispatch;
+- Tool Gateway/Worker runtime wiring and dispatch lifecycle events;
 - process-kill/fault-injection testing at every fsync boundary;
 - retention, compaction, verified backup/restore, encryption at rest, or external integrity
   anchoring;
 - admission queue/runtime service wiring; or
 - B2.9 collaboration projections and Supervisor execution.
 
-The next trust-boundary slice should combine the latest-revision comparison with deterministic
-ActionPermit issuance/consumption, rather than treating `GraphDecisionPreflight` as executable
-authority.
+GRAPH-006 does not treat `GraphDecisionPreflight` as executable authority. External Worker side
+effects and the SQLite commit are not physically atomic; the boundary remains at-most-once and
+never automatically redispatches after the consumed claim.

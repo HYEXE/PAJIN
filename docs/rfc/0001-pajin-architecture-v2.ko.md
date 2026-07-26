@@ -208,6 +208,7 @@ Target-signed lab attestation과 B2.8g local multipart 같은 기존 기능은 A
    - GRAPH-001 model
    - GRAPH-002 admission/event-log spike
    - projection, revision, snapshot, stale-decision tests
+   - durable Graph Store와 atomic consumed ActionPermit dispatch claim
 6. **Phase 4**
    - 첫 hybrid web + AI walking skeleton
 7. **Phase 5 이후**
@@ -218,7 +219,9 @@ Target-signed lab attestation과 B2.8g local multipart 같은 기존 기능은 A
 [ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)에서 해소한다. 첫
 backend는 한 Run의 `RunStore` 확장이 아니라 별도 single-Campaign SQLite Graph Store다.
 ADR-0048의 durable conformance 조각을 통과하며 future Control Plane/PostgreSQL adapter도
-같은 storage-neutral protocol을 사용한다.
+같은 storage-neutral protocol을 사용한다. 마지막 revision 검사와 consumed dispatch
+claim은 [ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)과
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.ko.md)에서 구체화한다.
 
 ## 10. Definition of Done
 
@@ -232,7 +235,8 @@ ADR-0048의 durable conformance 조각을 통과하며 future Control Plane/Post
 - benchmark result와 regression metric 생성
 - Notion status, 호환성, migration, rollback 경계 최신화
 
-현재 B2.8g는 로컬 작업 중인 변경이며 `main@a4d0582`의 검증된 기준선에는 포함되지 않는다.
+현재 committed 기준선은 `main@bc9f28f`이며 `origin/main`과 동기화되어 있다. GRAPH-006은
+로컬 검증 완료이며 commit과 Linux CI 확인은 남아 있다.
 
 ## 11. 관련 결정
 
@@ -240,3 +244,4 @@ ADR-0048의 durable conformance 조각을 통과하며 future Control Plane/Post
 - [ADR-0047: MissionEnvelope와 ActionPermit 대수](../adr/0047-mission-envelope-and-action-permit-algebra.ko.md)
 - [ADR-0048: Minimum Graph와 Admission 일관성](../adr/0048-minimum-graph-and-admission-consistency.ko.md)
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)
+- [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)

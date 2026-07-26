@@ -115,15 +115,21 @@ Costs and limits:
   required after an interruption.
 - Backup/restore, compaction, encryption at rest, external anchoring, and process-kill fault
   injection remain incomplete.
-- Final ActionPermit dispatch atomicity remains open.
+- Physical atomicity between an external Worker side effect and the database commit is not
+  provided.
+- Runtime wiring and lifecycle events remain after the schema-v2 consumed dispatch claim.
 
 ## Implementation
 
 [GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.en.md) records schema, recovery,
-filesystem, conformance, compatibility, and remaining boundaries.
+filesystem, conformance, compatibility, and remaining boundaries. The subsequent
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.en.md) verifies the exact v1
+fingerprint before adding append-only Permit tables through a schema-v2 migration and implements
+the final authority transaction.
 
 ## Related documents
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.en.md)
 - [ADR-0048: Minimum Graph and Admission Consistency](0048-minimum-graph-and-admission-consistency.en.md)
 - [GRAPH-004: Consistency, Recovery, and Stale Decision](../graph/GRAPH-004-consistency-recovery-stale-decision.en.md)
+- [ADR-0050: Consumed ActionPermit Dispatch Claim](0050-consumed-action-permit-dispatch-claim.en.md)

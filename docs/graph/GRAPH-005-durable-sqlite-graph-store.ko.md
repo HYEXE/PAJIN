@@ -130,14 +130,16 @@ chain을 export·검증해야 한다. admitted history 삭제나 rewrite는 허�
 
 ## 남은 경계
 
-GRAPH-005는 다음을 구현하지 않는다.
+GRAPH-006은 latest revision 비교와 consumed-on-issuance ActionPermit dispatch claim을 같은
+SQLite transaction에 결합했다. GRAPH-005/006 이후에도 다음은 남아 있다.
 
 - multi-host leader election·lease·PostgreSQL/HA storage
-- Graph preflight, ActionPermit 발급·소비, Worker dispatch를 아우르는 atomic transaction
+- Tool Gateway/Worker runtime wiring과 dispatch lifecycle event
 - 모든 fsync 경계의 process-kill/fault-injection test
 - retention·compaction·검증된 backup/restore·at-rest encryption·external integrity anchoring
 - admission queue/runtime service wiring
 - B2.9 collaboration projection과 Supervisor 실행
 
-다음 trust-boundary 조각은 `GraphDecisionPreflight`를 실행 권위로 취급하지 말고 latest revision
-비교와 deterministic ActionPermit 발급·소비를 결합해야 한다.
+GRAPH-006은 `GraphDecisionPreflight`를 실행 권위로 취급하지 않는다. 외부 Worker side
+effect와 SQLite commit은 물리적으로 atomic하지 않으며 consumed claim 뒤 자동
+재dispatch하지 않는 at-most-once 경계로 남는다.

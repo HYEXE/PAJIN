@@ -208,7 +208,8 @@ Architecture v2 prerequisites; they are reused where operational value is demons
 5. **Phase 3**
    - GRAPH-001 model;
    - GRAPH-002 admission/event-log spike;
-   - projection, revision, snapshot, and stale-decision tests.
+   - projection, revision, snapshot, and stale-decision tests; and
+   - durable Graph Store plus atomic consumed ActionPermit dispatch claims.
 6. **Phase 4**
    - first hybrid web-and-AI walking skeleton.
 7. **Phase 5 and later**
@@ -219,7 +220,10 @@ The initial storage choice left open by this RFC is resolved by
 [ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md): the first backend is a
 separate, single-Campaign SQLite Graph Store rather than an extension of the one-Run `RunStore`.
 It passes the ADR-0048 durable conformance slice while preserving the same storage-neutral
-protocols for a future Control Plane/PostgreSQL adapter.
+protocols for a future Control Plane/PostgreSQL adapter. The final revision check and consumed
+dispatch claim are specified by
+[ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.en.md) and
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.en.md).
 
 ## 10. Definition of Done
 
@@ -233,7 +237,8 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-B2.8g is currently local work in progress and is not part of the verified `main@a4d0582` baseline.
+The committed baseline is `main@bc9f28f`, synchronized with `origin/main`. GRAPH-006 is locally
+verified; commit and Linux CI remain pending.
 
 ## 11. Related decisions
 
@@ -241,3 +246,4 @@ B2.8g is currently local work in progress and is not part of the verified `main@
 - [ADR-0047: MissionEnvelope and ActionPermit Algebra](../adr/0047-mission-envelope-and-action-permit-algebra.en.md)
 - [ADR-0048: Minimum Graph and Admission Consistency](../adr/0048-minimum-graph-and-admission-consistency.en.md)
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md)
+- [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.en.md)

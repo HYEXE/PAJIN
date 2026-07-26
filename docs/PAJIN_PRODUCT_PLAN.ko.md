@@ -30,7 +30,8 @@ Finding을 확정할 수 없다. 실행 권위는 항상 deterministic compiler�
 [`ADR-0046`](adr/0046-common-engine-and-campaign-profiles.ko.md),
 [`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.ko.md),
 [`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.ko.md)에 기록하고 durable 저장 선택은
-[`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)에 기록한다.
+[`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.ko.md), consumed dispatch claim
+결정은 [`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.ko.md)에 기록한다.
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.ko.md)의 manifest·private ground truth,
 aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했다.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.ko.md)은 6개 Node, 8개 typed Edge와
@@ -47,8 +48,12 @@ duplicate/contradiction 분석, bounded CAS reconciliation, exact Snapshot-bound
 preflight를 추가했다.
 [`GRAPH-005`](graph/GRAPH-005-durable-sqlite-graph-store.ko.md)는 Event Log, append-only
 Projection history, immutable Snapshot, cross-process host-local CAS, reopen reconciliation을
-위한 별도 single-Campaign SQLite store를 추가했다. 로컬 `main@827404c`에는 GRAPH-004가
-커밋됐고 원격 `main`은 `42dd0a0`이며 GRAPH-005는 로컬 검증 완료, Linux CI 확인은 남아 있다.
+위한 별도 single-Campaign SQLite store를 추가했다.
+[`GRAPH-006`](graph/GRAPH-006-atomic-action-permit-authority.ko.md)은 canonical
+MissionEnvelope/ActionProposal/registered Capability, SQLite schema v2 migration, latest
+durable revision과 budget/rate를 같은 transaction에서 검증하는 consumed-on-issuance
+ActionPermit, cross-process exact retry no-redispatch를 추가했다. `main@bc9f28f`는
+`origin/main`과 동기화됐고 GRAPH-006은 로컬 검증 완료, commit과 Linux CI 확인은 남아 있다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

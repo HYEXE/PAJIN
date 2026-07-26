@@ -134,14 +134,15 @@ The combined focused suite now passes 46 tests locally, including:
 ## Remaining boundary
 
 GRAPH-005 closes the first durable Event/Projection/Snapshot adapter and host-local CAS boundary.
-The following remain open:
+GRAPH-006 combines the final latest-revision check with a consumed ActionPermit dispatch claim in
+one transaction. The following remain open:
 
 - multi-host leader fencing, lease expiry, and PostgreSQL/HA storage;
 - process-kill/fault-injection testing across fsync boundaries;
-- atomic preflight plus ActionPermit issuance/consumption;
 - semantic CampaignFact corroboration/invalidation workflows;
 - retention, compaction, backup, restore, and external integrity anchoring; and
 - live sealed-Run/Scope/Capability adapters, B2.9 Handoff projections, and Supervisor execution.
 
-Runtime dispatch integration remains a separate trust-boundary change and must recheck the latest
-durable revision inside ActionPermit issuance/consumption rather than trusting a prior preflight.
+GRAPH-006 rechecks the latest durable revision inside ActionPermit issuance/consumption instead of
+trusting a prior preflight. Tool Gateway/Worker runtime wiring and lifecycle events remain a
+separate trust-boundary change.

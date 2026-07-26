@@ -110,15 +110,20 @@ conformance test를 통해 Projection/Snapshot digest를 재현해야 한다.
   reconciliation이 필요하다.
 - backup/restore, compaction, at-rest encryption, external anchoring, process-kill fault injection은
   미완료다.
-- final ActionPermit dispatch atomicity가 남아 있다.
+- 외부 Worker side effect와 database commit의 physical atomicity는 제공하지 않는다.
+- schema v2의 consumed dispatch claim 이후 runtime wiring과 lifecycle event가 남아 있다.
 
 ## 구현
 
 [GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.md)에 schema, recovery,
-filesystem, conformance, 호환성, 남은 경계를 기록한다.
+filesystem, conformance, 호환성, 남은 경계를 기록한다. 후속
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.md)은 exact v1 fingerprint를
+검증한 뒤 append-only Permit table을 추가하는 schema v2 migration과 final authority
+transaction을 구현한다.
 
 ## 관련 문서
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)
 - [ADR-0048: Minimum Graph와 Admission 일관성](0048-minimum-graph-and-admission-consistency.md)
 - [GRAPH-004: Consistency·Recovery·Stale Decision](../graph/GRAPH-004-consistency-recovery-stale-decision.md)
+- [ADR-0050: Consumed ActionPermit Dispatch Claim](0050-consumed-action-permit-dispatch-claim.md)
