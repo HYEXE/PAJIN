@@ -57,10 +57,11 @@ cross-process host-local CAS, and reopen reconciliation.
 MissionEnvelope/ActionProposal/registered Capability contracts, SQLite schema-v2 migration, a
 consumed-on-issuance ActionPermit transaction that rechecks the latest durable revision and
 budgets/rates, and cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as
-`main@59cf210`, one commit ahead of `origin/main@bc9f28f`; Linux CI remains pending.
-[`CAP-001`](capability/CAP-001-versioned-capability-definition.en.md) locally adds explicit
+`main@59cf210`. The current baseline, including CAP-001, is `main@49b0ebb`, two commits ahead of
+`origin/main@bc9f28f`; Linux CI remains pending.
+[`CAP-001`](capability/CAP-001-versioned-capability-definition.en.md) adds explicit
 Capability metadata, a canonical full-ToolSpec digest, an exact-version Registry, and GRAPH-006
-`definitionDigest` binding. CAP-001 commit and Linux CI remain pending.
+`definitionDigest` binding, committed as `49b0ebb`.
 
 ## 2026-07-25 B2.8g implementation status
 

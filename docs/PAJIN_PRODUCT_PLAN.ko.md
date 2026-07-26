@@ -55,10 +55,11 @@ Projection history, immutable Snapshot, cross-process host-local CAS, reopen rec
 MissionEnvelope/ActionProposal/registered Capability, SQLite schema v2 migration, latest
 durable revision과 budget/rate를 같은 transaction에서 검증하는 consumed-on-issuance
 ActionPermit, cross-process exact retry no-redispatch를 추가했다. GRAPH-006은
-`main@59cf210`으로 커밋됐고 `origin/main@bc9f28f`보다 한 commit 앞서며 Linux CI 확인은
+`main@59cf210`으로 커밋됐다. CAP-001을 포함한 현재 기준선은 `main@49b0ebb`이고
+`origin/main@bc9f28f`보다 두 commit 앞서며 Linux CI 확인은
 남아 있다. [`CAP-001`](capability/CAP-001-versioned-capability-definition.ko.md)은 explicit
 Capability metadata, canonical full ToolSpec digest, exact-version Registry와 GRAPH-006
-`definitionDigest` binding을 로컬에 추가했다. CAP-001 commit과 Linux CI는 남아 있다.
+`definitionDigest` binding을 추가했고 `49b0ebb`로 커밋됐다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

@@ -20,7 +20,7 @@ Adaptive Supervisor는 Graph와 benchmark 계약이 준비될 때까지 의도�
 [ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.ko.md),
 [ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.ko.md)을 참조하십시오.
 
-commit 기준선은 `main@59cf210`이고 `origin/main@bc9f28f`보다 한 commit 앞서 있습니다.
+commit 기준선은 `main@49b0ebb`이고 `origin/main@bc9f28f`보다 두 commit 앞서 있습니다.
 Architecture v2 작업에는
 [BENCH-001 manifest·ground-truth·result·comparison 계약](docs/benchmark/BENCH-001-benchmark-contract.ko.md)까지
 포함됐습니다. [GRAPH-001의 6개 Node·8개 relation·4개 Proposal 계약](docs/graph/GRAPH-001-minimum-canonical-graph-model.ko.md)도
@@ -45,7 +45,7 @@ retry no-redispatch를 추가했습니다. GRAPH-006은 `59cf210`으로 커밋�
 [CAP-001 Versioned Capability Definition](docs/capability/CAP-001-versioned-capability-definition.ko.md)은
 명시적 domain/maturity/surface/threat/side-effect metadata, exact ToolSpec digest, latest
 fallback이 없는 exact-version Registry와 GRAPH-006 `definitionDigest` adapter를 추가했습니다.
-CAP-001은 로컬 구현·집중 검증 상태이며 commit과 Linux CI는 남아 있습니다.
+CAP-001은 `49b0ebb`로 커밋됐고 Linux CI 확인은 남아 있습니다.
 
 ## B2.8g 재개 가능한 multipart portable Artifact 전송
 

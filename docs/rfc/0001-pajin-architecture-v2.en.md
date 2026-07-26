@@ -241,9 +241,8 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-The committed baseline is `main@59cf210`, one commit ahead of `origin/main@bc9f28f`. GRAPH-006 is
-committed, while CAP-001 is locally implemented and focused-tested. Linux CI and the CAP-001 commit
-remain pending.
+The committed baseline is `main@49b0ebb`, two commits ahead of `origin/main@bc9f28f`. GRAPH-006 is
+committed as `59cf210`, and CAP-001 is committed as `49b0ebb`. Linux CI remains pending.
 
 ## 11. Related decisions
 

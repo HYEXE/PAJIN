@@ -237,9 +237,8 @@ binding·definition digest·no-latest Registry로 구체화한다.
 - benchmark result와 regression metric 생성
 - Notion status, 호환성, migration, rollback 경계 최신화
 
-현재 committed 기준선은 `main@59cf210`이며 `origin/main@bc9f28f`보다 한 commit 앞서 있다.
-GRAPH-006은 커밋됐고 CAP-001은 로컬 구현·집중 검증 상태다. Linux CI와 CAP-001 commit은
-남아 있다.
+현재 committed 기준선은 `main@49b0ebb`이며 `origin/main@bc9f28f`보다 두 commit 앞서 있다.
+GRAPH-006은 `59cf210`, CAP-001은 `49b0ebb`로 커밋됐다. Linux CI 확인은 남아 있다.
 
 ## 11. 관련 결정
 
