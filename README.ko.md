@@ -18,9 +18,11 @@ Adaptive Supervisor는 Graph와 benchmark 계약이 준비될 때까지 의도�
 [ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.ko.md),
 [ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.ko.md),
 [ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.ko.md),
-[ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.ko.md)을 참조하십시오.
+[ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.ko.md),
+[ADR-0052](docs/adr/0052-code-backed-capability-authority-set.ko.md)를 참조하십시오.
 
-commit 기준선은 `main@49b0ebb`이고 `origin/main@bc9f28f`보다 두 commit 앞서 있습니다.
+CAP-002 개발의 부모 기준선은 `main@c56a587`이고 `origin/main@bc9f28f`보다 세 commit
+앞서 있습니다.
 Architecture v2 작업에는
 [BENCH-001 manifest·ground-truth·result·comparison 계약](docs/benchmark/BENCH-001-benchmark-contract.ko.md)까지
 포함됐습니다. [GRAPH-001의 6개 Node·8개 relation·4개 Proposal 계약](docs/graph/GRAPH-001-minimum-canonical-graph-model.ko.md)도
@@ -46,6 +48,11 @@ retry no-redispatch를 추가했습니다. GRAPH-006은 `59cf210`으로 커밋�
 명시적 domain/maturity/surface/threat/side-effect metadata, exact ToolSpec digest, latest
 fallback이 없는 exact-version Registry와 GRAPH-006 `definitionDigest` adapter를 추가했습니다.
 CAP-001은 `49b0ebb`로 커밋됐고 Linux CI 확인은 남아 있습니다.
+[CAP-002 Metadata + Code-backed Authority 인터페이스](docs/capability/CAP-002-metadata-code-backed-authority-interfaces.ko.md)는
+일곱 역할의 exact authority set, 명시적 non-secret stable-context digest, adapter 호출 전·후
+drift 검사, canonical role wrapper와 compiler/network 권위 확대 거부를 추가했습니다. 기존
+Tool Gateway와 Replay runtime 경로는 그대로이며 CAP-003 Scaffold와 runtime wiring은
+후속입니다.
 
 ## B2.8g 재개 가능한 multipart portable Artifact 전송
 

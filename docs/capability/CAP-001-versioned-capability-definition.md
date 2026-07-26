@@ -69,6 +69,7 @@ definition에도 결박된다.
 
 - 기존 `CapabilityGrant`의 감쇠·revocation·call-budget 의미는 변경하지 않는다.
 - 기존 Tool Gateway와 Policy Engine이 계속 유일한 runtime 실행 경계다.
-- durable Registry, signing/review/maturity activation, compiler/executor/oracle/cleanup
-  code-backed interface, runtime ActionPermit wiring은 후속이다.
+- compiler/executor/oracle/replay/cleanup code-backed interface는
+  [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.ko.md)에서 구현한다.
+- durable Registry, signing/review/maturity activation과 runtime ActionPermit wiring은 후속이다.
 - CAP-001은 benchmark coverage나 실제 Hybrid walking skeleton 완료를 주장하지 않는다.

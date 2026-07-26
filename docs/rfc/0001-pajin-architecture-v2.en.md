@@ -228,6 +228,10 @@ The first Phase 2 versioned Capability contract is specified by
 [ADR-0051](../adr/0051-versioned-capability-definition-and-tool-binding.en.md) and
 [CAP-001](../capability/CAP-001-versioned-capability-definition.en.md) through exact ToolSpec
 binding, a definition digest, and a Registry with no latest-version fallback.
+The Phase 2 code-backed authority boundary is specified by
+[ADR-0052](../adr/0052-code-backed-capability-authority-set.en.md) and
+[CAP-002](../capability/CAP-002-metadata-code-backed-authority-interfaces.en.md) through an exact
+seven-role authority set, explicit stable-context digests, and identity-checking wrappers.
 
 ## 10. Definition of Done
 
@@ -241,8 +245,9 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-The committed baseline is `main@49b0ebb`, two commits ahead of `origin/main@bc9f28f`. GRAPH-006 is
-committed as `59cf210`, and CAP-001 is committed as `49b0ebb`. Linux CI remains pending.
+The CAP-002 committed parent baseline is `main@c56a587`, three commits ahead of
+`origin/main@bc9f28f`. GRAPH-006 is committed as `59cf210`, CAP-001 as `49b0ebb`, and CAP-002 is
+included in this change. Linux CI remains pending.
 
 ## 11. Related decisions
 
@@ -252,3 +257,4 @@ committed as `59cf210`, and CAP-001 is committed as `49b0ebb`. Linux CI remains 
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.en.md)
 - [ADR-0051: Versioned Capability Definition and Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.en.md)
+- [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.en.md)

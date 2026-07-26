@@ -226,6 +226,10 @@ Phase 2의 첫 versioned Capability 계약은
 [ADR-0051](../adr/0051-versioned-capability-definition-and-tool-binding.ko.md)과
 [CAP-001](../capability/CAP-001-versioned-capability-definition.ko.md)에서 exact ToolSpec
 binding·definition digest·no-latest Registry로 구체화한다.
+Phase 2의 code-backed authority 경계는
+[ADR-0052](../adr/0052-code-backed-capability-authority-set.ko.md)와
+[CAP-002](../capability/CAP-002-metadata-code-backed-authority-interfaces.ko.md)에서 일곱 역할의
+exact authority set, explicit stable context digest와 identity-checking wrapper로 구체화한다.
 
 ## 10. Definition of Done
 
@@ -239,8 +243,9 @@ binding·definition digest·no-latest Registry로 구체화한다.
 - benchmark result와 regression metric 생성
 - Notion status, 호환성, migration, rollback 경계 최신화
 
-현재 committed 기준선은 `main@49b0ebb`이며 `origin/main@bc9f28f`보다 두 commit 앞서 있다.
-GRAPH-006은 `59cf210`, CAP-001은 `49b0ebb`로 커밋됐다. Linux CI 확인은 남아 있다.
+CAP-002 개발의 committed 부모 기준선은 `main@c56a587`이며
+`origin/main@bc9f28f`보다 세 commit 앞서 있다. GRAPH-006은 `59cf210`, CAP-001은
+`49b0ebb`로 커밋됐다. CAP-002는 이 변경에 포함되며 Linux CI 확인은 남아 있다.
 
 ## 11. 관련 결정
 
@@ -250,3 +255,4 @@ GRAPH-006은 `59cf210`, CAP-001은 `49b0ebb`로 커밋됐다. Linux CI 확인은
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)
 - [ADR-0051: Versioned Capability Definition과 Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.ko.md)
+- [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.ko.md)

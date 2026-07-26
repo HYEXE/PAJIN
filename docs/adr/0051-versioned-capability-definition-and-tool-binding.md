@@ -45,8 +45,8 @@ parameter schema, side effect, evidence, approval, cost와 cleanup metadata 전�
   새 `definitionDigest`를 필수로 만들어 정의가 없는 실행권위를 fail closed한다.
 - CAP-001 이전 로컬 `v1alpha1` Permit row에 definition을 추정·backfill하지 않는다. 그런
   개발용 ledger는 보존 archive 후 새 Campaign store에서 다시 발급해야 한다.
-- durable Capability Registry, signing, activation/rotation과 code-backed compiler/executor
-  authority는 CAP-002/CAP-004 후속 경계다.
+- code-backed compiler/executor/oracle/replay/cleanup authority interface는 CAP-002에서
+  구체화한다. durable Registry, signing과 activation/rotation은 CAP-004 후속 경계다.
 
 ## 결과
 
@@ -62,3 +62,5 @@ parameter schema, side effect, evidence, approval, cost와 cleanup metadata 전�
 - [ADR-0047 MissionEnvelope와 ActionPermit 대수](0047-mission-envelope-and-action-permit-algebra.ko.md)
 - [GRAPH-006 Atomic ActionPermit Authority](../graph/GRAPH-006-atomic-action-permit-authority.ko.md)
 - [CAP-001 Versioned Capability Definition](../capability/CAP-001-versioned-capability-definition.ko.md)
+- [ADR-0052 Code-backed Capability Authority Set](0052-code-backed-capability-authority-set.ko.md)
+- [CAP-002 Metadata + Code-backed Authority 인터페이스](../capability/CAP-002-metadata-code-backed-authority-interfaces.ko.md)

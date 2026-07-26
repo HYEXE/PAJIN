@@ -35,7 +35,9 @@ decision is in [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.
 consumed dispatch-claim decision is in
 [`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.en.md), and the versioned
 Capability/Tool binding decision is in
-[`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.en.md). The local
+[`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.en.md), and the code-backed
+authority-set decision is in
+[`ADR-0052`](adr/0052-code-backed-capability-authority-set.en.md). The local
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
@@ -57,11 +59,16 @@ cross-process host-local CAS, and reopen reconciliation.
 MissionEnvelope/ActionProposal/registered Capability contracts, SQLite schema-v2 migration, a
 consumed-on-issuance ActionPermit transaction that rechecks the latest durable revision and
 budgets/rates, and cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as
-`main@59cf210`. The current baseline, including CAP-001, is `main@49b0ebb`, two commits ahead of
-`origin/main@bc9f28f`; Linux CI remains pending.
+`main@59cf210`, and CAP-001 is committed as `49b0ebb`. The CAP-002 parent baseline is
+`main@c56a587`, three commits ahead of `origin/main@bc9f28f`; Linux CI remains pending.
 [`CAP-001`](capability/CAP-001-versioned-capability-definition.en.md) adds explicit
 Capability metadata, a canonical full-ToolSpec digest, an exact-version Registry, and GRAPH-006
-`definitionDigest` binding, committed as `49b0ebb`.
+`definitionDigest` binding.
+[`CAP-002`](capability/CAP-002-metadata-code-backed-authority-interfaces.en.md) binds Materializer,
+Compiler, Executor, Normalizer, Oracle, Replay, and Cleanup code authorities to exact CAP-001
+definitions and authority-set digests. Missing, duplicate, drifted, confused-deputy, and narrowly
+authority-expanding adapters fail closed. Existing runtime wiring and durable Registry behavior
+remain unchanged.
 
 ## 2026-07-25 B2.8g implementation status
 

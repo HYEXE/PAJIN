@@ -45,8 +45,8 @@ higher-level reviewed behavior that a Tool exposes.
   `definitionDigest` makes execution authority without a definition fail closed.
 - Definitions are never inferred or backfilled into local pre-CAP-001 `v1alpha1` Permit rows.
   Preserve/archive such development ledgers and issue fresh authority in a new Campaign store.
-- Durable Registry storage, signing, activation/rotation, and code-backed compiler/executor
-  authorities remain CAP-002/CAP-004 follow-up boundaries.
+- Code-backed compiler/executor/oracle/replay/cleanup authority interfaces are specified by
+  CAP-002. Durable Registry storage, signing, and activation/rotation remain CAP-004 boundaries.
 
 ## Consequences
 
@@ -61,3 +61,5 @@ higher-level reviewed behavior that a Tool exposes.
 - [ADR-0047 MissionEnvelope and ActionPermit algebra](0047-mission-envelope-and-action-permit-algebra.en.md)
 - [GRAPH-006 Atomic ActionPermit Authority](../graph/GRAPH-006-atomic-action-permit-authority.en.md)
 - [CAP-001 Versioned Capability Definition](../capability/CAP-001-versioned-capability-definition.en.md)
+- [ADR-0052 Code-backed Capability Authority Set](0052-code-backed-capability-authority-set.en.md)
+- [CAP-002 Metadata + Code-backed Authority Interfaces](../capability/CAP-002-metadata-code-backed-authority-interfaces.en.md)

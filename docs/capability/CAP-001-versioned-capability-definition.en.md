@@ -70,7 +70,8 @@ as well as its Tool contract.
 
 - Existing `CapabilityGrant` attenuation, revocation, and call-budget semantics are unchanged.
 - The existing Tool Gateway and Policy Engine remain the only runtime execution boundary.
-- Durable Registry storage, signing/review/maturity activation, code-backed
-  compiler/executor/oracle/cleanup interfaces, and runtime ActionPermit wiring remain follow-up
-  work.
+- Code-backed compiler/executor/oracle/replay/cleanup interfaces are implemented by
+  [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.en.md).
+- Durable Registry storage, signing/review/maturity activation, and runtime ActionPermit wiring
+  remain follow-up work.
 - CAP-001 does not claim benchmark coverage or a completed Hybrid walking skeleton.
