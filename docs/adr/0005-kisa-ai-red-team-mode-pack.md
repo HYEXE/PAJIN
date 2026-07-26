@@ -1,81 +1,98 @@
-# ADR-0005: KISA AI Red Team Mode Pack과 증적 기반 체크리스트
+# ADR-0005: KISA AI Red Team Mode Pack and Evidence-Based Checklist
 
 - Status: Accepted
 - Date: 2026-07-12
 - Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 
-> 이 문서의 독립 검증·확정 표현은 당시 증거 심사 구현을 기록한다. ADR 0027 이후 제품
-> 수준의 Confirmed에는 별도 Restricted Reproducer의 새 요청·증적과 Oracle 성공이 필요하다.
+> The independent validation and confirmation language in this document records the evidence-review
+> implementation at the time. Since ADR 0027, product-level Confirmed also requires a separate
+> Restricted Reproducer's fresh request and evidence, plus Oracle success.
+
+> Historical scope note: references below to the initial A01/A02 vertical slice and to retesting as
+> follow-up work describe the state when this ADR was accepted. The current implementation also
+> covers A04, M03, and M06 and includes the retest closed loop; see
+> [KISA Guide Traceability](../KISA_TRACEABILITY.md).
 
 ## Context
 
-KISA 「AI 보안 레드티밍 가이드」는 위협 분류, 레드티밍 절차, 평가 기준, 시나리오 구성,
-로그·증적, 체크리스트, 계획·완료·실행 기록 산출물을 제시한다. PAJIN은 이를 단순 보고서
-템플릿이 아니라 실행 가능한 Mode Pack으로 연결해야 한다.
+The KISA *AI Security Red Teaming Guide* presents threat classifications, red-teaming procedures,
+evaluation criteria, scenario composition, logs and evidence, checklists, and artifacts for planning,
+completion, and execution records. PAJIN must connect these requirements to an executable Mode Pack,
+not merely a report template.
 
-다만 가이드의 모든 항목을 기술 실행 결과만으로 확인할 수는 없다. 법률·윤리 검토, 인력의
-전문성·교육, 심리적 지원, 이해관계자 협의, 비즈니스 영향, 개선 과제의 실제 운영 반영을
-자동으로 통과시키면 근거 없는 준수 주장이 된다. 위협 코드가 카탈로그에 존재한다는 사실과
-해당 위협을 실제로 테스트했다는 사실도 구분해야 한다.
+However, not every item in the guide can be verified from technical execution results alone.
+Automatically passing legal and ethical reviews, personnel expertise and training, psychological
+support, stakeholder consultation, business impact, or the operational adoption of improvement
+tasks would create an unsupported compliance claim. The existence of a threat code in the catalog
+must also be distinguished from actually testing that threat.
 
 ## Decision
 
-### PAJIN 소유의 타입 카탈로그
+### PAJIN-owned typed catalog
 
-1. 19개 KISA 위협을 코드, 이름, 위협군, 시스템 계층, 출처 페이지와 함께 타입 카탈로그로
-   관리한다.
-2. 시나리오는 대상 유형, 위협 코드, 공격 표면, 페르소나, 사전 조건, 실행 절차, 판정 기준,
-   영향 차원, 증적 요구사항, 등록 Tool을 포함한다.
-3. Campaign의 요청 위협 중 대상 유형에 맞는 시나리오만 Planner가 선택한다. 시나리오가
-   없는 요청 위협은 `untested`와 사유로 남긴다.
-4. 첫 실행 시나리오는 `mock-agent` 대상의 간접 프롬프트 인젝션·비인가 도구 호출이며
-   A01·A02를 다룬다.
+1. The 19 KISA threats are maintained in a typed catalog with their code, name, threat group, system
+   layer, and source page.
+2. Each scenario includes the target type, threat codes, attack surface, persona, preconditions,
+   execution procedure, decision criteria, impact dimensions, evidence requirements, and registered
+   Tool.
+3. The Planner selects only scenarios that match the target type among the Campaign's requested
+   threats. Requested threats without a scenario remain `untested` with a reason.
+4. The first executable scenario targets `mock-agent` with indirect prompt injection and
+   unauthorized tool invocation, covering A01 and A02.
 
-### 실행과 분리된 증거 심사
+### Evidence review separated from execution
 
-1. 시나리오 반복 수만큼 별도 Specialist Task를 만들고 기존 Tool Gateway, 정책,
-   Capability 감쇠, Docker Worker, 예산, Kill Switch 경계를 그대로 사용한다.
-2. Specialist는 Finding을 확정할 수 없다. 별도 Semantic Validator가 같은 Run의 증적만
-   사용해 심사하고 PAJIN의 결정론적 게이트가 증적 출처와 Scope를 다시 확인한다. 이는
-   독립 재현이 아니며 ADR 0027의 Restricted Reproducer가 별도로 필요하다.
-3. 반복 실행에서 나온 동일 Finding은 제목·위협·대상을 기준으로 합치되 모든 재현 증적을
-   보존하고 보수적인 신뢰도를 적용한다.
+1. A separate Specialist Task is created for each scenario repetition, reusing the existing Tool
+   Gateway, policy, Capability attenuation, Docker Worker, budget, and Kill Switch boundaries.
+2. A Specialist cannot confirm a Finding. A separate Semantic Validator reviews only evidence from
+   the same Run, and PAJIN's deterministic Gate rechecks evidence provenance and Scope. This is not
+   independent reproduction; ADR 0027's Restricted Reproducer is required separately.
+3. Identical Findings from repeated executions are merged by title, threat, and target while all
+   reproduction evidence is preserved and a conservative confidence level is applied.
 
-### 평가와 체크리스트
+### Evaluation and checklist
 
-1. 공격 성공률, 차단·거부율, 재현율, 민감정보 노출 수, 평균 지연, 위협 커버리지를
-   구조화된 지표로 계산한다.
-2. 체크리스트는 `yes`, `no`, `not-applicable`, `needs-review` 네 상태를 사용한다.
-3. `yes`는 동일 Run의 구조화 증적으로 확인 가능한 경우에만 사용한다.
-4. 법률·윤리·인력·교육·HITL·비즈니스 영향 등 조직 판단은 자동화하지 않고
-   `needs-review`로 남긴다.
-5. 수행하지 않은 완화·개선·재검증·회귀 활동은 `no`로 표시한다.
-6. Docker 환경 항목은 실제 Worker 증적에서 Docker backend가 관찰될 때만 `yes`다.
+1. Attack success rate, block and refusal rate, reproduction rate, sensitive-information exposure
+   count, average latency, and threat coverage are calculated as structured metrics.
+2. The checklist uses four states: `yes`, `no`, `not-applicable`, and `needs-review`.
+3. `yes` is used only when structured evidence from the same Run can verify the item.
+4. Organizational judgments such as legal, ethical, personnel, training, HITL, and business-impact
+   decisions are not automated and remain `needs-review`.
+5. Mitigation, improvement, retest, and regression activities that were not performed are marked
+   `no`.
+6. Docker-environment items are `yes` only when a Docker backend is observed in actual Worker
+   evidence.
 
-### 산출물
+### Artifacts
 
-표준 PAJIN Run 산출물에 평가 결과, 52개 체크리스트, 테스트 계획, 완료 보고, 실행 기록,
-Markdown 보고서를 추가한다. 모든 KISA 산출물은 출처 페이지 또는 근거 Artifact를 포함하며
-보고서에는 준수 인증이 아니라는 제한을 명시한다.
+Evaluation results, all 52 checklist items, the test plan, completion report, execution record, and
+Markdown report are added to the standard PAJIN Run artifacts. Every KISA artifact includes a source
+page or supporting Artifact, and the report states that it is not a compliance certification.
 
 ## Consequences
 
 ### Positive
 
-- 가이드 요구사항이 Campaign 선택부터 실행·검증·보고까지 추적된다.
-- 수록된 위협과 실제 테스트 커버리지가 분리되어 누락이 숨겨지지 않는다.
-- 반복 실행과 분리된 증거 심사로 단일 실행 결과보다 신뢰도가 높지만 독립 재현을 증명하지는 않는다.
-- 조직적 판단을 자동 통과시키지 않아 과도한 준수 주장을 방지한다.
-- Mode Pack이 기존 보안 경계를 우회하지 않고 동일한 Tool Gateway와 Worker를 재사용한다.
+- Guide requirements are traceable from Campaign selection through execution, validation, and
+  reporting.
+- Cataloged threats and actual test coverage are separated, so omissions are not hidden.
+- Repeated execution and a separate evidence review provide more confidence than one execution, but
+  do not prove independent reproduction.
+- Organizational judgments are not passed automatically, preventing excessive compliance claims.
+- The Mode Pack reuses the same Tool Gateway and Worker without bypassing existing security
+  boundaries.
 
 ### Trade-offs and residual risks
 
-- 첫 수직 시나리오는 19개 위협 중 A01·A02만 실행한다.
-- 체크리스트 자동 판정은 제공된 Campaign 데이터와 Run 증적의 완전성에 의존한다.
-- 기술 심각도와 조직의 최종 조치 우선순위 사이에는 사람 판단이 필요하다.
-- 실제 모델 비결정성을 다루려면 더 많은 반복, 변형 입력, 독립 모델과 정상 질의 평가가
-  필요하다.
-- 완화 권고, 담당·기한, 재검증과 회귀 테스트의 폐루프는 후속 목표다.
+- The first vertical scenario executes only A01 and A02 among the 19 threats.
+- Automated checklist decisions depend on the completeness of the supplied Campaign data and Run
+  evidence.
+- Human judgment is required between technical severity and the organization's final remediation
+  priority.
+- Real model nondeterminism requires more repetitions, varied inputs, independent models, and
+  normal-query evaluation.
+- The closed loop for mitigation recommendations, owners and deadlines, retesting, and regression
+  testing is a follow-up objective.
 
 ## Verification
 
@@ -87,6 +104,7 @@ Markdown 보고서를 추가한다. 모든 KISA 산출물은 출처 페이지 �
 .venv\Scripts\mypy src
 ```
 
-당시 인수 조건은 19개 위협과 52개 체크리스트의 스키마 검증, A01·A02 두 번 실행과 A04의 명시적
-미실행 사유, 증거 심사 후 한 개 legacy Finding과 두 개 Worker 증적, KISA JSON·Markdown 산출물,
-그리고 전체 정적·동적 테스트 통과다.
+The acceptance criteria at the time were schema validation for 19 threats and 52 checklist items,
+two executions each of A01 and A02 and an explicit reason for not executing A04, one legacy Finding
+and two Worker evidence records after evidence review, KISA JSON and Markdown artifacts, and passage
+of the full static and dynamic test suite.

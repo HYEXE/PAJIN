@@ -1,75 +1,75 @@
-> 언어: [English](CAP-001-versioned-capability-definition.en.md) | [한국어](CAP-001-versioned-capability-definition.ko.md)
-
 # CAP-001: Versioned Capability Definition
 
-- 상태: 로컬 구현 완료
-- 날짜: 2026-07-26
-- 선행 조건: ARCH-001, ADR-0047, GRAPH-006
+- Status: locally implemented
+- Date: 2026-07-26
+- Prerequisites: ARCH-001, ADR-0047, GRAPH-006
 
-## 목적
+## Purpose
 
-기존 Tool 실행과 Architecture v2 Capability를 이름만으로 연결하지 않고, review 가능한
-versioned metadata와 exact Tool contract digest로 결박한다. 이 조각은 Capability를 실행하지
-않는다. 이후 deterministic compiler와 ActionPermit이 참조할 immutable definition만 만든다.
+Bind existing Tool execution to Architecture v2 Capabilities through reviewable versioned metadata
+and an exact Tool-contract digest instead of names alone. This slice does not execute a Capability.
+It creates the immutable definition that later deterministic compilers and ActionPermits consume.
 
-## 구현
+## Implementation
 
 ### Canonical definition
 
-`CapabilityDefinition`은 다음 material을 bounded canonical JSON과 domain-separated SHA-256에
-결박한다.
+`CapabilityDefinition` binds the following material to bounded canonical JSON and a
+domain-separated SHA-256 digest:
 
-- Capability ID/version/domain/maturity
-- supported surface type, threat class와 precondition
-- parameter schema digest
-- exact Tool ID/version/full ToolSpec digest
-- risk tier와 side-effect class
-- evidence type, network access, approval, request-unit cost, cleanup, parallel-safe metadata
+- Capability ID/version/domain/maturity;
+- supported surface types, threat classes, and preconditions;
+- parameter-schema digest;
+- exact Tool ID/version/full-ToolSpec digest;
+- risk tier and side-effect class; and
+- evidence types, network access, approval, request-unit cost, cleanup, and parallel-safety
+  metadata.
 
-모든 collection은 sorted unique다. caller가 기존 digest와 다른 material을 제출하면 strict
-parse 단계에서 거부한다.
+Collections must be sorted and unique. Supplying existing identity fields with different material
+is rejected during strict parsing.
 
 ### Exact registry
 
-`CapabilityDefinitionRegistry`는 exact `(ID, version, digest)` reference만 resolve한다.
-`latest`, compatible-version fallback이나 retired version 자동 교체는 없다. 반환값은 deep
-copy이므로 caller mutation이 registry authority를 바꾸지 않는다.
+`CapabilityDefinitionRegistry` resolves exact `(ID, version, digest)` references only. It has no
+`latest` lookup, compatible-version fallback, or automatic retired-version replacement. Returned
+definitions are deep copies so caller mutation cannot alter registry authority.
 
 ### Existing Tool adapter
 
-`ToolCapabilityRegistration`은 Capability에 필요한 보안 metadata를 명시적으로 받는다.
-`capability_registry_from_tools()`는 live Tool adapter가 등록 당시 `ToolSpec`에서 변하지
-않았음을 `ToolRegistry.tool()`로 확인한 뒤 frozen ToolSpec을 digest한다.
+`ToolCapabilityRegistration` requires explicit security metadata.
+`capability_registry_from_tools()` verifies through `ToolRegistry.tool()` that the live adapter has
+not changed since registration, then digests the frozen ToolSpec.
 
-Tool 이름, category 또는 description에서 surface·threat·side effect·approval·cleanup을
-추론하지 않는다. 존재하지 않거나 drift한 Tool은 fail closed한다.
+Surface, threat, side-effect, approval, and cleanup semantics are never inferred from Tool names,
+categories, or descriptions. Unknown or drifted Tools fail closed.
 
 ### GRAPH-006 adapter
 
-`registered_action_capability()`은 CAP-001 definition을 GRAPH-006 Permit compiler 형식으로
-변환한다.
+`registered_action_capability()` converts a CAP-001 definition to the GRAPH-006 Permit compiler
+contract:
 
-- `definitionDigest`: CAP-001 전체 definition digest
-- `capabilityDigest`: Graph 등록 레코드 digest
-- Tool ID/version/digest와 risk tier: exact copy
+- `definitionDigest` binds the complete CAP-001 definition;
+- `capabilityDigest` binds the Graph registration record; and
+- Tool ID/version/digest and risk tier are copied exactly.
 
-따라서 MissionEnvelope·ActionProposal·ActionPermit은 Tool binding뿐 아니라 전체 Capability
-definition에도 결박된다.
+MissionEnvelopes, ActionProposals, and ActionPermits therefore bind the full Capability definition
+as well as its Tool contract.
 
-## 검증
+## Verification
 
-- canonical digest stability와 collection ordering rejection
-- definition digest tamper와 exact-version mismatch rejection
-- duplicate ID/version registry rejection
-- live ToolSpec drift와 unknown Tool rejection
-- explicit registration Tool mismatch rejection
-- CAP-001 → GRAPH-006 authority binding 보존
+- canonical digest stability and collection-order rejection;
+- definition-digest tamper and exact-version mismatch rejection;
+- duplicate ID/version rejection;
+- live ToolSpec drift and unknown Tool rejection;
+- explicit-registration Tool mismatch rejection; and
+- CAP-001 to GRAPH-006 authority-binding preservation.
 
-## 호환성·남은 경계
+## Compatibility and remaining boundaries
 
-- 기존 `CapabilityGrant`의 감쇠·revocation·call-budget 의미는 변경하지 않는다.
-- 기존 Tool Gateway와 Policy Engine이 계속 유일한 runtime 실행 경계다.
-- compiler/executor/oracle/replay/cleanup code-backed interface는
-  [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.ko.md)에서 구현한다.
-- durable Registry, signing/review/maturity activation과 runtime ActionPermit wiring은 후속이다.
-- CAP-001은 benchmark coverage나 실제 Hybrid walking skeleton 완료를 주장하지 않는다.
+- Existing `CapabilityGrant` attenuation, revocation, and call-budget semantics are unchanged.
+- The existing Tool Gateway and Policy Engine remain the only runtime execution boundary.
+- Code-backed compiler/executor/oracle/replay/cleanup interfaces are implemented by
+  [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.md).
+- Durable Registry storage, signing/review/maturity activation, and runtime ActionPermit wiring
+  remain follow-up work.
+- CAP-001 does not claim benchmark coverage or a completed Hybrid walking skeleton.

@@ -2,7 +2,9 @@
 
 - Status: Accepted for Candidate admission; confirmation semantics amended by ADR 0027
 - Date: 2026-07-14
-- Implementation: KISA AI chat Candidate admission implemented; Restricted Reproducer planned
+- Implementation: KISA AI chat Candidate admission implemented. The Restricted Reproducer and
+  common confirmation gate were planned when this ADR was accepted and are now implemented for
+  the explicit KISA/Local scope described in ADR 0027
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md)
 - Amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 

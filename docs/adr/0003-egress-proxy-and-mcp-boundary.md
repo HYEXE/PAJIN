@@ -1,4 +1,4 @@
-# ADR-0003: Egress proxy and registered MCP execution boundary
+# ADR-0003: Egress Proxy and Registered MCP Execution Boundary
 
 - Status: Accepted
 - Date: 2026-07-12

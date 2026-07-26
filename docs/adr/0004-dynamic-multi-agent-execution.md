@@ -1,4 +1,4 @@
-# ADR-0004: Dynamic multi-agent execution and attenuated delegation
+# ADR-0004: Dynamic Multi-Agent Execution and Attenuated Delegation
 
 - Status: Accepted
 - Date: 2026-07-12
@@ -7,6 +7,7 @@
 > The Validator and final-gate behavior below records the original implementation decision. Under
 > ADR 0027, semantic support and same-Run evidence checks alone cannot create product-level
 > `confirmed`; a fresh Candidate-bound ReplayOutcome is also required.
+
 - Call-budget allocation amended by: ADR 0020
 - Specialist scheduling amended by: ADR 0021
 
@@ -113,8 +114,7 @@ contract and its CLI, sealed Run context, and report state that it is not real-t
 
 The original acceptance requires five completed role agents and one legacy validation Finding in
 the normal Docker run; that Finding is not product-level Confirmed until ADR 0027-compliant
-reproduction succeeds;
-a live Worker dispatch followed by cancelled Specialist/Validator/Reporter tasks, complete Grant
-revocation, and no residual PAJIN container or network in the cancellation run; plus passing tests
-for sibling budget non-amplification, dynamic fan-out, bounded retry, external signal cancellation,
-and invented-evidence rejection.
+reproduction succeeds; a live Worker dispatch followed by cancelled
+Specialist/Validator/Reporter tasks, complete Grant revocation, and no residual PAJIN container or
+network in the cancellation run; plus passing tests for sibling budget non-amplification, dynamic
+fan-out, bounded retry, external signal cancellation, and invented-evidence rejection.

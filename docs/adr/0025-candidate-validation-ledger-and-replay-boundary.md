@@ -2,7 +2,9 @@
 
 - Status: Accepted for ledger and objective-gate design; confirmation semantics amended by ADR 0027
 - Date: 2026-07-14
-- Implementation: Stage 1 implemented; KISA trusted admission added by ADR 0026; Restricted Reproducer planned
+- Implementation: Stage 1 implemented; KISA trusted admission added by ADR 0026. The Restricted
+  Reproducer and common confirmation gate were planned when this ADR was accepted and are now
+  implemented for the explicit KISA/Local scope described in ADR 0027
 - Amends: [ADR 0004](0004-dynamic-multi-agent-execution.md)
 - Amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 

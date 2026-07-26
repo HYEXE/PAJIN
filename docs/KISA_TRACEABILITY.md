@@ -1,208 +1,224 @@
-# KISA AI 보안 레드티밍 가이드 추적성
+# KISA AI Security Red Teaming Guide Traceability
 
-> 2026-07-24 B2.8f: signed registry v4 HTTPS entry는 TLS 1.2
-> `tls-unique-sha256`을 요구한다. Target receipt v2와 Executor TLS binding v3는 양 endpoint가
-> 같은 socket에서 관찰한 session digest를 각각 서명하고, Control Plane은 digest·binding
-> type·TLS version·SPKI를 exact 비교해 downgrade와 cross-session proof 조합을 거부한다.
-> registry v1~v3는 호환되며 v4는 TLS 1.3 또는 channel binding 미지원 환경에서 fail closed
-> 한다. 이는 TLS 1.2 lab session 결박이며 TLS 1.3 RFC 9266 exporter, CT·revocation,
-> runtime refresh 또는 외부 anti-rollback 기준은 아니다. 자세한 결정은
-> [`ADR-0044`](adr/0044-target-signed-tls-session-binding.md)를 참조한다.
+> 2026-07-24 B2.8f: a signed registry-v4 HTTPS entry requires TLS 1.2
+> `tls-unique-sha256`. Target receipt v2 and Executor TLS binding v3 separately sign the session
+> digest observed by both endpoints on the same socket. The Control Plane exact matches digest,
+> binding type, TLS version, and SPKI to reject downgrade and cross-session proof composition.
+> Registry v1 through v3 remain compatible; v4 fails closed on TLS 1.3 or runtimes without channel
+> binding. This proves the lab TLS 1.2 session binding, not TLS 1.3 RFC 9266 exporter support,
+> CT/revocation, runtime refresh, or an external anti-rollback baseline. See
+> [`ADR-0044`](adr/0044-target-signed-tls-session-binding.md).
 
-## 1. 목적과 기준선
+## 1. Purpose and Baseline
 
-이 문서는 KISA 「AI 보안 레드티밍 가이드」(2026.07)의 요구사항을 PAJIN의 코드, 실행
-통제, 증적, 결과 산출물에 연결한다. 페이지는 첨부 PDF의 물리 페이지를 기준으로 한다.
+This document maps requirements from the KISA *AI Security Red Teaming Guide* (2026.07) to PAJIN
+code, execution controls, evidence, and result artifacts. Page references use the physical pages of
+the attached PDF.
 
-> 최종 최신화: 2026-07-19. Candidate admission, 원 증거 심사, 제한 재현 계약, Replay
-> Compiler·단일 사용 ticket·Restricted Reproducer와 M03·M06·A04용 trusted fresh-session
-> materializer·live KISA transcript Oracle·runner coordinator, receipt 재로딩 공통 Gate와
-> append-only `validation/v1alpha1` Confirmed 투영을 구현했다. flat `findings.json`은 봉인된
-> 원 snapshot으로 보존하며 제품 소비자는 versioned 투영을 사용한다. M6-05는 이 투영의
-> reproduction-backed baseline에 결박된 negative ReplayOutcome과 별도 정상 기능 회귀를
-> hardened `kisa-retest` 경로에 연결했다. M6-06은 로컬 KISA positive/negative ticket을 stable
-> SQLite 원장에 영속화하고 프로세스 재시작 뒤 read-only verifier와 CLI로 receipt 결박을 다시
-> 검증하는 경계를 추가했다. M6-07A는 일반 Local Campaign에도 명시적
-> `pajin run ... --kisa-replay --repetitions 2` opt-in을 추가해 exact M03·M06·A04 Candidate를
-> 같은 SQLite replay와 공통 Gate에 연결했다. flag가 없는 기본 Local 실행은 자동 replay를
-> 수행하지 않는다. M6-07B-2A는 Control Plane sealed-source 기반을 추가했다. 소유자 통제 managed
-> filesystem Artifact repository, immutable `cp_artifacts` metadata, schema v3와 producer Control
-> Plane/sealed Run identity를 따로 보존하는 server-owned admission을 구현했다. consumer는 exact
-> opaque `(artifact_id, repository_version)` locator만 사용하고 resolution은 content와 seal을 다시
-> 검증한다. M6-07B-2B는 batch input을 그 locator와 idempotency key로 한정한다. Control Plane은
-> managed sealed AI Red Team source를 다시 읽어 eligible exact M03·M06·A04 confirmation Candidate와
-> contract를 파생하고 trusted Replay Compiler를 실행한 뒤 canonical `ReplayCompilation`과
-> `ReplayCapabilityGrant`를 append-only planned/pending, non-dispatchable PostgreSQL derivation
-> record이자 proof로 저장한다. 2026-07-18에는 M6-07B-2C durable issuance도 구현했다. 내부 멱등
-> `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` 서비스는 managed source를 다시
-> resolve·재검증하고 schema v5 durable budget account/reservation과 보수적인 sealed-rate
-> account/reservation을 사용해 첫 시도 전체를 예약한다. pending item마다 fresh Replay Run identity와
-> 5분 Grant로 다시 compile해 새 canonical compilation을 append하고, 정확한 `compilation_id`,
-> `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run, compilation digest, Grant
-> digest에 결박된 내부 Job과 `issued` ticket을 하나씩 원자적으로 만든다. 최초 planned row는
-> non-dispatchable 상태로 남고 재사용하지 않는다. M6-07B-2D는 schema v6 append-only
-> `cp_replay_tool_permits` 원장과 내부 서비스 전용 호출별 permit 발급을 구현했다. strict request는
-> executor profile, lease token, ticket ID, fencing value와 1-based call ordinal만 받는다. 서버는 exact
-> active authority graph와 counter를 다시 검증하고 rolling-window rate 재수용을 수행한 뒤 canonical
-> Tool/target/method 및 신뢰된 unit 비용에 결박된 일회성 permit을 발급한다. ticket/ordinal 고유성과 저장된 permit digest/request ID로
-> 응답 유실 중복 호출은 같은 row를 돌려주며, 최초 발급만 예약량을 consumed로 옮기고 event를 append한다.
-> 실행 여부가 불확실해도 발급된 permit은 consumed로 남는다. M6-07B-2E는 fail-closed 내부 Worker HTTP
-> transport를 추가했다. strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array
-> allowlist는 설정이 없으면 빈 목록으로 fail closed하며, 예시
-> `{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 해당
-> profile 하나를 허용한다. WORKER-role 전용
-> claim·heartbeat·Tool-permit endpoint와 async client를 제공하고, claim/heartbeat envelope에 서버가
-> 검증한 canonical `ReplayCompilation`을 포함한다. permit은 발급 시 이미 소비된 non-bearer proof이며
-> 별도 redeem mutation은 없다. M6-07B-2F는 schema v7 append-only
-> `cp_replay_execution_contexts`를 추가한다. 발급 시 fresh compilation마다 exact Campaign, exact
-> KISA Scenario, canonical `AIChatProbeTool.spec`, 각 component digest와 전체 context digest를 저장한다.
-> context는 `kisa-exact-v1`을 고정하고 Secret Lease를 금지하며 opaque output-staging slot만
-> 할당한다. payload, claim/heartbeat, profile 검사와 permit 발급은 같은 authority를 전이적으로 다시
-> 검증한다. v6→v7 migration은 non-dispatchable 상태만 context table이 빈 채로 전진시키고, 과거
-> context byte를 backfill할 수 없는 dispatchable Replay authority가 있으면 fail closed한다. Schema
-> v9는 bounded exact-KISA 실행 slice를 구현한다. 전용 `kisa-exact-v1` daemon은 별도 Replay Worker
-> credential로 claim·heartbeat하고, 응답 유실 가능성이 있는 동일 permit 요청만 bounded retry하며,
-> 각 Tool dispatch 직전에 durable permit을 발급받아 서버 발행 opaque staging slot에 output을
-> seal한다. path, ArtifactRef, result, digest 또는 verdict는 제출하지 않는다. Control Plane은 staging
-> tree를 repository로 import해 두 seal과 source/compilation/ticket/permit lineage를 다시 검증하고,
-> 공통 Gate를 파생해 typed finalization과 Job/ticket/item/batch/Run 상태 전이를 원자적으로 append한다.
-> Compose는 일반 Worker daemon과 함께 이 전용 daemon을 활성화한다. Permit이 하나라도 생긴 뒤의
-> failure는 terminal이고 같은 ticket을 자동 재dispatch하지 않는다. Public Replay admission/read API,
-> fresh-identity retry 발행과 schema-v11 multi-item projection은 구현됐다. Schema v12는 confirmed
-> baseline과 부모 Retest를 1:1 결박하고 전체 음성 receipt·정상 기능 회귀를 서버가 재검증한
-> `kisa-retest.json`을 봉인한다. Schema v13은 exact KISA M03·M06·A04의 validity·impact·severity
-> Claim을 append-only 원장과 v3 public projection까지 보존한다. 명시적 v3 정책은 이 receipt
-> 권위를 Ed25519 bundle로 봉인해 외부 trust anchor로 off-host 검증할 수 있다. B2.8a는 별도
-> executor workload key가 exact permit set·sealed output과 bounded portable bundle을 서명하고
-> 다른 host의 Control Plane이 bytes 복사 전후로 재검증하게 한다. B2.8b는 permit-derived
-> challenge, Target 발급 Ed25519 receipt, host proxy 관찰과 executor binding을 검증해 exact
-> validity Claim의 `VERIFIED_INDEPENDENT_REPLAY`를 허용한다. B2.8c~f는 HTTPS CONNECT·leaf
-> SPKI, 다중 Target signed registry와 TLS 1.2 양측 session binding까지 검증한다. B2.8g는
-> 사전 검증·재개 가능한 로컬 object-store multipart 전송을 64 MiB까지 추가한다. TLS 1.3
-> exporter와 그보다 큰 외부/pre-signed object-store 전송은 후속이므로 M6-07B 전체는 아직
-> 미완료다.
+> Last updated: 2026-07-19. Candidate admission, original-evidence review, restricted-reproduction
+> contracts, the Replay Compiler, single-use tickets, the Restricted Reproducer, trusted
+> fresh-session materializers for M03, M06, and A04, the live KISA transcript Oracle, the runner
+> coordinator, the common Gate that reloads receipts, and the append-only
+> `validation/v1alpha1` Confirmed projection have been implemented. The flat `findings.json` is
+> preserved as the sealed original snapshot, while product consumers use the versioned projection.
+> M6-05 connects negative ReplayOutcomes bound to the projection's reproduction-backed baseline and
+> a separate normal-function regression to the hardened `kisa-retest` path. M6-06 persists local
+> KISA positive and negative tickets in a stable SQLite ledger and adds a boundary that revalidates
+> receipt bindings after a process restart through a read-only verifier and CLI. M6-07A also adds
+> explicit `pajin run ... --kisa-replay --repetitions 2` opt-in to ordinary Local Campaigns,
+> connecting exact M03, M06, and A04 Candidates to the same SQLite-backed replay path and common
+> Gate. A default Local execution without the flag does not perform replay automatically.
+> M6-07B-2A added the Control Plane sealed-source foundation: an owner-controlled managed
+> filesystem Artifact repository, immutable `cp_artifacts` metadata, schema v3, and server-owned
+> admission that preserves separate producer Control Plane and sealed Run identities. Consumers use
+> the exact opaque `(artifact_id, repository_version)` locator, and resolution re-verifies content
+> and seals. M6-07B-2B now narrows batch input to that locator plus an idempotency key. The Control
+> Plane rereads the managed sealed AI Red Team source, derives the eligible exact M03, M06, and A04
+> confirmation Candidate and contract, runs the trusted Replay Compiler, and stores the canonical
+> `ReplayCompilation` and `ReplayCapabilityGrant` as an append-only planned/pending,
+> non-dispatchable PostgreSQL derivation record and proof. M6-07B-2C durable issuance is also
+> implemented as of 2026-07-18. The internal, idempotent
+> `ControlPlaneService.issue_replay_batch(batch_id, actor=...)` service re-resolves and re-verifies
+> the managed source, uses schema-v5 durable budget and conservative sealed-rate accounts and
+> reservations, and reserves the entire first attempt. It recompiles every pending item with a fresh
+> Replay Run identity and five-minute Grant, appends a new canonical compilation, and atomically
+> creates one internal Job and `issued` ticket bound to the exact `compilation_id`,
+> `budget_reservation_id`, `rate_reservation_id`, attempt, Replay Run, compilation digest, and Grant
+> digest. The initial planned row remains non-dispatchable and is never reused. M6-07B-2D implements
+> the schema-v6 append-only `cp_replay_tool_permits` ledger and internal service-only per-call permit
+> issuance. Its strict request accepts only the executor profile, lease token, ticket ID, fencing
+> value, and 1-based call ordinal. The server rechecks the exact active authority graph and counters,
+> performs rolling-window rate re-admission, then issues a one-use permit bound to the canonical
+> Tool, target, method, and trusted unit cost. Ticket/ordinal uniqueness and the persisted permit digest/request ID make a response-loss
+> duplicate return the same row; only the first issuance consumes the reserved units and appends an event.
+> An issued permit stays consumed when execution is uncertain. M6-07B-2E adds fail-closed internal
+> Worker HTTP transport. The strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array
+> allowlist is empty and fails closed when unset; for example,
+> `{"replay-worker-service":["kisa-exact-v1"]}` grants that one profile only to the separately
+> authenticated Replay Worker subject. Dedicated
+> WORKER-role claim, heartbeat, and Tool-permit endpoints plus an async client expose the existing
+> authority, while claim/heartbeat envelopes contain the server-validated canonical
+> `ReplayCompilation`. A permit remains a non-bearer proof already consumed on issuance; there is no
+> separate redeem mutation. M6-07B-2F adds schema-v7 append-only
+> `cp_replay_execution_contexts`. Issuance stores one canonical context per fresh compilation with
+> the exact Campaign, exact KISA Scenario, canonical `AIChatProbeTool.spec`, their component digests,
+> and the complete context digest. The context fixes `kisa-exact-v1`, forbids Secret Leases, and
+> assigns an opaque output-staging slot. Payload, claim/heartbeat, profile checks, and permit
+> issuance revalidate the same authority transitively. The v6→v7 migration advances only
+> non-dispatchable state with an empty context table and fails closed if any dispatchable Replay
+> authority exists whose historical context bytes cannot be backfilled. Schema v9 now completes the
+> bounded exact-KISA execution slice: the dedicated `kisa-exact-v1` daemon claims and heartbeats with
+> its distinct Replay Worker credential, retries only identical permit requests after possible
+> response loss, obtains a durable permit immediately before each Tool dispatch, and seals output
+> into the server-issued opaque staging slot. It submits no path, ArtifactRef, result, digest, or
+> verdict. The Control Plane imports the staged tree into its repository, reopens both seals,
+> verifies source/compilation/ticket/permit lineage, derives the common Gate, and appends the typed
+> finalization atomically with the Job/ticket/item/batch/Run state changes. Compose enables this
+> daemon alongside the generic Worker daemon. After any permit exists, failure is terminal and the
+> same ticket is not automatically dispatched again. Public Replay admission/read APIs,
+> fresh-identity retry issuance, and schema-v11 multi-item projection are implemented. Schema v12
+> binds a confirmed baseline to one parent Retest and seals a server-reverified `kisa-retest.json`
+> from all negative receipts plus normal-function regression. Schema v13 preserves every validity,
+> impact, and severity Claim for exact KISA M03/M06/A04 through an append-only ledger and v3 public
+> projection. The explicit v3 policy seals that receipt authority in an Ed25519 bundle that an
+> off-host verifier can validate against an external trust anchor. B2.8a adds a separate executor
+> workload key that signs the exact permit set, sealed output, and bounded portable bundle for
+> verification before and after transfer to a Control Plane on another host. B2.8b verifies a
+> permit-derived challenge, Target-issued Ed25519 receipt, host proxy observation, and executor
+> binding before allowing an exact validity Claim to reach `VERIFIED_INDEPENDENT_REPLAY`. B2.8c
+> through B2.8f verify HTTPS CONNECT and leaf SPKI, a signed multi-Target registry, and TLS 1.2
+> dual-observer session binding. B2.8g adds pre-verified, resumable managed-local-object-store
+> multipart transfer up to 64 MiB. TLS 1.3 exporter support and larger external/pre-signed
+> object-store transfer remain follow-up work, so M6-07B is not complete.
 
-이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
-법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
-인증을 의미하지 않는다.
+This mapping is traceability material for applying technical evaluation consistently and exposing
+omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
+business-impact, or operational procedures, and it does not constitute compliance certification.
 
-## 2. 가이드에서 PAJIN까지의 흐름
+## 2. Flow from the Guide to PAJIN
 
 ```mermaid
 flowchart LR
-    G["KISA 가이드<br/>위협·절차·평가·기록"] --> C["KISA Catalog<br/>19개 위협·52개 체크리스트"]
-    C --> S["Scenario Selection<br/>대상 유형·요청 위협"]
-    S --> P["Planner<br/>반복 가능한 Task Graph"]
-    P --> X["Specialists<br/>Tool Gateway·Docker Worker"]
-    X --> CP["Trusted Candidate Producer<br/>구현"]
-    CP --> V["Semantic Validator<br/>증거 심사·구현"]
+    G["KISA Guide<br/>Threats, procedures, evaluation, records"] --> C["KISA Catalog<br/>19 threats, 52 checklist items"]
+    C --> S["Scenario Selection<br/>Target type, requested threats"]
+    S --> P["Planner<br/>Repeatable Task Graph"]
+    P --> X["Specialists<br/>Tool Gateway, Docker Worker"]
+    X --> CP["Trusted Candidate Producer<br/>Implemented"]
+    CP --> V["Semantic Validator<br/>Evidence review, implemented"]
     S -. "explicit Local opt-in" .-> LO
-    LO["Explicit Local KISA Orchestrator<br/>단일 process·writer"] -. "opt-in sequencing" .-> P
+    LO["Explicit Local KISA Orchestrator<br/>Single process and writer"] -. "opt-in sequencing" .-> P
     LO -. "sealed source → replay → Gate" .-> CG
-    V --> RC["Versioned Replay Contracts<br/>스키마 구현"]
-    RC --> RG["Deterministic Compiler + Replay Grant<br/>구현"]
-    RG --> TL["SQLite Ticket Ledger<br/>원자 상태 전이·event journal"]
-    TL --> RR["Restricted Reproducer<br/>새 요청·새 증적·이중 seal 구현"]
-    RR --> KD["KISA Fresh-session Driver<br/>M03·M06·A04 구현"]
-    KD --> O["Live KISA Transcript Oracle<br/>원문 재판정 구현"]
-    O --> RI["Replay Index<br/>원본·재현 증적 분리"]
-    RI --> DV["Read-only Ticket Verifier<br/>재시작 후 finalization 대조"]
+    V --> RC["Versioned Replay Contracts<br/>Schemas implemented"]
+    RC --> RG["Deterministic Compiler + Replay Grant<br/>Implemented"]
+    RG --> TL["SQLite Ticket Ledger<br/>Atomic state transitions, event journal"]
+    TL --> RR["Restricted Reproducer<br/>Fresh requests, fresh evidence, dual seals implemented"]
+    RR --> KD["KISA Fresh-session Driver<br/>M03, M06, A04 implemented"]
+    KD --> O["Live KISA Transcript Oracle<br/>Re-evaluation of raw text implemented"]
+    O --> RI["Replay Index<br/>Original and reproduction evidence separated"]
+    RI --> DV["Read-only Ticket Verifier<br/>Finalization comparison after restart"]
     TL --> DV
-    DV --> CG["Common Confirmed Gate<br/>receipt 재검증·구현"]
-    CG --> VP["validation/v1alpha1<br/>Decision·Finding·Report"]
-    VP --> BR["Baseline-bound Retest<br/>exact Candidate·receipt 결박"]
-    BR --> NR["Restricted Negative Replay<br/>별도 공격 Run"]
-    NR --> NO["Trusted Negative Oracle<br/>전체 반복 CONTRADICTS"]
-    RT["Normal Parent Retest<br/>정상 기능 probe"] --> NREG["Regression<br/>독립 평가"]
-    NO --> KG["KISA Retest Gate<br/>fixed·still-vulnerable·inconclusive"]
+    DV --> CG["Common Confirmed Gate<br/>Receipt revalidation, implemented"]
+    CG --> VP["validation/v1alpha1<br/>Decision, Finding, Report"]
+    VP --> BR["Baseline-bound Retest<br/>Exact Candidate and receipt binding"]
+    BR --> NR["Restricted Negative Replay<br/>Separate attack Run"]
+    NR --> NO["Trusted Negative Oracle<br/>All repetitions CONTRADICTS"]
+    RT["Normal Parent Retest<br/>Normal-function probe"] --> NREG["Regression<br/>Independent evaluation"]
+    NO --> KG["KISA Retest Gate<br/>fixed, still-vulnerable, inconclusive"]
     NREG --> KG
-    V --> N["Candidate·Decision Ledger<br/>needs-review"]
-    O --> E["Evaluation<br/>지표·커버리지·체크리스트"]
+    V --> N["Candidate and Decision Ledger<br/>needs-review"]
+    O --> E["Evaluation<br/>Metrics, coverage, checklist"]
     VP --> E
     KG --> E
     N --> E
-    E --> R["KISA Artifacts<br/>Markdown·JSON"]
+    E --> R["KISA Artifacts<br/>Markdown, JSON"]
 ```
 
-## 3. 요구사항 매핑
+## 3. Requirements Mapping
 
-| 가이드 기준 | PDF 페이지 | PAJIN 구현 | 실행 증적·산출물 | 상태 |
+| Guide criterion | PDF pages | PAJIN implementation | Execution evidence and artifacts | Status |
 | --- | ---: | --- | --- | --- |
-| AI 시스템 계층과 공격 표면 | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `kisa-test-plan.json`의 `scenarioDefinitions` | 구현 |
-| 19개 위협 분류 D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | `kisa-results.json`의 요청·실행·미실행 위협 | 전체 카탈로그 구현 |
-| 평가 기준과 측정 지표 | 26 | `EvaluationThresholds`, sealed Worker transcript/request 재판정, `KISAMetricResult`, replay index, 공통 Confirmed Gate | 공격 성공률, 차단·거부율, 반복 관찰률, 민감정보 노출, 지연, 커버리지, replay Oracle support, versioned Confirmed ID | 부분 구현: Worker summary verdict·집계값을 신뢰하지 않고 봉인 원문과 catalog check로 재계산하며, 원문 지연 또는 완결 실행이 없으면 `not-measured`; 비즈니스 영향 지표 후속 |
-| 위험 등급 | 27 | Candidate/Finding `severity`, 제안 등급을 숨긴 선택형 독립 Severity Deriver, 공통 Confirmed Gate, 체크리스트 판정 | `candidate-findings.json`, `validator-output.json` v1alpha2, `validation/v1alpha1/findings.json`, `kisa-results.json` | 부분 구현: reproduction-backed 기술 등급과 정보 전용 독립 등급 비교를 생성하며, calibration·다수 Reviewer 합의와 조직별 비즈니스 우선순위는 미완료 |
-| 공격 표면·페르소나 | 28-29 | `KISAPersona`, Scenario 대상 유형·표면 | `kisa-test-plan.json` | 구현 |
-| 시나리오 필수 항목(표 17) | 30 | `KISAScenarioDefinition` | `scenarioDefinitions`에 조건·절차·판정·영향·증적 포함 | 구현 |
-| 시나리오 기반 반복 공격 | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed 분리 | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | 구현: 같은 sealed Run의 terminal-success repetition 전체가 있을 때만 executed로 집계하며 FAILED/CANCELLED Run은 실행 성공·비율을 주장하지 않음 |
-| 결과 판정과 영향 분석 | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent 및 명시적 Local coordinator, Control Plane trusted KISA 파생·발행, 전용 exact-KISA Replay Worker, 서버 권위 호출별 permit, sealed-output import와 schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim receipt attestor·외부 trust-anchor verifier, executor workload attestor·bounded portable transport verifier, Target execution attestor·HTTPS leaf-SPKI·signed registry·TLS session verifier, 공통 Confirmed Gate, baseline-bound Retest Gate | 원 Run, 별도 replay Runs, replay ticket 원장, Control Plane planned proof와 fresh compilation, budget/rate reservation, 내부 Job/ticket, append-only permit·finalization·Retest-source·Claim-binding·registry-version 원장, 서버 검증 execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | 지원 KISA positive/negative 계약, 명시적 Local orchestration, public Replay admission/read API, fresh-identity retry, schema-v13 Claim projection, portable Claim receipt, executor-attested Artifact, Target-issued exact exchange, HTTPS CONNECT·leaf SPKI, signed registry v3 schema-v14 anti-rollback·제한된 pin rotation과 registry v4 TLS 1.2 양측 session binding 구현; TLS 1.3 RFC 9266 exporter와 조직 영향 분석은 후속 |
-| 로그와 부인 방지 증적 | 39 | Tool Gateway·Worker 증적, 해시, 감사 이벤트, SQLite ticket event journal, Control Plane Ed25519 Claim receipt bundle, executor workload attestation, Target-issued execution receipt | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | 로컬 SQLite DB/OS 신뢰 경계, Control Plane receipt 공개키 검증, executor와 Target 외부 trust-anchor 검증 구현; transparency log는 후속 |
-| 결과 분석·보고 | 41-44 | `KISAModePack` sealed Campaign·Plan·Agent·TaskGraph·Gateway evidence exact binding과 보고 생성 | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | 구현: 계획 시나리오와 실제 완결 시나리오를 분리하고 다른 Run 또는 caller 위조 결과를 거부 |
-| 수행 체크리스트(부록 1) | 49-51 | 52개 `ChecklistDefinition`과 4상태 판정 | `kisa-checklist.json` | 구현 |
-| 테스트 계획(표 28) | 64 | `_test_plan` | `kisa-test-plan.json` | 구현 |
-| 테스트 완료 보고(표 29) | 64-65 | `_completion_report` | `kisa-completion-report.json` | 구현 |
-| 테스트 실행 기록(표 30) | 65 | `_execution_log` | `kisa-execution-log.json` | 구현 |
-| 완화·재검증·회귀 확인 | 43-44, 51 | `KISARetestService`, baseline-bound Restricted Reproducer, trusted negative Oracle | `remediation-plan.json`, `kisa-retest.json`, `kisa-retest-index.json`, replay receipt lineage, `kisa-checklist-overlay.json` | 지원 KISA 계약 구현: target-authored 음성 응답은 `inconclusive`, 독립 remediation attestation 전에는 `fixed` 불가, 정상 기능 regression 별도 |
+| AI system layers and attack surfaces | 10-12, 28-29 | `SystemLayer`, Scenario `attack_surface` | `scenarioDefinitions` in `kisa-test-plan.json` | Implemented |
+| 19 threat classes: D01-D03, M01-M08, A01-A04, S01-S04 | 13-14 | `KISAThreatDefinition`, `KISA_CATALOG` | Requested, executed, and unexecuted threats in `kisa-results.json` | Full catalog implemented |
+| Evaluation criteria and metrics | 26 | `EvaluationThresholds`, sealed Worker transcript/request reevaluation, `KISAMetricResult`, replay index, common Confirmed Gate | Attack success rate, block/refusal rate, repeated-observation rate, sensitive-information exposure, latency, coverage, replay Oracle support, versioned Confirmed ID | Partially implemented: Worker summary verdicts and aggregates are ignored and recomputed from sealed raw evidence and catalog checks; missing raw latency or incomplete execution is `not-measured`; business-impact metrics remain follow-up work |
+| Risk rating | 27 | Candidate/Finding `severity`, optional proposed-label-free independent Severity Deriver, common Confirmed Gate, checklist decisions | `candidate-findings.json`, `validator-output.json` v1alpha2, `validation/v1alpha1/findings.json`, `kisa-results.json` | Partially implemented: reproduction-backed technical ratings and an information-only independent-rating comparison are generated; calibration, multi-Reviewer consensus, and organization-specific business priorities remain incomplete |
+| Attack surfaces and personas | 28-29 | `KISAPersona`, Scenario target types and surfaces | `kisa-test-plan.json` | Implemented |
+| Required scenario fields (Table 17) | 30 | `KISAScenarioDefinition` | Conditions, procedures, decisions, impact, and evidence in `scenarioDefinitions` | Implemented |
+| Repeated scenario-based attacks | 35-36 | `KISAPlannerRuntime`, `repetitions`, `KISAModePack` planned/completed projection | `plan.json`, `task-graph.json`, sealed `evidence/`, `events.jsonl` | Implemented: a scenario is executed only when every required terminal-success repetition is present in the same sealed Run; FAILED/CANCELLED Runs do not claim execution success or rates |
+| Result decisions and impact analysis | 37-38 | Candidate Producer, Semantic Validator, fresh-session Restricted Reproducer, live KISA transcript Oracle, SQLite ticket finalization verifier, Multi-Agent and explicit Local coordinators, Control Plane trusted KISA derivation and issuance, dedicated exact-KISA Replay Worker, server-authorized per-call permits, sealed-output import and schema-v9 typed finalization, schema-v13 exact Claim binding, Ed25519 Claim-receipt attestor and external-trust-anchor verifier, executor workload attestor and bounded portable-transport verifier, Target execution, HTTPS leaf-SPKI, signed-registry, and TLS-session verifiers, common Confirmed Gate, baseline-bound Retest Gate | Original Run, separate replay Runs, replay ticket ledger, Control Plane planned proof plus fresh compilation, budget/rate reservations, internal Job/ticket, append-only permit, finalization, Retest-source, Claim-binding, and registry-version ledgers, server-validated execution context, managed Artifact, Gate decision, `kisa-replay-index.json`, `validation/v1alpha1/`, `claim-replays.json`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/`, `kisa-retest.json` | Supported KISA contracts, explicit Local orchestration, public Replay APIs, fresh-identity retry, schema-v13 Claim projection, portable Claim receipts, executor-attested Artifacts, Target-issued exact exchanges, HTTPS CONNECT and leaf-SPKI binding, signed registry-v3 schema-v14 anti-rollback with bounded pin rotation, and registry-v4 TLS 1.2 dual-observer session binding are implemented; TLS 1.3 RFC 9266 exporter support and organizational impact analysis remain follow-up work |
+| Logs and non-repudiation evidence | 39 | Tool Gateway and Worker evidence, hashes, audit events, SQLite ticket event journal, Control Plane Ed25519 Claim-receipt bundle, executor workload attestation, Target-issued execution receipt | `evidence/`, `events.jsonl`, `kisa-execution-log.json`, `replay-tickets.sqlite3`, `portable-replay-attestation.json`, `validation/v1alpha1/executor-attestations/` | Local SQLite DB/OS trust boundary plus Control Plane receipt, executor, and Target external-trust-anchor verification are implemented; a transparency log remains follow-up work |
+| Result analysis and reporting | 41-44 | `KISAModePack` exact binding of sealed Campaign, Plan, Agents, TaskGraph, Gateway evidence, and report generation | `kisa-report.md`, `kisa-results.json`, `kisa-test-plan.json`, `kisa-completion-report.json` | Implemented: planned and actually completed scenarios are separated; foreign-Run or caller-forged inputs are rejected |
+| Execution checklist (Appendix 1) | 49-51 | 52 `ChecklistDefinition` entries and four-state decisions | `kisa-checklist.json` | Implemented |
+| Test plan (Table 28) | 64 | `_test_plan` | `kisa-test-plan.json` | Implemented |
+| Test completion report (Table 29) | 64-65 | `_completion_report` | `kisa-completion-report.json` | Implemented |
+| Test execution record (Table 30) | 65 | `_execution_log` | `kisa-execution-log.json` | Implemented |
+| Mitigation, retest, and regression verification | 43-44, 51 | `KISARetestService`, baseline-bound Restricted Reproducer, trusted negative Oracle | `remediation-plan.json`, `kisa-retest.json`, `kisa-retest-index.json`, replay receipt lineage, `kisa-checklist-overlay.json` | Supported KISA contracts implemented: target-authored negative responses remain `inconclusive`; `fixed` is unavailable before independent remediation attestation; normal-function regression is evaluated separately |
 
-## 4. 위협 카탈로그와 실행 커버리지
+## 4. Threat Catalog and Execution Coverage
 
-| 위협군 | 코드 | 현재 상태 |
+| Threat group | Codes | Current status |
 | --- | --- | --- |
-| 데이터 | D01, D02, D03 | 분류·추적 가능, 실행 시나리오 추가 필요 |
-| 모델 | M01-M08 | M03·M06 실행 가능, 나머지 시나리오 추가 필요 |
-| 에이전트 | A01-A04 | A01·A02·A04 실행 가능, A03 시나리오 추가 필요 |
-| 공급망 | S01-S04 | 분류·추적 가능, 실행 시나리오 추가 필요 |
+| Data | D01, D02, D03 | Classification and tracking available; execution scenarios must be added |
+| Model | M01-M08 | M03 and M06 executable; scenarios for the others must be added |
+| Agent | A01-A04 | A01, A02, and A04 executable; an A03 scenario must be added |
+| Supply chain | S01-S04 | Classification and tracking available; execution scenarios must be added |
 
-첫 수직 시나리오 `kisa.agent.indirect-tool-hijacking`은 `mock-agent`를 대상으로 간접
-프롬프트 인젝션과 비인가 도구 호출을 반복 실행하며 A01·A02를 검증한다. Campaign이 A04를
-함께 요청하면 이를 성공으로 간주하지 않고 `untested`와 사유로 기록한다. 따라서 카탈로그
-수록과 실제 동적 테스트 커버리지를 구분할 수 있다.
+The first vertical scenario, `kisa.agent.indirect-tool-hijacking`, repeatedly runs indirect prompt
+injection and unauthorized tool invocation against `mock-agent` to test A01 and A02. If a Campaign
+also requests A04, the system does not count it as a success; it records `untested` and the reason.
+This distinguishes catalog inclusion from actual dynamic test coverage.
 
-공급자 중립 `ai-chat-api` 대상에는 다음 세 시나리오가 추가로 연결된다.
+Three more scenarios are connected to the provider-neutral `ai-chat-api` target:
 
-- `kisa.model.system-prompt-disclosure`: M03 시스템 프롬프트 전용 표식 노출
-- `kisa.model.jailbreak-policy-bypass`: M06 제한 동작 승인 표식을 통한 정책 우회
-- `kisa.agent.memory-poisoning-persistence`: A04 동일 세션 후속 턴의 오염 표식 지속
+- `kisa.model.system-prompt-disclosure`: exposure of an M03 system-prompt-only marker
+- `kisa.model.jailbreak-policy-bypass`: M06 policy bypass through a restricted-action approval marker
+- `kisa.agent.memory-poisoning-persistence`: persistence of an A04 contamination marker in a
+  follow-up turn in the same session
 
-각 시나리오는 실제 Docker Worker에서 egress proxy를 거쳐 고정된 Chat API 계약만
-호출한다. Tool, Trusted Candidate Producer와 결정론적 Semantic Validator는 동일한 strict
-`AIChatProbeOutput` 계약을 파싱하고 Tool이 제공한 `vulnerable`·`matched` 값을 신뢰하지 않은
-채 계획에 기록된 판정 마커를 원문 대화 응답에서 다시 확인한다. 이는 원 실행의 증거
-심사이며, 새 요청과 증적 계보를 만드는 독립 재현은 아니다.
+Each scenario calls only the fixed Chat API contract through an egress proxy from an actual Docker
+Worker. The Tool, Trusted Candidate Producer, and deterministic Semantic Validator parse the same
+strict `AIChatProbeOutput` contract. Without trusting the Tool-provided `vulnerable` or `matched`
+values, they recheck the decision markers recorded in the plan against the raw conversation
+response. This is evidence review of the original execution, not independent reproduction that
+creates a fresh request and evidence lineage.
 
-## 5. 체크리스트 판정 원칙
+## 5. Checklist Decision Principles
 
-| 상태 | 의미 | 예시 |
+| State | Meaning | Example |
 | --- | --- | --- |
-| `yes` | 같은 Run의 구조화 증적으로 확인됨 | Scope, 교전 규칙, 반복 실행, 로그, 독립 판정 |
-| `no` | 필요한 활동 또는 산출물이 수행되지 않음 | 완화 과제, 재검증, 정상 기능·회귀 테스트 |
-| `not-applicable` | 해당 Run에 판정 대상이 없음 | Finding이 없을 때 취약점별 설명·완화 |
-| `needs-review` | 기술 실행만으로 확인할 수 없음 | 법률 검토, 교육, HITL, 비즈니스 영향 |
+| `yes` | Verified from structured evidence in the same Run | Scope, rules of engagement, repeated execution, logs, independent decision |
+| `no` | A required activity or artifact was not performed or produced | Mitigation tasks, retesting, normal-function and regression testing |
+| `not-applicable` | The Run has nothing to which the decision applies | Per-vulnerability explanation and mitigation when there is no Finding |
+| `needs-review` | Cannot be verified through technical execution alone | Legal review, training, HITL, business impact |
 
-`yes`에는 증적 경로와 자동 판정 여부가 포함된다. 증적이 없거나 조직 맥락이 필요한 항목을
-관행적으로 통과시키지 않는다. Docker 실행이 실제 증적에서 관찰된 경우에만 격리 환경
-항목을 `yes`로 판정한다.
+A `yes` result includes the evidence path and whether the decision was automated. Items without
+evidence or requiring organizational context are not passed as a matter of convention. An isolated
+environment item is `yes` only when Docker execution is observed in the actual evidence.
 
-## 6. 캠페인 실행 재현 명령과 기대 결과
+## 6. Campaign Reproduction Commands and Expected Results
 
-이 절의 명령은 개발자가 전체 Campaign을 다시 실행하는 방법이다. Candidate별 Restricted
-ReplayOutcome을 생성하는 Validator 독립 재현 단계와는 구분한다.
+The commands in this section show developers how to rerun a complete Campaign. They are distinct
+from the Validator's independent-reproduction stage, which creates a Candidate-specific
+ReplayOutcome.
 
 ```powershell
 .venv\Scripts\pajin kisa-run examples\kisa-ai-redteam.yaml --worker docker --repetitions 2
 ```
 
-현재 예제의 기대 결과는 다음과 같다.
+The current example is expected to produce the following results:
 
-- Supervisor, Planner, 반복별 Specialist, Candidate Producer, Semantic Validator, Reporter가
-  분리된 역할 또는 신뢰 경계로 실행된다.
-- A01·A02는 실행되고 A04는 대상 연결 시나리오 부재로 커버리지 갭에 남는다.
-- 두 번의 공격 성공 증적은 하나의 Candidate와 legacy validation Finding으로 중복 제거된다.
-- Candidate와 legacy Finding은 두 개의 Docker Worker 증적을 참조한다.
-- 공격 성공률과 차단·거부율 임계값은 실패하고 민감정보 노출과 지연 임계값은 통과한다.
-- 표 28-30 대응 JSON, 전체 체크리스트 JSON, 평가 JSON, Markdown 보고서가 생성된다.
+- The Supervisor, Planner, per-repetition Specialists, Candidate Producer, Semantic Validator, and
+  Reporter run as separate roles or trust boundaries.
+- A01 and A02 execute, while A04 remains a coverage gap because there is no scenario connected to
+  the target.
+- Evidence from two successful attacks is deduplicated into one Candidate and one legacy validation
+  Finding.
+- The Candidate and legacy Finding reference two Docker Worker evidence records.
+- The attack success-rate and block/refusal-rate thresholds fail, while the
+  sensitive-information-exposure and latency thresholds pass.
+- JSON corresponding to Tables 28-30, the full checklist JSON, evaluation JSON, and a Markdown
+  report are generated.
 
-공급자 중립 AI Chat Lab Campaign은 다음 명령으로 별도 실행한다.
+Run the provider-neutral AI Chat Lab Campaign separately with the following commands:
 
 ```powershell
 docker compose -f containers/compose.ai-lab.yaml up --build --detach
@@ -210,81 +226,85 @@ docker compose -f containers/compose.ai-lab.yaml up --build --detach
 docker compose -f containers/compose.ai-lab.yaml down
 ```
 
-같은 exact KISA Chat 계약은 일반 Local runner에서도 명시적으로 선택할 수 있다.
+The exact same KISA Chat contract can also be selected explicitly with the ordinary Local runner:
 
 ```powershell
 .venv\Scripts\pajin run examples\kisa-ai-chat-lab.yaml --worker docker `
   --kisa-replay --repetitions 2
 ```
 
-`--kisa-replay`가 없으면 `pajin run`은 기존 Local 원 실행만 수행하고 replay ticket이나 공통
-Confirmed Gate를 자동으로 시작하지 않는다. opt-in은 AI Red Team Campaign의 exact M03·M06·A04
-`ai.chat-probe` allowlist에만 적용한다. Candidate 부재, Validator semantic support 누락 또는
-미등록 Scenario를 구조적으로 비슷하다는 이유로 replay하지 않는다.
+Without `--kisa-replay`, `pajin run` performs only the original execution through the existing Local
+path; it does not automatically start replay tickets or the common Confirmed Gate. Opt-in applies
+only to the exact M03, M06, and A04 `ai.chat-probe` allowlist of the AI Red Team Campaign. The system
+does not replay an absent Candidate, a Candidate that lacks Validator semantic support, or an
+unregistered Scenario merely because it appears structurally similar to a supported case.
 
-M03·M06·A04의 Validation Control 대조는 별도 opt-in으로 실행한다.
+The M03, M06, and A04 Validation Control contrasts are a separate explicit opt-in:
 
 ```powershell
 .venv\Scripts\pajin kisa-run examples\kisa-ai-chat-controls-lab.yaml `
   --worker docker --repetitions 2 --validation-controls
 ```
 
-코드 등록 materializer의 ID·version·scenario digest는 `ValidationControlPlan` v1alpha2에
-봉인된다. Candidate마다 Baseline·Negative Control·Counterfactual이 각각 fresh single-call
-Capability와 고유 request·session·evidence·receipt를 사용한다. A04 Counterfactual은 두 번째
-memory query를 보존하고 첫 poison write만 안전한 directive로 바꾼다. 세 시나리오·단일 target
-예제는 source 6회, validity·impact·severity Claim Replay 18회, Control 9회로 정확히 33회를
-사전 예약한다. Control
-Reconciliation은 정보 전용이며 Confirmed Gate나 Candidate 상태를 변경하지 않는다.
+The code-registered materializer ID, version, and scenario digest are sealed in
+`ValidationControlPlan` v1alpha2. For each Candidate, Baseline, Negative Control, and
+Counterfactual use separate fresh single-call Capabilities and unique request, session, evidence,
+and receipt lineage. The A04 Counterfactual preserves the second memory query while replacing only
+the first poison write with a safe directive. The three-scenario, single-target example reserves
+exactly 33 calls: 6 source, 18 validity/impact/severity Claim Replay, and 9 Control calls. Control Reconciliation is
+information-only and cannot change the Confirmed Gate or Candidate state.
 
-이 Campaign은 M03·M06·A04에 대해 원 실행 6개 Task와 Candidate별 세 Atomic Claim 각각의
-2회 fresh-session replay를 기대한다. 봉인된 원 Run 뒤에는 trusted Candidate 중
-`independent-reproduction-missing` 상태인 항목만 별도 replay Run에서 실행한다. Claim마다
-별도 compiled authority·Grant·single-use ticket·request·session·evidence·Oracle·receipt를
-만든다. Oracle은 Mode 소유 impact statement 및 `high` severity 정책을 확인하고 Worker 판정
-플래그 대신 원문 transcript에서 카탈로그 check를 다시 계산한다. impact·severity는 정보
-전용이며 validity만 제품 confirmation을 구동한다. 취약 프로필에서는 3개 validity replay
-record가 Oracle support를 가질 수 있지만
-공통 Gate가 영수증을 다시 검증하면 `confirmationMutationApplied`는 `true`가 된다. 원
-Candidate·Decision·flat `findings.json`은 덮어쓰지 않고 `validation/v1alpha1`에 최종 Decision과
-Finding을 새 seal로 추가하므로, 취약 fixture의 제품 수준 Confirmed 기대 건수는 3건이다.
+This Campaign expects six original-execution Tasks for M03, M06, and A04, plus two fresh-session
+replays for each of the Candidate's three Atomic Claims. After the sealed original Run, only trusted
+Candidates in the `independent-reproduction-missing` state execute in separate replay Runs. Every
+Claim receives a separate compiled authority, Grant, single-use ticket, request, session, evidence,
+Oracle, and receipt. The Oracles check Mode-owned impact statements and `high` severity policy and
+recalculate catalog checks from the raw transcript rather than using Worker decision flags. Impact
+and severity remain information-only; only validity drives product confirmation. In a vulnerable
+profile, three validity replay records may have Oracle support, but
+`confirmationMutationApplied` becomes `true` when the common Gate revalidates the receipts. The
+original Candidate, Decision, and flat `findings.json` are not overwritten. Instead, a final
+Decision and Finding are added under `validation/v1alpha1` with a new seal, so the expected number
+of product-level Confirmed findings for the vulnerable fixture is three.
 
-positive replay ticket은 개별 sealed replay Run 밖의
-`<output>/replay/replay-tickets.sqlite3`에 저장된다. 이 원장은 canonical compilation, source
-root, replay Run과 Campaign·Tool·Scenario issuance context digest를 결박하고
-`issued → claimed → finalized` 상태 전이와 event journal을 원자적으로 기록한다. 실행
-프로세스가 종료된 뒤에는 다음 명령이 DB를 `mode=ro`로 열어 receipt ticket, artifact digest와
-최종 seal root를 다시 검증한다.
+Positive replay tickets are stored outside individual sealed replay Runs at
+`<output>/replay/replay-tickets.sqlite3`. This ledger binds the canonical compilation and source
+root, plus an issuance-context digest covering the replay Run, Campaign, Tool, and Scenario. It
+atomically records the `issued → claimed → finalized` state transitions and the event journal. After
+the execution process exits, the following command opens the DB in `mode=ro` and revalidates the
+receipt ticket, artifact digest, and final seal root.
 
 ```powershell
 .venv\Scripts\pajin replay-verify <replay-run-directory> `
   --ledger <output>\replay\replay-tickets.sqlite3
 ```
 
-명령은 누락된 ledger를 생성하거나 ticket 상태를 변경하지 않는다. 미완료 ticket이나
-compilation·source/replay 계보·digest·seal 불일치는 fail closed다.
+The command does not create a missing ledger or change ticket state. An incomplete ticket or any
+mismatch in the compilation, source or replay lineage, digest, or seal fails closed.
 
-명시적 Local 경로의 stable ledger는 `<output>/local-replay/replay-tickets.sqlite3`다. Local
-coordinator는 원 Run을 먼저 완결·봉인하고, 같은 live Campaign budget·request-rate ledger·취소
-문맥으로 Candidate replay를 실행한 뒤 batch coverage와 canonical receipt를 다시 확인해 공통
-Gate를 적용한다. verified replay가 없으면 Gate를 적용하지 않는다. flat `findings.json`은
-pre-replay snapshot으로 보존되고 reproduction-backed Confirmed는 append-only
-`validation/v1alpha1`에만 기록된다. 이 순서는 단일 프로세스·단일 writer 전제이며 분산 lock이나
-Control Plane lease를 제공하지 않는다.
+The stable ledger for the explicit Local path is
+`<output>/local-replay/replay-tickets.sqlite3`. The Local coordinator first completes and seals the
+original Run. It then executes Candidate replay with the same live Campaign budget, request-rate
+ledger, and cancellation context, rechecks batch coverage and canonical receipts, and applies the
+common Gate. It does not apply the Gate when there is no verified replay. The flat `findings.json`
+is preserved as the pre-replay snapshot, and reproduction-backed Confirmed findings are recorded
+only in the append-only `validation/v1alpha1` projection. This sequence assumes a single process and
+single writer; it does not provide a distributed lock or Control Plane lease.
 
-## 7. 완화 및 재검증 폐루프
+## 7. Closed Loop for Mitigation and Retesting
 
-완화 계획과 취약점 상태 재검증은 기준 Run의 reproduction-backed Finding만 대상으로 한다.
-따라서 Restricted Replay 이전의 새 Run에서는 Candidate가 보존되더라도 완화 action은 비어 있고,
-retest가 `fixed` 또는 `still-vulnerable`을 주장하지 않는다. 정상 기능 회귀는 별도로 측정하며,
-`improve.retest`는 제품 Confirmed 기준선이 생길 때까지 `needs-review`로 남는다.
+Mitigation planning and vulnerability-state retesting target only reproduction-backed Findings from
+the baseline Run. Therefore, in a new Run before Restricted Replay, mitigation actions remain empty
+even if Candidates are preserved, and the retest does not claim `fixed` or `still-vulnerable`.
+Normal-function regression is measured separately, and `improve.retest` remains `needs-review` until
+a product-level Confirmed baseline exists.
 
-baseline loader는 봉인된 `validation/v1alpha1`의 Confirmed Decision/Finding과 receipt lineage를
-검증한다. legacy flat `findings.json`, semantic-only Candidate, 재현 없는 historical confirmation은
-재검증 기준으로 거부한다. 허용된 각 baseline Finding은 Candidate, source Decision, Finding,
-remediation action, baseline/retest Run과 seal root, original/replay request, scenario, threat, Tool,
-target에 정확히 결박된다. fingerprint는 표시 보조일 뿐 lifecycle 권한 결박이나 신규 Finding
-판정에 사용하지 않는다.
+The baseline loader validates sealed Confirmed Decisions and Findings in `validation/v1alpha1` and
+their receipt lineage. It rejects legacy flat `findings.json`, semantic-only Candidates, and
+historical confirmations without reproduction as retest baselines. Every admitted baseline Finding
+is bound exactly to the Candidate, source Decision, Finding, remediation action, baseline/retest Run
+and seal root, original/replay request, Scenario, threat, Tool, and target. A fingerprint is only a
+display aid; it is not used for lifecycle-authority binding or for deciding that a Finding is new.
 
 ```powershell
 .venv\Scripts\pajin kisa-plan-remediation <baseline-run-directory>
@@ -294,154 +314,168 @@ docker compose -f containers/compose.ai-lab.yaml `
   examples\kisa-ai-chat-lab.yaml --worker docker --repetitions 2
 ```
 
-재검증 판정은 다음 보수적 규칙을 적용한다.
+Retest decisions apply the following conservative rules:
 
-| 판정 | 조건 |
+| Decision | Condition |
 | --- | --- |
-| `fixed` | 기준 Candidate에 결박된 모든 기대 반복이 성공하고 canonical receipt의 trusted negative Oracle이 명시적으로 `ReplayOracleVerdict.CONTRADICTS`를 반환함 |
-| `still-vulnerable` | 기준 Candidate에 결박된 verified ReplayOutcome의 trusted Oracle이 `ReplayOracleVerdict.SUPPORTS`를 반환함 |
-| `inconclusive` | support/contradiction 혼합, 실행 실패·취소·timeout·target unavailable, 증적 누락, 반복 횟수 미달 또는 명시적 방어 증적 부재로 수정 여부를 증명하지 못함 |
-| `new` | 범위 한정 재검증 중 관찰된 reproduction-backed Confirmed Finding이 baseline Finding ID 집합에 없음(새 위협 유형 전체 탐색 여부는 별도 discovery Run에서 판정) |
+| `fixed` | All expected repetitions bound to the baseline Candidate succeed, and the canonical receipt's trusted negative Oracle explicitly returns `ReplayOracleVerdict.CONTRADICTS` |
+| `still-vulnerable` | The trusted Oracle of a verified ReplayOutcome bound to the baseline Candidate returns `ReplayOracleVerdict.SUPPORTS` |
+| `inconclusive` | Mixed support and contradiction, execution failure/cancellation/timeout/target unavailable, missing evidence, too few repetitions, or the absence of explicit defense evidence prevents proof of the remediation state |
+| `new` | A reproduction-backed Confirmed Finding observed during the scoped retest is not in the baseline Finding ID set; whether all new threat types were discovered is decided in a separate discovery Run |
 
-`kisa-retest`는 normal parent retest와 baseline-bound 공격 replay를 분리한다. parent Run은 정상
-기능 probe와 regression을 수행하고, 원 취약점 상태는 baseline Candidate의 exact KISA
-계약을 다시 컴파일한 별도 Restricted Replay Run에서만 판정한다. positive confirmation Oracle의
-zero-support 동작은 바꾸지 않아 계속 `inconclusive`다. 오직 retest 목적의 trusted negative
-Oracle만 전체 기대 반복의 원문 transcript에서 명시적인 방어 결과를 확인한 뒤
-`contradicts`를 만들 수 있다. Worker의 `vulnerable=false`, 단순 compromise marker 부재 또는
-`supports_claim == false`는 `fixed` 근거가 아니다.
+`kisa-retest` separates the normal parent retest from baseline-bound attack replay. The parent Run
+performs the normal-function probe and regression, while the original vulnerability state is
+decided only in a separate Restricted Replay Run that recompiles the exact KISA contract of the
+baseline Candidate. The positive-confirmation Oracle's zero-support behavior is unchanged and
+still yields `inconclusive`. Only the trusted negative Oracle used for retesting can produce
+`contradicts`, after it verifies an explicit defensive result in the raw transcript for every
+expected repetition. A Worker's `vulnerable=false`, the mere absence of a compromise marker, or
+`supports_claim == false` is not evidence of `fixed`.
 
-현재 M03·M06·A04 trusted negative predicate는 결정론 KISA Lab에 등록된 정확한 방어 응답과
-모든 턴의 compromise marker·`toolCalls`·`memoryWrites` 부재를 함께 확인한다. A04는 첫 메모리
-쓰기 거부와 후속 조회의 비지속 응답을 별도로 검증한다. `safety.blocked`·reason 값만으로는
-반증을 만들 수 없고, 등록 응답과 메타데이터가 불일치하거나 문구·target이 미등록이면
-`inconclusive`다.
+The current M03, M06, and A04 trusted negative predicates jointly verify exact defensive responses
+registered in the deterministic KISA Lab and the absence of compromise markers, `toolCalls`, and
+`memoryWrites` in every turn. A04 separately verifies rejection of the first memory write and a
+non-persistent response to the follow-up lookup. `safety.blocked` and its reason alone cannot
+produce a contradiction; a mismatch between the registered response and metadata, or an
+unregistered phrase or target, is `inconclusive`.
 
-receipt loader는 canonical replay artifact를 다시 열어 이중 seal, ticket finalization과 모든 ID·
-digest 결박을 확인한다. baseline/retest Run, root, Candidate, Decision, Finding, remediation,
-request, scenario, threat, Tool 또는 target 불일치는 `inconclusive`로 기록하지 않고 명령을 hard
-fail한다. `kisa-plan-remediation`은 versioned baseline projection과 기존 seal entry를 덮어쓰지
-않고 remediation plan과 event를 append해 새 current root를 만든다. retest receipt는 이 root를
-결박하며 이후 baseline 변경을 거부한다. assessment와 report에는 ReplayOutcome·replay Run·
-request·evidence·Oracle·receipt lineage를 기록한다.
+The receipt loader reopens the canonical replay artifact and validates the dual seals, ticket
+finalization, and every ID and digest binding. A mismatch in the baseline/retest Run, root,
+Candidate, Decision, Finding, remediation, request, Scenario, threat, Tool, or target hard-fails the
+command instead of being recorded as `inconclusive`. `kisa-plan-remediation` does not overwrite the
+versioned baseline projection or the existing seal entry; it appends the remediation plan and event
+to create a new current root. The retest receipt binds this root and rejects later baseline changes.
+The assessment and report record the ReplayOutcome, replay Run, request, evidence, Oracle, and
+receipt lineage.
 
-baseline-bound negative replay ticket은 `<output>/retest-replay/replay-tickets.sqlite3`의 별도
-stable 원장에 같은 상태 전이와 issuance context를 보존한다. 재시작 후 검증은 위
-`replay-verify` 명령의 `--ledger`에 이 retest 원장을 지정한다. 이 검증은 retest 판정의
-Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며, 공통 Gate가 전체 계보를
-계속 검증한다.
+Baseline-bound negative replay tickets preserve the same state transitions and issuance context in
+a separate stable ledger at `<output>/retest-replay/replay-tickets.sqlite3`. Post-restart
+verification specifies this retest ledger with `--ledger` in the `replay-verify` command above. This
+verification does not replace the retest decision's Candidate, Finding, remediation, and baseline
+root bindings; the common Gate continues to validate the complete lineage.
 
-정상 기능은 `ai.normal-probe`로 별도 실행하므로 공격 성공률과 차단율을 희석하지 않는다.
-`kisa-checklist-overlay.json`은 다음 항목만 새 증적으로 대체한다.
+Normal functionality runs separately through `ai.normal-probe`, so it does not dilute the attack
+success rate or block rate. `kisa-checklist-overlay.json` replaces only the following items with new
+evidence:
 
-- `report.mitigation`: 위협별 통제와 수용 기준
-- `improve.retest`: 동일 공격 반복과 원본 Finding 연결
-- `improve.normal`: 정상 기능 반복 결과
-- `improve.regression`: 보안 조치 후 회귀 결과
-- `improve.tasks`: 계획은 있으나 담당자·기한은 `needs-review`
+- `report.mitigation`: per-threat controls and acceptance criteria
+- `improve.retest`: repeated execution of the same attack and linkage to the original Finding
+- `improve.normal`: repeated normal-function results
+- `improve.regression`: regression results after security measures
+- `improve.tasks`: a plan exists, but owners and deadlines are `needs-review`
 
-`improve.retest=yes`는 모든 baseline Finding에 conclusive verified receipt가 연결됐다는 뜻이다.
-모두 수정됐다는 의미는 아니므로 `still-vulnerable` 수와 분리해 읽어야 한다. 범위 한정 CLI
-성공 Exit Gate는 모든 baseline Finding이 `fixed`, `still-vulnerable`·`inconclusive`가 0, 실행
-중 관찰된 새 Confirmed Finding이 0, 정상 기능 regression이 `pass`일 때만 충족한다.
-`kisa-retest`는 baseline 폐루프이며 새로운 위협 유형을 탐색하는 전체 재스캔이 아니다. 신규
-취약점 부재를 검증하려면 hardened target에 대해 별도의 fresh `pajin kisa-run` discovery Gate를
-통과해야 한다. 이 Gate도 현재 실행 가능한 시나리오에 한정되며 미구현 KISA 위협은 계속
-`not assessed`다.
+`improve.retest=yes` means that every baseline Finding is linked to a conclusive verified receipt.
+It does not mean that all Findings were fixed, so it must be read separately from the
+`still-vulnerable` count. The scoped CLI success Exit Gate is satisfied only when every baseline
+Finding is `fixed`, `still-vulnerable` and `inconclusive` are both 0, the number of new Confirmed
+Findings observed during execution is 0, and normal-function regression is `pass`. `kisa-retest`
+closes the baseline loop; it is not a full rescan that explores new threat types. To verify the
+absence of new vulnerabilities, a separate fresh `pajin kisa-run` discovery Gate must pass against
+the hardened target. That Gate is also limited to currently executable scenarios, and unimplemented
+KISA threats remain `not assessed`.
 
-## 8. 알려진 제한과 다음 확장
+## 8. Known Limitations and Next Extensions
 
-- 버전형 Validation Packet·Replay Intent·Mode Contract·Compiled Spec·Materialization·Attempt·
-  Oracle·Outcome 계약, Replay Compiler·전용 Grant·별도 replay Run 저장과 exact M03·M06·A04
-  `ai.chat-probe` fresh-session driver/live Oracle은 구현됐다. 결과는 봉인 영수증을 다시 읽어
-  canonical record와 일치할 때만 공통 Gate가 소비하며, `kisa-run`은 같은 verified record를
-  `kisa-replay-index.json`에도 기록한다. Gate는 원
-  artifact를 변경하지 않고 versioned Decision·Finding·report와 receipt lineage를 새 seal로
-  추가한다. 같은 receipt 경계는 reproduction-backed baseline의 negative KISA retest에도
-  적용되며, 일반 retest Run의 정상 기능 결과와 공격 replay 증명을 분리한다.
-- 로컬 KISA positive/negative 경로의 single-use ticket은 stable SQLite 원장과 프로세스 재시작
-  후 read-only verifier에 연결됐다. 기존 인메모리 authority는 단위 테스트와 API 호환 경계로
-  유지된다. SQLite DB와 OS account/ACL이 로컬 trust anchor이므로, 이 원장은 PostgreSQL
-  Control Plane replay authority나 외부 감사자가 독립 검증할 portable 서명 proof가 아니다.
-- M6-07A의 명시적 Local KISA coordinator는 exact M03·M06·A04 allowlist와 한 프로세스·한
-  writer에 한정된다. M6-07B 전체는 미완료지만 첫 authority-state 조각, M6-07B-2A managed Artifact
-  기반, M6-07B-2B trusted derivation, M6-07B-2C durable issuance, M6-07B-2D 내부 호출별 permit
-  ledger/issuance와 M6-07B-2E fail-closed 내부 Worker HTTP transport 조각은 구현됐다. batch input은
-  exact opaque Artifact locator와
-  idempotency key뿐이다. Control Plane은 managed sealed AI Red Team source를 다시 검증하고 eligible
-  exact M03·M06·A04 confirmation Candidate와 contract를 파생·컴파일해 canonical
-  `ReplayCompilation`과 Grant를 batch `planned`, item `pending` 상태의 append-only,
-  non-dispatchable PostgreSQL derivation record로 저장한다. schema v5는 forward v1→v2→v3→v4→v5
-  경로에 durable budget account/reservation, 보수적인 sealed-rate account/reservation과 exact ticket
-  FK를 추가한다. caller가 작성한 Candidate, contract, digest, policy, target, arguments는 신뢰 입력이
-  아니다. 내부 멱등 issuance 서비스는 managed source를 재검증하고 한 transaction에서 모든 첫 시도
-  call/unit을 예약하며, fresh Replay Run/Grant compilation 권위를 append하고 정확한 내부 Job/ticket
-  집합을 만든다. 각 payload/ticket은 `compilation_id`, `budget_reservation_id`,
-  `rate_reservation_id`에 결박된다. 응답 유실(response-loss) 재시도는 현재 active exact authority
-  graph가 발급 직후 ticket/Job `issued`/`queued`이거나 claim 뒤 `claimed`/`running`일 때만 같은
-  issuance를 재구성하며, terminal이거나 그 밖에 변경된 graph는 fail closed한다. 최초 planned Grant는
-  재사용하지 않는다. schema v6는 forward v1→v2→v3→v4→v5→v6 경로와 append-only
-  `cp_replay_tool_permits`를 추가한다. strict `ReplayToolPermitRequest`에는 executor profile, lease token,
-  ticket ID, fencing value와 1-based call ordinal만 들어간다. 내부 멱등
-  `issue_replay_tool_permit` 서비스는 인증 principal/profile, exact Job/ticket lease/fence, active
-  Run/batch/item/ticket, canonical compilation/Grant, exact reservation counter와 rolling request-rate
-  admission을 재검증한다. cap이 있으면 현재 sealed baseline, 발급 후 아직 유효한 reservation의 미소비 unit, 각
-  60초 window에서 active인 permit unit과 새 trusted request 비용을 합산하고, cap이 없으면 rate 거부만
-  생략한 채 exact counter를 소비한다. 발급된
-  canonical row는 exact ticket/compilation/reservation graph, source/original request,
-  Tool/version/target/method, 1-based ordinal, Tool-call unit 하나와 trusted request unit에 결박된다. TTL은
-  최대 30초이고 lease 및 compiled spec/Grant deadline에만 제한되며 rate reservation expiry에는 제한되지
-  않는다. 고유
-  ticket/ordinal 및 저장된 permit digest/request ID는 정확한 response-loss duplicate를 counter/event 중복
-  없이 같은 row로 재구성한다. 최초 발급은 budget/rate의 reserved unit을 consumed로 원자적으로 옮기고
-  event를 append한다. 실행이 불확실해도 발급된 permit은 consumed로 남으며 취소·포기는 확실히 미발급된
-  잔여분만 release한다. stale/wrong/cancelled/expired/finalized/ordinal-gap/over-limit 요청은 fail closed한다.
-  M6-07B-2E의 strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject→profile-array allowlist는
-  설정이 없으면 빈 목록으로 fail closed한다. 예시
-  `{"replay-worker-service":["kisa-exact-v1"]}`는 별도로 인증된 Replay Worker subject에만 해당
-  profile 하나를 허용한다. 전용 WORKER-role
-  claim·heartbeat·Tool-permit endpoint와 async client가 이 기존 서비스 authority를 노출하고,
-  claim/heartbeat의 `ReplayExecutionClaimView`는 서버가 exact digest·identity binding을 다시 검증한
-  canonical `ReplayCompilation`을 포함한다. permit은 발급 시 reserved unit을 이미 소비한
-  non-bearer proof이며 별도 redeem mutation은 없다. M6-07B-2F는 forward 경로를 v7까지 확장하고
-  append-only `cp_replay_execution_contexts`를 추가한다. 발급 시 각 fresh compilation은 exact
-  Campaign/KISA Scenario/`AIChatProbeTool.spec` canonical byte, 독립 component digest, 고정
-  `kisa-exact-v1`, secret 금지와 opaque output-staging slot에 one-to-one으로 결박된다. Job payload,
-  claim/heartbeat, profile 선택과 permit 발급은 context identity/digest를 전이적으로 모두 다시
-  검증한다. v6→v7 migration은 가짜 context row 없이 non-dispatchable 상태만 받아들이며 ticket,
-  permit, Job, reservation 또는 진행된 item이 있으면 fail closed한다. Schema v9 append-only
-  server-derived finalization과 전용 `kisa-exact-v1` daemon이 구현됐다. Daemon은 별도
-  `replay-worker-service` credential로 fenced lease를 heartbeat하고 Tool dispatch 직전에 동일 permit
-  요청의 bounded response-loss retry만 수행하며 opaque staging slot의 Replay Run을 두 번 seal한다.
-  Worker는 발행된 profile/lease/ticket/fence/staging identity만 보내고, Control Plane이 staging tree와
-  두 seal 및 exact permit/request lineage를 독립 검증해 import한 뒤 공통 Gate와
-  Artifact·Job/ticket/item/batch/Run finalization을 원자적으로 확정한다. Permit 뒤 failure는 그
-  ticket에 terminal이다. Compose는 일반 Worker와 함께 전용 daemon을 활성화한다. Public Replay
-  admission/read API, fresh-identity retry 발행, schema-v11 multi-item projection, schema-v12 dual-source
-  negative Control Plane retest, schema-v13 exact Claim별 공개 projection, Ed25519 portable Claim
-  receipt, executor-attested portable Artifact, Target-issued exact exchange receipt, HTTPS
-  CONNECT·leaf SPKI 결박, signed registry v3 schema-v14 anti-rollback·제한된 pin rotation,
-  registry v4 TLS 1.2 양측 session binding과 64 MiB까지의 사전 검증·재개 가능한 로컬
-  object-store multipart Artifact 전송은 구현됐다. TLS 1.3 RFC 9266 exporter와 그보다 큰
-  외부/pre-signed object-store 전송·운영 수명주기 경계는 남아 있다.
-- 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
-  맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
-- 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는
-  사람 검토가 필요하다.
-- 기술 완화 계획과 재검증·정상 기능 회귀는 자동화하지만 실제 담당자·기한·운영 반영은
-  조직 확인이 필요하다.
-- 공급자별 인증·스트리밍·도구 호출을 표준 Chat 계약으로 변환하는 Provider Adapter와
-  정상/공격 데이터셋이 추가되어야 한다.
-- 운영 수준에서는 Artifact 무결성 서명, 보존·파기 정책, 승인 워크플로가 추가로 필요하다.
+- The versioned Validation Packet, Replay Intent, Mode Contract, Compiled Spec, Materialization,
+  Attempt, Oracle, and Outcome contracts; Replay Compiler; dedicated Grant; separate replay Run
+  storage; and exact M03, M06, and A04 `ai.chat-probe` fresh-session driver/live Oracle have been
+  implemented. The common Gate consumes a result only after rereading the sealed receipt and
+  matching it to the canonical record, and `kisa-run` also records the same verified record in
+  `kisa-replay-index.json`. The Gate does not alter original artifacts; it adds the versioned
+  Decision, Finding, report, and receipt lineage under a new seal. The same receipt boundary applies
+  to negative KISA retests of a reproduction-backed baseline, separating attack-replay proof from
+  normal-function results in the ordinary retest Run.
+- Single-use tickets on the local KISA positive and negative paths are connected to a stable SQLite
+  ledger and a post-restart read-only verifier. The existing in-memory authority remains as a unit
+  testing and API compatibility boundary. Because the SQLite DB and OS account/ACL are the local
+  trust anchor, this ledger is not a PostgreSQL Control Plane replay authority or portable signed
+  proof that an external auditor can verify independently.
+- The explicit Local KISA coordinator in M6-07A is limited to the exact M03, M06, and A04 allowlist
+  and one process with one writer. M6-07B remains incomplete, but its first authority-state slice,
+  M6-07B-2A managed Artifact foundation, M6-07B-2B trusted derivation, M6-07B-2C durable issuance,
+  M6-07B-2D internal per-call permit ledger/issuance, and M6-07B-2E fail-closed internal Worker HTTP
+  transport slices are implemented.
+  Batch input is only the exact opaque Artifact locator and idempotency key. The Control Plane
+  re-verifies the managed sealed AI Red Team source, derives eligible exact M03/M06/A04 confirmation
+  Candidates and contracts, compiles them, and persists canonical `ReplayCompilation` and Grant as
+  non-dispatchable derivation records in append-only PostgreSQL storage with batch `planned` and item
+  `pending` state. Schema v5 extends the forward v1→v2→v3→v4→v5 path with durable budget accounts and
+  reservations, conservative sealed-rate accounts and reservations, and exact ticket foreign keys.
+  Caller-authored Candidate, contract, digest, policy, target, and arguments are not trusted inputs.
+  The internal idempotent issuance service re-verifies the managed source and, in one transaction,
+  reserves every first-attempt call/unit, appends fresh Replay Run/Grant compilation authority, and
+  creates the exact internal Job/ticket set. Each payload/ticket binds `compilation_id`,
+  `budget_reservation_id`, and `rate_reservation_id`. Only a response-loss retry against the current
+  active exact authority graph reconstructs that issuance: the ticket/Job pair must still be
+  `issued`/`queued` immediately after issuance or `claimed`/`running` after claim; a terminal or
+  otherwise changed graph must fail closed.
+  The initial planned Grant is not reused. Schema v6 extends the forward v1→v2→v3→v4→v5→v6 path
+  with append-only `cp_replay_tool_permits`. Strict `ReplayToolPermitRequest` input contains only the
+  executor profile, lease token, ticket ID, fencing value, and 1-based call ordinal. The internal,
+  idempotent `issue_replay_tool_permit` service rechecks the authenticated principal/profile, exact
+  Job/ticket lease/fence, active Run/batch/item/ticket, canonical compilation/Grant, exact reservation
+  counters, and rolling request-rate admission. With a configured cap it counts the current sealed
+  baseline, post-admission unconsumed units in still-live reservations, active permits in their 60-second windows,
+  and the new trusted request cost; without a cap it skips rate rejection but still consumes exact
+  counters. Its canonical row binds the exact ticket/compilation/reservation graph,
+  source/original request, Tool/version/target/method, 1-based ordinal, one Tool-call unit, and trusted
+  request units. Permit TTL is at most 30 seconds and is capped by the lease and compiled-spec/Grant
+  deadlines, not rate-reservation expiry. The unique ticket/ordinal and persisted permit digest/request
+  ID reconstruct an exact
+  response-loss duplicate without double consumption or events. The first issuance atomically moves the
+  budget/rate units from reserved to consumed and appends an event. Issued permits remain consumed
+  when execution is uncertain; cancel/abandon releases only the definitely unissued remainder.
+  Stale, wrong, cancelled, expired, finalized, ordinal-gap, and over-limit requests fail closed.
+  M6-07B-2E's strict JSON `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` subject-to-profile-array allowlist is
+  empty and fail closed when unset. For example,
+  `{"replay-worker-service":["kisa-exact-v1"]}` grants that one profile only to the separately
+  authenticated Replay Worker subject. Dedicated WORKER-role claim, heartbeat, and Tool-permit endpoints
+  and async client methods expose this existing service authority. Claim and heartbeat return a
+  `ReplayExecutionClaimView` with the canonical `ReplayCompilation` after the server revalidates its
+  exact digest and identity bindings. A permit is a non-bearer proof whose reserved units were
+  already consumed at issuance, with no separate redeem mutation. M6-07B-2F extends the forward path through v7 with
+  append-only `cp_replay_execution_contexts`. Issuance binds each fresh compilation one-to-one to
+  canonical exact Campaign/KISA Scenario/`AIChatProbeTool.spec` bytes, independent component
+  digests, fixed `kisa-exact-v1`, forbidden secrets, and an opaque output-staging slot. Job payload,
+  claim/heartbeat, profile selection, and permit issuance all recheck the context identity/digest
+  transitively. The v6→v7 migration accepts only non-dispatchable state with no fabricated context
+  row and fails closed rather than inventing context for tickets, permits, Jobs, reservations, or
+  advanced items. Schema v9 adds append-only server-derived finalization. The dedicated
+  `kisa-exact-v1` daemon uses the distinct `replay-worker-service` credential, heartbeats the fenced
+  lease, performs only bounded identical response-loss retries for a permit immediately before Tool
+  dispatch, and twice seals the Replay Run in its opaque staging slot. The Worker sends only the
+  issued profile/lease/ticket/fence/staging identity. The Control Plane imports and independently
+  verifies the staged tree, both seals, and exact permit/request lineage, derives the common Gate,
+  then atomically finalizes the Artifact and Job/ticket/item/batch/Run state. Any failure after a
+  permit is terminal for that ticket. Compose enables this dedicated daemon alongside the generic
+  Worker. Public Replay admission/read APIs, fresh-identity retry issuance, schema-v11 multi-item
+  projection, schema-v12 dual-source negative Control Plane retest, schema-v13 exact
+  Claim-specific projection, Ed25519 portable Claim receipts, executor-attested portable
+  Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed
+  registry-v3 schema-v14 anti-rollback with bounded pin rotation, registry-v4 TLS 1.2
+  dual-observer session binding, and pre-verified resumable managed-local-object-store multipart
+  Artifact transfer up to 64 MiB are implemented. TLS 1.3 RFC 9266 exporter support, larger
+  external/pre-signed object-store transfer, and production lifecycle boundaries remain outstanding.
+- Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
+  explicit coverage gaps until target-appropriate executable scenarios are added.
+- Technical severity is generated, but final prioritization that reflects organization-specific
+  legal, financial, and reputational impact requires human review.
+- Technical mitigation planning, retesting, and normal-function regression are automated, but
+  actual owners, deadlines, and operational adoption require organizational confirmation.
+- Provider Adapters that translate provider-specific authentication, streaming, and tool calls into
+  the standard Chat contract must be added, along with normal and attack datasets.
+- Production use additionally requires Artifact-integrity signatures, retention and destruction
+  policies, and approval workflows.
 
-Validator 상태와 확정 경계는 [ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.md),
+Validator state and confirmation boundaries follow
+[ADR 0025](adr/0025-candidate-validation-ledger-and-replay-boundary.md),
 [ADR 0026](adr/0026-trusted-kisa-candidate-admission.md),
-[ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md),
+[ADR 0027](adr/0027-independent-reproduction-confirmation-boundary.md), and
 [ADR 0028](adr/0028-durable-local-replay-ticket-ledger.md),
 [ADR 0029](adr/0029-control-plane-replay-orchestration.md),
 [ADR 0030](adr/0030-candidate-aware-atomic-claim-validation.md),
-[ADR 0031](adr/0031-blind-evidence-review-boundary.md),
-[ADR 0034](adr/0034-diverse-independent-severity-review.md),
+[ADR 0031](adr/0031-blind-evidence-review-boundary.md), and
+[ADR 0034](adr/0034-diverse-independent-severity-review.md), and
 [ADR 0035](adr/0035-claim-replay-public-state-projection.md),
-[ADR 0036](adr/0036-claim-bound-replay-execution-authority.md),
-[ADR 0044](adr/0044-target-signed-tls-session-binding.md)를 따른다.
+[ADR 0036](adr/0036-claim-bound-replay-execution-authority.md), and
+[ADR 0044](adr/0044-target-signed-tls-session-binding.md).

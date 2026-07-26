@@ -1,64 +1,68 @@
-# ADR 0038: 휴대 가능한 Claim receipt 공개키 증명
+# ADR 0038: Portable Public-Key Attestation for Claim Receipts
 
-- 상태: Accepted
-- 날짜: 2026-07-24
+- Status: Accepted
+- Date: 2026-07-24
 
-## 배경
+## Context
 
-ADR 0037까지의 Control Plane은 exact KISA M03·M06·A04 validity·impact·severity Claim을
-각각 실행하고, ticket·compilation·Replay Run·output Artifact·receipt seal root를 projection
-input authority v3에 보존한다. 그러나 이 권위의 최종 trust anchor는 Control Plane DB와
-Artifact repository의 OS 계정·ACL이다. 다른 호스트의 검증자는 서버 비밀키 없이 receipt가
-동일한지 확인할 수 없고, 내부 checkpoint용 HMAC 키를 공개 검증에 재사용할 수도 없다.
+Through ADR 0037, the Control Plane executes exact KISA M03/M06/A04 validity, impact, and severity
+Claims separately and preserves their ticket, compilation, Replay Run, output Artifact, and receipt
+seal root in projection input authority v3. Its final trust anchor is still the Control Plane
+database plus the Artifact repository's OS account and ACL. An off-host verifier cannot authenticate
+those receipts without a server secret, and the internal HMAC checkpoint key is unsuitable for
+public verification.
 
-서명 파일을 완성된 projection Artifact의 digest에 포함하면서 동시에 그 digest를 서명하면
-순환 의존성이 생긴다. 따라서 공개키 증명은 projection Artifact 자기 자신이 아니라, 그
-Artifact를 만드는 입력 권위와 각 Claim receipt root를 서명해야 한다.
+Signing the completed projection Artifact digest from a file contained by that same Artifact would
+create a digest cycle. The public-key proof must therefore sign the immutable projection input
+authority and every Claim receipt root rather than the containing Artifact itself.
 
-## 결정
+## Decision
 
-1. `CreateReplayBatchRequest.portable_attestation`을 명시적 opt-in으로 추가한다. 이 값은
-   `claim_projection: true`와 confirmation에서만 사용할 수 있다. 이 경로는
-   `pajin.kisa-claim-attestation:v3` 정책을 사용하고, Ed25519 signer가 없으면 batch 생성부터
-   fail closed한다. 기존 v1/v2 정책과 projection input authority v1/v2/v3는 변경하지 않는다.
-2. 서명 statement는 trust domain·issuer·정책·batch ID·발급 시각, 전체
-   `ReplayClaimProjectionInputAuthority`, 그 canonical digest와 receipt 수를 포함한다. 각
-   validity·impact·severity item의 Claim identity, finalization, Replay Run, output Artifact,
-   artifact-set digest, receipt seal root, gate/result digest가 따라서 한 서명에 결박된다.
-3. 서명은 별도 domain prefix가 붙은 canonical JSON bytes에 Ed25519로 수행한다. bundle은
-   statement SHA-256, key ID, algorithm과 base64url signature를 포함한다.
-4. bundle은 `validation/v1alpha1/portable-replay-attestation.json`으로 confirmation projection
-   transaction에 추가된다. transaction은 이 파일의 digest도 기록하고, Run seal은 transaction과
-   bundle을 함께 봉인한다. 발급 시각은 immutable batch snapshot에서 가져오므로 crash recovery와
-   response-loss retry가 같은 bytes를 다시 만든다.
-5. trust anchor는 issuer·trust domain과 정렬된 공개키 lifecycle을 가진 별도 JSON 계약이다.
-   정확히 한 key만 `active`이고 이전 key는 `retired` 또는 `revoked`다. `retired` key의 과거
-   bundle은 유효 기간 안에서 검증할 수 있지만, `revoked` key는 발급 시각과 무관하게 항상
-   fail closed한다. active private key는 trust anchor의 공개키와 일치해야 하며 내부 HMAC
-   checkpoint key와 분리한다.
-6. verifier는 bundle 안의 key를 신뢰하지 않고 호출자가 별도 전달한 trust anchor를 반드시
-   요구한다. `GET /v1/replay/batches/{batch_id}/attestation`과
-   `GET /v1/replay/attestation/trust-anchor`는 전송 편의 API일 뿐 신뢰 설정이 아니다.
-   `pajin replay-attestation-verify <bundle> --trust-anchor <anchor>`가 서버 비밀 없이 같은
-   검증을 수행하고 anchor digest를 출력한다.
+1. Add an explicit `CreateReplayBatchRequest.portable_attestation` opt-in. It is valid only with
+   `claim_projection: true` for confirmation. This path uses the
+   `pajin.kisa-claim-attestation:v3` policy and fails closed at batch creation when no Ed25519 signer
+   is configured. Existing v1/v2 policies and projection input authority v1/v2/v3 remain unchanged.
+2. The signed statement contains the trust domain, issuer, policy, batch ID, issue time, complete
+   `ReplayClaimProjectionInputAuthority`, its canonical digest, and the receipt count. One signature
+   therefore binds every validity/impact/severity Claim identity, finalization, Replay Run, output
+   Artifact, artifact-set digest, receipt seal root, gate digest, and result digest.
+3. Ed25519 signs canonical JSON bytes under a distinct domain prefix. The bundle carries the
+   statement SHA-256, key ID, algorithm, and base64url signature.
+4. Add the bundle to the confirmation projection transaction as
+   `validation/v1alpha1/portable-replay-attestation.json`. The transaction records its digest, and
+   the Run seal covers both transaction and bundle. The issue time comes from the immutable batch
+   snapshot, so crash recovery and response-loss retries reproduce identical bytes.
+5. Model the trust anchor as a separate JSON contract containing issuer, trust domain, and a sorted
+   public-key lifecycle. Exactly one key is `active`; previous keys are `retired` or `revoked`.
+   Historical bundles from a `retired` key verify within its validity window. A `revoked` key always
+   fails closed, regardless of issue time. The active private key must match the anchored public key
+   and remains separate from the internal HMAC checkpoint key.
+6. The verifier never trusts key material from the bundle and requires an explicitly supplied,
+   out-of-band trust anchor. `GET /v1/replay/batches/{batch_id}/attestation` and
+   `GET /v1/replay/attestation/trust-anchor` are transport conveniences, not trust establishment.
+   `pajin replay-attestation-verify <bundle> --trust-anchor <anchor>` performs the same verification
+   without a server secret and reports the anchor digest.
 
-## 보안 경계
+## Security boundary
 
-이 조각은 다른 호스트가 “해당 trust domain의 Control Plane key가 이 exact Claim receipt
-집합을 서명했다”는 사실과 이후 변조 여부를 검증하게 한다. 외부에서 고정한 trust anchor를
-사용하면 같은 서버 응답만으로 key를 자기 승인하는 오류를 피할 수 있다.
+This slice lets another host verify that a key from the selected Control Plane trust domain signed
+the exact Claim receipt set and that the statement has not changed. Pinning the anchor through a
+separate channel prevents a verifier from implicitly trusting a key merely because the same server
+returned it.
 
-그러나 이 서명은 별도 조직의 Worker가 실행했다거나 target이 독립적으로 응답했다는 사실,
-물리적 격리·quiescence, remediation 완료 또는 transparency log 등재를 증명하지 않는다.
-따라서 현재 validity 결과의 제품 disposition은 계속 `needs-review` 상한과
-`independent-execution-attestation-missing` 경계를 유지한다. 독립 executor/target issuer,
-HSM·외부 key custody, multi-host/object-store Artifact 전송과 transparency log는 후속 범위다.
+The signature does not prove that a Worker from another organization executed the workload, that
+the target independently authored its response, physical isolation or quiescence, completed
+remediation, or transparency-log inclusion. The current validity result therefore retains the
+`needs-review` ceiling and `independent-execution-attestation-missing` boundary. Independent
+executor/target issuers, HSM or external key custody, multi-host/object-store Artifact transfer, and
+a transparency log remain follow-on scope.
 
-## 결과
+## Consequences
 
-- Claim receipt 권위는 서버 비밀을 공유하지 않고 off-host에서 검증할 수 있다.
-- key rotation은 이전 공개키를 `retired`로 보존해 기존 bundle을 유지하고, compromise는
-  `revoked`로 전체 거부할 수 있다.
-- signature bundle은 기존 sealed projection transaction 안에 들어가므로 새 DB schema나
-  mutable backfill 없이 append-only 성질을 유지한다.
-- 운영자는 trust anchor를 Control Plane과 다른 채널·소유 경계에서 배포하고 pin해야 한다.
+- Claim receipt authority becomes verifiable off-host without sharing a server secret.
+- Rotation preserves old bundles by retaining previous public keys as `retired`; compromise can
+  reject a key and all of its bundles through `revoked`.
+- The signature bundle remains inside the existing sealed projection transaction, preserving the
+  append-only model without a new database schema or mutable backfill.
+- Operators must distribute and pin the trust anchor across a channel and ownership boundary
+  separate from the Control Plane.

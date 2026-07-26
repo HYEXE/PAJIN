@@ -1,145 +1,113 @@
-> 언어: [English](GRAPH-006-atomic-action-permit-authority.en.md) | [한국어](GRAPH-006-atomic-action-permit-authority.ko.md)
-
 # GRAPH-006: Atomic ActionPermit Authority
 
-- 상태: 로컬 구현 완료
-- 날짜: 2026-07-26
-- 선행 조건: GRAPH-003, GRAPH-004, GRAPH-005, ADR-0047, ADR-0049
+- Status: locally implemented
+- Date: 2026-07-26
+- Prerequisites: GRAPH-003, GRAPH-004, GRAPH-005, ADR-0047, ADR-0049
 
-## 목적
+## Purpose
 
-`GraphDecisionPreflight` 뒤에 Graph가 바뀌는 race를 닫는다. 이전 preflight 결과를 실행
-권위로 승격하지 않고, 같은 single-Campaign SQLite Graph Store의 마지막 write
-transaction 안에서 다음을 함께 수행한다.
+Close the race in which the Graph changes after `GraphDecisionPreflight`. The preflight record is
+never promoted into execution authority. Instead, the final write transaction in the same
+single-Campaign SQLite Graph Store:
 
-1. exact `MissionEnvelope`, `ActionProposal`, `GraphDecision`, registered Capability를 검증한다.
-2. durable Event Log 전체를 다시 projection해 저장된 current Projection과 exact 비교한다.
-3. decision의 immutable Snapshot이 그 latest Projection과 동일한지 확인한다.
-4. Scope, target, risk, Campaign/Run, compiler, Tool/version/digest를 다시 확인한다.
-5. MissionEnvelope의 누적 call/unit/cost budget과 rolling-window unit rate를 계산한다.
-6. deterministic `ActionPermit`을 append하고 같은 순간 consumed dispatch claim으로 만든다.
+1. validates the exact `MissionEnvelope`, `ActionProposal`, `GraphDecision`, and registered
+   Capability;
+2. reprojects the complete durable Event Log and compares it to the stored current Projection;
+3. requires the decision's immutable Snapshot to be that exact latest Projection;
+4. rechecks Scope, target, risk, Campaign/Run, compiler, and Tool/version/digest bindings;
+5. computes cumulative call/unit/cost budgets and the rolling-window unit rate; and
+6. appends a deterministic `ActionPermit` as a consumed dispatch claim.
 
-## 권위 계약
+## Authority contracts
 
-### RegisteredActionCapability
+`RegisteredActionCapability` canonically pins a Capability ID/version, CAP-001
+`definitionDigest`, Tool ID/version/digest, and risk tier into a separate Graph registration
+digest. `ActionCapabilityRegistry` resolves only an exact version, definition digest, and
+registration digest. The registry is currently an immutable process-local contract; durable
+registry distribution remains follow-up work.
 
-`RegisteredActionCapability`은 Capability ID/version, CAP-001 `definitionDigest`,
-Tool ID/version/digest와 risk tier를 Graph 등록 레코드의 canonical digest로 고정한다.
-`ActionCapabilityRegistry`는 exact version, definition digest와 등록 digest가 모두 일치할
-때만 reference를 resolve한다. 이 registry는 현재 immutable process-local contract이며
-durable registry 배포는 후속 경계다.
+`MissionEnvelope` is the execution ceiling for one Campaign/Run. It binds profile/compiler/source
+Campaign identity, exact allowed Capability references, target digests, maximum risk, autonomy,
+call/unit/fixed-point micro-USD budgets, an optional rolling rate, and an authorization window.
 
-### MissionEnvelope
+`ActionProposal` is non-executable intent bound to an exact Envelope, Graph decision, Snapshot,
+Capability, target, request, normalized parameter digest, and budget reservation.
 
-`MissionEnvelope`은 한 Campaign/Run의 실행 상한이다.
-
-- profile/compiler/source Campaign identity
-- allowed Capability exact reference 집합
-- allowed target digest 집합
-- max risk tier와 autonomy
-- tool-call, request-unit, fixed-point micro-USD budget
-- optional rolling-window request-unit rate
-- authorization/not-before/expiry 시간
-
-Capability와 target 집합은 canonical 순서의 unique tuple이며 envelope ID/digest는 전체
-권위 material에서 결정된다.
-
-### ActionProposal
-
-`ActionProposal`은 실행 권위가 아닌 의도다. exact MissionEnvelope, GraphDecision,
-Snapshot, Capability, target digest, request ID/digest, normalized parameter digest와
-budget reservation에 결박된다. 제안된 risk는 registered Capability risk와 같아야 한다.
-
-### ActionPermit
-
-`ActionPermit`은 다음 특징을 가진다.
-
-- exact Envelope, Proposal, Decision, Snapshot, Capability, request binding
-- compiler identity와 canonical permit/dispatch ID
-- `status=consumed`
-- issuance와 consumption이 같은 시각에 이루어진 non-bearer audit proof
-- Envelope expiry보다 길 수 없는 짧은 dispatch authority window
-
-Permit ID는 clock과 무관한 stable input에서 결정된다. response loss 뒤 exact retry는 같은
-row를 돌려주지만 `newlyConsumed=false`이므로 Worker를 다시 호출할 수 없다.
+`ActionPermit` is a consumed-on-issuance non-bearer audit proof. It binds every authority input,
+compiler identity, canonical permit and dispatch IDs, and a short authority window no longer than
+the Envelope. Its ID excludes clock values, so an exact response-loss retry resolves the stored row
+but returns `newlyConsumed=false` and cannot redispatch.
 
 ## SQLite schema v2
 
-GRAPH-005 schema v1에 다음 append-only table을 추가했다.
+GRAPH-005 schema v1 gains two append-only tables:
 
-| Table | 의미 |
+| Table | Meaning |
 | --- | --- |
-| `graph_action_permit_writers` | Campaign의 pinned compiler identity |
-| `graph_action_permits` | consumed-on-issuance Permit 및 dispatch claim ledger |
+| `graph_action_permit_writers` | Campaign-pinned compiler identity |
+| `graph_action_permits` | consumed-on-issuance Permit and dispatch-claim ledger |
 
-Permit row는 Snapshot과 Projection revision을 foreign key로 참조하고, proposal ID와 request
-ID를 각각 unique로 제한한다. update/delete/replace trigger와 schema fingerprint가 모든
-Permit material을 보호한다.
+Permit rows reference the durable Snapshot and Projection revision. Proposal and request IDs are
+independently unique. Update/delete/replace triggers and the schema fingerprint protect all Permit
+material.
 
-정확한 v1 schema와 fingerprint를 먼저 검증한 뒤에만 v2 migration을 실행한다. migration은
-기존 Event, Projection, Snapshot을 보존하고 Permit row를 만들지 않는다.
+Migration first verifies the exact v1 schema and fingerprint. It preserves every Event, Projection,
+and Snapshot and never fabricates Permit authority.
 
-## 최종 권위 transaction
+## Final authority transaction
 
 ```text
 BEGIN IMMEDIATE
-  pinned compiler identity 확인
-  deterministic attempt exact-retry 조회
-  request/proposal equivocation 거부
-  Envelope + Proposal + Capability 대수 검증
-  durable Event Log -> latest Projection 재구성
-  stored Projection + Snapshot exact 비교
-  durable budget/rate 합계 계산
-  consumed ActionPermit append
-COMMIT  # dispatch claim이 시작된 권위 시점
+  verify pinned compiler
+  resolve deterministic exact retry
+  reject request/proposal equivocation
+  validate Envelope + Proposal + Capability algebra
+  reproject durable Event Log
+  compare stored Projection + Snapshot exactly
+  calculate durable budget/rate use
+  append consumed ActionPermit
+COMMIT  # authoritative dispatch-claim point
 ```
 
-Graph Event append와 Projection publish도 같은 database의 `BEGIN IMMEDIATE` writer lock을
-사용한다. 따라서 Graph 변경과 dispatch claim은 하나의 직렬 순서를 가진다. commit 뒤에
-들어온 Graph Event는 이미 권위가 확정된 dispatch보다 나중 사건이다.
+Graph Event append and Projection publication use the same database writer lock, so Graph mutation
+and a dispatch claim have one serial order. A Graph Event committed afterward is later than the
+already-authorized dispatch.
 
-`GraphActionPermitDispatcher.dispatch_once()`는 오직 `newlyConsumed=true`인 호출에서만
-Worker callback을 호출한다. callback 실패나 응답 불확실성 뒤 Permit은 consumed로
-남고 exact retry는 재dispatch하지 않는다. 이는 안전 우선 at-most-once 의미다.
+`GraphActionPermitDispatcher.dispatch_once()` calls the Worker callback only when
+`newlyConsumed=true`. A callback failure or uncertain response leaves the Permit consumed; an exact
+retry does not dispatch again. This is safety-first at-most-once behavior.
 
-## 거부 조건
+## Fail-closed conditions
 
-- durable Event Log와 stored Projection 불일치
-- Snapshot이 latest revision/head/projection과 불일치
-- Campaign, Run, Envelope, Decision 또는 compiler lineage 불일치
-- unknown Capability 또는 version/digest/Tool/risk drift
-- Scope 밖 target 또는 risk ceiling 초과
-- inactive/expired Envelope
-- 누적 budget 또는 rolling rate 초과
-- 같은 proposal/request ID의 다른 canonical material
-- compiler writer identity drift
+- durable Event Log and stored Projection mismatch;
+- Snapshot differs from latest revision/head/projection;
+- Campaign, Run, Envelope, decision, or compiler lineage mismatch;
+- unknown Capability or version/digest/Tool/risk drift;
+- out-of-Scope target or excessive risk;
+- inactive or expired Envelope;
+- cumulative budget or rolling-rate exhaustion;
+- different material under an existing proposal or request identity; and
+- compiler writer drift.
 
-## 검증
+## Verification
 
-- canonical identity와 Capability registry drift
-- reopen 뒤 Permit 조회와 exact response-loss retry
-- projection lag 및 recovery 뒤 stale Snapshot 거부
-- cross-instance 경쟁에서 하나의 dispatch winner
-- Worker callback 실패 뒤 terminal consumption과 no-redispatch
-- durable budget와 rolling-window rate
-- target Scope와 expiry fail-closed
-- request equivocation
-- append-only trigger와 schema fingerprint tamper
-- v1→v2 migration이 Permit authority를 꾸며내지 않음
+Tests cover canonical identities, registry drift, reopen recovery, exact response-loss retry,
+projection lag and stale decisions, cross-instance one-winner races, terminal callback failure,
+durable budgets and rolling rates, Scope/expiry rejection, request equivocation, append-only and
+fingerprint tampering, and honest v1-to-v2 migration.
 
-Windows focused Graph suite는 `64 passed, 2 skipped`다. skip 2개는 POSIX
-symlink/hardlink 의미를 검증하는 기존 테스트다.
+The focused Graph suite on Windows is `64 passed, 2 skipped`; the skips are the existing POSIX
+symlink/hard-link semantics checks.
 
-## 남은 경계
+## Remaining boundaries
 
-- Tool Gateway/Worker daemon의 opt-in runtime wiring과 실제 request/result audit 연결
-- dispatch 성공·실패·만료·취소 lifecycle event 원장
-- durable Capability Registry와 compiler rotation/activation 정책
-- process-kill/fsync fault injection 및 backup/restore
-- multi-host leader/lease와 PostgreSQL/HA adapter
-- B2.9 Handoff projection과 Supervisor shadow
+- opt-in Tool Gateway/Worker daemon wiring and request/result audit linkage;
+- dispatch success/failure/expiry/cancellation lifecycle events;
+- durable Capability Registry and compiler rotation policy;
+- process-kill/fsync fault injection and verified backup/restore;
+- multi-host leader/lease and PostgreSQL/HA adapters; and
+- B2.9 Handoff projections and Supervisor shadow mode.
 
-외부 Worker 부작용은 SQLite commit과 물리적으로 같은 transaction이 아니다. 이 조각은
-commit을 one-time dispatch claim으로 정의하고 retry 시 재실행을 막아 duplicate side
-effect를 방지한다. commit 뒤 process가 죽으면 작업이 실행되지 않은 채 consumed로 남을 수
-있으며 자동 재dispatch하지 않는다.
+An external Worker side effect is not physically part of the SQLite commit. This slice defines the
+commit as the one-time dispatch claim and prevents duplicate side effects on retry. A process crash
+after commit may leave the action unexecuted but consumed; it is never automatically redispatched.

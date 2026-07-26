@@ -1,129 +1,133 @@
 # ADR-0049: Durable Single-Campaign SQLite Graph Store
 
-- 상태: 승인
-- 날짜: 2026-07-26
+- Status: Accepted
+- Date: 2026-07-26
 
-## 배경
+## Context
 
-ADR-0048은 첫 durable Canonical Graph 저장 위치를 기존 `RunStore`와 별도 Graph 모듈 사이에서
-결정하지 않았다. GRAPH-002부터 GRAPH-004는 append-only admission, exact retry/equivocation,
-deterministic projection, immutable Snapshot, lag recovery, contradiction 보존, stale-decision
-거부라는 conformance 계약을 만들었다.
+ADR-0048 left the first durable Canonical Graph storage location open between the existing
+`RunStore` and a separate Graph module. GRAPH-002 through GRAPH-004 established the conformance
+contract: append-only admissions, exact retry/equivocation, deterministic projection, immutable
+Snapshots, lag recovery, contradiction preservation, and stale-decision rejection.
 
-`RunStore`는 의도적으로 한 Run에 결박되어 artifact와 audit history를 봉인한다. Canonical Graph
-revision은 Campaign-wide이고 여러 Run에 걸쳐 이어지며 cross-process revision/head CAS와 독립적인
-Snapshot publication이 필요하다. 두 책임을 `RunStore`에 넣으면 한 Campaign을 Run directory
-여러 개로 분할하거나 Run 경계 안에 두 번째 Campaign authority를 만들게 된다.
+`RunStore` is deliberately bound to one Run and seals artifacts and audit history. Canonical Graph
+revision is Campaign-wide, continues across Runs, and needs cross-process revision/head CAS plus
+independent Snapshot publication. Putting both responsibilities in `RunStore` would either split
+one Campaign across Run directories or create a second Campaign authority inside a Run boundary.
 
-첫 durable adapter는 production service dependency를 새로 요구하지 않으면서 Control Plane
-database로 확장 가능한 경계를 보존해야 한다.
+The first durable adapter should add no production service dependency while preserving a clear
+upgrade path to a Control Plane database.
 
-## 결정
+## Decision
 
-### 1. 별도 Graph Store를 사용한다
+### 1. Use a separate Graph Store
 
-첫 durable backend는 `pajin.graph.sqlite_store`의 `SQLiteGraphStore`다. `RunStore` format은
-바꾸지 않는다. 한 database는 정확히 한 Campaign을 소유하고 Event Log, Projection Store,
-Snapshot Store protocol adapter를 제공한다.
+The first durable backend is `SQLiteGraphStore` in `pajin.graph.sqlite_store`. It does not modify
+the `RunStore` format. One database owns exactly one Campaign and exposes Event Log, Projection
+Store, and Snapshot Store protocol adapters.
 
-### 2. authoritative history를 append-only로 유지한다
+### 2. Keep authoritative history append-only
 
-Admission Event, admitted-node lookup row, Projection revision, Snapshot은 append-only다. 현재
-Projection은 mutable last-write-wins row가 아니라 저장된 가장 큰 revision이다. Metadata와
-Event/Snapshot writer identity도 초기화 후 immutable이다.
+Admission Events, admitted-node lookup rows, Projection revisions, and Snapshots are append-only.
+Projection current state is the greatest stored revision, not a mutable last-write-wins row.
+Metadata and Event/Snapshot writer identities are immutable after initialization.
 
-### 3. schema·Campaign·writer를 고정한다
+### 3. Pin schema, Campaign, and writers
 
-database는 exact schema object를 fingerprint하고 schema version/digest, SQLite application ID,
-Campaign ID를 고정한다. Event와 Snapshot writer ID/digest pair는 각각 한 번만 insert한다.
-같은 identity로 process가 reopen할 수 있지만 다른 identity는 fail-closed한다.
+The database fingerprints its exact schema objects and pins schema version/digest, SQLite
+application ID, and Campaign ID. Event and Snapshot writer ID/digest pairs are independently
+inserted once. A process may reopen with the same identity; another identity fails closed.
 
-### 4. host-local 직렬화에 SQLite transaction을 사용한다
+### 4. Use SQLite transactions for host-local serialization
 
-write는 `BEGIN IMMEDIATE`, DELETE journal mode, `synchronous=FULL`을 사용한다.
+Writes use `BEGIN IMMEDIATE`, DELETE journal mode, and `synchronous=FULL`.
 
-- Event append는 Event와 새 admitted-node index를 atomic하게 기록한다.
-- Projection CAS는 같은 durable Event Log의 exact prefix를 요구하고 immutable revision 하나를
-  append한다.
-- Snapshot append는 exact predecessor와 같은 database에 이미 발표된 Projection을 요구한다.
+- Event append atomically writes the Event and newly admitted-node index.
+- Projection CAS requires an exact prefix of the same durable Event Log and appends one immutable
+  revision.
+- Snapshot append requires an exact predecessor and a Projection already published in the same
+  database.
 
-Projection publication 전에 Event가 commit된 상태는 지원하는 recovery 상태다.
-`GraphProjectionReconciler`가 reopen 뒤 복구하며 divergent history를 rewrite하지 않는다.
+An Event committed before Projection publication is a supported recovery state.
+`GraphProjectionReconciler` repairs it after reopen. It never rewrites divergent history.
 
-### 5. storage read에서도 canonical validation을 유지한다
+### 5. Preserve canonical validation at storage reads
 
-model은 제한된 canonical UTF-8 JSON BLOB으로 저장한다. read는 typed model, content-addressed
-identity, canonical bytes, 중복 index column을 다시 검증한다. reopen 때 SQLite schema,
-foreign-key, integrity check를 수행한다.
+Models are stored as bounded canonical UTF-8 JSON BLOBs. Reads revalidate the typed model, its
+content-addressed identity, canonical bytes, and duplicated index columns. SQLite schema,
+foreign-key, and integrity checks run on reopen.
 
-### 6. 실행 권위는 분리한다
+### 6. Keep execution authority separate
 
-이 store는 `GraphDecisionPreflight`를 ActionPermit으로 바꾸지 않는다. atomic latest-revision
-비교와 ActionPermit 발급·소비, Worker dispatch는 별도 decision과 trust-boundary 조각이다.
+This store does not turn `GraphDecisionPreflight` into an ActionPermit. Atomic latest-revision
+comparison plus ActionPermit issuance/consumption and Worker dispatch is a separate decision and
+trust-boundary slice.
 
-## 검토한 대안
+## Alternatives considered
 
-### `RunStore` 확장
+### Extend `RunStore`
 
-한 Run lifecycle과 seal semantics가 Campaign-wide sequence와 cross-Run projection head를
-자연스럽게 소유하지 못하므로 첫 adapter에서는 채택하지 않았다. `RunStore`는 source evidence와
-legacy migration input으로 계속 사용한다.
+Rejected for the first adapter because its one-Run lifecycle and sealing semantics do not naturally
+own a Campaign-wide sequence and cross-Run projection head. `RunStore` remains valuable as source
+evidence and legacy migration input.
 
-### 지금 Control Plane database에 Graph table 추가
+### Add Graph tables to the Control Plane database now
 
-보류했다. PostgreSQL HA와 공유 operational lease를 제공할 수 있지만 local 계약을 검증하기 전에
-첫 Graph conformance 조각을 optional service deployment와 database migration에 결합한다.
+Deferred. It could provide PostgreSQL HA and shared operational leases, but would couple the first
+Graph conformance slice to optional service deployment and database migrations before the local
+contract is exercised.
 
-### Run 옆 JSONL file
+### Persist JSONL files beside Runs
 
-multi-process append, exact CAS, schema constraint, Event/Projection/Snapshot transaction을 위해
-새 filesystem database protocol이 필요하므로 채택하지 않았다.
+Rejected because multi-process append, exact CAS, schema constraints, and Event/Projection/Snapshot
+transactions would require a new filesystem database protocol.
 
-## 호환성과 migration
+## Compatibility and migration
 
-adapter는 opt-in이다. 기존 Mode, manifest, CLI/API 계약, Run directory, in-memory Graph test는
-바뀌지 않는다. migration할 production Graph database는 아직 없다.
+The adapter is opt-in. Existing Modes, manifests, CLI/API contracts, Run directories, and in-memory
+Graph tests are unchanged. No production Graph database exists to migrate.
 
-향후 legacy adapter는 original Run/artifact digest를 provenance로 가진 typed Proposal을 만든다.
-변환은 admission authority를 부여하지 않는다.
+Future legacy adapters emit typed Proposals with original Run/artifact digests as provenance.
+Conversion never grants admission authority.
 
 ## Rollback
 
-runtime integration 전에는 SQLite store 생성을 중단하고 file을 audit evidence로 보존한다. 한
-Campaign이 이를 canonical로 취급한 뒤에는 rollback도 exact Event chain을 보존·검증해야 한다.
-admitted history 삭제·truncate·rewrite는 금지한다. 대체 backend는 canonical Event를 import하고
-conformance test를 통해 Projection/Snapshot digest를 재현해야 한다.
+Before runtime integration, stop creating the SQLite store and retain its file as audit evidence.
+After a Campaign treats it as canonical, rollback must preserve and verify the exact Event chain;
+deleting, truncating, or rewriting admitted history is forbidden. A replacement backend must
+import the canonical Events and reproduce Projection/Snapshot digests through conformance tests.
 
-## 결과
+## Consequences
 
-장점:
+Positive:
 
-- Campaign-wide Graph ownership이 한 Run의 seal과 충돌하지 않는다.
-- cross-process host-local Event append와 Projection CAS가 한 database 직렬화 지점을 사용한다.
-- 새 runtime dependency 없이 Event, revision, Snapshot이 재시작 뒤에도 유지된다.
-- future PostgreSQL adapter도 같은 storage-neutral Graph protocol을 사용할 수 있다.
+- Campaign-wide Graph ownership no longer conflicts with one-Run sealing.
+- Cross-process host-local Event append and Projection CAS have one database serialization point.
+- Events, revisions, and Snapshots survive restart without a new runtime dependency.
+- The same storage-neutral Graph protocols remain available for a future PostgreSQL adapter.
 
-비용과 한계:
+Costs and limits:
 
-- SQLite는 one-host storage이며 multi-host leader election이나 HA가 아니다.
-- Event append와 Projection publication은 의도적으로 별도 transaction이고 중단 뒤
-  reconciliation이 필요하다.
-- backup/restore, compaction, at-rest encryption, external anchoring, process-kill fault injection은
-  미완료다.
-- 외부 Worker side effect와 database commit의 physical atomicity는 제공하지 않는다.
-- schema v2의 consumed dispatch claim 이후 runtime wiring과 lifecycle event가 남아 있다.
+- SQLite is one-host storage, not multi-host leader election or HA.
+- Event append and Projection publication are separate transactions by design; reconciliation is
+  required after an interruption.
+- Backup/restore, compaction, encryption at rest, external anchoring, and process-kill fault
+  injection remain incomplete.
+- Physical atomicity between an external Worker side effect and the database commit is not
+  provided.
+- Runtime wiring and lifecycle events remain after the schema-v2 consumed dispatch claim.
 
-## 구현
+## Implementation
 
-[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.md)에 schema, recovery,
-filesystem, conformance, 호환성, 남은 경계를 기록한다. 후속
-[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.md)은 exact v1 fingerprint를
-검증한 뒤 append-only Permit table을 추가하는 schema v2 migration과 final authority
-transaction을 구현한다.
+[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.md) records schema, recovery,
+filesystem, conformance, compatibility, and remaining boundaries. The subsequent
+[GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.md) verifies the exact v1
+fingerprint before adding append-only Permit tables through a schema-v2 migration and implements
+the final authority transaction.
 
-## 관련 문서
+## Related documents
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)
-- [ADR-0048: Minimum Graph와 Admission 일관성](0048-minimum-graph-and-admission-consistency.md)
-- [GRAPH-004: Consistency·Recovery·Stale Decision](../graph/GRAPH-004-consistency-recovery-stale-decision.md)
+- [ADR-0048: Minimum Graph and Admission Consistency](0048-minimum-graph-and-admission-consistency.md)
+- [GRAPH-004: Consistency, Recovery, and Stale Decision](../graph/GRAPH-004-consistency-recovery-stale-decision.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](0050-consumed-action-permit-dispatch-claim.md)

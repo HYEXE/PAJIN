@@ -11,47 +11,21 @@ compatible during the strangler migration.
 An Adaptive Supervisor is deliberately deferred until the graph and benchmark contracts exist.
 When introduced, it will consume immutable snapshots and emit proposals only; deterministic code
 continues to compile single-use execution permits and enforce Scope, risk, budget, and Capability.
-See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
-[ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.en.md),
-[ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
-[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md), and
-[ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.en.md), and
-[ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.en.md), and
-[ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.en.md), and
-[ADR-0052](docs/adr/0052-code-backed-capability-authority-set.en.md), and
-[ADR-0053](docs/adr/0053-inert-deterministic-capability-scaffolds.en.md).
+See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.md),
+[ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.md),
+[ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.md), and
+[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.md), and
+[ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.md), and
+[ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.md), and
+[ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.md), and
+[ADR-0052](docs/adr/0052-code-backed-capability-authority-set.md), and
+[ADR-0053](docs/adr/0053-inert-deterministic-capability-scaffolds.md).
 
-CAP-003 development starts from committed parent `main@84c8cd2`, synchronized with
-`origin/main@84c8cd2`. The Architecture v2 work
-includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
-It also includes the [GRAPH-001 six-node, eight-relation, and four-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
-The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
-now adds one writer capability, registered producer and exact lineage verification, idempotent
-retry/equivocation handling, canonical materialization, and a hash-chained in-memory Event Log.
-The [GRAPH-003 projection, atomic revision, and immutable Snapshot reference spike](docs/graph/GRAPH-003-projection-revision-immutable-snapshot.en.md)
-now adds deterministic exact-prefix replay, projection CAS, content-addressed Snapshot chaining,
-and exact Snapshot reference resolution. The [GRAPH-004 consistency reference slice](docs/graph/GRAPH-004-consistency-recovery-stale-decision.en.md)
-adds Hypothesis admission, duplicate/contradiction analysis, bounded projection recovery, and a
-Snapshot-bound stale-decision preflight. The [GRAPH-005 durable SQLite Graph Store](docs/graph/GRAPH-005-durable-sqlite-graph-store.en.md)
-persists one Campaign's Event Log, append-only Projection history, and immutable Snapshot chain
-with cross-process host-local CAS and reopen recovery. GRAPH-004 is locally committed; GRAPH-005 is
-committed and synchronized. The [GRAPH-006 atomic ActionPermit authority](docs/graph/GRAPH-006-atomic-action-permit-authority.en.md)
-adds canonical Mission/Proposal/Capability contracts, SQLite schema-v2 migration, a final
-latest-revision plus budget/rate transaction, consumed-on-issuance dispatch claims, and
-cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as `59cf210`; Linux CI
-remains pending. [CAP-001 Versioned Capability Definition](docs/capability/CAP-001-versioned-capability-definition.en.md)
-adds explicit domain/maturity/surface/threat/side-effect metadata, an exact ToolSpec digest, an
-exact-version Registry with no latest fallback, and a GRAPH-006 `definitionDigest` adapter. CAP-001
-is committed as `49b0ebb`; Linux CI remains pending.
-[CAP-002 Metadata + Code-backed Authority Interfaces](docs/capability/CAP-002-metadata-code-backed-authority-interfaces.en.md)
-adds an exact seven-role authority set, explicit non-secret stable-context digests, pre/post adapter
-drift checks, canonical role wrappers, and compiler/network authority-expansion rejection. Existing
-Tool Gateway and Replay runtime paths remain unchanged.
-[CAP-003 Capability Authoring SDK and Scaffold](docs/capability/CAP-003-capability-authoring-sdk-scaffold.en.md)
-adds strict-JSON authoring specs, seven inert abstract role templates, deterministic metadata/schema,
-benchmark mapping, negative-test and documentation generation, per-file digests, a write-last
-manifest, and the write-once `pajin capability-scaffold` CLI. Generated output is never registered
-automatically; CAP-004 review/activation and runtime wiring remain follow-up work.
+The repository keeps code-coupled contracts and decisions only. Use the
+[documentation index](docs/README.md) to navigate those records and the
+[documentation authority policy](docs/DOCUMENTATION_POLICY.md) before adding a new document.
+Current priorities, implementation status, and milestone tracking live in the
+[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a).
 
 ## B2.8g resumable multipart portable Artifact transport
 
@@ -66,7 +40,7 @@ manifest, atomically publishes the staging tree, and then reuses the existing ma
 sealed Run, receipt, and projection checks. Small Runs keep the existing inline v1 transport.
 External S3-compatible storage, pre-signed URLs, upload expiry/garbage collection, encryption, and
 tenant isolation remain follow-up work. See
-[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.en.md).
+[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.md).
 
 ## B2.8f Target-signed TLS session binding
 
@@ -80,7 +54,7 @@ Python 3.12 does not expose RFC 9266 `tls-exporter`, so this slice deliberately 
 profile to TLS 1.2 `tls-unique` instead of overstating TLS 1.3 support. Registry v1-v3 and all
 legacy receipt/binding versions retain their existing behavior. Production TLS 1.3 exporter
 support, full handshake policy, and mTLS remain follow-up work. See
-[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.en.md).
+[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.md).
 
 ## B2.8e signed Target registry distribution
 
@@ -96,7 +70,7 @@ The Control Plane accepts an inline bundle or fetches it once at startup from a 
 absolute HTTPS URL, bounded to 512 KiB. The distribution trust anchor remains an out-of-band public
 configuration. Runtime refresh, TLS 1.3 exporter binding, CT/revocation, and recovery of the
 anti-rollback baseline after loss of the database and its backups remain outside this slice. See
-[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
+[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.md).
 
 PAJIN is a policy-governed multi-agent AI red-team and security validation platform.
 
@@ -110,7 +84,9 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation baseline as of 2026-07-24 is:
+The implementation overview below is release-neutral. Consult the
+[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a)
+for the current Git baseline and verification state.
 
 | Area | Current scope |
 | --- | --- |
@@ -922,15 +898,15 @@ context. Its `corroborated`, `contested`, or `inconclusive` comparison is sealed
 is a configuration assertion, not cryptographic proof of separate organizations or infrastructure.
 
 The exact Claim identity, evidence, fallback, blind-review, Control, and confirmation boundaries are recorded
-in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.en.md),
-[ADR 0031](docs/adr/0031-blind-evidence-review-boundary.en.md),
-[ADR 0032](docs/adr/0032-fresh-capability-validation-controls.en.md),
-[ADR 0033](docs/adr/0033-registered-validation-control-materializers.en.md), and
-[ADR 0034](docs/adr/0034-diverse-independent-severity-review.en.md). Claim-bound replay lineage and
+in [ADR 0030](docs/adr/0030-candidate-aware-atomic-claim-validation.md),
+[ADR 0031](docs/adr/0031-blind-evidence-review-boundary.md),
+[ADR 0032](docs/adr/0032-fresh-capability-validation-controls.md),
+[ADR 0033](docs/adr/0033-registered-validation-control-materializers.md), and
+[ADR 0034](docs/adr/0034-diverse-independent-severity-review.md). Claim-bound replay lineage and
 the public partial-validation projection are recorded in
-[ADR 0035](docs/adr/0035-claim-replay-public-state-projection.en.md). Separate Claim execution
+[ADR 0035](docs/adr/0035-claim-replay-public-state-projection.md). Separate Claim execution
 authority and KISA validity/impact/severity Oracles are recorded in
-[ADR 0036](docs/adr/0036-claim-bound-replay-execution-authority.en.md).
+[ADR 0036](docs/adr/0036-claim-bound-replay-execution-authority.md).
 
 `maxModelCalls` and `maxModelTokens` bound Campaign-side model usage independently, while
 `maxCostUsd` applies registration-supplied per-million token rates to the same conservative
@@ -1094,14 +1070,14 @@ before that deadline may use it. The inline bundle and HTTPS bundle URL are mutu
 and HTTPS fetch is redirect-free, bounded to 512 KiB, and performed once at startup. The development
 Target can optionally enable TLS with `PAJIN_TARGET_TLS_CERTIFICATE` and
 `PAJIN_TARGET_TLS_PRIVATE_KEY`. See
-[ADR-0042](docs/adr/0042-worker-observed-tls-leaf-spki-binding.en.md) and
-[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.en.md).
+[ADR-0042](docs/adr/0042-worker-observed-tls-leaf-spki-binding.md) and
+[ADR-0043](docs/adr/0043-signed-target-registry-distribution-and-rotation.md).
 Registry v4 additionally requires `tls_session_binding: tls-unique-sha256` on every HTTPS route.
 When the Target also sets `PAJIN_TARGET_TLS_SESSION_BINDING=tls-unique-sha256`, the lab caps TLS at
 1.2 and signs the server-side channel-binding digest in receipt statement v2. The Worker records
 the same connection's digest, and Executor TLS binding v3 seals it with the SPKI and CONNECT route.
 The Control Plane rejects missing, downgraded, or cross-session evidence. See
-[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.en.md).
+[ADR-0044](docs/adr/0044-target-signed-tls-session-binding.md).
 
 An Operator credential can use the public Replay admission surface:
 
@@ -1665,9 +1641,10 @@ run-scoped Secret Leases. `PydanticAIAgentRuntime` is limited to PydanticAI's ex
 Agent construction. Every MCP, CLI, browser, sandbox, and network-backed model call must cross its
 PAJIN policy boundary.
 
-See [the product plan](docs/PAJIN_PRODUCT_PLAN.md),
-[the KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
-[ADR decision record](docs/adr/). The latest implementation decisions are
+See the [live product roadmap in Notion](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a),
+the [documentation index](docs/README.md),
+the [KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
+[ADR decision record](docs/adr/). Selected implementation decisions are
 [ADR-0019](docs/adr/0019-bounded-ctf-suite-orchestration.md),
 [ADR-0020](docs/adr/0020-specialist-call-budget-allocation.md),
 [ADR-0021](docs/adr/0021-opt-in-specialist-concurrency.md),

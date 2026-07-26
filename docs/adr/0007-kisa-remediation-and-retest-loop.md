@@ -1,85 +1,98 @@
-# ADR-0007: KISA 완화 계획과 증적 기반 재검증 폐루프
+# ADR-0007: KISA remediation plan and evidence-based closed retest loop
 
 - Status: Accepted
 - Date: 2026-07-12
 - Confirmation semantics amended by: [ADR 0027](0027-independent-reproduction-confirmation-boundary.md)
 
-> 현재 remediation/retest 서비스는 legacy validation Finding을 사용한다. 기본 `kisa-run`에는
-> ADR 0027의 exact fresh-session driver와 live transcript Oracle이 연결됐지만, verified receipt를
-> 소비하는 공통 Gate와 `kisa-retest` 연결 전 판정은 제품 수준의 Confirmed·fixed·
-> still-vulnerable을 증명하지 않는다.
+> This ADR originally described a remediation/retest service that consumed legacy validation
+> Findings. Although the default `kisa-run` was connected to ADR 0027's exact fresh-session driver
+> and live-transcript Oracle, decisions made before the shared Gate began consuming verified
+> receipts—and before `kisa-retest` was connected—did not establish product-level `confirmed`,
+> `fixed`, or `still-vulnerable` status. The current `kisa-retest` implementation accepts only
+> sealed, reproduction-backed `validation/v1alpha1` baselines.
 
 ## Context
 
-초기 KISA Mode Pack은 취약점 발견·분리된 증거 심사·보고까지 수행하지만 완화 방안, 개선 과제,
-재검증, 정상 기능과 회귀 확인은 미충족으로 남겼다. 단순히 후속 Run에서 Finding이 사라진
-사실만으로 수정 완료를 선언하면 실행 실패, 증적 손실, Validator 오류를 실제 수정으로
-오인할 수 있다. 보안 통제가 정상 기능을 훼손해도 공격 결과만 비교하면 이를 발견하지
-못한다.
+The initial KISA Mode Pack covered vulnerability discovery, separate evidence review, and
+reporting, but left mitigation guidance, remediation tasks, retesting, normal functionality, and
+regression checks incomplete. Declaring a fix merely because a Finding disappears in a subsequent
+Run can mistake an execution failure, lost evidence, or a Validator error for an actual fix. Looking
+only at attack results also fails to detect when a security control breaks normal functionality.
 
-완화 계획의 담당자·기한·운영 반영은 조직의 권한과 맥락이 필요하므로 PAJIN이 임의로
-채워서도 안 된다.
+Assigning owners and deadlines to a mitigation plan and deploying it operationally require
+organizational authority and context, so PAJIN must not invent these details.
 
 ## Decision
 
-### 계획이 실행보다 먼저다
+### Planning precedes execution
 
-1. `kisa-plan-remediation`은 완료된 기준 Run의 검증 Finding만 사용해 위협별 기술 통제와
-   수용 기준을 생성한다.
-2. 계획은 안정적 Finding fingerprint, 기준 Finding ID, 위협, 원본 증적, 통제, 최소 두 번의
-   동일 공격과 정상 기능 성공 기준을 포함한다.
-3. 담당자와 기한은 제공되지 않은 경우 비워 두고 `requires_human_assignment`로 표시한다.
-4. 계획 생성 이벤트를 기준 Run에 기록한다. `kisa-retest`는 계획이 없으면 실행 전에 이를
-   생성하고, 비교 단계는 기준 Run의 계획이 없거나 Finding과 불일치하면 실패한다.
+1. `kisa-plan-remediation` uses only validated Findings from a completed baseline Run to generate
+   threat-specific technical controls and acceptance criteria.
+2. The plan includes a stable Finding fingerprint, baseline Finding ID, threat, original evidence,
+   control, and acceptance criteria requiring at least two successful repetitions of both the same
+   attack and normal functionality.
+3. Owners and deadlines remain empty when not provided and are marked
+   `requires_human_assignment`.
+4. A plan-creation event is recorded on the baseline Run. `kisa-retest` creates the plan before
+   execution if one does not exist, and the comparison stage fails if the baseline Run lacks a plan
+   or if the plan does not match its Findings.
 
-### 공격 재검증과 정상 기능을 분리한다
+### Separate attack retesting from normal functionality
 
-1. `KISARetestPlannerRuntime`은 기존 KISA 공격 시나리오를 같은 반복 수로 실행한다.
-2. 별도 등록 Tool `ai.normal-probe`가 일반 사용자 입력을 두 번 실행하고 기대 정상 응답을
-   확인한다.
-3. 정상 기능 Tool은 공격 Finding을 만들지 않으며 공격 성공률·차단율·민감정보 노출 지표에
-   포함되지 않는다.
-4. 공격과 정상 기능 호출 모두 Tool Gateway, Scope, egress proxy, Docker Worker, Capability
-   예산과 증적 경계를 그대로 사용한다.
+1. `KISARetestPlannerRuntime` runs the existing KISA attack scenarios with the same repetition
+   count.
+2. A separate registered Tool, `ai.normal-probe`, runs ordinary user input twice and verifies the
+   expected normal response.
+3. The normal-functionality Tool does not create attack Findings and is excluded from attack success
+   rate, block rate, and sensitive-information exposure metrics.
+4. Both attack and normal-functionality calls continue to use the Tool Gateway, Scope, egress proxy,
+   Docker Worker, Capability budgets, and evidence boundaries.
 
-### 수정 판정은 증명 가능해야 한다
+### A fix decision must be provable
 
-1. Finding fingerprint는 위협 코드, 대상, 정규화 제목으로 계산하며 실행별 임의 Finding ID와
-   분리한다.
-2. 현재 호환 구현은 재검증에서 같은 fingerprint가 다시 심사되면 `still-vulnerable`로
-   기록한다. 제품 수준 판정에는 양쪽 Run의 ADR 0027 ReplayOutcome이 필요하다.
-3. Finding이 없더라도 동일 위협의 기대 반복 횟수가 모두 성공적으로 실행되고 각 결과의
-   공격 신호가 false인 경우에만 `fixed`다.
-4. 반복 횟수 미달, 도구 실패, 증적 누락, 비취약 판정 부족은 `inconclusive`다.
-5. 기준에 없는 fingerprint는 `new`로 분리한다.
-6. 정상 기능 증적이 기대 횟수보다 적으면 `not-measured`, 실패가 있으면 `fail`, 모두 통과하면
-   `pass`다.
+1. A Finding fingerprint is calculated from the threat code, target, and normalized title, and is
+   distinct from a random per-run Finding ID.
+2. The compatibility implementation described at the time records `still-vulnerable` when the same
+   fingerprint is reviewed again during retesting. A product-level decision requires the ADR 0027
+   ReplayOutcome from both Runs.
+3. Even when no Finding exists, the status is `fixed` only if all expected repetitions for the same
+   threat ran successfully and each result's attack signal is false.
+4. Too few repetitions, Tool failure, missing evidence, or insufficient non-vulnerable results
+   produce `inconclusive`.
+5. A fingerprint absent from the baseline is classified separately as `new`.
+6. Normal functionality is `not-measured` when there is less evidence than expected, `fail` when
+   any check fails, and `pass` when all checks succeed.
 
-### 원본 체크리스트는 덮어쓰지 않는다
+### Do not overwrite the original checklist
 
-재검증 서비스는 원본 KISA 체크리스트를 수정하지 않고 `kisa-checklist-overlay.json`을 만든다.
-완화 방안, 재검증, 정상 기능, 회귀 확인은 증적에 따라 갱신하지만 실제 담당자·기한은 계속
-`needs-review`다. Overlay는 대체하는 항목 ID를 명시하고 준수 인증이 아니라는 제한을
-보고서에 유지한다.
+The retest service creates `kisa-checklist-overlay.json` without modifying the original KISA
+checklist. Mitigation, retesting, normal functionality, and regression checks are updated from
+evidence, while actual owners and deadlines remain `needs-review`. The Overlay identifies the item
+IDs that it replaces and retains a disclaimer in the report that it is not a compliance
+certification.
 
 ## Consequences
 
 ### Positive
 
-- 실행 실패와 증적 손실을 수정 완료로 오인하지 않는다.
-- 기준 Finding부터 완화 계획, 재검증 증적, 최종 상태까지 추적할 수 있다.
-- 보안 통제가 정상 기능을 훼손하는 회귀를 별도 실패로 처리한다.
-- CI에서 남은 취약점, 불확실 판정, 신규 Finding, 회귀 실패를 non-zero 종료로 차단할 수 있다.
-- 조직 정보가 없는 담당자·기한을 자동으로 조작하지 않는다.
+- Execution failure and evidence loss are not mistaken for a completed fix.
+- The chain from baseline Finding through mitigation plan and retest evidence to final status is
+  traceable.
+- A security control that breaks normal functionality is handled as a separate regression failure.
+- CI can block remaining vulnerabilities, inconclusive decisions, new Findings, and regression
+  failures with a non-zero exit.
+- Owners and deadlines are not fabricated when organizational information is unavailable.
 
 ### Trade-offs and residual risks
 
-- 제목이 크게 바뀐 동일 근본 원인은 새 fingerprint로 인식될 수 있다. 장기적으로 명시적
-  scenario/root-cause ID를 Finding 모델에 추가해야 한다.
-- 현재 완화 통제는 M03·M06·A04 템플릿이며 실제 코드 변경을 자동 적용하지 않는다.
-- 정상 기능은 하나의 대표 Chat 응답을 검사한다. 실제 업무별 golden dataset과 의미 기반
-  품질 판정이 필요하다.
-- Overlay를 조직의 최종 체크리스트로 병합하고 승인하는 단계는 사람 워크플로가 필요하다.
+- The same root cause may be treated as a new fingerprint if its title changes substantially. In
+  the long term, an explicit scenario/root-cause ID should be added to the Finding model.
+- Current mitigation controls are M03, M06, and A04 templates and do not automatically apply real
+  code changes.
+- Normal functionality checks one representative Chat response. Real workloads require
+  task-specific golden datasets and semantic quality decisions.
+- Merging the Overlay into the organization's final checklist and approving it requires a human
+  workflow.
 
 ## Verification
 
@@ -95,6 +108,7 @@ docker compose -f containers/compose.ai-lab.yaml `
   -f containers/compose.ai-lab.hardened.yaml down
 ```
 
-당시 호환 인수 조건은 계획 이벤트가 재검증 시작보다 먼저 발생하고, M03·M06·A04가 각각 두 개의
-비취약 Docker 증적으로 `fixed`, 정상 기능이 2/2 `pass`, 신규·미확정 결과가 0건이며 모든
-호출이 egress proxy allow 증적을 갖고 종료 후 컨테이너·네트워크가 남지 않는 것이다.
+The compatibility acceptance criteria at the time required the plan event to occur before retesting
+began; M03, M06, and A04 each to be `fixed` with two non-vulnerable Docker evidence items; normal
+functionality to be 2/2 `pass`; no new or inconclusive results; egress proxy allow evidence for
+every call; and no remaining containers or networks after termination.

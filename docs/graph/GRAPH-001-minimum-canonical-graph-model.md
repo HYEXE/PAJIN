@@ -1,34 +1,34 @@
 # GRAPH-001: Minimum Canonical Graph Model
 
-- 상태: Implemented contract
-- 날짜: 2026-07-26
-- 구현: `pajin.graph`
+- Status: Implemented contract
+- Date: 2026-07-26
+- Implementation: `pajin.graph`
 
-## 목적
+## Purpose
 
-여러 Specialist와 공격 표면이 공유할 최소 campaign knowledge vocabulary를 비실행 typed
-contract로 고정한다. 이 조각은 Event Store, Admission Queue, Graph Projection, Snapshot,
-Supervisor를 구현하지 않는다. Agent가 만든 값은 Proposal이며 canonical state가 아니다.
+This non-executable typed contract fixes the minimum campaign-knowledge vocabulary shared across
+Specialists and attack surfaces. It does not implement an Event Store, Admission Queue, Graph
+Projection, Snapshot, or Supervisor. Agent-produced values are Proposals, not canonical state.
 
-## Node
+## Nodes
 
-| Kind | 핵심 결박 |
+| Kind | Core binding |
 | --- | --- |
-| `Surface` | Campaign, Target, surface type, locator schema/digest, origin |
-| `Hypothesis` | statement, expected observable, producer version/digest, origin, confidence |
-| `Action` | request, Capability/Permit authority, registered Capability, Tool, target digest, 결과 시각 |
-| `Observation` | typed summary/value digest, producer version/digest, taint origin, confidence, 시각 |
-| `Evidence` | normalized relative reference, content/root digest, media type, data classification |
-| `CampaignFact` | fact key/value digest, validation state, producer provenance, origin, 시각 |
+| `Surface` | Campaign, Target, surface type, locator schema/digest, and origin |
+| `Hypothesis` | Statement, expected observable, producer version/digest, origin, and confidence |
+| `Action` | Request, Capability/Permit authority, registered Capability, Tool, target digest, result time |
+| `Observation` | Typed summary/value digest, producer version/digest, taint origin, confidence, and time |
+| `Evidence` | Normalized relative reference, content/root digest, media type, and data classification |
+| `CampaignFact` | Fact key/value digest, validation state, producer provenance, origin, and time |
 
-Node ID는 Campaign과 전체 semantic payload의 domain-separated canonical digest다. provenance가
-다르거나 모순되는 값은 다른 Node ID를 가지므로 overwrite하지 않고 함께 보존할 수 있다.
-Target-derived text는 `origin=target-derived`로 표시해 이후 Supervisor input taint 처리가
-가능하다.
+A Node ID is a domain-separated canonical digest of its Campaign and complete semantic payload.
+Different provenance or contradictory values produce separate Node IDs, allowing coexistence
+without overwrite. Target-derived text uses `origin=target-derived` so a later Supervisor input can
+preserve taint.
 
-## Edge
+## Edges
 
-다음 여덟 relation만 허용하며 각 relation은 source/target kind를 고정한다.
+Only these eight relations are accepted, each with fixed source and target kinds:
 
 ```text
 Surface motivates Hypothesis
@@ -41,80 +41,80 @@ Observation discovers Surface
 Observation enables Hypothesis
 ```
 
-Edge는 Campaign, typed endpoint, relation, authority ID/digest에 결박된 canonical ID를 가진다.
-반대 방향, 잘못된 endpoint kind, self-edge, cross-campaign endpoint와 ID 변조를 거부한다.
+An Edge has a canonical ID bound to Campaign, typed endpoints, relation, and authority ID/digest.
+Reverse direction, wrong endpoint kinds, self-edges, cross-Campaign endpoints, and ID tampering are
+rejected.
 
-## Proposal
+## Proposals
 
-Agent와 Specialist가 제출할 수 있는 write intent는 네 가지뿐이다.
+Agents and Specialists can submit only four write-intent types.
 
 ### `SurfaceProposal`
 
-- exact campaign/run/agent/task/request/evidence lineage에 결박
-- seed Surface는 edge 없이 제출 가능
-- edge가 있으면 `Observation discovers Surface`만 허용
+- binds exact campaign/run/agent/task/request/evidence lineage;
+- allows a seed Surface without an edge; and
+- permits only `Observation discovers Surface` when edges are present.
 
 ### `HypothesisProposal`
 
-- 등록 producer의 Hypothesis 하나를 제출
-- Hypothesis producer ID/version/digest와 outer Proposal의 exact 일치
-- Admission Authority가 resolve하는 `Surface motivates Hypothesis` 또는
-  `Observation enables Hypothesis` edge를 최소 하나 요구
+- carries one registered-producer Hypothesis;
+- exact-matches Hypothesis producer ID/version/digest to the outer Proposal; and
+- requires at least one exact `Surface motivates Hypothesis` or
+  `Observation enables Hypothesis` edge, resolved by the Admission Authority.
 
 ### `ObservationProposal`
 
-- exact Action 전체, 한 Observation과 한 개 이상의 Evidence node
-- 정확히 한 `Action produces Observation`
-- 모든 Evidence에 대한 `Observation supported-by Evidence`
-- Action의 request, Capability, Grant/Permit authority와 lineage의 exact 일치
-- Proposal lineage의 evidence reference/digest와 Evidence node의 source-root exact 일치
-- 추가 support/contradict/discover/enable edge도 항상 제안 Observation에 연결
+- carries the exact Action, one Observation, and at least one Evidence node;
+- requires exactly one `Action produces Observation`;
+- requires `Observation supported-by Evidence` for every Evidence node;
+- exact-matches Action request, Capability, and Grant/Permit authority against lineage;
+- exact-matches lineage evidence reference/digest and Evidence source root; and
+- connects every additional support/contradict/discover/enable edge to the proposed Observation.
 
 ### `CampaignFactProposal`
 
-- canonical `validation_state`가 없는 `CampaignFactPayload`만 제출
-- Agent는 fact를 제안할 수 있지만 `admitted`, `corroborated`, `contested`, `invalidated`
-  상태를 부여할 수 없음
-- GRAPH-002 Admission Authority가 accepted payload를 canonical `CampaignFact`로 materialize
+- carries a `CampaignFactPayload` without canonical `validation_state`;
+- lets an Agent propose a fact but not assign `admitted`, `corroborated`, `contested`, or
+  `invalidated`; and
+- leaves canonical `CampaignFact` materialization to the GRAPH-002 Admission Authority.
 
-모든 Proposal은 등록 producer ID/version/digest와 campaign, run, agent, task, request
-ID/digest, CapabilityGrant ID/digest, Capability ID/version/digest, source root, evidence,
-produced time에 결박한다. ActionPermit은 아직 일반 실행에 도입되지 않았으므로 optional
-pair지만 ID와 digest 중 하나만 제출할 수 없다. Proposal digest는 ID를 포함한 전체 canonical
-내용에 결박해 같은 ID/내용의 exact retry와 same-ID/different-content equivocation을
-GRAPH-002가 구분할 수 있게 한다.
+Every Proposal binds its registered producer ID/version/digest plus campaign, run, agent, task,
+request ID/digest, CapabilityGrant ID/digest, Capability ID/version/digest, source root, evidence,
+and production time. ActionPermit remains an optional pair until the general execution Permit
+exists, but an ID or digest cannot appear alone. The Proposal digest includes its ID and complete
+canonical content so GRAPH-002 can distinguish exact retry from same-ID/different-content
+equivocation.
 
-## A5 호환 경계
+## A5 compatibility boundary
 
-현재 `SurfaceObservation`, `AttackSurfaceSet`, `AttackHypothesis`,
-`ObservationGraphSnapshot`은 변경하지 않는다. 이들은 sealed legacy Artifact이며, 후속
-trusted adapter가 원본 schema/root/artifact digest를 보존한 Proposal로 변환한다. 변환
-성공만으로 admission하지 않는다.
+Existing `SurfaceObservation`, `AttackSurfaceSet`, `AttackHypothesis`, and
+`ObservationGraphSnapshot` types remain unchanged. They are sealed legacy Artifacts. A later
+trusted adapter converts them into Proposals while preserving original schema, root, and Artifact
+digests. Successful conversion does not imply admission.
 
-`TaskGraph`도 별도다. `TaskGraph`는 실행 의존성이고 Minimum Canonical Graph는 admitted
-campaign knowledge와 provenance다.
+`TaskGraph` also remains separate: it models execution dependencies, while the Minimum Canonical
+Graph models admitted campaign knowledge and provenance.
 
-## 검증된 거부 계약
+## Verified rejection contract
 
-- unknown field, naive timestamp, control character, unsafe evidence path
-- canonical Node/Edge ID 변조
-- relation endpoint kind/direction 불일치와 cross-campaign edge
-- Proposal node/edge의 foreign campaign
-- Hypothesis producer mismatch 또는 unresolved motivation
-- Evidence reference/content/source-root lineage 불일치
-- 누락된 Action production 또는 Evidence support edge
-- Agent가 CampaignFact validation state를 직접 제출
-- partial ActionPermit ID/digest
-- 모순 Observation의 overwrite 대신 별도 identity 보존
+- unknown fields, naive timestamps, control characters, and unsafe evidence paths;
+- canonical Node/Edge ID tampering;
+- relation endpoint kind/direction mismatch and cross-Campaign edges;
+- foreign-Campaign Proposal nodes or edges;
+- Hypothesis producer mismatch or unresolved motivation;
+- evidence reference/content/source-root lineage mismatch;
+- missing Action production or Evidence support edges;
+- Agent-supplied CampaignFact validation state;
+- partial ActionPermit ID/digest; and
+- overwrite of contradiction instead of a separate identity.
 
-## 다음 단계
+## Next step
 
-[GRAPH-002](GRAPH-002-single-admission-event-log.md)는 단일 Admission Authority와
-append-only Event Log reference spike를 구현했다.
-[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.md)은 projection,
-process-local atomic revision, immutable Snapshot 계약을 추가했다.
-[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.md)는 Hypothesis admission,
-duplicate/contradiction 분석, bounded reconciliation, stale-decision preflight를 추가했다.
-[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md)는 별도 single-Campaign SQLite Graph
-Store를 선택하고 host-local cross-process CAS를 추가했다. atomic ActionPermit dispatch는
-남아 있다.
+[GRAPH-002](GRAPH-002-single-admission-event-log.md) implements the single Admission Authority
+and append-only Event Log reference spike.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.md) adds projection, atomic
+process-local revision, and immutable Snapshot contracts.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.md) adds the Hypothesis admission path,
+duplicate/contradiction analysis, bounded reconciliation, and stale-decision preflight.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md) selects a separate single-Campaign SQLite
+Graph Store and adds host-local cross-process CAS. Atomic ActionPermit dispatch remains open.

@@ -13,7 +13,7 @@
   negative Control Plane retest, and additional Modes remain planned
 - Amends: [ADR 0025](0025-candidate-validation-ledger-and-replay-boundary.md), [ADR 0026](0026-trusted-kisa-candidate-admission.md)
 - Clarifies: [ADR 0004](0004-dynamic-multi-agent-execution.md)
-- Product baseline: [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
+- Product baseline: [PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a)
 
 > **Normative security correction (2026-07-19):** A typed transcript, Worker/proxy receipt,
 > ticket finalization, hash, and local seal establish internal consistency and lineage only. They
@@ -411,7 +411,7 @@ and additional explicitly opted-in Mode contracts.
 
 ## References
 
-- [PAJIN Product Plan](../PAJIN_PRODUCT_PLAN.md)
+- [PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a)
 - [ADR 0002: Tool Gateway and Worker isolation](0002-tool-gateway-and-worker-isolation.md)
 - [ADR 0004: Dynamic multi-agent execution](0004-dynamic-multi-agent-execution.md)
 - [ADR 0009: Provider-backed Agent Runtime](0009-provider-backed-agent-runtime.md)

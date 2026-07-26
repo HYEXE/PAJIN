@@ -335,14 +335,10 @@ def test_replay_runtime_preflight_rejects_unsafe_config_without_reflection(
     assert secret not in diagnostic
 
 
-def test_multilingual_docs_state_the_https_proxy_boundary_truthfully() -> None:
+def test_canonical_docs_state_the_https_proxy_boundary_truthfully() -> None:
     docs = [
         Path("README.md"),
-        Path("README.en.md"),
-        Path("README.ko.md"),
         Path("docs/adr/0003-egress-proxy-and-mcp-boundary.md"),
-        Path("docs/adr/0003-egress-proxy-and-mcp-boundary.en.md"),
-        Path("docs/adr/0003-egress-proxy-and-mcp-boundary.ko.md"),
     ]
     for path in docs:
         text = path.read_text(encoding="utf-8")
@@ -351,32 +347,17 @@ def test_multilingual_docs_state_the_https_proxy_boundary_truthfully() -> None:
         assert "pathEnforcement=authority-only" in text
         assert "8 MiB" in text
 
-    for path in docs[3:]:
-        text = path.read_text(encoding="utf-8")
-        assert "offline build" in text
+    assert "offline build" in docs[1].read_text(encoding="utf-8")
 
 
-def test_multilingual_docs_do_not_present_host_bridges_as_outbound_denial() -> None:
-    english_docs = [
+def test_canonical_docs_do_not_present_host_bridges_as_outbound_denial() -> None:
+    docs = [
         Path("README.md"),
-        Path("README.en.md"),
-        Path("docs/adr/0029-control-plane-replay-orchestration.en.md"),
+        Path("docs/adr/0029-control-plane-replay-orchestration.md"),
     ]
-    for path in english_docs:
+    for path in docs:
         text = path.read_text(encoding="utf-8")
         assert "ordinary Docker bridge" in text
         assert "outbound-deny boundary" in text or (
             "do not deny" in text and "container outbound traffic" in text
-        )
-
-    korean_docs = [
-        Path("README.ko.md"),
-        Path("docs/adr/0029-control-plane-replay-orchestration.md"),
-        Path("docs/adr/0029-control-plane-replay-orchestration.ko.md"),
-    ]
-    for path in korean_docs:
-        text = path.read_text(encoding="utf-8")
-        assert "일반 Docker bridge" in text
-        assert "outbound deny 경계는 아니" in text or (
-            "container outbound traffic을" in text and "차단하지" in text
         )

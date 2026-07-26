@@ -1,124 +1,125 @@
-# GRAPH-002: 단일 Admission Authority와 Append-only Event Log
+# GRAPH-002: Single Admission Authority and Append-only Event Log
 
-- 상태: Reference spike 구현 완료, 로컬 WIP
-- 날짜: 2026-07-26
-- 구현: `pajin.graph.admission`
+- Status: Implemented reference spike, local WIP
+- Date: 2026-07-26
+- Implementation: `pajin.graph.admission`
 
-## 결과
+## Outcome
 
-GRAPH-002는 검증된 GRAPH-001 Proposal을 append-only admission 또는 rejection event로
-변환한다. Event Log writer capability는 `GraphAdmissionAuthority`만 받는다. Producer,
-Specialist, Agent, Supervisor는 권위 없는 Proposal 제출자로 남으며 canonical CampaignFact
-validation state를 부여하거나 canonical event를 직접 append할 수 없다.
+GRAPH-002 turns a validated GRAPH-001 Proposal into an append-only admission or rejection event.
+Only `GraphAdmissionAuthority` receives the Event Log writer capability. Producers, Specialists,
+Agents, and Supervisors remain unprivileged Proposal submitters and cannot assign canonical
+CampaignFact validation state or append canonical events directly.
 
-이 spike는 저장소 중립 `GraphEventLog` 계약과 `InMemoryGraphEventLog` reference 구현을
-제공한다. 영구 Graph 저장소는 아직 선택하지 않는다.
+The spike intentionally exposes a storage-neutral `GraphEventLog` contract and an
+`InMemoryGraphEventLog` reference implementation. It does not select the durable Graph store.
 
 ## Admission pipeline
 
 ```text
 typed Proposal
-  -> authority 경계에서 재파싱
-  -> proposal ID/digest retry 검사
-  -> 등록 producer/version/digest/kind 검사
-  -> trusted lineage exact 검사
-  -> canonical node materialize
-  -> 이번 attempt 또는 기존 admitted node에 대한 edge resolve
+  -> parse again at the authority boundary
+  -> proposal-ID/digest retry check
+  -> registered producer/version/digest/kind check
+  -> exact trusted lineage check
+  -> canonical node materialization
+  -> edge resolution against this attempt or prior admitted nodes
   -> authority-owned append
 ```
 
-Event ordering 시각은 authority-owned clock이 부여한다. Producer 시각은 provenance일 뿐
-ordering 권위가 아니다. 모든 event는 proposal/lineage digest, Campaign/Run/Agent/Task/request,
-CapabilityGrant와 Capability, optional ActionPermit, source-root와 evidence, producer 계약,
-decision/reason, admitted canonical material을 기록한다.
+The authority-owned clock assigns event ordering time. Producer time remains provenance only.
+Every event records the proposal and lineage digests, Campaign/Run/Agent/Task/request identity,
+CapabilityGrant and Capability identity, optional ActionPermit, source-root and evidence bindings,
+producer contract, decision, reason, and admitted canonical material.
 
-## 일관성 계약
+## Consistency contract
 
-### 단일 writer
+### One writer
 
-Reference Event Log는 opaque writer capability 하나만 발급한다. 두 번째 writer claim,
-발급되지 않은 writer object, claimed writer와 authority가 다른 event는 fail-closed로
-거부한다. 이는 spike의 process-local single-writer 증명이며, 영구 배포에는 DB 또는
-service-level leadership fencing이 추가로 필요하다.
+The reference Event Log issues one opaque writer capability. A second writer claim, an unclaimed
+writer object, or an event whose authority differs from the claimed writer fails closed. This is a
+process-local single-writer proof for the spike; a durable deployment still needs database or
+service-level leadership fencing.
 
 ### Append-only hash chain
 
-Event는 단조 증가 sequence, previous-event digest, authority-assigned timestamp, canonical
-event digest, content-derived event ID를 가진다. Log는 stale sequence/predecessor, 중복 semantic
-attempt, 중복 event identity, validation 이후 object 변조를 거부한다. Read API는 deep copy만
-반환하며 update/delete API를 제공하지 않는다.
+Events have a monotonic sequence, previous-event digest, authority-assigned timestamp, canonical
+event digest, and content-derived event ID. The Log rejects stale sequence/predecessor values,
+duplicate semantic attempts, duplicate event identities, and post-validation object mutation.
+Read APIs return deep copies and expose no update or delete operation.
 
-### Retry와 equivocation
+### Retry and equivocation
 
-- 같은 proposal ID + 같은 digest는 원 event를 `idempotent=true`로 반환하고 append하지 않는다.
-- 같은 proposal ID + 다른 digest는 `proposal-equivocation` rejection event 하나를 append한다.
-- 그 equivocation의 exact retry도 기존 rejection event를 반환한다.
+- same proposal ID + same digest returns the original event with `idempotent=true` and appends
+  nothing;
+- same proposal ID + different digest appends one `proposal-equivocation` rejection event; and
+- an exact retry of that equivocation returns the existing rejection event.
 
-첫 기록 digest는 첫 attempt가 rejected여도 proposal ID를 예약한다. 수정한 내용은 새
-proposal ID를 사용해야 한다.
+The first recorded digest reserves the proposal ID even when the first attempt was rejected.
+Corrected content therefore requires a new proposal ID.
 
-### Trusted producer와 lineage
+### Trusted producer and lineage
 
-`GraphProducerRegistry`는 application code에서 producer ID, version, digest, 허용 Proposal
-kind를 고정한다. Observation과 CampaignFact payload의 producer 필드는 outer Proposal
-producer 계약과 exact match해야 한다.
+`GraphProducerRegistry` fixes producer ID, version, digest, and allowed Proposal kinds in
+application code. Observation and CampaignFact payload producer fields must exactly match the
+outer Proposal producer contract.
 
-`TrustedGraphLineageRegistry`는 sealed-Run adapter가 이미 인증한 source를 위한 reference
-verifier다. Campaign, Run, Agent, Task, request ID/digest, CapabilityGrant ID/digest,
-Capability ID/version/digest, optional ActionPermit ID/digest, source-root digest, evidence
-reference/digest, producer time을 exact match한다. 같은 source identity에 다른 lineage를
-등록하면 trusted-source equivocation으로 거부한다.
+`TrustedGraphLineageRegistry` is the reference verifier for a source already authenticated by a
+sealed-Run adapter. It exact-matches Campaign, Run, Agent, Task, request ID/digest,
+CapabilityGrant ID/digest, Capability ID/version/digest, optional ActionPermit ID/digest,
+source-root digest, evidence reference/digest, and producer time. Registering different lineage
+under the same source identity is rejected as trusted-source equivocation.
 
-### Materialization과 edge resolution
+### Materialization and edge resolution
 
-- `SurfaceProposal`은 Surface와 허용된 discovery edge를 admission한다.
-- `HypothesisProposal`은 source가 resolve된 exact motivation/enablement edge와 등록
-  producer의 Hypothesis를 admission한다.
-- `ObservationProposal`은 전체 Action, Observation, Evidence node와 typed edge를 admission한다.
-  Action은 request, Capability, execution-authority lineage와 정확히 일치해야 한다.
-- `CampaignFactProposal`은 `validation_state=admitted`인 canonical CampaignFact로
-  materialize한다. Producer는 이 상태를 제출할 수 없다.
+- `SurfaceProposal` admits its Surface and permitted discovery edges.
+- `HypothesisProposal` admits its registered-producer Hypothesis and exact motivation/enablement
+  edges after their source resolves.
+- `ObservationProposal` admits the full Action, Observation, Evidence nodes, and typed edges. The
+  Action must exactly match request, Capability, and execution-authority lineage.
+- `CampaignFactProposal` materializes a canonical CampaignFact with
+  `validation_state=admitted`; the producer cannot provide that state.
 
-모든 edge endpoint는 같은 attempt에서 admission하는 node 또는 Event Log에 이미 admission된
-exact node로 resolve되어야 한다. Dangling edge는 거부하고 event로 감사한다.
+Each edge endpoint must resolve to a node admitted in the same attempt or an exact node already in
+the Event Log. Dangling edges are rejected and audited.
 
-## 검증된 negative 계약
+## Verified negative contract
 
-GRAPH-001/002 test는 다음을 검증한다.
+The GRAPH-001/002 tests cover:
 
-- 변조된 Proposal 재검증과 canonical identity tampering
-- unknown producer, version/digest mismatch, kind denial, payload-producer mismatch
-- foreign Campaign, 미등록 또는 equivocated trusted lineage
-- 불완전한 Action/request/Capability/authority binding
-- dangling edge
-- exact retry와 same-ID/different-digest equivocation
-- rejected event material 주입과 event digest 변조
-- stale sequence/predecessor append
-- invalid 또는 두 번째 writer capability
-- Event Log read copy의 caller-side 변조
+- mutated Proposal revalidation and canonical identity tampering;
+- unknown producer, version/digest mismatch, kind denial, and payload-producer mismatch;
+- foreign Campaign and unregistered or equivocated trusted lineage;
+- incomplete Action/request/Capability/authority bindings;
+- dangling edges;
+- exact retry and same-ID/different-digest equivocation;
+- rejected-event material injection and event-digest mutation;
+- stale sequence/predecessor append;
+- invalid or second writer capability; and
+- caller mutation of Event Log read copies.
 
-## 의도적으로 남긴 경계
+## Deliberate boundaries
 
-이 spike는 다음을 구현하지 않는다.
+This spike does not implement:
 
-- 영구 RunStore 또는 별도 Graph Store adapter
-- cross-process leader election, database transaction/CAS, crash recovery
-- durable Graph Projection/Snapshot 저장소, snapshot-bound decision
-- semantic duplicate folding, contradiction state transition, stale-decision 처리
-- sealed Run, Scope, Capability Registry, legacy A5 artifact의 live adapter
-- Supervisor scheduling과 B2.9 fact/snapshot/handoff projection
+- a durable RunStore or separate Graph Store adapter;
+- cross-process leader election, database transaction/CAS, or crash recovery;
+- durable Graph Projection/Snapshot storage or snapshot-bound decisions;
+- semantic duplicate folding, contradiction state transitions, or stale-decision handling;
+- live adapters from sealed Run, Scope, Capability Registry, or legacy A5 artifacts; or
+- Supervisor scheduling and B2.9 fact/snapshot/handoff projections.
 
-RunStore는 이미 private append, lock, hash chain, sealed integrity를 증명했지만 한 Run에
-결박되어 있다. [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md)는 별도
-single-Campaign SQLite Graph Store를 선택하고 storage-neutral `GraphEventLog` protocol을
-유지한다.
+RunStore already demonstrates private append, locking, hash chaining, and sealed integrity, but it
+is scoped to one Run. [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md) resolves the choice
+in favor of a separate single-Campaign SQLite Graph Store while retaining the storage-neutral
+`GraphEventLog` protocol.
 
-## 다음 단계
+## Next step
 
-[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.md)은 전체 admission/rejection
-Event Log에서 재구성하는 in-memory reference Projection, revision/head CAS, immutable
-Snapshot chain을 구현했다.
-[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.md)는 duplicate·contradiction
-semantics, concurrent admission/projection, 복구 가능한 projection lag, stale-decision
-preflight를 검증한다. GRAPH-005는 이 계약을 durable host-local transaction과 reopen
-recovery에 적용했다. multi-host leadership과 atomic ActionPermit dispatch는 남아 있다.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.md) now implements the in-memory
+reference Projection, revision/head compare-and-set, and immutable Snapshot chain rebuilt from the
+complete admission/rejection Event Log.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.md) now exercises duplicate and
+contradiction semantics, concurrent admission/projection, recoverable projection lag, and
+stale-decision preflight. GRAPH-005 applies those contracts to durable host-local transactions and
+reopen recovery. Multi-host leadership and atomic ActionPermit dispatch remain open.

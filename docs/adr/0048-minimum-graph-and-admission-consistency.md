@@ -1,24 +1,24 @@
-# ADR-0048: Minimum Graph와 Admission 일관성
+# ADR-0048: Minimum Graph and Admission Consistency
 
-- 상태: Accepted
-- 날짜: 2026-07-26
+- Status: Accepted
+- Date: 2026-07-26
 
-## 배경
+## Context
 
-현재 `TaskGraph`는 실행 의존성을, A5 `ObservationGraphSnapshot`은 제한된 후속 replanning을
-표현한다. Architecture v2에는 여러 Specialist와 surface가 공유할 수 있으면서도 provenance,
-중복, 모순, 동시성, stale decision을 결정론적으로 처리하는 canonical campaign state가
-필요하다. Agent가 공유 dictionary나 free-form memory를 직접 수정하게 하면 last-write-wins,
-권위 혼동과 재현 불가능한 계획이 생긴다.
+The existing `TaskGraph` models execution dependencies, while A5 `ObservationGraphSnapshot` models
+limited follow-up replanning. Architecture v2 needs canonical campaign state shared across
+Specialists and surfaces with deterministic provenance, duplicate, contradiction, concurrency,
+and stale-decision semantics. Direct mutation of a shared dictionary or free-form memory would
+introduce last-write-wins behavior, authority ambiguity, and irreproducible planning.
 
-## 결정
+## Decision
 
-### 1. 최소 vocabulary
+### 1. Minimum vocabulary
 
-canonical node는 `Surface`, `Hypothesis`, `Action`, `Observation`, `Evidence`,
-`CampaignFact` 여섯 가지다.
+Canonical nodes are `Surface`, `Hypothesis`, `Action`, `Observation`, `Evidence`, and
+`CampaignFact`.
 
-canonical edge는 다음 일곱 가지다.
+Canonical edges are:
 
 ```text
 Surface motivates Hypothesis
@@ -30,101 +30,99 @@ Observation discovers Surface
 Observation enables Hypothesis
 ```
 
-새 node/edge kind는 schema version과 benchmark 근거를 가진 별도 변경으로만 추가한다.
+A new node or edge kind requires a schema version and benchmark evidence in a separate change.
 
-### 2. 단일 write authority
+### 2. Single write authority
 
-Specialist와 Supervisor는 `ObservationProposal`, `SurfaceProposal`,
-`CampaignFactProposal` 같은 typed proposal만 제출한다. Admission Queue의 단일
-`GraphAdmissionAuthority`만 proposal을 검증하고 append-only Canonical Event Log에
-admission/rejection event를 기록할 수 있다. Graph Projection과 Snapshot은 그 log에서만
-파생한다.
+Specialists and Supervisors submit typed `ObservationProposal`, `SurfaceProposal`, and
+`CampaignFactProposal` values. Only the `GraphAdmissionAuthority` consuming the Admission Queue can
+validate them and append admission/rejection events to the Canonical Event Log. Graph Projections
+and Snapshots derive only from that log.
 
-### 3. proposal binding
+### 3. Proposal binding
 
-각 proposal은 다음을 canonical digest에 포함한다.
+Each proposal's canonical digest includes:
 
-- schema와 proposal kind/ID
-- campaign, run, agent, task identity
-- source request/action와 Capability/Permit identity
-- node/edge payload
-- evidence reference와 digest
-- producer timestamp가 아닌 authority-assigned admission ordering에 필요한 metadata
+- schema and proposal kind/ID;
+- campaign, run, agent, and task identity;
+- source request/action and Capability/Permit identity;
+- node/edge payload;
+- evidence reference and digest; and
+- metadata needed for authority-assigned admission ordering.
 
-untrusted producer timestamp는 provenance일 수 있으나 canonical ordering 권위가 아니다.
+An untrusted producer timestamp may be provenance but is not canonical-order authority.
 
-### 4. consistency
+### 4. Consistency
 
-- 동일 proposal ID와 동일 digest 재제출은 멱등이며 새 semantic event를 만들지 않는다.
-- 동일 ID와 다른 digest는 equivocation으로 거부하고 감사한다.
-- 내용이 같은 별도 proposal은 provenance를 잃지 않으며 deterministic dedup relation으로
-  표현할 수 있지만 기존 event를 삭제하지 않는다.
-- 모순되는 Observation과 CampaignFact는 함께 보존하고 각 validation state와 lineage를
-  유지한다. silent overwrite와 last-write-wins는 금지한다.
-- 하나의 admission transaction은 이전 revision을 compare-and-set하고 event sequence,
-  projection revision과 digest를 원자적으로 전진시킨다.
-- 부분 기록 뒤 projection만 전진하거나 event 없이 revision이 전진할 수 없다.
+- Re-submitting the same proposal ID and digest is idempotent and creates no new semantic event.
+- Reusing an ID with another digest is rejected and audited as equivocation.
+- Separate proposals with equal content retain provenance. A deterministic dedup relation may
+  connect them, but no prior event is deleted.
+- Contradictory Observations and CampaignFacts coexist with their validation state and lineage.
+  Silent overwrite and last-write-wins are forbidden.
+- One admission transaction compare-and-sets the previous revision and atomically advances event
+  sequence, projection revision, and digest.
+- Projection revision cannot advance after a partial event write or without an event.
 
-### 5. immutable snapshot과 stale decision
+### 5. Immutable snapshot and stale decisions
 
-Checkpoint Snapshot은 campaign ID, graph schema, revision, event-log head digest, canonical
-node/edge projection digest와 생성 사유를 가진 immutable object다. Planner/Supervisor
-decision은 exact snapshot ID, revision, digest에 결박한다. dispatch 직전 current revision이
-다르면 revalidation 후 새 decision/Permit을 만들거나 거부한다.
+A Checkpoint Snapshot is immutable and includes campaign ID, graph schema, revision, event-log head
+digest, canonical node/edge projection digest, and creation reason. Every Planner/Supervisor
+decision binds exact snapshot ID, revision, and digest. A changed current revision before dispatch
+requires revalidation and a new decision/Permit or denial.
 
-### 6. 기존 자료의 migration
+### 6. Existing-data migration
 
-기존 `SurfaceObservation`, `AttackSurfaceSet`, A5 `ObservationGraphSnapshot`과 sealed Artifact는
-trusted adapter가 proposal로 변환할 수 있다. 원본 digest와 legacy schema를 provenance로
-보존하며, adapter를 통과했다는 이유만으로 자동 admission하지 않는다.
+A trusted adapter may convert existing `SurfaceObservation`, `AttackSurfaceSet`, A5
+`ObservationGraphSnapshot`, and sealed Artifacts into proposals. It preserves the original digest
+and legacy schema as provenance; adapter output is not automatically admitted.
 
-B2.9 facts/snapshot/handoff는 Event Log의 projection이다. 별도 free-form memory는 canonical
-권위로 사용하지 않는다.
+B2.9 facts/snapshot/handoff are Event-Log projections. Free-form memory is never canonical
+authority.
 
-## 저장소 선택
+## Storage choice
 
-이 ADR은 처음에 첫 Event Store 위치를 열어 두었다.
-[ADR-0049](0049-durable-single-campaign-sqlite-graph-store.md)는 한 Run의 `RunStore` 확장 대신
-별도 single-Campaign SQLite Graph Store를 선택한다. adapter는 ordering, idempotency,
-equivocation, contradiction, durable revision CAS, recovery, Snapshot 공통 conformance test를
-통과한다. future Control Plane/PostgreSQL backend도 같은 storage-neutral protocol을 migration
-경계로 사용한다.
+This ADR originally left the first Event Store location open. ADR-0049 resolves it in favor of a
+separate, single-Campaign SQLite Graph Store rather than extending the one-Run `RunStore`. The
+adapter passes shared conformance tests for ordering, idempotency, equivocation, contradiction,
+durable revision CAS, recovery, and Snapshots. The storage-neutral protocols remain the migration
+boundary for a future Control Plane/PostgreSQL backend.
 
-## 필수 negative test
+## Required negative tests
 
-- duplicate exact retry와 same-ID/different-digest equivocation
-- contradiction coexistence와 silent overwrite 거부
-- foreign campaign/run/evidence lineage
-- evidence digest 또는 registered producer 불일치
-- concurrent admission race와 revision CAS 실패
-- event/projection partial write recovery
-- stale snapshot decision과 graph-change-before-dispatch
+- duplicate exact retry and same-ID/different-digest equivocation;
+- contradiction coexistence and silent-overwrite rejection;
+- foreign campaign/run/evidence lineage;
+- evidence-digest or registered-producer mismatch;
+- concurrent admission race and revision-CAS failure;
+- event/projection partial-write recovery; and
+- stale snapshot decision and graph change before dispatch.
 
-## 결과
+## Consequences
 
-에이전트 간 정보 공유가 검증된 공통 사실과 snapshot으로 가능해지고, 모든 변경을 event에서
-재구성할 수 있다. 대신 single-writer admission 병목과 projection 운영 비용이 생긴다.
-성능 최적화는 의미 일관성을 완화하지 않고 batching, partitioning, read model로 해결한다.
+Agents can share admitted facts and snapshots, and every state change is reconstructable from
+events. A single-writer admission bottleneck and projection operations add cost. Optimization uses
+batching, partitioning, and read models without weakening semantic consistency.
 
-## 구현 상태
+## Implementation status
 
-[GRAPH-002](../graph/GRAPH-002-single-admission-event-log.md)는 process-local 단일 writer,
-append-only hash chain, 등록 producer와 exact lineage gate, retry, equivocation,
-materialization, dangling-edge 검사를 구현했다.
-[GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.md)은 deterministic
-exact-prefix projection, process-local atomic revision/head CAS, content-addressed Snapshot
-chain, exact Snapshot reference resolution을 구현했다.
-[GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.md)는 Hypothesis admission,
-duplicate/contradiction 분석, concurrent admission/projection CAS test, bounded lag
-reconciliation, exact Snapshot-bound stale-decision preflight를 구현했다.
-[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.md)는 별도 single-Campaign SQLite
-Event/Projection/Snapshot store, cross-process host-local CAS, reopen reconciliation,
-schema-tamper 검증을 구현했다. multi-host leadership과 atomic preflight + ActionPermit
-발급·소비는 아직 남아 있다.
+[GRAPH-002](../graph/GRAPH-002-single-admission-event-log.md) implements the process-local
+single writer, append-only hash chain, registered producer and exact lineage gate, retry,
+equivocation, materialization, and dangling-edge checks.
+[GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.md) implements
+deterministic exact-prefix projection, atomic process-local revision/head CAS, content-addressed
+Snapshot chaining, and exact Snapshot reference resolution.
+[GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.md) implements the missing
+Hypothesis admission path, duplicate/contradiction analysis, concurrent admission and projection
+CAS tests, bounded lag reconciliation, and exact Snapshot-bound stale-decision preflight.
+[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.md) implements the separate
+single-Campaign SQLite Event/Projection/Snapshot store, cross-process host-local CAS, reopen
+reconciliation, and schema-tamper checks. Multi-host leadership and atomic preflight plus
+ActionPermit issuance/consumption remain open.
 
-## 관련 문서
+## Related documents
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)
-- [ADR-0046: 공통 엔진과 Campaign Profile](0046-common-engine-and-campaign-profiles.md)
-- [ADR-0047: MissionEnvelope와 ActionPermit 대수](0047-mission-envelope-and-action-permit-algebra.md)
+- [ADR-0046: Common Engine and Campaign Profiles](0046-common-engine-and-campaign-profiles.md)
+- [ADR-0047: MissionEnvelope and ActionPermit Algebra](0047-mission-envelope-and-action-permit-algebra.md)
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](0049-durable-single-campaign-sqlite-graph-store.md)

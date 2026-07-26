@@ -1,71 +1,72 @@
-# ADR 0039: Executor 서명 기반 휴대형 Replay Artifact 전송
+# ADR 0039: Executor-attested portable Replay Artifact transport
 
-- 상태: Accepted
-- 날짜: 2026-07-24
+- Status: Accepted
+- Date: 2026-07-24
 
-## 배경
+## Context
 
-ADR 0038은 Control Plane이 발행한 exact Claim receipt 집합을 외부에서 검증할 수 있게 했지만,
-실행 주체는 여전히 Control Plane과 같은 공유 staging volume에 출력해야 했다. 또한 공개 서명은
-Control Plane receipt authority의 서명일 뿐, 별도 workload identity의 executor가 어떤
-compilation·permit·sealed output을 실행했다고 관찰했는지는 증명하지 않았다.
+ADR 0038 lets an off-host verifier validate the exact Claim receipt set issued by the Control
+Plane, but the executor still has to write output into a staging volume shared with the Control
+Plane. That public signature also covers Control Plane receipt authority. It does not prove that a
+separately identified workload executor observed a particular compilation, permit set, and sealed
+output.
 
-공유 volume을 단순히 원격 경로 또는 caller-supplied filesystem path로 바꾸면 path substitution,
-TOCTOU, link traversal과 불완전 업로드가 기존 managed Artifact admission 경계를 우회한다.
-반대로 executor 서명만 추가하고 Artifact bytes를 결박하지 않으면 올바른 receipt를 다른 output에
-재사용할 수 있다.
+Replacing the shared volume with a remote or caller-supplied filesystem path would bypass managed
+Artifact admission through path substitution, TOCTOU, link traversal, or partial uploads. Adding
+only an executor signature without binding the transferred bytes would permit replaying a valid
+receipt over another output.
 
-## 결정
+## Decision
 
-1. B2.8a는 executor workload key와 Control Plane key를 분리한다. executor만 Ed25519 private
-   key를 보유하고, Control Plane은 별도 배포된 issuer·trust-domain 공개키 trust anchor만
-   보유한다. key lifecycle은 `active`·`retired`·`revoked`를 사용하며, bundle 안의 key material은
-   신뢰하지 않는다.
-2. `ReplayFinalizeRequest`의 휴대형 형태는 `artifact_bundle`과 `executor_attestation`을 항상
-   함께 요구한다. bundle은 canonical 상대 경로로 정렬된 regular-file 목록과 각 file의
-   size·SHA-256·base64 bytes, 전체 manifest SHA-256을 가진다. 첫 수직 조각의 상한은 raw
-   2 MiB, file당 1 MiB, 256 files, depth 24다. 절대·상위·dot 경로, prefix collision,
-   duplicate path, symbolic link, hard link와 special file은 fail closed한다.
-3. executor statement는 issuer·trust domain·profile·발급 시각과 batch·item·Job·ticket·fence·
-   Replay Run·source root·compilation·execution-context digest를 포함한다. canonical 순서의
-   permit digest와 Replay request ID, bundle manifest·file count·total bytes, artifact-set
-   digest와 두 seal root도 서명한다. 서명 domain은 Control Plane Claim receipt 서명과 분리한다.
-4. Control Plane은 어떤 caller-supplied Artifact bytes도 복사하기 전에 외부 trust anchor로
-   서명과 발급 authority를 검증한다. 서로 다른 host clock은 미래 방향 최대 30초만 허용하고
-   attestation 시각은 execution context와 모든 permit 발급보다 빠를 수 없다. 그 다음 opaque
-   server-owned staging reservation에 bundle을 원자적으로 materialize하고, 기존 managed
-   repository가 tree content digest와 Run integrity, artifact-set, receipt와 seal을 다시 검증한다.
-   portable manifest digest는 admitted `ArtifactRef.content_digest`와 정확히 같아야 한다.
-5. Control Plane이 관찰한 transport receipt와 executor attestation은 두 digest 및 검증에 사용한
-   trust-anchor digest와 함께 immutable Replay Job finalization result에 보존되고 finalization
-   result digest에 결박된다. projection input authority도 transport·attestation digest를 포함하며,
-   전체 executor attestation은
-   `validation/v1alpha1/executor-attestations/{item_id}.json`으로 projection Run seal 안에
-   봉인한다.
-6. 기존 shared-staging finalization은 호환 경로로 유지한다. portable 요청과 기존 요청은
-   idempotent retry에서 서로 대체할 수 없고, 동일 portable retry도 저장된 attestation과 exact
-   manifest가 같아야 한다.
+1. B2.8a separates the executor workload key from the Control Plane key. Only the executor holds
+   the Ed25519 private key. The Control Plane holds a separately distributed issuer/trust-domain
+   public-key anchor with `active`, `retired`, and `revoked` lifecycle. Bundle-supplied key material
+   is never trusted.
+2. The portable `ReplayFinalizeRequest` form always requires `artifact_bundle` and
+   `executor_attestation` together. The bundle contains canonically sorted relative regular-file
+   paths, per-file size, SHA-256 and base64 bytes, plus a manifest SHA-256. The first vertical
+   slice is bounded to 2 MiB raw total, 1 MiB per file, 256 files, and depth 24. Absolute, parent,
+   dot, prefix-colliding, or duplicate paths and symbolic, hard, or special files fail closed.
+3. The executor statement signs issuer, trust domain, profile, issue time, batch, item, Job,
+   ticket, fence, Replay Run, source root, compilation, and execution-context digests. It also
+   signs the canonically ordered permit digests and Replay request IDs, bundle manifest, file
+   count and bytes, artifact-set digest, and both seal roots. Its signature domain is separate
+   from the Control Plane Claim receipt signature.
+4. The Control Plane verifies the external signature and issued authority before copying any
+   caller-supplied Artifact bytes. Clocks on separate hosts receive at most 30 seconds of future
+   skew, and the attestation cannot predate the execution context or any permit. The Control Plane
+   then atomically materializes the bundle into an opaque server-owned staging reservation. The
+   existing managed repository reverifies tree content, Run integrity, artifact set, receipt, and
+   seals. The portable manifest digest must exactly equal the admitted
+   `ArtifactRef.content_digest`.
+5. The Control Plane transport receipt and executor attestation are retained with their digests
+   and the verifying trust-anchor digest in the immutable Replay Job finalization result, and all
+   three digests are bound into the finalization result digest. Projection input authority includes
+   the transport and attestation digests, and the complete executor attestation is
+   sealed at `validation/v1alpha1/executor-attestations/{item_id}.json`.
+6. Existing shared-staging finalization remains a compatibility path. Portable and legacy retries
+   cannot substitute for one another. A portable retry must reproduce the stored attestation and
+   exact manifest.
 
-## 보안 경계
+## Security boundary
 
-이 결정은 “고정된 executor trust domain의 workload key가 이 exact Control Plane authority,
-permit set와 sealed output tree를 관찰해 서명했다”는 증거와 작은 Artifact의 다중 호스트 전송을
-제공한다. Control Plane은 executor private key를 갖지 않으며, 서명 실패는 Artifact import 전에
-거부한다.
+This decision proves that a workload key in a pinned executor trust domain signed the exact
+Control Plane authority, permit set, and sealed output tree. It also enables bounded Artifact
+transfer without a shared filesystem. The Control Plane does not possess the executor private key,
+and signature failures are rejected before Artifact import.
 
-그러나 executor는 여전히 target 응답을 중계하는 주체다. 이 증명만으로 target workload가 실제
-응답했다거나 provider audit log·KMS·HSM·transparency log에 실행이 기록됐다고 판단할 수 없다.
-따라서 confirmation Gate는 계속 `needs-review`와
-`independent-execution-attestation-missing`을 유지한다. B2.8b가 target issuer의 challenge-bound
-signed receipt를 host-observed proxy receipt와 결박한 뒤에만 독립 실행 승격을 검토한다.
+The executor still relays target responses. This proof alone does not establish that the target
+workload actually answered or that provider audit logs, KMS, HSM, or a transparency log recorded
+the execution. The confirmation Gate therefore retains `needs-review` and
+`independent-execution-attestation-missing`. B2.8b must bind a target-issued, challenge-bound
+signed receipt to the host-observed proxy receipt before independent confirmation is considered.
 
-## 결과
+## Consequences
 
-- Replay Worker와 Control Plane이 공유 filesystem을 사용하지 않아도 작은 sealed Run을 전송할
-  수 있다.
-- signer, issued authority, permit set와 transferred bytes가 하나의 검증 사슬로 묶인다.
-- 2 MiB 상한은 현재 4 MiB Control Plane request fence 안에서 동작하는 최소 조각이다. 대형
-  Artifact, resume, multipart와 object-store pre-signed upload는 content-addressed manifest
-  계약을 재사용하는 후속 transport adapter 범위다.
-- 운영자는 executor private key를 Control Plane에서 분리하고 trust anchor를 별도 채널에서
-  배포·고정해야 한다.
+- A Replay Worker and Control Plane can transfer a small sealed Run without sharing a filesystem.
+- Signer, issued authority, permit set, and transferred bytes form one verification chain.
+- The 2 MiB ceiling is a minimum slice that fits the current 4 MiB Control Plane request fence.
+  Large Artifacts, resume, multipart, and object-store pre-signed upload remain follow-up adapters
+  that reuse the content-addressed manifest contract.
+- Operators must keep the executor private key outside the Control Plane and distribute and pin
+  the trust anchor over a separate channel.
