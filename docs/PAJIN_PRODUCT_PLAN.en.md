@@ -37,7 +37,8 @@ consumed dispatch-claim decision is in
 Capability/Tool binding decision is in
 [`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.en.md), and the code-backed
 authority-set decision is in
-[`ADR-0052`](adr/0052-code-backed-capability-authority-set.en.md). The local
+[`ADR-0052`](adr/0052-code-backed-capability-authority-set.en.md). The inert deterministic scaffold
+decision is in [`ADR-0053`](adr/0053-inert-deterministic-capability-scaffolds.en.md). The local
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
@@ -59,8 +60,8 @@ cross-process host-local CAS, and reopen reconciliation.
 MissionEnvelope/ActionProposal/registered Capability contracts, SQLite schema-v2 migration, a
 consumed-on-issuance ActionPermit transaction that rechecks the latest durable revision and
 budgets/rates, and cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as
-`main@59cf210`, and CAP-001 is committed as `49b0ebb`. The CAP-002 parent baseline is
-`main@c56a587`, three commits ahead of `origin/main@bc9f28f`; Linux CI remains pending.
+`main@59cf210`, CAP-001 as `49b0ebb`, and CAP-002 as `84c8cd2`. The CAP-003 parent baseline is
+`main@84c8cd2`, synchronized with `origin/main@84c8cd2`; Linux CI remains pending.
 [`CAP-001`](capability/CAP-001-versioned-capability-definition.en.md) adds explicit
 Capability metadata, a canonical full-ToolSpec digest, an exact-version Registry, and GRAPH-006
 `definitionDigest` binding.
@@ -69,6 +70,10 @@ Compiler, Executor, Normalizer, Oracle, Replay, and Cleanup code authorities to 
 definitions and authority-set digests. Missing, duplicate, drifted, confused-deputy, and narrowly
 authority-expanding adapters fail closed. Existing runtime wiring and durable Registry behavior
 remain unchanged.
+[`CAP-003`](capability/CAP-003-capability-authoring-sdk-scaffold.en.md) adds a strict-JSON authoring
+spec, seven abstract role templates, deterministic metadata/schema, benchmark, negative-test, and
+documentation generation, per-file digests, a write-last manifest, and a write-once CLI. Incomplete
+stubs cannot be instantiated, and generated output is never registered automatically.
 
 ## 2026-07-25 B2.8g implementation status
 

@@ -74,3 +74,5 @@ Replay.
 - [ADR-0051 Versioned Capability Definition and Tool Binding](0051-versioned-capability-definition-and-tool-binding.en.md)
 - [CAP-001 Versioned Capability Definition](../capability/CAP-001-versioned-capability-definition.en.md)
 - [CAP-002 Metadata + Code-backed Authority Interfaces](../capability/CAP-002-metadata-code-backed-authority-interfaces.en.md)
+- [ADR-0053 Inert Deterministic Capability Scaffolds](0053-inert-deterministic-capability-scaffolds.en.md)
+- [CAP-003 Capability Authoring SDK and Scaffold](../capability/CAP-003-capability-authoring-sdk-scaffold.en.md)

@@ -14,6 +14,11 @@ from rich.table import Table
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.agents.provider import ModelToolDescriptor, ProviderAgentRuntime
+from pajin.capabilities.scaffold import (
+    generate_capability_scaffold,
+    load_capability_scaffold_spec,
+    write_capability_scaffold,
+)
 from pajin.cli_support.check_contracts import (
     mcp_registered_call_matches as _mcp_registered_call_matches,
 )
@@ -329,6 +334,23 @@ def _run_local_kisa_replay(
     console.print(f"Confirmed findings: {len(outcome.findings)}")
     console.print(f"Replay records: {len(local_replay.batch.records)}")
     _print_cli_field("Final report", outcome.report_path.resolve())
+
+
+@app.command("capability-scaffold")
+def scaffold_capability(
+    spec: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o")],
+) -> None:
+    """Generate one inert, digest-bound Capability authoring scaffold."""
+
+    with _cli_error_boundary("Capability scaffold generation failed", exit_code=2):
+        scaffold_spec = load_capability_scaffold_spec(spec)
+        scaffold = generate_capability_scaffold(scaffold_spec)
+        destination = write_capability_scaffold(scaffold, output)
+
+    _print_cli_field("Capability scaffold", scaffold.scaffold_id, label_style="bold green")
+    _print_cli_field("Capability", scaffold.capability.capability_id)
+    _print_cli_field("Output", destination.resolve())
 
 
 @app.command("validate")

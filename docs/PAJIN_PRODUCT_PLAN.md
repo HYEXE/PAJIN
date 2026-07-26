@@ -32,7 +32,8 @@ Finding을 확정할 수 없다. 실행 권위는 항상 deterministic compiler�
 결정은 [`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.md), versioned Capability와
 Tool binding 결정은 [`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.md)에
 기록하고 code-backed authority set 결정은
-[`ADR-0052`](adr/0052-code-backed-capability-authority-set.md)에 기록한다.
+[`ADR-0052`](adr/0052-code-backed-capability-authority-set.md), inert deterministic scaffold
+결정은 [`ADR-0053`](adr/0053-inert-deterministic-capability-scaffolds.md)에 기록한다.
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.md)의 manifest·private ground truth,
 aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했다.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.md)은 6개 Node, 8개 typed Edge와
@@ -53,15 +54,19 @@ single-Campaign SQLite store를 추가했다. [`GRAPH-006`](graph/GRAPH-006-atom
 canonical MissionEnvelope/ActionProposal/registered Capability, SQLite schema v2 migration,
 latest durable revision과 budget/rate를 같은 transaction에서 검증하는 consumed-on-issuance
 ActionPermit, cross-process exact retry no-redispatch를 추가했다. GRAPH-006은
-`main@59cf210`으로 커밋됐고 CAP-001은 `49b0ebb`로 커밋됐다. CAP-002 개발의 부모 기준선은
-`main@c56a587`이고 `origin/main@bc9f28f`보다 세 commit 앞서며 Linux CI 확인은
-남아 있다. [`CAP-001`](capability/CAP-001-versioned-capability-definition.md)은 explicit
+`main@59cf210`으로 커밋됐고 CAP-001은 `49b0ebb`, CAP-002는 `84c8cd2`로 커밋됐다.
+CAP-003 개발의 부모 기준선은 `main@84c8cd2`이며 `origin/main@84c8cd2`와 동기화돼 있다.
+Linux CI 확인은 남아 있다. [`CAP-001`](capability/CAP-001-versioned-capability-definition.md)은 explicit
 Capability metadata, canonical full ToolSpec digest, exact-version Registry와 GRAPH-006
 `definitionDigest` binding을 추가했다.
 [`CAP-002`](capability/CAP-002-metadata-code-backed-authority-interfaces.md)는 Materializer,
 Compiler, Executor, Normalizer, Oracle, Replay, Cleanup 일곱 code authority를 exact CAP-001
 definition과 authority-set digest에 결박하고 missing/duplicate/drift·confused-deputy·제한된
 권위 확대를 fail closed한다. 기존 runtime wiring과 durable Registry는 변경하지 않는다.
+[`CAP-003`](capability/CAP-003-capability-authoring-sdk-scaffold.md)은 strict-JSON authoring
+spec, 일곱 abstract role template, deterministic metadata/schema·benchmark·negative-test·문서
+generator, per-file digest, write-last manifest와 write-once CLI를 추가한다. incomplete stub는
+인스턴스화할 수 없고 생성 결과는 자동 등록되지 않는다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

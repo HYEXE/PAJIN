@@ -101,10 +101,13 @@ set 안에서 중복될 수 없다. 전체 material은 content-derived `authorit
 - rollback은 CAP-002 registry를 구성하지 않고 CAP-001 metadata-only Registry를 계속 사용하는
   것이다. 기존 실행 경로에는 영향이 없다.
 
-## 후속 경계
+## 관련·후속 경계
 
-- CAP-003: Capability SDK·Scaffold와 역할별 template
+- CAP-003: Capability SDK·Scaffold와 역할별 inert template 구현 완료
 - CAP-004: maturity signing, review, activation, deprecation, rotation
 - CAP-005: 기존 KISA·Bug Bounty·CTF Tool과 Replay component adapter
 - GRAPH-006 ActionPermit와 Tool Gateway의 실제 opt-in runtime wiring
 - durable Capability Registry와 Linux CI
+
+[CAP-003 명세](CAP-003-capability-authoring-sdk-scaffold.ko.md)와
+[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.ko.md)을 참조한다.

@@ -232,6 +232,10 @@ The Phase 2 code-backed authority boundary is specified by
 [ADR-0052](../adr/0052-code-backed-capability-authority-set.en.md) and
 [CAP-002](../capability/CAP-002-metadata-code-backed-authority-interfaces.en.md) through an exact
 seven-role authority set, explicit stable-context digests, and identity-checking wrappers.
+The Capability authoring foundation is specified by
+[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.en.md) and
+[CAP-003](../capability/CAP-003-capability-authoring-sdk-scaffold.en.md) through a strict-JSON spec,
+inert abstract role templates, deterministic artifact digests, and a write-once scaffold CLI.
 
 ## 10. Definition of Done
 
@@ -245,9 +249,9 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-The CAP-002 committed parent baseline is `main@c56a587`, three commits ahead of
-`origin/main@bc9f28f`. GRAPH-006 is committed as `59cf210`, CAP-001 as `49b0ebb`, and CAP-002 is
-included in this change. Linux CI remains pending.
+The CAP-003 committed parent baseline is `main@84c8cd2`, synchronized with
+`origin/main@84c8cd2`. GRAPH-006 is committed as `59cf210`, CAP-001 as `49b0ebb`, and CAP-002 as
+`84c8cd2`. CAP-003 is included in this change. Linux CI remains pending.
 
 ## 11. Related decisions
 
@@ -258,3 +262,4 @@ included in this change. Linux CI remains pending.
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.en.md)
 - [ADR-0051: Versioned Capability Definition and Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.en.md)
 - [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.en.md)
+- [ADR-0053: Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.en.md)

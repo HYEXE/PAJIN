@@ -228,6 +228,11 @@ Phase 2의 code-backed authority 경계는
 [ADR-0052](../adr/0052-code-backed-capability-authority-set.md)와
 [CAP-002](../capability/CAP-002-metadata-code-backed-authority-interfaces.md)에서 일곱 역할의
 exact authority set, explicit stable context digest와 identity-checking wrapper로 구체화한다.
+Capability authoring foundation은
+[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.md)과
+[CAP-003](../capability/CAP-003-capability-authoring-sdk-scaffold.md)에서 strict-JSON spec,
+inert abstract role template, deterministic artifact/digest와 write-once scaffold CLI로
+구체화한다.
 
 ## 10. Definition of Done
 
@@ -241,9 +246,9 @@ exact authority set, explicit stable context digest와 identity-checking wrapper
 - benchmark result와 regression metric 생성
 - Notion status, 호환성, migration, rollback 경계 최신화
 
-CAP-002 개발의 committed 부모 기준선은 `main@c56a587`이며
-`origin/main@bc9f28f`보다 세 commit 앞서 있다. GRAPH-006은 `59cf210`, CAP-001은
-`49b0ebb`로 커밋됐다. CAP-002는 이 변경에 포함되며 Linux CI 확인은 남아 있다.
+CAP-003 개발의 committed 부모 기준선은 `main@84c8cd2`이며
+`origin/main@84c8cd2`와 동기화돼 있다. GRAPH-006은 `59cf210`, CAP-001은 `49b0ebb`,
+CAP-002는 `84c8cd2`로 커밋됐다. CAP-003은 이 변경에 포함되며 Linux CI 확인은 남아 있다.
 
 ## 11. 관련 결정
 
@@ -254,3 +259,4 @@ CAP-002 개발의 committed 부모 기준선은 `main@c56a587`이며
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.md)
 - [ADR-0051: Versioned Capability Definition과 Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.md)
 - [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.md)
+- [ADR-0053: Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.md)

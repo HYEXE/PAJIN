@@ -70,3 +70,5 @@ Capability로 간주하면 Materializer, Compiler, Oracle, Replay, Cleanup 책�
 - [ADR-0051 Versioned Capability Definition과 Tool Binding](0051-versioned-capability-definition-and-tool-binding.ko.md)
 - [CAP-001 Versioned Capability Definition](../capability/CAP-001-versioned-capability-definition.ko.md)
 - [CAP-002 Metadata + Code-backed Authority 인터페이스](../capability/CAP-002-metadata-code-backed-authority-interfaces.ko.md)
+- [ADR-0053 Inert Deterministic Capability Scaffolds](0053-inert-deterministic-capability-scaffolds.ko.md)
+- [CAP-003 Capability Authoring SDK·Scaffold](../capability/CAP-003-capability-authoring-sdk-scaffold.ko.md)

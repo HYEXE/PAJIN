@@ -91,10 +91,13 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 - Rollback means not constructing a CAP-002 registry and continuing to use the CAP-001
   metadata-only Registry. Existing runtime paths are unaffected.
 
-## Follow-up boundaries
+## Related and follow-up boundaries
 
-- CAP-003: Capability SDK, Scaffold, and role templates
+- CAP-003: Capability SDK, Scaffold, and inert role templates implemented
 - CAP-004: maturity signing, review, activation, deprecation, and rotation
 - CAP-005: adapters for existing KISA, Bug Bounty, CTF Tool, and Replay components
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring
 - durable Capability Registry and Linux CI
+
+See the [CAP-003 specification](CAP-003-capability-authoring-sdk-scaffold.en.md) and
+[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.en.md).

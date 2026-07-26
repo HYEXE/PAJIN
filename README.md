@@ -18,10 +18,11 @@ See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
 [ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.en.md), and
 [ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.en.md), and
 [ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.en.md), and
-[ADR-0052](docs/adr/0052-code-backed-capability-authority-set.en.md).
+[ADR-0052](docs/adr/0052-code-backed-capability-authority-set.en.md), and
+[ADR-0053](docs/adr/0053-inert-deterministic-capability-scaffolds.en.md).
 
-CAP-002 development starts from committed parent `main@c56a587`, three commits ahead of
-`origin/main@bc9f28f`. The Architecture v2 work
+CAP-003 development starts from committed parent `main@84c8cd2`, synchronized with
+`origin/main@84c8cd2`. The Architecture v2 work
 includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
 It also includes the [GRAPH-001 six-node, eight-relation, and four-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
 The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
@@ -45,8 +46,12 @@ is committed as `49b0ebb`; Linux CI remains pending.
 [CAP-002 Metadata + Code-backed Authority Interfaces](docs/capability/CAP-002-metadata-code-backed-authority-interfaces.en.md)
 adds an exact seven-role authority set, explicit non-secret stable-context digests, pre/post adapter
 drift checks, canonical role wrappers, and compiler/network authority-expansion rejection. Existing
-Tool Gateway and Replay runtime paths remain unchanged; CAP-003 Scaffold and runtime wiring are
-follow-up work.
+Tool Gateway and Replay runtime paths remain unchanged.
+[CAP-003 Capability Authoring SDK and Scaffold](docs/capability/CAP-003-capability-authoring-sdk-scaffold.en.md)
+adds strict-JSON authoring specs, seven inert abstract role templates, deterministic metadata/schema,
+benchmark mapping, negative-test and documentation generation, per-file digests, a write-last
+manifest, and the write-once `pajin capability-scaffold` CLI. Generated output is never registered
+automatically; CAP-004 review/activation and runtime wiring remain follow-up work.
 
 ## B2.8g resumable multipart portable Artifact transport
 
