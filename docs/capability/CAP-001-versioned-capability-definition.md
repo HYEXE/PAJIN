@@ -70,6 +70,7 @@ as well as its Tool contract.
 - The existing Tool Gateway and Policy Engine remain the only runtime execution boundary.
 - Code-backed compiler/executor/oracle/replay/cleanup interfaces are implemented by
   [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.md).
-- Durable Registry storage, signing/review/maturity activation, and runtime ActionPermit wiring
-  remain follow-up work.
+- Signed review, maturity activation, key rotation, and deprecation are implemented by
+  [CAP-004](CAP-004-maturity-signing-review-deprecation.md). Durable Registry storage and runtime
+  ActionPermit wiring remain follow-up work.
 - CAP-001 does not claim benchmark coverage or a completed Hybrid walking skeleton.

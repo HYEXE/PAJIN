@@ -110,7 +110,7 @@ consumed.
 - Existing Capability, Tool, Registry, Gateway, Replay runtime APIs, and persistent schemas do not
   change.
 - The CLI and public SDK imports are additive.
-- Generated output is not automatically registered. CAP-004 review/activation and explicit
+- Generated output is not automatically registered. CAP-004 signed review/activation and explicit
   bootstrap remain required.
 - Rollback means not using the scaffold CLI/SDK. CAP-001/002 and existing runtime behavior remain
   unchanged.
@@ -119,7 +119,7 @@ consumed.
 
 ## Follow-up boundaries
 
-- CAP-004 maturity signing, review, activation, deprecation, and rotation
+- organization-specific CAP-004 authorization workflow and durable Registry storage
 - CAP-005 adapters for existing KISA, Bug Bounty, CTF Tool, and Replay components
 - CAP-006 Registry coverage, authoring lead time, Oracle, and Replay metrics
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring

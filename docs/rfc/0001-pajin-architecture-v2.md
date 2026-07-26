@@ -234,6 +234,11 @@ The Capability authoring foundation is specified by
 [ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.md) and
 [CAP-003](../capability/CAP-003-capability-authoring-sdk-scaffold.md) through a strict-JSON spec,
 inert abstract role templates, deterministic artifact digests, and a write-once scaffold CLI.
+The signed lifecycle boundary is specified by
+[ADR-0054](../adr/0054-signed-reviewed-capability-lifecycle.md) and
+[CAP-004](../capability/CAP-004-maturity-signing-review-deprecation.md) through exact Ed25519
+publisher/reviewer authority, immutable predecessor chains, conservative maturity transitions, and
+profile-specific activation.
 
 ## 10. Definition of Done
 
@@ -247,9 +252,8 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-The CAP-003 committed parent baseline is `main@84c8cd2`, synchronized with
-`origin/main@84c8cd2`. GRAPH-006 is committed as `59cf210`, CAP-001 as `49b0ebb`, and CAP-002 as
-`84c8cd2`. CAP-003 is included in this change. Linux CI remains pending.
+Current Git baseline, verification state, and remaining milestone work are maintained in the
+[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a).
 
 ## 11. Related decisions
 
@@ -261,3 +265,4 @@ The CAP-003 committed parent baseline is `main@84c8cd2`, synchronized with
 - [ADR-0051: Versioned Capability Definition and Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.md)
 - [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.md)
 - [ADR-0053: Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.md)
+- [ADR-0054: Signed Reviewed Capability Lifecycle](../adr/0054-signed-reviewed-capability-lifecycle.md)

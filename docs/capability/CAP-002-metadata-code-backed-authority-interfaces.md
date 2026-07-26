@@ -92,10 +92,12 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 ## Related and follow-up boundaries
 
 - CAP-003: Capability SDK, Scaffold, and inert role templates implemented
-- CAP-004: maturity signing, review, activation, deprecation, and rotation
+- CAP-004: maturity signing, review, activation, deprecation, and rotation implemented as an
+  offline reference registry
 - CAP-005: adapters for existing KISA, Bug Bounty, CTF Tool, and Replay components
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring
 - durable Capability Registry and Linux CI
 
-See the [CAP-003 specification](CAP-003-capability-authoring-sdk-scaffold.md) and
-[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.md).
+See the [CAP-003 specification](CAP-003-capability-authoring-sdk-scaffold.md),
+[ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.md), and
+[CAP-004](CAP-004-maturity-signing-review-deprecation.md).

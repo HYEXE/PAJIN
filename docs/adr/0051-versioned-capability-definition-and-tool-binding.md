@@ -44,7 +44,8 @@ higher-level reviewed behavior that a Tool exposes.
 - Definitions are never inferred or backfilled into local pre-CAP-001 `v1alpha1` Permit rows.
   Preserve/archive such development ledgers and issue fresh authority in a new Campaign store.
 - Code-backed compiler/executor/oracle/replay/cleanup authority interfaces are specified by
-  CAP-002. Durable Registry storage, signing, and activation/rotation remain CAP-004 boundaries.
+  CAP-002. Signing and activation/rotation are specified by CAP-004; durable Registry storage
+  remains follow-up work.
 
 ## Consequences
 
@@ -61,3 +62,5 @@ higher-level reviewed behavior that a Tool exposes.
 - [CAP-001 Versioned Capability Definition](../capability/CAP-001-versioned-capability-definition.md)
 - [ADR-0052 Code-backed Capability Authority Set](0052-code-backed-capability-authority-set.md)
 - [CAP-002 Metadata + Code-backed Authority Interfaces](../capability/CAP-002-metadata-code-backed-authority-interfaces.md)
+- [ADR-0054 Signed Reviewed Capability Lifecycle](0054-signed-reviewed-capability-lifecycle.md)
+- [CAP-004 Maturity, Signing, Review, and Deprecation](../capability/CAP-004-maturity-signing-review-deprecation.md)
