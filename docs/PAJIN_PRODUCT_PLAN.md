@@ -1,5 +1,62 @@
 # PAJIN 제품 기획서
 
+## 2026-07-26 Architecture v2 제품 기준선 개정
+
+PAJIN의 제품 방향을 Mode별 사일로에서 **공통 공격 엔진 + Campaign Profile + 버전 고정
+Capability + Canonical Graph**로 전환한다. AI는 prompt, RAG, memory, tool authorization
+표면을 가진 first-class domain이지만 제품 전체를 AI red-team 하나로 정의하지 않는다.
+
+이 전환은 기존 Policy, 감쇠 Capability, Worker isolation, Evidence, Candidate/Claim
+Validation, 독립 Replay와 Control Plane 원장을 보존하는 strangler migration이다. 기존
+`ai-redteam`, `bug-bounty`, `ctf` manifest·CLI·API는 호환 입력으로 유지하며 parity가
+입증되기 전에 삭제하거나 대규모 directory move를 하지 않는다.
+
+Canonical Graph의 최초 vocabulary는 `Surface`, `Hypothesis`, `Action`, `Observation`,
+`Evidence`, `CampaignFact`로 제한한다. Agent는 typed proposal만 제출하고 단일 Graph
+Admission Authority가 append-only Event Log에 반영한다. 모순은 공존하고 overwrite하지
+않으며 모든 planner/supervisor 결정은 immutable snapshot revision과 digest에 결박한다.
+B2.9 구조화 협업 memory는 이 Graph/Event Log의 fact·snapshot·handoff projection으로
+재정의하며 별도 free-form 권위 저장소를 만들지 않는다.
+
+Adaptive Supervisor는 Minimum Graph와 benchmark가 준비된 뒤 shadow mode부터 평가한다.
+Supervisor는 proposal만 만들고 Scope, risk, budget, rate, Capability, egress를 확장하거나
+Finding을 확정할 수 없다. 실행 권위는 항상 deterministic compiler와 기존 Policy Gate가
+만든 single-use ActionPermit으로 제한한다.
+
+구체 계약과 migration/rollback 기준은
+[`ARCH-001`](rfc/0001-pajin-architecture-v2.md),
+[`ADR-0046`](adr/0046-common-engine-and-campaign-profiles.md),
+[`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.md),
+[`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.md)에 기록한다.
+[`BENCH-001`](benchmark/BENCH-001-benchmark-contract.md)의 manifest·private ground truth,
+aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했다.
+[`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.md)은 6개 Node, 8개 typed Edge와
+`SurfaceProposal`·`ObservationProposal`·`CampaignFactProposal`을 추가했다. Agent는
+CampaignFact validation state를 지정할 수 없다. 로컬
+[`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.md) reference spike는 단일 write
+authority, 등록 producer와 exact lineage gate, 멱등 retry/equivocation, canonical
+materialization, hash-chained append-only Event Log를 추가했다. 검증된 구현 기준선은
+`main@a4d0582`이며 이 변경과 아래 B2.8g는 아직 로컬 WIP다. 다음 구현 순서는 GRAPH-003
+projection, atomic revision, immutable Snapshot이다.
+
+## 2026-07-25 B2.8g 구현 상태
+
+[`ADR-0045`](adr/0045-resumable-multipart-portable-artifact-transport.md)에 따라 기존 2 MiB
+inline 한도를 넘는 portable Artifact는 Control Plane이 관리하는 로컬 object-store의 재개
+가능한 multipart 경로를 사용한다. Worker는 최종 manifest와 Executor attestation을 먼저
+제출하고, Control Plane이 live replay authority와 서명을 검증한 뒤에만 1 MiB 고정 part를
+받는다. 동일 part의 동일 바이트 재전송은 멱등이고 다른 바이트 재전송은 거부한다.
+
+현재 경계는 Artifact 합계 64 MiB, 파일당 16 MiB, 파일 256개, 경로 깊이 24다. finalize는
+모든 part를 재조립해 파일 digest와 canonical manifest를 다시 검증한 뒤 managed Artifact,
+sealed Run, replay receipt, projection을 기존 원자적 경로로 발행한다. 2 MiB 이하의 기존
+inline v1 wire format은 변경하지 않았다.
+
+외부 object store와 pre-signed URL, 64 MiB 초과 전송, 만료·GC, 저장 암호화, tenant 격리는
+다음 저장소 경계다. TLS 1.3 exporter, runtime registry refresh, 배포 anchor
+transparency/federation, DB·백업 소실 뒤 외부 anti-rollback 기준과 mTLS/HSM/KMS도 후속
+경계로 유지한다.
+
 ## 2026-07-24 B2.8f 구현 상태
 
 [`ADR-0044`](adr/0044-target-signed-tls-session-binding.md)에 따라 signed registry v4의
@@ -14,17 +71,16 @@ signed distribution bundle에서만 허용하며 TLS 1.3 또는 channel binding 
 약화하지 않고 fail closed 한다. Python 표준 `ssl`에 exporter API가 없어 운영 TLS 1.3
 RFC 9266 `tls-exporter`는 후속 경계로 유지한다.
 
-다음 개발 순서는 2 MiB를 넘는 object-store/multipart portable Artifact 전송이다. runtime
-registry refresh, 배포 anchor transparency/federation, DB·백업 소실 뒤 외부 anti-rollback
-기준과 mTLS/HSM/KMS도 후속 경계다.
+B2.8g가 이 우선순위의 첫 로컬 object-store 수직 조각을 완료했다. 외부 object store와
+운영 수명주기 경계는 위 B2.8g 상태에 기록한 후속 작업으로 남아 있다.
 
-> 자율형 멀티 에이전트 AI 레드팀·보안 검증 오케스트레이션 플랫폼
+> 정책 통제형 멀티 에이전트·다중 표면 보안 검증 오케스트레이션 플랫폼
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 상태 | Product Baseline v0.3 |
+| 문서 상태 | Product Baseline v0.4 (Architecture v2) |
 | 작성일 | 2026-07-12 |
-| 최종 최신화 | 2026-07-19 |
+| 최종 최신화 | 2026-07-26 |
 | 문서 목적 | 제품 방향, 범위, 핵심 요구사항, 안전 원칙, MVP 및 로드맵의 기준선 정의 |
 | 주요 참고 | KISA 「AI 보안 레드티밍 가이드」(2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -36,9 +92,10 @@ registry refresh, 배포 anchor transparency/federation, DB·백업 소실 뒤 �
 문서 사이에 충돌이 있으면 다음 순서로 해석한다.
 
 1. `docs/PAJIN_PRODUCT_PLAN.md` — 제품 불변 원칙과 수용 기준
-2. 같은 범위의 이전 결정을 명시적으로 amend 또는 supersede한 가장 최근 Accepted ADR — 불변 원칙을 구현하기 위한 기술 결정
-3. `docs/KISA_TRACEABILITY.md` — KISA 요구사항과 구현 증적의 연결 상태
-4. `README.md` — 현재 코드의 실행 방법, 지원 범위와 알려진 구현 격차
+2. 이 기획서가 명시적으로 참조한 Accepted Architecture RFC — 제품 구조와 migration 계약
+3. 같은 범위의 이전 결정을 명시적으로 amend 또는 supersede한 가장 최근 Accepted ADR — 불변 원칙을 구현하기 위한 기술 결정
+4. `docs/KISA_TRACEABILITY.md` — KISA 요구사항과 구현 증적의 연결 상태
+5. `README.md` — 현재 코드의 실행 방법, 지원 범위와 알려진 구현 격차
 
 ADR은 제품 기획서의 불변 원칙을 구체화할 수 있지만 암묵적으로 완화할 수 없다. 불변 원칙을
 바꾸려면 이 기획서를 먼저 개정하고, 변경 사유와 이행 영향을 새 ADR에 기록한 뒤 구현해야

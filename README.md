@@ -1,5 +1,45 @@
 # PAJIN
 
+## Architecture v2 direction
+
+PAJIN is transitioning incrementally to one policy-governed common attack engine, Campaign
+Profiles, versioned registered Capabilities, and a Minimum Canonical Graph. AI remains a
+first-class security surface instead of defining the entire product. Existing `ai-redteam`,
+`bug-bounty`, and `ctf` inputs and their policy, evidence, validation, and replay boundaries remain
+compatible during the strangler migration.
+
+An Adaptive Supervisor is deliberately deferred until the graph and benchmark contracts exist.
+When introduced, it will consume immutable snapshots and emit proposals only; deterministic code
+continues to compile single-use execution permits and enforce Scope, risk, budget, and Capability.
+See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
+[ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.en.md),
+[ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
+[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md).
+
+The verified implementation baseline remains `main@a4d0582`. The local Architecture v2 work now
+includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
+It also includes the [GRAPH-001 six-node, eight-relation, and three-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
+The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
+now adds one writer capability, registered producer and exact lineage verification, idempotent
+retry/equivocation handling, canonical materialization, and a hash-chained in-memory Event Log.
+GRAPH-003 projection, revision, and immutable Snapshot are next. These changes and B2.8g below
+remain local work in progress until committed and verified by CI.
+
+## B2.8g resumable multipart portable Artifact transport
+
+Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
+The first slice is bounded to 64 MiB total, 16 MiB per file, 256 files, depth 24, and fixed 1 MiB
+parts. The Control Plane verifies the live lease, exact Replay authority, executor signature, and
+manifest before accepting bytes into its owner-private local object-store namespace.
+
+Upload begin and part PUT operations are idempotent for exact retries. A retry cannot replace an
+existing part with different bytes. Finalization recomputes every file digest and the canonical
+manifest, atomically publishes the staging tree, and then reuses the existing managed Artifact,
+sealed Run, receipt, and projection checks. Small Runs keep the existing inline v1 transport.
+External S3-compatible storage, pre-signed URLs, upload expiry/garbage collection, encryption, and
+tenant isolation remain follow-up work. See
+[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.en.md).
+
 ## B2.8f Target-signed TLS session binding
 
 Signed Target registry v4 can now require `tls-unique-sha256` for each HTTPS exact URL. In the
@@ -51,8 +91,8 @@ The implementation baseline as of 2026-07-24 is:
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested bounded portable Artifact, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, support signed registry rotation, and bind the Target-signed application exchange to the Worker-observed TLS 1.2 channel. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, large object-store/multipart Artifact transfer, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested portable Artifact inline or through a resumable 64 MiB local-object-store multipart path, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, support signed registry rotation, and bind the Target-signed application exchange to the Worker-observed TLS 1.2 channel. Only validity drives confirmation, while impact and severity remain information-only. |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, external object-store/pre-signed multipart transport above the 64 MiB local slice with expiry, encryption, and tenant isolation, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, broader HTTP/RAG/Admin discovery adapters and Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

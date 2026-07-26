@@ -2,6 +2,64 @@
 
 # PAJIN Product Plan
 
+## 2026-07-26 Architecture v2 product-baseline amendment
+
+PAJIN is transitioning from Mode-specific silos to a **Common Attack Engine + Campaign Profiles +
+version-pinned Capabilities + Canonical Graph**. AI remains a first-class domain for prompt, RAG,
+memory, and tool-authorization surfaces; it no longer defines the whole product as one AI-red-team
+Mode.
+
+This is a strangler migration that preserves existing Policy, attenuated Capability, Worker
+isolation, Evidence, Candidate/Claim Validation, independent Replay, and Control Plane ledgers.
+Existing `ai-redteam`, `bug-bounty`, and `ctf` manifests, CLI commands, and APIs remain compatibility
+inputs. They are not deleted, and no large directory move occurs before parity is proven.
+
+The initial Canonical Graph vocabulary is limited to `Surface`, `Hypothesis`, `Action`,
+`Observation`, `Evidence`, and `CampaignFact`. Agents submit typed proposals; one Graph Admission
+Authority appends accepted state to an Event Log. Contradictions coexist rather than overwrite,
+and every planner/supervisor decision binds an immutable snapshot revision and digest. B2.9
+structured collaboration memory becomes fact, snapshot, and handoff projections of this
+Graph/Event Log, not a separate free-form authority store.
+
+An Adaptive Supervisor is evaluated in shadow mode only after the Minimum Graph and benchmark
+exist. It emits proposals only and cannot expand Scope, risk, budget, rate, Capability, or egress,
+or confirm Findings. A deterministic compiler plus the existing Policy Gate remains the only
+source of single-use ActionPermits.
+
+The detailed contract and migration/rollback criteria are in
+[`ARCH-001`](rfc/0001-pajin-architecture-v2.en.md),
+[`ADR-0046`](adr/0046-common-engine-and-campaign-profiles.en.md),
+[`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
+[`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.en.md). The local
+[`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
+ground-truth, aggregate-result, and baseline/candidate comparison contracts.
+[`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
+and `SurfaceProposal`, `ObservationProposal`, and `CampaignFactProposal`. An Agent cannot assign
+CampaignFact validation state. The local
+[`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.en.md) reference spike adds the single
+write authority, registered producer and exact lineage gates, idempotency/equivocation handling,
+canonical materialization, and a hash-chained append-only Event Log. The verified implementation
+baseline remains `main@a4d0582`; these changes and B2.8g below are still local WIP. GRAPH-003
+projection, atomic revision, and immutable Snapshot are next.
+
+## 2026-07-25 B2.8g implementation status
+
+[`ADR-0045`](adr/0045-resumable-multipart-portable-artifact-transport.en.md) adds a resumable
+multipart path for portable Artifacts that exceed the existing 2 MiB inline limit. The Worker
+submits the final manifest and Executor attestation first. Only after the Control Plane verifies
+live replay authority and the signature does its managed local object store accept fixed 1 MiB
+parts. Re-sending the same bytes for a part is idempotent; re-sending different bytes is rejected.
+
+The current boundary is 64 MiB per Artifact, 16 MiB per file, 256 files, and path depth 24.
+Finalize reassembles every part, re-verifies file digests and the canonical manifest, then
+publishes the managed Artifact, sealed Run, replay receipt, and projection through the existing
+atomic path. The existing inline-v1 wire format for Artifacts up to 2 MiB is unchanged.
+
+External object stores and pre-signed URLs, transfers above 64 MiB, expiry and garbage collection,
+at-rest encryption, and tenant isolation are the next storage boundary. TLS 1.3 exporter support,
+runtime registry refresh, distribution-anchor transparency/federation, an external anti-rollback
+baseline after database and backup loss, and mTLS/HSM/KMS remain later boundaries.
+
 ## 2026-07-24 B2.8f implementation status
 
 [`ADR-0044`](adr/0044-target-signed-tls-session-binding.en.md) lets a signed registry-v4 HTTPS
@@ -16,17 +74,16 @@ v4 is valid only inside a signed distribution bundle and fails closed on TLS 1.3
 without channel binding. The Python standard `ssl` module exposes no exporter API, so production
 TLS 1.3 RFC 9266 `tls-exporter` support remains a later boundary.
 
-The next development priority is object-store/multipart transport for portable Artifacts over
-2 MiB. Runtime registry refresh, transparency/federation for the distribution anchor, an external
-anti-rollback baseline after database and backup loss, and mTLS/HSM/KMS remain later boundaries.
+B2.8g completes the first managed-local-object-store vertical slice of that priority. External
+object stores and production lifecycle boundaries remain follow-up work as recorded above.
 
-> Autonomous multi-agent AI red team and security validation orchestration platform
+> Policy-governed multi-agent, multi-surface security validation orchestration platform
 
 | Item | Content |
 | --- | --- |
-| Document Status | Product Baseline v0.3 |
+| Document Status | Product Baseline v0.4 (Architecture v2) |
 | Date Created | 2026-07-12 |
-| Last Updated | 2026-07-19 |
+| Last Updated | 2026-07-26 |
 | Document Purpose | Define the baseline for product direction, scope, core requirements, safety principles, MVP, and roadmap |
 | Key References | KISA "AI Security Red Teaming Guide" (2026.07), STRIX, HEXSTRIKE AI, XBOW |
 
@@ -40,9 +97,10 @@ the two differ, the authoritative source takes precedence. Within the English lo
 conflicts in the following order.
 
 1. `docs/PAJIN_PRODUCT_PLAN.en.md` - localized product immutable principles and acceptance criteria
-2. The most recent Accepted ADR that explicitly amends or supersedes a prior decision in the same scope - technical decisions that implement the immutable principles
-3. `docs/KISA_TRACEABILITY.en.md` - the linkage status between KISA requirements and implementation evidence
-4. `README.en.md` - how to run the current code, supported scope, and known implementation gaps
+2. An Accepted Architecture RFC explicitly referenced by this plan - product structure and migration contract
+3. The most recent Accepted ADR that explicitly amends or supersedes a prior decision in the same scope - technical decisions that implement the immutable principles
+4. `docs/KISA_TRACEABILITY.en.md` - the linkage status between KISA requirements and implementation evidence
+5. `README.en.md` - how to run the current code, supported scope, and known implementation gaps
 
 ADRs may concretize the immutable principles of the product plan, but they may not relax them implicitly. To
 change an immutable principle, the authoritative plan must be revised first, and the reason for the change and

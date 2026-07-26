@@ -2,6 +2,45 @@
 
 # PAJIN
 
+## Architecture v2 방향
+
+PAJIN은 하나의 정책 통제형 공통 공격 엔진, Campaign Profile, 버전이 고정된 등록형
+Capability와 Minimum Canonical Graph로 점진적으로 전환합니다. AI는 제품 전체를 정의하는
+Mode가 아니라 first-class 보안 표면으로 유지합니다. 기존 `ai-redteam`, `bug-bounty`,
+`ctf` 입력과 정책·증거·검증·Replay 경계는 strangler migration 동안 호환됩니다.
+
+Adaptive Supervisor는 Graph와 benchmark 계약이 준비될 때까지 의도적으로 보류합니다.
+도입 후에도 immutable snapshot을 읽고 proposal만 만들며, deterministic code가 single-use
+실행 permit을 컴파일하고 Scope·risk·budget·Capability를 계속 집행합니다. 자세한 계약은
+[ARCH-001](docs/rfc/0001-pajin-architecture-v2.ko.md),
+[ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.ko.md),
+[ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.ko.md),
+[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.ko.md)을 참조하십시오.
+
+검증된 구현 기준선은 계속 `main@a4d0582`입니다. 로컬 Architecture v2 작업에는
+[BENCH-001 manifest·ground-truth·result·comparison 계약](docs/benchmark/BENCH-001-benchmark-contract.ko.md)까지
+포함됐습니다. [GRAPH-001의 6개 Node·8개 relation·3개 Proposal 계약](docs/graph/GRAPH-001-minimum-canonical-graph-model.ko.md)도
+로컬에 구현했습니다. [GRAPH-002 단일 Admission Authority와 append-only Event Log reference
+spike](docs/graph/GRAPH-002-single-admission-event-log.ko.md)는 단일 writer capability, 등록
+producer와 exact lineage 검증, 멱등 retry/equivocation, canonical materialization,
+hash-chained in-memory Event Log를 추가했습니다. 다음 구현 단위는 GRAPH-003 projection,
+revision, immutable Snapshot입니다. 이 변경과 아래 B2.8g는 커밋·CI 검증 전까지 로컬 WIP입니다.
+
+## B2.8g 재개 가능한 multipart portable Artifact 전송
+
+기존 2 MiB 인라인 상한을 넘는 Replay Run은 이제 bytes가 없는 manifest와 multipart
+전송을 사용합니다. 첫 조각은 전체 64 MiB, 파일당 16 MiB, 256 files, depth 24, 고정
+1 MiB part로 제한됩니다. Control Plane은 live lease, exact Replay authority, executor
+서명과 manifest를 먼저 검증한 뒤 owner-private local object-store namespace에 bytes를
+받습니다.
+
+upload begin과 part PUT은 exact retry에 멱등이며 같은 part를 다른 bytes로 바꿀 수 없습니다.
+최종화는 모든 파일 digest와 canonical manifest를 다시 계산하고 staging tree를 원자적으로
+발행한 뒤 기존 managed Artifact, sealed Run, receipt와 projection 검증을 재사용합니다. 작은
+Run은 기존 inline v1 전송을 유지합니다. 외부 S3 호환 저장소, pre-signed URL, upload
+expiry·garbage collection, encryption과 tenant isolation은 후속입니다. 자세한 경계는
+[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.ko.md)를 참조하십시오.
+
 ## B2.8f Target 서명 TLS session binding
 
 signed Target registry v4는 HTTPS exact URL마다 `tls-unique-sha256` session binding을
@@ -52,8 +91,8 @@ CLI를 대체하지 않으면서 최초의 지속성 있는 실행 경로를 제
 | AI Red Team | 19개 위협 분류와 52개 체크리스트 항목의 KISA 카탈로그, 실행 가능한 A01, A02, A04, M03, M06 시나리오, `kisa-run` 및 명시적 Local 경로를 통한 exact M03·M06·A04 validity·impact·severity Claim별 fresh-session Replay 권위, Candidate마다 fresh single-call Capability 세 개와 등록 materializer identity·별도 request/evidence/receipt 계보를 사용하는 opt-in 정보 전용 validation Control, Claim replay projection, 외부 remediation attestation 없이는 inconclusive로 남는 baseline-bound negative replay |
 | Bug Bounty | 프로그램 정책 검토, canonical scope 컴파일, 보수적 중복 triage, 로컬 보고서 초안, 고정된 Boolean SQL injection lab 한 개 |
 | CTF | 타입이 지정된 로컬 Web backup 및 오프라인 single-byte XOR challenge와 제한된 Web + Crypto Suite |
-| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 multi-item projection을, schema v12는 baseline-bound Retest를, schema v13은 exact Claim binding을, schema v14는 signed Target registry anti-rollback 원장을 추가합니다. 추가 opt-in은 Ed25519 Claim receipt, executor-attested portable Artifact, Target-issued receipt와 HTTPS CONNECT 증명, exact endpoint SPKI, 제한된 old/new pin overlap과 Target 서명 application exchange의 Worker 관찰 TLS 1.2 channel 결박을 제공합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
-| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, live registry refresh와 외부 transparency/federation anchor, TLS 1.3 RFC 9266 exporter 지원, 대형 object-store/multipart Artifact 전송, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
+| Control Plane | 선택적 인증 FastAPI API, PostgreSQL Job queue, 승인 checkpoint, fenced cooperative 취소, lease와 crash 복구, same-origin Web Console preview, owner-controlled managed Artifact, opaque Operator Replay source/batch admission과 역할 기반 조회, durable exact-KISA Replay finalization, fresh-identity retry 발행, 전용 `kisa-exact-v1` Replay Worker. Schema v11은 multi-item projection을, schema v12는 baseline-bound Retest를, schema v13은 exact Claim binding을, schema v14는 signed Target registry anti-rollback 원장을 추가합니다. 추가 opt-in은 Ed25519 Claim receipt, 인라인 또는 재개 가능한 64 MiB local-object-store multipart executor-attested portable Artifact, Target-issued receipt와 HTTPS CONNECT 증명, exact endpoint SPKI, 제한된 old/new pin overlap과 Target 서명 application exchange의 Worker 관찰 TLS 1.2 channel 결박을 제공합니다. validity만 confirmation을 구동하고 impact·severity는 정보 전용입니다. |
+| 주요 공백 | 등록된 KISA 세 시나리오 밖의 Validation Control과 Claim별 Replay, live registry refresh와 외부 transparency/federation anchor, TLS 1.3 RFC 9266 exporter 지원, 64 MiB local 조각을 넘는 외부 object-store/pre-signed multipart 전송과 expiry·encryption·tenant isolation, 검증 가능한 운영 Provider 다양성, severity calibration과 다수 Reviewer/Human 합의, HTTP·RAG·Admin 추가 discovery adapter와 Hypothesis·Observation rule, 후속 관찰의 trusted new-Surface admission, ranking·정보가치 평가, 병렬 안전성과 3개 이상 wave 실행, Finding/보고서 검토 UI, 분산 Worker, 외부 연동, 독립적으로 앵커링된 운영 증거 |
 
 주요 운영자 인터페이스는 계속 CLI + YAML입니다. 일반 공개 대상 공격 자동화, 외부 Bug Bounty
 또는 CTF 제출, 운영용 멀티테넌트 배포는 구현되어 있지 않습니다.
