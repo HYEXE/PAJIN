@@ -75,6 +75,8 @@ under the same source identity is rejected as trusted-source equivocation.
 ### Materialization and edge resolution
 
 - `SurfaceProposal` admits its Surface and permitted discovery edges.
+- `HypothesisProposal` admits its registered-producer Hypothesis and exact motivation/enablement
+  edges after their source resolves.
 - `ObservationProposal` admits the full Action, Observation, Evidence nodes, and typed edges. The
   Action must exactly match request, Capability, and execution-authority lineage.
 - `CampaignFactProposal` materializes a canonical CampaignFact with
@@ -118,6 +120,7 @@ adapter measurements and conformance tests exist.
 
 [GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.en.md) now implements the in-memory
 reference Projection, revision/head compare-and-set, and immutable Snapshot chain rebuilt from the
-complete admission/rejection Event Log. GRAPH-004 next exercises duplicate and contradiction
-semantics, concurrent admission/projection, partial-write recovery, and stale-decision races
-against the candidate durable transaction boundary.
+complete admission/rejection Event Log.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.en.md) now exercises duplicate and
+contradiction semantics, concurrent admission/projection, recoverable projection lag, and
+stale-decision preflight. Durable transaction and crash boundaries remain open.

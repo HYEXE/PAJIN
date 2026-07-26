@@ -108,6 +108,7 @@ class CampaignFactValidationState(StrEnum):
 
 class GraphProposalKind(StrEnum):
     SURFACE = "SurfaceProposal"
+    HYPOTHESIS = "HypothesisProposal"
     OBSERVATION = "ObservationProposal"
     CAMPAIGN_FACT = "CampaignFactProposal"
 
@@ -523,6 +524,40 @@ class SurfaceProposal(_GraphProposalBase):
         return self
 
 
+class HypothesisProposal(_GraphProposalBase):
+    kind: Literal["HypothesisProposal"] = "HypothesisProposal"
+    hypothesis: GraphHypothesis
+    edges: list[GraphEdge] = Field(
+        min_length=1,
+        max_length=_MAX_PROPOSAL_EDGES,
+    )
+
+    @model_validator(mode="after")
+    def bind_hypothesis_to_lineage_and_edges(self) -> Self:
+        campaign_id = self.lineage.campaign_id
+        if self.hypothesis.campaign_id != campaign_id:
+            raise ValueError("Hypothesis Proposal node belongs to another Campaign")
+        if (
+            self.hypothesis.producer_id,
+            self.hypothesis.producer_version,
+            self.hypothesis.producer_digest,
+        ) != (self.producer_id, self.producer_version, self.producer_digest):
+            raise ValueError("Hypothesis Proposal payload producer differs from Proposal")
+        for edge in self.edges:
+            if (
+                edge.campaign_id != campaign_id
+                or edge.relation
+                not in {GraphRelation.MOTIVATES, GraphRelation.ENABLES}
+                or edge.target.node_id != self.hypothesis.node_id
+                or edge.target.kind is not GraphNodeKind.HYPOTHESIS
+            ):
+                raise ValueError("Hypothesis Proposal contains an unrelated edge")
+        edge_ids = [edge.edge_id for edge in self.edges]
+        if edge_ids != sorted(set(edge_ids)):
+            raise ValueError("Hypothesis Proposal edges must be unique and sorted")
+        return self
+
+
 class ObservationProposal(_GraphProposalBase):
     kind: Literal["ObservationProposal"] = "ObservationProposal"
     action: GraphAction
@@ -628,6 +663,17 @@ class ObservationProposal(_GraphProposalBase):
             raise ValueError(
                 "Observation Proposal must bind every Evidence node with supported-by"
             )
+        positions: dict[str, set[GraphRelation]] = {}
+        for edge in self.edges:
+            if edge.relation in {
+                GraphRelation.SUPPORTS,
+                GraphRelation.CONTRADICTS,
+            }:
+                positions.setdefault(edge.target.node_id, set()).add(edge.relation)
+        if any(len(relations) > 1 for relations in positions.values()):
+            raise ValueError(
+                "one Graph Observation cannot support and contradict one Hypothesis"
+            )
         return self
 
 
@@ -643,7 +689,7 @@ class CampaignFactProposal(_GraphProposalBase):
 
 
 GraphProposal = Annotated[
-    SurfaceProposal | ObservationProposal | CampaignFactProposal,
+    SurfaceProposal | HypothesisProposal | ObservationProposal | CampaignFactProposal,
     Field(discriminator="kind"),
 ]
 _GRAPH_PROPOSAL_ADAPTER: TypeAdapter[GraphProposal] = TypeAdapter(GraphProposal)

@@ -74,6 +74,8 @@ reference/digest, producer time을 exact match한다. 같은 source identity에 
 ### Materialization과 edge resolution
 
 - `SurfaceProposal`은 Surface와 허용된 discovery edge를 admission한다.
+- `HypothesisProposal`은 source가 resolve된 exact motivation/enablement edge와 등록
+  producer의 Hypothesis를 admission한다.
 - `ObservationProposal`은 전체 Action, Observation, Evidence node와 typed edge를 admission한다.
   Action은 request, Capability, execution-authority lineage와 정확히 일치해야 한다.
 - `CampaignFactProposal`은 `validation_state=admitted`인 canonical CampaignFact로
@@ -117,6 +119,7 @@ test가 나오기 전까지 두 선택지를 열어 둔다.
 
 [GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 전체 admission/rejection
 Event Log에서 재구성하는 in-memory reference Projection, revision/head CAS, immutable
-Snapshot chain을 구현했다. 다음 GRAPH-004는 후보 durable transaction 경계에서
-duplicate·contradiction semantics, concurrent admission/projection, partial-write recovery,
-stale-decision race를 검증한다.
+Snapshot chain을 구현했다.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.ko.md)는 duplicate·contradiction
+semantics, concurrent admission/projection, 복구 가능한 projection lag, stale-decision
+preflight를 검증한다. Durable transaction과 crash 경계는 아직 남아 있다.

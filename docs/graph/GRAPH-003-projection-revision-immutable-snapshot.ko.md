@@ -2,7 +2,7 @@
 
 # GRAPH-003: Projection·Revision·Immutable Snapshot
 
-- 상태: Reference spike 구현 완료, 로컬 WIP
+- 상태: Reference spike 구현 완료, 로컬 commit `c8268e3`, CI 대기
 - 날짜: 2026-07-26
 - 구현: `pajin.graph.projection`
 - 테스트: `tests/test_graph_projection.py`
@@ -95,11 +95,9 @@ GRAPH-001/002/003 focused suite는 현재 로컬에서 36개 테스트를 통과
 ## 의도적으로 남긴 경계와 다음 단계
 
 GRAPH-003은 durable database/Event Store를 선택하지 않으며 cross-process fencing 또는 Event
-Log와 projection store를 아우르는 atomic transaction을 주장하지 않는다. Semantic
-duplicate relation, contradiction transition, stale-decision dispatch, snapshot-bound
-ActionPermit 재컴파일도 아직 구현하지 않는다.
+Log와 projection store를 아우르는 atomic transaction을 주장하지 않는다.
 
-GRAPH-004는 concurrent admission/projection CAS, duplicate·contradiction semantics,
-event/projection partial-write recovery, Snapshot decision staleness,
-graph-change-before-dispatch를 검증한다. 이 conformance 결과를 durable Graph Store 선택
-근거로 사용한다.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.ko.md)는 concurrent
+admission/projection CAS, duplicate·contradiction semantics, 복구 가능한 projection lag,
+Snapshot decision staleness, graph-change-before-dispatch를 검증한다. Durable crash atomicity와
+atomic ActionPermit 발급은 별도 adapter 범위로 남는다.

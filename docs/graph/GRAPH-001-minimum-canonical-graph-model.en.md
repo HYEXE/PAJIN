@@ -49,13 +49,20 @@ rejected.
 
 ## Proposals
 
-Agents and Specialists can submit only three write-intent types.
+Agents and Specialists can submit only four write-intent types.
 
 ### `SurfaceProposal`
 
 - binds exact campaign/run/agent/task/request/evidence lineage;
 - allows a seed Surface without an edge; and
 - permits only `Observation discovers Surface` when edges are present.
+
+### `HypothesisProposal`
+
+- carries one registered-producer Hypothesis;
+- exact-matches Hypothesis producer ID/version/digest to the outer Proposal; and
+- requires at least one exact `Surface motivates Hypothesis` or
+  `Observation enables Hypothesis` edge, resolved by the Admission Authority.
 
 ### `ObservationProposal`
 
@@ -96,6 +103,7 @@ Graph models admitted campaign knowledge and provenance.
 - canonical Node/Edge ID tampering;
 - relation endpoint kind/direction mismatch and cross-Campaign edges;
 - foreign-Campaign Proposal nodes or edges;
+- Hypothesis producer mismatch or unresolved motivation;
 - evidence reference/content/source-root lineage mismatch;
 - missing Action production or Evidence support edges;
 - Agent-supplied CampaignFact validation state;
@@ -104,7 +112,10 @@ Graph models admitted campaign knowledge and provenance.
 
 ## Next step
 
-[GRAPH-002](GRAPH-002-single-admission-event-log.en.md) now implements the single Admission
-Authority and append-only Event Log reference spike. GRAPH-003 adds projection, atomic revision,
-and immutable Snapshot contracts. Durable storage selection, cross-process CAS, and partial-write
-recovery remain open until those adapters pass shared conformance tests.
+[GRAPH-002](GRAPH-002-single-admission-event-log.en.md) implements the single Admission Authority
+and append-only Event Log reference spike.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.en.md) adds projection, atomic
+process-local revision, and immutable Snapshot contracts.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.en.md) adds the Hypothesis admission path,
+duplicate/contradiction analysis, bounded reconciliation, and stale-decision preflight. Durable
+storage selection and cross-process dispatch atomicity remain open.

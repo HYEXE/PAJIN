@@ -33,17 +33,18 @@ Finding을 확정할 수 없다. 실행 권위는 항상 deterministic compiler�
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.ko.md)의 manifest·private ground truth,
 aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했다.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.ko.md)은 6개 Node, 8개 typed Edge와
-`SurfaceProposal`·`ObservationProposal`·`CampaignFactProposal`을 추가했다. Agent는
-CampaignFact validation state를 지정할 수 없다. 로컬
+`SurfaceProposal`·`HypothesisProposal`·`ObservationProposal`·`CampaignFactProposal`을
+추가했다. Agent는 CampaignFact validation state를 지정할 수 없다. 로컬
 [`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.ko.md) reference spike는 단일 write
 authority, 등록 producer와 exact lineage gate, 멱등 retry/equivocation, canonical
 materialization, hash-chained append-only Event Log를 추가했다.
 [`GRAPH-003`](graph/GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 deterministic
 exact-prefix projection, revision/head CAS, content-addressed immutable Snapshot chain, exact
-Snapshot reference resolution을 추가했다. 원격 commit 기준선은 `main@42dd0a0`이다.
-GRAPH-003은 로컬 검증을 통과했고 Linux CI 확인은 남아
-있다. 다음 순서는 GRAPH-004 concurrency, partial recovery, contradiction, stale-decision
-conformance다.
+Snapshot reference resolution을 추가했다.
+[`GRAPH-004`](graph/GRAPH-004-consistency-recovery-stale-decision.ko.md)는 Hypothesis admission,
+duplicate/contradiction 분석, bounded CAS reconciliation, exact Snapshot-bound stale-decision
+preflight를 추가했다. 로컬 `main@c8268e3`에는 GRAPH-003이 커밋됐고 원격 `main`은
+`42dd0a0`이며 GRAPH-004는 로컬 검증 완료, Linux CI 확인은 남아 있다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

@@ -48,13 +48,20 @@ Edge는 Campaign, typed endpoint, relation, authority ID/digest에 결박된 can
 
 ## Proposal
 
-Agent와 Specialist가 제출할 수 있는 write intent는 세 가지뿐이다.
+Agent와 Specialist가 제출할 수 있는 write intent는 네 가지뿐이다.
 
 ### `SurfaceProposal`
 
 - exact campaign/run/agent/task/request/evidence lineage에 결박
 - seed Surface는 edge 없이 제출 가능
 - edge가 있으면 `Observation discovers Surface`만 허용
+
+### `HypothesisProposal`
+
+- 등록 producer의 Hypothesis 하나를 제출
+- Hypothesis producer ID/version/digest와 outer Proposal의 exact 일치
+- Admission Authority가 resolve하는 `Surface motivates Hypothesis` 또는
+  `Observation enables Hypothesis` edge를 최소 하나 요구
 
 ### `ObservationProposal`
 
@@ -95,6 +102,7 @@ campaign knowledge와 provenance다.
 - canonical Node/Edge ID 변조
 - relation endpoint kind/direction 불일치와 cross-campaign edge
 - Proposal node/edge의 foreign campaign
+- Hypothesis producer mismatch 또는 unresolved motivation
 - Evidence reference/content/source-root lineage 불일치
 - 누락된 Action production 또는 Evidence support edge
 - Agent가 CampaignFact validation state를 직접 제출
@@ -104,6 +112,9 @@ campaign knowledge와 provenance다.
 ## 다음 단계
 
 [GRAPH-002](GRAPH-002-single-admission-event-log.ko.md)는 단일 Admission Authority와
-append-only Event Log reference spike를 구현했다. GRAPH-003은 projection, atomic revision,
-immutable Snapshot 계약을 추가한다. 영구 저장소 선택, cross-process CAS, partial-write
-recovery는 adapter가 공통 conformance test를 통과할 때까지 미결정이다.
+append-only Event Log reference spike를 구현했다.
+[GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.ko.md)은 projection,
+process-local atomic revision, immutable Snapshot 계약을 추가했다.
+[GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.ko.md)는 Hypothesis admission,
+duplicate/contradiction 분석, bounded reconciliation, stale-decision preflight를 추가했다.
+Durable 저장소 선택과 cross-process dispatch atomicity는 아직 미결정이다.

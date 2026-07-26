@@ -111,9 +111,11 @@ append-only hash chain, 등록 producer와 exact lineage gate, retry, equivocati
 materialization, dangling-edge 검사를 구현했다.
 [GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.md)은 deterministic
 exact-prefix projection, process-local atomic revision/head CAS, content-addressed Snapshot
-chain, exact Snapshot reference resolution을 구현했다. Durable cross-process CAS,
-event/projection crash recovery, contradiction transition, stale-decision dispatch test는
-GRAPH-004 범위로 남아 있다.
+chain, exact Snapshot reference resolution을 구현했다.
+[GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.md)는 Hypothesis admission,
+duplicate/contradiction 분석, concurrent admission/projection CAS test, bounded lag
+reconciliation, exact Snapshot-bound stale-decision preflight를 구현했다. Durable
+cross-process CAS/crash recovery와 atomic preflight + ActionPermit 발급은 아직 남아 있다.
 
 ## 관련 문서
 

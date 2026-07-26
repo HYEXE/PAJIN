@@ -112,9 +112,11 @@ single writer, append-only hash chain, registered producer and exact lineage gat
 equivocation, materialization, and dangling-edge checks.
 [GRAPH-003](../graph/GRAPH-003-projection-revision-immutable-snapshot.en.md) implements
 deterministic exact-prefix projection, atomic process-local revision/head CAS, content-addressed
-Snapshot chaining, and exact Snapshot reference resolution. Durable cross-process CAS,
-event/projection crash recovery, contradiction transitions, and stale-decision dispatch tests
-remain GRAPH-004 work.
+Snapshot chaining, and exact Snapshot reference resolution.
+[GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.en.md) implements the missing
+Hypothesis admission path, duplicate/contradiction analysis, concurrent admission and projection
+CAS tests, bounded lag reconciliation, and exact Snapshot-bound stale-decision preflight. Durable
+cross-process CAS/crash recovery and atomic preflight plus ActionPermit issuance remain open.
 
 ## Related documents
 

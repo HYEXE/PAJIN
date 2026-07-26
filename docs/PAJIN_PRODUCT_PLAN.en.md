@@ -34,16 +34,18 @@ The detailed contract and migration/rollback criteria are in
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
-and `SurfaceProposal`, `ObservationProposal`, and `CampaignFactProposal`. An Agent cannot assign
-CampaignFact validation state. The local
+and `SurfaceProposal`, `HypothesisProposal`, `ObservationProposal`, and `CampaignFactProposal`. An
+Agent cannot assign CampaignFact validation state. The local
 [`GRAPH-002`](graph/GRAPH-002-single-admission-event-log.en.md) reference spike adds the single
 write authority, registered producer and exact lineage gates, idempotency/equivocation handling,
 canonical materialization, and a hash-chained append-only Event Log.
 [`GRAPH-003`](graph/GRAPH-003-projection-revision-immutable-snapshot.en.md) adds deterministic
 exact-prefix projection, revision/head compare-and-set, content-addressed immutable Snapshot
-chaining, and exact Snapshot reference resolution. The remote committed baseline is
-`main@42dd0a0` before this slice. GRAPH-003 is locally verified and Linux CI remains pending.
-GRAPH-004 concurrency, partial recovery, contradiction, and stale-decision conformance is next.
+chaining, and exact Snapshot reference resolution.
+[`GRAPH-004`](graph/GRAPH-004-consistency-recovery-stale-decision.en.md) adds Hypothesis admission,
+duplicate/contradiction analysis, bounded CAS reconciliation, and exact Snapshot-bound
+stale-decision preflight. Local `main@c8268e3` contains GRAPH-003; remote `main` remains
+`42dd0a0`, GRAPH-004 is locally verified, and Linux CI remains pending.
 
 ## 2026-07-25 B2.8g implementation status
 

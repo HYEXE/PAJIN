@@ -21,6 +21,7 @@ from pajin.graph.models import (
     GraphEdge,
     GraphEvidence,
     GraphEvidenceBinding,
+    GraphHypothesis,
     GraphNode,
     GraphNodeKind,
     GraphObservation,
@@ -29,6 +30,7 @@ from pajin.graph.models import (
     GraphProposalLineage,
     GraphRelation,
     GraphSurface,
+    HypothesisProposal,
     ObservationProposal,
     SurfaceProposal,
     canonical_graph_json,
@@ -352,6 +354,8 @@ class GraphAdmissionEvent(StrictModel):
     def _require_proposal_material(self) -> None:
         if self.proposal_kind is GraphProposalKind.SURFACE:
             self._require_surface_material()
+        elif self.proposal_kind is GraphProposalKind.HYPOTHESIS:
+            self._require_hypothesis_material()
         elif self.proposal_kind is GraphProposalKind.OBSERVATION:
             self._require_observation_material()
         else:
@@ -370,6 +374,26 @@ class GraphAdmissionEvent(StrictModel):
             for edge in self.admitted_edges
         ):
             raise ValueError("Surface admission event contains invalid edge material")
+
+    def _require_hypothesis_material(self) -> None:
+        if len(self.admitted_nodes) != 1 or not isinstance(
+            self.admitted_nodes[0],
+            GraphHypothesis,
+        ) or not self.admitted_edges:
+            raise ValueError("Hypothesis admission event contains invalid node material")
+        hypothesis = self.admitted_nodes[0]
+        if (
+            hypothesis.producer_id,
+            hypothesis.producer_version,
+            hypothesis.producer_digest,
+        ) != (self.producer_id, self.producer_version, self.producer_digest):
+            raise ValueError("admitted Graph Hypothesis differs from event producer")
+        if any(
+            edge.relation not in {GraphRelation.MOTIVATES, GraphRelation.ENABLES}
+            or edge.target.node_id != hypothesis.node_id
+            for edge in self.admitted_edges
+        ):
+            raise ValueError("Hypothesis admission event contains invalid edge material")
 
     def _require_observation_material(self) -> None:
         actions = [node for node in self.admitted_nodes if isinstance(node, GraphAction)]
@@ -419,6 +443,17 @@ class GraphAdmissionEvent(StrictModel):
             item.node_id for item in evidence
         }:
             raise ValueError("Observation admission event contains incomplete edge material")
+        positions: dict[str, set[GraphRelation]] = {}
+        for edge in self.admitted_edges:
+            if edge.relation in {
+                GraphRelation.SUPPORTS,
+                GraphRelation.CONTRADICTS,
+            }:
+                positions.setdefault(edge.target.node_id, set()).add(edge.relation)
+        if any(len(relations) > 1 for relations in positions.values()):
+            raise ValueError(
+                "one admitted Graph Observation cannot support and contradict one Hypothesis"
+            )
 
     def _action_matches_event(self, action: GraphAction) -> bool:
         expected_authority = (
@@ -772,6 +807,10 @@ class GraphAdmissionAuthority:
             return [proposal.surface.model_copy(deep=True)], [
                 edge.model_copy(deep=True) for edge in proposal.edges
             ]
+        if isinstance(proposal, HypothesisProposal):
+            return [proposal.hypothesis.model_copy(deep=True)], [
+                edge.model_copy(deep=True) for edge in proposal.edges
+            ]
         if isinstance(proposal, ObservationProposal):
             nodes: list[GraphNode] = [
                 proposal.action.model_copy(deep=True),
@@ -808,7 +847,9 @@ class GraphAdmissionAuthority:
 
 def _payload_producer_matches(proposal: GraphProposal) -> bool:
     payload: GraphObservation | object
-    if isinstance(proposal, ObservationProposal):
+    if isinstance(proposal, HypothesisProposal):
+        payload = proposal.hypothesis
+    elif isinstance(proposal, ObservationProposal):
         payload = proposal.observation
     elif isinstance(proposal, CampaignFactProposal):
         payload = proposal.fact
