@@ -16,9 +16,10 @@ continues to compile single-use execution permits and enforce Scope, risk, budge
 See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
 [ADR-0046](docs/adr/0046-common-engine-and-campaign-profiles.en.md),
 [ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
-[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md).
+[ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md), and
+[ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.en.md).
 
-The local committed baseline is `main@c8268e3`; remote `main` remains `42dd0a0` until push. The Architecture v2 work
+The local committed baseline is `main@827404c`; remote `main` remains `42dd0a0` until push. The Architecture v2 work
 includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
 It also includes the [GRAPH-001 six-node, eight-relation, and four-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
 The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
@@ -28,8 +29,10 @@ The [GRAPH-003 projection, atomic revision, and immutable Snapshot reference spi
 now adds deterministic exact-prefix replay, projection CAS, content-addressed Snapshot chaining,
 and exact Snapshot reference resolution. The [GRAPH-004 consistency reference slice](docs/graph/GRAPH-004-consistency-recovery-stale-decision.en.md)
 adds Hypothesis admission, duplicate/contradiction analysis, bounded projection recovery, and a
-Snapshot-bound stale-decision preflight. GRAPH-003 is locally committed; GRAPH-004 is locally
-verified, and Linux CI remains pending.
+Snapshot-bound stale-decision preflight. The [GRAPH-005 durable SQLite Graph Store](docs/graph/GRAPH-005-durable-sqlite-graph-store.en.md)
+persists one Campaign's Event Log, append-only Projection history, and immutable Snapshot chain
+with cross-process host-local CAS and reopen recovery. GRAPH-004 is locally committed; GRAPH-005 is
+locally verified, and Linux CI remains pending.
 
 ## B2.8g resumable multipart portable Artifact transport
 

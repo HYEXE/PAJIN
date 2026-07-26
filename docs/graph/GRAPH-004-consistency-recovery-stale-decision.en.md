@@ -85,9 +85,10 @@ succeeded but projection publication did not run or lost a CAS race.
 An exact current state returns `in-sync`; a repaired lag returns `recovered` with the count of
 replayed Events. A divergent projection is never replaced silently.
 
-This is replay recovery, not durable two-store crash atomicity. Loss or corruption of both stores,
-cross-process leadership, database isolation, fsync ordering, and backup restore remain adapter
-work.
+This reference algorithm is replay recovery, not durable two-store crash atomicity.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.en.md) now applies it to a separate
+single-Campaign SQLite store with cross-process host-local CAS and reopen persistence. Multi-host
+leadership, process-kill fsync fault injection, and verified backup restore remain open.
 
 ## Snapshot-bound stale decision preflight
 
@@ -132,15 +133,15 @@ The combined focused suite now passes 46 tests locally, including:
 
 ## Remaining boundary
 
-The following are not implemented by this reference slice:
+GRAPH-005 closes the first durable Event/Projection/Snapshot adapter and host-local CAS boundary.
+The following remain open:
 
-- durable Event/Graph Store selection and schema;
-- cross-process leader fencing and serializable CAS;
-- crash testing across Event append, projection publication, and Snapshot append;
+- multi-host leader fencing, lease expiry, and PostgreSQL/HA storage;
+- process-kill/fault-injection testing across fsync boundaries;
 - atomic preflight plus ActionPermit issuance/consumption;
 - semantic CampaignFact corroboration/invalidation workflows;
 - retention, compaction, backup, restore, and external integrity anchoring; and
 - live sealed-Run/Scope/Capability adapters, B2.9 Handoff projections, and Supervisor execution.
 
-The next storage decision must use these conformance tests unchanged against the chosen durable
-adapter. Runtime dispatch integration remains a separate trust-boundary change.
+Runtime dispatch integration remains a separate trust-boundary change and must recheck the latest
+durable revision inside ActionPermit issuance/consumption rather than trusting a prior preflight.

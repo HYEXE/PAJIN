@@ -111,9 +111,9 @@ GRAPH-001/002 test는 다음을 검증한다.
 - Supervisor scheduling과 B2.9 fact/snapshot/handoff projection
 
 RunStore는 이미 private append, lock, hash chain, sealed integrity를 증명했지만 한 Run에
-결박되어 있다. 별도 Graph Store는 Campaign-wide revision과 projection transaction을 더
-자연스럽게 소유할 수 있다. `GraphEventLog` protocol은 durable adapter 측정과 conformance
-test가 나오기 전까지 두 선택지를 열어 둔다.
+결박되어 있다. [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.ko.md)는 별도
+single-Campaign SQLite Graph Store를 선택하고 storage-neutral `GraphEventLog` protocol을
+유지한다.
 
 ## 다음 단계
 
@@ -122,4 +122,5 @@ Event Log에서 재구성하는 in-memory reference Projection, revision/head CA
 Snapshot chain을 구현했다.
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.ko.md)는 duplicate·contradiction
 semantics, concurrent admission/projection, 복구 가능한 projection lag, stale-decision
-preflight를 검증한다. Durable transaction과 crash 경계는 아직 남아 있다.
+preflight를 검증한다. GRAPH-005는 이 계약을 durable host-local transaction과 reopen
+recovery에 적용했다. multi-host leadership과 atomic ActionPermit dispatch는 남아 있다.

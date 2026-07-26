@@ -117,5 +117,6 @@ and append-only Event Log reference spike.
 [GRAPH-003](GRAPH-003-projection-revision-immutable-snapshot.en.md) adds projection, atomic
 process-local revision, and immutable Snapshot contracts.
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.en.md) adds the Hypothesis admission path,
-duplicate/contradiction analysis, bounded reconciliation, and stale-decision preflight. Durable
-storage selection and cross-process dispatch atomicity remain open.
+duplicate/contradiction analysis, bounded reconciliation, and stale-decision preflight.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.en.md) selects a separate single-Campaign SQLite
+Graph Store and adds host-local cross-process CAS. Atomic ActionPermit dispatch remains open.

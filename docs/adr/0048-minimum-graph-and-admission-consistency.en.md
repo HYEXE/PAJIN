@@ -84,10 +84,11 @@ authority.
 
 ## Storage choice
 
-This ADR does not decide whether the first Event Store lives in the existing RunStore or a separate
-Graph module. Every implementation must pass shared conformance tests for ordering, idempotency,
-equivocation, contradiction, atomic revision, and snapshots. A later decision uses spike metrics
-and rollback cost to choose storage.
+This ADR originally left the first Event Store location open. ADR-0049 resolves it in favor of a
+separate, single-Campaign SQLite Graph Store rather than extending the one-Run `RunStore`. The
+adapter passes shared conformance tests for ordering, idempotency, equivocation, contradiction,
+durable revision CAS, recovery, and Snapshots. The storage-neutral protocols remain the migration
+boundary for a future Control Plane/PostgreSQL backend.
 
 ## Required negative tests
 
@@ -115,11 +116,15 @@ deterministic exact-prefix projection, atomic process-local revision/head CAS, c
 Snapshot chaining, and exact Snapshot reference resolution.
 [GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.en.md) implements the missing
 Hypothesis admission path, duplicate/contradiction analysis, concurrent admission and projection
-CAS tests, bounded lag reconciliation, and exact Snapshot-bound stale-decision preflight. Durable
-cross-process CAS/crash recovery and atomic preflight plus ActionPermit issuance remain open.
+CAS tests, bounded lag reconciliation, and exact Snapshot-bound stale-decision preflight.
+[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.en.md) implements the separate
+single-Campaign SQLite Event/Projection/Snapshot store, cross-process host-local CAS, reopen
+reconciliation, and schema-tamper checks. Multi-host leadership and atomic preflight plus
+ActionPermit issuance/consumption remain open.
 
 ## Related documents
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.en.md)
 - [ADR-0046: Common Engine and Campaign Profiles](0046-common-engine-and-campaign-profiles.en.md)
 - [ADR-0047: MissionEnvelope and ActionPermit Algebra](0047-mission-envelope-and-action-permit-algebra.en.md)
+- [ADR-0049: Durable Single-Campaign SQLite Graph Store](0049-durable-single-campaign-sqlite-graph-store.en.md)

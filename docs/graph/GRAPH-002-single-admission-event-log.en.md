@@ -112,9 +112,9 @@ This spike does not implement:
 - Supervisor scheduling and B2.9 fact/snapshot/handoff projections.
 
 RunStore already demonstrates private append, locking, hash chaining, and sealed integrity, but it
-is scoped to one Run. A separate Graph Store could better own Campaign-wide revision and
-projection transactions. The `GraphEventLog` protocol keeps both options open until durable
-adapter measurements and conformance tests exist.
+is scoped to one Run. [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.en.md) resolves the choice
+in favor of a separate single-Campaign SQLite Graph Store while retaining the storage-neutral
+`GraphEventLog` protocol.
 
 ## Next step
 
@@ -123,4 +123,5 @@ reference Projection, revision/head compare-and-set, and immutable Snapshot chai
 complete admission/rejection Event Log.
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.en.md) now exercises duplicate and
 contradiction semantics, concurrent admission/projection, recoverable projection lag, and
-stale-decision preflight. Durable transaction and crash boundaries remain open.
+stale-decision preflight. GRAPH-005 applies those contracts to durable host-local transactions and
+reopen recovery. Multi-host leadership and atomic ActionPermit dispatch remain open.

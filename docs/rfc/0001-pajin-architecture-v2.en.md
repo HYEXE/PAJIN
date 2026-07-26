@@ -215,8 +215,11 @@ Architecture v2 prerequisites; they are reused where operational value is demons
    - B2.9 projections;
    - Supervisor shadow, evaluation, and bounded activation.
 
-This RFC deliberately does not choose whether the first Graph Event Store lives in the existing
-RunStore or a separate module. Either backend must pass ADR-0048 conformance tests.
+The initial storage choice left open by this RFC is resolved by
+[ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md): the first backend is a
+separate, single-Campaign SQLite Graph Store rather than an extension of the one-Run `RunStore`.
+It passes the ADR-0048 durable conformance slice while preserving the same storage-neutral
+protocols for a future Control Plane/PostgreSQL adapter.
 
 ## 10. Definition of Done
 
@@ -237,3 +240,4 @@ B2.8g is currently local work in progress and is not part of the verified `main@
 - [ADR-0046: Common Engine and Campaign Profiles](../adr/0046-common-engine-and-campaign-profiles.en.md)
 - [ADR-0047: MissionEnvelope and ActionPermit Algebra](../adr/0047-mission-envelope-and-action-permit-algebra.en.md)
 - [ADR-0048: Minimum Graph and Admission Consistency](../adr/0048-minimum-graph-and-admission-consistency.en.md)
+- [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md)

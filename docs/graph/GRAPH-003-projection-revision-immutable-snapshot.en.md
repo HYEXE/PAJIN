@@ -100,5 +100,7 @@ claim an atomic transaction across the Event Log and projection store.
 
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.en.md) now exercises concurrent
 admission/projection CAS, duplicate and contradiction semantics, recoverable projection lag,
-Snapshot decision staleness, and graph-change-before-dispatch. Durable crash atomicity and atomic
-ActionPermit issuance remain separate adapter work.
+Snapshot decision staleness, and graph-change-before-dispatch.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.en.md) persists these contracts in a separate
+single-Campaign SQLite store with host-local CAS and reopen recovery. Multi-host leadership and
+atomic ActionPermit issuance/dispatch remain separate work.

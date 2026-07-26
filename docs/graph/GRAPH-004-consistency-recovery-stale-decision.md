@@ -88,9 +88,10 @@ closed한다.
 정확히 최신이면 `in-sync`, 복구했으면 replay Event 수와 함께 `recovered`를 반환한다.
 Divergent projection은 조용히 교체하지 않는다.
 
-이는 replay recovery이지 durable two-store crash atomicity가 아니다. 두 store의 손실·변조,
-cross-process leadership, database isolation, fsync ordering, backup restore는 adapter
-범위로 남는다.
+이는 reference replay recovery이지 durable two-store crash atomicity가 아니다.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md)는 별도 single-Campaign SQLite store에
+cross-process host-local CAS와 reopen persistence를 적용했다. multi-host leadership,
+process-kill fsync fault injection, 검증된 backup restore는 남아 있다.
 
 ## Snapshot-bound stale decision preflight
 
@@ -135,15 +136,15 @@ deterministic ActionPermit compiler가 dispatch transaction 안에서 비교하�
 
 ## 남은 경계
 
-이 reference slice는 다음을 구현하지 않는다.
+GRAPH-005가 첫 durable Event/Projection/Snapshot adapter와 host-local CAS 경계를 닫았다.
+다음은 남아 있다.
 
-- durable Event/Graph Store 선택과 schema
-- cross-process leader fencing과 serializable CAS
-- Event append, projection publish, Snapshot append 사이 crash test
+- multi-host leader fencing·lease expiry·PostgreSQL/HA storage
+- fsync 경계의 process-kill/fault-injection test
 - atomic preflight + ActionPermit 발급/소비
 - semantic CampaignFact corroboration/invalidation workflow
 - retention, compaction, backup, restore, 외부 integrity anchoring
 - sealed Run/Scope/Capability live adapter, B2.9 Handoff projection, Supervisor 실행
 
-다음 저장소 결정은 선택한 durable adapter에 이 conformance test를 그대로 적용한 결과를
-근거로 해야 한다. Runtime dispatch 통합은 별도 trust-boundary 변경으로 진행한다.
+Runtime dispatch 통합은 별도 trust-boundary 변경으로 남는다. 이전 preflight를 신뢰하지 말고
+ActionPermit 발급·소비 안에서 latest durable revision을 다시 검사해야 한다.

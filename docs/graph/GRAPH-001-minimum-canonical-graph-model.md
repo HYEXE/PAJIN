@@ -115,4 +115,6 @@ append-only Event Log reference spike를 구현했다.
 process-local atomic revision, immutable Snapshot 계약을 추가했다.
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.md)는 Hypothesis admission,
 duplicate/contradiction 분석, bounded reconciliation, stale-decision preflight를 추가했다.
-Durable 저장소 선택과 cross-process dispatch atomicity는 아직 미결정이다.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md)는 별도 single-Campaign SQLite Graph
+Store를 선택하고 host-local cross-process CAS를 추가했다. atomic ActionPermit dispatch는
+남아 있다.

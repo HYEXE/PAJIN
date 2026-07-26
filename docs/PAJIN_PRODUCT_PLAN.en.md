@@ -30,7 +30,8 @@ The detailed contract and migration/rollback criteria are in
 [`ARCH-001`](rfc/0001-pajin-architecture-v2.en.md),
 [`ADR-0046`](adr/0046-common-engine-and-campaign-profiles.en.md),
 [`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
-[`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.en.md). The local
+[`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.en.md) and the durable storage
+decision is in [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.en.md). The local
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
@@ -44,8 +45,11 @@ exact-prefix projection, revision/head compare-and-set, content-addressed immuta
 chaining, and exact Snapshot reference resolution.
 [`GRAPH-004`](graph/GRAPH-004-consistency-recovery-stale-decision.en.md) adds Hypothesis admission,
 duplicate/contradiction analysis, bounded CAS reconciliation, and exact Snapshot-bound
-stale-decision preflight. Local `main@c8268e3` contains GRAPH-003; remote `main` remains
-`42dd0a0`, GRAPH-004 is locally verified, and Linux CI remains pending.
+stale-decision preflight.
+[`GRAPH-005`](graph/GRAPH-005-durable-sqlite-graph-store.en.md) adds a separate single-Campaign
+SQLite store for the Event Log, append-only Projection history, immutable Snapshots,
+cross-process host-local CAS, and reopen reconciliation. Local `main@827404c` contains GRAPH-004;
+remote `main` remains `42dd0a0`, GRAPH-005 is locally verified, and Linux CI remains pending.
 
 ## 2026-07-25 B2.8g implementation status
 

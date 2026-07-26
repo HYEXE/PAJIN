@@ -90,6 +90,13 @@ from pajin.graph.projection import (
     InMemoryGraphSnapshotStore,
     graph_snapshot_ref,
 )
+from pajin.graph.sqlite_store import (
+    SQLiteGraphEventLog,
+    SQLiteGraphProjectionStore,
+    SQLiteGraphSnapshotStore,
+    SQLiteGraphStore,
+    SQLiteGraphStoreError,
+)
 
 __all__ = [
     "GRAPH_ADMISSION_EVENT_API_VERSION",
@@ -166,6 +173,11 @@ __all__ = [
     "InMemoryGraphProjectionStore",
     "InMemoryGraphSnapshotStore",
     "ObservationProposal",
+    "SQLiteGraphEventLog",
+    "SQLiteGraphProjectionStore",
+    "SQLiteGraphSnapshotStore",
+    "SQLiteGraphStore",
+    "SQLiteGraphStoreError",
     "SurfaceProposal",
     "TrustedGraphLineageRegistry",
     "canonical_graph_json",

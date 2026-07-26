@@ -212,8 +212,11 @@ Target-signed lab attestation과 B2.8g local multipart 같은 기존 기능은 A
    - B2.9 projection
    - Supervisor shadow, 평가, 제한적 activation
 
-Graph Event Store의 첫 구현을 기존 RunStore에 둘지 별도 모듈로 둘지는 이 RFC에서 결정하지
-않는다. 어느 선택이든 ADR-0048의 conformance test를 통과해야 한다.
+이 RFC가 열어 둔 첫 Graph Event Store 선택은
+[ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.md)에서 해소한다. 첫 backend는
+한 Run의 `RunStore` 확장이 아니라 별도 single-Campaign SQLite Graph Store다. ADR-0048의
+durable conformance 조각을 통과하며 future Control Plane/PostgreSQL adapter도 같은
+storage-neutral protocol을 사용한다.
 
 ## 10. Definition of Done
 
@@ -234,3 +237,4 @@ Graph Event Store의 첫 구현을 기존 RunStore에 둘지 별도 모듈로 �
 - [ADR-0046: 공통 엔진과 Campaign Profile](../adr/0046-common-engine-and-campaign-profiles.md)
 - [ADR-0047: MissionEnvelope와 ActionPermit 대수](../adr/0047-mission-envelope-and-action-permit-algebra.md)
 - [ADR-0048: Minimum Graph와 Admission 일관성](../adr/0048-minimum-graph-and-admission-consistency.md)
+- [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.md)

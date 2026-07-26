@@ -99,5 +99,7 @@ Log와 projection store를 아우르는 atomic transaction을 주장하지 않�
 
 [GRAPH-004](GRAPH-004-consistency-recovery-stale-decision.ko.md)는 concurrent
 admission/projection CAS, duplicate·contradiction semantics, 복구 가능한 projection lag,
-Snapshot decision staleness, graph-change-before-dispatch를 검증한다. Durable crash atomicity와
-atomic ActionPermit 발급은 별도 adapter 범위로 남는다.
+Snapshot decision staleness, graph-change-before-dispatch를 검증한다.
+[GRAPH-005](GRAPH-005-durable-sqlite-graph-store.ko.md)는 별도 single-Campaign SQLite
+store에 이 계약과 host-local CAS·reopen recovery를 적용했다. multi-host leadership과
+atomic ActionPermit 발급·dispatch는 남아 있다.

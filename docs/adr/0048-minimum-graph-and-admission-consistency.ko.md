@@ -85,10 +85,12 @@ B2.9 facts/snapshot/handoff는 Event Log의 projection이다. 별도 free-form m
 
 ## 저장소 선택
 
-첫 Event Store를 기존 RunStore에 둘지 별도 Graph 모듈로 둘지는 이 ADR에서 결정하지 않는다.
-구현체는 위 ordering, idempotency, equivocation, contradiction, atomic revision과 snapshot
-계약에 대한 공통 conformance test를 통과해야 한다. 저장소 선택은 spike 측정과 rollback
-비용을 근거로 후속 결정한다.
+이 ADR은 처음에 첫 Event Store 위치를 열어 두었다.
+[ADR-0049](0049-durable-single-campaign-sqlite-graph-store.ko.md)는 한 Run의 `RunStore` 확장
+대신 별도 single-Campaign SQLite Graph Store를 선택한다. adapter는 ordering, idempotency,
+equivocation, contradiction, durable revision CAS, recovery, Snapshot 공통 conformance
+test를 통과한다. future Control Plane/PostgreSQL backend도 같은 storage-neutral protocol을
+migration 경계로 사용한다.
 
 ## 필수 negative test
 
@@ -116,11 +118,15 @@ exact-prefix projection, process-local atomic revision/head CAS, content-address
 chain, exact Snapshot reference resolution을 구현했다.
 [GRAPH-004](../graph/GRAPH-004-consistency-recovery-stale-decision.ko.md)는 Hypothesis admission,
 duplicate/contradiction 분석, concurrent admission/projection CAS test, bounded lag
-reconciliation, exact Snapshot-bound stale-decision preflight를 구현했다. Durable
-cross-process CAS/crash recovery와 atomic preflight + ActionPermit 발급은 아직 남아 있다.
+reconciliation, exact Snapshot-bound stale-decision preflight를 구현했다.
+[GRAPH-005](../graph/GRAPH-005-durable-sqlite-graph-store.ko.md)는 별도 single-Campaign SQLite
+Event/Projection/Snapshot store, cross-process host-local CAS, reopen reconciliation,
+schema-tamper 검증을 구현했다. multi-host leadership과 atomic preflight + ActionPermit
+발급·소비는 아직 남아 있다.
 
 ## 관련 문서
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.ko.md)
 - [ADR-0046: 공통 엔진과 Campaign Profile](0046-common-engine-and-campaign-profiles.ko.md)
 - [ADR-0047: MissionEnvelope와 ActionPermit 대수](0047-mission-envelope-and-action-permit-algebra.ko.md)
+- [ADR-0049: Durable Single-Campaign SQLite Graph Store](0049-durable-single-campaign-sqlite-graph-store.ko.md)
