@@ -1,26 +1,37 @@
 from __future__ import annotations
 
 import base64
+import json
 import os
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
 import pajin.control_plane.api as control_plane_api_module
 import pajin.control_plane.replay_worker_main as replay_worker_main_module
 from pajin.control_plane.artifact_transfer import (
+    MULTIPART_ARTIFACT_PART_BYTES,
     PortableArtifactBundle,
     PortableArtifactFile,
+    PortableArtifactManifestFile,
+    PortableArtifactMultipartManifest,
+    PortableArtifactMultipartPart,
+    PortableArtifactMultipartPartView,
+    PortableArtifactMultipartTransportReceipt,
+    PortableArtifactMultipartUploadView,
     portable_artifact_manifest_sha256,
 )
 from pajin.control_plane.artifacts import (
     ArtifactConflict,
+    ArtifactValidationError,
     ManagedArtifactRepository,
     build_portable_artifact_bundle,
 )
+from pajin.control_plane.client import ControlPlaneClient, ControlPlaneTransientError
 from pajin.control_plane.execution_attestation import (
     ExecutorAttestationKeyState,
     ExecutorAttestationTrustAnchor,
@@ -31,7 +42,12 @@ from pajin.control_plane.execution_attestation import (
     executor_public_key_base64url,
     verify_executor_execution_attestation,
 )
-from pajin.control_plane.models import ReplayFinalizeRequest
+from pajin.control_plane.models import (
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
+    ReplayFinalizeRequest,
+)
+from pajin.control_plane.replay_executor import KISAExactReplayExecutor
 from pajin.control_plane.service import ControlPlaneService
 from pajin.runtime.store import RunStore, verify_run_integrity
 
@@ -48,6 +64,18 @@ def _file(path: str, content: bytes) -> PortableArtifactFile:
 def _bundle(*files: PortableArtifactFile) -> PortableArtifactBundle:
     ordered = sorted(files, key=lambda item: item.path)
     return PortableArtifactBundle(
+        files=ordered,
+        file_count=len(ordered),
+        total_bytes=sum(item.size for item in ordered),
+        manifest_sha256=portable_artifact_manifest_sha256(ordered),
+    )
+
+
+def _multipart_manifest(
+    *files: PortableArtifactManifestFile,
+) -> PortableArtifactMultipartManifest:
+    ordered = sorted(files, key=lambda item: item.path)
+    return PortableArtifactMultipartManifest(
         files=ordered,
         file_count=len(ordered),
         total_bytes=sum(item.size for item in ordered),
@@ -78,7 +106,7 @@ def _trust_anchor(
 
 
 def _attestation(
-    bundle: PortableArtifactBundle,
+    bundle: PortableArtifactBundle | PortableArtifactMultipartManifest,
     *,
     seed: bytes = bytes(range(32)),
 ) -> ExecutorExecutionAttestation:
@@ -150,6 +178,36 @@ def test_portable_bundle_rejects_path_escape_and_changed_content() -> None:
         PortableArtifactFile.model_validate(changed)
 
 
+def test_multipart_manifest_and_parts_extend_inline_limit_without_embedding_tree() -> None:
+    content_size = (2 * 1024 * 1024) + 1
+    file = PortableArtifactManifestFile(
+        path="evidence/large.bin",
+        size=content_size,
+        sha256="a" * 64,
+    )
+    manifest = _multipart_manifest(file)
+    part_content = b"x" * MULTIPART_ARTIFACT_PART_BYTES
+    part = PortableArtifactMultipartPart(
+        file_index=0,
+        part_number=1,
+        sha256=sha256(part_content).hexdigest(),
+        content_base64=base64.b64encode(part_content).decode("ascii"),
+    )
+
+    assert manifest.total_bytes > 2 * 1024 * 1024
+    assert manifest.part_count == 3
+    assert "contentBase64" not in manifest.model_dump_json(by_alias=True)
+    assert part.content == part_content
+
+    with pytest.raises(ValidationError, match="differs from its digest"):
+        PortableArtifactMultipartPart(
+            file_index=0,
+            part_number=1,
+            sha256="0" * 64,
+            content_base64=part.content_base64,
+        )
+
+
 def test_executor_attestation_verifies_external_key_and_rejects_tampering() -> None:
     bundle = _bundle(_file("run.json", b"sealed"))
     attestation = _attestation(bundle)
@@ -181,6 +239,125 @@ def test_executor_attestation_verifies_external_key_and_rejects_tampering() -> N
         )
 
 
+def test_executor_attestation_accepts_multipart_manifest_over_inline_limit() -> None:
+    manifest = _multipart_manifest(
+        PortableArtifactManifestFile(
+            path="large.bin",
+            size=(2 * 1024 * 1024) + 1,
+            sha256="a" * 64,
+        )
+    )
+    attestation = _attestation(manifest)
+
+    verified = verify_executor_execution_attestation(
+        attestation,
+        trust_anchor=_trust_anchor(),
+    )
+
+    assert verified.artifact_bundle_manifest_sha256 == manifest.manifest_sha256
+    assert attestation.statement.artifact_bundle_total_bytes == manifest.total_bytes
+
+
+@pytest.mark.asyncio
+async def test_multipart_upload_retry_resumes_after_transient_transport_failure() -> None:
+    executor = object.__new__(KISAExactReplayExecutor)
+    executor._permit_attempts = 3
+    executor._retry_base_seconds = 0.0001
+    executor._retry_max_seconds = 0.0001
+    attempts = 0
+
+    async def operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise ControlPlaneTransientError("transient")
+        return "accepted"
+
+    assert await executor._retry_multipart_upload(operation) == "accepted"
+    assert attempts == 2
+
+
+@pytest.mark.asyncio
+async def test_control_plane_client_uses_separate_multipart_upload_requests() -> None:
+    manifest = _multipart_manifest(
+        PortableArtifactManifestFile(
+            path="large.bin",
+            size=(2 * 1024 * 1024) + 1,
+            sha256="a" * 64,
+        )
+    )
+    attestation = _attestation(manifest)
+    part_content = b"part"
+    part = PortableArtifactMultipartPart(
+        file_index=0,
+        part_number=1,
+        sha256=sha256(part_content).hexdigest(),
+        content_base64=base64.b64encode(part_content).decode("ascii"),
+    )
+    staging_id = f"stage_{'d' * 32}"
+    job_id = f"job_{'3' * 32}"
+    observed: list[tuple[str, str, dict[str, object]]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert isinstance(payload, dict)
+        observed.append((request.method, request.url.path, payload))
+        if request.method == "POST":
+            response = PortableArtifactMultipartUploadView(
+                output_staging_id=staging_id,
+                manifest_sha256=manifest.manifest_sha256,
+                file_count=manifest.file_count,
+                total_bytes=manifest.total_bytes,
+                part_count=manifest.part_count,
+                executor_attestation_digest=attestation.digest,
+            )
+        else:
+            response = PortableArtifactMultipartPartView(
+                output_staging_id=staging_id,
+                manifest_sha256=manifest.manifest_sha256,
+                file_index=part.file_index,
+                part_number=part.part_number,
+                part_sha256=part.sha256,
+            )
+        return httpx.Response(
+            200,
+            json=response.model_dump(mode="json", by_alias=True),
+        )
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.example",
+        bearer_token="worker-token-" + ("x" * 32),
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        await client.begin_replay_artifact_upload(
+            job_id,
+            ReplayArtifactUploadBeginRequest(
+                lease_token="l" * 32,
+                ticket_id=f"replay-ticket_{'4' * 32}",
+                fencing_value=7,
+                output_staging_id=staging_id,
+                artifact_manifest=manifest,
+                executor_attestation=attestation,
+            ),
+        )
+        await client.put_replay_artifact_upload_part(
+            job_id,
+            ReplayArtifactUploadPartRequest(
+                lease_token="l" * 32,
+                ticket_id=f"replay-ticket_{'4' * 32}",
+                fencing_value=7,
+                output_staging_id=staging_id,
+                manifest_sha256=manifest.manifest_sha256,
+                part=part,
+            ),
+        )
+
+    assert [(method, path) for method, path, _payload in observed] == [
+        ("POST", f"/v1/worker/replay/jobs/{job_id}/artifact-upload"),
+        ("PUT", f"/v1/worker/replay/jobs/{job_id}/artifact-upload/parts"),
+    ]
+
+
 def test_finalize_request_requires_bundle_and_attestation_as_one_authority() -> None:
     bundle = _bundle(_file("run.json", b"sealed"))
     common = {
@@ -198,6 +375,27 @@ def test_finalize_request_requires_bundle_and_attestation_as_one_authority() -> 
         executor_attestation=_attestation(bundle),
     )
     assert request.artifact_bundle == bundle
+
+    manifest = _multipart_manifest(
+        PortableArtifactManifestFile(
+            path="large.bin",
+            size=(2 * 1024 * 1024) + 1,
+            sha256="a" * 64,
+        )
+    )
+    multipart_request = ReplayFinalizeRequest(
+        **common,
+        artifact_manifest=manifest,
+        executor_attestation=_attestation(manifest),
+    )
+    assert multipart_request.artifact_manifest == manifest
+    with pytest.raises(ValidationError, match="mutually exclusive"):
+        ReplayFinalizeRequest(
+            **common,
+            artifact_bundle=bundle,
+            artifact_manifest=manifest,
+            executor_attestation=_attestation(manifest),
+        )
 
 
 def test_executor_attestation_environment_requires_exact_public_private_pair(
@@ -237,10 +435,13 @@ def test_control_plane_executor_anchor_requires_replay_worker_identity() -> None
             raw,
             replay_worker_token=None,
         )
-    assert control_plane_api_module._parse_executor_attestation_anchor(
-        raw,
-        replay_worker_token="replay-worker-token",
-    ) == _trust_anchor()
+    assert (
+        control_plane_api_module._parse_executor_attestation_anchor(
+            raw,
+            replay_worker_token="replay-worker-token",
+        )
+        == _trust_anchor()
+    )
 
 
 def test_retest_projection_appends_executor_proof_in_a_new_seal(tmp_path: Path) -> None:
@@ -249,10 +450,7 @@ def test_retest_projection_appends_executor_proof_in_a_new_seal(tmp_path: Path) 
     store.append_event("mode-pack.kisa.retest.completed")
     first = store.seal()
     attestation = _attestation(_bundle(_file("run.json", b"sealed")))
-    relative_path = (
-        "validation/v1alpha1/executor-attestations/"
-        f"replay-item_{'2' * 32}.json"
-    )
+    relative_path = f"validation/v1alpha1/executor-attestations/replay-item_{'2' * 32}.json"
 
     ControlPlaneService._seal_retest_executor_attestations(
         store.path,
@@ -300,4 +498,112 @@ def test_repository_materializes_portable_bundle_idempotently(tmp_path: Path) ->
         repository.materialize_portable_bundle(
             staging_id=staging_id,
             bundle=_bundle(_file("run.json", b"different")),
+        )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable directory fsync is POSIX-only")
+def test_repository_resumes_and_materializes_large_multipart_upload(tmp_path: Path) -> None:
+    repository = ManagedArtifactRepository(
+        staging_root=tmp_path / "staging",
+        repository_root=tmp_path / "repository",
+    )
+    staging_id = f"stage_{'f' * 32}"
+    repository.reserve_staging(staging_id)
+    content = b"large-object-" + (b"x" * (2 * 1024 * 1024))
+    manifest = _multipart_manifest(
+        PortableArtifactManifestFile(
+            path="evidence/large.bin",
+            size=len(content),
+            sha256=sha256(content).hexdigest(),
+        )
+    )
+    attestation_digest = "d" * 64
+
+    first_begin = repository.begin_portable_multipart_upload(
+        staging_id=staging_id,
+        manifest=manifest,
+        executor_attestation_digest=attestation_digest,
+    )
+    second_begin = repository.begin_portable_multipart_upload(
+        staging_id=staging_id,
+        manifest=manifest,
+        executor_attestation_digest=attestation_digest,
+    )
+    assert first_begin == second_begin
+
+    for offset in range(0, len(content), manifest.part_bytes):
+        part_content = content[offset : offset + manifest.part_bytes]
+        part = PortableArtifactMultipartPart(
+            file_index=0,
+            part_number=(offset // manifest.part_bytes) + 1,
+            sha256=sha256(part_content).hexdigest(),
+            content_base64=base64.b64encode(part_content).decode("ascii"),
+        )
+        first_part = repository.put_portable_multipart_part(
+            staging_id=staging_id,
+            manifest_sha256=manifest.manifest_sha256,
+            part=part,
+        )
+        second_part = repository.put_portable_multipart_part(
+            staging_id=staging_id,
+            manifest_sha256=manifest.manifest_sha256,
+            part=part,
+        )
+        assert first_part == second_part
+
+    receipt = repository.materialize_portable_multipart_upload(
+        staging_id=staging_id,
+        manifest=manifest,
+        executor_attestation_digest=attestation_digest,
+    )
+    retried = repository.materialize_portable_multipart_upload(
+        staging_id=staging_id,
+        manifest=manifest,
+        executor_attestation_digest=attestation_digest,
+    )
+
+    assert receipt == retried
+    assert isinstance(receipt, PortableArtifactMultipartTransportReceipt)
+    assert receipt.part_count == 3
+    assert (tmp_path / "staging" / staging_id / "evidence" / "large.bin").read_bytes() == content
+
+
+@pytest.mark.skipif(os.name != "posix", reason="durable directory fsync is POSIX-only")
+def test_repository_rejects_incomplete_multipart_upload(tmp_path: Path) -> None:
+    repository = ManagedArtifactRepository(
+        staging_root=tmp_path / "staging",
+        repository_root=tmp_path / "repository",
+    )
+    staging_id = f"stage_{'a' * 32}"
+    repository.reserve_staging(staging_id)
+    content = b"x" * (MULTIPART_ARTIFACT_PART_BYTES + 1)
+    manifest = _multipart_manifest(
+        PortableArtifactManifestFile(
+            path="large.bin",
+            size=len(content),
+            sha256=sha256(content).hexdigest(),
+        )
+    )
+    repository.begin_portable_multipart_upload(
+        staging_id=staging_id,
+        manifest=manifest,
+        executor_attestation_digest="e" * 64,
+    )
+    first_part = content[:MULTIPART_ARTIFACT_PART_BYTES]
+    repository.put_portable_multipart_part(
+        staging_id=staging_id,
+        manifest_sha256=manifest.manifest_sha256,
+        part=PortableArtifactMultipartPart(
+            file_index=0,
+            part_number=1,
+            sha256=sha256(first_part).hexdigest(),
+            content_base64=base64.b64encode(first_part).decode("ascii"),
+        ),
+    )
+
+    with pytest.raises(ArtifactValidationError, match="incomplete"):
+        repository.materialize_portable_multipart_upload(
+            staging_id=staging_id,
+            manifest=manifest,
+            executor_attestation_digest="e" * 64,
         )

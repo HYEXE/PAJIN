@@ -972,6 +972,8 @@ def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_rout
             "/v1/worker/replay/jobs/claim",
             "/v1/worker/replay/jobs/{job_id}/heartbeat",
             "/v1/worker/replay/jobs/{job_id}/tool-permits",
+            "/v1/worker/replay/jobs/{job_id}/artifact-upload",
+            "/v1/worker/replay/jobs/{job_id}/artifact-upload/parts",
             "/v1/worker/replay/jobs/{job_id}/finalize",
         }
 

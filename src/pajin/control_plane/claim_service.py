@@ -56,6 +56,8 @@ from pajin.control_plane.models import (
     JobState,
     JobView,
     LeaseRequest,
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
     ReplayBatchState,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
@@ -1114,7 +1116,13 @@ class ControlPlaneClaimService:
         job: JobRecord,
         ticket: ReplayTicketRecord,
         *,
-        request: ReplayLeaseRequest | ReplayToolPermitRequest | ReplayFinalizeRequest,
+        request: (
+            ReplayLeaseRequest
+            | ReplayToolPermitRequest
+            | ReplayFinalizeRequest
+            | ReplayArtifactUploadBeginRequest
+            | ReplayArtifactUploadPartRequest
+        ),
         actor: str,
     ) -> None:
         if (

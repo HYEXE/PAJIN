@@ -77,8 +77,10 @@
 > 다른 host의 Control Plane이 bytes 복사 전후로 재검증하게 한다. B2.8b는 permit-derived
 > challenge, Target 발급 Ed25519 receipt, host proxy 관찰과 executor binding을 검증해 exact
 > validity Claim의 `VERIFIED_INDEPENDENT_REPLAY`를 허용한다. B2.8c~f는 HTTPS CONNECT·leaf
-> SPKI, 다중 Target signed registry와 TLS 1.2 양측 session binding까지 검증한다. TLS 1.3
-> exporter와 대형 object-store/multipart Artifact 전송은 후속이므로 M6-07B 전체는 아직 미완료다.
+> SPKI, 다중 Target signed registry와 TLS 1.2 양측 session binding까지 검증한다. B2.8g는
+> 사전 검증·재개 가능한 로컬 object-store multipart 전송을 64 MiB까지 추가한다. TLS 1.3
+> exporter와 그보다 큰 외부/pre-signed object-store 전송은 후속이므로 M6-07B 전체는 아직
+> 미완료다.
 
 이 매핑은 기술 평가를 일관되게 수행하고 누락을 드러내기 위한 추적성 자료다. 조직의
 법률·윤리·인력·교육·비즈니스 영향·운영 절차를 자동으로 증명하지 않으며, 규정 준수
@@ -418,9 +420,10 @@ Candidate·Finding·remediation·baseline root 결박을 대신하지 않으며,
   admission/read API, fresh-identity retry 발행, schema-v11 multi-item projection, schema-v12 dual-source
   negative Control Plane retest, schema-v13 exact Claim별 공개 projection, Ed25519 portable Claim
   receipt, executor-attested portable Artifact, Target-issued exact exchange receipt, HTTPS
-  CONNECT·leaf SPKI 결박, signed registry v3 schema-v14 anti-rollback·제한된 pin rotation과
-  registry v4 TLS 1.2 양측 session binding은 구현됐다. TLS 1.3 RFC 9266 exporter와 대형
-  object-store/multipart Artifact 전송은 남아 있다.
+  CONNECT·leaf SPKI 결박, signed registry v3 schema-v14 anti-rollback·제한된 pin rotation,
+  registry v4 TLS 1.2 양측 session binding과 64 MiB까지의 사전 검증·재개 가능한 로컬
+  object-store multipart Artifact 전송은 구현됐다. TLS 1.3 RFC 9266 exporter와 그보다 큰
+  외부/pre-signed object-store 전송·운영 수명주기 경계는 남아 있다.
 - 현재 실행 시나리오는 A01·A02·A04·M03·M06을 다룬다. 나머지 14개 위협은 대상 유형에
   맞는 실행 시나리오가 추가될 때까지 명시적 커버리지 갭으로 남는다.
 - 기술 심각도는 생성하지만 조직 고유의 법률·재무·평판 영향을 반영한 최종 우선순위는

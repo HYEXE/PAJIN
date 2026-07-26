@@ -15,7 +15,10 @@ from pydantic import BeforeValidator, ConfigDict, Field, field_validator, model_
 
 from pajin.control_plane.artifact_transfer import (
     PortableArtifactBundle,
-    PortableArtifactTransportReceipt,
+    PortableArtifactMultipartManifest,
+    PortableArtifactMultipartPart,
+    PortableArtifactMultipartTransportReceipt,
+    PortableArtifactTransportReceiptType,
 )
 from pajin.control_plane.execution_attestation import ExecutorExecutionAttestation
 from pajin.domain.models import CampaignManifest, CampaignMode, StrictModel, ToolRiskTier
@@ -759,13 +762,38 @@ class ReplayToolPermitRequest(StrictModel):
     call_ordinal: int = Field(strict=True, ge=1, le=20)
 
 
+class ReplayArtifactUploadBeginRequest(StrictModel):
+    """Lease-fenced authority for one server-owned multipart Artifact upload."""
+
+    executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
+    lease_token: str = Field(min_length=32, max_length=300)
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
+    artifact_manifest: PortableArtifactMultipartManifest
+    executor_attestation: ExecutorExecutionAttestation
+
+
+class ReplayArtifactUploadPartRequest(StrictModel):
+    """Lease-fenced delivery of one idempotent multipart Artifact object."""
+
+    executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
+    lease_token: str = Field(min_length=32, max_length=300)
+    ticket_id: str = Field(pattern=r"^replay-ticket_[0-9a-f]{32}$")
+    fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
+    output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
+    manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    part: PortableArtifactMultipartPart
+
+
 class ReplayFinalizeRequest(StrictModel):
     """Lease/fence plus one server-owned output capability.
 
-    The legacy form references a shared staging reservation. The portable form
-    carries a bounded content-addressed tree plus an independently keyed executor
-    receipt. Both forms remain untrusted until the Control Plane imports and
-    re-verifies the sealed Run; neither accepts a Worker-authored verdict.
+    The legacy form references a shared staging reservation. Portable forms either
+    carry a small content-addressed tree inline or reference an already uploaded
+    multipart manifest plus an independently keyed executor receipt. Every form
+    remains untrusted until the Control Plane imports and re-verifies the sealed Run;
+    none accepts a Worker-authored verdict.
     """
 
     executor_profile: Literal["kisa-exact-v1"] = KISA_EXACT_REPLAY_EXECUTOR_PROFILE
@@ -774,13 +802,22 @@ class ReplayFinalizeRequest(StrictModel):
     fencing_value: int = Field(strict=True, ge=1, le=2_147_483_647)
     output_staging_id: str = Field(pattern=r"^stage_[0-9a-f]{32}$")
     artifact_bundle: PortableArtifactBundle | None = None
+    artifact_manifest: PortableArtifactMultipartManifest | None = None
     executor_attestation: ExecutorExecutionAttestation | None = None
 
     @model_validator(mode="after")
     def require_complete_portable_transport(self) -> ReplayFinalizeRequest:
-        if (self.artifact_bundle is None) != (self.executor_attestation is None):
+        transport_count = sum(
+            value is not None for value in (self.artifact_bundle, self.artifact_manifest)
+        )
+        if transport_count > 1:
             raise ValueError(
-                "portable Replay Artifact bundle and executor attestation must be supplied together"
+                "inline and multipart portable Replay Artifact transports are mutually exclusive"
+            )
+        if (transport_count == 0) != (self.executor_attestation is None):
+            raise ValueError(
+                "portable Replay Artifact transport and executor attestation "
+                "must be supplied together"
             )
         return self
 
@@ -1338,7 +1375,7 @@ class ReplayFinalizationView(StrictModel):
     artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
-    artifact_transport: PortableArtifactTransportReceipt | None = None
+    artifact_transport: PortableArtifactTransportReceiptType | None = None
     executor_attestation: ExecutorExecutionAttestation | None = None
     target_execution_verification: TargetExecutionVerificationSummary | None = None
     gate_decision: ValidationDecision
@@ -1370,6 +1407,27 @@ class ReplayFinalizationView(StrictModel):
                 and self.executor_attestation is not None
                 and self.artifact_transport.manifest_sha256
                 != self.executor_attestation.statement.artifact_bundle_manifest_sha256
+            )
+            or (
+                self.artifact_transport is not None
+                and self.executor_attestation is not None
+                and (
+                    self.artifact_transport.file_count
+                    != self.executor_attestation.statement.artifact_bundle_file_count
+                    or self.artifact_transport.total_bytes
+                    != self.executor_attestation.statement.artifact_bundle_total_bytes
+                )
+            )
+            or (
+                isinstance(
+                    self.artifact_transport,
+                    PortableArtifactMultipartTransportReceipt,
+                )
+                and (
+                    self.executor_attestation is None
+                    or self.artifact_transport.executor_attestation_digest
+                    != self.executor_attestation.digest
+                )
             )
             or (
                 (

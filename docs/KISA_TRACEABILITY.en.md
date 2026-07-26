@@ -89,8 +89,9 @@ the attached PDF.
 > permit-derived challenge, Target-issued Ed25519 receipt, host proxy observation, and executor
 > binding before allowing an exact validity Claim to reach `VERIFIED_INDEPENDENT_REPLAY`. B2.8c
 > through B2.8f verify HTTPS CONNECT and leaf SPKI, a signed multi-Target registry, and TLS 1.2
-> dual-observer session binding. TLS 1.3 exporter support and large object-store/multipart Artifact
-> transfer remain follow-up work, so M6-07B is not complete.
+> dual-observer session binding. B2.8g adds pre-verified, resumable managed-local-object-store
+> multipart transfer up to 64 MiB. TLS 1.3 exporter support and larger external/pre-signed
+> object-store transfer remain follow-up work, so M6-07B is not complete.
 
 This mapping is traceability material for applying technical evaluation consistently and exposing
 omissions. It does not automatically prove an organization's legal, ethical, staffing, training,
@@ -453,9 +454,10 @@ KISA threats remain `not assessed`.
   projection, schema-v12 dual-source negative Control Plane retest, schema-v13 exact
   Claim-specific projection, Ed25519 portable Claim receipts, executor-attested portable
   Artifacts, Target-issued exact-exchange receipts, HTTPS CONNECT and leaf-SPKI binding, and signed
-  registry-v3 schema-v14 anti-rollback with bounded pin rotation, and registry-v4 TLS 1.2
-  dual-observer session binding are implemented. TLS 1.3 RFC 9266 exporter support and large
-  object-store/multipart Artifact transfer remain outstanding.
+  registry-v3 schema-v14 anti-rollback with bounded pin rotation, registry-v4 TLS 1.2
+  dual-observer session binding, and pre-verified resumable managed-local-object-store multipart
+  Artifact transfer up to 64 MiB are implemented. TLS 1.3 RFC 9266 exporter support, larger
+  external/pre-signed object-store transfer, and production lifecycle boundaries remain outstanding.
 - Current executable scenarios cover A01, A02, A04, M03, and M06. The other 14 threats remain
   explicit coverage gaps until target-appropriate executable scenarios are added.
 - Technical severity is generated, but final prioritization that reflects organization-specific

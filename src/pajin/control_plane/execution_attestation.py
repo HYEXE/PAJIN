@@ -20,6 +20,7 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import (
 )
 from pydantic import Field, field_validator, model_validator
 
+from pajin.control_plane.artifact_transfer import MAX_MULTIPART_ARTIFACT_TOTAL_BYTES
 from pajin.domain.models import StrictModel
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.target_attestation import TargetExecutionTransportBinding
@@ -149,7 +150,11 @@ class ExecutorExecutionStatement(StrictModel):
     )
     artifact_bundle_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_bundle_file_count: int = Field(strict=True, ge=1, le=256)
-    artifact_bundle_total_bytes: int = Field(strict=True, ge=1, le=2 * 1024 * 1024)
+    artifact_bundle_total_bytes: int = Field(
+        strict=True,
+        ge=1,
+        le=MAX_MULTIPART_ARTIFACT_TOTAL_BYTES,
+    )
     artifact_set_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     artifact_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     receipt_seal_root_digest: str = Field(pattern=r"^[a-f0-9]{64}$")

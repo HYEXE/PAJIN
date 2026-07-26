@@ -3,20 +3,34 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 import shutil
 import stat
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
+from hashlib import sha256
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeVar
 from urllib.parse import urlsplit
 
-from pajin.control_plane.artifact_transfer import PortableArtifactBundle
-from pajin.control_plane.artifacts import build_portable_artifact_bundle
+from pajin.control_plane.artifact_transfer import (
+    MAX_PORTABLE_ARTIFACT_FILE_BYTES,
+    MAX_PORTABLE_ARTIFACT_TOTAL_BYTES,
+    PortableArtifactBundle,
+    PortableArtifactMultipartManifest,
+    PortableArtifactMultipartPart,
+    PortableArtifactMultipartPartView,
+    PortableArtifactMultipartUploadView,
+)
+from pajin.control_plane.artifacts import (
+    build_portable_artifact_bundle,
+    build_portable_artifact_multipart_upload,
+)
 from pajin.control_plane.client import (
     ControlPlaneAuthenticationError,
     ControlPlaneLeaseLost,
@@ -32,6 +46,8 @@ from pajin.control_plane.execution_attestation import (
 from pajin.control_plane.kisa_derivation import KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
 from pajin.control_plane.models import (
     KISA_EXACT_REPLAY_EXECUTOR_PROFILE,
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
     ReplayExecutionClaimView,
     ReplayFinalizeRequest,
     ReplayToolPermitRequest,
@@ -72,6 +88,8 @@ from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.workflow.cancellation import record_engine_cleanup, seal_executor_quiescence
 
+_T = TypeVar("_T")
+
 
 class ReplayExecutorControlPlanePort(Protocol):
     async def issue_replay_tool_permit(
@@ -79,6 +97,18 @@ class ReplayExecutorControlPlanePort(Protocol):
         job_id: str,
         request: ReplayToolPermitRequest,
     ) -> ReplayToolPermitView: ...
+
+    async def begin_replay_artifact_upload(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadBeginRequest,
+    ) -> PortableArtifactMultipartUploadView: ...
+
+    async def put_replay_artifact_upload_part(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadPartRequest,
+    ) -> PortableArtifactMultipartPartView: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,7 +603,11 @@ class KISAExactReplayExecutor:
         if verified is None:  # pragma: no cover - every unsuccessful path raises
             raise RuntimeError("Replay execution returned without a verified result")
         try:
-            artifact_bundle, executor_attestation = self._portable_finalization(
+            (
+                artifact_bundle,
+                artifact_manifest,
+                executor_attestation,
+            ) = await self._portable_finalization(
                 claim=claim,
                 verified=verified,
                 permits=dispatch_authorizer.permits,
@@ -590,10 +624,11 @@ class KISAExactReplayExecutor:
             fencing_value=claim.ticket.fencing_value,
             output_staging_id=claim.execution_context.output_staging_id,
             artifact_bundle=artifact_bundle,
+            artifact_manifest=artifact_manifest,
             executor_attestation=executor_attestation,
         )
 
-    def _portable_finalization(
+    async def _portable_finalization(
         self,
         *,
         claim: ReplayExecutionClaimView,
@@ -601,15 +636,24 @@ class KISAExactReplayExecutor:
         permits: tuple[ReplayToolPermitView, ...],
         store: RunStore,
         target_proofs: _TargetExecutionProofLedger,
-    ) -> tuple[PortableArtifactBundle | None, ExecutorExecutionAttestation | None]:
+    ) -> tuple[
+        PortableArtifactBundle | None,
+        PortableArtifactMultipartManifest | None,
+        ExecutorExecutionAttestation | None,
+    ]:
         attestor = self._execution_attestor
         if attestor is None:
-            return None, None
+            return None, None, None
         if len(permits) != claim.compilation.spec.repetitions:
             raise ControlPlaneProtocolError(
                 "executor attestation requires the exact Replay Tool permit set"
             )
-        bundle = build_portable_artifact_bundle(store.path)
+        multipart_manifest, file_contents = build_portable_artifact_multipart_upload(store.path)
+        inline = multipart_manifest.total_bytes <= MAX_PORTABLE_ARTIFACT_TOTAL_BYTES and all(
+            item.size <= MAX_PORTABLE_ARTIFACT_FILE_BYTES for item in multipart_manifest.files
+        )
+        bundle = build_portable_artifact_bundle(store.path) if inline else None
+        artifact_transport = bundle or multipart_manifest
         attestation = attestor.attest(
             {
                 "executor_profile": self.profile,
@@ -625,16 +669,111 @@ class KISAExactReplayExecutor:
                 "permit_digests": [permit.permit_digest for permit in permits],
                 "replay_request_ids": [permit.replay_request_id for permit in permits],
                 "target_execution_proofs": target_proofs.finalize(permits),
-                "artifact_bundle_manifest_sha256": bundle.manifest_sha256,
-                "artifact_bundle_file_count": bundle.file_count,
-                "artifact_bundle_total_bytes": bundle.total_bytes,
+                "artifact_bundle_manifest_sha256": artifact_transport.manifest_sha256,
+                "artifact_bundle_file_count": artifact_transport.file_count,
+                "artifact_bundle_total_bytes": artifact_transport.total_bytes,
                 "artifact_set_digest": verified.receipt.artifact_set_digest,
                 "artifact_seal_root_digest": verified.receipt.artifact_seal_root_digest,
                 "receipt_seal_root_digest": verified.receipt_seal_root_digest,
             },
             issued_at=self._clock(),
         )
-        return bundle, attestation
+        if bundle is not None:
+            return bundle, None, attestation
+        await self._upload_multipart_artifact(
+            claim=claim,
+            manifest=multipart_manifest,
+            file_contents=file_contents,
+            attestation=attestation,
+        )
+        return None, multipart_manifest, attestation
+
+    async def _upload_multipart_artifact(
+        self,
+        *,
+        claim: ReplayExecutionClaimView,
+        manifest: PortableArtifactMultipartManifest,
+        file_contents: tuple[bytes, ...],
+        attestation: ExecutorExecutionAttestation,
+    ) -> None:
+        begin_request = ReplayArtifactUploadBeginRequest(
+            executor_profile=self.profile,
+            lease_token=claim.lease_token,
+            ticket_id=claim.ticket.ticket_id,
+            fencing_value=claim.ticket.fencing_value,
+            output_staging_id=claim.execution_context.output_staging_id,
+            artifact_manifest=manifest,
+            executor_attestation=attestation,
+        )
+        initialized = await self._retry_multipart_upload(
+            partial(
+                self._client.begin_replay_artifact_upload,
+                claim.job.job_id,
+                begin_request,
+            )
+        )
+        if (
+            initialized.output_staging_id != claim.execution_context.output_staging_id
+            or initialized.manifest_sha256 != manifest.manifest_sha256
+            or initialized.file_count != manifest.file_count
+            or initialized.total_bytes != manifest.total_bytes
+            or initialized.part_count != manifest.part_count
+            or initialized.executor_attestation_digest != attestation.digest
+        ):
+            raise ControlPlaneProtocolError(
+                "multipart Artifact upload response differs from executor authority"
+            )
+        for file_index, content in enumerate(file_contents):
+            for offset in range(0, len(content), manifest.part_bytes):
+                part_content = content[offset : offset + manifest.part_bytes]
+                part_number = (offset // manifest.part_bytes) + 1
+                part = PortableArtifactMultipartPart(
+                    file_index=file_index,
+                    part_number=part_number,
+                    sha256=sha256(part_content).hexdigest(),
+                    content_base64=base64.b64encode(part_content).decode("ascii"),
+                )
+                part_request = ReplayArtifactUploadPartRequest(
+                    executor_profile=self.profile,
+                    lease_token=claim.lease_token,
+                    ticket_id=claim.ticket.ticket_id,
+                    fencing_value=claim.ticket.fencing_value,
+                    output_staging_id=claim.execution_context.output_staging_id,
+                    manifest_sha256=manifest.manifest_sha256,
+                    part=part,
+                )
+                accepted = await self._retry_multipart_upload(
+                    partial(
+                        self._client.put_replay_artifact_upload_part,
+                        claim.job.job_id,
+                        part_request,
+                    )
+                )
+                if (
+                    accepted.output_staging_id != claim.execution_context.output_staging_id
+                    or accepted.manifest_sha256 != manifest.manifest_sha256
+                    or accepted.file_index != file_index
+                    or accepted.part_number != part_number
+                    or accepted.part_sha256 != part.sha256
+                ):
+                    raise ControlPlaneProtocolError(
+                        "multipart Artifact part response differs from uploaded object"
+                    )
+
+    async def _retry_multipart_upload(
+        self,
+        operation: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        delay = self._retry_base_seconds
+        for attempt in range(1, self._permit_attempts + 1):
+            try:
+                return await operation()
+            except ControlPlaneTransientError:
+                if attempt == self._permit_attempts:
+                    raise
+                await asyncio.sleep(delay)
+                delay = min(delay * 2, self._retry_max_seconds)
+        raise AssertionError("bounded multipart upload retry loop did not return")
 
     def _staging_store(
         self,

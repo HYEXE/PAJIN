@@ -14,6 +14,10 @@ from typing import Annotated, Any
 from fastapi import Depends, FastAPI, Query, Response, status
 from sqlalchemy import text
 
+from pajin.control_plane.artifact_transfer import (
+    PortableArtifactMultipartPartView,
+    PortableArtifactMultipartUploadView,
+)
 from pajin.control_plane.attestation import (
     PortableReplayAttestationBundle,
     ReplayAttestationTrustAnchor,
@@ -39,6 +43,8 @@ from pajin.control_plane.models import (
     LeaseRequest,
     Principal,
     PrincipalRole,
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
     ReplayBatchView,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
@@ -450,6 +456,38 @@ def register_replay_worker_routes(
         principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
     ) -> ReplayToolPermitView:
         return service.issue_replay_tool_permit(job_id, request, actor=principal.subject)
+
+    @app.post(
+        "/v1/worker/replay/jobs/{job_id}/artifact-upload",
+        response_model=PortableArtifactMultipartUploadView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    def begin_replay_artifact_upload(
+        job_id: str,
+        request: ReplayArtifactUploadBeginRequest,
+        principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
+    ) -> PortableArtifactMultipartUploadView:
+        return service.begin_replay_artifact_upload(
+            job_id,
+            request,
+            actor=principal.subject,
+        )
+
+    @app.put(
+        "/v1/worker/replay/jobs/{job_id}/artifact-upload/parts",
+        response_model=PortableArtifactMultipartPartView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    def put_replay_artifact_upload_part(
+        job_id: str,
+        request: ReplayArtifactUploadPartRequest,
+        principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
+    ) -> PortableArtifactMultipartPartView:
+        return service.put_replay_artifact_upload_part(
+            job_id,
+            request,
+            actor=principal.subject,
+        )
 
     @app.post(
         "/v1/worker/replay/jobs/{job_id}/finalize",

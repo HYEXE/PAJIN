@@ -18,7 +18,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
 from pajin.control_plane.artifact_transfer import (
+    PortableArtifactMultipartPartView,
+    PortableArtifactMultipartTransportReceipt,
+    PortableArtifactMultipartUploadView,
     PortableArtifactTransportReceipt,
+    PortableArtifactTransportReceiptType,
 )
 from pajin.control_plane.artifacts import (
     ArtifactNotFound,
@@ -125,6 +129,8 @@ from pajin.control_plane.models import (
     JobState,
     JobView,
     LeaseRequest,
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
     ReplayBatchIssuanceView,
     ReplayBatchState,
     ReplayBatchView,
@@ -356,8 +362,7 @@ def _target_transport_binding_matches(
             and proof.tls_version == "TLSv1.2"
             and proof.tls_session_binding == expected_tls_session_binding
             and receipt_tls_session_binding_sha256 is not None
-            and proof.tls_session_binding_sha256
-            == receipt_tls_session_binding_sha256
+            and proof.tls_session_binding_sha256 == receipt_tls_session_binding_sha256
         )
     return False
 
@@ -432,7 +437,7 @@ class _ReplayFinalizationPreflight:
 
 @dataclass(frozen=True, slots=True)
 class _PortableReplayFinalizationProof:
-    transport: PortableArtifactTransportReceipt
+    transport: PortableArtifactTransportReceiptType
     transport_digest: str
     attestation: ExecutorExecutionAttestation
     attestation_digest: str
@@ -539,12 +544,9 @@ class ControlPlaneService:
                 "signed target registry bundle and distribution trust anchor "
                 "must be configured together"
             )
-        if (
-            target_attestation_trust_anchor is not None
-            and (
-                target_attestation_trust_registry is not None
-                or target_attestation_registry_bundle is not None
-            )
+        if target_attestation_trust_anchor is not None and (
+            target_attestation_trust_registry is not None
+            or target_attestation_registry_bundle is not None
         ):
             raise ValueError("configure either one target trust anchor or the exact registry")
         if (
@@ -563,17 +565,13 @@ class ControlPlaneService:
         self._executor_attestation_trust_anchor = executor_attestation_trust_anchor
         self._target_attestation_trust_anchor = target_attestation_trust_anchor
         self._target_attestation_registry_bundle = target_attestation_registry_bundle
-        self._target_attestation_registry_trust_anchor = (
-            target_attestation_registry_trust_anchor
-        )
+        self._target_attestation_registry_trust_anchor = target_attestation_registry_trust_anchor
         self._target_attestation_trust_registry = (
             target_attestation_registry_bundle.statement.registry
             if target_attestation_registry_bundle is not None
             else target_attestation_trust_registry
         )
-        self._target_attestation_registry_activated = (
-            target_attestation_registry_bundle is None
-        )
+        self._target_attestation_registry_activated = target_attestation_registry_bundle is None
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -1648,7 +1646,7 @@ class ControlPlaneService:
     def _require_finalizable_replay_attempt(
         attempt: _LockedReplayAttempt,
         *,
-        request: ReplayFinalizeRequest,
+        request: ReplayFinalizeRequest | ReplayArtifactUploadPartRequest,
         now: datetime,
     ) -> None:
         job_deadline = attempt.job.lease_expires_at
@@ -1755,6 +1753,82 @@ class ControlPlaneService:
         ):
             raise StateConflict("Replay output Artifact authority is already different")
         return artifact
+
+    def begin_replay_artifact_upload(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadBeginRequest,
+        *,
+        actor: str,
+    ) -> PortableArtifactMultipartUploadView:
+        """Preverify executor authority before accepting any multipart bytes."""
+
+        self._claims.require_replay_executor_profile(actor, request.executor_profile)
+        artifact_repository = self._require_artifact_repository()
+        finalization_request = ReplayFinalizeRequest(
+            executor_profile=request.executor_profile,
+            lease_token=request.lease_token,
+            ticket_id=request.ticket_id,
+            fencing_value=request.fencing_value,
+            output_staging_id=request.output_staging_id,
+            artifact_manifest=request.artifact_manifest,
+            executor_attestation=request.executor_attestation,
+        )
+        with self.repository.transaction() as session:
+            preflight = self._prepare_replay_finalization(
+                session,
+                job_id=job_id,
+                request=finalization_request,
+                actor=actor,
+            )
+        verification = self._preverify_portable_replay_finalization(
+            authority=preflight.attempt.authority,
+            request=finalization_request,
+            now=utc_now(),
+        )
+        if verification is None:
+            raise StateConflict("multipart Artifact upload has no executor verification")
+        try:
+            return artifact_repository.begin_portable_multipart_upload(
+                staging_id=request.output_staging_id,
+                manifest=request.artifact_manifest,
+                executor_attestation_digest=verification.attestation_digest,
+            )
+        except ArtifactRepositoryError as exc:
+            raise StateConflict("multipart Artifact upload initialization failed") from exc
+
+    def put_replay_artifact_upload_part(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadPartRequest,
+        *,
+        actor: str,
+    ) -> PortableArtifactMultipartPartView:
+        """Accept one lease-fenced, idempotent multipart Artifact object."""
+
+        self._claims.require_replay_executor_profile(actor, request.executor_profile)
+        artifact_repository = self._require_artifact_repository()
+        with self.repository.transaction() as session:
+            attempt = self._replay_attempt(session, job_id, lock=False)
+            self._claims.require_replay_lease_identity(
+                attempt.job,
+                attempt.ticket,
+                request=request,
+                actor=actor,
+            )
+            self._require_finalizable_replay_attempt(
+                attempt,
+                request=request,
+                now=utc_now(),
+            )
+        try:
+            return artifact_repository.put_portable_multipart_part(
+                staging_id=request.output_staging_id,
+                manifest_sha256=request.manifest_sha256,
+                part=request.part,
+            )
+        except ArtifactRepositoryError as exc:
+            raise StateConflict("multipart Artifact part was rejected") from exc
 
     def finalize_replay_job(
         self,
@@ -2135,13 +2209,21 @@ class ControlPlaneService:
         repository: ManagedArtifactRepository,
         *,
         request: ReplayFinalizeRequest,
-    ) -> PortableArtifactTransportReceipt | None:
-        if request.artifact_bundle is None:
-            return None
-        return repository.materialize_portable_bundle(
-            staging_id=request.output_staging_id,
-            bundle=request.artifact_bundle,
-        )
+    ) -> PortableArtifactTransportReceiptType | None:
+        if request.artifact_bundle is not None:
+            return repository.materialize_portable_bundle(
+                staging_id=request.output_staging_id,
+                bundle=request.artifact_bundle,
+            )
+        if request.artifact_manifest is not None:
+            if request.executor_attestation is None:
+                raise StateConflict("multipart Replay Artifact has no executor attestation")
+            return repository.materialize_portable_multipart_upload(
+                staging_id=request.output_staging_id,
+                manifest=request.artifact_manifest,
+                executor_attestation_digest=request.executor_attestation.digest,
+            )
+        return None
 
     def _replay_retest_artifact(
         self,
@@ -3274,8 +3356,7 @@ class ControlPlaneService:
             latest = session.scalar(
                 select(TargetAttestationRegistryVersionRecord)
                 .where(
-                    TargetAttestationRegistryVersionRecord.trust_domain
-                    == statement.trust_domain
+                    TargetAttestationRegistryVersionRecord.trust_domain == statement.trust_domain
                 )
                 .order_by(TargetAttestationRegistryVersionRecord.sequence.desc())
                 .limit(1)
@@ -3288,9 +3369,7 @@ class ControlPlaneService:
                     )
             elif statement.sequence == latest.sequence:
                 if bundle_digest != latest.bundle_digest:
-                    raise StateConflict(
-                        "signed target trust registry sequence has equivocated"
-                    )
+                    raise StateConflict("signed target trust registry sequence has equivocated")
                 self._target_attestation_registry_activated = True
                 return
             else:
@@ -3377,7 +3456,8 @@ class ControlPlaneService:
         target_attestation_required = (
             authority.payload.policy_version == KISA_TARGET_ATTESTED_CLAIM_POLICY_VERSION
         )
-        if request.artifact_bundle is None or request.executor_attestation is None:
+        artifact_transport = request.artifact_bundle or request.artifact_manifest
+        if artifact_transport is None or request.executor_attestation is None:
             if target_attestation_required:
                 raise StateConflict("target-attested Replay requires portable executor attestation")
             return None
@@ -3413,7 +3493,7 @@ class ControlPlaneService:
             + [_aware(permit.issued_at) for permit in permits]
         )
         exact = (
-            verification.artifact_bundle_manifest_sha256 == request.artifact_bundle.manifest_sha256
+            verification.artifact_bundle_manifest_sha256 == artifact_transport.manifest_sha256
             and statement.executor_profile == request.executor_profile
             and statement.batch_id == authority.payload.batch_id
             and statement.item_id == authority.payload.item_id
@@ -3426,8 +3506,8 @@ class ControlPlaneService:
             and statement.execution_context_digest == authority.payload.execution_context_digest
             and statement.permit_digests == permit_digests
             and statement.replay_request_ids == replay_request_ids
-            and statement.artifact_bundle_file_count == request.artifact_bundle.file_count
-            and statement.artifact_bundle_total_bytes == request.artifact_bundle.total_bytes
+            and statement.artifact_bundle_file_count == artifact_transport.file_count
+            and statement.artifact_bundle_total_bytes == artifact_transport.total_bytes
             and earliest_issue_time <= issued_at <= (now + _EXECUTOR_ATTESTATION_MAX_CLOCK_SKEW)
         )
         if not exact:
@@ -3441,7 +3521,7 @@ class ControlPlaneService:
         *,
         authority: ReplayBindingAuthority,
         request: ReplayFinalizeRequest,
-        transport_receipt: PortableArtifactTransportReceipt | None,
+        transport_receipt: PortableArtifactTransportReceiptType | None,
         output_snapshot: ManagedArtifactSnapshot,
         verified: VerifiedReplayResult,
         preverification: ExecutorExecutionVerificationResult | None,
@@ -3450,7 +3530,8 @@ class ControlPlaneService:
     ) -> _PortableReplayFinalizationProof | None:
         """Bind the preverified executor observation to the reloaded sealed output."""
 
-        if request.artifact_bundle is None or request.executor_attestation is None:
+        artifact_transport = request.artifact_bundle or request.artifact_manifest
+        if artifact_transport is None or request.executor_attestation is None:
             if transport_receipt is not None or preverification is not None:
                 raise StateConflict("legacy Replay finalization has portable transport state")
             return None
@@ -3460,14 +3541,23 @@ class ControlPlaneService:
         exact = (
             transport_receipt.output_staging_id == request.output_staging_id
             and transport_receipt.manifest_sha256
-            == request.artifact_bundle.manifest_sha256
+            == artifact_transport.manifest_sha256
             == output_snapshot.ref.content_digest
-            and transport_receipt.file_count == request.artifact_bundle.file_count
-            and transport_receipt.total_bytes == request.artifact_bundle.total_bytes
+            and transport_receipt.file_count == artifact_transport.file_count
+            and transport_receipt.total_bytes == artifact_transport.total_bytes
             and statement.artifact_set_digest == verified.receipt.artifact_set_digest
             and statement.artifact_seal_root_digest == verified.receipt.artifact_seal_root_digest
             and statement.receipt_seal_root_digest == verified.receipt_seal_root_digest
         )
+        if request.artifact_manifest is not None:
+            exact = exact and (
+                isinstance(transport_receipt, PortableArtifactMultipartTransportReceipt)
+                and transport_receipt.part_count == request.artifact_manifest.part_count
+                and transport_receipt.executor_attestation_digest
+                == request.executor_attestation.digest
+            )
+        elif isinstance(transport_receipt, PortableArtifactMultipartTransportReceipt):
+            exact = False
         if not exact:
             raise StateConflict(
                 "executor attestation differs from the materialized sealed Replay output"
@@ -3580,8 +3670,8 @@ class ControlPlaneService:
                     trust_anchor=trust_anchor,
                     trust_registry=trust_registry,
                 )
-                receipt_tls_session_binding_sha256 = (
-                    _target_receipt_tls_session_binding_sha256(statement)
+                receipt_tls_session_binding_sha256 = _target_receipt_tls_session_binding_sha256(
+                    statement
                 )
                 exact_statement = (
                     statement.challenge_id == challenge.challenge_id
@@ -3611,9 +3701,7 @@ class ControlPlaneService:
                     response_digest=response_digest,
                     expected_tls_leaf_spki_sha256=expected_tls_leaf_spki_sha256,
                     expected_tls_session_binding=expected_tls_session_binding,
-                    receipt_tls_session_binding_sha256=(
-                        receipt_tls_session_binding_sha256
-                    ),
+                    receipt_tls_session_binding_sha256=(receipt_tls_session_binding_sha256),
                 )
                 if not exact_statement or not exact_transport:
                     raise StateConflict(
@@ -3639,9 +3727,7 @@ class ControlPlaneService:
                     expected_tls_session_binding=expected_tls_session_binding,
                 )
                 tls_peer_leaf_spki_sha256_digests.update(observed_spki_digests)
-                tls_session_binding_sha256_digests.update(
-                    observed_session_digests
-                )
+                tls_session_binding_sha256_digests.update(observed_session_digests)
                 tls_session_binding_observed |= observed_session_binding
         if proof_index != len(proofs):
             raise StateConflict("target execution proof set contains unbound exchanges")
@@ -3657,15 +3743,9 @@ class ControlPlaneService:
             receipt_count=len(receipt_digests),
             receipt_digests=receipt_digests,
             key_ids=sorted(key_ids),
-            tls_peer_leaf_spki_sha256_digests=sorted(
-                tls_peer_leaf_spki_sha256_digests
-            ),
-            tls_session_binding=(
-                "tls-unique-sha256" if tls_session_binding_observed else None
-            ),
-            tls_session_binding_sha256_digests=sorted(
-                tls_session_binding_sha256_digests
-            ),
+            tls_peer_leaf_spki_sha256_digests=sorted(tls_peer_leaf_spki_sha256_digests),
+            tls_session_binding=("tls-unique-sha256" if tls_session_binding_observed else None),
+            tls_session_binding_sha256_digests=sorted(tls_session_binding_sha256_digests),
         )
 
     @staticmethod
@@ -4182,7 +4262,9 @@ class ControlPlaneService:
         stored_portable = self._stored_portable_replay_finalization(job)
         if stored_portable is None:
             portable_request_matches = (
-                request.artifact_bundle is None and request.executor_attestation is None
+                request.artifact_bundle is None
+                and request.artifact_manifest is None
+                and request.executor_attestation is None
             )
         else:
             (
@@ -4191,12 +4273,24 @@ class ControlPlaneService:
                 stored_attestation,
                 _stored_attestation_digest,
             ) = stored_portable
-            portable_request_matches = (
+            requested_transport = request.artifact_bundle or request.artifact_manifest
+            transport_mode_matches = (
                 request.artifact_bundle is not None
+                and isinstance(stored_transport, PortableArtifactTransportReceipt)
+            ) or (
+                request.artifact_manifest is not None
+                and isinstance(
+                    stored_transport,
+                    PortableArtifactMultipartTransportReceipt,
+                )
+            )
+            portable_request_matches = (
+                requested_transport is not None
+                and transport_mode_matches
                 and request.executor_attestation == stored_attestation
-                and request.artifact_bundle.manifest_sha256 == stored_transport.manifest_sha256
-                and request.artifact_bundle.file_count == stored_transport.file_count
-                and request.artifact_bundle.total_bytes == stored_transport.total_bytes
+                and requested_transport.manifest_sha256 == stored_transport.manifest_sha256
+                and requested_transport.file_count == stored_transport.file_count
+                and requested_transport.total_bytes == stored_transport.total_bytes
             )
         supplied_digest = token_digest(request.lease_token)
         if not (
@@ -4242,7 +4336,7 @@ class ControlPlaneService:
         job: JobRecord,
     ) -> (
         tuple[
-            PortableArtifactTransportReceipt,
+            PortableArtifactTransportReceiptType,
             str,
             ExecutorExecutionAttestation,
             str,
@@ -4264,7 +4358,22 @@ class ControlPlaneService:
         if any(value is None for value in fields):
             raise StateConflict("portable Replay finalization Job result is incomplete")
         try:
-            transport = PortableArtifactTransportReceipt.model_validate(fields[0])
+            raw_transport = fields[0]
+            if not isinstance(raw_transport, dict):
+                raise ValueError("portable Replay transport is not an object")
+            if (
+                raw_transport.get("apiVersion")
+                == "pajin.control-plane.portable-artifact-transport-receipt/v1"
+            ):
+                transport: PortableArtifactTransportReceiptType = (
+                    PortableArtifactTransportReceipt.model_validate(raw_transport)
+                )
+            elif raw_transport.get("apiVersion") == (
+                "pajin.control-plane.portable-artifact-multipart-transport-receipt/v1"
+            ):
+                transport = PortableArtifactMultipartTransportReceipt.model_validate(raw_transport)
+            else:
+                raise ValueError("portable Replay transport version is unsupported")
             attestation = ExecutorExecutionAttestation.model_validate(fields[2])
         except ValueError as exc:
             raise StateConflict("portable Replay finalization Job result is invalid") from exc

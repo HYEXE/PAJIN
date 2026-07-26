@@ -25,11 +25,17 @@ if sys.platform != "win32":
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from pajin.control_plane.models import ArtifactRef
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import RunIntegrityError, verify_run_integrity
 
 if TYPE_CHECKING:
     from pajin.control_plane.artifact_transfer import (
         PortableArtifactBundle,
+        PortableArtifactMultipartManifest,
+        PortableArtifactMultipartPart,
+        PortableArtifactMultipartPartView,
+        PortableArtifactMultipartTransportReceipt,
+        PortableArtifactMultipartUploadView,
         PortableArtifactTransportReceipt,
     )
 
@@ -869,6 +875,56 @@ def build_portable_artifact_bundle(root: Path) -> PortableArtifactBundle:
     )
 
 
+def build_portable_artifact_multipart_upload(
+    root: Path,
+) -> tuple[PortableArtifactMultipartManifest, tuple[bytes, ...]]:
+    """Snapshot one medium sealed Run as a manifest plus bounded upload objects."""
+
+    from pajin.control_plane.artifact_transfer import (
+        MAX_MULTIPART_ARTIFACT_FILE_BYTES,
+        MAX_MULTIPART_ARTIFACT_TOTAL_BYTES,
+        MAX_PORTABLE_ARTIFACT_DEPTH,
+        MAX_PORTABLE_ARTIFACT_FILES,
+        PortableArtifactManifestFile,
+        PortableArtifactMultipartManifest,
+        portable_artifact_manifest_sha256,
+    )
+
+    limits = ArtifactRepositoryLimits(
+        max_file_bytes=MAX_MULTIPART_ARTIFACT_FILE_BYTES,
+        max_total_bytes=MAX_MULTIPART_ARTIFACT_TOTAL_BYTES,
+        max_files=MAX_PORTABLE_ARTIFACT_FILES,
+        max_entries=MAX_PORTABLE_ARTIFACT_FILES * (MAX_PORTABLE_ARTIFACT_DEPTH + 1),
+        max_depth=MAX_PORTABLE_ARTIFACT_DEPTH,
+    )
+    collected: dict[str, bytes] = {}
+    tree = _DescriptorTreeScanner(limits).scan(root, collect_to=collected)
+    files = [
+        PortableArtifactManifestFile(
+            path=entry.path,
+            size=entry.size,
+            sha256=entry.sha256,
+        )
+        for entry in tree.entries
+    ]
+    manifest = PortableArtifactMultipartManifest(
+        files=files,
+        file_count=len(files),
+        total_bytes=tree.byte_length,
+        manifest_sha256=portable_artifact_manifest_sha256(files),
+    )
+    return manifest, tuple(collected[item.path] for item in files)
+
+
+def build_portable_artifact_multipart_manifest(
+    root: Path,
+) -> PortableArtifactMultipartManifest:
+    """Verify a materialized multipart tree and return its canonical manifest."""
+
+    manifest, _contents = build_portable_artifact_multipart_upload(root)
+    return manifest
+
+
 class ManagedArtifactRepository:
     """Import and freshly resolve sealed Runs under owner-selected filesystem roots.
 
@@ -914,13 +970,17 @@ class ManagedArtifactRepository:
         self._objects_root = self.repository_root / "objects"
         self._version_root = self.repository_root / "v1"
         self._indexes_root = self._version_root / "sha256"
+        self._multipart_root = self.repository_root / "multipart-v1"
         self._staging_consume_lock = threading.Lock()
+        self._multipart_lock = threading.Lock()
         self._objects_root.mkdir(mode=0o700, exist_ok=True)
         self._version_root.mkdir(mode=0o700, exist_ok=True)
         self._indexes_root.mkdir(mode=0o700, exist_ok=True)
+        self._multipart_root.mkdir(mode=0o700, exist_ok=True)
         self._require_directory(self._objects_root, label="repository objects root")
         self._require_directory(self._version_root, label="repository version root")
         self._require_directory(self._indexes_root, label="repository index root")
+        self._require_directory(self._multipart_root, label="repository multipart root")
         self._require_private_owner_directory(
             self._objects_root,
             label="repository objects root",
@@ -936,10 +996,16 @@ class ManagedArtifactRepository:
             label="repository index root",
             configuration=True,
         )
+        self._require_private_owner_directory(
+            self._multipart_root,
+            label="repository multipart root",
+            configuration=True,
+        )
         if _DIRECTORY_FSYNC_SUPPORTED:
             self._fsync_directory(self._objects_root, label="repository objects root")
             self._fsync_directory(self._indexes_root, label="repository index root")
             self._fsync_directory(self._version_root, label="repository version root")
+            self._fsync_directory(self._multipart_root, label="repository multipart root")
             self._fsync_directory(self.repository_root, label="repository root")
             self._fsync_creation_chain(
                 repository_creation_chain,
@@ -1123,9 +1189,7 @@ class ManagedArtifactRepository:
             raise ArtifactRepositoryError(
                 "durable portable Artifact materialization requires POSIX directory fsync support"
             )
-        trusted = PortableArtifactBundle.model_validate(
-            bundle.model_dump(mode="python")
-        )
+        trusted = PortableArtifactBundle.model_validate(bundle.model_dump(mode="python"))
         self._require_repository_layout()
         self._validate_staging_id(staging_id)
         destination = self.staging_root / staging_id
@@ -1158,9 +1222,7 @@ class ManagedArtifactRepository:
                 )
             observed = build_portable_artifact_bundle(temporary_root)
             if observed != trusted:
-                raise ArtifactValidationError(
-                    "portable Artifact changed during materialization"
-                )
+                raise ArtifactValidationError("portable Artifact changed during materialization")
             with self._locked_staging_root():
                 self._require_directory(destination, label="reserved staging directory")
                 self._require_private_owner_directory(
@@ -1191,6 +1253,286 @@ class ManagedArtifactRepository:
                 manifest_sha256=trusted.manifest_sha256,
                 file_count=trusted.file_count,
                 total_bytes=trusted.total_bytes,
+            )
+        finally:
+            if not published and self._lexists(temporary_root):
+                shutil.rmtree(temporary_root)
+
+    def begin_portable_multipart_upload(
+        self,
+        *,
+        staging_id: str,
+        manifest: PortableArtifactMultipartManifest,
+        executor_attestation_digest: str,
+    ) -> PortableArtifactMultipartUploadView:
+        """Initialize or exactly resume one server-owned multipart upload."""
+
+        from pajin.control_plane.artifact_transfer import (
+            PortableArtifactMultipartManifest,
+            PortableArtifactMultipartUploadView,
+        )
+
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            raise ArtifactRepositoryError(
+                "durable multipart Artifact upload requires POSIX directory fsync support"
+            )
+        trusted = PortableArtifactMultipartManifest.model_validate(
+            manifest.model_dump(mode="python")
+        )
+        self._require_repository_layout()
+        self._validate_staging_id(staging_id)
+        if (
+            type(executor_attestation_digest) is not str
+            or len(executor_attestation_digest) != 64
+            or any(character not in "0123456789abcdef" for character in executor_attestation_digest)
+        ):
+            raise ArtifactValidationError("executor attestation digest is invalid")
+        authority = self._multipart_authority_bytes(
+            staging_id=staging_id,
+            manifest=trusted,
+            executor_attestation_digest=executor_attestation_digest,
+        )
+        upload_root = self._multipart_root / staging_id
+        with self._locked_multipart_root():
+            if self._lexists(upload_root):
+                self._require_directory(upload_root, label="multipart upload root")
+                self._require_private_owner_directory(
+                    upload_root,
+                    label="multipart upload root",
+                )
+                existing = self._read_regular_file(
+                    upload_root / "authority.json",
+                    label="multipart upload authority",
+                    require_single_link=True,
+                )
+                if existing != authority:
+                    raise ArtifactConflict(
+                        "multipart upload capability is already bound to different authority"
+                    )
+            else:
+                temporary_root: Path | None = None
+                try:
+                    temporary_root = Path(
+                        mkdtemp(prefix=".multipart-upload-", dir=self._multipart_root)
+                    )
+                    parts_root = temporary_root / "parts"
+                    parts_root.mkdir(mode=0o700, exist_ok=False)
+                    self._write_exclusive(temporary_root / "authority.json", authority)
+                    self._fsync_directory(parts_root, label="multipart upload parts root")
+                    self._fsync_directory(temporary_root, label="multipart upload root")
+                    os.rename(temporary_root, upload_root)
+                    temporary_root = None
+                except OSError as exc:
+                    raise ArtifactRepositoryError("multipart upload initialization failed") from exc
+                finally:
+                    if temporary_root is not None and self._lexists(temporary_root):
+                        shutil.rmtree(temporary_root)
+                self._fsync_directory(
+                    self._multipart_root,
+                    label="repository multipart root",
+                )
+        return PortableArtifactMultipartUploadView(
+            output_staging_id=staging_id,
+            manifest_sha256=trusted.manifest_sha256,
+            file_count=trusted.file_count,
+            total_bytes=trusted.total_bytes,
+            part_count=trusted.part_count,
+            executor_attestation_digest=executor_attestation_digest,
+        )
+
+    def put_portable_multipart_part(
+        self,
+        *,
+        staging_id: str,
+        manifest_sha256: str,
+        part: PortableArtifactMultipartPart,
+    ) -> PortableArtifactMultipartPartView:
+        """Store one exact part without allowing a retry to replace different bytes."""
+
+        from pajin.control_plane.artifact_transfer import (
+            MULTIPART_ARTIFACT_PART_BYTES,
+            PortableArtifactMultipartPart,
+            PortableArtifactMultipartPartView,
+        )
+
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            raise ArtifactRepositoryError(
+                "durable multipart Artifact upload requires POSIX directory fsync support"
+            )
+        trusted_part = PortableArtifactMultipartPart.model_validate(part.model_dump(mode="python"))
+        self._require_repository_layout()
+        self._validate_staging_id(staging_id)
+        upload_root = self._multipart_root / staging_id
+        with self._locked_multipart_root():
+            manifest, _attestation_digest = self._load_multipart_authority(
+                upload_root,
+                expected_staging_id=staging_id,
+            )
+            if manifest.manifest_sha256 != manifest_sha256:
+                raise ArtifactConflict("multipart part references a different manifest")
+            if trusted_part.file_index >= len(manifest.files):
+                raise ArtifactValidationError("multipart part file index is outside the manifest")
+            file = manifest.files[trusted_part.file_index]
+            expected_parts = (file.size + manifest.part_bytes - 1) // manifest.part_bytes
+            if trusted_part.part_number > expected_parts:
+                raise ArtifactValidationError("multipart part number is outside the manifest")
+            expected_size = min(
+                MULTIPART_ARTIFACT_PART_BYTES,
+                file.size - ((trusted_part.part_number - 1) * manifest.part_bytes),
+            )
+            if len(trusted_part.content) != expected_size:
+                raise ArtifactValidationError("multipart part size differs from the manifest")
+            parts_root = upload_root / "parts"
+            self._require_directory(parts_root, label="multipart upload parts root")
+            self._require_private_owner_directory(
+                parts_root,
+                label="multipart upload parts root",
+            )
+            file_root = parts_root / f"{trusted_part.file_index:04d}"
+            if not self._lexists(file_root):
+                file_root.mkdir(mode=0o700, exist_ok=False)
+                self._fsync_directory(parts_root, label="multipart upload parts root")
+            self._require_directory(file_root, label="multipart upload file-parts root")
+            self._require_private_owner_directory(
+                file_root,
+                label="multipart upload file-parts root",
+            )
+            part_path = file_root / f"{trusted_part.part_number:06d}.part"
+            content = trusted_part.content
+            if self._lexists(part_path):
+                existing = _BoundedRegularFileReader(max_bytes=MULTIPART_ARTIFACT_PART_BYTES).read(
+                    part_path,
+                    label="multipart Artifact part",
+                    require_single_link=True,
+                )
+                if existing != content:
+                    raise ArtifactConflict(
+                        "multipart part number is already bound to different bytes"
+                    )
+            else:
+                temporary_part = self._multipart_root / f".multipart-part-{uuid4().hex}"
+                part_published = False
+                try:
+                    self._write_exclusive(temporary_part, content)
+                    os.rename(temporary_part, part_path)
+                    part_published = True
+                    self._fsync_directory(
+                        file_root,
+                        label="multipart upload file-parts root",
+                    )
+                    self._fsync_directory(
+                        self._multipart_root,
+                        label="repository multipart root",
+                    )
+                except OSError as exc:
+                    raise ArtifactRepositoryError("multipart part publish failed") from exc
+                finally:
+                    if not part_published and self._lexists(temporary_part):
+                        temporary_part.unlink()
+        return PortableArtifactMultipartPartView(
+            output_staging_id=staging_id,
+            manifest_sha256=manifest_sha256,
+            file_index=trusted_part.file_index,
+            part_number=trusted_part.part_number,
+            part_sha256=trusted_part.sha256,
+        )
+
+    def materialize_portable_multipart_upload(
+        self,
+        *,
+        staging_id: str,
+        manifest: PortableArtifactMultipartManifest,
+        executor_attestation_digest: str,
+    ) -> PortableArtifactMultipartTransportReceipt:
+        """Assemble exact uploaded parts into the issued staging reservation."""
+
+        from pajin.control_plane.artifact_transfer import (
+            MULTIPART_ARTIFACT_PART_BYTES,
+            PortableArtifactMultipartManifest,
+            PortableArtifactMultipartTransportReceipt,
+        )
+
+        if not _DIRECTORY_FSYNC_SUPPORTED:
+            raise ArtifactRepositoryError(
+                "durable multipart Artifact materialization requires POSIX directory fsync support"
+            )
+        trusted = PortableArtifactMultipartManifest.model_validate(
+            manifest.model_dump(mode="python")
+        )
+        self._require_repository_layout()
+        self._validate_staging_id(staging_id)
+        destination = self.staging_root / staging_id
+        upload_root = self._multipart_root / staging_id
+        temporary_root = Path(mkdtemp(prefix=".portable-multipart-", dir=self.staging_root))
+        published = False
+        try:
+            with self._locked_multipart_root():
+                if self._destination_matches_multipart_manifest(destination, trusted):
+                    self._discard_multipart_upload(upload_root)
+                    return PortableArtifactMultipartTransportReceipt(
+                        output_staging_id=staging_id,
+                        manifest_sha256=trusted.manifest_sha256,
+                        file_count=trusted.file_count,
+                        total_bytes=trusted.total_bytes,
+                        part_count=trusted.part_count,
+                        executor_attestation_digest=executor_attestation_digest,
+                    )
+                stored_manifest, stored_attestation_digest = self._load_multipart_authority(
+                    upload_root,
+                    expected_staging_id=staging_id,
+                )
+                if (
+                    stored_manifest != trusted
+                    or stored_attestation_digest != executor_attestation_digest
+                ):
+                    raise ArtifactConflict("multipart upload differs from finalization authority")
+                self._assemble_multipart_tree(
+                    upload_root=upload_root,
+                    destination=temporary_root,
+                    manifest=trusted,
+                    max_part_bytes=MULTIPART_ARTIFACT_PART_BYTES,
+                )
+                observed = build_portable_artifact_multipart_manifest(temporary_root)
+                if observed != trusted:
+                    raise ArtifactValidationError(
+                        "multipart Artifact changed during materialization"
+                    )
+                with self._locked_staging_root():
+                    self._require_directory(destination, label="reserved staging directory")
+                    self._require_private_owner_directory(
+                        destination,
+                        label="reserved staging directory",
+                    )
+                    if any(destination.iterdir()):
+                        if not self._destination_matches_multipart_manifest(
+                            destination,
+                            trusted,
+                        ):
+                            raise ArtifactConflict(
+                                "reserved staging capability contains "
+                                "a different multipart Artifact"
+                            )
+                    else:
+                        try:
+                            destination.rmdir()
+                            os.rename(temporary_root, destination)
+                            published = True
+                        except OSError as exc:
+                            if not self._lexists(destination):
+                                destination.mkdir(mode=0o700, exist_ok=True)
+                            raise ArtifactRepositoryError(
+                                "multipart Artifact staging publish failed"
+                            ) from exc
+                        self._fsync_directory(destination, label="multipart staged Run")
+                        self._fsync_directory(self.staging_root, label="staging root")
+                self._discard_multipart_upload(upload_root)
+            return PortableArtifactMultipartTransportReceipt(
+                output_staging_id=staging_id,
+                manifest_sha256=trusted.manifest_sha256,
+                file_count=trusted.file_count,
+                total_bytes=trusted.total_bytes,
+                part_count=trusted.part_count,
+                executor_attestation_digest=executor_attestation_digest,
             )
         finally:
             if not published and self._lexists(temporary_root):
@@ -1550,6 +1892,32 @@ class ManagedArtifactRepository:
                 _require_same_inode(observed, opened)
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
                 self._require_bound_staging_root(descriptor)
+                yield descriptor
+            finally:
+                os.close(descriptor)
+
+    @contextmanager
+    def _locked_multipart_root(self) -> Iterator[int]:
+        with self._multipart_lock:
+            self._require_directory(self._multipart_root, label="repository multipart root")
+            self._require_private_owner_directory(
+                self._multipart_root,
+                label="repository multipart root",
+            )
+            flags = os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0)
+            try:
+                observed = self._multipart_root.lstat()
+                descriptor = os.open(self._multipart_root, flags)
+            except OSError as exc:
+                raise ArtifactRepositoryError(
+                    "repository multipart root cannot be locked safely"
+                ) from exc
+            try:
+                opened = os.fstat(descriptor)
+                _require_same_inode(observed, opened)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
+                current = self._multipart_root.lstat()
+                _require_same_inode(opened, current)
                 yield descriptor
             finally:
                 os.close(descriptor)
@@ -2014,12 +2382,217 @@ class ManagedArtifactRepository:
             if observed.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
                 raise error_type(f"{label} cannot grant group or other access")
 
+    @staticmethod
+    def _multipart_authority_bytes(
+        *,
+        staging_id: str,
+        manifest: PortableArtifactMultipartManifest,
+        executor_attestation_digest: str,
+    ) -> bytes:
+        return json.dumps(
+            {
+                "apiVersion": "pajin.control-plane.portable-artifact-multipart-authority/v1",
+                "executorAttestationDigest": executor_attestation_digest,
+                "manifest": manifest.model_dump(mode="json"),
+                "outputStagingId": staging_id,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+
+    def _load_multipart_authority(
+        self,
+        upload_root: Path,
+        *,
+        expected_staging_id: str,
+    ) -> tuple[PortableArtifactMultipartManifest, str]:
+        from pajin.control_plane.artifact_transfer import PortableArtifactMultipartManifest
+
+        self._require_directory(upload_root, label="multipart upload root")
+        self._require_private_owner_directory(upload_root, label="multipart upload root")
+        content = self._read_regular_file(
+            upload_root / "authority.json",
+            label="multipart upload authority",
+            require_single_link=True,
+        )
+        try:
+            decoded = parse_strict_json_bytes(
+                content,
+                label="multipart upload authority",
+                max_bytes=_MAX_MANIFEST_BYTES,
+                max_depth=32,
+                max_nodes=10_000,
+            )
+            if not isinstance(decoded, dict) or set(decoded) != {
+                "apiVersion",
+                "executorAttestationDigest",
+                "manifest",
+                "outputStagingId",
+            }:
+                raise ValueError("multipart upload authority shape is invalid")
+            if (
+                decoded["apiVersion"]
+                != "pajin.control-plane.portable-artifact-multipart-authority/v1"
+                or decoded["outputStagingId"] != expected_staging_id
+                or not isinstance(decoded["executorAttestationDigest"], str)
+            ):
+                raise ValueError("multipart upload authority identity is invalid")
+            manifest = PortableArtifactMultipartManifest.model_validate(decoded["manifest"])
+            digest = decoded["executorAttestationDigest"]
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError("multipart upload attestation digest is invalid")
+            canonical = self._multipart_authority_bytes(
+                staging_id=expected_staging_id,
+                manifest=manifest,
+                executor_attestation_digest=digest,
+            )
+        except (ValidationError, ValueError) as exc:
+            raise ArtifactValidationError("multipart upload authority is invalid") from exc
+        if canonical != content:
+            raise ArtifactValidationError("multipart upload authority is not canonically encoded")
+        return manifest, digest
+
+    @staticmethod
+    def _destination_matches_multipart_manifest(
+        destination: Path,
+        manifest: PortableArtifactMultipartManifest,
+    ) -> bool:
+        if not os.path.lexists(destination):
+            return False
+        ManagedArtifactRepository._require_directory(
+            destination,
+            label="reserved staging directory",
+        )
+        ManagedArtifactRepository._require_private_owner_directory(
+            destination,
+            label="reserved staging directory",
+        )
+        try:
+            if not any(destination.iterdir()):
+                return False
+        except OSError as exc:
+            raise ArtifactValidationError("reserved staging directory cannot be inspected") from exc
+        return build_portable_artifact_multipart_manifest(destination) == manifest
+
+    def _assemble_multipart_tree(
+        self,
+        *,
+        upload_root: Path,
+        destination: Path,
+        manifest: PortableArtifactMultipartManifest,
+        max_part_bytes: int,
+    ) -> None:
+        parts_root = upload_root / "parts"
+        self._require_directory(parts_root, label="multipart upload parts root")
+        self._require_private_owner_directory(
+            parts_root,
+            label="multipart upload parts root",
+        )
+        try:
+            upload_entries = {entry.name for entry in upload_root.iterdir()}
+            part_directories = {entry.name for entry in parts_root.iterdir()}
+        except OSError as exc:
+            raise ArtifactValidationError("multipart upload tree cannot be inspected") from exc
+        if upload_entries != {"authority.json", "parts"}:
+            raise ArtifactValidationError("multipart upload root contains unknown objects")
+        expected_directories = {
+            f"{index:04d}" for index, item in enumerate(manifest.files) if item.size > 0
+        }
+        if part_directories != expected_directories:
+            raise ArtifactValidationError("multipart upload part set is incomplete")
+
+        created_directories: set[Path] = {destination}
+        for file_index, item in enumerate(manifest.files):
+            target = destination.joinpath(*PurePosixPath(item.path).parts)
+            target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            cursor = target.parent
+            while cursor != destination:
+                created_directories.add(cursor)
+                cursor = cursor.parent
+            expected_parts = (item.size + manifest.part_bytes - 1) // manifest.part_bytes
+            chunks: list[bytes] = []
+            if expected_parts:
+                file_root = parts_root / f"{file_index:04d}"
+                self._require_directory(
+                    file_root,
+                    label="multipart upload file-parts root",
+                )
+                self._require_private_owner_directory(
+                    file_root,
+                    label="multipart upload file-parts root",
+                )
+                expected_names = {
+                    f"{part_number:06d}.part" for part_number in range(1, expected_parts + 1)
+                }
+                try:
+                    observed_names = {entry.name for entry in file_root.iterdir()}
+                except OSError as exc:
+                    raise ArtifactValidationError(
+                        "multipart upload file-parts cannot be inspected"
+                    ) from exc
+                if observed_names != expected_names:
+                    raise ArtifactValidationError(
+                        "multipart upload file part sequence is incomplete"
+                    )
+                for part_number in range(1, expected_parts + 1):
+                    content = _BoundedRegularFileReader(max_bytes=max_part_bytes).read(
+                        file_root / f"{part_number:06d}.part",
+                        label="multipart Artifact part",
+                        require_single_link=True,
+                    )
+                    expected_size = min(
+                        manifest.part_bytes,
+                        item.size - ((part_number - 1) * manifest.part_bytes),
+                    )
+                    if len(content) != expected_size:
+                        raise ArtifactValidationError(
+                            "multipart Artifact part size differs from the manifest"
+                        )
+                    chunks.append(content)
+            content = b"".join(chunks)
+            if len(content) != item.size or sha256(content).hexdigest() != item.sha256:
+                raise ArtifactValidationError("multipart Artifact file differs from the manifest")
+            self._write_exclusive(target, content)
+        for directory in sorted(
+            created_directories,
+            key=lambda path: len(path.parts),
+            reverse=True,
+        ):
+            self._require_private_owner_directory(
+                directory,
+                label="multipart Artifact materialization directory",
+            )
+            self._fsync_directory(
+                directory,
+                label="multipart Artifact materialization directory",
+            )
+
+    def _discard_multipart_upload(self, upload_root: Path) -> None:
+        if not self._lexists(upload_root):
+            return
+        if not shutil.rmtree.avoids_symlink_attacks:
+            raise ArtifactRepositoryError(
+                "multipart upload cleanup requires symlink-safe recursive removal"
+            )
+        self._require_directory(upload_root, label="multipart upload root")
+        self._require_private_owner_directory(upload_root, label="multipart upload root")
+        try:
+            shutil.rmtree(upload_root)
+        except OSError as exc:
+            raise ArtifactRepositoryError("multipart upload cleanup failed") from exc
+        self._fsync_directory(self._multipart_root, label="repository multipart root")
+
     def _require_repository_layout(self) -> None:
         for path, label in (
             (self.repository_root, "repository root"),
             (self._objects_root, "repository objects root"),
             (self._version_root, "repository version root"),
             (self._indexes_root, "repository index root"),
+            (self._multipart_root, "repository multipart root"),
         ):
             self._require_directory(path, label=label)
             self._require_private_owner_directory(path, label=label)

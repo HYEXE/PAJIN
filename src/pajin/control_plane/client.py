@@ -10,6 +10,10 @@ from urllib.parse import SplitResult, urlsplit
 import httpx
 from pydantic import BaseModel
 
+from pajin.control_plane.artifact_transfer import (
+    PortableArtifactMultipartPartView,
+    PortableArtifactMultipartUploadView,
+)
 from pajin.control_plane.models import (
     CheckpointCreationView,
     ClaimedJob,
@@ -21,6 +25,8 @@ from pajin.control_plane.models import (
     FailJobRequest,
     JobView,
     LeaseRequest,
+    ReplayArtifactUploadBeginRequest,
+    ReplayArtifactUploadPartRequest,
     ReplayClaimRequest,
     ReplayExecutionClaimView,
     ReplayFinalizationView,
@@ -263,6 +269,31 @@ class ControlPlaneClient:
             json=request.model_dump(mode="json"),
         )
         return self._validated(response, ReplayToolPermitView)
+
+    async def begin_replay_artifact_upload(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadBeginRequest,
+    ) -> PortableArtifactMultipartUploadView:
+        response = await self._request(
+            "POST",
+            f"/v1/worker/replay/jobs/{job_id}/artifact-upload",
+            json=request.model_dump(mode="json"),
+        )
+        return self._validated(response, PortableArtifactMultipartUploadView)
+
+    async def put_replay_artifact_upload_part(
+        self,
+        job_id: str,
+        request: ReplayArtifactUploadPartRequest,
+    ) -> PortableArtifactMultipartPartView:
+        response = await self._request(
+            "PUT",
+            f"/v1/worker/replay/jobs/{job_id}/artifact-upload/parts",
+            json=request.model_dump(mode="json"),
+            timeout=httpx.Timeout(connect=5, read=30, write=30, pool=5),
+        )
+        return self._validated(response, PortableArtifactMultipartPartView)
 
     async def finalize_replay(
         self,

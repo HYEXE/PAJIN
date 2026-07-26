@@ -6,7 +6,11 @@ from datetime import UTC, datetime
 
 from pydantic import ValidationError
 
-from pajin.control_plane.artifact_transfer import PortableArtifactTransportReceipt
+from pajin.control_plane.artifact_transfer import (
+    PortableArtifactMultipartTransportReceipt,
+    PortableArtifactTransportReceipt,
+    PortableArtifactTransportReceiptType,
+)
 from pajin.control_plane.database import (
     ApprovalRecord,
     ArtifactRecord,
@@ -61,6 +65,17 @@ from pajin.target_attestation import (
     TargetExecutionVerificationSummary,
     derive_target_execution_challenge,
 )
+
+
+def _portable_transport(value: object) -> PortableArtifactTransportReceiptType:
+    if not isinstance(value, dict):
+        raise ValueError("portable Replay transport is not an object")
+    api_version = value.get("apiVersion")
+    if api_version == "pajin.control-plane.portable-artifact-transport-receipt/v1":
+        return PortableArtifactTransportReceipt.model_validate(value)
+    if api_version == "pajin.control-plane.portable-artifact-multipart-transport-receipt/v1":
+        return PortableArtifactMultipartTransportReceipt.model_validate(value)
+    raise ValueError("portable Replay transport version is unsupported")
 
 
 def _aware(value: datetime) -> datetime:
@@ -323,7 +338,7 @@ class ControlPlaneViewMapper:
             job.result.get("executorAttestationDigest"),
             job.result.get("executorAttestationTrustAnchorDigest"),
         )
-        artifact_transport: PortableArtifactTransportReceipt | None
+        artifact_transport: PortableArtifactTransportReceiptType | None
         executor_attestation: ExecutorExecutionAttestation | None
         target_execution_verification: TargetExecutionVerificationSummary | None
         if all(value is None for value in portable_fields):
@@ -334,9 +349,7 @@ class ControlPlaneViewMapper:
             raise StateConflict("durable portable Replay finalization is incomplete")
         else:
             try:
-                artifact_transport = PortableArtifactTransportReceipt.model_validate(
-                    portable_fields[0]
-                )
+                artifact_transport = _portable_transport(portable_fields[0])
                 executor_attestation = ExecutorExecutionAttestation.model_validate(
                     portable_fields[2]
                 )
@@ -356,6 +369,13 @@ class ControlPlaneViewMapper:
                 and statement.artifact_bundle_manifest_sha256 == artifact_transport.manifest_sha256
                 and statement.artifact_bundle_file_count == artifact_transport.file_count
                 and statement.artifact_bundle_total_bytes == artifact_transport.total_bytes
+                and (
+                    not isinstance(
+                        artifact_transport,
+                        PortableArtifactMultipartTransportReceipt,
+                    )
+                    or artifact_transport.executor_attestation_digest == executor_attestation.digest
+                )
                 and statement.batch_id == batch.batch_id
                 and statement.item_id == item.item_id
                 and statement.job_id == job.job_id
