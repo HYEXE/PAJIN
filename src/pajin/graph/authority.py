@@ -16,16 +16,16 @@ from pajin.graph.models import canonical_graph_json, graph_digest
 from pajin.graph.projection import GraphSnapshotRef
 
 REGISTERED_ACTION_CAPABILITY_API_VERSION: Literal[
-    "pajin.dev/registered-action-capability/v1alpha1"
-] = "pajin.dev/registered-action-capability/v1alpha1"
-MISSION_ENVELOPE_API_VERSION: Literal["pajin.dev/mission-envelope/v1alpha1"] = (
-    "pajin.dev/mission-envelope/v1alpha1"
+    "pajin.dev/registered-action-capability/v1alpha2"
+] = "pajin.dev/registered-action-capability/v1alpha2"
+MISSION_ENVELOPE_API_VERSION: Literal["pajin.dev/mission-envelope/v1alpha2"] = (
+    "pajin.dev/mission-envelope/v1alpha2"
 )
-ACTION_PROPOSAL_API_VERSION: Literal["pajin.dev/action-proposal/v1alpha1"] = (
-    "pajin.dev/action-proposal/v1alpha1"
+ACTION_PROPOSAL_API_VERSION: Literal["pajin.dev/action-proposal/v1alpha2"] = (
+    "pajin.dev/action-proposal/v1alpha2"
 )
-ACTION_PERMIT_API_VERSION: Literal["pajin.dev/action-permit/v1alpha1"] = (
-    "pajin.dev/action-permit/v1alpha1"
+ACTION_PERMIT_API_VERSION: Literal["pajin.dev/action-permit/v1alpha2"] = (
+    "pajin.dev/action-permit/v1alpha2"
 )
 
 _MAX_CAPABILITY_BYTES = 64 * 1024
@@ -76,6 +76,7 @@ class ActionCapabilityRef(StrictModel):
 
     capability_id: _Identifier = Field(alias="capabilityId")
     capability_version: _Identifier = Field(alias="capabilityVersion")
+    definition_digest: _Sha256 = Field(alias="definitionDigest")
     capability_digest: _Sha256 = Field(alias="capabilityDigest")
     tool_id: _Identifier = Field(alias="toolId")
     tool_version: _Identifier = Field(alias="toolVersion")
@@ -93,7 +94,7 @@ class RegisteredActionCapability(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/registered-action-capability/v1alpha1"] = Field(
+    api_version: Literal["pajin.dev/registered-action-capability/v1alpha2"] = Field(
         default=REGISTERED_ACTION_CAPABILITY_API_VERSION,
         alias="apiVersion",
     )
@@ -104,6 +105,7 @@ class RegisteredActionCapability(StrictModel):
         max_length=200,
     )
     capability_version: _Identifier = Field(alias="capabilityVersion")
+    definition_digest: _Sha256 = Field(alias="definitionDigest")
     capability_digest: str = Field(default="", alias="capabilityDigest", max_length=64)
     tool_id: _Identifier = Field(alias="toolId")
     tool_version: _Identifier = Field(alias="toolVersion")
@@ -123,7 +125,7 @@ class RegisteredActionCapability(StrictModel):
             exclude={"capability_digest"},
         )
         digest = graph_digest(
-            "pajin.action.registered-capability/v1",
+            "pajin.action.registered-capability/v2",
             material,
             max_bytes=_MAX_CAPABILITY_BYTES,
         )
@@ -141,6 +143,7 @@ class RegisteredActionCapability(StrictModel):
         return ActionCapabilityRef(
             capabilityId=self.capability_id,
             capabilityVersion=self.capability_version,
+            definitionDigest=self.definition_digest,
             capabilityDigest=self.capability_digest,
             toolId=self.tool_id,
             toolVersion=self.tool_version,
@@ -227,7 +230,7 @@ class MissionEnvelope(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/mission-envelope/v1alpha1"] = Field(
+    api_version: Literal["pajin.dev/mission-envelope/v1alpha2"] = Field(
         default=MISSION_ENVELOPE_API_VERSION,
         alias="apiVersion",
     )
@@ -294,7 +297,7 @@ class MissionEnvelope(StrictModel):
             exclude={"envelope_id", "envelope_digest"},
         )
         digest = graph_digest(
-            "pajin.action.mission-envelope/v1",
+            "pajin.action.mission-envelope/v2",
             material,
             max_bytes=_MAX_ENVELOPE_BYTES,
         )
@@ -320,7 +323,7 @@ class ActionProposal(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/action-proposal/v1alpha1"] = Field(
+    api_version: Literal["pajin.dev/action-proposal/v1alpha2"] = Field(
         default=ACTION_PROPOSAL_API_VERSION,
         alias="apiVersion",
     )
@@ -367,7 +370,7 @@ class ActionProposal(StrictModel):
             exclude={"proposal_id", "proposal_digest"},
         )
         digest = graph_digest(
-            "pajin.action.proposal/v1",
+            "pajin.action.proposal/v2",
             material,
             max_bytes=_MAX_ACTION_PROPOSAL_BYTES,
         )
@@ -393,7 +396,7 @@ class ActionPermit(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/action-permit/v1alpha1"] = Field(
+    api_version: Literal["pajin.dev/action-permit/v1alpha2"] = Field(
         default=ACTION_PERMIT_API_VERSION,
         alias="apiVersion",
     )
@@ -452,13 +455,13 @@ class ActionPermit(StrictModel):
             "requestDigest": self.request_digest,
         }
         permit_identity = graph_digest(
-            "pajin.action.permit-id/v1",
+            "pajin.action.permit-id/v2",
             stable_material,
             max_bytes=_MAX_ACTION_PERMIT_BYTES,
         )
         permit_id = f"action-permit_{permit_identity}"
         dispatch_id = "action-dispatch_" + graph_digest(
-            "pajin.action.dispatch-id/v1",
+            "pajin.action.dispatch-id/v2",
             {"permitId": permit_id, "requestId": self.request_id},
             max_bytes=_MAX_ACTION_PERMIT_BYTES,
         )
@@ -474,7 +477,7 @@ class ActionPermit(StrictModel):
             exclude={"permit_digest"},
         )
         digest = graph_digest(
-            "pajin.action.permit/v1",
+            "pajin.action.permit/v2",
             material,
             max_bytes=_MAX_ACTION_PERMIT_BYTES,
         )
@@ -750,7 +753,7 @@ def action_permit_attempt_id(
         "requestDigest": proposal.request_digest,
     }
     return "action-permit_" + graph_digest(
-        "pajin.action.permit-id/v1",
+        "pajin.action.permit-id/v2",
         material,
         max_bytes=_MAX_ACTION_PERMIT_BYTES,
     )

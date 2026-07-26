@@ -19,8 +19,8 @@ and proving monotonic attenuation through every composition.
    targets/scope, allowed Capability constraints, maximum risk, budget, rate, autonomy, and source
    Campaign digest.
 2. An `ActionProposal` is intent, not execution authority. It includes proposer, exact snapshot
-   ID/digest, Capability ID/version, target, normalized input, expected risk/cost, and rationale
-   lineage.
+   ID/digest, Capability ID/version/definition digest, target, normalized input, expected
+   risk/cost, and rationale lineage.
 3. Only a deterministic Compiler plus the existing Policy Gate can issue an `ActionPermit`. An LLM,
    Specialist, Supervisor, or Profile cannot issue one.
 4. An `ActionPermit` is non-delegable, single-use authority bound to the exact proposal,

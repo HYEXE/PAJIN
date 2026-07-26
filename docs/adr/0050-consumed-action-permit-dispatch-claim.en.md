@@ -37,6 +37,10 @@ safer failure than a duplicate side effect.
 8. Migrate v1 only after verifying its full fingerprint; preserve Events, Projections, and
    Snapshots and never backfill Permit authority.
 
+CAP-001 adds a separate `definitionDigest` to this decision's registered Capability reference.
+That strengthens Permit JSON authority without changing the SQLite table shape, so it does not
+require another schema-version increment.
+
 ## Authority and failure semantics
 
 ```text

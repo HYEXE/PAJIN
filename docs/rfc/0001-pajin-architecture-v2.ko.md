@@ -222,6 +222,10 @@ ADR-0048의 durable conformance 조각을 통과하며 future Control Plane/Post
 같은 storage-neutral protocol을 사용한다. 마지막 revision 검사와 consumed dispatch
 claim은 [ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)과
 [GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.ko.md)에서 구체화한다.
+Phase 2의 첫 versioned Capability 계약은
+[ADR-0051](../adr/0051-versioned-capability-definition-and-tool-binding.ko.md)과
+[CAP-001](../capability/CAP-001-versioned-capability-definition.ko.md)에서 exact ToolSpec
+binding·definition digest·no-latest Registry로 구체화한다.
 
 ## 10. Definition of Done
 
@@ -235,8 +239,9 @@ claim은 [ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)과
 - benchmark result와 regression metric 생성
 - Notion status, 호환성, migration, rollback 경계 최신화
 
-현재 committed 기준선은 `main@bc9f28f`이며 `origin/main`과 동기화되어 있다. GRAPH-006은
-로컬 검증 완료이며 commit과 Linux CI 확인은 남아 있다.
+현재 committed 기준선은 `main@59cf210`이며 `origin/main@bc9f28f`보다 한 commit 앞서 있다.
+GRAPH-006은 커밋됐고 CAP-001은 로컬 구현·집중 검증 상태다. Linux CI와 CAP-001 commit은
+남아 있다.
 
 ## 11. 관련 결정
 
@@ -245,3 +250,4 @@ claim은 [ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)과
 - [ADR-0048: Minimum Graph와 Admission 일관성](../adr/0048-minimum-graph-and-admission-consistency.ko.md)
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.ko.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.ko.md)
+- [ADR-0051: Versioned Capability Definition과 Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.ko.md)

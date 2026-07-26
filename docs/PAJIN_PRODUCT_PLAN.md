@@ -29,7 +29,9 @@ Finding을 확정할 수 없다. 실행 권위는 항상 deterministic compiler�
 [`ADR-0047`](adr/0047-mission-envelope-and-action-permit-algebra.md),
 [`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.md)에 기록하고 durable 저장 선택은
 [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.md), consumed dispatch claim
-결정은 [`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.md)에 기록한다.
+결정은 [`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.md), versioned Capability와
+Tool binding 결정은 [`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.md)에
+기록한다.
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.md)의 manifest·private ground truth,
 aggregate result와 baseline/candidate comparison 계약도 로컬에 구현했다.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.md)은 6개 Node, 8개 typed Edge와
@@ -49,8 +51,11 @@ history, immutable Snapshot, cross-process host-local CAS, reopen reconciliation
 single-Campaign SQLite store를 추가했다. [`GRAPH-006`](graph/GRAPH-006-atomic-action-permit-authority.md)은
 canonical MissionEnvelope/ActionProposal/registered Capability, SQLite schema v2 migration,
 latest durable revision과 budget/rate를 같은 transaction에서 검증하는 consumed-on-issuance
-ActionPermit, cross-process exact retry no-redispatch를 추가했다. `main@bc9f28f`는
-`origin/main`과 동기화됐고 GRAPH-006은 로컬 검증 완료, commit과 Linux CI 확인은 남아 있다.
+ActionPermit, cross-process exact retry no-redispatch를 추가했다. GRAPH-006은
+`main@59cf210`으로 커밋됐고 `origin/main@bc9f28f`보다 한 commit 앞서며 Linux CI 확인은
+남아 있다. [`CAP-001`](capability/CAP-001-versioned-capability-definition.md)은 explicit
+Capability metadata, canonical full ToolSpec digest, exact-version Registry와 GRAPH-006
+`definitionDigest` binding을 로컬에 추가했다. CAP-001 commit과 Linux CI는 남아 있다.
 
 ## 2026-07-25 B2.8g 구현 상태
 

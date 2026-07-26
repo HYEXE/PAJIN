@@ -224,6 +224,10 @@ protocols for a future Control Plane/PostgreSQL adapter. The final revision chec
 dispatch claim are specified by
 [ADR-0050](../adr/0050-consumed-action-permit-dispatch-claim.en.md) and
 [GRAPH-006](../graph/GRAPH-006-atomic-action-permit-authority.en.md).
+The first Phase 2 versioned Capability contract is specified by
+[ADR-0051](../adr/0051-versioned-capability-definition-and-tool-binding.en.md) and
+[CAP-001](../capability/CAP-001-versioned-capability-definition.en.md) through exact ToolSpec
+binding, a definition digest, and a Registry with no latest-version fallback.
 
 ## 10. Definition of Done
 
@@ -237,8 +241,9 @@ Each vertical slice requires:
 - benchmark results and regression metrics; and
 - updated Notion status, compatibility, migration, and rollback boundaries.
 
-The committed baseline is `main@bc9f28f`, synchronized with `origin/main`. GRAPH-006 is locally
-verified; commit and Linux CI remain pending.
+The committed baseline is `main@59cf210`, one commit ahead of `origin/main@bc9f28f`. GRAPH-006 is
+committed, while CAP-001 is locally implemented and focused-tested. Linux CI and the CAP-001 commit
+remain pending.
 
 ## 11. Related decisions
 
@@ -247,3 +252,4 @@ verified; commit and Linux CI remain pending.
 - [ADR-0048: Minimum Graph and Admission Consistency](../adr/0048-minimum-graph-and-admission-consistency.en.md)
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](../adr/0049-durable-single-campaign-sqlite-graph-store.en.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](../adr/0050-consumed-action-permit-dispatch-claim.en.md)
+- [ADR-0051: Versioned Capability Definition and Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.en.md)

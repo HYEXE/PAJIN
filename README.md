@@ -16,9 +16,10 @@ See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.en.md),
 [ADR-0047](docs/adr/0047-mission-envelope-and-action-permit-algebra.en.md), and
 [ADR-0048](docs/adr/0048-minimum-graph-and-admission-consistency.en.md), and
 [ADR-0049](docs/adr/0049-durable-single-campaign-sqlite-graph-store.en.md), and
-[ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.en.md).
+[ADR-0050](docs/adr/0050-consumed-action-permit-dispatch-claim.en.md), and
+[ADR-0051](docs/adr/0051-versioned-capability-definition-and-tool-binding.en.md).
 
-The committed baseline is `main@bc9f28f`, synchronized with `origin/main`. The Architecture v2 work
+The committed baseline is `main@59cf210`, one commit ahead of `origin/main@bc9f28f`. The Architecture v2 work
 includes the [BENCH-001 manifest, ground-truth, result, and comparison contract](docs/benchmark/BENCH-001-benchmark-contract.en.md).
 It also includes the [GRAPH-001 six-node, eight-relation, and four-proposal contract](docs/graph/GRAPH-001-minimum-canonical-graph-model.en.md).
 The [GRAPH-002 single admission authority and append-only event-log reference spike](docs/graph/GRAPH-002-single-admission-event-log.en.md)
@@ -34,8 +35,11 @@ with cross-process host-local CAS and reopen recovery. GRAPH-004 is locally comm
 committed and synchronized. The [GRAPH-006 atomic ActionPermit authority](docs/graph/GRAPH-006-atomic-action-permit-authority.en.md)
 adds canonical Mission/Proposal/Capability contracts, SQLite schema-v2 migration, a final
 latest-revision plus budget/rate transaction, consumed-on-issuance dispatch claims, and
-cross-process exact-retry no-redispatch semantics. GRAPH-006 is locally verified; commit and Linux
-CI remain pending.
+cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as `59cf210`; Linux CI
+remains pending. [CAP-001 Versioned Capability Definition](docs/capability/CAP-001-versioned-capability-definition.en.md)
+adds explicit domain/maturity/surface/threat/side-effect metadata, an exact ToolSpec digest, an
+exact-version Registry with no latest fallback, and a GRAPH-006 `definitionDigest` adapter. CAP-001
+is locally implemented and focused-tested; commit and Linux CI remain pending.
 
 ## B2.8g resumable multipart portable Artifact transport
 

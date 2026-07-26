@@ -22,10 +22,11 @@ single-Campaign SQLite Graph Store:
 
 ## Authority contracts
 
-`RegisteredActionCapability` canonically pins a Capability ID/version, Tool ID/version/digest, and
-risk tier. `ActionCapabilityRegistry` resolves only an exact version and digest. The registry is
-currently an immutable process-local contract; durable registry distribution remains follow-up
-work.
+`RegisteredActionCapability` canonically pins a Capability ID/version, CAP-001
+`definitionDigest`, Tool ID/version/digest, and risk tier into a separate Graph registration
+digest. `ActionCapabilityRegistry` resolves only an exact version, definition digest, and
+registration digest. The registry is currently an immutable process-local contract; durable
+registry distribution remains follow-up work.
 
 `MissionEnvelope` is the execution ceiling for one Campaign/Run. It binds profile/compiler/source
 Campaign identity, exact allowed Capability references, target digests, maximum risk, autonomy,

@@ -36,6 +36,10 @@ Worker 호출을 transaction 안에서 먼저 수행하면 process crash 뒤 같
 8. v1→v2 migration은 먼저 기존 fingerprint 전체를 검증하고 Event/Projection/Snapshot을
    그대로 보존하며 Permit을 backfill하지 않는다.
 
+CAP-001은 이 결정의 registered Capability reference에 별도 `definitionDigest`를 추가한다.
+이는 Permit JSON authority를 강화하지만 SQLite table shape는 바꾸지 않으므로 schema
+version을 다시 올리지는 않는다.
+
 ## 권위와 실패 의미
 
 ```text

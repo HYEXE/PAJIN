@@ -17,7 +17,8 @@
    window, targets/scope, allowed Capability constraints, max risk, budget, rate, autonomy와
    source Campaign digest를 가진다.
 2. `ActionProposal`은 실행 요청이 아니라 의도다. proposer, exact snapshot ID/digest,
-   Capability ID/version, target, normalized input, 예상 risk/cost와 근거 lineage를 가진다.
+   Capability ID/version/definition digest, target, normalized input, 예상 risk/cost와 근거
+   lineage를 가진다.
 3. deterministic Compiler와 기존 Policy Gate만 `ActionPermit`을 발급할 수 있다. LLM,
    Specialist, Supervisor, Profile은 Permit을 자체 발급할 수 없다.
 4. `ActionPermit`은 exact proposal, MissionEnvelope, registered Capability, target,

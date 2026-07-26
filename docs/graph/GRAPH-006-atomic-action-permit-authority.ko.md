@@ -23,10 +23,11 @@ transaction 안에서 다음을 함께 수행한다.
 
 ### RegisteredActionCapability
 
-`RegisteredActionCapability`은 Capability ID/version, Tool ID/version/digest와 risk tier를
-canonical digest로 고정한다. `ActionCapabilityRegistry`는 exact version과 digest가 모두
-일치할 때만 reference를 resolve한다. 이 registry는 현재 immutable process-local
-contract이며 durable registry 배포는 후속 경계다.
+`RegisteredActionCapability`은 Capability ID/version, CAP-001 `definitionDigest`,
+Tool ID/version/digest와 risk tier를 Graph 등록 레코드의 canonical digest로 고정한다.
+`ActionCapabilityRegistry`는 exact version, definition digest와 등록 digest가 모두 일치할
+때만 reference를 resolve한다. 이 registry는 현재 immutable process-local contract이며
+durable registry 배포는 후속 경계다.
 
 ### MissionEnvelope
 

@@ -33,7 +33,9 @@ The detailed contract and migration/rollback criteria are in
 [`ADR-0048`](adr/0048-minimum-graph-and-admission-consistency.en.md) and the durable storage
 decision is in [`ADR-0049`](adr/0049-durable-single-campaign-sqlite-graph-store.en.md). The
 consumed dispatch-claim decision is in
-[`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.en.md). The local
+[`ADR-0050`](adr/0050-consumed-action-permit-dispatch-claim.en.md), and the versioned
+Capability/Tool binding decision is in
+[`ADR-0051`](adr/0051-versioned-capability-definition-and-tool-binding.en.md). The local
 [`BENCH-001`](benchmark/BENCH-001-benchmark-contract.en.md) implementation adds manifest, private
 ground-truth, aggregate-result, and baseline/candidate comparison contracts.
 [`GRAPH-001`](graph/GRAPH-001-minimum-canonical-graph-model.en.md) adds six Nodes, eight typed Edges,
@@ -54,8 +56,11 @@ cross-process host-local CAS, and reopen reconciliation.
 [`GRAPH-006`](graph/GRAPH-006-atomic-action-permit-authority.en.md) adds canonical
 MissionEnvelope/ActionProposal/registered Capability contracts, SQLite schema-v2 migration, a
 consumed-on-issuance ActionPermit transaction that rechecks the latest durable revision and
-budgets/rates, and cross-process exact-retry no-redispatch semantics. `main@bc9f28f` is synchronized
-with `origin/main`; GRAPH-006 is locally verified, while commit and Linux CI remain pending.
+budgets/rates, and cross-process exact-retry no-redispatch semantics. GRAPH-006 is committed as
+`main@59cf210`, one commit ahead of `origin/main@bc9f28f`; Linux CI remains pending.
+[`CAP-001`](capability/CAP-001-versioned-capability-definition.en.md) locally adds explicit
+Capability metadata, a canonical full-ToolSpec digest, an exact-version Registry, and GRAPH-006
+`definitionDigest` binding. CAP-001 commit and Linux CI remain pending.
 
 ## 2026-07-25 B2.8g implementation status
 

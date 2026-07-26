@@ -126,6 +126,7 @@ def _capability(*, tool_digest: str = DIGEST_B) -> RegisteredActionCapability:
     return RegisteredActionCapability(
         capabilityId="capability:http-observe",
         capabilityVersion="1.0.0",
+        definitionDigest=DIGEST_C,
         toolId="http.request",
         toolVersion="1.0.0",
         toolDigest=tool_digest,
@@ -268,9 +269,20 @@ def _permit_authority(
 def test_action_contracts_are_canonical_and_registry_requires_exact_version() -> None:
     capability = _capability()
     assert capability.reference().capability_digest == capability.capability_digest
+    assert capability.reference().definition_digest == DIGEST_C
     raw = capability.model_dump(mode="json", by_alias=True)
     raw["toolDigest"] = DIGEST_C
     with pytest.raises(ValidationError, match="digest differs"):
+        RegisteredActionCapability.model_validate(raw)
+
+    raw = capability.model_dump(mode="json", by_alias=True)
+    raw["definitionDigest"] = DIGEST_A
+    with pytest.raises(ValidationError, match="digest differs"):
+        RegisteredActionCapability.model_validate(raw)
+
+    raw = capability.model_dump(mode="json", by_alias=True)
+    raw["apiVersion"] = "pajin.dev/registered-action-capability/v1alpha1"
+    with pytest.raises(ValidationError, match="literal_error"):
         RegisteredActionCapability.model_validate(raw)
 
     registry = ActionCapabilityRegistry([capability])
