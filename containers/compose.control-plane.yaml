@@ -143,6 +143,8 @@ services:
       PAJIN_DAEMON_LONG_POLL_SECONDS: 10
       PAJIN_DAEMON_OUTPUT_ROOT: /var/lib/pajin/runs
       PAJIN_DAEMON_STATUS_PATH: /tmp/pajin-worker-status.json
+      PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH: ${PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH:-}
+      PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_SHA256: ${PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_SHA256:-}
     healthcheck:
       test: ["CMD", "python", "-m", "pajin.control_plane.worker_health"]
       interval: 5s
@@ -151,6 +153,10 @@ services:
       start_period: 10s
     init: true
     read_only: true
+    volumes:
+      - ${PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_FILE:-./capability-deployment.disabled}:/run/pajin-capability/deployment.json:ro
+      - capability-graph-state:/var/lib/pajin/capability-graph
+      - capability-run-audit:/var/lib/pajin/capability-runs
     tmpfs:
       - /tmp:uid=10001,gid=10001,mode=0750,noexec,nosuid,nodev,size=16m
       - /var/lib/pajin/runs:uid=10001,gid=10001,mode=0750,noexec,nosuid,nodev,size=128m
@@ -312,6 +318,8 @@ services:
 volumes:
   artifact-staging:
   artifact-repository:
+  capability-graph-state:
+  capability-run-audit:
 
 networks:
   api-host:

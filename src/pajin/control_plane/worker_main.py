@@ -3,9 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 from pathlib import Path
 
+from pajin.control_plane.capability_deployment import (
+    CapabilityGraphDeploymentRuntime,
+    load_capability_graph_deployment,
+)
 from pajin.control_plane.client import ControlPlaneClient
 from pajin.control_plane.daemon_runtime import (
     env,
@@ -25,6 +30,8 @@ from pajin.control_plane.status_file import default_worker_status_path
 from pajin.control_plane.worker import WorkerDaemon, WorkerDaemonConfig
 
 _PLAINTEXT_LAB_ENV = "PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB"
+_CAPABILITY_DEPLOYMENT_PATH_ENV = "PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH"
+_CAPABILITY_DEPLOYMENT_SHA256_ENV = "PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_SHA256"
 
 
 def _required_env(name: str) -> str:
@@ -35,6 +42,28 @@ def _plaintext_http_for_lab_enabled() -> bool:
     return literal_bool_env(_PLAINTEXT_LAB_ENV, owner="Worker daemon")
 
 
+def _capability_graph_deployment_from_env() -> CapabilityGraphDeploymentRuntime | None:
+    raw_path = os.environ.get(_CAPABILITY_DEPLOYMENT_PATH_ENV)
+    raw_digest = os.environ.get(_CAPABILITY_DEPLOYMENT_SHA256_ENV)
+    if raw_path in {None, ""} and raw_digest in {None, ""}:
+        return None
+    if (
+        raw_path is None
+        or raw_digest is None
+        or not raw_path
+        or raw_path != raw_path.strip()
+        or not raw_digest
+        or raw_digest != raw_digest.strip()
+    ):
+        raise RuntimeError(
+            "Worker daemon Capability Graph deployment path and SHA-256 must be configured together"
+        )
+    return load_capability_graph_deployment(
+        Path(raw_path),
+        expected_sha256=raw_digest,
+    )
+
+
 async def run_from_env() -> None:
     output_root = Path(
         env(
@@ -43,9 +72,13 @@ async def run_from_env() -> None:
             owner="Worker daemon",
         )
     ).resolve()
+    capability_deployment = _capability_graph_deployment_from_env()
     executors = ExecutorRegistry(
         [
-            CampaignJobExecutor(output_root=output_root),
+            CampaignJobExecutor(
+                output_root=output_root,
+                capability_deployment=capability_deployment,
+            ),
             ToolLoopJobExecutor(output_root=output_root),
         ]
     )

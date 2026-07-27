@@ -109,6 +109,17 @@ def test_compose_marks_plaintext_control_plane_transport_as_lab_only() -> None:
     assert compose.count("Local Compose lab only; production PAJIN_CP_URL must use HTTPS.") == 2
 
 
+def test_compose_wires_opt_in_digest_pinned_capability_graph_state() -> None:
+    compose = Path("containers/compose.control-plane.yaml").read_text(encoding="utf-8")
+    worker = _compose_service_block(compose, "worker-daemon")
+
+    assert "PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH:" in worker
+    assert "PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_SHA256:" in worker
+    assert "capability-deployment.disabled}:/run/pajin-capability/deployment.json:ro" in worker
+    assert "capability-graph-state:/var/lib/pajin/capability-graph" in worker
+    assert "capability-run-audit:/var/lib/pajin/capability-runs" in worker
+
+
 def test_compose_status_paths_are_inside_private_worker_tmpfs() -> None:
     compose = Path("containers/compose.control-plane.yaml").read_text(encoding="utf-8")
     generic_worker = _compose_service_block(compose, "worker-daemon")

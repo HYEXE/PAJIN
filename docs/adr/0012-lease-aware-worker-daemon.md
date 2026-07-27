@@ -72,6 +72,27 @@ profile uses a no-network deterministic Provider fixture and the T3 `mock.approv
 safe integration fixture, not a production model backend. It still exercises the real Tool Loop,
 Provider Tool, Secret Lease, Capability, policy re-entry, and checkpoint code.
 
+The `campaign` adapter also has an opt-in `capability-graph-v1` profile. It is unavailable unless
+the daemon starts with both `PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_PATH` and
+`PAJIN_CAPABILITY_GRAPH_DEPLOYMENT_SHA256`. The no-follow, bounded JSON document is pinned by its
+raw SHA-256 before parsing and contains the exact Campaign, CAP-004 lifecycle policy and public
+trust keys, all seven signed first releases, the explicit activated subset, release/activation-set
+digests, exact MissionEnvelope authority ceiling, Graph database, Run audit root, and Permit
+compiler identity. The Envelope Campaign digest, compiler, and complete activated Capability set
+must match the rest of that same pinned document. Partial configuration, unknown fields, digest
+drift, signature failure, or durable writer drift stops daemon startup. The Job can provide only a
+typed Proposal, Decision, request, release reference, and attenuating Gateway Grant inside that
+deployed Envelope; it cannot choose a module, class, command, executable, plugin, Tool path, or
+MissionEnvelope. Runtime Tools remain the closed CAP-005 inventory.
+
+The profile consumes the SQLite `ActionPermit` before entering `ToolGateway`, records
+`claimed` plus one terminal `completed`/`failed`/`cancelled`/`expired` event in the matching
+hash-chained Run, and seals that Run mutation. A retry resolves the already-consumed Permit and
+verifies the sealed lifecycle instead of invoking the Worker again. SQLite Graph authority,
+RunStore audit, Control Plane PostgreSQL Job state, and an external Tool target are still separate
+transactions; a consumed Permit with missing or unsealed terminal audit fails closed and is not
+redispatched.
+
 Both built-in profiles bind the canonical Worker execution context into the sealed Run and copy the
 verified value into the optional completed-Job result fields `executionProfile` and
 `executionContext`. The defaults are explicitly `simulated-development-only`; Docker-backed
@@ -120,7 +141,12 @@ systems transactional with PostgreSQL.
   cleanup cap, so an adapter embedding it needs a forced window greater than 20 seconds and a larger
   supervisor allowance than the deterministic Compose profile.
 - The Compose Worker is non-root, read-only, capability-free, and has writable tmpfs only for status
-  and lab artifacts.
+  and lab artifacts. It also mounts separate named volumes for opt-in Capability Graph SQLite state
+  and sealed Run audit. The default placeholder is not JSON and both deployment environment values
+  are empty, so the profile remains disabled. An operator must mount the organization-issued JSON,
+  set its in-container path (normally `/run/pajin-capability/deployment.json`), and provide the exact
+  SHA-256. The bundled Worker backend is still simulated-development-only and does not satisfy the
+  production Web+AI Campaign exit gate.
 - Compose uses a six-second lease only to make crash tests fast. Production should size lease and
   heartbeat intervals for its latency and recovery objectives.
 - The absolute server lease horizon is 24 hours regardless of configured rolling lease duration;

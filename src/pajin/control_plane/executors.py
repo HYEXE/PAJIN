@@ -13,12 +13,29 @@ from pathlib import Path
 from re import fullmatch
 from typing import Any, Literal, Protocol
 
-from pydantic import Field, model_validator
+from pydantic import Field, ValidationError, model_validator
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
+from pajin.capabilities import (
+    CapabilityDispatchAuditEvent,
+    CapabilityDispatchStage,
+    CapabilityReleaseRef,
+    ExistingModeCapabilityActivationError,
+    ExistingModeCapabilityGatewayDispatcher,
+    capability_gateway_outcome_digest,
+)
+from pajin.control_plane.capability_deployment import (
+    CapabilityGraphDeploymentRuntime,
+)
 from pajin.control_plane.models import ApprovalIntent, JobKind, JobView
-from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.domain.models import (
+    CampaignManifest,
+    CapabilityGrant,
+    StrictModel,
+    ToolRequest,
+)
 from pajin.domain.validation import FindingDisposition
+from pajin.graph import ActionPermit, ActionProposal, GraphDecision
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.models import NormalizedToolCall, ProviderChatResult, ProviderUsage
@@ -31,7 +48,12 @@ from pajin.runtime.execution_context import (
 )
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.secrets import SecretBroker, SecretMaterial
-from pajin.runtime.store import RunIntegrityError, load_verified_run_artifacts
+from pajin.runtime.store import (
+    RunIntegrityError,
+    RunStore,
+    load_verified_run_artifacts,
+    load_verified_run_events,
+)
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
     WorkerBackend,
@@ -40,6 +62,7 @@ from pajin.runtime.worker import (
     WorkerStatus,
 )
 from pajin.tools.base import ToolRegistry
+from pajin.tools.gateway import GatewayOutcome, ToolGateway
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
 from pajin.workflow.cancellation import seal_executor_quiescence
 from pajin.workflow.local import LocalCampaignRunner, LocalToolExecutionError
@@ -125,6 +148,23 @@ class CampaignJobInput(StrictModel):
         unknown = {target.type for target in self.manifest.spec.targets} - supported
         if unknown:
             raise ValueError(f"deterministic-local profile rejects target types: {sorted(unknown)}")
+        return self
+
+
+class CapabilityGraphCampaignJobInput(StrictModel):
+    """One exact Graph decision dispatched through a startup-pinned deployment."""
+
+    profile: Literal["capability-graph-v1"]
+    proposal: ActionProposal
+    decision: GraphDecision
+    release: CapabilityReleaseRef
+    request: ToolRequest
+    grant: CapabilityGrant
+
+    @model_validator(mode="after")
+    def bind_job_authority(self) -> CapabilityGraphCampaignJobInput:
+        if self.proposal.campaign_id != self.decision.campaign_id:
+            raise ValueError("Capability Graph Job authority belongs to another Campaign or Run")
         return self
 
 
@@ -227,9 +267,11 @@ class CampaignJobExecutor:
         *,
         output_root: Path,
         worker: WorkerBackend | None = None,
+        capability_deployment: CapabilityGraphDeploymentRuntime | None = None,
     ) -> None:
         self._output_root = output_root
         self._worker = worker or SimulatedWorkerBackend()
+        self._capability_deployment = capability_deployment
 
     async def execute(
         self,
@@ -237,7 +279,14 @@ class CampaignJobExecutor:
         *,
         cancellation: ExecutionCancellationContext | None = None,
     ) -> CompletedExecution:
-        job_input = CampaignJobInput.model_validate(self._input(job))
+        raw_input = self._input(job)
+        if raw_input.get("profile") == "capability-graph-v1":
+            return await self._execute_capability_graph(
+                job,
+                raw_input,
+                cancellation=cancellation,
+            )
+        job_input = CampaignJobInput.model_validate(raw_input)
         tools = ToolRegistry()
         tools.register(MockAgentProbe())
         tools.register(SleepCheckTool())
@@ -278,6 +327,194 @@ class CampaignJobExecutor:
                 "validatedFindings": len(outcome.findings),
                 "confirmedFindings": len(outcome.findings),
                 "needsReviewCandidates": needs_review,
+            }
+        )
+
+    async def _execute_capability_graph(
+        self,
+        job: JobView,
+        raw_input: dict[str, Any],
+        *,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> CompletedExecution:
+        runtime = self._capability_deployment
+        if runtime is None:
+            raise PermanentExecutionError(
+                "capability-graph-v1 requires a startup-pinned Worker deployment"
+            )
+        try:
+            job_input = CapabilityGraphCampaignJobInput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise PermanentExecutionError("capability-graph-v1 Job input is invalid") from exc
+        deployment = runtime.deployment
+        campaign = deployment.campaign
+        envelope = deployment.mission_envelope
+        if (
+            job_input.proposal.campaign_id != campaign.metadata.name
+            or job_input.proposal.run_id != envelope.run_id
+        ):
+            raise PermanentExecutionError(
+                "capability-graph-v1 Job differs from its deployed Campaign authority"
+            )
+        try:
+            prepared = runtime.activation.prepare_action(
+                release=job_input.release,
+                request=job_input.request,
+                parameters=job_input.request.arguments,
+            )
+        except ExistingModeCapabilityActivationError as exc:
+            raise PermanentExecutionError(
+                "capability-graph-v1 request preparation failed closed"
+            ) from exc
+        used_calls = sum(
+            permit.run_id == envelope.run_id
+            for permit in runtime.graph_store.permit_store.permits()
+        )
+        store = runtime.open_run_store(envelope.run_id)
+        gateway = ToolGateway(
+            policy=PolicyEngine(),
+            tools=runtime.tools,
+            worker=self._worker,
+            store=store,
+            allow_secret_requests=False,
+            clock=runtime.clock,
+        )
+        dispatcher = ExistingModeCapabilityGatewayDispatcher(
+            activation=runtime.activation,
+            permits=runtime.permits,
+            gateway=gateway,
+            audit_store=store,
+            clock=runtime.clock,
+        )
+        try:
+            dispatched = await dispatcher.dispatch_once(
+                envelope,
+                job_input.proposal,
+                job_input.decision,
+                prepared,
+                campaign=campaign,
+                grant=job_input.grant,
+                used_calls=used_calls,
+            )
+        except asyncio.CancelledError:
+            self._seal_failed_dispatch(store)
+            if cancellation is not None and cancellation.active:
+                seal_executor_quiescence(cancellation)
+            raise
+        except Exception:
+            self._seal_failed_dispatch(store)
+            raise
+        if dispatched.dispatched:
+            store.seal()
+        terminal = self._verified_dispatch_terminal(store, dispatched.permit)
+        outcome = dispatched.result
+        if outcome is not None:
+            observed_digest = capability_gateway_outcome_digest(outcome)
+            if (
+                terminal.stage is not CapabilityDispatchStage.COMPLETED
+                or terminal.gateway_outcome_digest != observed_digest
+            ):
+                raise PermanentExecutionError(
+                    "Capability Gateway outcome differs from its sealed dispatch audit"
+                )
+        return self._capability_graph_result(
+            job,
+            dispatched.permit,
+            terminal,
+            outcome=outcome,
+            dispatched=dispatched.dispatched,
+        )
+
+    @staticmethod
+    def _seal_failed_dispatch(store: RunStore) -> None:
+        try:
+            store.seal()
+        except (OSError, RunIntegrityError, ValueError):
+            # The original dispatch failure remains authoritative. A retry must
+            # verify a sealed terminal audit before it can finish.
+            return
+
+    @staticmethod
+    def _verified_dispatch_terminal(
+        store: RunStore,
+        permit: ActionPermit,
+    ) -> CapabilityDispatchAuditEvent:
+        try:
+            events = load_verified_run_events(
+                store.path,
+                expected_run_id=store.run_id,
+            )
+            lifecycle = tuple(
+                CapabilityDispatchAuditEvent.model_validate(event.payload)
+                for event in events
+                if event.event_type.startswith("capability.dispatch.")
+                and event.payload.get("permitId") == permit.permit_id
+            )
+        except (AttributeError, OSError, RunIntegrityError, ValidationError, ValueError) as exc:
+            raise PermanentExecutionError(
+                "Capability dispatch does not have a verified sealed audit"
+            ) from exc
+        terminal_stages = {
+            CapabilityDispatchStage.COMPLETED,
+            CapabilityDispatchStage.FAILED,
+            CapabilityDispatchStage.CANCELLED,
+            CapabilityDispatchStage.EXPIRED,
+        }
+        if (
+            len(lifecycle) != 2
+            or lifecycle[0].stage is not CapabilityDispatchStage.CLAIMED
+            or lifecycle[1].stage not in terminal_stages
+            or any(
+                (
+                    item.permit_digest != permit.permit_digest
+                    or item.dispatch_id != permit.dispatch_id
+                    or item.run_id != permit.run_id
+                )
+                for item in lifecycle
+            )
+        ):
+            raise PermanentExecutionError(
+                "Capability dispatch sealed audit lifecycle is incomplete or inconsistent"
+            )
+        return lifecycle[1]
+
+    def _capability_graph_result(
+        self,
+        job: JobView,
+        permit: ActionPermit,
+        terminal: CapabilityDispatchAuditEvent,
+        *,
+        outcome: GatewayOutcome | None,
+        dispatched: bool,
+    ) -> CompletedExecution:
+        runtime = self._capability_deployment
+        assert runtime is not None
+        execution_context = worker_execution_context(self._worker)
+        return CompletedExecution(
+            result={
+                "engine": "capability-graph-gateway",
+                "executionProfile": "capability-graph-v1",
+                "deploymentId": runtime.deployment.deployment_id,
+                "releaseSetDigest": runtime.deployment.release_set_digest,
+                "activationSetDigest": runtime.deployment.activation_set_digest,
+                "controlPlaneRunId": job.run_id,
+                "graphRunId": permit.run_id,
+                "permitId": permit.permit_id,
+                "permitDigest": permit.permit_digest,
+                "dispatchId": permit.dispatch_id,
+                "dispatched": dispatched,
+                "dispatchStatus": terminal.stage.value,
+                "gatewayOutcomeDigest": terminal.gateway_outcome_digest,
+                "gatewayExecutionId": terminal.gateway_execution_id,
+                "executed": terminal.executed,
+                "policyAllowed": terminal.policy_allowed,
+                "toolSuccess": terminal.tool_success,
+                "evidence": list(terminal.evidence),
+                "executionContext": execution_context.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+                "outcomeAvailableInProcess": outcome is not None,
             }
         )
 
