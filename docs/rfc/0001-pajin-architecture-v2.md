@@ -252,6 +252,10 @@ lead time, Oracle, Replay, and signed lifecycle evidence without deriving its de
 Registry or inventing zero-valued results for missing samples. Its CAP-005 baseline records
 implemented structure and explicit evidence gaps; it does not activate the adapters or complete
 the Web + AI runtime exit gate.
+The closed CAP-005 inventory also provides seven exact benchmark mappings and an opt-in rollout
+verifier that accepts only a complete externally reviewed seven-release CAP-004 set. The verifier
+binds full signed-bundle and mapping digests but creates no signing authority and does not treat
+test fixtures as operational releases.
 
 ## 10. Definition of Done
 

@@ -36,6 +36,10 @@ analysis.
    adapter requires a new version and cleanup design.
 9. Existing Mode, CLI, Graph, Tool Gateway, Replay, API, and database paths remain unchanged.
    Runtime dispatch integration is a later opt-in vertical slice.
+10. The closed inventory has seven code-authored benchmark mappings. A rollout admits only seven
+    externally reviewed first-release bundles through CAP-004, and emits a content-addressed set
+    binding every full signed-bundle digest, release reference, maturity, and mapping digest.
+    PAJIN does not create keys, reviews, signatures, or approvals for this operation.
 
 ## Rejected alternatives
 
@@ -58,8 +62,11 @@ analysis.
   measurement, and later dispatch.
 - Unregistered and extra Tools stay outside the generalized Capability surface.
 - Adapter and Tool drift is visible through stable-context and definition digests.
-- Generalized execution is intentionally not yet live. Signed releases, CAP-006 metrics, runtime
-  wiring, and one Web + AI Campaign remain required before the Phase 2 exit gate is complete.
+- An incomplete or substituted signed rollout cannot be presented as complete adapter coverage.
+- Generalized execution is intentionally not yet live. Organization-issued signed releases,
+  operational CAP-006 evidence, runtime wiring, and one Web + AI Campaign remain required before
+  the Phase 2 exit gate is complete. The rollout verifier does not imply that organization-issued
+  releases already exist.
 - The small amount of explicit inventory duplication is intentional security configuration and
   must change through review.
 

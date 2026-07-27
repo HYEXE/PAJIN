@@ -104,6 +104,14 @@ return no replay plan.
   underlying Tool is mature.
 - Registration is not activation. CAP-004 still requires a reviewed publisher-signed first
   release before any profile may resolve the Capability.
+- `admit_existing_mode_capability_releases()` accepts only externally supplied policy, public
+  trust keys, and seven signed first-release bundles. It creates no key, review, signature, or
+  approval and rejects incomplete, duplicated, untrusted, future-dated, or authority-drifted
+  inventories through CAP-004 verification.
+- A content-addressed `ExistingModeCapabilityReleaseSet` binds each exact code authority to its
+  signed bundle digest, release reference, maturity, and exact benchmark-mapping digest.
+- `existing_mode_capability_benchmark_mappings()` provides one closed CAP-003 mapping for every
+  adapter. Mapping registration declares what must be observed; it is not execution evidence.
 - CAP-005 changes no existing Mode planner, validator, CLI, API, database, Graph, Gateway, or
   Replay coordinator path.
 - Rollback means not constructing `ExistingModeCapabilityBundle`; existing execution remains
@@ -117,14 +125,17 @@ return no replay plan.
 - missing Tool, extra Tool, and post-registration Tool-drift behavior;
 - exact KISA catalog materialization, compilation, and Worker preparation;
 - independently recomputed KISA, mock, Boolean SQLi, and CTF Crypto semantic outcomes;
-- non-executable KISA Replay plan and no Replay plan for A01/A02; and
-- bounded side-effect and empty-cleanup declarations.
+- non-executable KISA Replay plan and no Replay plan for A01/A02;
+- bounded side-effect and empty-cleanup declarations;
+- exact seven-item benchmark mapping and externally signed release-set coverage;
+- release and trust-key input-order independence; and
+- missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection.
 
 ## Follow-up boundaries
 
-- CAP-006 measurement contracts and the honest structural baseline are implemented; benchmark
-  mappings, delivery evidence, execution observations, and signed releases remain follow-up work;
-- signed CAP-004 releases for reviewed adapter versions;
+- CAP-006 measurement contracts, seven code-authored benchmark mappings, and signed release-set
+  admission are implemented; organization-issued releases, delivery evidence, and sealed
+  execution observations remain follow-up work;
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring;
 - one Web + AI Hybrid Campaign exit-gate verification;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and

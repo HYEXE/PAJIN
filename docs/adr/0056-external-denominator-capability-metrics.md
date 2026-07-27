@@ -38,6 +38,9 @@ stale versions or authority sets to contaminate the report.
 10. The CAP-005 helper reports an honest current baseline: implemented structure and Replay
     support are counted, while absent mappings, timestamps, execution samples, and signed releases
     remain gaps.
+11. A separate verified rollout input may contribute the seven code-authored mappings and seven
+    externally signed CAP-004 heads. Its release-set artifact binds full signed-bundle digests, but
+    test signatures are never described as organization-issued operational releases.
 
 ## Rejected alternatives
 
@@ -56,6 +59,8 @@ stale versions or authority sets to contaminate the report.
 - Consumers can reproduce a report and distinguish absent data from measured outcomes.
 - CAP-005's local baseline is deliberately incomplete even though structural definition,
   authority, and Replay-support coverage are present.
+- A fully admitted reference rollout reduces the explicit gaps from 31 to 17 without inventing
+  delivery, Oracle, or Replay execution observations.
 - Report production requires callers to preserve explicit delivery, benchmark, execution, and
   release evidence.
 - The collector remains offline and additive; runtime activation and the Phase 2 Web + AI exit
