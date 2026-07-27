@@ -245,6 +245,13 @@ The existing-mode compatibility boundary is specified by
 inventory, exact Tool and scenario contracts, independently recomputed semantic Oracles, and a
 non-executable binding to the existing KISA M03/M06/A04 fresh-session Replay path. Registration is
 explicit, every definition remains experimental, and existing runtimes are not replaced.
+The Phase 2 measurement boundary is specified by
+[ADR-0056](../adr/0056-external-denominator-capability-metrics.md) and
+[CAP-006](../capability/CAP-006-registry-quality-metrics.md). It measures exact external scope,
+lead time, Oracle, Replay, and signed lifecycle evidence without deriving its denominator from the
+Registry or inventing zero-valued results for missing samples. Its CAP-005 baseline records
+implemented structure and explicit evidence gaps; it does not activate the adapters or complete
+the Web + AI runtime exit gate.
 
 ## 10. Definition of Done
 

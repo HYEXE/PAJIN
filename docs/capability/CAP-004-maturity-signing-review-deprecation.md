@@ -146,7 +146,8 @@ issued.
 - durable signed Capability Registry storage, anti-rollback state, and operational key
   distribution;
 - reviewed signed releases for the experimental CAP-005 existing-mode adapter definitions;
-- CAP-006 coverage, authoring lead-time, Oracle, Replay, and lifecycle metrics;
+- CAP-006 coverage, lead-time, Oracle, Replay, and lifecycle measurement contracts are
+  implemented; reviewed adapter releases and operational samples remain follow-up work;
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring; and
 - Linux CI and clean-clone verification.
 

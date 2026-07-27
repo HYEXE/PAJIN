@@ -122,7 +122,8 @@ return no replay plan.
 
 ## Follow-up boundaries
 
-- CAP-006 coverage, Oracle, Replay, lifecycle, and authoring metrics;
+- CAP-006 measurement contracts and the honest structural baseline are implemented; benchmark
+  mappings, delivery evidence, execution observations, and signed releases remain follow-up work;
 - signed CAP-004 releases for reviewed adapter versions;
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring;
 - one Web + AI Hybrid Campaign exit-gate verification;
@@ -136,4 +137,5 @@ return no replay plan.
 - [CAP-002 Metadata + Code-backed Authority Interfaces](CAP-002-metadata-code-backed-authority-interfaces.md)
 - [CAP-003 Capability Authoring SDK and Scaffold](CAP-003-capability-authoring-sdk-scaffold.md)
 - [CAP-004 Maturity, Signing, Review, and Deprecation](CAP-004-maturity-signing-review-deprecation.md)
+- [CAP-006 Registry Quality Metrics](CAP-006-registry-quality-metrics.md)
 - [ADR-0055 Explicit Existing Mode Capability Adapters](../adr/0055-explicit-existing-mode-capability-adapters.md)

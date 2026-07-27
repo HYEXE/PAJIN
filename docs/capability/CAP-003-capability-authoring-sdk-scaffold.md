@@ -121,6 +121,7 @@ consumed.
 
 - organization-specific CAP-004 authorization workflow and durable Registry storage
 - additional authoring templates beyond the explicit CAP-005 existing-mode adapter bundle
-- CAP-006 Registry coverage, authoring lead time, Oracle, and Replay metrics
+- CAP-006 measurement contracts and the honest CAP-005 structural baseline are implemented;
+  real contribution timestamps, benchmark mappings, and execution samples remain follow-up work
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring
 - Linux CI and clean-clone scaffold-consumer verification
