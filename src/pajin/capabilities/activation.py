@@ -2,13 +2,23 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Awaitable, Callable, Iterable, Mapping
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from enum import StrEnum
 from hashlib import sha256
-from typing import Annotated, Literal, Protocol, Self, cast
+from typing import Annotated, Any, Literal, Protocol, Self, cast
 
-from pydantic import ConfigDict, Field, JsonValue, ValidationError, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    JsonValue,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from pajin.capabilities.adapters import registered_action_capability
 from pajin.capabilities.authorities import (
@@ -47,6 +57,7 @@ from pajin.graph.authority import (
     RegisteredActionCapability,
 )
 from pajin.graph.consistency import GraphDecision
+from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.tools.gateway import GatewayOutcome
 
 EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION: Literal[
@@ -55,13 +66,146 @@ EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION: Literal[
 PREPARED_CAPABILITY_ACTION_API_VERSION: Literal["pajin.dev/prepared-capability-action/v1alpha1"] = (
     "pajin.dev/prepared-capability-action/v1alpha1"
 )
+CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION: Literal[
+    "pajin.dev/capability-dispatch-audit-event/v1alpha1"
+] = "pajin.dev/capability-dispatch-audit-event/v1alpha1"
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _MAX_ACTIVATED_CAPABILITIES = 7
+_MAX_GATEWAY_OUTCOME_BYTES = 32 * 1024 * 1024
 
 
 class ExistingModeCapabilityActivationError(ValueError):
     """Raised when signed runtime activation or dispatch authority differs."""
+
+
+class CapabilityDispatchStage(StrEnum):
+    """Closed lifecycle stages emitted after an ActionPermit is consumed."""
+
+    CLAIMED = "claimed"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+    EXPIRED = "expired"
+
+
+class CapabilityDispatchAuditEvent(StrictModel):
+    """Content-addressed Permit-to-Gateway lifecycle record."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/capability-dispatch-audit-event/v1alpha1"] = Field(
+        default=CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["CapabilityDispatchAuditEvent"] = "CapabilityDispatchAuditEvent"
+    event_id: str = Field(default="", alias="eventId", max_length=100)
+    event_digest: str = Field(default="", alias="eventDigest", max_length=64)
+    stage: CapabilityDispatchStage
+    occurred_at: datetime = Field(alias="occurredAt")
+    activation_set_digest: _Sha256 = Field(alias="activationSetDigest")
+    release: CapabilityReleaseRef
+    permit_id: str = Field(alias="permitId", min_length=1, max_length=78)
+    permit_digest: _Sha256 = Field(alias="permitDigest")
+    dispatch_id: str = Field(alias="dispatchId", min_length=1, max_length=80)
+    campaign_id: str = Field(alias="campaignId", min_length=1, max_length=200)
+    run_id: str = Field(alias="runId", min_length=1, max_length=200)
+    proposal_id: str = Field(alias="proposalId", min_length=1, max_length=80)
+    proposal_digest: _Sha256 = Field(alias="proposalDigest")
+    request_id: str = Field(alias="requestId", min_length=1, max_length=200)
+    request_digest: _Sha256 = Field(alias="requestDigest")
+    normalized_parameters_digest: _Sha256 = Field(alias="normalizedParametersDigest")
+    gateway_outcome_digest: _Sha256 | None = Field(
+        default=None,
+        alias="gatewayOutcomeDigest",
+    )
+    gateway_execution_id: str | None = Field(
+        default=None,
+        alias="gatewayExecutionId",
+        min_length=1,
+        max_length=200,
+    )
+    executed: bool | None = None
+    policy_allowed: bool | None = Field(default=None, alias="policyAllowed")
+    tool_success: bool | None = Field(default=None, alias="toolSuccess")
+    evidence: tuple[str, ...] = Field(default=(), max_length=100)
+    error_type: str | None = Field(
+        default=None,
+        alias="errorType",
+        min_length=1,
+        max_length=200,
+    )
+
+    @field_validator("occurred_at")
+    @classmethod
+    def normalize_time(cls, value: datetime) -> datetime:
+        return _normalize_dispatch_time(value, label="Capability dispatch event time")
+
+    @model_validator(mode="after")
+    def bind_lifecycle_and_identity(self) -> Self:
+        if self.evidence != tuple(sorted(set(self.evidence))):
+            raise ValueError("Capability dispatch evidence must be unique and sorted")
+        outcome_fields = (
+            self.gateway_outcome_digest,
+            self.executed,
+            self.policy_allowed,
+            self.tool_success,
+        )
+        if self.stage is CapabilityDispatchStage.COMPLETED:
+            if any(value is None for value in outcome_fields) or self.error_type is not None:
+                raise ValueError(
+                    "completed Capability dispatch requires only Gateway outcome fields"
+                )
+        elif self.stage in {
+            CapabilityDispatchStage.FAILED,
+            CapabilityDispatchStage.CANCELLED,
+        }:
+            if any(value is not None for value in outcome_fields):
+                raise ValueError("unsuccessful Capability dispatch cannot claim a Gateway outcome")
+            if self.gateway_execution_id is not None or self.evidence:
+                raise ValueError("unsuccessful Capability dispatch cannot claim Gateway evidence")
+            if self.error_type is None:
+                raise ValueError(
+                    "unsuccessful Capability dispatch requires an audit-safe error type"
+                )
+        elif (
+            any(value is not None for value in outcome_fields)
+            or self.gateway_execution_id is not None
+            or self.evidence
+            or self.error_type is not None
+        ):
+            raise ValueError("non-terminal Capability dispatch cannot claim Gateway result fields")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"event_id", "event_digest"},
+        )
+        digest = capability_definition_digest(
+            "pajin.capability.dispatch-audit-event/v1",
+            material,
+        )
+        event_id = f"capability-dispatch-event_{digest}"
+        if self.event_digest and self.event_digest != digest:
+            raise ValueError("Capability dispatch event digest differs from canonical identity")
+        if self.event_id and self.event_id != event_id:
+            raise ValueError("Capability dispatch event ID differs from canonical identity")
+        object.__setattr__(self, "event_digest", digest)
+        object.__setattr__(self, "event_id", event_id)
+        return self
+
+
+class CapabilityDispatchAuditStore(Protocol):
+    """Append-only Run audit boundary used by the Capability dispatch bridge."""
+
+    run_id: str
+
+    def append_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        occurred_at: datetime | None = None,
+    ) -> object: ...
 
 
 class ExistingModeCapabilityActivationBinding(StrictModel):
@@ -295,12 +439,20 @@ class ExistingModeCapabilityGatewayDispatcher:
         activation: ExistingModeCapabilityActivation,
         permits: _PermitDispatcher,
         gateway: _Gateway,
+        audit_store: CapabilityDispatchAuditStore,
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         if not isinstance(activation, ExistingModeCapabilityActivation):
             raise TypeError("Capability Gateway dispatch requires a verified activation")
+        if not isinstance(getattr(audit_store, "run_id", None), str) or not callable(
+            getattr(audit_store, "append_event", None)
+        ):
+            raise TypeError("Capability Gateway dispatch requires an append-only audit store")
         self._activation = activation
         self._permits = permits
         self._gateway = gateway
+        self._audit_store = audit_store
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     async def dispatch_once(
         self,
@@ -341,13 +493,61 @@ class ExistingModeCapabilityGatewayDispatcher:
 
         async def dispatch(permit: ActionPermit) -> GatewayOutcome:
             self._validate_permit(permit, proposal, canonical_prepared)
-            self._activation.resolve_for_dispatch(canonical_prepared.capability)
-            return await self._gateway.execute(
-                canonical_campaign,
-                canonical_grant,
-                canonical_prepared.request,
-                used_calls=used_calls,
+            if self._audit_store.run_id != permit.run_id:
+                raise ExistingModeCapabilityActivationError(
+                    "Capability dispatch audit Run differs from the consumed ActionPermit"
+                )
+            claimed_at = self._dispatch_time()
+            self._append_dispatch_event(
+                permit=permit,
+                prepared=canonical_prepared,
+                stage=CapabilityDispatchStage.CLAIMED,
+                occurred_at=claimed_at,
             )
+            if claimed_at >= permit.expires_at:
+                self._append_dispatch_event(
+                    permit=permit,
+                    prepared=canonical_prepared,
+                    stage=CapabilityDispatchStage.EXPIRED,
+                    occurred_at=self._dispatch_time(),
+                )
+                raise ExistingModeCapabilityActivationError(
+                    "consumed ActionPermit expired before Tool Gateway dispatch"
+                )
+            try:
+                self._activation.resolve_for_dispatch(canonical_prepared.capability)
+                outcome = await self._gateway.execute(
+                    canonical_campaign,
+                    canonical_grant,
+                    canonical_prepared.request,
+                    used_calls=used_calls,
+                )
+            except asyncio.CancelledError as exc:
+                self._append_dispatch_event(
+                    permit=permit,
+                    prepared=canonical_prepared,
+                    stage=CapabilityDispatchStage.CANCELLED,
+                    occurred_at=self._dispatch_time(),
+                    error_type=audit_safe_exception_type(exc),
+                )
+                raise
+            except Exception as exc:
+                self._append_dispatch_event(
+                    permit=permit,
+                    prepared=canonical_prepared,
+                    stage=CapabilityDispatchStage.FAILED,
+                    occurred_at=self._dispatch_time(),
+                    error_type=audit_safe_exception_type(exc),
+                )
+                raise
+            self._append_dispatch_event(
+                permit=permit,
+                prepared=canonical_prepared,
+                stage=CapabilityDispatchStage.COMPLETED,
+                occurred_at=self._dispatch_time(),
+                outcome=outcome,
+            )
+            return outcome
 
         if proposal.reservation.request_units != definition.request_unit_cost:
             raise ExistingModeCapabilityActivationError(
@@ -401,7 +601,9 @@ class ExistingModeCapabilityGatewayDispatcher:
         prepared: PreparedCapabilityAction,
     ) -> None:
         if (
-            permit.proposal_id != proposal.proposal_id
+            permit.campaign_id != proposal.campaign_id
+            or permit.run_id != proposal.run_id
+            or permit.proposal_id != proposal.proposal_id
             or permit.proposal_digest != proposal.proposal_digest
             or permit.capability != prepared.capability
             or permit.request_id != prepared.request.request_id
@@ -411,6 +613,61 @@ class ExistingModeCapabilityGatewayDispatcher:
             raise ExistingModeCapabilityActivationError(
                 "consumed ActionPermit differs from the prepared Capability action"
             )
+
+    def _append_dispatch_event(
+        self,
+        *,
+        permit: ActionPermit,
+        prepared: PreparedCapabilityAction,
+        stage: CapabilityDispatchStage,
+        occurred_at: datetime,
+        outcome: GatewayOutcome | None = None,
+        error_type: str | None = None,
+    ) -> CapabilityDispatchAuditEvent:
+        event = CapabilityDispatchAuditEvent(
+            stage=stage,
+            occurredAt=occurred_at,
+            activationSetDigest=prepared.activation_set_digest,
+            release=prepared.release,
+            permitId=permit.permit_id,
+            permitDigest=permit.permit_digest,
+            dispatchId=permit.dispatch_id,
+            campaignId=permit.campaign_id,
+            runId=permit.run_id,
+            proposalId=permit.proposal_id,
+            proposalDigest=permit.proposal_digest,
+            requestId=permit.request_id,
+            requestDigest=permit.request_digest,
+            normalizedParametersDigest=permit.normalized_parameters_digest,
+            gatewayOutcomeDigest=(
+                capability_gateway_outcome_digest(outcome) if outcome is not None else None
+            ),
+            gatewayExecutionId=(
+                outcome.worker_result.execution_id
+                if outcome is not None and outcome.worker_result is not None
+                else None
+            ),
+            executed=outcome.executed if outcome is not None else None,
+            policyAllowed=outcome.decision.allowed if outcome is not None else None,
+            toolSuccess=outcome.result.success if outcome is not None else None,
+            evidence=(tuple(sorted(set(outcome.result.evidence))) if outcome is not None else ()),
+            errorType=error_type,
+        )
+        self._audit_store.append_event(
+            f"capability.dispatch.{event.stage.value}",
+            event.model_dump(mode="json", by_alias=True),
+            occurred_at=event.occurred_at,
+        )
+        return event
+
+    def _dispatch_time(self) -> datetime:
+        try:
+            value = self._clock()
+        except Exception as exc:
+            raise ExistingModeCapabilityActivationError(
+                "Capability dispatch audit clock failed"
+            ) from exc
+        return _normalize_dispatch_time(value, label="Capability dispatch audit clock")
 
 
 def activate_existing_mode_capabilities(
@@ -496,6 +753,43 @@ def capability_tool_request_digest(request: ToolRequest) -> str:
             "Capability Tool request is not strict canonical JSON"
         ) from exc
     return sha256(encoded).hexdigest()
+
+
+def capability_gateway_outcome_digest(outcome: GatewayOutcome) -> str:
+    """Bind the exact Gateway outcome without copying result data into audit events."""
+
+    try:
+        canonical = GatewayOutcome.model_validate(outcome.model_dump(mode="json"))
+        encoded = json.dumps(
+            canonical.model_dump(mode="json"),
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (
+        AttributeError,
+        OverflowError,
+        TypeError,
+        UnicodeError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        raise ExistingModeCapabilityActivationError(
+            "Capability Gateway outcome is not strict canonical JSON"
+        ) from exc
+    if len(encoded) > _MAX_GATEWAY_OUTCOME_BYTES:
+        raise ExistingModeCapabilityActivationError(
+            "Capability Gateway outcome exceeds the audit digest byte limit"
+        )
+    domain = b"pajin.capability.gateway-outcome/v1"
+    return sha256(
+        b"PAJIN-CAPABILITY\0"
+        + len(domain).to_bytes(4, "big")
+        + domain
+        + len(encoded).to_bytes(8, "big")
+        + encoded
+    ).hexdigest()
 
 
 def capability_normalized_parameters_digest(
@@ -633,6 +927,17 @@ def _canonical_model[ModelT: StrictModel](
         raise ExistingModeCapabilityActivationError(
             f"Capability Gateway {label} is not canonical"
         ) from exc
+
+
+def _normalize_dispatch_time(value: datetime, *, label: str) -> datetime:
+    if not isinstance(value, datetime):
+        raise ExistingModeCapabilityActivationError(f"{label} must be a datetime")
+    try:
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ExistingModeCapabilityActivationError(f"{label} must include a UTC offset or Z")
+        return value.astimezone(UTC)
+    except (OverflowError, TypeError, ValueError) as exc:
+        raise ExistingModeCapabilityActivationError(f"{label} is invalid") from exc
 
 
 def _release_key(reference: CapabilityReleaseRef) -> tuple[str, str]:

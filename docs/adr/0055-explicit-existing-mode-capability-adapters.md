@@ -34,12 +34,16 @@ analysis.
    identities, is explicitly non-executable, and requires new authorization.
 8. Current adapters are `none` or `read-only` and have explicit no-op cleanup. A future write
    adapter requires a new version and cleanup design.
-9. Existing Mode, CLI, Graph, Tool Gateway, Replay, API, and database paths remain unchanged.
-   Runtime dispatch integration is a later opt-in vertical slice.
+9. Existing Mode, CLI, Replay, API, and default runtime paths remain unchanged. An explicit
+   activation can bridge a first-consumed GRAPH-006 Permit into Tool Gateway only when an
+   append-only RunStore matches the Permit Run.
 10. The closed inventory has seven code-authored benchmark mappings. A rollout admits only seven
     externally reviewed first-release bundles through CAP-004, and emits a content-addressed set
     binding every full signed-bundle digest, release reference, maturity, and mapping digest.
     PAJIN does not create keys, reviews, signatures, or approvals for this operation.
+11. The bridge records content-addressed `claimed` and observed terminal lifecycle events. A
+    completed event binds the exact Gateway outcome digest without duplicating result data;
+    failure and cancellation retain only audit-safe exception types.
 
 ## Rejected alternatives
 
@@ -63,18 +67,23 @@ analysis.
 - Unregistered and extra Tools stay outside the generalized Capability surface.
 - Adapter and Tool drift is visible through stable-context and definition digests.
 - An incomplete or substituted signed rollout cannot be presented as complete adapter coverage.
+- An explicit dispatch has a hash-chained Permit-to-Gateway result linkage and fails closed before
+  Gateway entry when its claimed event cannot be recorded.
 - Generalized execution is intentionally not yet live. Organization-issued signed releases,
-  operational CAP-006 evidence, runtime wiring, and one Web + AI Campaign remain required before
-  the Phase 2 exit gate is complete. The rollout verifier does not imply that organization-issued
-  releases already exist.
+  operational CAP-006 evidence, Worker-daemon deployment wiring, and one Web + AI Campaign remain
+  required before the Phase 2 exit gate is complete. The rollout verifier does not imply that
+  organization-issued releases already exist.
+- Graph SQLite, RunStore, and Worker side effects are separate durability domains. A crash can
+  leave a consumed Permit with no lifecycle event or only a claimed event; automatic redispatch
+  remains forbidden.
 - The small amount of explicit inventory duplication is intentional security configuration and
   must change through review.
 
 ## Compatibility, migration, and rollback
 
-- The change is additive and in-memory; no persistent migration is required.
+- The change is additive; the RunStore event schema needs no persistent migration.
 - Consumers opt in by constructing the bundle from an already populated `ToolRegistry`.
-- Not constructing the bundle restores the prior behavior.
+- Not constructing the activation/dispatcher restores the prior behavior.
 - Any incompatible adapter or Tool change requires a new Capability version, authority set, and
   CAP-004 release.
 

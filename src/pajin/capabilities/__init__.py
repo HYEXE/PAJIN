@@ -1,8 +1,12 @@
 """Versioned executable Capability contracts and compatibility adapters."""
 
 from pajin.capabilities.activation import (
+    CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION,
     EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION,
     PREPARED_CAPABILITY_ACTION_API_VERSION,
+    CapabilityDispatchAuditEvent,
+    CapabilityDispatchAuditStore,
+    CapabilityDispatchStage,
     ExistingModeCapabilityActivation,
     ExistingModeCapabilityActivationBinding,
     ExistingModeCapabilityActivationError,
@@ -10,6 +14,7 @@ from pajin.capabilities.activation import (
     ExistingModeCapabilityGatewayDispatcher,
     PreparedCapabilityAction,
     activate_existing_mode_capabilities,
+    capability_gateway_outcome_digest,
     capability_normalized_parameters_digest,
     capability_tool_request_digest,
 )
@@ -157,6 +162,7 @@ __all__ = [
     "CAPABILITY_BENCHMARK_MAPPING_API_VERSION",
     "CAPABILITY_DEFINITION_API_VERSION",
     "CAPABILITY_DELIVERY_EVIDENCE_API_VERSION",
+    "CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION",
     "CAPABILITY_LIFECYCLE_POLICY_API_VERSION",
     "CAPABILITY_METRICS_REPORT_API_VERSION",
     "CAPABILITY_METRIC_SCOPE_API_VERSION",
@@ -190,6 +196,9 @@ __all__ = [
     "CapabilityDefinitionRegistry",
     "CapabilityDeliveryEvidence",
     "CapabilityDeprecationNotice",
+    "CapabilityDispatchAuditEvent",
+    "CapabilityDispatchAuditStore",
+    "CapabilityDispatchStage",
     "CapabilityDurationSummary",
     "CapabilityExecutorAdapter",
     "CapabilityLeadTimeMetrics",
@@ -268,6 +277,7 @@ __all__ = [
     "capability_authority_binding",
     "capability_definition_digest",
     "capability_definition_from_tool",
+    "capability_gateway_outcome_digest",
     "capability_lifecycle_public_key",
     "capability_normalized_parameters_digest",
     "capability_parameter_schema_digest",

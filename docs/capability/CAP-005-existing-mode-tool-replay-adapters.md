@@ -25,9 +25,11 @@ the bootstrap automatically.
   `pajin.existing-mode-capability-adapter/v1` and
   `pajin.dev/existing-kisa-replay-plan/v1alpha1`,
   `pajin.dev/existing-mode-capability-activation-set/v1alpha1`, and
-  `pajin.dev/prepared-capability-action/v1alpha1`
-- **Audit artifacts:** seven canonical `CapabilityDefinition` records and seven complete
-  `CodeBackedCapability` authority sets
+  `pajin.dev/prepared-capability-action/v1alpha1`, and
+  `pajin.dev/capability-dispatch-audit-event/v1alpha1`
+- **Audit artifacts:** seven canonical `CapabilityDefinition` records, seven complete
+  `CodeBackedCapability` authority sets, and content-addressed Permit dispatch events in the
+  RunStore hash chain
 - **Benchmark impact:** none until CAP-006 records coverage and runtime wiring executes an
   activated release
 
@@ -120,6 +122,19 @@ request-unit cost, then invokes the existing Tool Gateway. The Gateway still own
 Capability Grant, Scope, risk, method, rate, Secret, Worker, receipt, and evidence policy. A
 response-loss retry remains non-dispatchable through GRAPH-006.
 
+Construction now requires an append-only audit store whose Run ID equals the consumed Permit.
+After the Graph claim, the dispatcher emits `capability.dispatch.claimed` before Gateway entry and
+exactly one observed terminal stage: `completed`, `failed`, `cancelled`, or `expired`. Every
+content-addressed event binds the activation set, release, Permit/dispatch/proposal/request
+identities, and normalized parameters. A completed event additionally binds a domain-separated
+digest of the exact `GatewayOutcome`, execution ID when present, policy/execution/success flags,
+and canonical evidence references without copying result data into the audit event. Failure and
+cancellation expose only an audit-safe exception type.
+
+The bridge fails closed before Gateway entry when the claimed event cannot be appended, the audit
+Run differs, or the Permit has expired. Terminal append failure is surfaced to the caller and the
+consumed Permit is never retried.
+
 This path is never installed automatically. The legacy Mode planners and coordinators continue to
 use their existing paths unless a caller explicitly builds the signed activation and dispatcher.
 The local Web + AI fixture proves the structural exit gate but does not claim organization-issued
@@ -156,7 +171,9 @@ releases or an operational Campaign run.
 - exact seven-item benchmark mapping and externally signed release-set coverage;
 - release, trust-key, and Web + AI activation input-order independence;
 - range-only signed activation, inactive Capability rejection, CAP-002 request compilation, exact
-  Proposal/Permit/request binding, and request-unit cost enforcement; and
+  Proposal/Permit/request binding, and request-unit cost enforcement;
+- hash-chained claimed/completed linkage, exact Gateway outcome digest, tamper rejection,
+  failure/cancellation/expiry terminal events, and pre-execution audit-write fail-closed behavior;
 - missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection.
 
 ## Follow-up boundaries
@@ -165,9 +182,15 @@ releases or an operational Campaign run.
   admission are implemented; organization-issued releases, delivery evidence, and sealed
   execution observations remain follow-up work;
 - one Web + AI Hybrid Campaign exit-gate run using organization-issued releases;
-- dispatch outcome lifecycle events and explicit Graph Permit-to-Gateway result audit records;
+- Worker-daemon deployment wiring for the explicit Graph/Capability dispatch bridge;
+- fault injection around the non-atomic Graph SQLite claim and RunStore audit/Gateway boundary;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.
+
+The Graph claim, RunStore event append, and external Worker side effect are separate durability
+domains. A process death after the SQLite claim can leave no claimed event; a death after Gateway
+side effect can leave only the claimed event. The consumed Permit prevents automatic redispatch,
+so operational reconciliation must classify these states rather than infer successful execution.
 
 ## Related documents
 

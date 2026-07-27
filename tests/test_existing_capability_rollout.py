@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -11,6 +12,8 @@ from pydantic import ValidationError
 
 from pajin.capabilities import (
     CapabilityBenchmarkMapping,
+    CapabilityDispatchAuditEvent,
+    CapabilityDispatchStage,
     CapabilityLifecycleKeyRole,
     CapabilityLifecycleKeyState,
     CapabilityLifecyclePolicy,
@@ -34,6 +37,7 @@ from pajin.capabilities import (
     PreparedCapabilityAction,
     activate_existing_mode_capabilities,
     admit_existing_mode_capability_releases,
+    capability_gateway_outcome_digest,
     capability_lifecycle_public_key,
     capability_normalized_parameters_digest,
     capability_tool_request_digest,
@@ -51,7 +55,7 @@ from pajin.domain.models import (
 )
 from pajin.graph import ActionPermitError
 from pajin.policy.engine import PolicyEngine
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunStore, load_verified_run_events
 from pajin.runtime.worker import SimulatedWorkerBackend
 from pajin.tools.ai import AIChatProbeTool
 from pajin.tools.base import ToolRegistry
@@ -292,6 +296,77 @@ class _PermitDispatcherStub:
             dispatched=True,
             result=result,
         )
+
+
+class _RaisingGateway:
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.calls = 0
+
+    async def execute(self, *_args, **_kwargs):
+        self.calls += 1
+        raise self.error
+
+
+class _FailingAuditStore:
+    def __init__(self, run_id: str) -> None:
+        self.run_id = run_id
+        self.calls = 0
+
+    def append_event(self, *_args, **_kwargs):
+        self.calls += 1
+        raise RuntimeError("audit storage unavailable")
+
+
+def _dispatch_authority(
+    *,
+    campaign_id: str,
+    run_id: str,
+    prepared: PreparedCapabilityAction,
+    expires_at: datetime = NOW + timedelta(days=1),
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    proposal = SimpleNamespace(
+        campaign_id=campaign_id,
+        run_id=run_id,
+        proposal_id="action-proposal_" + "a" * 64,
+        proposal_digest="b" * 64,
+        capability=prepared.capability,
+        request_id=prepared.request.request_id,
+        request_digest=prepared.request_digest,
+        normalized_parameters_digest=prepared.normalized_parameters_digest,
+        reservation=SimpleNamespace(request_units=1),
+    )
+    permit = SimpleNamespace(
+        permit_id="action-permit_" + "c" * 64,
+        permit_digest="d" * 64,
+        dispatch_id="action-dispatch_" + "e" * 64,
+        campaign_id=campaign_id,
+        run_id=run_id,
+        proposal_id=proposal.proposal_id,
+        proposal_digest=proposal.proposal_digest,
+        capability=prepared.capability,
+        request_id=prepared.request.request_id,
+        request_digest=prepared.request_digest,
+        normalized_parameters_digest=prepared.normalized_parameters_digest,
+        expires_at=expires_at,
+    )
+    return proposal, permit
+
+
+def _dispatch_grant(
+    prepared: PreparedCapabilityAction,
+    campaign: CampaignManifest,
+) -> CapabilityGrant:
+    return CapabilityGrant(
+        subject=prepared.request.agent_id,
+        campaign=campaign.metadata.name,
+        tools={prepared.request.tool_id},
+        targets={prepared.request.target},
+        max_risk_tier=ToolRiskTier.T2,
+        max_calls=1,
+        issued_at=campaign.spec.authorization.approved_at,
+        expires_at=campaign.spec.authorization.expires_at,
+    )
 
 
 def test_existing_mode_benchmark_mappings_cover_exact_seven_capabilities() -> None:
@@ -561,28 +636,15 @@ async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
     sample_campaign: CampaignManifest,
 ) -> None:
     activation, prepared = _mock_action(_admit())
-    proposal = SimpleNamespace(
-        campaign_id=sample_campaign.metadata.name,
-        proposal_id="action-proposal_" + "a" * 64,
-        proposal_digest="b" * 64,
-        capability=prepared.capability,
-        request_id=prepared.request.request_id,
-        request_digest=prepared.request_digest,
-        normalized_parameters_digest=prepared.normalized_parameters_digest,
-        reservation=SimpleNamespace(request_units=1),
-    )
-    permit = SimpleNamespace(
-        proposal_id=proposal.proposal_id,
-        proposal_digest=proposal.proposal_digest,
-        capability=prepared.capability,
-        request_id=prepared.request.request_id,
-        request_digest=prepared.request_digest,
-        normalized_parameters_digest=prepared.normalized_parameters_digest,
-    )
-    permits = _PermitDispatcherStub(permit)
     tools = ToolRegistry()
     tools.register(MockAgentProbe())
     store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    proposal, permit = _dispatch_authority(
+        campaign_id=sample_campaign.metadata.name,
+        run_id=store.run_id,
+        prepared=prepared,
+    )
+    permits = _PermitDispatcherStub(permit)
     gateway = ToolGateway(
         policy=PolicyEngine(),
         tools=tools,
@@ -593,17 +655,10 @@ async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
         activation=activation,
         permits=permits,
         gateway=gateway,
+        audit_store=store,
+        clock=lambda: NOW,
     )
-    grant = CapabilityGrant(
-        subject=prepared.request.agent_id,
-        campaign=sample_campaign.metadata.name,
-        tools={prepared.request.tool_id},
-        targets={prepared.request.target},
-        max_risk_tier=ToolRiskTier.T2,
-        max_calls=1,
-        issued_at=sample_campaign.spec.authorization.approved_at,
-        expires_at=sample_campaign.spec.authorization.expires_at,
-    )
+    grant = _dispatch_grant(prepared, sample_campaign)
 
     result = await dispatcher.dispatch_once(
         SimpleNamespace(),
@@ -626,6 +681,33 @@ async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
         )
     )
     assert reservation["requestSha256"] == prepared.request_digest
+    store.seal()
+    dispatch_events = [
+        event
+        for event in load_verified_run_events(store.path)
+        if event.event_type.startswith("capability.dispatch.")
+    ]
+    assert [event.event_type for event in dispatch_events] == [
+        "capability.dispatch.claimed",
+        "capability.dispatch.completed",
+    ]
+    claimed, completed = (
+        CapabilityDispatchAuditEvent.model_validate(event.payload) for event in dispatch_events
+    )
+    assert claimed.stage is CapabilityDispatchStage.CLAIMED
+    assert completed.stage is CapabilityDispatchStage.COMPLETED
+    assert completed.permit_id == permit.permit_id
+    assert completed.permit_digest == permit.permit_digest
+    assert completed.dispatch_id == permit.dispatch_id
+    assert completed.activation_set_digest == prepared.activation_set_digest
+    assert completed.gateway_outcome_digest == capability_gateway_outcome_digest(result.result)
+    assert completed.executed is True
+    assert completed.policy_allowed is True
+    assert completed.tool_success is True
+
+    tampered = dispatch_events[-1].payload | {"permitDigest": "0" * 64}
+    with pytest.raises(ValidationError, match="event digest differs"):
+        CapabilityDispatchAuditEvent.model_validate(tampered)
 
     mismatched = SimpleNamespace(**vars(proposal))
     mismatched.request_digest = "0" * 64
@@ -643,3 +725,145 @@ async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
             used_calls=0,
         )
     assert permits.calls == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("error", "expected_stage"),
+    [
+        (RuntimeError("gateway failed"), CapabilityDispatchStage.FAILED),
+        (asyncio.CancelledError(), CapabilityDispatchStage.CANCELLED),
+    ],
+)
+async def test_gateway_dispatch_audits_failure_and_cancellation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    error: BaseException,
+    expected_stage: CapabilityDispatchStage,
+) -> None:
+    activation, prepared = _mock_action(_admit())
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    proposal, permit = _dispatch_authority(
+        campaign_id=sample_campaign.metadata.name,
+        run_id=store.run_id,
+        prepared=prepared,
+    )
+    gateway = _RaisingGateway(error)
+    dispatcher = ExistingModeCapabilityGatewayDispatcher(
+        activation=activation,
+        permits=_PermitDispatcherStub(permit),
+        gateway=gateway,
+        audit_store=store,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(type(error)):
+        await dispatcher.dispatch_once(
+            SimpleNamespace(),
+            proposal,
+            SimpleNamespace(),
+            prepared,
+            campaign=sample_campaign,
+            grant=_dispatch_grant(prepared, sample_campaign),
+            used_calls=0,
+        )
+
+    store.seal()
+    dispatch_events = [
+        CapabilityDispatchAuditEvent.model_validate(event.payload)
+        for event in load_verified_run_events(store.path)
+        if event.event_type.startswith("capability.dispatch.")
+    ]
+    assert [event.stage for event in dispatch_events] == [
+        CapabilityDispatchStage.CLAIMED,
+        expected_stage,
+    ]
+    assert dispatch_events[-1].error_type is not None
+    assert dispatch_events[-1].gateway_outcome_digest is None
+    assert gateway.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_dispatch_audits_expiry_without_calling_gateway(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    activation, prepared = _mock_action(_admit())
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    proposal, permit = _dispatch_authority(
+        campaign_id=sample_campaign.metadata.name,
+        run_id=store.run_id,
+        prepared=prepared,
+        expires_at=NOW,
+    )
+    gateway = _RaisingGateway(AssertionError("expired Permit reached Gateway"))
+    dispatcher = ExistingModeCapabilityGatewayDispatcher(
+        activation=activation,
+        permits=_PermitDispatcherStub(permit),
+        gateway=gateway,
+        audit_store=store,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(
+        ExistingModeCapabilityActivationError,
+        match="expired before Tool Gateway",
+    ):
+        await dispatcher.dispatch_once(
+            SimpleNamespace(),
+            proposal,
+            SimpleNamespace(),
+            prepared,
+            campaign=sample_campaign,
+            grant=_dispatch_grant(prepared, sample_campaign),
+            used_calls=0,
+        )
+
+    store.seal()
+    dispatch_events = [
+        CapabilityDispatchAuditEvent.model_validate(event.payload)
+        for event in load_verified_run_events(store.path)
+        if event.event_type.startswith("capability.dispatch.")
+    ]
+    assert [event.stage for event in dispatch_events] == [
+        CapabilityDispatchStage.CLAIMED,
+        CapabilityDispatchStage.EXPIRED,
+    ]
+    assert gateway.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_dispatch_fails_closed_before_execution_when_audit_append_fails(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    activation, prepared = _mock_action(_admit())
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    proposal, permit = _dispatch_authority(
+        campaign_id=sample_campaign.metadata.name,
+        run_id=store.run_id,
+        prepared=prepared,
+    )
+    gateway = _RaisingGateway(AssertionError("unaudited dispatch reached Gateway"))
+    audit_store = _FailingAuditStore(store.run_id)
+    dispatcher = ExistingModeCapabilityGatewayDispatcher(
+        activation=activation,
+        permits=_PermitDispatcherStub(permit),
+        gateway=gateway,
+        audit_store=audit_store,
+        clock=lambda: NOW,
+    )
+
+    with pytest.raises(RuntimeError, match="audit storage unavailable"):
+        await dispatcher.dispatch_once(
+            SimpleNamespace(),
+            proposal,
+            SimpleNamespace(),
+            prepared,
+            campaign=sample_campaign,
+            grant=_dispatch_grant(prepared, sample_campaign),
+            used_calls=0,
+        )
+
+    assert audit_store.calls == 1
+    assert gateway.calls == 0

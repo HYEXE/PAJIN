@@ -86,6 +86,18 @@ Capability, Tool, request, normalized-parameter, and request-unit identities on 
 Permit claim. `ExistingModeCapabilityGatewayDispatcher` calls the existing Tool Gateway only from
 the first-consumption callback.
 
+The callback requires a RunStore matching the Permit Run. It appends a content-addressed
+`CapabilityDispatchAuditEvent` at `claimed` before Gateway entry and then one observed terminal
+stage: `completed`, `failed`, `cancelled`, or `expired`. All stages bind the exact Permit,
+dispatch, Proposal, request, activation set, and signed release. Completion also binds the exact
+Gateway outcome digest, execution identity when available, policy/execution/result flags, and
+evidence references. Result bodies and exception details are not copied into the lifecycle event.
+
+An unavailable or mismatched audit store prevents Gateway entry. An expired Permit records
+`claimed` and `expired` without calling Gateway. Failure and cancellation retain the consumed
+Permit and record only an audit-safe exception type. The outer RunStore `AuditEvent` supplies
+sequence, previous-hash linkage, and seal coverage.
+
 The bridge is explicit construction, not default runtime wiring. Existing Mode execution is
 unchanged, and local signed fixtures are not organization-issued activation authority.
 
@@ -107,15 +119,15 @@ Tests cover canonical identities, registry drift, reopen recovery, exact respons
 projection lag and stale decisions, cross-instance one-winner races, terminal callback failure,
 durable budgets and rolling rates, Scope/expiry rejection, request equivocation, append-only and
 fingerprint tampering, honest v1-to-v2 migration, signed Web + AI subset activation, inactive
-Capability rejection, and exact prepared-request Gateway dispatch binding.
+Capability rejection, exact prepared-request Gateway dispatch binding, outcome-digest tamper
+rejection, success/failure/expiry/cancellation lifecycle events, and pre-execution audit failure.
 
 The focused Graph suite on Windows is `64 passed, 2 skipped`; the skips are the existing POSIX
 symlink/hard-link semantics checks.
 
 ## Remaining boundaries
 
-- explicit Permit-to-Gateway result audit linkage and Worker-daemon deployment wiring;
-- dispatch success/failure/expiry/cancellation lifecycle events;
+- Worker-daemon deployment wiring for the explicit Graph/Capability bridge;
 - durable Capability Registry and compiler rotation policy;
 - process-kill/fsync fault injection and verified backup/restore;
 - multi-host leader/lease and PostgreSQL/HA adapters; and
@@ -124,3 +136,6 @@ symlink/hard-link semantics checks.
 An external Worker side effect is not physically part of the SQLite commit. This slice defines the
 commit as the one-time dispatch claim and prevents duplicate side effects on retry. A process crash
 after commit may leave the action unexecuted but consumed; it is never automatically redispatched.
+The Graph claim, RunStore lifecycle event, and Worker side effect are not one transaction. A crash
+can therefore leave no `claimed` event after the claim or leave only `claimed` after a side effect.
+Reconciliation must treat those as uncertain terminal states rather than manufacture completion.
