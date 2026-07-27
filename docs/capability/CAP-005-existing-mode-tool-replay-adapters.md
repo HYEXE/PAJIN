@@ -23,7 +23,9 @@ the bootstrap automatically.
 - **Changed trust boundary:** existing bounded Mode Tool contracts to CAP-001/002 registration
 - **Schema/API versions:** existing CAP-001/002 schemas plus
   `pajin.existing-mode-capability-adapter/v1` and
-  `pajin.dev/existing-kisa-replay-plan/v1alpha1`
+  `pajin.dev/existing-kisa-replay-plan/v1alpha1`,
+  `pajin.dev/existing-mode-capability-activation-set/v1alpha1`, and
+  `pajin.dev/prepared-capability-action/v1alpha1`
 - **Audit artifacts:** seven canonical `CapabilityDefinition` records and seven complete
   `CodeBackedCapability` authority sets
 - **Benchmark impact:** none until CAP-006 records coverage and runtime wiring executes an
@@ -98,6 +100,31 @@ The CAP-002 replay strategy returns an information-only
 receipt, and sealed-run checks still authorize and execute replay. A01/A02, Bug Bounty, and CTF
 return no replay plan.
 
+## Opt-in activation and GRAPH dispatch
+
+`activate_existing_mode_capabilities()` accepts only an explicit subset of exact release
+references from one verified `ExistingModeCapabilityRollout`. CAP-004 revalidates every release
+against the requested profile. The resulting content-addressed activation set binds the source
+release-set digest, exact code authority, GRAPH-006 registration, domain, and supported surfaces.
+Input order does not change its identity. A missing, duplicated, historical, profile-ineligible,
+or registration-drifted release fails closed.
+
+`ExistingModeCapabilityActivation.action_registry()` exposes only that subset to the GRAPH-006
+Permit compiler. `prepare_action()` then runs the selected release's CAP-002 materializer and
+action compiler and binds the exact canonical Tool request and normalized-parameter digests.
+
+`ExistingModeCapabilityGatewayDispatcher` revalidates the signed release before the atomic Permit
+claim and again immediately before its callback. It requires the Proposal and consumed Permit to
+match the prepared Capability, release, request ID/digest, parameter digest, and declared
+request-unit cost, then invokes the existing Tool Gateway. The Gateway still owns Campaign,
+Capability Grant, Scope, risk, method, rate, Secret, Worker, receipt, and evidence policy. A
+response-loss retry remains non-dispatchable through GRAPH-006.
+
+This path is never installed automatically. The legacy Mode planners and coordinators continue to
+use their existing paths unless a caller explicitly builds the signed activation and dispatcher.
+The local Web + AI fixture proves the structural exit gate but does not claim organization-issued
+releases or an operational Campaign run.
+
 ## Lifecycle, compatibility, and rollback
 
 - Every definition is `experimental` because the generalized adapter path is new, even where the
@@ -112,10 +139,9 @@ return no replay plan.
   signed bundle digest, release reference, maturity, and exact benchmark-mapping digest.
 - `existing_mode_capability_benchmark_mappings()` provides one closed CAP-003 mapping for every
   adapter. Mapping registration declares what must be observed; it is not execution evidence.
-- CAP-005 changes no existing Mode planner, validator, CLI, API, database, Graph, Gateway, or
-  Replay coordinator path.
-- Rollback means not constructing `ExistingModeCapabilityBundle`; existing execution remains
-  unchanged.
+- CAP-005 changes no existing Mode planner, validator, CLI, API, database, or Replay coordinator
+  path. The GRAPH/Gateway bridge is additive and requires explicit construction.
+- Rollback means not constructing the activation/dispatcher; existing execution remains unchanged.
 - Tool or behavior changes require a new Tool/Capability version and reviewed lifecycle release.
 
 ## Verification
@@ -128,7 +154,9 @@ return no replay plan.
 - non-executable KISA Replay plan and no Replay plan for A01/A02;
 - bounded side-effect and empty-cleanup declarations;
 - exact seven-item benchmark mapping and externally signed release-set coverage;
-- release and trust-key input-order independence; and
+- release, trust-key, and Web + AI activation input-order independence;
+- range-only signed activation, inactive Capability rejection, CAP-002 request compilation, exact
+  Proposal/Permit/request binding, and request-unit cost enforcement; and
 - missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection.
 
 ## Follow-up boundaries
@@ -136,8 +164,8 @@ return no replay plan.
 - CAP-006 measurement contracts, seven code-authored benchmark mappings, and signed release-set
   admission are implemented; organization-issued releases, delivery evidence, and sealed
   execution observations remain follow-up work;
-- opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring;
-- one Web + AI Hybrid Campaign exit-gate verification;
+- one Web + AI Hybrid Campaign exit-gate run using organization-issued releases;
+- dispatch outcome lifecycle events and explicit Graph Permit-to-Gateway result audit records;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.
 

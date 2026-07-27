@@ -255,7 +255,11 @@ the Web + AI runtime exit gate.
 The closed CAP-005 inventory also provides seven exact benchmark mappings and an opt-in rollout
 verifier that accepts only a complete externally reviewed seven-release CAP-004 set. The verifier
 binds full signed-bundle and mapping digests but creates no signing authority and does not treat
-test fixtures as operational releases.
+test fixtures as operational releases. An additive opt-in bridge now selects an explicit signed
+release subset, compiles exact CAP-002 requests, exposes only that subset to GRAPH-006, and invokes
+the existing Tool Gateway from the first-consumption callback. The local Web + AI fixture closes
+the structural activation gate; an organization-issued release set and sealed operational
+Campaign run remain required for the runtime exit gate.
 
 ## 10. Definition of Done
 

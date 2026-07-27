@@ -77,6 +77,18 @@ already-authorized dispatch.
 `newlyConsumed=true`. A callback failure or uncertain response leaves the Permit consumed; an exact
 retry does not dispatch again. This is safety-first at-most-once behavior.
 
+## Opt-in Capability and Gateway bridge
+
+The CAP-005 compatibility layer can now build a content-addressed activation subset from one
+CAP-004-verified release set. It adapts only those exact definitions into
+`ActionCapabilityRegistry`, compiles a prepared request through CAP-002, and revalidates release,
+Capability, Tool, request, normalized-parameter, and request-unit identities on both sides of the
+Permit claim. `ExistingModeCapabilityGatewayDispatcher` calls the existing Tool Gateway only from
+the first-consumption callback.
+
+The bridge is explicit construction, not default runtime wiring. Existing Mode execution is
+unchanged, and local signed fixtures are not organization-issued activation authority.
+
 ## Fail-closed conditions
 
 - durable Event Log and stored Projection mismatch;
@@ -94,14 +106,15 @@ retry does not dispatch again. This is safety-first at-most-once behavior.
 Tests cover canonical identities, registry drift, reopen recovery, exact response-loss retry,
 projection lag and stale decisions, cross-instance one-winner races, terminal callback failure,
 durable budgets and rolling rates, Scope/expiry rejection, request equivocation, append-only and
-fingerprint tampering, and honest v1-to-v2 migration.
+fingerprint tampering, honest v1-to-v2 migration, signed Web + AI subset activation, inactive
+Capability rejection, and exact prepared-request Gateway dispatch binding.
 
 The focused Graph suite on Windows is `64 passed, 2 skipped`; the skips are the existing POSIX
 symlink/hard-link semantics checks.
 
 ## Remaining boundaries
 
-- opt-in Tool Gateway/Worker daemon wiring and request/result audit linkage;
+- explicit Permit-to-Gateway result audit linkage and Worker-daemon deployment wiring;
 - dispatch success/failure/expiry/cancellation lifecycle events;
 - durable Capability Registry and compiler rotation policy;
 - process-kill/fsync fault injection and verified backup/restore;

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -20,20 +23,41 @@ from pajin.capabilities import (
     CapabilityReviewDecision,
     CapabilityReviewStatement,
     CapabilityUseProfile,
+    ExistingModeCapabilityActivation,
+    ExistingModeCapabilityActivationError,
+    ExistingModeCapabilityActivationSet,
     ExistingModeCapabilityBundle,
+    ExistingModeCapabilityGatewayDispatcher,
     ExistingModeCapabilityReleaseSet,
     ExistingModeCapabilityRollout,
     ExistingModeCapabilityRolloutError,
+    PreparedCapabilityAction,
+    activate_existing_mode_capabilities,
     admit_existing_mode_capability_releases,
     capability_lifecycle_public_key,
+    capability_normalized_parameters_digest,
+    capability_tool_request_digest,
     existing_mode_capability_benchmark_mappings,
     existing_mode_capability_bundle,
     existing_mode_capability_rollout_metrics,
+    registered_action_capability,
 )
+from pajin.domain.ctf import CTFScenario
+from pajin.domain.models import (
+    CampaignManifest,
+    CapabilityGrant,
+    ToolRequest,
+    ToolRiskTier,
+)
+from pajin.graph import ActionPermitError
+from pajin.policy.engine import PolicyEngine
+from pajin.runtime.store import RunStore
+from pajin.runtime.worker import SimulatedWorkerBackend
 from pajin.tools.ai import AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
+from pajin.tools.gateway import ToolGateway
 from pajin.tools.mock import MockAgentProbe
 
 NOW = datetime(2026, 7, 27, 6, tzinfo=UTC)
@@ -175,6 +199,99 @@ def _admit(
         releases=default_releases if releases is None else releases,
         clock=lambda: NOW,
     )
+
+
+def _release_for(
+    rollout: ExistingModeCapabilityRollout,
+    capability_id: str,
+):
+    return next(
+        item.release
+        for item in rollout.release_set.bindings
+        if item.capability.capability.capability_id == capability_id
+    )
+
+
+def _web_ai_activation(
+    rollout: ExistingModeCapabilityRollout,
+) -> ExistingModeCapabilityActivation:
+    return activate_existing_mode_capabilities(
+        rollout=rollout,
+        releases=(
+            _release_for(rollout, "pajin.ctf.web-exposed-backup-config"),
+            _release_for(rollout, "pajin.ai.kisa.system-prompt-disclosure"),
+        ),
+        profile=CapabilityUseProfile.RANGE,
+    )
+
+
+def _web_action(
+    activation: ExistingModeCapabilityActivation,
+) -> PreparedCapabilityAction:
+    return activation.prepare_action(
+        release=_release_for(
+            activation.rollout,
+            "pajin.ctf.web-exposed-backup-config",
+        ),
+        request=ToolRequest(
+            request_id="tool_capability_activation_web",
+            agent_id="agent:planner-local",
+            tool_id="ctf.web-backup-probe",
+            target="http://host.docker.internal:8780/.env.backup",
+            method="GET",
+        ),
+        parameters={
+            "challengeId": "activation-web",
+            "scenarioId": CTFScenario.WEB_EXPOSED_BACKUP_CONFIG.value,
+        },
+    )
+
+
+def _mock_action(
+    rollout: ExistingModeCapabilityRollout,
+) -> tuple[ExistingModeCapabilityActivation, PreparedCapabilityAction]:
+    release = _release_for(
+        rollout,
+        "pajin.ai.kisa.indirect-tool-hijacking",
+    )
+    activation = activate_existing_mode_capabilities(
+        rollout=rollout,
+        releases=(release,),
+        profile=CapabilityUseProfile.RANGE,
+    )
+    prepared = activation.prepare_action(
+        release=release,
+        request=ToolRequest(
+            request_id="tool_capability_gateway_dispatch",
+            agent_id="agent:planner-local",
+            tool_id="mock.agent-probe",
+            target="https://staging.example.invalid/api/chat",
+            method="POST",
+        ),
+        parameters={"simulation": {"unauthorizedToolCall": True}},
+    )
+    return activation, prepared
+
+
+class _PermitDispatcherStub:
+    def __init__(self, permit: SimpleNamespace) -> None:
+        self.permit = permit
+        self.calls = 0
+
+    async def dispatch_once(
+        self,
+        _envelope: object,
+        _proposal: object,
+        _decision: object,
+        dispatch,
+    ):
+        self.calls += 1
+        result = await dispatch(self.permit)
+        return SimpleNamespace(
+            permit=self.permit,
+            dispatched=True,
+            result=result,
+        )
 
 
 def test_existing_mode_benchmark_mappings_cover_exact_seven_capabilities() -> None:
@@ -325,3 +442,204 @@ def test_release_set_and_rollout_reject_identity_and_mapping_drift() -> None:
             release_set=rollout.release_set,
             benchmark_mappings=mappings,
         )
+
+
+def test_signed_rollout_activates_explicit_web_and_ai_graph_subset() -> None:
+    rollout = _admit()
+
+    activation = _web_ai_activation(rollout)
+    reversed_activation = activate_existing_mode_capabilities(
+        rollout=rollout,
+        releases=tuple(
+            reversed(
+                (
+                    _release_for(
+                        rollout,
+                        "pajin.ctf.web-exposed-backup-config",
+                    ),
+                    _release_for(
+                        rollout,
+                        "pajin.ai.kisa.system-prompt-disclosure",
+                    ),
+                )
+            )
+        ),
+        profile=CapabilityUseProfile.RANGE,
+    )
+
+    assert activation.activation_set.activation_set_digest == (
+        reversed_activation.activation_set.activation_set_digest
+    )
+    assert activation.activation_set.release_set_digest == (rollout.release_set.release_set_digest)
+    assert {item.domain for item in activation.activation_set.bindings} == {
+        "ai-redteam",
+        "ctf",
+    }
+    assert {
+        surface
+        for item in activation.activation_set.bindings
+        for surface in item.supported_surface_types
+    } >= {"ctf-web"}
+    registry = activation.action_registry()
+    for binding in activation.activation_set.bindings:
+        assert registry.resolve(binding.action_capability.reference()) == (
+            binding.action_capability
+        )
+
+    inactive = next(
+        item
+        for item in rollout.bundle.definitions.definitions()
+        if item.capability_id == "pajin.ctf.crypto-single-byte-xor"
+    )
+    with pytest.raises(ActionPermitError, match="not registered"):
+        registry.resolve(registered_action_capability(inactive).reference())
+
+
+def test_activation_rejects_disallowed_profile_duplicate_and_rollout_drift() -> None:
+    rollout = _admit()
+    web = _release_for(rollout, "pajin.ctf.web-exposed-backup-config")
+
+    with pytest.raises(
+        ExistingModeCapabilityActivationError,
+        match="not an executable member",
+    ):
+        activate_existing_mode_capabilities(
+            rollout=rollout,
+            releases=(web,),
+            profile=CapabilityUseProfile.PENTEST,
+        )
+    with pytest.raises(
+        ExistingModeCapabilityActivationError,
+        match="duplicate",
+    ):
+        activate_existing_mode_capabilities(
+            rollout=rollout,
+            releases=(web, web),
+            profile=CapabilityUseProfile.RANGE,
+        )
+
+    activation = _web_ai_activation(rollout)
+    drifted_set = ExistingModeCapabilityActivationSet(
+        releaseSetDigest="0" * 64,
+        profile=activation.activation_set.profile,
+        bindings=activation.activation_set.bindings,
+    )
+    with pytest.raises(
+        ExistingModeCapabilityActivationError,
+        match="another signed release set",
+    ):
+        ExistingModeCapabilityActivation(
+            rollout=rollout,
+            activation_set=drifted_set,
+        )
+
+
+def test_activation_prepares_exact_cap002_request_and_graph_digests() -> None:
+    activation = _web_ai_activation(_admit())
+
+    prepared = _web_action(activation)
+
+    assert prepared.request.arguments == {
+        "challengeId": "activation-web",
+        "scenarioId": CTFScenario.WEB_EXPOSED_BACKUP_CONFIG.value,
+    }
+    assert prepared.request_digest == capability_tool_request_digest(prepared.request)
+    assert prepared.normalized_parameters_digest == (
+        capability_normalized_parameters_digest(prepared.request.arguments)
+    )
+    assert activation.resolve_for_dispatch(prepared.capability).release == (prepared.release)
+
+    raw = prepared.model_dump(mode="json", by_alias=True)
+    raw["requestDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="request digest differs"):
+        PreparedCapabilityAction.model_validate(raw)
+
+
+@pytest.mark.asyncio
+async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    activation, prepared = _mock_action(_admit())
+    proposal = SimpleNamespace(
+        campaign_id=sample_campaign.metadata.name,
+        proposal_id="action-proposal_" + "a" * 64,
+        proposal_digest="b" * 64,
+        capability=prepared.capability,
+        request_id=prepared.request.request_id,
+        request_digest=prepared.request_digest,
+        normalized_parameters_digest=prepared.normalized_parameters_digest,
+        reservation=SimpleNamespace(request_units=1),
+    )
+    permit = SimpleNamespace(
+        proposal_id=proposal.proposal_id,
+        proposal_digest=proposal.proposal_digest,
+        capability=prepared.capability,
+        request_id=prepared.request.request_id,
+        request_digest=prepared.request_digest,
+        normalized_parameters_digest=prepared.normalized_parameters_digest,
+    )
+    permits = _PermitDispatcherStub(permit)
+    tools = ToolRegistry()
+    tools.register(MockAgentProbe())
+    store = RunStore.create(tmp_path, sample_campaign.metadata.name)
+    gateway = ToolGateway(
+        policy=PolicyEngine(),
+        tools=tools,
+        worker=SimulatedWorkerBackend(),
+        store=store,
+    )
+    dispatcher = ExistingModeCapabilityGatewayDispatcher(
+        activation=activation,
+        permits=permits,
+        gateway=gateway,
+    )
+    grant = CapabilityGrant(
+        subject=prepared.request.agent_id,
+        campaign=sample_campaign.metadata.name,
+        tools={prepared.request.tool_id},
+        targets={prepared.request.target},
+        max_risk_tier=ToolRiskTier.T2,
+        max_calls=1,
+        issued_at=sample_campaign.spec.authorization.approved_at,
+        expires_at=sample_campaign.spec.authorization.expires_at,
+    )
+
+    result = await dispatcher.dispatch_once(
+        SimpleNamespace(),
+        proposal,
+        SimpleNamespace(),
+        prepared,
+        campaign=sample_campaign,
+        grant=grant,
+        used_calls=0,
+    )
+
+    assert result.dispatched is True
+    assert result.result is not None
+    assert result.result.executed is True
+    assert result.result.result.success is True
+    assert permits.calls == 1
+    reservation = json.loads(
+        (store.path / "requests" / f"{prepared.request.request_id}.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert reservation["requestSha256"] == prepared.request_digest
+
+    mismatched = SimpleNamespace(**vars(proposal))
+    mismatched.request_digest = "0" * 64
+    with pytest.raises(
+        ExistingModeCapabilityActivationError,
+        match="differs from the prepared",
+    ):
+        await dispatcher.dispatch_once(
+            SimpleNamespace(),
+            mismatched,
+            SimpleNamespace(),
+            prepared,
+            campaign=sample_campaign,
+            grant=grant,
+            used_calls=0,
+        )
+    assert permits.calls == 1

@@ -140,7 +140,8 @@ behavior. An incompatible evidence or aggregation change requires a new schema v
 - sealed Oracle and Replay execution observations from BENCH-001 runs;
 - durable metric artifact storage, retention, and trend queries;
 - project-approved quantitative gates after a measured baseline exists; and
-- opt-in GRAPH-006 runtime wiring plus the Web + AI Campaign exit-gate run.
+- the opt-in GRAPH-006/Gateway bridge is implemented; an organization-issued Web + AI Campaign
+  exit-gate run and its sealed operational observations remain required.
 
 ## Related documents
 
