@@ -28,6 +28,14 @@ from pajin.capabilities.authorities import (
     RegisteredCapabilityAuthority,
     capability_authority_binding,
 )
+from pajin.capabilities.existing import (
+    EXISTING_KISA_REPLAY_PLAN_API_VERSION,
+    EXISTING_MODE_CAPABILITY_ADAPTER_VERSION,
+    ExistingCapabilitySuccessPolicy,
+    ExistingModeCapabilityBundle,
+    existing_mode_capability_bundle,
+    existing_mode_capability_registrations,
+)
 from pajin.capabilities.lifecycle import (
     CAPABILITY_LIFECYCLE_POLICY_API_VERSION,
     CAPABILITY_RELEASE_API_VERSION,
@@ -101,6 +109,8 @@ __all__ = [
     "CAPABILITY_SCAFFOLD_MANIFEST_API_VERSION",
     "CAPABILITY_TRUST_KEY_API_VERSION",
     "CODE_BACKED_CAPABILITY_API_VERSION",
+    "EXISTING_KISA_REPLAY_PLAN_API_VERSION",
+    "EXISTING_MODE_CAPABILITY_ADAPTER_VERSION",
     "ActionCompilerTemplate",
     "CapabilityActionCompiler",
     "CapabilityAuthorityAdapter",
@@ -147,6 +157,8 @@ __all__ = [
     "CodeBackedCapability",
     "CodeBackedCapabilityRef",
     "ExecutorAdapterTemplate",
+    "ExistingCapabilitySuccessPolicy",
+    "ExistingModeCapabilityBundle",
     "MaterializerTemplate",
     "RegisteredCapabilityAuthority",
     "ReplayStrategyTemplate",
@@ -164,6 +176,8 @@ __all__ = [
     "capability_lifecycle_public_key",
     "capability_parameter_schema_digest",
     "capability_registry_from_tools",
+    "existing_mode_capability_bundle",
+    "existing_mode_capability_registrations",
     "generate_capability_scaffold",
     "load_capability_scaffold_spec",
     "registered_action_capability",

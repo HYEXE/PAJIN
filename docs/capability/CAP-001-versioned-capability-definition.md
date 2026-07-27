@@ -71,6 +71,8 @@ as well as its Tool contract.
 - Code-backed compiler/executor/oracle/replay/cleanup interfaces are implemented by
   [CAP-002](CAP-002-metadata-code-backed-authority-interfaces.md).
 - Signed review, maturity activation, key rotation, and deprecation are implemented by
-  [CAP-004](CAP-004-maturity-signing-review-deprecation.md). Durable Registry storage and runtime
+  [CAP-004](CAP-004-maturity-signing-review-deprecation.md).
+- The seven currently bounded KISA, Bug Bounty, and CTF components are explicitly adapted by
+  [CAP-005](CAP-005-existing-mode-tool-replay-adapters.md). Durable Registry storage and runtime
   ActionPermit wiring remain follow-up work.
 - CAP-001 does not claim benchmark coverage or a completed Hybrid walking skeleton.

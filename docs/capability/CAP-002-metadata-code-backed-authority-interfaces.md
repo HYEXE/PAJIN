@@ -84,8 +84,9 @@ fallback, partial set, runtime mutation, or automatic module discovery.
   unchanged.
 - No persistent schema or Artifact reader migration is introduced.
 - A CAP-001 definition without a CAP-002 authority set is not considered code-backed executable.
-- Existing Tool and Replay implementations are not auto-registered. Explicit compatibility
-  adapters remain CAP-005 work.
+- Existing Tool and Replay implementations are not auto-registered. CAP-005 supplies a closed,
+  explicit compatibility bundle for the seven currently bounded KISA, Bug Bounty, and CTF
+  components.
 - Rollback means not constructing a CAP-002 registry and continuing to use the CAP-001
   metadata-only Registry. Existing runtime paths are unaffected.
 
@@ -94,10 +95,12 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 - CAP-003: Capability SDK, Scaffold, and inert role templates implemented
 - CAP-004: maturity signing, review, activation, deprecation, and rotation implemented as an
   offline reference registry
-- CAP-005: adapters for existing KISA, Bug Bounty, CTF Tool, and Replay components
+- CAP-005: existing KISA, Bug Bounty, CTF Tool, and Replay adapters implemented as an explicit
+  experimental bundle
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring
 - durable Capability Registry and Linux CI
 
 See the [CAP-003 specification](CAP-003-capability-authoring-sdk-scaffold.md),
 [ADR-0053](../adr/0053-inert-deterministic-capability-scaffolds.md), and
-[CAP-004](CAP-004-maturity-signing-review-deprecation.md).
+[CAP-004](CAP-004-maturity-signing-review-deprecation.md), and
+[CAP-005](CAP-005-existing-mode-tool-replay-adapters.md).

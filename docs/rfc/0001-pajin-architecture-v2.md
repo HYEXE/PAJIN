@@ -239,6 +239,12 @@ The signed lifecycle boundary is specified by
 [CAP-004](../capability/CAP-004-maturity-signing-review-deprecation.md) through exact Ed25519
 publisher/reviewer authority, immutable predecessor chains, conservative maturity transitions, and
 profile-specific activation.
+The existing-mode compatibility boundary is specified by
+[ADR-0055](../adr/0055-explicit-existing-mode-capability-adapters.md) and
+[CAP-005](../capability/CAP-005-existing-mode-tool-replay-adapters.md) through a closed seven-item
+inventory, exact Tool and scenario contracts, independently recomputed semantic Oracles, and a
+non-executable binding to the existing KISA M03/M06/A04 fresh-session Replay path. Registration is
+explicit, every definition remains experimental, and existing runtimes are not replaced.
 
 ## 10. Definition of Done
 
@@ -266,3 +272,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0052: Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.md)
 - [ADR-0053: Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.md)
 - [ADR-0054: Signed Reviewed Capability Lifecycle](../adr/0054-signed-reviewed-capability-lifecycle.md)
+- [ADR-0055: Explicit Existing Mode Capability Adapters](../adr/0055-explicit-existing-mode-capability-adapters.md)

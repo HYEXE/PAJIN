@@ -28,8 +28,8 @@ operational storage, and runtime dispatch wiring open.
   `pajin.dev/capability-release/v1alpha1`
 - **Audit artifacts:** content-derived policy, review, release, predecessor, definition, and
   authority-set digests plus detached Ed25519 signatures
-- **Benchmark impact:** none until CAP-005 adapters and CAP-006 coverage measurement connect the
-  registry to runtime paths
+- **Benchmark impact:** none until CAP-006 coverage measurement and later runtime wiring execute
+  reviewed CAP-005 adapters
 
 ## Reference policy
 
@@ -145,7 +145,7 @@ issued.
 - organization-specific publisher/reviewer authorization and external-contribution workflow;
 - durable signed Capability Registry storage, anti-rollback state, and operational key
   distribution;
-- CAP-005 compatibility adapters for existing KISA, Bug Bounty, CTF, Tool, and Replay components;
+- reviewed signed releases for the experimental CAP-005 existing-mode adapter definitions;
 - CAP-006 coverage, authoring lead-time, Oracle, Replay, and lifecycle metrics;
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring; and
 - Linux CI and clean-clone verification.
@@ -157,3 +157,4 @@ issued.
 - [ADR-0052 Code-backed Capability Authority Set](../adr/0052-code-backed-capability-authority-set.md)
 - [ADR-0053 Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.md)
 - [ADR-0054 Signed Reviewed Capability Lifecycle](../adr/0054-signed-reviewed-capability-lifecycle.md)
+- [CAP-005 Existing Mode, Tool, and Replay Adapters](CAP-005-existing-mode-tool-replay-adapters.md)

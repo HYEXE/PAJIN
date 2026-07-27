@@ -86,3 +86,5 @@ workflow are not yet decided, so the code contract must not pretend to define th
 - [ADR-0052 Code-backed Capability Authority Set](0052-code-backed-capability-authority-set.md)
 - [ADR-0053 Inert Deterministic Capability Scaffolds](0053-inert-deterministic-capability-scaffolds.md)
 - [CAP-004 Maturity, Signing, Review, and Deprecation](../capability/CAP-004-maturity-signing-review-deprecation.md)
+- [ADR-0055 Explicit Existing Mode Capability Adapters](0055-explicit-existing-mode-capability-adapters.md)
+- [CAP-005 Existing Mode, Tool, and Replay Adapters](../capability/CAP-005-existing-mode-tool-replay-adapters.md)

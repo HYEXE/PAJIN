@@ -120,7 +120,7 @@ consumed.
 ## Follow-up boundaries
 
 - organization-specific CAP-004 authorization workflow and durable Registry storage
-- CAP-005 adapters for existing KISA, Bug Bounty, CTF Tool, and Replay components
+- additional authoring templates beyond the explicit CAP-005 existing-mode adapter bundle
 - CAP-006 Registry coverage, authoring lead time, Oracle, and Replay metrics
 - opt-in GRAPH-006 ActionPermit and Tool Gateway runtime wiring
 - Linux CI and clean-clone scaffold-consumer verification

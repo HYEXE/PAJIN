@@ -63,8 +63,9 @@ Replay.
 - Declarative metadata and actual code behavior gain an exact audit artifact.
 - Missing, duplicate, substituted, mutable, and confused-deputy authorities fail before execution.
 - CAP-003 has a fixed set of seven interfaces for generated templates.
-- Signed review/activation is implemented by CAP-004. Durable storage, existing Tool adapters, and
-  ActionPermit runtime wiring remain follow-up work.
+- Signed review/activation is implemented by CAP-004, and the first closed existing-Tool adapter
+  bundle is implemented by CAP-005. Durable storage and ActionPermit runtime wiring remain
+  follow-up work.
 
 ## Related documents
 
@@ -76,3 +77,4 @@ Replay.
 - [CAP-003 Capability Authoring SDK and Scaffold](../capability/CAP-003-capability-authoring-sdk-scaffold.md)
 - [ADR-0054 Signed Reviewed Capability Lifecycle](0054-signed-reviewed-capability-lifecycle.md)
 - [CAP-004 Maturity, Signing, Review, and Deprecation](../capability/CAP-004-maturity-signing-review-deprecation.md)
+- [CAP-005 Existing Mode, Tool, and Replay Adapters](../capability/CAP-005-existing-mode-tool-replay-adapters.md)
