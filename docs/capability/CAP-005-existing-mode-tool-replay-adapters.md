@@ -137,8 +137,35 @@ consumed Permit is never retried.
 
 This path is never installed automatically. The legacy Mode planners and coordinators continue to
 use their existing paths unless a caller explicitly builds the signed activation and dispatcher.
-The local Web + AI fixture proves the structural exit gate but does not claim organization-issued
-releases or an operational Campaign run.
+The local Web + AI fixture proves the structural activation gate but does not claim
+organization-issued releases or an operational Campaign run.
+
+## Sealed Web + AI operational exit gate
+
+`CapabilityOperationalEvidenceSet` carries the exact seven delivery records, seven-or-more Oracle
+observations, and three-or-more Replay observations used by CAP-006. Its content identity binds
+the source release set and every evidence record. `verify_web_ai_hybrid_campaign_exit_gate()`
+loads this set only from a fully integrity-verified Run and requires every delivery source,
+Oracle observation, and Replay observation digest to match the SHA-256 of another sealed artifact
+in that same Run.
+
+The gate then rebuilds the CAP-006 report from the verified rollout and sealed evidence instead of
+accepting a caller-supplied completion flag. All CAP-006 gaps must be closed, but CAP-006 decision
+and verdict counts remain measurements rather than invented numeric acceptance thresholds.
+
+The same immutable Run must contain exactly two dispatch lifecycles for the bounded Range
+activation: `pajin.ctf.web-exposed-backup-config` and
+`pajin.ai.kisa.system-prompt-disclosure`. Each lifecycle must be an ordered
+`claimed → completed` pair bound to the exact activation, signed release, Campaign, Run, Permit,
+Proposal, request, and normalized parameters. Both completions must attest policy allowance,
+Worker execution, Tool success, a Gateway outcome digest, a Worker execution ID, and evidence
+paths that are themselves sealed in the Run. The two requests and dispatches must be distinct and
+belong to one Campaign.
+
+Only a passing gate is materialized. `WebAIHybridCampaignExitGate` content-addresses the sealed
+Run root, release and activation sets, raw operational-evidence artifact, rebuilt CAP-006 report,
+and both successful dispatch summaries. Fixture-signed tests validate this admission contract;
+they do not satisfy the production exit gate.
 
 ## Lifecycle, compatibility, and rollback
 
@@ -174,15 +201,20 @@ releases or an operational Campaign run.
   Proposal/Permit/request binding, and request-unit cost enforcement;
 - hash-chained claimed/completed linkage, exact Gateway outcome digest, tamper rejection,
   failure/cancellation/expiry terminal events, and pre-execution audit-write fail-closed behavior;
-- missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection.
+- missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection;
+- exact seven-delivery/seven-Oracle/three-Replay operational evidence with sealed source hashes;
+- exact successful Web + AI dispatch pair, distinct request/dispatch identity, sealed evidence
+  paths, and content-addressed exit-gate identity; and
+- unsuccessful dispatch, absent source/evidence, activation expansion, and post-seal mutation
+  rejection.
 
 ## Follow-up boundaries
 
 - CAP-006 measurement contracts, seven code-authored benchmark mappings, and signed release-set
   admission are implemented; organization-issued releases, delivery evidence, and sealed
   execution observations remain follow-up work;
-- one Web + AI Hybrid Campaign exit-gate run using organization-issued releases;
-- Worker-daemon deployment wiring for the explicit Graph/Capability dispatch bridge;
+- the sealed Web + AI gate verifier and Worker-daemon deployment wiring are implemented; one
+  actual isolated Hybrid Campaign run using organization-issued releases remains required;
 - fault injection around the non-atomic Graph SQLite claim and RunStore audit/Gateway boundary;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.

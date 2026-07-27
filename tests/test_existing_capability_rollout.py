@@ -12,7 +12,9 @@ from pydantic import ValidationError
 
 import pajin.control_plane.worker_main as worker_main_module
 from pajin.capabilities import (
+    CAPABILITY_OPERATIONAL_EVIDENCE_ARTIFACT,
     CapabilityBenchmarkMapping,
+    CapabilityDeliveryEvidence,
     CapabilityDispatchAuditEvent,
     CapabilityDispatchStage,
     CapabilityLifecycleKeyRole,
@@ -22,8 +24,13 @@ from pajin.capabilities import (
     CapabilityLifecycleTrustKey,
     CapabilityMaturity,
     CapabilityMetricsReportStatus,
+    CapabilityOperationalEvidenceSet,
+    CapabilityOracleDecision,
+    CapabilityOracleObservation,
     CapabilityReleaseBundle,
     CapabilityReleaseStatement,
+    CapabilityReplayObservation,
+    CapabilityReplayVerdict,
     CapabilityReviewDecision,
     CapabilityReviewStatement,
     CapabilityUseProfile,
@@ -36,6 +43,8 @@ from pajin.capabilities import (
     ExistingModeCapabilityRollout,
     ExistingModeCapabilityRolloutError,
     PreparedCapabilityAction,
+    WebAIHybridCampaignExitGate,
+    WebAIHybridCampaignExitGateError,
     activate_existing_mode_capabilities,
     admit_existing_mode_capability_releases,
     capability_gateway_outcome_digest,
@@ -44,8 +53,10 @@ from pajin.capabilities import (
     capability_tool_request_digest,
     existing_mode_capability_benchmark_mappings,
     existing_mode_capability_bundle,
+    existing_mode_capability_replay_support,
     existing_mode_capability_rollout_metrics,
     registered_action_capability,
+    verify_web_ai_hybrid_campaign_exit_gate,
 )
 from pajin.control_plane.capability_deployment import (
     CapabilityGraphCompilerIdentity,
@@ -282,6 +293,168 @@ def _web_action(
             "scenarioId": CTFScenario.WEB_EXPOSED_BACKUP_CONFIG.value,
         },
     )
+
+
+def _sealed_operational_evidence(
+    store: RunStore,
+    rollout: ExistingModeCapabilityRollout,
+) -> CapabilityOperationalEvidenceSet:
+    deliveries: list[CapabilityDeliveryEvidence] = []
+    oracle_observations: list[CapabilityOracleObservation] = []
+    replay_observations: list[CapabilityReplayObservation] = []
+    mapping_by_capability = {
+        item.capability.capability_id: item for item in rollout.benchmark_mappings
+    }
+    support_by_capability = {
+        item.capability.capability.capability_id: item
+        for item in existing_mode_capability_replay_support(rollout.bundle)
+    }
+    for index, binding in enumerate(rollout.release_set.bindings):
+        capability_id = binding.capability.capability.capability_id
+        release = rollout.lifecycle.resolve_release(binding.release).release.statement
+        delivery_text = f"reviewed delivery evidence for {capability_id}"
+        delivery_bytes = (delivery_text + "\n").encode()
+        store.write_text(f"sources/delivery-{index}.txt", delivery_text)
+        deliveries.append(
+            CapabilityDeliveryEvidence(
+                capability=binding.capability,
+                authoredAt=release.issued_at - timedelta(days=2),
+                codeBackedAt=release.issued_at - timedelta(days=1),
+                releasedAt=release.issued_at,
+                release=binding.release,
+                sourceDigest=sha256(delivery_bytes).hexdigest(),
+            )
+        )
+
+        oracle_text = f"sealed Oracle observation for {capability_id}"
+        oracle_bytes = (oracle_text + "\n").encode()
+        store.write_text(f"sources/oracle-{index}.txt", oracle_text)
+        oracle_observations.append(
+            CapabilityOracleObservation(
+                capability=binding.capability,
+                benchmarkId=mapping_by_capability[capability_id].benchmark_ids[0],
+                decision=CapabilityOracleDecision.SUCCEEDED,
+                observedAt=NOW - timedelta(hours=2),
+                evidenceDigest=sha256(oracle_bytes).hexdigest(),
+            )
+        )
+
+        support = support_by_capability.get(capability_id)
+        if support is not None:
+            replay_text = f"sealed Replay observation for {capability_id}"
+            replay_bytes = (replay_text + "\n").encode()
+            store.write_text(f"sources/replay-{index}.txt", replay_text)
+            replay_observations.append(
+                CapabilityReplayObservation(
+                    capability=binding.capability,
+                    contractId=support.contract_ids[0],
+                    verdict=CapabilityReplayVerdict.SUPPORTS,
+                    observedAt=NOW - timedelta(hours=1),
+                    evidenceDigest=sha256(replay_bytes).hexdigest(),
+                )
+            )
+    evidence_set = CapabilityOperationalEvidenceSet(
+        releaseSetDigest=rollout.release_set.release_set_digest,
+        deliveryEvidence=tuple(
+            sorted(
+                deliveries,
+                key=lambda item: (
+                    item.capability.capability.capability_id,
+                    item.capability.capability.capability_version,
+                    item.capability.capability.capability_digest,
+                    item.capability.authority_set_digest,
+                    item.evidence_digest,
+                ),
+            )
+        ),
+        oracleObservations=tuple(
+            sorted(
+                oracle_observations,
+                key=lambda item: (
+                    item.capability.capability.capability_id,
+                    item.capability.capability.capability_version,
+                    item.capability.capability.capability_digest,
+                    item.capability.authority_set_digest,
+                    item.observation_digest,
+                ),
+            )
+        ),
+        replayObservations=tuple(
+            sorted(
+                replay_observations,
+                key=lambda item: (
+                    item.capability.capability.capability_id,
+                    item.capability.capability.capability_version,
+                    item.capability.capability.capability_digest,
+                    item.capability.authority_set_digest,
+                    item.observation_digest,
+                ),
+            )
+        ),
+    )
+    store.write_json(
+        CAPABILITY_OPERATIONAL_EVIDENCE_ARTIFACT,
+        evidence_set.model_dump(mode="json", by_alias=True),
+    )
+    return evidence_set
+
+
+def _append_hybrid_dispatches(
+    store: RunStore,
+    activation: ExistingModeCapabilityActivation,
+    *,
+    successful: bool = True,
+    missing_evidence: bool = False,
+) -> None:
+    for index, binding in enumerate(activation.activation_set.bindings):
+        label = str(index)
+        evidence_path = f"evidence/hybrid-{label}.json"
+        if not missing_evidence:
+            store.write_json(
+                evidence_path,
+                {
+                    "capability": binding.capability.model_dump(
+                        mode="json",
+                        by_alias=True,
+                    )
+                },
+            )
+        common = {
+            "activationSetDigest": activation.activation_set.activation_set_digest,
+            "release": binding.release,
+            "permitId": "action-permit_" + sha256(f"permit:{label}".encode()).hexdigest(),
+            "permitDigest": sha256(f"permit-digest:{label}".encode()).hexdigest(),
+            "dispatchId": "action-dispatch_" + sha256(f"dispatch:{label}".encode()).hexdigest(),
+            "campaignId": "hybrid-exit-campaign",
+            "runId": store.run_id,
+            "proposalId": "action-proposal_" + sha256(f"proposal:{label}".encode()).hexdigest(),
+            "proposalDigest": sha256(f"proposal-digest:{label}".encode()).hexdigest(),
+            "requestId": f"hybrid-exit-request-{label}",
+            "requestDigest": sha256(f"request:{label}".encode()).hexdigest(),
+            "normalizedParametersDigest": sha256(f"parameters:{label}".encode()).hexdigest(),
+        }
+        claimed = CapabilityDispatchAuditEvent(
+            stage=CapabilityDispatchStage.CLAIMED,
+            occurredAt=NOW - timedelta(minutes=4 - index),
+            **common,
+        )
+        completed = CapabilityDispatchAuditEvent(
+            stage=CapabilityDispatchStage.COMPLETED,
+            occurredAt=NOW - timedelta(minutes=2 - index),
+            gatewayOutcomeDigest=sha256(f"outcome:{label}".encode()).hexdigest(),
+            gatewayExecutionId=f"worker-execution-{label}",
+            executed=True,
+            policyAllowed=True,
+            toolSuccess=successful,
+            evidence=(evidence_path,),
+            **common,
+        )
+        for event in (claimed, completed):
+            store.append_event(
+                f"capability.dispatch.{event.stage.value}",
+                event.model_dump(mode="json", by_alias=True),
+                occurred_at=event.occurred_at,
+            )
 
 
 def _mock_action(
@@ -1244,6 +1417,19 @@ def test_worker_deployment_rejects_digest_substitution_and_unknown_fields(
         )
 
 
+def test_worker_deployment_campaign_digest_is_stable_across_set_wire_order(
+    sample_campaign: CampaignManifest,
+) -> None:
+    raw = sample_campaign.model_dump(mode="json", by_alias=True)
+    rules = raw["spec"]["rulesOfEngagement"]
+    rules["allowedMethods"] = list(reversed(rules["allowedMethods"]))
+    reloaded = CampaignManifest.model_validate(raw)
+
+    assert capability_graph_campaign_digest(sample_campaign) == (
+        capability_graph_campaign_digest(reloaded)
+    )
+
+
 def test_worker_deployment_environment_requires_path_and_digest_pair(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1271,3 +1457,185 @@ def test_worker_deployment_environment_requires_path_and_digest_pair(
         ),
     )
     assert worker_main_module._capability_graph_deployment_from_env() is sentinel
+
+
+def _hybrid_exit_gate_run(
+    tmp_path: Path,
+    rollout: ExistingModeCapabilityRollout,
+    activation: ExistingModeCapabilityActivation,
+    *,
+    successful: bool = True,
+    missing_dispatch_evidence: bool = False,
+) -> RunStore:
+    store = RunStore.create(tmp_path, "hybrid-exit-gate")
+    _sealed_operational_evidence(store, rollout)
+    _append_hybrid_dispatches(
+        store,
+        activation,
+        successful=successful,
+        missing_evidence=missing_dispatch_evidence,
+    )
+    store.seal()
+    return store
+
+
+def test_sealed_web_ai_hybrid_campaign_passes_exact_operational_exit_gate(
+    tmp_path: Path,
+) -> None:
+    rollout = _admit()
+    activation = _web_ai_activation(rollout)
+    store = _hybrid_exit_gate_run(tmp_path, rollout, activation)
+
+    gate = verify_web_ai_hybrid_campaign_exit_gate(
+        rollout=rollout,
+        activation=activation,
+        run_path=store.path,
+        evaluated_at=NOW,
+    )
+
+    assert gate.outcome == "passed"
+    assert gate.run_id == store.run_id
+    assert gate.release_set_digest == rollout.release_set.release_set_digest
+    assert gate.activation_set_digest == activation.activation_set.activation_set_digest
+    assert gate.metrics_report.status is CapabilityMetricsReportStatus.COMPLETE
+    assert gate.metrics_report.gaps == ()
+    assert gate.metrics_report.lead_time.delivery_coverage.value == 1
+    assert gate.metrics_report.oracle.observation_coverage.value == 1
+    assert gate.metrics_report.replay.observation_coverage.value == 1
+    assert tuple(item.capability.capability.capability_id for item in gate.dispatches) == (
+        "pajin.ai.kisa.system-prompt-disclosure",
+        "pajin.ctf.web-exposed-backup-config",
+    )
+    assert all(item.gateway_execution_id for item in gate.dispatches)
+    assert all(item.evidence for item in gate.dispatches)
+
+    raw = gate.model_dump(mode="json", by_alias=True)
+    raw["gateDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="gate digest differs"):
+        WebAIHybridCampaignExitGate.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    ("successful", "missing_dispatch_evidence", "message"),
+    [
+        (False, False, "does not attest successful Worker execution"),
+        (True, True, "evidence absent from the sealed Run"),
+    ],
+)
+def test_hybrid_exit_gate_rejects_unsuccessful_or_unsealed_dispatch_evidence(
+    tmp_path: Path,
+    *,
+    successful: bool,
+    missing_dispatch_evidence: bool,
+    message: str,
+) -> None:
+    rollout = _admit()
+    activation = _web_ai_activation(rollout)
+    store = _hybrid_exit_gate_run(
+        tmp_path,
+        rollout,
+        activation,
+        successful=successful,
+        missing_dispatch_evidence=missing_dispatch_evidence,
+    )
+
+    with pytest.raises(WebAIHybridCampaignExitGateError, match=message):
+        verify_web_ai_hybrid_campaign_exit_gate(
+            rollout=rollout,
+            activation=activation,
+            run_path=store.path,
+            evaluated_at=NOW,
+        )
+
+
+def test_hybrid_exit_gate_rejects_unsealed_operational_source_reference(
+    tmp_path: Path,
+) -> None:
+    rollout = _admit()
+    activation = _web_ai_activation(rollout)
+    store = RunStore.create(tmp_path, "hybrid-missing-operational-source")
+    evidence_set = _sealed_operational_evidence(store, rollout)
+    deliveries = list(evidence_set.delivery_evidence)
+    deliveries[0] = CapabilityDeliveryEvidence(
+        **(
+            deliveries[0].model_dump(
+                mode="python",
+                by_alias=True,
+                exclude={"evidence_id", "evidence_digest"},
+            )
+            | {"sourceDigest": "f" * 64}
+        )
+    )
+    substituted = CapabilityOperationalEvidenceSet(
+        releaseSetDigest=evidence_set.release_set_digest,
+        deliveryEvidence=tuple(
+            sorted(
+                deliveries,
+                key=lambda item: (
+                    item.capability.capability.capability_id,
+                    item.capability.capability.capability_version,
+                    item.capability.capability.capability_digest,
+                    item.capability.authority_set_digest,
+                    item.evidence_digest,
+                ),
+            )
+        ),
+        oracleObservations=evidence_set.oracle_observations,
+        replayObservations=evidence_set.replay_observations,
+    )
+    store.write_json(
+        CAPABILITY_OPERATIONAL_EVIDENCE_ARTIFACT,
+        substituted.model_dump(mode="json", by_alias=True),
+    )
+    _append_hybrid_dispatches(store, activation)
+    store.seal()
+
+    with pytest.raises(
+        WebAIHybridCampaignExitGateError,
+        match="source bytes absent",
+    ):
+        verify_web_ai_hybrid_campaign_exit_gate(
+            rollout=rollout,
+            activation=activation,
+            run_path=store.path,
+            evaluated_at=NOW,
+        )
+
+
+def test_hybrid_exit_gate_rejects_activation_expansion_and_sealed_run_tamper(
+    tmp_path: Path,
+) -> None:
+    rollout = _admit()
+    activation = _web_ai_activation(rollout)
+    store = _hybrid_exit_gate_run(tmp_path, rollout, activation)
+    expanded = activate_existing_mode_capabilities(
+        rollout=rollout,
+        releases=(
+            *tuple(item.release for item in activation.activation_set.bindings),
+            _release_for(rollout, "pajin.ctf.crypto-single-byte-xor"),
+        ),
+        profile=CapabilityUseProfile.RANGE,
+    )
+    with pytest.raises(
+        WebAIHybridCampaignExitGateError,
+        match="only the exact Web \\+ AI Capability pair",
+    ):
+        verify_web_ai_hybrid_campaign_exit_gate(
+            rollout=rollout,
+            activation=expanded,
+            run_path=store.path,
+            evaluated_at=NOW,
+        )
+
+    evidence_path = store.path / "sources" / "delivery-0.txt"
+    evidence_path.write_text("tampered after seal\n", encoding="utf-8")
+    with pytest.raises(
+        WebAIHybridCampaignExitGateError,
+        match="failed verification",
+    ):
+        verify_web_ai_hybrid_campaign_exit_gate(
+            rollout=rollout,
+            activation=activation,
+            run_path=store.path,
+            evaluated_at=NOW,
+        )

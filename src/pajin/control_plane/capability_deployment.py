@@ -207,8 +207,19 @@ def capability_graph_campaign_digest(campaign: CampaignManifest) -> str:
     """Fingerprint one canonical Campaign used by the deployment and envelope."""
 
     canonical = CampaignManifest.model_validate(campaign.model_dump(mode="python", by_alias=True))
+    payload = canonical.model_dump(mode="json", by_alias=True)
+    rules = payload["spec"]["rulesOfEngagement"]
+    for field_name in (
+        "allowedMethods",
+        "allowedToolCategories",
+        "prohibit",
+        "stopOn",
+    ):
+        rules[field_name] = sorted(rules[field_name])
+    for window in rules["testingWindows"]:
+        window["days"] = sorted(window["days"])
     encoded = json.dumps(
-        canonical.model_dump(mode="json", by_alias=True),
+        payload,
         allow_nan=False,
         ensure_ascii=False,
         separators=(",", ":"),
