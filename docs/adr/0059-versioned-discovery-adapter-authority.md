@@ -54,8 +54,8 @@ reference runtime use the new path. Rollback is to stop selecting the versioned 
 that opt-in composition to the legacy constructor; already sealed projection Runs retain their
 adapter reference and must not be rewritten.
 
-DISC-001 does not implement HTTP route extraction, schema enumeration, dynamic plugin loading,
-multi-wave orchestration, or Planner integration.
+DISC-001 does not implement DISC-002 HTTP/OpenAPI Surface extraction, DISC-003 Auth/File
+Upload/RAG/MCP adapters, dynamic plugin loading, multi-wave orchestration, or Planner integration.
 
 ## Related documents
 

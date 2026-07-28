@@ -11,8 +11,9 @@ The Registry prevents a caller, model, or serialized proposal from selecting an 
 interpreter, silently moving to a newer version, or changing interpretation settings after
 registration.
 
-DISC-001 defines the common adapter boundary only. HTTP route extraction, OpenAPI/GraphQL
-enumeration, orchestration waves, and Planner integration remain separate slices.
+DISC-001 defines the common adapter boundary only. HTTP/OpenAPI Surface extraction,
+Auth/File Upload/RAG/MCP adapters, orchestration waves, and Planner integration remain separate
+slices.
 
 ## Common protocol
 
@@ -82,8 +83,8 @@ shape remains unchanged.
 
 ## Remaining boundaries
 
-- DISC-002 owns bounded HTTP route/method/content-type discovery.
-- DISC-003 owns OpenAPI and GraphQL schema discovery.
+- DISC-002 owns bounded HTTP route/method/content-type and OpenAPI Surface discovery.
+- DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters.
 - ORCH-001/002 own multi-adapter scheduling, multi-wave execution, and Planner integration.
 - Signed adapter releases, durable Registry storage, dynamic plugin loading, and remote Registry
   refresh are not implemented.

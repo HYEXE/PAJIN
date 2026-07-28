@@ -288,8 +288,8 @@ The first unified-discovery boundary is specified by
 code-owned common adapter protocol, immutable exact-version references, full Tool and stable
 execution-context binding, and live drift detection. Registry-backed Surface admission records
 the exact adapter reference, while existing Scope, Authorization, sealed-evidence, and Tool-risk
-gates remain authoritative. HTTP and schema adapters plus multi-wave Planner integration remain
-later slices.
+gates remain authoritative. HTTP/OpenAPI and Auth/File Upload/RAG/MCP adapters plus multi-wave
+Planner integration remain later slices.
 
 ## 10. Definition of Done
 
