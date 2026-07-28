@@ -125,15 +125,19 @@ The Worker bridge additionally covers deterministic crash injection immediately 
 Permit claim and immediately after a Gateway side effect. It seals a pre-claim deployment/Run
 anchor, records content-addressed `consumed-without-claim` or `claimed-outcome-unknown`
 reconciliation, and proves repeated retries do not invoke Gateway or duplicate the record.
+GRAPH-005 additionally backs up and restores consumed Permits with their exact Snapshot/compiler
+bindings. A real subprocess hard exit preserves a committed Projection, rolls back an uncommitted
+writer mutation, and leaves a published backup restorable after immediate process termination.
 
-The concentrated Capability/Graph/RunStore regression suite on Windows is `71 passed, 2 skipped`;
+The concentrated Capability/Graph regression suite on Windows is `152 passed, 2 skipped`;
 the skips are the existing POSIX symlink/hard-link semantics checks.
 
 ## Remaining boundaries
 
 - durable Capability Registry and compiler rotation policy;
-- real process-kill/fsync fault injection beyond the deterministic injected crash windows, and
-  verified backup/restore;
+- real process termination across the Permit/RunStore/external Gateway crash windows beyond the
+  deterministic injections, plus exhaustive power-loss testing at every sync boundary;
+- signed/encrypted off-host backup retention and independent restore drills;
 - multi-host leader/lease and PostgreSQL/HA adapters; and
 - B2.9 Handoff projections and Supervisor shadow mode.
 

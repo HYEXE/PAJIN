@@ -321,6 +321,38 @@ def test_final_authority_transaction_persists_one_consumed_permit_and_retry(
     assert reopened.permit_store.permits() == (first.permit,)
 
 
+def test_verified_backup_restore_preserves_consumed_action_permit(tmp_path: Path) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, capability, envelope, proposal = _seed(path)
+    authorization = _permit_authority(store, capability).authorize_for_dispatch(
+        envelope,
+        proposal,
+        decision,
+    )
+    backup = tmp_path / "backups" / "graph-lab.sqlite3"
+
+    manifest = store.create_backup(
+        backup,
+        created_at=NOW + timedelta(seconds=8),
+    )
+    restored = SQLiteGraphStore.restore_backup(
+        backup,
+        destination=tmp_path / "restored" / "canonical-graph.sqlite3",
+        campaign_id=CAMPAIGN,
+    )
+
+    assert manifest.action_permit_count == 1
+    assert manifest.action_permit_head_digest == authorization.permit.permit_digest
+    assert restored.permit_store.permits() == (authorization.permit,)
+    retry = _permit_authority(restored, capability).authorize_for_dispatch(
+        envelope,
+        proposal,
+        decision,
+    )
+    assert retry.newly_consumed is False
+    assert retry.permit == authorization.permit
+
+
 def test_action_permit_fails_closed_before_and_after_projection_recovery(
     tmp_path: Path,
 ) -> None:

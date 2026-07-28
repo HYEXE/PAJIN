@@ -267,6 +267,10 @@ non-atomic crash windows without redispatch: no `claimed` event is
 `consumed-without-claim`, while a lone `claimed` event is `claimed-outcome-unknown`. Incomplete
 states are content-addressed to the consumed Permit and the earliest seal covering their evidence,
 recorded once, and require manual review.
+The single-Campaign Graph Store now also emits a content-addressed backup manifest, verifies the
+full Event/Node/Projection/Snapshot/Permit state before backup and restore, restores only to a new
+path, and has subprocess hard-exit coverage for committed, uncommitted, and backup-publication
+boundaries. This remains host-local self-consistency rather than signed off-host disaster recovery.
 
 ## 10. Definition of Done
 

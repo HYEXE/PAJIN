@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -37,6 +40,7 @@ from pajin.graph import (
     SurfaceProposal,
     TrustedGraphLineageRegistry,
     graph_snapshot_ref,
+    sqlite_graph_backup_manifest_path,
 )
 from pajin.graph.models import GraphContentOrigin
 
@@ -152,6 +156,27 @@ def _seeded_store(
     return store, proposals
 
 
+def _run_hard_exit(script: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+    project_root = Path(__file__).parents[1]
+    environment = os.environ.copy()
+    source_root = str(project_root / "src")
+    inherited_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        source_root
+        if not inherited_pythonpath
+        else f"{source_root}{os.pathsep}{inherited_pythonpath}"
+    )
+    return subprocess.run(
+        [sys.executable, "-c", script, *arguments],
+        cwd=project_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 def test_sqlite_store_reopens_event_projection_and_snapshot_state(tmp_path: Path) -> None:
     path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
     store, proposals = _seeded_store(path)
@@ -202,6 +227,203 @@ def test_event_commit_survives_projection_lag_and_reconciles_after_reopen(
         event_log=reopened.event_log,
         projection_store=reopened.projection_store,
     ).reconcile().status is GraphProjectionReconciliationStatus.IN_SYNC
+
+
+def test_verified_backup_restore_round_trips_exact_graph_state(tmp_path: Path) -> None:
+    source = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(source)
+    projection = GraphProjectionCoordinator(
+        event_log=store.event_log,
+        projection_store=store.projection_store,
+    ).refresh().projection
+    snapshot = GraphSnapshotAuthority(
+        creator_id=SNAPSHOT_CREATOR_ID,
+        creator_digest=DIGEST_B,
+        projection_store=store.projection_store,
+        snapshot_store=store.snapshot_store,
+        clock=lambda: NOW + timedelta(seconds=4),
+    ).capture(GraphSnapshotReason.RECOVERY)
+    backup = tmp_path / "backups" / "graph-lab.sqlite3"
+
+    manifest = store.create_backup(
+        backup,
+        created_at=NOW + timedelta(seconds=5),
+    )
+
+    assert backup.is_file()
+    assert sqlite_graph_backup_manifest_path(backup).is_file()
+    assert manifest.event_count == 2
+    assert manifest.event_log_head_digest == store.event_log.events()[-1].event_digest
+    assert manifest.projection_revision == projection.revision
+    assert manifest.projection_digest == projection.projection_digest
+    assert manifest.snapshot_count == 1
+    assert manifest.snapshot_head_digest == snapshot.snapshot_digest
+    assert manifest.action_permit_count == 0
+    restored = SQLiteGraphStore.restore_backup(
+        backup,
+        destination=tmp_path / "restored" / "canonical-graph.sqlite3",
+        campaign_id=CAMPAIGN,
+    )
+    assert restored.event_log.events() == store.event_log.events()
+    assert restored.projection_store.current() == projection
+    assert restored.snapshot_store.snapshots() == (snapshot,)
+    assert restored.permit_store.permits() == ()
+
+
+def test_backup_and_restore_fail_closed_on_existing_or_tampered_material(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(source)
+    backup = tmp_path / "backups" / "graph-lab.sqlite3"
+    store.create_backup(backup, created_at=NOW + timedelta(seconds=5))
+
+    with pytest.raises(SQLiteGraphStoreError, match="already exists"):
+        store.create_backup(backup, created_at=NOW + timedelta(seconds=6))
+
+    destination = tmp_path / "restored" / "canonical-graph.sqlite3"
+    SQLiteGraphStore.restore_backup(
+        backup,
+        destination=destination,
+        campaign_id=CAMPAIGN,
+    )
+    with pytest.raises(SQLiteGraphStoreError, match="already exists"):
+        SQLiteGraphStore.restore_backup(
+            backup,
+            destination=destination,
+            campaign_id=CAMPAIGN,
+        )
+
+    manifest_path = sqlite_graph_backup_manifest_path(backup)
+    manifest_document = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest_document["eventCount"] = 3
+    manifest_path.write_text(
+        json.dumps(manifest_document, separators=(",", ":"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(SQLiteGraphStoreError, match="manifest is invalid"):
+        SQLiteGraphStore.restore_backup(
+            backup,
+            destination=tmp_path / "tampered-manifest" / "canonical-graph.sqlite3",
+            campaign_id=CAMPAIGN,
+        )
+
+    second_backup = tmp_path / "backups" / "graph-lab-second.sqlite3"
+    store.create_backup(
+        second_backup,
+        created_at=NOW + timedelta(seconds=7),
+    )
+    database = bytearray(second_backup.read_bytes())
+    database[-1] ^= 1
+    second_backup.write_bytes(database)
+    with pytest.raises(SQLiteGraphStoreError, match="database digest differs"):
+        SQLiteGraphStore.restore_backup(
+            second_backup,
+            destination=tmp_path / "tampered" / "canonical-graph.sqlite3",
+            campaign_id=CAMPAIGN,
+        )
+
+
+def test_process_hard_exit_after_projection_commit_preserves_committed_revision(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(path)
+    assert store.projection_store.current().revision == 0
+    child = _run_hard_exit(
+        """
+import os
+import sys
+from pathlib import Path
+from pajin.graph import GraphProjectionReconciler, SQLiteGraphStore
+
+store = SQLiteGraphStore(Path(sys.argv[1]), campaign_id=sys.argv[2])
+result = GraphProjectionReconciler(
+    event_log=store.event_log,
+    projection_store=store.projection_store,
+).reconcile()
+if result.projection.revision != 2:
+    os._exit(70)
+os._exit(91)
+""",
+        str(path),
+        CAMPAIGN,
+    )
+
+    assert child.returncode == 91, child.stderr
+    reopened = SQLiteGraphStore(path, campaign_id=CAMPAIGN)
+    assert reopened.projection_store.current().revision == 2
+    assert len(reopened.event_log.events()) == 2
+
+
+def test_process_hard_exit_before_transaction_commit_rolls_back_partial_writer(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    SQLiteGraphStore(path, campaign_id=CAMPAIGN)
+    child = _run_hard_exit(
+        """
+import os
+import sqlite3
+import sys
+
+connection = sqlite3.connect(sys.argv[1], isolation_level=None)
+connection.execute("PRAGMA synchronous = FULL")
+connection.execute("BEGIN IMMEDIATE")
+connection.execute(
+    "INSERT INTO graph_store_writers (writer_kind, writer_id, writer_digest) "
+    "VALUES ('snapshot', 'pajin.graph.interrupted-writer', ?)",
+    ("f" * 64,),
+)
+os._exit(92)
+""",
+        str(path),
+    )
+
+    assert child.returncode == 92, child.stderr
+    reopened = SQLiteGraphStore(path, campaign_id=CAMPAIGN)
+    reopened.snapshot_store.claim_writer(SNAPSHOT_CREATOR_ID, DIGEST_B)
+    assert reopened.snapshot_store.head_digest() is None
+
+
+def test_process_hard_exit_after_backup_publish_restores_verified_state(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(path)
+    projection = GraphProjectionCoordinator(
+        event_log=store.event_log,
+        projection_store=store.projection_store,
+    ).refresh().projection
+    backup = tmp_path / "backups" / "graph-lab.sqlite3"
+    child = _run_hard_exit(
+        """
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from pajin.graph import SQLiteGraphStore
+
+store = SQLiteGraphStore(Path(sys.argv[1]), campaign_id=sys.argv[3])
+store.create_backup(
+    Path(sys.argv[2]),
+    created_at=datetime(2026, 7, 26, 15, 0, 5, tzinfo=UTC),
+)
+os._exit(93)
+""",
+        str(path),
+        str(backup),
+        CAMPAIGN,
+    )
+
+    assert child.returncode == 93, child.stderr
+    restored = SQLiteGraphStore.restore_backup(
+        backup,
+        destination=tmp_path / "restored" / "canonical-graph.sqlite3",
+        campaign_id=CAMPAIGN,
+    )
+    assert restored.event_log.events() == store.event_log.events()
+    assert restored.projection_store.current() == projection
 
 
 def test_cross_instance_event_append_and_projection_cas_have_one_winner(

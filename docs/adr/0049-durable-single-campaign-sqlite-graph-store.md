@@ -63,6 +63,14 @@ This store does not turn `GraphDecisionPreflight` into an ActionPermit. Atomic l
 comparison plus ActionPermit issuance/consumption and Worker dispatch is a separate decision and
 trust-boundary slice.
 
+### 7. Publish self-verifying backups without overwriting authority
+
+An online SQLite backup is accepted only after the complete schema, Event/Node, Projection,
+Snapshot, and consumed ActionPermit state is revalidated. A canonical content-addressed manifest
+binds the database digest and exact logical heads. Backup files publish exclusively, and restore
+repeats every check before creating a previously absent destination. The manifest is deliberately
+not treated as an external signature or anti-rollback anchor.
+
 ## Alternatives considered
 
 ### Extend `RunStore`
@@ -104,6 +112,8 @@ Positive:
 - Campaign-wide Graph ownership no longer conflicts with one-Run sealing.
 - Cross-process host-local Event append and Projection CAS have one database serialization point.
 - Events, revisions, and Snapshots survive restart without a new runtime dependency.
+- A bounded host-local backup can be restored without weakening canonical identities or replaying a
+  consumed Permit.
 - The same storage-neutral Graph protocols remain available for a future PostgreSQL adapter.
 
 Costs and limits:
@@ -111,8 +121,8 @@ Costs and limits:
 - SQLite is one-host storage, not multi-host leader election or HA.
 - Event append and Projection publication are separate transactions by design; reconciliation is
   required after an interruption.
-- Backup/restore, compaction, encryption at rest, external anchoring, and process-kill fault
-  injection remain incomplete.
+- Scheduled/off-host retention, compaction, encryption at rest, signed manifests, external
+  anchoring, and exhaustive power-loss fault injection remain incomplete.
 - Physical atomicity between an external Worker side effect and the database commit is not
   provided.
 - Runtime wiring and lifecycle events remain after the schema-v2 consumed dispatch claim.

@@ -115,12 +115,15 @@ from pajin.graph.projection import (
     graph_snapshot_ref,
 )
 from pajin.graph.sqlite_store import (
+    GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
     SQLiteGraphActionPermitStore,
+    SQLiteGraphBackupManifest,
     SQLiteGraphEventLog,
     SQLiteGraphProjectionStore,
     SQLiteGraphSnapshotStore,
     SQLiteGraphStore,
     SQLiteGraphStoreError,
+    sqlite_graph_backup_manifest_path,
 )
 
 __all__ = [
@@ -136,6 +139,7 @@ __all__ = [
     "GRAPH_PROPOSAL_API_VERSION",
     "GRAPH_SCHEMA_VERSION",
     "GRAPH_SNAPSHOT_API_VERSION",
+    "GRAPH_STORE_BACKUP_MANIFEST_API_VERSION",
     "MISSION_ENVELOPE_API_VERSION",
     "REGISTERED_ACTION_CAPABILITY_API_VERSION",
     "ActionBudgetLimit",
@@ -220,6 +224,7 @@ __all__ = [
     "ObservationProposal",
     "RegisteredActionCapability",
     "SQLiteGraphActionPermitStore",
+    "SQLiteGraphBackupManifest",
     "SQLiteGraphEventLog",
     "SQLiteGraphProjectionStore",
     "SQLiteGraphSnapshotStore",
@@ -234,4 +239,5 @@ __all__ = [
     "graph_snapshot_ref",
     "parse_graph_node",
     "parse_graph_proposal",
+    "sqlite_graph_backup_manifest_path",
 ]

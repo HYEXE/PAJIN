@@ -86,7 +86,8 @@ replayed Events. A divergent projection is never replaced silently.
 This reference algorithm is replay recovery, not durable two-store crash atomicity.
 [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md) now applies it to a separate
 single-Campaign SQLite store with cross-process host-local CAS and reopen persistence. Multi-host
-leadership, process-kill fsync fault injection, and verified backup restore remain open.
+leadership remains open. GRAPH-005 now also verifies content-addressed backup/restore and the first
+subprocess hard-exit commit, rollback, and backup-publication boundaries.
 
 ## Snapshot-bound stale decision preflight
 
@@ -136,9 +137,10 @@ GRAPH-006 combines the final latest-revision check with a consumed ActionPermit 
 one transaction. The following remain open:
 
 - multi-host leader fencing, lease expiry, and PostgreSQL/HA storage;
-- process-kill/fault-injection testing across fsync boundaries;
+- exhaustive process-kill/power-loss injection across every SQLite and filesystem sync boundary;
 - semantic CampaignFact corroboration/invalidation workflows;
-- retention, compaction, backup, restore, and external integrity anchoring; and
+- scheduled/off-host retention, compaction, encryption, signed backup manifests, and external
+  integrity anchoring; and
 - live sealed-Run/Scope/Capability adapters, B2.9 Handoff projections, and Supervisor execution.
 
 GRAPH-006 rechecks the latest durable revision inside ActionPermit issuance/consumption instead of

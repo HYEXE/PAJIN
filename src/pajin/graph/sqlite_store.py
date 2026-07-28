@@ -6,17 +6,20 @@ import json
 import os
 import sqlite3
 import stat
+import tempfile
 import threading
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager, suppress
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from re import fullmatch
-from typing import cast
+from typing import Annotated, Literal, Self, cast
 
-from pydantic import ValidationError
+from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from pajin.domain.models import StrictModel
 from pajin.graph.admission import (
     GraphAdmissionDecision,
     GraphAdmissionEvent,
@@ -52,6 +55,11 @@ from pajin.graph.projection import (
     GraphSnapshot,
     GraphSnapshotError,
     GraphSnapshotRef,
+    graph_snapshot_ref,
+)
+from pajin.runtime.safe_files import (
+    parse_strict_json_bytes,
+    read_bounded_regular_bytes,
 )
 
 _SCHEMA_VERSION = 2
@@ -59,6 +67,12 @@ _LEGACY_SCHEMA_VERSION = 1
 _APPLICATION_ID = 0x50414752  # ASCII "PAGR"
 _BUSY_TIMEOUT_MS = 30_000
 _MAX_GRAPH_BYTES = 64 * 1024 * 1024
+_MAX_GRAPH_BACKUP_BYTES = 256 * 1024 * 1024
+_MAX_GRAPH_BACKUP_MANIFEST_BYTES = 64 * 1024
+GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
+    "pajin.dev/sqlite-graph-backup-manifest/v1alpha1"
+] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha1"
+_Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _LEGACY_TABLES = frozenset(
     {
         "graph_store_metadata",
@@ -290,6 +304,87 @@ class SQLiteGraphStoreError(RuntimeError):
     """Raised when the durable Graph Store cannot establish a trusted boundary."""
 
 
+class SQLiteGraphBackupManifest(StrictModel):
+    """Content-addressed identity and logical-state summary for one Graph backup."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/sqlite-graph-backup-manifest/v1alpha1"] = Field(
+        default=GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SQLiteGraphBackupManifest"] = "SQLiteGraphBackupManifest"
+    backup_id: str = Field(default="", alias="backupId", max_length=96)
+    campaign_id: str = Field(
+        alias="campaignId",
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    schema_version: Literal[2] = Field(default=2, alias="schemaVersion")
+    schema_digest: _Sha256 = Field(default=_SCHEMA_DIGEST, alias="schemaDigest")
+    created_at: datetime = Field(alias="createdAt")
+    database_sha256: _Sha256 = Field(alias="databaseSha256")
+    database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_GRAPH_BACKUP_BYTES)
+    event_count: int = Field(alias="eventCount", ge=0)
+    event_log_head_digest: _Sha256 | None = Field(alias="eventLogHeadDigest")
+    projection_revision: int = Field(alias="projectionRevision", ge=0)
+    projection_digest: _Sha256 = Field(alias="projectionDigest")
+    snapshot_count: int = Field(alias="snapshotCount", ge=0)
+    snapshot_head_digest: _Sha256 | None = Field(alias="snapshotHeadDigest")
+    action_permit_count: int = Field(alias="actionPermitCount", ge=0)
+    action_permit_head_digest: _Sha256 | None = Field(alias="actionPermitHeadDigest")
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("SQLite Graph backup creation time must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def bind_backup_identity(self) -> Self:
+        if (self.event_count == 0) is not (self.event_log_head_digest is None):
+            raise ValueError("SQLite Graph backup Event count and head are inconsistent")
+        if self.projection_revision > self.event_count:
+            raise ValueError("SQLite Graph backup Projection is ahead of its Event Log")
+        if (self.snapshot_count == 0) is not (self.snapshot_head_digest is None):
+            raise ValueError("SQLite Graph backup Snapshot count and head are inconsistent")
+        if (self.action_permit_count == 0) is not (
+            self.action_permit_head_digest is None
+        ):
+            raise ValueError("SQLite Graph backup Permit count and head are inconsistent")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"backup_id"},
+        )
+        digest = sha256(
+            canonical_graph_json(
+                material,
+                label="SQLiteGraphBackupManifest",
+                max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+            )
+        ).hexdigest()
+        backup_id = f"graph-store-backup_{digest}"
+        if self.backup_id and self.backup_id != backup_id:
+            raise ValueError("SQLite Graph backup ID differs from canonical material")
+        object.__setattr__(self, "backup_id", backup_id)
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class _VerifiedGraphStoreState:
+    event_count: int
+    event_log_head_digest: str | None
+    projection_revision: int
+    projection_digest: str
+    snapshot_count: int
+    snapshot_head_digest: str | None
+    action_permit_count: int
+    action_permit_head_digest: str | None
+
+
 class SQLiteGraphStore:
     """Own one Campaign's durable Graph and final ActionPermit authority."""
 
@@ -312,6 +407,38 @@ class SQLiteGraphStore:
             self.path,
             campaign_id=campaign_id,
         )
+
+    def create_backup(
+        self,
+        destination: Path,
+        *,
+        created_at: datetime | None = None,
+    ) -> SQLiteGraphBackupManifest:
+        """Create one consistent, verified database plus content-addressed manifest."""
+
+        return _create_backup(
+            self.path,
+            destination,
+            campaign_id=self.campaign_id,
+            created_at=created_at or datetime.now(UTC),
+        )
+
+    @classmethod
+    def restore_backup(
+        cls,
+        backup: Path,
+        *,
+        destination: Path,
+        campaign_id: str,
+    ) -> SQLiteGraphStore:
+        """Verify a backup and restore it only to a previously absent database path."""
+
+        _restore_backup(
+            backup,
+            destination=destination,
+            campaign_id=campaign_id,
+        )
+        return cls(destination, campaign_id=campaign_id)
 
 
 class SQLiteGraphEventLog:
@@ -1031,6 +1158,466 @@ class SQLiteGraphActionPermitStore:
                 )
         except sqlite3.Error as exc:
             raise ActionPermitError("ActionPermit ledger read failed") from exc
+
+
+def sqlite_graph_backup_manifest_path(backup: Path) -> Path:
+    """Return the fixed sidecar path for one SQLite Graph backup."""
+
+    normalized = _absolute_path(backup)
+    return Path(f"{normalized}.manifest.json")
+
+
+def _create_backup(
+    source: Path,
+    destination: Path,
+    *,
+    campaign_id: str,
+    created_at: datetime,
+) -> SQLiteGraphBackupManifest:
+    backup_path = _absolute_path(destination)
+    manifest_path = sqlite_graph_backup_manifest_path(backup_path)
+    if backup_path == source or manifest_path == source:
+        raise SQLiteGraphStoreError("SQLite Graph backup must not replace the live store")
+    _prepare_private_parent(backup_path.parent)
+    _require_absent_leaf(backup_path, label="SQLite Graph backup")
+    _require_absent_leaf(manifest_path, label="SQLite Graph backup manifest")
+    temporary_backup = _private_temporary_path(backup_path)
+    temporary_manifest: Path | None = None
+    backup_published = False
+    try:
+        _copy_sqlite_backup(source, temporary_backup, campaign_id=campaign_id)
+        state = _verified_graph_store_state(temporary_backup, campaign_id=campaign_id)
+        database = read_bounded_regular_bytes(
+            temporary_backup,
+            max_bytes=_MAX_GRAPH_BACKUP_BYTES,
+            label="SQLite Graph backup database",
+            require_single_link=True,
+        )
+        manifest = SQLiteGraphBackupManifest(
+            campaignId=campaign_id,
+            createdAt=created_at,
+            databaseSha256=sha256(database).hexdigest(),
+            databaseBytes=len(database),
+            eventCount=state.event_count,
+            eventLogHeadDigest=state.event_log_head_digest,
+            projectionRevision=state.projection_revision,
+            projectionDigest=state.projection_digest,
+            snapshotCount=state.snapshot_count,
+            snapshotHeadDigest=state.snapshot_head_digest,
+            actionPermitCount=state.action_permit_count,
+            actionPermitHeadDigest=state.action_permit_head_digest,
+        )
+        temporary_manifest = _write_private_temporary(
+            manifest_path,
+            _backup_manifest_bytes(manifest),
+        )
+        _publish_exclusive(temporary_backup, backup_path, label="SQLite Graph backup")
+        backup_published = True
+        _publish_exclusive(
+            temporary_manifest,
+            manifest_path,
+            label="SQLite Graph backup manifest",
+        )
+        temporary_manifest = None
+        return manifest
+    except (
+        OSError,
+        sqlite3.Error,
+        ValidationError,
+        ValueError,
+        SQLiteGraphStoreError,
+    ) as exc:
+        if backup_published:
+            with suppress(OSError):
+                backup_path.unlink()
+                _fsync_graph_directory(backup_path.parent)
+        if isinstance(exc, SQLiteGraphStoreError):
+            raise
+        raise SQLiteGraphStoreError("SQLite Graph backup creation failed") from exc
+    finally:
+        with suppress(FileNotFoundError):
+            temporary_backup.unlink()
+        if temporary_manifest is not None:
+            with suppress(FileNotFoundError):
+                temporary_manifest.unlink()
+
+
+def _restore_backup(
+    backup: Path,
+    *,
+    destination: Path,
+    campaign_id: str,
+) -> None:
+    backup_path = _absolute_path(backup)
+    manifest_path = sqlite_graph_backup_manifest_path(backup_path)
+    destination_path = _absolute_path(destination)
+    if destination_path in {backup_path, manifest_path}:
+        raise SQLiteGraphStoreError("SQLite Graph restore destination overlaps its backup")
+    _prepare_private_parent(destination_path.parent)
+    _require_absent_leaf(destination_path, label="SQLite Graph restore destination")
+    temporary = _private_temporary_path(destination_path)
+    try:
+        manifest_raw = read_bounded_regular_bytes(
+            manifest_path,
+            max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+            label="SQLite Graph backup manifest",
+            require_single_link=True,
+        )
+        try:
+            manifest = SQLiteGraphBackupManifest.model_validate(
+                parse_strict_json_bytes(
+                    manifest_raw,
+                    label="SQLite Graph backup manifest",
+                    max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+                    max_depth=16,
+                    max_nodes=64,
+                )
+            )
+        except (ValidationError, ValueError) as exc:
+            raise SQLiteGraphStoreError("SQLite Graph backup manifest is invalid") from exc
+        if manifest_raw != _backup_manifest_bytes(manifest):
+            raise SQLiteGraphStoreError("SQLite Graph backup manifest is not canonical bytes")
+        if manifest.campaign_id != campaign_id:
+            raise SQLiteGraphStoreError("SQLite Graph backup belongs to another Campaign")
+        database = read_bounded_regular_bytes(
+            backup_path,
+            max_bytes=_MAX_GRAPH_BACKUP_BYTES,
+            label="SQLite Graph backup database",
+            require_single_link=True,
+        )
+        if (
+            len(database) != manifest.database_bytes
+            or sha256(database).hexdigest() != manifest.database_sha256
+        ):
+            raise SQLiteGraphStoreError("SQLite Graph backup database digest differs")
+        _write_existing_private_file(temporary, database)
+        state = _verified_graph_store_state(temporary, campaign_id=campaign_id)
+        _require_manifest_state(manifest, state)
+        _publish_exclusive(
+            temporary,
+            destination_path,
+            label="SQLite Graph restore destination",
+        )
+    except (
+        OSError,
+        sqlite3.Error,
+        ValidationError,
+        ValueError,
+        SQLiteGraphStoreError,
+    ) as exc:
+        if isinstance(exc, SQLiteGraphStoreError):
+            raise
+        raise SQLiteGraphStoreError("SQLite Graph backup restore failed") from exc
+    finally:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _copy_sqlite_backup(source: Path, destination: Path, *, campaign_id: str) -> None:
+    with _readonly_connection(source) as source_connection:
+        _validate_schema(source_connection, campaign_id=campaign_id)
+        target_connection = sqlite3.connect(
+            destination,
+            isolation_level=None,
+            timeout=_BUSY_TIMEOUT_MS / 1_000,
+        )
+        try:
+            target_connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
+            target_connection.execute("PRAGMA synchronous = FULL")
+            source_connection.backup(target_connection)
+        finally:
+            target_connection.close()
+    _fsync_graph_file(destination)
+
+
+def _verified_graph_store_state(
+    path: Path,
+    *,
+    campaign_id: str,
+) -> _VerifiedGraphStoreState:
+    with _readonly_connection(path) as connection:
+        _validate_schema(connection, campaign_id=campaign_id)
+        events = _events_from_connection(connection, campaign_id=campaign_id)
+        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+        projections = _verified_projections(
+            connection,
+            campaign_id=campaign_id,
+            events=events,
+        )
+        snapshots, snapshot_head = _verified_snapshots(
+            connection,
+            campaign_id=campaign_id,
+            projections=projections,
+        )
+        permits = _verified_action_permits(
+            connection,
+            campaign_id=campaign_id,
+            snapshots=snapshots,
+        )
+        current_projection = projections[max(projections)]
+        return _VerifiedGraphStoreState(
+            event_count=len(events),
+            event_log_head_digest=events[-1].event_digest if events else None,
+            projection_revision=current_projection.revision,
+            projection_digest=current_projection.projection_digest,
+            snapshot_count=len(snapshots),
+            snapshot_head_digest=snapshot_head,
+            action_permit_count=len(permits),
+            action_permit_head_digest=permits[-1].permit_digest if permits else None,
+        )
+
+
+def _require_exact_node_index(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    events: tuple[GraphAdmissionEvent, ...],
+) -> None:
+    expected_nodes: dict[str, tuple[GraphNode, int]] = {}
+    for event in events:
+        if event.decision is not GraphAdmissionDecision.ADMITTED:
+            continue
+        for node in event.admitted_nodes:
+            expected_nodes.setdefault(node.node_id, (node, event.sequence))
+    node_rows = connection.execute("SELECT * FROM graph_nodes ORDER BY node_id").fetchall()
+    stored_nodes = {
+        cast(str, row["node_id"]): (
+            _node_from_row(row, campaign_id=campaign_id),
+            cast(int, row["admitted_sequence"]),
+        )
+        for row in node_rows
+    }
+    if stored_nodes != expected_nodes:
+        raise SQLiteGraphStoreError(
+            "SQLite Graph backup admitted-node index differs from its Event Log"
+        )
+
+
+def _verified_projections(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    events: tuple[GraphAdmissionEvent, ...],
+) -> dict[int, GraphProjection]:
+    projection_rows = connection.execute(
+        "SELECT * FROM graph_projections ORDER BY revision"
+    ).fetchall()
+    if not projection_rows:
+        raise SQLiteGraphStoreError("SQLite Graph backup has no genesis projection")
+    projections: dict[int, GraphProjection] = {}
+    for row in projection_rows:
+        projection = _projection_from_row(row, campaign_id=campaign_id)
+        if projection.revision > len(events):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup Projection is ahead of its Event Log"
+            )
+        expected_projection = GraphProjector.project(
+            campaign_id=campaign_id,
+            events=events[: projection.revision],
+        )
+        if projection != expected_projection:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup Projection differs from its Event Log prefix"
+            )
+        projections[projection.revision] = projection
+    if 0 not in projections:
+        raise SQLiteGraphStoreError("SQLite Graph backup has no genesis projection")
+    return projections
+
+
+def _verified_snapshots(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    projections: dict[int, GraphProjection],
+) -> tuple[dict[str, GraphSnapshot], str | None]:
+    snapshot_rows = connection.execute(
+        "SELECT * FROM graph_snapshots ORDER BY ordinal"
+    ).fetchall()
+    snapshots: dict[str, GraphSnapshot] = {}
+    previous_snapshot: str | None = None
+    for ordinal, row in enumerate(snapshot_rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup Snapshot ordinals are not contiguous"
+            )
+        snapshot = _snapshot_from_row(row, campaign_id=campaign_id)
+        if snapshot.previous_snapshot_digest != previous_snapshot:
+            raise SQLiteGraphStoreError("SQLite Graph backup Snapshot chain is not contiguous")
+        if projections.get(snapshot.revision) != snapshot.projection:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup Snapshot differs from its published Projection"
+            )
+        snapshots[snapshot.snapshot_id] = snapshot
+        previous_snapshot = snapshot.snapshot_digest
+    return snapshots, previous_snapshot
+
+
+def _verified_action_permits(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    snapshots: dict[str, GraphSnapshot],
+) -> list[ActionPermit]:
+    permit_rows = connection.execute(
+        "SELECT * FROM graph_action_permits ORDER BY ordinal"
+    ).fetchall()
+    permits: list[ActionPermit] = []
+    compiler_identity = _action_permit_writer_identity(connection)
+    for ordinal, row in enumerate(permit_rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup ActionPermit ordinals are not contiguous"
+            )
+        permit = _action_permit_from_row(row, campaign_id=campaign_id)
+        snapshot = snapshots.get(permit.snapshot.snapshot_id)
+        if snapshot is None or permit.snapshot != graph_snapshot_ref(snapshot):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup ActionPermit differs from its Snapshot"
+            )
+        if compiler_identity != (
+            permit.compiler_id,
+            permit.compiler_version,
+            permit.compiler_digest,
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup ActionPermit differs from its compiler writer"
+            )
+        permits.append(permit)
+    return permits
+
+
+def _require_manifest_state(
+    manifest: SQLiteGraphBackupManifest,
+    state: _VerifiedGraphStoreState,
+) -> None:
+    if (
+        manifest.schema_version != _SCHEMA_VERSION
+        or manifest.schema_digest != _SCHEMA_DIGEST
+        or manifest.event_count != state.event_count
+        or manifest.event_log_head_digest != state.event_log_head_digest
+        or manifest.projection_revision != state.projection_revision
+        or manifest.projection_digest != state.projection_digest
+        or manifest.snapshot_count != state.snapshot_count
+        or manifest.snapshot_head_digest != state.snapshot_head_digest
+        or manifest.action_permit_count != state.action_permit_count
+        or manifest.action_permit_head_digest != state.action_permit_head_digest
+    ):
+        raise SQLiteGraphStoreError("SQLite Graph backup manifest differs from restored state")
+
+
+def _backup_manifest_bytes(manifest: SQLiteGraphBackupManifest) -> bytes:
+    return (
+        canonical_graph_json(
+            manifest.model_dump(mode="json", by_alias=True),
+            label="SQLiteGraphBackupManifest",
+            max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+        )
+        + b"\n"
+    )
+
+
+def _private_temporary_path(destination: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    try:
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+    finally:
+        os.close(descriptor)
+    return Path(name)
+
+
+def _write_private_temporary(destination: Path, content: bytes) -> Path:
+    temporary = _private_temporary_path(destination)
+    try:
+        _write_existing_private_file(temporary, content)
+    except BaseException:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+    return temporary
+
+
+def _write_existing_private_file(path: Path, content: bytes) -> None:
+    flags = os.O_WRONLY | os.O_TRUNC | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOINHERIT", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            descriptor = -1
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _require_absent_leaf(path: Path, *, label: str) -> None:
+    if path.exists() or path.is_symlink() or path.is_junction():
+        raise SQLiteGraphStoreError(f"{label} path already exists")
+
+
+def _publish_exclusive(source: Path, destination: Path, *, label: str) -> None:
+    _require_absent_leaf(destination, label=label)
+    parent_identity = destination.parent.lstat()
+    published = False
+    try:
+        os.link(source, destination, follow_symlinks=False)
+        published = True
+        observed_parent = destination.parent.lstat()
+        if (
+            destination.parent.is_symlink()
+            or destination.parent.is_junction()
+            or (observed_parent.st_dev, observed_parent.st_ino)
+            != (parent_identity.st_dev, parent_identity.st_ino)
+        ):
+            raise SQLiteGraphStoreError(f"{label} parent changed during publication")
+        source.unlink()
+        file_stat = destination.lstat()
+        if (
+            destination.is_symlink()
+            or destination.is_junction()
+            or not stat.S_ISREG(file_stat.st_mode)
+            or file_stat.st_nlink != 1
+        ):
+            raise SQLiteGraphStoreError(f"{label} publication identity is invalid")
+        _fsync_graph_directory(destination.parent)
+        published = False
+    except FileExistsError as exc:
+        raise SQLiteGraphStoreError(f"{label} path already exists") from exc
+    except BaseException:
+        if published:
+            with suppress(OSError):
+                destination.unlink()
+        raise
+
+
+def _fsync_graph_file(path: Path) -> None:
+    flags = os.O_RDWR | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOINHERIT", 0) | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_graph_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(
+        path,
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _absolute_path(path: Path) -> Path:

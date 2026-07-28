@@ -236,8 +236,9 @@ repeated retry resolves the same record and cannot append another record or ente
   execution observations remain follow-up work;
 - the sealed Web + AI gate verifier and Worker-daemon deployment wiring are implemented; one
   actual isolated Hybrid Campaign run using organization-issued releases remains required;
-- process-kill/fsync fault injection beyond the deterministic in-process crash windows, plus
-  backup/restore verification;
+- real process termination across the Permit/RunStore/external Gateway windows beyond the
+  deterministic in-process injections; GRAPH-005 now covers verified Graph backup/restore and
+  subprocess commit/rollback/publication hard exits, but not that external side-effect window;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.
 

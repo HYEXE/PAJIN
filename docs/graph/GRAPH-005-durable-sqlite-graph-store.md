@@ -1,7 +1,7 @@
 # GRAPH-005: Durable Single-Campaign SQLite Graph Store
 
-- Status: First durable adapter implemented and locally verified; Linux CI pending
-- Date: 2026-07-26
+- Status: Durable adapter, verified backup/restore, and hard-exit recovery locally verified; Linux CI pending
+- Date: 2026-07-28
 - Decision: [ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.md)
 - Implementation: `pajin.graph.sqlite_store`
 - Tests: `tests/test_graph_sqlite_store.py`
@@ -10,14 +10,17 @@
 
 GRAPH-005 selects a separate Graph Store instead of embedding Campaign-wide state in `RunStore`.
 `RunStore` remains the sealed, one-Run artifact and audit boundary. The new
-`SQLiteGraphStore` owns one Campaign's Canonical Event Log, append-only Projection history, and
-immutable Snapshot chain in one local SQLite database.
+`SQLiteGraphStore` owns one Campaign's Canonical Event Log, append-only Projection history,
+immutable Snapshot chain, and consumed ActionPermit authority in one local SQLite database. It can
+also create and verify a bounded backup plus content-addressed manifest and restore it to a new
+database path.
 
-The public facade exposes three protocol-compatible adapters:
+The public facade exposes four protocol-compatible adapters:
 
 - `SQLiteGraphEventLog`;
 - `SQLiteGraphProjectionStore`; and
-- `SQLiteGraphSnapshotStore`.
+- `SQLiteGraphSnapshotStore`; and
+- `SQLiteGraphActionPermitStore`.
 
 Existing in-memory implementations remain the reference semantics and require no migration.
 
@@ -33,6 +36,8 @@ One database is pinned to one exact Campaign ID and schema fingerprint.
 | `graph_nodes` | exact admitted-node lookup index | transactionally appended with Event |
 | `graph_projections` | deterministic revision history including genesis | append-only |
 | `graph_snapshots` | content-addressed Snapshot chain | append-only |
+| `graph_action_permit_writers` | one compiler identity | insert once, immutable |
+| `graph_action_permits` | consumed one-time dispatch authority | append-only |
 
 Update, delete, and replacement triggers protect every managed table. Initialization fingerprints
 the exact tables, index, triggers, schema version, application ID, and metadata. Reopen fails
@@ -96,12 +101,37 @@ The adapter uses:
 - file and direct-parent identity checks when connections open.
 
 These controls establish a host-local durable adapter. They do not claim protection from a
-privileged attacker replacing arbitrary ancestors concurrently, disk/controller failure beyond
-SQLite's guarantees, or a completed backup/restore disaster-recovery drill.
+privileged attacker replacing arbitrary ancestors concurrently or disk/controller failure beyond
+SQLite's guarantees.
+
+## Verified backup and restore
+
+`SQLiteGraphStore.create_backup()` uses SQLite's online backup API to capture one consistent source
+transaction into a private temporary file. Before publication, it checks the exact schema and
+SQLite integrity and then revalidates:
+
+- the complete Event hash chain and admitted-node index;
+- every stored Projection against its exact Event prefix;
+- the Snapshot predecessor chain and embedded published Projection; and
+- every consumed ActionPermit against its Snapshot and pinned compiler writer.
+
+The database is bounded to 256 MiB. A canonical
+`pajin.dev/sqlite-graph-backup-manifest/v1alpha1` sidecar binds its SHA-256, byte length, Campaign,
+schema, Event head, current Projection, Snapshot head, and Permit head. Both files use private
+temporary files, file `fsync`, exclusive hard-link publication that cannot replace an existing
+leaf, and parent-directory `fsync` on POSIX. A crash can leave at most one half of the pair; restore
+requires both and therefore treats such output as incomplete.
+
+`SQLiteGraphStore.restore_backup()` strictly parses and content-address verifies the manifest,
+checks the exact database digest, repeats the complete logical-state verification, compares that
+state to the manifest, and publishes only to a previously absent destination. It never overwrites
+a live or previously restored database. This is a self-consistency and local disaster-recovery
+boundary, not an external authenticity claim: the pair is not signed, encrypted, remotely
+retained, or anchored outside the host.
 
 ## Verified conformance
 
-The focused Graph suite passes 54 tests locally, including eight durable-store tests on Windows.
+The focused Graph suite passes 70 tests locally.
 Two POSIX link tests are correctly skipped on Windows and remain Linux CI obligations.
 
 The durable tests cover:
@@ -114,7 +144,11 @@ The durable tests cover:
 - Campaign and writer-identity pinning;
 - Snapshot predecessor and durably-published Projection checks;
 - append-only trigger and schema-fingerprint tamper rejection; and
-- stale Decision rejection when the durable Event Log is ahead.
+- stale Decision rejection when the durable Event Log is ahead;
+- exact backup/restore of Events, Projection, Snapshot, and consumed Permit state;
+- manifest and database tamper rejection plus no-overwrite restore; and
+- real subprocess `os._exit` immediately after Projection commit, before transaction commit, and
+  after backup publication.
 
 ## Compatibility, migration, and rollback
 
@@ -132,10 +166,10 @@ GRAPH-006 now combines the latest-revision comparison with a consumed-on-issuanc
 dispatch claim in one SQLite transaction. The following remain after GRAPH-005/006:
 
 - multi-host leader election, leases, or PostgreSQL/HA storage;
-- Tool Gateway/Worker runtime wiring and dispatch lifecycle events;
-- process-kill/fault-injection testing at every fsync boundary;
-- retention, compaction, verified backup/restore, encryption at rest, or external integrity
-  anchoring;
+- process termination across the external Gateway side-effect window and exhaustive power-loss
+  injection at every SQLite/filesystem synchronization boundary;
+- scheduled/off-host retention, restore drills on another host, compaction, encryption at rest,
+  signed manifests, or external integrity anchoring;
 - admission queue/runtime service wiring; or
 - B2.9 collaboration projections and Supervisor execution.
 
