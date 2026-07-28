@@ -262,6 +262,11 @@ rebuilds CAP-006 from source hashes present in one integrity-verified Run and re
 successful Web + AI `claimed → completed` lifecycles with sealed Gateway evidence. The local
 fixture closes the structural admission gate only; an organization-issued release set and actual
 isolated Campaign run remain required to produce the production runtime exit-gate artifact.
+The Worker bridge also seals a deployment/Run anchor before the Permit claim and reconciles the two
+non-atomic crash windows without redispatch: no `claimed` event is
+`consumed-without-claim`, while a lone `claimed` event is `claimed-outcome-unknown`. Incomplete
+states are content-addressed to the consumed Permit and the earliest seal covering their evidence,
+recorded once, and require manual review.
 
 ## 10. Definition of Done
 

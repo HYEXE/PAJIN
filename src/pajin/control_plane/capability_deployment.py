@@ -5,6 +5,7 @@ from __future__ import annotations
 import hmac
 import json
 from collections.abc import Callable
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -14,6 +15,8 @@ from re import fullmatch
 from pydantic import Field, ValidationError, field_validator, model_validator
 
 from pajin.capabilities import (
+    CAPABILITY_GRAPH_RUN_AUDIT_ANCHOR_EVENT_TYPE,
+    CapabilityGraphRunAuditAnchor,
     CapabilityLifecyclePolicy,
     CapabilityLifecycleTrustKey,
     CapabilityReleaseBundle,
@@ -32,7 +35,7 @@ from pajin.graph import (
     SQLiteGraphStore,
 )
 from pajin.runtime.safe_files import parse_strict_json_bytes, read_bounded_regular_bytes
-from pajin.runtime.store import RunStore
+from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_events
 from pajin.tools.ai import AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
@@ -181,18 +184,71 @@ class CapabilityGraphDeploymentRuntime:
             raise CapabilityGraphDeploymentError(
                 "Capability Graph Run ID is not a generated RunStore identifier"
             )
+        if run_id != self.deployment.mission_envelope.run_id:
+            raise CapabilityGraphDeploymentError(
+                "Capability Graph Run differs from the deployed MissionEnvelope"
+            )
         root = Path(self.deployment.run_root)
         campaign = self.deployment.campaign.metadata.name
         campaign_path = root / campaign
         run_path = campaign_path / run_id
         self._reject_linked_run_path(root, campaign_path, run_path)
         if run_path.exists():
-            return RunStore(run_id, run_path)
+            store = RunStore(run_id, run_path)
+        else:
+            try:
+                store = RunStore.create(root, campaign, run_id=run_id)
+            except FileExistsError:
+                self._reject_linked_run_path(root, campaign_path, run_path)
+                store = RunStore(run_id, run_path)
+        self._ensure_run_audit_anchor(store)
+        return store
+
+    def _ensure_run_audit_anchor(self, store: RunStore) -> None:
+        deployment = self.deployment
+        anchor = CapabilityGraphRunAuditAnchor(
+            deploymentId=deployment.deployment_id,
+            campaignId=deployment.campaign.metadata.name,
+            campaignDigest=deployment.campaign_digest,
+            runId=store.run_id,
+            envelopeId=deployment.mission_envelope.envelope_id,
+            envelopeDigest=deployment.mission_envelope.envelope_digest,
+            releaseSetDigest=deployment.release_set_digest,
+            activationSetDigest=deployment.activation_set_digest,
+            compilerId=deployment.compiler.compiler_id,
+            compilerVersion=deployment.compiler.compiler_version,
+            compilerDigest=deployment.compiler.compiler_digest,
+        )
         try:
-            return RunStore.create(root, campaign, run_id=run_id)
-        except FileExistsError:
-            self._reject_linked_run_path(root, campaign_path, run_path)
-            return RunStore(run_id, run_path)
+            store.append_unique_event(
+                CAPABILITY_GRAPH_RUN_AUDIT_ANCHOR_EVENT_TYPE,
+                anchor.model_dump(mode="json", by_alias=True),
+                occurred_at=self.clock(),
+            )
+            with suppress(RunIntegrityError):
+                store.seal()
+            events = load_verified_run_events(
+                store.path,
+                expected_run_id=store.run_id,
+            )
+            anchors = tuple(
+                event
+                for event in events
+                if event.event_type == CAPABILITY_GRAPH_RUN_AUDIT_ANCHOR_EVENT_TYPE
+            )
+            if len(anchors) != 1 or anchors[0].payload != anchor.model_dump(
+                mode="json",
+                by_alias=True,
+            ):
+                raise CapabilityGraphDeploymentError(
+                    "Capability Graph Run audit anchor differs from deployment"
+                )
+        except CapabilityGraphDeploymentError:
+            raise
+        except (OSError, RunIntegrityError, ValidationError, ValueError) as exc:
+            raise CapabilityGraphDeploymentError(
+                "Capability Graph Run audit anchor could not be verified"
+            ) from exc
 
     @staticmethod
     def _reject_linked_run_path(*paths: Path) -> None:

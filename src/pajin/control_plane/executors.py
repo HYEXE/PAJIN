@@ -17,12 +17,16 @@ from pydantic import Field, ValidationError, model_validator
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.capabilities import (
+    CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
     CapabilityDispatchAuditEvent,
+    CapabilityDispatchReconciliationError,
+    CapabilityDispatchReconciliationObservation,
     CapabilityDispatchStage,
     CapabilityReleaseRef,
     ExistingModeCapabilityActivationError,
     ExistingModeCapabilityGatewayDispatcher,
     capability_gateway_outcome_digest,
+    reconcile_capability_dispatch,
 )
 from pajin.control_plane.capability_deployment import (
     CapabilityGraphDeploymentRuntime,
@@ -52,7 +56,7 @@ from pajin.runtime.store import (
     RunIntegrityError,
     RunStore,
     load_verified_run_artifacts,
-    load_verified_run_events,
+    load_verified_run_snapshot,
 )
 from pajin.runtime.worker import (
     SimulatedWorkerBackend,
@@ -406,7 +410,21 @@ class CampaignJobExecutor:
             raise
         if dispatched.dispatched:
             store.seal()
-        terminal = self._verified_dispatch_terminal(store, dispatched.permit)
+        reconciliation = self._verified_dispatch_reconciliation(
+            store,
+            dispatched.permit,
+        )
+        terminal = reconciliation.terminal_event
+        if terminal is None:
+            self._record_incomplete_dispatch_reconciliation(
+                store,
+                dispatched.permit,
+                reconciliation,
+            )
+            raise PermanentExecutionError(
+                "Capability dispatch is permanently consumed with reconciliation status "
+                f"{reconciliation.record.status.value}; automatic redispatch is prohibited"
+            )
         outcome = dispatched.result
         if outcome is not None:
             observed_digest = capability_gateway_outcome_digest(outcome)
@@ -435,48 +453,71 @@ class CampaignJobExecutor:
             return
 
     @staticmethod
-    def _verified_dispatch_terminal(
+    def _verified_dispatch_reconciliation(
         store: RunStore,
         permit: ActionPermit,
-    ) -> CapabilityDispatchAuditEvent:
+    ) -> CapabilityDispatchReconciliationObservation:
         try:
-            events = load_verified_run_events(
+            snapshot = load_verified_run_snapshot(
                 store.path,
                 expected_run_id=store.run_id,
             )
-            lifecycle = tuple(
-                CapabilityDispatchAuditEvent.model_validate(event.payload)
-                for event in events
-                if event.event_type.startswith("capability.dispatch.")
-                and event.payload.get("permitId") == permit.permit_id
-            )
-        except (AttributeError, OSError, RunIntegrityError, ValidationError, ValueError) as exc:
+            return reconcile_capability_dispatch(snapshot, permit)
+        except (
+            AttributeError,
+            CapabilityDispatchReconciliationError,
+            OSError,
+            RunIntegrityError,
+            ValidationError,
+            ValueError,
+        ) as exc:
             raise PermanentExecutionError(
-                "Capability dispatch does not have a verified sealed audit"
+                "Capability dispatch does not have a reconcilable sealed audit"
             ) from exc
-        terminal_stages = {
-            CapabilityDispatchStage.COMPLETED,
-            CapabilityDispatchStage.FAILED,
-            CapabilityDispatchStage.CANCELLED,
-            CapabilityDispatchStage.EXPIRED,
-        }
-        if (
-            len(lifecycle) != 2
-            or lifecycle[0].stage is not CapabilityDispatchStage.CLAIMED
-            or lifecycle[1].stage not in terminal_stages
-            or any(
-                (
-                    item.permit_digest != permit.permit_digest
-                    or item.dispatch_id != permit.dispatch_id
-                    or item.run_id != permit.run_id
-                )
-                for item in lifecycle
+
+    def _record_incomplete_dispatch_reconciliation(
+        self,
+        store: RunStore,
+        permit: ActionPermit,
+        observation: CapabilityDispatchReconciliationObservation,
+    ) -> None:
+        if observation.already_recorded:
+            return
+        runtime = self._capability_deployment
+        assert runtime is not None
+        try:
+            store.append_unique_event(
+                CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
+                observation.record.model_dump(mode="json", by_alias=True),
+                occurred_at=runtime.clock(),
+                unique_by="permitId",
             )
+            store.seal()
+            verified = reconcile_capability_dispatch(
+                load_verified_run_snapshot(
+                    store.path,
+                    expected_run_id=store.run_id,
+                ),
+                permit,
+            )
+        except (
+            CapabilityDispatchReconciliationError,
+            OSError,
+            RunIntegrityError,
+            ValidationError,
+            ValueError,
+        ) as exc:
+            raise PermanentExecutionError(
+                "Capability dispatch reconciliation record could not be sealed"
+            ) from exc
+        if (
+            not verified.already_recorded
+            or verified.record != observation.record
+            or verified.terminal_event is not None
         ):
             raise PermanentExecutionError(
-                "Capability dispatch sealed audit lifecycle is incomplete or inconsistent"
+                "Capability dispatch reconciliation record changed after sealing"
             )
-        return lifecycle[1]
 
     def _capability_graph_result(
         self,

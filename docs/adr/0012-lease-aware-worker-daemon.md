@@ -93,6 +93,12 @@ RunStore audit, Control Plane PostgreSQL Job state, and an external Tool target 
 transactions; a consumed Permit with missing or unsealed terminal audit fails closed and is not
 redispatched.
 
+Before the Permit claim, the Worker seals an exact deployment/Run anchor. Reopen recovery seals any
+hash-valid interrupted extension and classifies a consumed Permit with no `claimed` event as
+`consumed-without-claim`, or a lone `claimed` event as `claimed-outcome-unknown`. Both states are
+content-addressed, durably recorded once, require manual review, and permanently prohibit automatic
+redispatch. A terminal lifecycle remains the only path that can report an observed dispatch status.
+
 Both built-in profiles bind the canonical Worker execution context into the sealed Run and copy the
 verified value into the optional completed-Job result fields `executionProfile` and
 `executionContext`. The defaults are explicitly `simulated-development-only`; Docker-backed

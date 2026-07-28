@@ -208,6 +208,27 @@ they do not satisfy the production exit gate.
 - unsuccessful dispatch, absent source/evidence, activation expansion, and post-seal mutation
   rejection.
 
+## Crash-window reconciliation
+
+The Worker now seals one content-addressed `CapabilityGraphRunAuditAnchor` before the SQLite Permit
+claim. The anchor binds the deployment, Campaign, Run, MissionEnvelope, release/activation sets,
+and compiler. `RunStore.append_unique_event()` installs that exact anchor once under the existing
+cross-process mutation lock, so a concurrent reopen cannot create a second authority record.
+
+An exact retry first seals any hash-valid extension left by the interrupted attempt, then
+`reconcile_capability_dispatch()` compares the consumed Permit with the verified Run snapshot:
+
+- no `claimed` event becomes `consumed-without-claim`; Gateway was not entered through this bridge,
+  the omitted action remains consumed, and manual review is required;
+- exactly one `claimed` event becomes `claimed-outcome-unknown`; an external side effect may have
+  occurred, manual review is required, and completion is never inferred; and
+- `claimed` plus one exact terminal event becomes the observed terminal status.
+
+Every reconciliation is content-addressed to the Permit, the relevant outer audit event hash, and
+the earliest Run seal covering that evidence. Incomplete states are recorded once as
+`capability.dispatch-reconciliation.recorded`. The record fixes `redispatchAllowed=false`; a
+repeated retry resolves the same record and cannot append another record or enter Gateway.
+
 ## Follow-up boundaries
 
 - CAP-006 measurement contracts, seven code-authored benchmark mappings, and signed release-set
@@ -215,14 +236,14 @@ they do not satisfy the production exit gate.
   execution observations remain follow-up work;
 - the sealed Web + AI gate verifier and Worker-daemon deployment wiring are implemented; one
   actual isolated Hybrid Campaign run using organization-issued releases remains required;
-- fault injection around the non-atomic Graph SQLite claim and RunStore audit/Gateway boundary;
+- process-kill/fsync fault injection beyond the deterministic in-process crash windows, plus
+  backup/restore verification;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.
 
-The Graph claim, RunStore event append, and external Worker side effect are separate durability
-domains. A process death after the SQLite claim can leave no claimed event; a death after Gateway
-side effect can leave only the claimed event. The consumed Permit prevents automatic redispatch,
-so operational reconciliation must classify these states rather than infer successful execution.
+The Graph claim, RunStore event append, and external Worker side effect remain separate durability
+domains. The implemented reconciliation makes their ambiguity explicit and durable; it does not
+make the external side effect transactional or authorize an automatic retry.
 
 ## Related documents
 

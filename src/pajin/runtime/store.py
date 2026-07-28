@@ -1296,31 +1296,96 @@ class RunStore:
         occurred_at: datetime | None = None,
     ) -> AuditEvent:
         with self._mutation():
-            assert self._event_count is not None
-            if (
-                event_type in _CAMPAIGN_TERMINAL_EVENTS
-                and self._campaign_terminal_event is not None
-            ):
-                raise RunIntegrityError(
-                    f"Run already contains Campaign terminal event {self._campaign_terminal_event}"
-                )
-            sequence = self._event_count + 1
-            event = AuditEvent(
-                run_id=self.run_id,
-                sequence=sequence,
-                event_type=event_type,
-                occurred_at=occurred_at or datetime.now(UTC),
-                payload=payload or {},
-                previous_hash=self._event_head_hash,
-                event_hash="0" * 64,
+            return self._append_event_locked(
+                event_type,
+                payload,
+                occurred_at=occurred_at,
             )
-            event = event.model_copy(update={"event_hash": event.computed_hash()})
-            _append_private_line(self.events_path, event.model_dump_json() + "\n")
-            self._event_count = sequence
-            self._event_head_hash = event.event_hash
-            if event_type in _CAMPAIGN_TERMINAL_EVENTS:
-                self._campaign_terminal_event = event_type
-            return event
+
+    def append_unique_event(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        occurred_at: datetime | None = None,
+        unique_by: str | None = None,
+    ) -> AuditEvent:
+        """Append one exact event type once across cooperating RunStore writers."""
+
+        canonical_payload = payload or {}
+        if unique_by is not None and (
+            not isinstance(unique_by, str)
+            or not unique_by
+            or not isinstance(canonical_payload.get(unique_by), str)
+            or not canonical_payload[unique_by]
+        ):
+            raise ValueError("unique Run event identity must name a non-empty string field")
+        with self._mutation():
+            same_type = (
+                tuple(
+                    event
+                    for event in _load_events(
+                        self.events_path,
+                        expected_run_id=self.run_id,
+                    )
+                    if event.event_type == event_type
+                )
+                if self.events_path.exists()
+                else ()
+            )
+            existing = (
+                tuple(
+                    event
+                    for event in same_type
+                    if event.payload.get(unique_by) == canonical_payload[unique_by]
+                )
+                if unique_by is not None
+                else same_type
+            )
+            if existing:
+                if len(existing) != 1 or existing[0].payload != canonical_payload:
+                    raise RunIntegrityError(
+                        f"unique Run event {event_type} conflicts with existing audit"
+                    )
+                return existing[0]
+            return self._append_event_locked(
+                event_type,
+                canonical_payload,
+                occurred_at=occurred_at,
+            )
+
+    def _append_event_locked(
+        self,
+        event_type: str,
+        payload: dict[str, Any] | None,
+        *,
+        occurred_at: datetime | None,
+    ) -> AuditEvent:
+        assert self._event_count is not None
+        if (
+            event_type in _CAMPAIGN_TERMINAL_EVENTS
+            and self._campaign_terminal_event is not None
+        ):
+            raise RunIntegrityError(
+                f"Run already contains Campaign terminal event {self._campaign_terminal_event}"
+            )
+        sequence = self._event_count + 1
+        event = AuditEvent(
+            run_id=self.run_id,
+            sequence=sequence,
+            event_type=event_type,
+            occurred_at=occurred_at or datetime.now(UTC),
+            payload=payload or {},
+            previous_hash=self._event_head_hash,
+            event_hash="0" * 64,
+        )
+        event = event.model_copy(update={"event_hash": event.computed_hash()})
+        _append_private_line(self.events_path, event.model_dump_json() + "\n")
+        self._event_count = sequence
+        self._event_head_hash = event.event_hash
+        if event_type in _CAMPAIGN_TERMINAL_EVENTS:
+            self._campaign_terminal_event = event_type
+        return event
 
     def write_json(self, relative_path: str, data: Any) -> str:
         with self._mutation():

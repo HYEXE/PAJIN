@@ -12,10 +12,13 @@ from pydantic import ValidationError
 
 import pajin.control_plane.worker_main as worker_main_module
 from pajin.capabilities import (
+    CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
     CAPABILITY_OPERATIONAL_EVIDENCE_ARTIFACT,
     CapabilityBenchmarkMapping,
     CapabilityDeliveryEvidence,
     CapabilityDispatchAuditEvent,
+    CapabilityDispatchReconciliation,
+    CapabilityDispatchReconciliationStatus,
     CapabilityDispatchStage,
     CapabilityLifecycleKeyRole,
     CapabilityLifecycleKeyState,
@@ -55,6 +58,7 @@ from pajin.capabilities import (
     existing_mode_capability_bundle,
     existing_mode_capability_replay_support,
     existing_mode_capability_rollout_metrics,
+    reconcile_capability_dispatch,
     registered_action_capability,
     verify_web_ai_hybrid_campaign_exit_gate,
 )
@@ -99,7 +103,11 @@ from pajin.graph import (
     graph_snapshot_ref,
 )
 from pajin.policy.engine import PolicyEngine
-from pajin.runtime.store import RunStore, load_verified_run_events
+from pajin.runtime.store import (
+    RunStore,
+    load_verified_run_events,
+    load_verified_run_snapshot,
+)
 from pajin.runtime.worker import SimulatedWorkerBackend
 from pajin.tools.ai import AIChatProbeTool
 from pajin.tools.base import ToolRegistry
@@ -1389,6 +1397,152 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
         "capability.dispatch.claimed",
         "capability.dispatch.completed",
     ]
+    permit = runtime.graph_store.permit_store.permits()[0]
+    reconciliation = reconcile_capability_dispatch(
+        load_verified_run_snapshot(run_path, expected_run_id=permit.run_id),
+        permit,
+    )
+    assert reconciliation.record.status is CapabilityDispatchReconciliationStatus.COMPLETED
+    assert reconciliation.terminal_event is not None
+    assert reconciliation.terminal_event.stage is CapabilityDispatchStage.COMPLETED
+    assert reconciliation.record.redispatch_allowed is False
+    assert reconciliation.record.manual_review_required is False
+    assert (
+        CapabilityDispatchReconciliation.model_validate(
+            reconciliation.record.model_dump(mode="json", by_alias=True)
+        )
+        == reconciliation.record
+    )
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_crash_after_permit_claim_without_redispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+    original_append = ExistingModeCapabilityGatewayDispatcher._append_dispatch_event
+
+    def crash_before_claim(self, **kwargs):
+        if kwargs["stage"] is CapabilityDispatchStage.CLAIMED:
+            raise SystemExit("injected crash after Permit claim")
+        return original_append(self, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(
+            ExistingModeCapabilityGatewayDispatcher,
+            "_append_dispatch_event",
+            crash_before_claim,
+        )
+        with pytest.raises(SystemExit, match="after Permit claim"):
+            await executor.execute(job)
+
+    with pytest.raises(
+        PermanentExecutionError,
+        match="consumed-without-claim",
+    ):
+        await executor.execute(job.model_copy(update={"attempts": 2}))
+    with pytest.raises(
+        PermanentExecutionError,
+        match="consumed-without-claim",
+    ):
+        await executor.execute(job.model_copy(update={"attempts": 3}))
+
+    assert worker.calls == 0
+    assert len(runtime.graph_store.permit_store.permits()) == 1
+    run_path = (
+        Path(runtime.deployment.run_root)
+        / sample_campaign.metadata.name
+        / runtime.deployment.mission_envelope.run_id
+    )
+    events = load_verified_run_events(run_path)
+    assert not any(
+        event.event_type.startswith("capability.dispatch.") for event in events
+    )
+    records = [
+        CapabilityDispatchReconciliation.model_validate(event.payload)
+        for event in events
+        if event.event_type == CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE
+    ]
+    assert len(records) == 1
+    assert (
+        records[0].status
+        is CapabilityDispatchReconciliationStatus.CONSUMED_WITHOUT_CLAIM
+    )
+    assert records[0].manual_review_required is True
+    assert records[0].redispatch_allowed is False
+
+
+@pytest.mark.asyncio
+async def test_worker_reconciles_post_gateway_crash_as_outcome_unknown(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+    original_append = ExistingModeCapabilityGatewayDispatcher._append_dispatch_event
+
+    def crash_before_terminal(self, **kwargs):
+        if kwargs["stage"] is CapabilityDispatchStage.COMPLETED:
+            raise SystemExit("injected crash after Gateway side effect")
+        return original_append(self, **kwargs)
+
+    with monkeypatch.context() as fault:
+        fault.setattr(
+            ExistingModeCapabilityGatewayDispatcher,
+            "_append_dispatch_event",
+            crash_before_terminal,
+        )
+        with pytest.raises(SystemExit, match="after Gateway side effect"):
+            await executor.execute(job)
+
+    with pytest.raises(
+        PermanentExecutionError,
+        match="claimed-outcome-unknown",
+    ):
+        await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    assert worker.calls == 1
+    assert len(runtime.graph_store.permit_store.permits()) == 1
+    run_path = (
+        Path(runtime.deployment.run_root)
+        / sample_campaign.metadata.name
+        / runtime.deployment.mission_envelope.run_id
+    )
+    events = load_verified_run_events(run_path)
+    lifecycle = [
+        event.event_type
+        for event in events
+        if event.event_type.startswith("capability.dispatch.")
+    ]
+    assert lifecycle == ["capability.dispatch.claimed"]
+    records = [
+        CapabilityDispatchReconciliation.model_validate(event.payload)
+        for event in events
+        if event.event_type == CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE
+    ]
+    assert len(records) == 1
+    assert (
+        records[0].status
+        is CapabilityDispatchReconciliationStatus.CLAIMED_OUTCOME_UNKNOWN
+    )
+    assert records[0].manual_review_required is True
+    assert records[0].redispatch_allowed is False
 
 
 def test_worker_deployment_rejects_digest_substitution_and_unknown_fields(

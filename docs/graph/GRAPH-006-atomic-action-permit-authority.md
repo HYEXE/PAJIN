@@ -121,21 +121,26 @@ durable budgets and rolling rates, Scope/expiry rejection, request equivocation,
 fingerprint tampering, honest v1-to-v2 migration, signed Web + AI subset activation, inactive
 Capability rejection, exact prepared-request Gateway dispatch binding, outcome-digest tamper
 rejection, success/failure/expiry/cancellation lifecycle events, and pre-execution audit failure.
+The Worker bridge additionally covers deterministic crash injection immediately after the SQLite
+Permit claim and immediately after a Gateway side effect. It seals a pre-claim deployment/Run
+anchor, records content-addressed `consumed-without-claim` or `claimed-outcome-unknown`
+reconciliation, and proves repeated retries do not invoke Gateway or duplicate the record.
 
-The focused Graph suite on Windows is `64 passed, 2 skipped`; the skips are the existing POSIX
-symlink/hard-link semantics checks.
+The concentrated Capability/Graph/RunStore regression suite on Windows is `71 passed, 2 skipped`;
+the skips are the existing POSIX symlink/hard-link semantics checks.
 
 ## Remaining boundaries
 
-- Worker-daemon deployment wiring for the explicit Graph/Capability bridge;
 - durable Capability Registry and compiler rotation policy;
-- process-kill/fsync fault injection and verified backup/restore;
+- real process-kill/fsync fault injection beyond the deterministic injected crash windows, and
+  verified backup/restore;
 - multi-host leader/lease and PostgreSQL/HA adapters; and
 - B2.9 Handoff projections and Supervisor shadow mode.
 
 An external Worker side effect is not physically part of the SQLite commit. This slice defines the
 commit as the one-time dispatch claim and prevents duplicate side effects on retry. A process crash
 after commit may leave the action unexecuted but consumed; it is never automatically redispatched.
-The Graph claim, RunStore lifecycle event, and Worker side effect are not one transaction. A crash
-can therefore leave no `claimed` event after the claim or leave only `claimed` after a side effect.
-Reconciliation must treat those as uncertain terminal states rather than manufacture completion.
+The Graph claim, RunStore lifecycle event, and Worker side effect are not one transaction. The
+Worker bridge now durably distinguishes a consumed Permit with no `claimed` event from a
+`claimed`-only outcome-unknown state. Neither classification manufactures completion or permits
+automatic redispatch.
