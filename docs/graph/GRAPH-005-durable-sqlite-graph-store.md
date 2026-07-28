@@ -1,10 +1,10 @@
 # GRAPH-005: Durable Single-Campaign SQLite Graph Store
 
-- Status: Durable adapter, signed/encrypted retention, independent restore, and hard-exit recovery locally verified; Linux CI pending
+- Status: Durable adapter, signed/encrypted retention, immutable-repository contract, pinned inventory restore, and hard-exit recovery locally verified; Linux CI pending
 - Date: 2026-07-28
 - Decision: [ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.md)
-- Implementation: `pajin.graph.sqlite_store`
-- Tests: `tests/test_graph_sqlite_store.py`
+- Implementation: `pajin.graph.sqlite_store`, `pajin.graph.backup_retention`, and `pajin.graph.backup_repository`
+- Tests: `tests/test_graph_sqlite_store.py`, `tests/test_graph_backup_repository.py`
 
 ## Outcome
 
@@ -143,13 +143,31 @@ decryption. Restore then verifies the ciphertext digest, AEAD authentication, pl
 and the complete ADR-0049 logical state before exclusively publishing a new database.
 
 The conformance drill copies the pair to a detached directory and restores it in a fresh process
-without the source database. This proves transport independence inside the test host. It does not
-claim an actual off-host transfer, retention schedule, object lock, KMS integration, or external
-anti-rollback inventory.
+without the source database. This proves transport independence inside the test host.
+
+## Immutable repository and signed inventory
+
+`SQLiteGraphBackupRetentionBackend` defines a provider-neutral `put_if_absent()` and
+version-pinned `read_exact()` boundary. Each request binds exact content, object key, Campaign,
+retention deadline, and object-lock mode. Publication accepts only a receipt that preserves every
+requested field, includes a fixed object version, and retains at least through the requested
+deadline. Ciphertext and signed manifest become one content-addressed publication only after both
+receipts pass.
+
+`append_sqlite_graph_backup_inventory()` signs cumulative, single-entry extensions. Verification
+requires a contiguous signature-valid prefix chain and can pin any already observed revision with
+an externally stored `SQLiteGraphBackupInventoryAnchor`. Restore requires that anchor, rejects
+rollback, forks, reordering, duplicates, foreign Campaigns, and repository substitution, reads the
+exact receipt versions, and then runs the complete signed/encrypted restore verification.
+
+The locked in-memory backend in tests demonstrates no-overwrite and retention failure behavior. It
+is not a production object-store adapter and its receipts are not provider attestations. Actual
+off-host scheduling, authoritative cloud object-lock evidence, independently persisted anchors,
+KMS/HSM integration, and restore drills on another host remain deployment work.
 
 ## Verified conformance
 
-The focused Graph suite passes 73 tests locally.
+The focused Graph suite passes 78 tests locally.
 Two POSIX link tests are correctly skipped on Windows and remain Linux CI obligations.
 
 The durable tests cover:
@@ -168,6 +186,11 @@ The durable tests cover:
 - encrypted retained-object publication without serialized secret material;
 - external signing-key trust, wrong-key, signature-tamper, and ciphertext-tamper rejection;
 - detached fresh-process restore with exact Event, Projection, and Snapshot state; and
+- put-if-absent retry, object-lock deletion denial, shortened-retention receipt rejection, and
+  partial-publication failure;
+- signed cumulative inventory verification plus external-anchor rollback, fork, and reorder
+  rejection;
+- exact-version backend restore and tamper rejection before destination publication; and
 - real subprocess `os._exit` immediately after Projection commit, before transaction commit, and
   after backup publication.
 
@@ -193,8 +216,9 @@ dispatch claim in one SQLite transaction. The following remain after GRAPH-005/0
 - multi-host leader election, leases, or PostgreSQL/HA storage;
 - exhaustive process-kill and power-loss injection at every remaining SQLite/filesystem
   synchronization boundary;
-- actual remote retention transport and scheduling, restore drills on another host, object lock,
-  compaction, KMS/HSM integration, or external anti-rollback inventory;
+- actual provider-backed remote retention transport and scheduling, restore drills on another
+  host, authoritative object-lock evidence, compaction, KMS/HSM integration, or independently
+  persisted anti-rollback anchors;
 - admission queue/runtime service wiring; or
 - B2.9 collaboration projections and Supervisor execution.
 

@@ -277,8 +277,11 @@ path, and has subprocess hard-exit coverage for committed, uncommitted, and back
 boundaries. An additive retained format encrypts that verified database with externally supplied
 AES-256-GCM key material and signs a canonical ciphertext statement with an external Ed25519 key.
 A detached fresh-process drill verifies signature, AEAD, plaintext identity, and complete logical
-state before a new-path restore. Actual remote transport/scheduling, independent-host drills,
-managed key services, object lock, and external anti-rollback inventory remain deployment work.
+state before a new-path restore. A transport-neutral backend contract now binds put-if-absent
+publication, version-pinned reads, requested object-lock receipts, and a signed cumulative
+inventory to an external anti-rollback anchor. The local backend proves only that contract; actual
+provider transport/scheduling, independent-host drills, managed key services, authoritative
+object-lock evidence, and independent anchor persistence remain deployment work.
 
 ## 10. Definition of Done
 
@@ -307,3 +310,5 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0053: Inert Deterministic Capability Scaffolds](../adr/0053-inert-deterministic-capability-scaffolds.md)
 - [ADR-0054: Signed Reviewed Capability Lifecycle](../adr/0054-signed-reviewed-capability-lifecycle.md)
 - [ADR-0055: Explicit Existing Mode Capability Adapters](../adr/0055-explicit-existing-mode-capability-adapters.md)
+- [ADR-0057: Signed and Encrypted Graph Backup Retention Objects](../adr/0057-signed-encrypted-graph-backup-retention.md)
+- [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](../adr/0058-immutable-graph-backup-repository-inventory.md)

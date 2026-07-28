@@ -43,8 +43,10 @@ an object was transported off-host or retained according to an organizational sc
 - Encryption is bounded to the existing 256 MiB database limit and currently operates in memory.
 - Random nonce generation makes retained object identities intentionally non-deterministic even
   when the source state is unchanged.
-- Actual remote transport, object-lock/retention policy, independent-host scheduling, key
-  management service integration, and external anti-rollback inventory remain deployment work.
+- ADR-0058 adds the transport-neutral put-if-absent/object-lock receipt boundary and a signed
+  cumulative inventory that requires an external anti-rollback anchor. Actual provider adapters,
+  scheduled off-host transport, independent-host drills, KMS/HSM integration, and independent
+  anchor persistence remain deployment work.
 
 ## Compatibility and rollback
 
@@ -56,5 +58,6 @@ matching external decryption key and trusted historical signing key.
 ## Related documents
 
 - [ADR-0049: Durable Single-Campaign SQLite Graph Store](0049-durable-single-campaign-sqlite-graph-store.md)
+- [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](0058-immutable-graph-backup-repository-inventory.md)
 - [GRAPH-005: Durable Single-Campaign SQLite Graph Store](../graph/GRAPH-005-durable-sqlite-graph-store.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

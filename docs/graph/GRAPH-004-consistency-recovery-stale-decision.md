@@ -90,7 +90,8 @@ leadership remains open. GRAPH-005 now also verifies content-addressed backup/re
 subprocess hard-exit commit, rollback, and backup-publication boundaries. GRAPH-006 additionally
 verifies process termination after Permit commit, after the RunStore claimed append, and after an
 external Gateway side-effect marker. ADR-0057 adds an externally keyed signed/encrypted retention
-object and a detached fresh-process restore drill without claiming remote transport.
+object and a detached fresh-process restore drill. ADR-0058 adds put-if-absent/object-lock receipt
+contracts and an externally pinned signed inventory without claiming a real provider integration.
 
 ## Snapshot-bound stale decision preflight
 
@@ -143,8 +144,9 @@ one transaction. The following remain open:
 - exhaustive process-kill/power-loss injection across every remaining SQLite and filesystem sync
   boundary;
 - semantic CampaignFact corroboration/invalidation workflows;
-- actual remote retention scheduling/transport, compaction, managed key service integration,
-  object lock, and external anti-rollback inventory; and
+- actual provider-backed remote retention scheduling/transport, compaction, managed key service
+  integration, authoritative object-lock evidence, and independently persisted anti-rollback
+  anchors; and
 - live sealed-Run/Scope/Capability adapters, B2.9 Handoff projections, and Supervisor execution.
 
 GRAPH-006 rechecks the latest durable revision inside ActionPermit issuance/consumption instead of

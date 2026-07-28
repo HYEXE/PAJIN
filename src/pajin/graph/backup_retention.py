@@ -253,6 +253,15 @@ class SQLiteGraphBackupSigner:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class SQLiteGraphVerifiedRetainedBackup:
+    """A signature-verified encrypted object and its exact canonical manifest bytes."""
+
+    manifest: SQLiteGraphRetainedBackupManifest
+    ciphertext: bytes = field(repr=False)
+    manifest_bytes: bytes = field(repr=False)
+
+
 def sqlite_graph_backup_public_key(private_key: bytes) -> str:
     """Derive the canonical public verification key from a raw Ed25519 seed."""
 
@@ -272,6 +281,75 @@ def sqlite_graph_retained_backup_manifest_path(retained_backup: Path) -> Path:
 
     normalized = _absolute_path(retained_backup)
     return Path(f"{normalized}.manifest.json")
+
+
+def sqlite_graph_retained_backup_manifest_bytes(
+    manifest: SQLiteGraphRetainedBackupManifest,
+) -> bytes:
+    """Serialize the exact canonical retained-backup manifest wire bytes."""
+
+    return _retained_backup_manifest_bytes(manifest)
+
+
+def verify_retained_sqlite_graph_backup(
+    retained_backup: Path,
+    *,
+    trusted_signing_keys: Iterable[SQLiteGraphBackupVerificationKey],
+) -> SQLiteGraphVerifiedRetainedBackup:
+    """Verify canonical signature and ciphertext identity without decrypting."""
+
+    retained_path = _absolute_path(retained_backup)
+    manifest_path = sqlite_graph_retained_backup_manifest_path(retained_path)
+    try:
+        manifest_raw = read_bounded_regular_bytes(
+            manifest_path,
+            max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
+            label="SQLite Graph retained backup manifest",
+            require_single_link=True,
+        )
+        try:
+            manifest = SQLiteGraphRetainedBackupManifest.model_validate(
+                parse_strict_json_bytes(
+                    manifest_raw,
+                    label="SQLite Graph retained backup manifest",
+                    max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
+                    max_depth=24,
+                    max_nodes=128,
+                )
+            )
+        except (ValidationError, ValueError) as exc:
+            raise SQLiteGraphStoreError("SQLite Graph retained backup manifest is invalid") from exc
+        if manifest_raw != _retained_backup_manifest_bytes(manifest):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph retained backup manifest is not canonical bytes"
+            )
+        _verify_retained_backup_signature(manifest, trusted_signing_keys)
+        ciphertext = read_bounded_regular_bytes(
+            retained_path,
+            max_bytes=_MAX_RETAINED_BACKUP_BYTES,
+            label="SQLite Graph retained backup ciphertext",
+            require_single_link=True,
+        )
+        statement = manifest.statement
+        if (
+            len(ciphertext) != statement.ciphertext_bytes
+            or sha256(ciphertext).hexdigest() != statement.ciphertext_sha256
+        ):
+            raise SQLiteGraphStoreError("SQLite Graph retained backup ciphertext digest differs")
+        return SQLiteGraphVerifiedRetainedBackup(
+            manifest=manifest,
+            ciphertext=ciphertext,
+            manifest_bytes=manifest_raw,
+        )
+    except (
+        OSError,
+        ValidationError,
+        ValueError,
+        SQLiteGraphStoreError,
+    ) as exc:
+        if isinstance(exc, SQLiteGraphStoreError):
+            raise
+        raise SQLiteGraphStoreError("SQLite Graph retained backup verification failed") from exc
 
 
 def create_retained_sqlite_graph_backup(
@@ -405,28 +483,11 @@ def restore_retained_sqlite_graph_backup(
     workspace: Path | None = None
     plaintext_backup: Path | None = None
     try:
-        manifest_raw = read_bounded_regular_bytes(
-            manifest_path,
-            max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
-            label="SQLite Graph retained backup manifest",
-            require_single_link=True,
+        verified = verify_retained_sqlite_graph_backup(
+            retained_path,
+            trusted_signing_keys=trusted_signing_keys,
         )
-        try:
-            manifest = SQLiteGraphRetainedBackupManifest.model_validate(
-                parse_strict_json_bytes(
-                    manifest_raw,
-                    label="SQLite Graph retained backup manifest",
-                    max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
-                    max_depth=24,
-                    max_nodes=128,
-                )
-            )
-        except (ValidationError, ValueError) as exc:
-            raise SQLiteGraphStoreError("SQLite Graph retained backup manifest is invalid") from exc
-        if manifest_raw != _retained_backup_manifest_bytes(manifest):
-            raise SQLiteGraphStoreError(
-                "SQLite Graph retained backup manifest is not canonical bytes"
-            )
+        manifest = verified.manifest
         statement = manifest.statement
         if statement.backup_manifest.campaign_id != campaign_id:
             raise SQLiteGraphStoreError("SQLite Graph retained backup belongs to another Campaign")
@@ -434,18 +495,7 @@ def restore_retained_sqlite_graph_backup(
             raise SQLiteGraphStoreError(
                 "SQLite Graph retained backup encryption key is not trusted"
             )
-        _verify_retained_backup_signature(manifest, trusted_signing_keys)
-        ciphertext = read_bounded_regular_bytes(
-            retained_path,
-            max_bytes=_MAX_RETAINED_BACKUP_BYTES,
-            label="SQLite Graph retained backup ciphertext",
-            require_single_link=True,
-        )
-        if (
-            len(ciphertext) != statement.ciphertext_bytes
-            or sha256(ciphertext).hexdigest() != statement.ciphertext_sha256
-        ):
-            raise SQLiteGraphStoreError("SQLite Graph retained backup ciphertext digest differs")
+        ciphertext = verified.ciphertext
         nonce = _base64url_decode(
             statement.nonce_base64url,
             expected_length=12,

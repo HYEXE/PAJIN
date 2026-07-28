@@ -121,9 +121,10 @@ Costs and limits:
 - SQLite is one-host storage, not multi-host leader election or HA.
 - Event append and Projection publication are separate transactions by design; reconciliation is
   required after an interruption.
-- ADR-0057 adds an optional signed and encrypted transport-neutral retention object. Scheduled
-  remote transport, object retention, external anti-rollback inventory, compaction, and exhaustive
-  power-loss fault injection remain incomplete.
+- ADR-0057 adds an optional signed and encrypted retention object. ADR-0058 adds the
+  transport-neutral put-if-absent/object-lock receipt boundary and signed cumulative inventory
+  with an external anchor. Provider-backed remote transport, independently persisted anchors,
+  compaction, and exhaustive power-loss fault injection remain incomplete.
 - Physical atomicity between an external Worker side effect and the database commit is not
   provided.
 - Runtime wiring and lifecycle events remain after the schema-v2 consumed dispatch claim.
@@ -143,3 +144,4 @@ the final authority transaction.
 - [GRAPH-004: Consistency, Recovery, and Stale Decision](../graph/GRAPH-004-consistency-recovery-stale-decision.md)
 - [ADR-0050: Consumed ActionPermit Dispatch Claim](0050-consumed-action-permit-dispatch-claim.md)
 - [ADR-0057: Signed and Encrypted Graph Backup Retention Objects](0057-signed-encrypted-graph-backup-retention.md)
+- [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](0058-immutable-graph-backup-repository-inventory.md)
