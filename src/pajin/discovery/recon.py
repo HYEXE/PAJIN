@@ -166,6 +166,7 @@ class MCPInterfaceSurfaceAdapter:
         self.adapter_version = "1.0.0"
         self.producer_id = f"pajin.discovery.mcp-interface.v1:{self.tool_id}"
         self.supported_surface_kinds: tuple[DiscoverySurfaceKind, ...] = ("tool-interface",)
+        self.requires_trusted_network_receipt = False
         self._tool_version = tool.spec.version
         self._registry_id = registration.server_id
         self._remote_tool_id = registration.remote_tool_name

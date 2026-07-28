@@ -46,7 +46,11 @@ def test_registry_resolves_only_exact_versioned_adapter_reference() -> None:
     assert definition.tool.tool_id == tool.spec.tool_id
     assert definition.tool.tool_version == tool.spec.version
     assert definition.supported_surface_kinds == ("tool-interface",)
+    assert definition.requires_trusted_network_receipt is False
     assert registry.resolve(definition.reference()).definition == definition
+    legacy_payload = definition.model_dump(mode="json", by_alias=True)
+    legacy_payload.pop("requiresTrustedNetworkReceipt")
+    assert type(definition).model_validate(legacy_payload).reference() == definition.reference()
 
     with pytest.raises(DiscoveryAdapterError, match="not registered"):
         registry.resolve(

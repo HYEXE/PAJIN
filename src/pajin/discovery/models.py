@@ -6,8 +6,9 @@ from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
-from re import fullmatch
+from re import fullmatch, sub
 from typing import Annotated, ClassVar, Literal
+from urllib.parse import urlsplit, urlunsplit
 
 from pydantic import Field, TypeAdapter, field_validator, model_validator
 
@@ -43,6 +44,9 @@ _Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 _OBSERVATION_ID_PATTERN = r"^surface-observation_[a-f0-9]{64}$"
 _SURFACE_ID_PATTERN = r"^attack-surface_[a-f0-9]{64}$"
 _SURFACE_SET_ID_PATTERN = r"^attack-surface-set_[a-f0-9]{64}$"
+_ROUTE_PARAMETER_PATTERN = r"\{([A-Za-z_][A-Za-z0-9_.-]{0,99})\}"
+_ROUTE_LITERAL_SEGMENT_PATTERN = r"(?:[A-Za-z0-9._~!$&'()+,;=:@-]|%[0-9A-F]{2})+"
+_MEDIA_TYPE_PATTERN = r"^[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+$"
 
 
 def _normalize_utc(value: datetime, *, label: str) -> datetime:
@@ -146,6 +150,94 @@ class HTTPSurfaceLocator(StrictModel):
         return value.upper() if isinstance(value, str) else value
 
 
+class HTTPRouteSurfaceLocator(StrictModel):
+    """Non-executable HTTP route template declared by a bounded schema."""
+
+    kind: Literal["http-route"] = "http-route"
+    base_url: str = Field(min_length=1, max_length=2_000)
+    path_template: str = Field(min_length=1, max_length=2_000)
+    method: str = Field(min_length=1, max_length=20, pattern=r"^[A-Z0-9!#$%&'*+.^_`|~-]+$")
+    request_content_types: tuple[str, ...] = Field(default=(), max_length=32)
+    response_content_types: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("base_url")
+    @classmethod
+    def normalize_base_url(cls, value: str) -> str:
+        normalized = normalize_target_url(value)
+        parsed = urlsplit(normalized)
+        if parsed.query:
+            raise ValueError("HTTP route base URL cannot contain a query")
+        path = parsed.path.rstrip("/") or "/"
+        return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
+
+    @field_validator("path_template")
+    @classmethod
+    def validate_path_template(cls, value: str) -> str:
+        if value != value.strip() or not value.startswith("/"):
+            raise ValueError("HTTP route template must be an absolute path")
+        if any(ord(character) < 0x20 or ord(character) == 0x7F for character in value):
+            raise ValueError("HTTP route template cannot contain control characters")
+        if any(character in value for character in ("\\", "?", "#")):
+            raise ValueError("HTTP route template contains an ambiguous delimiter")
+        if value == "/":
+            return value
+        segments = value[1:].split("/")
+        if any(not segment for segment in segments):
+            raise ValueError("HTTP route template cannot contain an empty segment")
+        parameters: list[str] = []
+        for segment in segments:
+            parameter = fullmatch(_ROUTE_PARAMETER_PATTERN, segment)
+            if parameter is not None:
+                parameters.append(parameter.group(1))
+                continue
+            if "{" in segment or "}" in segment:
+                raise ValueError("HTTP route parameters must occupy one complete segment")
+            if fullmatch(_ROUTE_LITERAL_SEGMENT_PATTERN, segment) is None:
+                raise ValueError("HTTP route literal segment is not canonical")
+        if len(parameters) != len(set(parameters)):
+            raise ValueError("HTTP route parameter names must be unique")
+        rendered = sub(_ROUTE_PARAMETER_PATTERN, "pajin-route-parameter", value)
+        normalized = normalize_target_url(f"https://route.invalid{rendered}")
+        if urlsplit(normalized).path != rendered:
+            raise ValueError("HTTP route template is not canonically encoded")
+        return value
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def normalize_route_method(cls, value: object) -> object:
+        return value.upper() if isinstance(value, str) else value
+
+    @field_validator(
+        "request_content_types",
+        "response_content_types",
+        mode="before",
+    )
+    @classmethod
+    def normalize_content_types(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("HTTP route content types must be a list or tuple")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("HTTP route content type must be text")
+            media_type = item.strip().lower()
+            wildcard_is_valid = (
+                "*" not in media_type
+                or media_type == "*/*"
+                or (media_type.count("*") == 1 and media_type.endswith("/*"))
+            )
+            if (
+                item != item.strip()
+                or fullmatch(_MEDIA_TYPE_PATTERN, media_type) is None
+                or not wildcard_is_valid
+            ):
+                raise ValueError("HTTP route content type is invalid")
+            normalized.append(media_type)
+        if normalized != sorted(set(normalized)):
+            raise ValueError("HTTP route content types must be unique and sorted")
+        return tuple(normalized)
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -162,7 +254,7 @@ class ToolInterfaceSurfaceLocator(StrictModel):
 
 
 SurfaceLocator = Annotated[
-    HTTPSurfaceLocator | ToolInterfaceSurfaceLocator,
+    HTTPSurfaceLocator | HTTPRouteSurfaceLocator | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
 _SURFACE_LOCATOR_ADAPTER: TypeAdapter[SurfaceLocator] = TypeAdapter(SurfaceLocator)
@@ -388,6 +480,47 @@ def http_surface_locator(*, url: str, method: str) -> HTTPSurfaceLocator:
     """Build one canonical HTTP locator."""
 
     return HTTPSurfaceLocator(url=url, method=method)
+
+
+def http_route_surface_locator(
+    *,
+    base_url: str,
+    path_template: str,
+    method: str,
+    request_content_types: tuple[str, ...] = (),
+    response_content_types: tuple[str, ...] = (),
+) -> HTTPRouteSurfaceLocator:
+    """Build one canonical non-executable HTTP route template."""
+
+    return HTTPRouteSurfaceLocator(
+        base_url=base_url,
+        path_template=path_template,
+        method=method,
+        request_content_types=request_content_types,
+        response_content_types=response_content_types,
+    )
+
+
+def http_route_scope_url(locator: HTTPRouteSurfaceLocator) -> str:
+    """Render a route template to one safe URL used only for Scope evaluation."""
+
+    parsed = urlsplit(locator.base_url)
+    rendered_path = sub(
+        _ROUTE_PARAMETER_PATTERN,
+        "pajin-route-parameter",
+        http_route_path_template(locator),
+    )
+    return normalize_target_url(
+        urlunsplit((parsed.scheme, parsed.netloc, rendered_path or "/", "", ""))
+    )
+
+
+def http_route_path_template(locator: HTTPRouteSurfaceLocator) -> str:
+    """Return the effective absolute path template under its OpenAPI server base."""
+
+    parsed = urlsplit(locator.base_url)
+    base_path = parsed.path.rstrip("/")
+    return f"{base_path}{locator.path_template}" if base_path else locator.path_template
 
 
 def tool_interface_surface_locator(

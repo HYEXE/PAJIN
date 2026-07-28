@@ -287,9 +287,14 @@ The first unified-discovery boundary is specified by
 [DISC-001](../discovery/DISC-001-versioned-discovery-adapter-registry.md). It introduces a
 code-owned common adapter protocol, immutable exact-version references, full Tool and stable
 execution-context binding, and live drift detection. Registry-backed Surface admission records
-the exact adapter reference, while existing Scope, Authorization, sealed-evidence, and Tool-risk
-gates remain authoritative. HTTP/OpenAPI and Auth/File Upload/RAG/MCP adapters plus multi-wave
-Planner integration remain later slices.
+the exact adapter reference and any trusted-network-receipt requirement, while existing Scope,
+Authorization, sealed-evidence, and Tool-risk gates remain authoritative. DISC-002 now provides
+the first HTTP/OpenAPI adapter over exact bounded `HTTPGetTool` evidence. Admission replays its
+host-trusted Worker HTTP receipt before extraction. The adapter preserves OpenAPI path parameters
+and content types in non-executable `http-route` locators, accepts same-origin inline JSON only,
+performs no `$ref` or YAML expansion, and reuses Campaign Scope and method admission before
+publication. Auth/File Upload/RAG/MCP adapters plus multi-wave Planner integration remain later
+slices.
 
 ## 10. Definition of Done
 
@@ -321,3 +326,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0057: Signed and Encrypted Graph Backup Retention Objects](../adr/0057-signed-encrypted-graph-backup-retention.md)
 - [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](../adr/0058-immutable-graph-backup-repository-inventory.md)
 - [ADR-0059: Versioned Discovery Adapter Authority](../adr/0059-versioned-discovery-adapter-authority.md)
+- [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](../adr/0060-bounded-http-openapi-route-discovery.md)

@@ -21,7 +21,9 @@ A `DiscoveryAdapter` declares:
 
 - stable adapter ID and version;
 - producer ID and one registered Tool ID;
-- a sorted, unique set of supported `http-endpoint` or `tool-interface` Surface kinds;
+- a sorted, unique set of supported `http-endpoint`, `http-route`, or `tool-interface` Surface
+  kinds;
+- whether successful extraction requires replay of a host-trusted network execution receipt;
 - an explicit non-secret `stable_execution_context()`; and
 - `extract_surfaces(request, result)`, which returns non-authoritative `SurfaceCandidate` values.
 
@@ -31,8 +33,9 @@ Scope, Authorization, method, Tool-risk, chronology, and canonical Surface admis
 ## Immutable definition and exact Tool binding
 
 `DiscoveryAdapterDefinition` binds the adapter identity, producer, implementation type, supported
-Surface kinds, stable-context digest, and exact Tool ID/version/full-ToolSpec digest. Bounded
-canonical JSON and a domain-separated SHA-256 digest form the adapter identity.
+Surface kinds, trusted-network-receipt requirement, stable-context digest, and exact Tool
+ID/version/full-ToolSpec digest. Bounded canonical JSON and a domain-separated SHA-256 digest form
+the adapter identity.
 
 `DiscoveryAdapterReference` always contains ID, version, and digest. There is no `latest` lookup,
 compatible-version fallback, filesystem scan, entry-point discovery, or runtime import.
@@ -62,6 +65,12 @@ process-local and cannot be reconstructed from serialized definitions.
 Before each admission it resolves the exact reference again, detects drift, then uses the existing
 trusted extraction and admission path.
 
+When the selected definition requires a trusted network receipt, admission also requires the
+sealed Gateway `workerResult` and a true host trust flag, then replays the registered Tool's
+`validate_trusted_execution()` contract against the exact request and result before extraction.
+The HTTP/OpenAPI adapter opts into this gate; the MCP interface adapter does not claim a network
+receipt requirement.
+
 The adapter reference is included in the process-local admission authority digest and the
 `discovery.attack-surface-set.published` audit event. The current MCP interface adapter implements
 the common protocol and binds its registered MCP server/tool identity, Tool version, and input
@@ -77,13 +86,14 @@ shape remains unchanged.
 - immutable definition and unknown Surface-kind rejection;
 - duplicate registration, duplicate selection, and multiple-interpreters-per-Tool rejection;
 - unknown Tool, live ToolSpec drift, and live adapter-context drift rejection;
+- missing, untrusted, or mismatched required network execution receipt rejection;
 - secret-like stable-context key rejection;
 - existing admission and projection regression coverage; and
 - an end-to-end MCP Recon wave whose projection audit binds the exact adapter reference.
 
 ## Remaining boundaries
 
-- DISC-002 owns bounded HTTP route/method/content-type and OpenAPI Surface discovery.
+- DISC-002 implements bounded HTTP route/method/content-type and OpenAPI Surface discovery.
 - DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters.
 - ORCH-001/002 own multi-adapter scheduling, multi-wave execution, and Planner integration.
 - Signed adapter releases, durable Registry storage, dynamic plugin loading, and remote Registry

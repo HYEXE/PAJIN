@@ -6,11 +6,13 @@ import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from fnmatch import fnmatchcase
 from hashlib import sha256
 from itertools import islice
 from pathlib import Path, PurePosixPath
-from re import fullmatch
+from re import fullmatch, sub
 from typing import Protocol
+from urllib.parse import SplitResult, urlsplit
 
 from pydantic import TypeAdapter
 
@@ -23,17 +25,25 @@ from pajin.discovery.canonicalization import canonical_json_bytes, discovery_dig
 from pajin.discovery.models import (
     AttackSurface,
     AttackSurfaceSet,
+    HTTPRouteSurfaceLocator,
     HTTPSurfaceLocator,
     SurfaceEvidenceReference,
     SurfaceLocator,
     SurfaceObservation,
     attack_surface,
     attack_surface_set,
+    http_route_path_template,
+    http_route_scope_url,
     surface_observation,
 )
 from pajin.domain.models import CampaignManifest, ToolRequest, ToolResult
 from pajin.policy.engine import PolicyDecision
-from pajin.policy.scope import InvalidScopeURL, normalize_target_url, scope_matches
+from pajin.policy.scope import (
+    InvalidScopeURL,
+    normalize_scope_pattern,
+    normalize_target_url,
+    scope_matches,
+)
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import (
     AuditEvent,
@@ -42,6 +52,7 @@ from pajin.runtime.store import (
     VerifiedRunSnapshot,
     load_verified_run_artifacts,
 )
+from pajin.runtime.worker import WorkerResult
 from pajin.tools.base import ToolRegistry, ToolSpec
 
 _MAX_CAMPAIGN_BYTES = 1024 * 1024
@@ -137,6 +148,7 @@ class TrustedSurfaceProducer:
         self._tools = tools
         self._adapters: dict[str, TrustedSurfaceAdapter] = {}
         self._tool_specs: dict[str, ToolSpec] = {}
+        self._adapter_network_receipt_requirements: dict[str, bool] = {}
         self._adapter_registry: DiscoveryAdapterRegistry | None = None
         self._adapter_references: dict[str, DiscoveryAdapterReference] = {}
         for adapter in adapters:
@@ -188,7 +200,13 @@ class TrustedSurfaceProducer:
                 expected_run_id=expected_run_id,
             )
             campaign = _load_campaign(snapshot)
-            request, result, recorded_decision = _load_gateway_record(snapshot, reference)
+            (
+                request,
+                result,
+                recorded_decision,
+                network_log_trusted,
+                worker_result,
+            ) = _load_gateway_record(snapshot, reference)
             evidence_record = _sealed_artifact(snapshot, reference)
             self._validate_source_events(
                 snapshot,
@@ -198,7 +216,13 @@ class TrustedSurfaceProducer:
                 decision=recorded_decision,
                 evidence_reference=reference,
             )
-            adapter, tool_spec, adapter_reference = self._trusted_adapter(request.tool_id)
+            (
+                adapter,
+                tool_spec,
+                adapter_reference,
+                supported_surface_kinds,
+                requires_trusted_network_receipt,
+            ) = self._trusted_adapter(request.tool_id)
             evaluated_at = _normalize_admission_time(admitted_at)
             target_id = _admitted_target_id(campaign, request)
             _revalidate_source_authority(
@@ -208,7 +232,19 @@ class TrustedSurfaceProducer:
                 tool_spec=tool_spec,
                 admitted_at=evaluated_at,
             )
-            candidates = _extract_candidates(adapter, request, result)
+            if requires_trusted_network_receipt:
+                self._revalidate_trusted_network_execution(
+                    request=request,
+                    result=result,
+                    worker_result=worker_result,
+                    network_log_trusted=network_log_trusted,
+                )
+            candidates = _extract_candidates(
+                adapter,
+                request,
+                result,
+                supported_surface_kinds=supported_surface_kinds,
+            )
             surface_set = _admit_candidates(
                 campaign=campaign,
                 snapshot=snapshot,
@@ -240,12 +276,18 @@ class TrustedSurfaceProducer:
         producer_id = getattr(adapter, "producer_id", None)
         tool_id = getattr(adapter, "tool_id", None)
         extractor = getattr(adapter, "extract_surfaces", None)
+        requires_trusted_network_receipt = getattr(
+            adapter,
+            "requires_trusted_network_receipt",
+            False,
+        )
         if (
             not isinstance(producer_id, str)
             or fullmatch(_PRODUCER_ID_PATTERN, producer_id) is None
             or not isinstance(tool_id, str)
             or fullmatch(_PRODUCER_ID_PATTERN, tool_id) is None
             or not callable(extractor)
+            or type(requires_trusted_network_receipt) is not bool
         ):
             raise ValueError("Trusted Surface adapter contract is invalid")
         if tool_id in self._adapters:
@@ -256,6 +298,9 @@ class TrustedSurfaceProducer:
             raise ValueError("Trusted Surface adapter requires a registered Tool") from exc
         self._adapters[tool_id] = adapter
         self._tool_specs[tool_id] = tool_spec
+        self._adapter_network_receipt_requirements[tool_id] = (
+            requires_trusted_network_receipt
+        )
 
     def _trusted_adapter(
         self,
@@ -264,18 +309,31 @@ class TrustedSurfaceProducer:
         TrustedSurfaceAdapter,
         ToolSpec,
         DiscoveryAdapterReference | None,
+        frozenset[str] | None,
+        bool,
     ]:
         try:
             adapter = self._adapters[tool_id]
             expected_spec = self._tool_specs[tool_id]
             current_spec = self._tools.spec(tool_id)
+            requires_trusted_network_receipt = (
+                self._adapter_network_receipt_requirements[tool_id]
+            )
         except (KeyError, ValueError) as exc:
             raise SurfaceAdmissionError(
                 "Recon result Tool has no trusted Surface adapter"
             ) from exc
         if current_spec != expected_spec:
             raise SurfaceAdmissionError("trusted Recon Tool contract changed after registration")
+        if (
+            getattr(adapter, "requires_trusted_network_receipt", False)
+            is not requires_trusted_network_receipt
+        ):
+            raise SurfaceAdmissionError(
+                "trusted Recon adapter receipt requirement changed after registration"
+            )
         reference = self._adapter_references.get(tool_id)
+        supported_surface_kinds: frozenset[str] | None = None
         if self._adapter_registry is not None:
             if reference is None:
                 raise SurfaceAdmissionError(
@@ -295,7 +353,46 @@ class TrustedSurfaceProducer:
                 raise SurfaceAdmissionError(
                     "versioned discovery adapter differs from its trusted registration"
                 )
-        return adapter, current_spec, reference
+            supported_surface_kinds = frozenset(registered.definition.supported_surface_kinds)
+            if (
+                registered.definition.requires_trusted_network_receipt
+                is not requires_trusted_network_receipt
+            ):
+                raise SurfaceAdmissionError(
+                    "versioned discovery adapter receipt requirement differs from registration"
+                )
+        return (
+            adapter,
+            current_spec,
+            reference,
+            supported_surface_kinds,
+            requires_trusted_network_receipt,
+        )
+
+    def _revalidate_trusted_network_execution(
+        self,
+        *,
+        request: ToolRequest,
+        result: ToolResult,
+        worker_result: WorkerResult | None,
+        network_log_trusted: bool,
+    ) -> None:
+        if not network_log_trusted or worker_result is None:
+            raise SurfaceAdmissionError(
+                "discovery adapter requires a trusted network execution receipt"
+            )
+        try:
+            tool = self._tools.tool(request.tool_id)
+            tool.validate_trusted_execution(
+                request.model_copy(deep=True),
+                result.model_copy(deep=True),
+                worker_result.model_copy(deep=True),
+                network_log_trusted=True,
+            )
+        except Exception as exc:
+            raise SurfaceAdmissionError(
+                "trusted network execution receipt does not match the discovery result"
+            ) from exc
 
     @staticmethod
     def _validate_source_events(
@@ -375,7 +472,7 @@ def _load_campaign(snapshot: VerifiedRunSnapshot) -> CampaignManifest:
 def _load_gateway_record(
     snapshot: VerifiedRunSnapshot,
     reference: str,
-) -> tuple[ToolRequest, ToolResult, PolicyDecision]:
+) -> tuple[ToolRequest, ToolResult, PolicyDecision, bool, WorkerResult | None]:
     try:
         value = parse_strict_json_bytes(
             snapshot.artifact_bytes(reference),
@@ -391,11 +488,18 @@ def _load_gateway_record(
         request = ToolRequest.model_validate(value.get("request"))
         result = ToolResult.model_validate(value.get("result"))
         decision = PolicyDecision.model_validate(value.get("policyDecision"))
+        network_log_trusted = value["networkLogTrusted"]
+        worker_result_value = value.get("workerResult")
+        worker_result = (
+            None
+            if worker_result_value is None
+            else WorkerResult.model_validate(worker_result_value)
+        )
     except (KeyError, TypeError, ValueError) as exc:
         raise SurfaceAdmissionError("sealed Gateway evidence contract is invalid") from exc
     if result.request_id != request.request_id or result.tool_id != request.tool_id:
         raise SurfaceAdmissionError("sealed Tool result differs from its source request")
-    return request, result, decision
+    return request, result, decision, network_log_trusted, worker_result
 
 
 def _sealed_artifact(snapshot: VerifiedRunSnapshot, reference: str) -> SealedArtifact:
@@ -495,6 +599,8 @@ def _extract_candidates(
     adapter: TrustedSurfaceAdapter,
     request: ToolRequest,
     result: ToolResult,
+    *,
+    supported_surface_kinds: frozenset[str] | None,
 ) -> list[SurfaceCandidate]:
     try:
         extracted = adapter.extract_surfaces(
@@ -508,6 +614,12 @@ def _extract_candidates(
         raise SurfaceAdmissionError("trusted Surface adapter exceeded the Surface limit")
     if any(not isinstance(candidate, SurfaceCandidate) for candidate in candidates):
         raise SurfaceAdmissionError("trusted Surface adapter returned an invalid candidate")
+    if supported_surface_kinds is not None and any(
+        candidate.locator.kind not in supported_surface_kinds for candidate in candidates
+    ):
+        raise SurfaceAdmissionError(
+            "versioned discovery adapter returned an undeclared Surface kind"
+        )
     return candidates
 
 
@@ -588,10 +700,140 @@ def _admit_candidates(
 
 
 def _revalidate_surface_scope(campaign: CampaignManifest, locator: SurfaceLocator) -> None:
-    if isinstance(locator, HTTPSurfaceLocator):
+    if isinstance(locator, HTTPSurfaceLocator | HTTPRouteSurfaceLocator):
         if locator.method not in campaign.spec.rules_of_engagement.allowed_methods:
             raise SurfaceAdmissionError("discovered HTTP method exceeds Campaign authority")
-        _require_in_scope(campaign, locator.url)
+        if isinstance(locator, HTTPSurfaceLocator):
+            _require_in_scope(campaign, locator.url)
+        else:
+            _require_route_in_scope(campaign, locator)
+
+
+def _require_route_in_scope(
+    campaign: CampaignManifest,
+    locator: HTTPRouteSurfaceLocator,
+) -> None:
+    rendered = http_route_scope_url(locator)
+    template = http_route_path_template(locator)
+    if "{" not in template:
+        _require_in_scope(campaign, rendered)
+        return
+    if not any(
+        _scope_allow_covers_route(rule, locator)
+        for rule in campaign.spec.scope.allow
+    ):
+        raise SurfaceAdmissionError(
+            "HTTP route template is not fully covered by Campaign allow scope"
+        )
+    if any(
+        _scope_deny_may_overlap_route(rule, locator)
+        for rule in campaign.spec.scope.deny
+    ):
+        raise SurfaceAdmissionError(
+            "HTTP route template may overlap an explicit Campaign deny rule"
+        )
+
+
+def _scope_allow_covers_route(
+    rule: str,
+    locator: HTTPRouteSurfaceLocator,
+) -> bool:
+    try:
+        pattern = urlsplit(normalize_scope_pattern(rule))
+        base = urlsplit(locator.base_url)
+    except (InvalidScopeURL, ValueError):
+        return False
+    if not _scope_origin_matches(pattern, base) or pattern.query:
+        return False
+    route_template = http_route_path_template(locator)
+    route_prefix = route_template.partition("{")[0]
+    pattern_path = pattern.path or "/"
+    glob_indexes = [
+        pattern_path.index(character)
+        for character in "*?["
+        if character in pattern_path
+    ]
+    if not glob_indexes:
+        return False
+    pattern_prefix = pattern_path[: min(glob_indexes)]
+    if not route_prefix.startswith(pattern_prefix):
+        return False
+    first = http_route_scope_url(locator)
+    second_path = sub(r"\{[^{}]+\}", "pajin-route-alternative", route_template)
+    second = normalize_target_url(
+        f"{base.scheme}://{base.netloc}{second_path}"
+    )
+    return scope_matches(rule, first) and scope_matches(rule, second)
+
+
+def _scope_deny_may_overlap_route(
+    rule: str,
+    locator: HTTPRouteSurfaceLocator,
+) -> bool:
+    try:
+        pattern = urlsplit(normalize_scope_pattern(rule))
+        base = urlsplit(locator.base_url)
+    except (InvalidScopeURL, ValueError):
+        return True
+    if not _scope_origin_matches(pattern, base) or pattern.query:
+        return False
+    route_template = http_route_path_template(locator)
+    pattern_path = pattern.path or "/"
+    if not any(character in pattern_path for character in "*?["):
+        return _concrete_path_matches_route_template(pattern_path, route_template)
+    if scope_matches(rule, http_route_scope_url(locator)):
+        return True
+    route_prefix = route_template.partition("{")[0]
+    pattern_prefix = pattern_path[
+        : min(
+            pattern_path.index(character)
+            for character in "*?["
+            if character in pattern_path
+        )
+    ]
+    return route_prefix.startswith(pattern_prefix) or pattern_prefix.startswith(
+        route_prefix
+    )
+
+
+def _scope_origin_matches(pattern: SplitResult, target: SplitResult) -> bool:
+    if pattern.scheme != target.scheme:
+        return False
+    pattern_host = pattern.hostname
+    target_host = target.hostname
+    if pattern_host is None or target_host is None:
+        return False
+    if pattern_host.startswith("*."):
+        if not fnmatchcase(target_host, pattern_host):
+            return False
+    elif pattern_host != target_host:
+        return False
+    pattern_port = pattern.port or (443 if pattern.scheme == "https" else 80)
+    target_port = target.port or (443 if target.scheme == "https" else 80)
+    return pattern_port == target_port
+
+
+def _concrete_path_matches_route_template(
+    concrete_path: str,
+    route_template: str,
+) -> bool:
+    concrete_segments = concrete_path.split("/")
+    route_segments = route_template.split("/")
+    if len(concrete_segments) != len(route_segments):
+        return False
+    return all(
+        route_segment == concrete_segment
+        or (
+            route_segment.startswith("{")
+            and route_segment.endswith("}")
+            and bool(concrete_segment)
+        )
+        for concrete_segment, route_segment in zip(
+            concrete_segments,
+            route_segments,
+            strict=True,
+        )
+    )
 
 
 def _require_in_scope(campaign: CampaignManifest, target: str) -> None:

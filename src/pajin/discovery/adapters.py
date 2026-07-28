@@ -21,7 +21,7 @@ DISCOVERY_ADAPTER_API_VERSION: Literal["pajin.dev/discovery-adapter/v1alpha1"] =
     "pajin.dev/discovery-adapter/v1alpha1"
 )
 
-DiscoverySurfaceKind = Literal["http-endpoint", "tool-interface"]
+DiscoverySurfaceKind = Literal["http-endpoint", "http-route", "tool-interface"]
 
 _MAX_ADAPTER_DEFINITION_BYTES = 256 * 1024
 _MAX_ADAPTER_CONTEXT_BYTES = 64 * 1024
@@ -97,6 +97,10 @@ class DiscoveryAdapterDefinition(StrictModel):
         min_length=1,
         max_length=20,
     )
+    requires_trusted_network_receipt: bool = Field(
+        default=False,
+        alias="requiresTrustedNetworkReceipt",
+    )
     implementation_type: _ImplementationType = Field(alias="implementationType")
     execution_context_digest: _Sha256 = Field(alias="executionContextDigest")
 
@@ -109,6 +113,8 @@ class DiscoveryAdapterDefinition(StrictModel):
             by_alias=True,
             exclude={"adapter_digest"},
         )
+        if not self.requires_trusted_network_receipt:
+            material.pop("requiresTrustedNetworkReceipt")
         digest = discovery_digest("pajin.discovery.adapter-definition/v1", material)
         if self.adapter_digest and self.adapter_digest != digest:
             raise ValueError("Discovery adapter digest differs from canonical identity")
@@ -138,6 +144,7 @@ class DiscoveryAdapter(Protocol):
     producer_id: str
     tool_id: str
     supported_surface_kinds: tuple[DiscoverySurfaceKind, ...]
+    requires_trusted_network_receipt: bool
 
     def stable_execution_context(self) -> Mapping[str, object]:
         """Expose every non-secret setting that changes result interpretation."""
@@ -294,6 +301,7 @@ class DiscoveryAdapterRegistry:
                     toolDigest=_tool_spec_digest(tool_spec),
                 ),
                 supportedSurfaceKinds=adapter.supported_surface_kinds,
+                requiresTrustedNetworkReceipt=adapter.requires_trusted_network_receipt,
                 implementationType=implementation_type,
                 executionContextDigest=discovery_digest(
                     "pajin.discovery.adapter-execution-context/v1",
