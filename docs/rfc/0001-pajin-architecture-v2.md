@@ -299,8 +299,11 @@ scope names, and optional anonymous access. Authentication URLs and material are
 nor fetched, and the nested route reuses DISC-002 admission authority. DISC-003B adds a cumulative
 exact-version file-upload adapter for direct raw binary/base64 bodies and multipart file fields.
 It preserves only route-bound shape and declared media types, resolves no `$ref`, retains no file
-bytes or destinations, and reuses the same route admission. RAG, MCP, and Planner integration
-remain pending.
+bytes or destinations, and reuses the same route admission. DISC-003C adds a cumulative
+exact-version RAG adapter that reads only versioned operation-level `x-pajin-rag` declarations,
+preserves route-bound corpus/index identifiers and boundary type, performs no prose/schema
+inference, and retains no corpus content, queries, retrieved chunks, embeddings, vectors, or
+destinations. MCP and Planner integration remain pending.
 
 ## 10. Definition of Done
 

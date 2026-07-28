@@ -537,6 +537,35 @@ class HTTPFileUploadSurfaceLocator(StrictModel):
         return self
 
 
+class HTTPRAGSurfaceLocator(StrictModel):
+    """Non-executable RAG boundary explicitly declared for one HTTP route."""
+
+    kind: Literal["http-rag"] = "http-rag"
+    route: HTTPRouteSurfaceLocator
+    boundary: Literal["corpus-ingest", "index-management", "retrieval"]
+    corpus_ids: tuple[_PortableIdentifier, ...] = Field(default=(), max_length=16)
+    index_ids: tuple[_PortableIdentifier, ...] = Field(default=(), max_length=16)
+
+    @field_validator("corpus_ids", "index_ids", mode="before")
+    @classmethod
+    def require_identifier_sequence(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("RAG boundary identifiers must be a list or tuple")
+        return tuple(value)
+
+    @model_validator(mode="after")
+    def validate_rag_contract(self) -> HTTPRAGSurfaceLocator:
+        if self.corpus_ids != tuple(sorted(set(self.corpus_ids))):
+            raise ValueError("RAG corpus identifiers must be unique and sorted")
+        if self.index_ids != tuple(sorted(set(self.index_ids))):
+            raise ValueError("RAG index identifiers must be unique and sorted")
+        if self.boundary == "corpus-ingest" and not self.corpus_ids:
+            raise ValueError("RAG corpus ingestion requires a corpus identifier")
+        if self.boundary in {"index-management", "retrieval"} and not self.index_ids:
+            raise ValueError("RAG index boundary requires an index identifier")
+        return self
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -557,6 +586,7 @@ SurfaceLocator = Annotated[
     | HTTPRouteSurfaceLocator
     | HTTPAuthenticationSurfaceLocator
     | HTTPFileUploadSurfaceLocator
+    | HTTPRAGSurfaceLocator
     | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
@@ -857,6 +887,23 @@ def http_file_upload_surface_locator(
         route=route.model_copy(deep=True),
         request_body_required=request_body_required,
         uploads=tuple(upload.model_copy(deep=True) for upload in uploads),
+    )
+
+
+def http_rag_surface_locator(
+    *,
+    route: HTTPRouteSurfaceLocator,
+    boundary: Literal["corpus-ingest", "index-management", "retrieval"],
+    corpus_ids: tuple[str, ...] = (),
+    index_ids: tuple[str, ...] = (),
+) -> HTTPRAGSurfaceLocator:
+    """Build one canonical non-executable HTTP RAG boundary."""
+
+    return HTTPRAGSurfaceLocator(
+        route=route.model_copy(deep=True),
+        boundary=boundary,
+        corpus_ids=corpus_ids,
+        index_ids=index_ids,
     )
 
 

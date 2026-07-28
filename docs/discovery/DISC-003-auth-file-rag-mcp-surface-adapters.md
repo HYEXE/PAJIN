@@ -1,6 +1,6 @@
 # DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters
 
-- Status: in progress (`DISC-003A` and `DISC-003B` implemented)
+- Status: in progress (`DISC-003A`, `DISC-003B`, and `DISC-003C` implemented)
 - Date: 2026-07-29
 - Prerequisites: DISC-001, DISC-002, trusted Surface admission
 
@@ -63,16 +63,34 @@ contradictory encodings, wildcard outer upload types, and OpenAPI 3.1 encoding f
 documents fail closed. The adapter never retains or produces file bytes, filenames, form values,
 filesystem paths, destinations, or upload URLs.
 
+## DISC-003C: Explicit RAG boundary
+
+`HTTPAndOpenAPIRAGSurfaceAdapter` is the next cumulative exact-version interpreter. It preserves
+the HTTP, authentication, and file-upload Surfaces, then reads only an operation-level
+`x-pajin-rag` object with exact version `"1"`.
+
+The non-executable `http-rag` locator binds the admitted route and one declared
+`corpus-ingest`, `index-management`, or `retrieval` boundary. It retains only sorted, unique,
+portable corpus and index identifiers. Corpus ingestion requires a corpus identifier; index
+management and retrieval require an index identifier.
+
+Path names, summaries, descriptions, schemas, examples, root/path vendor extensions, and ordinary
+request or response fields never imply a RAG boundary. Unsupported versions, unknown fields,
+`$ref`, null or malformed declarations, noncanonical identifiers, missing required identifiers,
+and declaration overflow fail closed. The adapter never retains or fetches corpus documents,
+queries, retrieved chunks, embeddings, vector values, credentials, or destination URLs.
+
 ## Authority and admission
 
 The adapter remains bound to the exact DISC-001 ID, version, implementation digest, stable
 context, and `HTTPGetTool` contract. It requires the same sealed Worker result and host-trusted
-HTTP proxy receipt as DISC-002. Every authentication locator nests a previously parsed route, so
-trusted admission reuses the existing Campaign method, allow, deny, wildcard-template, and
-possible-deny-overlap checks before publication.
+HTTP proxy receipt as DISC-002. Every authentication, file-upload, and RAG locator nests a
+previously parsed route, so trusted admission reuses the existing Campaign method, allow, deny,
+wildcard-template, and possible-deny-overlap checks before publication.
 
-Both locators are descriptive only. They cannot acquire credentials, call an identity provider,
-materialize route parameters, read or upload a file, schedule a request, or relax Scope.
+All domain locators are descriptive only. They cannot acquire credentials, call an identity
+provider, materialize route parameters, read or upload a file, access a corpus or index, schedule
+a request, or relax Scope.
 
 ## Verification
 
@@ -91,25 +109,30 @@ materialize route parameters, read or upload a file, schedule a request, or rela
 - malformed required/encoding/media declarations, contradictory versions, raw arrays, and
   declaration-overflow rejection; and
 - cumulative HTTP/Auth/File Registry definition plus sealed admission/projection integration.
+- explicit corpus-ingest, index-management, and retrieval topology with canonical identifiers;
+- no inference from names, descriptions, schemas, examples, or root/path extensions;
+- unknown, referenced, malformed, noncanonical, contradictory, and overflow declaration
+  rejection;
+- no corpus content, query, retrieved content, embedding, vector, or destination retention; and
+- cumulative HTTP/Auth/File/RAG Registry definition plus sealed admission/projection integration.
 
 ## Remaining sub-slices
 
-- `DISC-003C`: bounded RAG corpus/index/retrieval boundary discovery; and
 - `DISC-003D`: bounded MCP server/resource/prompt/tool boundary discovery.
 
-Neither remaining adapter is implied by the file-upload locator. Planner and
-multi-wave orchestration wiring also remains outside DISC-003.
+The MCP adapter is not implied by the RAG locator. Planner and multi-wave orchestration wiring
+also remains outside DISC-003.
 
 ## Compatibility and rollback
 
-The existing DISC-002 and DISC-003A adapters and their exact references remain unchanged. The
-file-upload adapter is a separate cumulative exact-version definition and must be selected
-explicitly. Existing `http-endpoint`, `http-route`, `http-authentication`, and `tool-interface`
-artifacts keep their wire shape and identity.
+The existing DISC-002 and DISC-003A/B adapters and their exact references remain unchanged. The
+RAG adapter is a separate cumulative exact-version definition and must be selected explicitly.
+Existing `http-endpoint`, `http-route`, `http-authentication`, `http-file-upload`, and
+`tool-interface` artifacts keep their wire shape and identity.
 
-Rollback removes the DISC-003B adapter reference and may select DISC-003A to retain authentication
-discovery. Already sealed authentication and file-upload Surfaces remain readable and must not be
-rewritten.
+Rollback removes the DISC-003C adapter reference and may select DISC-003B to retain file-upload
+discovery. Already sealed authentication, file-upload, and RAG Surfaces remain readable and must
+not be rewritten.
 
 ## Related documents
 
@@ -117,4 +140,5 @@ rewritten.
 - [DISC-001: Versioned Discovery Adapter Registry](DISC-001-versioned-discovery-adapter-registry.md)
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
+- [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

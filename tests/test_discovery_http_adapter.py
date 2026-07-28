@@ -12,9 +12,11 @@ from pajin.discovery import (
     DiscoveryAdapterRegistry,
     HTTPAndOpenAPIAuthenticationSurfaceAdapter,
     HTTPAndOpenAPIFileUploadSurfaceAdapter,
+    HTTPAndOpenAPIRAGSurfaceAdapter,
     HTTPAndOpenAPISurfaceAdapter,
     HTTPAuthenticationSurfaceLocator,
     HTTPFileUploadSurfaceLocator,
+    HTTPRAGSurfaceLocator,
     HTTPRouteSurfaceLocator,
     SurfaceAdmissionError,
     TrustedSurfaceProducer,
@@ -702,6 +704,69 @@ def test_versioned_openapi_file_upload_admission_reuses_route_authority(
         event.payload["adapterId"]
         == "pajin.discovery.http-openapi-file-upload:http.get"
     )
+    assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
+
+
+def test_versioned_openapi_rag_admission_reuses_route_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign_for_http_openapi(sample_campaign)
+    document = _openapi_document()
+    paths = document["paths"]
+    assert isinstance(paths, dict)
+    users = paths["/users/{user_id}"]
+    assert isinstance(users, dict)
+    post = users["post"]
+    assert isinstance(post, dict)
+    post["x-pajin-rag"] = {
+        "version": "1",
+        "boundary": "retrieval",
+        "corpusIds": ["customer-documents"],
+        "indexIds": ["semantic-primary"],
+    }
+    source = _sealed_http_source(tmp_path, campaign, document)
+    tools = ToolRegistry()
+    tool = HTTPGetTool()
+    tools.register(tool)
+    adapter = HTTPAndOpenAPIRAGSurfaceAdapter(
+        tool=tool,
+        allowed_methods=("GET", "POST"),
+    )
+    registry = DiscoveryAdapterRegistry(tools=tools, adapters=[adapter])
+    producer = TrustedSurfaceProducer.from_adapter_registry(
+        tools=tools,
+        registry=registry,
+        adapter_references=[
+            definition.reference() for definition in registry.definitions()
+        ],
+    )
+
+    admission = producer.produce_from_run(
+        source.path,
+        evidence_reference=EVIDENCE_REFERENCE,
+        expected_run_id=source.run_id,
+        admitted_at=NOW + timedelta(minutes=1),
+    )
+
+    rag = next(
+        surface.locator
+        for surface in admission.surface_set.surfaces
+        if isinstance(surface.locator, HTTPRAGSurfaceLocator)
+    )
+    assert rag.route.path_template == "/users/{user_id}"
+    assert rag.route.method == "POST"
+    assert rag.boundary == "retrieval"
+    assert rag.corpus_ids == ("customer-documents",)
+    assert rag.index_ids == ("semantic-primary",)
+    projection = RunStore.create(tmp_path / "rag-projection", campaign.metadata.name)
+    publish_surface_projection(projection, admission)
+    event = next(
+        item
+        for item in load_verified_run_events(projection.path)
+        if item.event_type == "discovery.attack-surface-set.published"
+    )
+    assert event.payload["adapterId"] == "pajin.discovery.http-openapi-rag:http.get"
     assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
 
 

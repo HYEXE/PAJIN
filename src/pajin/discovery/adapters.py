@@ -25,6 +25,7 @@ DiscoverySurfaceKind = Literal[
     "http-authentication",
     "http-endpoint",
     "http-file-upload",
+    "http-rag",
     "http-route",
     "tool-interface",
 ]
