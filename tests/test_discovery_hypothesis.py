@@ -4,25 +4,33 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, ValidationError
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.discovery import (
+    CompiledHypothesisWave,
     DeterministicHypothesisCompiler,
     DynamicHypothesisWaveRunner,
     HypothesisWaveError,
     MCPInterfaceSurfaceAdapter,
+    ReconWaveOutcome,
     RegisteredHypothesisRule,
     RegisteredMCPReconPlanner,
     SingleReconWaveRunner,
+    SurfaceBoundPlan,
     TrustedSurfaceProducer,
 )
 from pajin.domain.models import CampaignManifest
 from pajin.policy.capability import CapabilityError
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import BudgetController
+from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.store import load_verified_run_events, verify_run_integrity
-from pajin.runtime.worker import SimulatedWorkerBackend
+from pajin.runtime.worker import (
+    SimulatedWorkerBackend,
+    WorkerJob,
+    WorkerResult,
+)
 from pajin.tools.base import ToolRegistry
 from pajin.tools.mcp import RegisteredMCPTool, demo_mcp_tool
 from pajin.tools.mock import MockAgentProbe, SleepCheckTool
@@ -30,6 +38,20 @@ from pajin.workflow.discovery import DiscoveryCampaignRunner
 from pajin.workflow.local import LocalCampaignRunner
 
 _INPUT_SCHEMA_DIGEST = "a" * 64
+
+
+class _CountingSimulatedWorker(SimulatedWorkerBackend):
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        self.calls += 1
+        return await super().run(job, secrets=secrets)
 
 
 def _a4_campaign(campaign: CampaignManifest) -> CampaignManifest:
@@ -167,6 +189,72 @@ def test_hypothesis_compiler_is_deterministic_and_surface_bound(
     assert first.plan.steps[0].request.agent_id.startswith("hypothesis-specialist:")
     assert first.plan.max_waves == 1
     assert first.plan.stop_condition == "hypothesis-wave-complete"
+    snapshot = first.surface_bound_plan.surface_snapshot
+    task = first.surface_bound_plan.tasks[0]
+    assert snapshot.revision == 1
+    assert snapshot.surface_set_id == recon.surface_set.surface_set_id
+    assert snapshot.projection_run_id == recon.publication.projection_run_id
+    assert snapshot.projection_root_digest == recon.publication.projection_root_digest
+    assert snapshot.artifact_sha256 == recon.publication.artifact_sha256
+    assert task.surface_snapshot_id == snapshot.snapshot_id
+    assert task.surface_snapshot_revision == snapshot.revision
+    assert task.surface_snapshot_digest == snapshot.snapshot_digest
+    assert task.hypothesis_set_id == first.hypothesis_set.hypothesis_set_id
+    assert task.wave_plan_id == first.plan.wave_plan_id
+    assert task.step == first.plan.steps[0]
+
+
+def test_surface_bound_plan_rejects_snapshot_task_and_plan_digest_tampering(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a4_campaign(sample_campaign)
+    recon_runner, _, tools, recon_tool = _a4_stack(tmp_path, campaign)
+    recon = asyncio.run(recon_runner.run(campaign))
+    compiled = DeterministicHypothesisCompiler(
+        tools=tools,
+        rules=[_rule(recon_tool)],
+    ).compile(campaign, recon)
+    payload = compiled.surface_bound_plan.model_dump(mode="json", by_alias=True)
+
+    forged_snapshot = json.loads(json.dumps(payload))
+    forged_snapshot["surfaceSnapshot"]["snapshotDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="Surface Snapshot Digest"):
+        SurfaceBoundPlan.model_validate(forged_snapshot)
+
+    forged_task = json.loads(json.dumps(payload))
+    forged_task["tasks"][0]["surfaceSnapshotDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="Task Digest"):
+        SurfaceBoundPlan.model_validate(forged_task)
+
+    forged_plan = json.loads(json.dumps(payload))
+    forged_plan["planDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="Plan Digest"):
+        SurfaceBoundPlan.model_validate(forged_plan)
+
+
+def test_surface_bound_plan_rejects_task_from_another_snapshot(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a4_campaign(sample_campaign)
+    recon_runner, _, tools, recon_tool = _a4_stack(tmp_path, campaign)
+    first_recon = asyncio.run(recon_runner.run(campaign))
+    second_recon = asyncio.run(recon_runner.run(campaign))
+    compiler = DeterministicHypothesisCompiler(
+        tools=tools,
+        rules=[_rule(recon_tool)],
+    )
+    first = compiler.compile(campaign, first_recon)
+    second = compiler.compile(campaign, second_recon)
+    payload = first.surface_bound_plan.model_dump(mode="json", by_alias=True)
+    payload["tasks"] = second.surface_bound_plan.model_dump(
+        mode="json",
+        by_alias=True,
+    )["tasks"]
+
+    with pytest.raises(ValidationError, match="another Plan authority"):
+        SurfaceBoundPlan.model_validate(payload)
 
 
 def test_hypothesis_compiler_orders_registered_rules_canonically(
@@ -204,9 +292,7 @@ def test_hypothesis_compiler_orders_registered_rules_canonically(
     ).compile(campaign, recon)
 
     assert first == second
-    hypothesis_ids = [
-        hypothesis.hypothesis_id for hypothesis in first.hypothesis_set.hypotheses
-    ]
+    hypothesis_ids = [hypothesis.hypothesis_id for hypothesis in first.hypothesis_set.hypotheses]
     assert hypothesis_ids == sorted(hypothesis_ids)
     assert [step.hypothesis_id for step in first.plan.steps] == hypothesis_ids
     assert {step.request.tool_id for step in first.plan.steps} == {
@@ -302,9 +388,14 @@ def test_dynamic_hypothesis_wave_uses_fresh_single_call_capability_and_seals(
     assert [result.request_id for result in outcome.tool_results] == [
         step.request.request_id for step in outcome.plan.steps
     ]
-    capabilities = json.loads(
-        (outcome.run_path / "capabilities.json").read_text(encoding="utf-8")
+    bound_plan = json.loads(
+        (outcome.run_path / "surface-bound-plan.json").read_text(encoding="utf-8")
     )
+    assert bound_plan == outcome.surface_bound_plan.model_dump(mode="json", by_alias=True)
+    assert bound_plan["surfaceSnapshot"]["revision"] == 1
+    assert bound_plan["planDigest"] == outcome.surface_bound_plan.plan_digest
+    assert bound_plan["tasks"][0]["taskDigest"] == (outcome.surface_bound_plan.tasks[0].task_digest)
+    capabilities = json.loads((outcome.run_path / "capabilities.json").read_text(encoding="utf-8"))
     assert len(capabilities) == 2
     root, specialist = capabilities
     assert root["grant"]["depth"] == 0
@@ -320,21 +411,116 @@ def test_dynamic_hypothesis_wave_uses_fresh_single_call_capability_and_seals(
     assert state["status"] == "completed"
     assert state["stopCondition"] == "hypothesis-wave-complete"
     events = load_verified_run_events(outcome.run_path)
+    assert sum(event.event_type == "discovery.hypothesis-set.compiled" for event in events) == 1
     assert (
-        sum(event.event_type == "discovery.hypothesis-set.compiled" for event in events)
-        == 1
+        sum(event.event_type == "discovery.hypothesis-specialist.created" for event in events) == 1
     )
-    assert (
-        sum(
-            event.event_type == "discovery.hypothesis-specialist.created"
-            for event in events
-        )
-        == 1
+    assert sum(event.event_type == "discovery.hypothesis-wave.completed" for event in events) == 1
+    created = next(
+        event for event in events if event.event_type == "discovery.hypothesis-specialist.created"
     )
-    assert (
-        sum(event.event_type == "discovery.hypothesis-wave.completed" for event in events)
-        == 1
+    assert created.payload["surfaceSnapshotDigest"] == (
+        outcome.surface_bound_plan.surface_snapshot.snapshot_digest
     )
+    assert created.payload["surfaceBoundPlanDigest"] == (outcome.surface_bound_plan.plan_digest)
+    assert created.payload["surfaceBoundTaskDigest"] == (
+        outcome.surface_bound_plan.tasks[0].task_digest
+    )
+
+
+def test_hypothesis_wave_revalidates_surface_snapshot_before_capability_issuance(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a4_campaign(sample_campaign)
+    tools = ToolRegistry()
+    recon_tool = demo_mcp_tool()
+    tools.register(recon_tool)
+    tools.register(MockAgentProbe())
+    recon_runner = _recon_runner(
+        tmp_path,
+        campaign,
+        tools=tools,
+        recon_tool=recon_tool,
+    )
+    recon = asyncio.run(recon_runner.run(campaign))
+
+    class _TamperingCompiler(DeterministicHypothesisCompiler):
+        def compile(
+            self,
+            campaign: CampaignManifest,
+            recon: ReconWaveOutcome,
+        ) -> CompiledHypothesisWave:
+            compiled = super().compile(campaign, recon)
+            artifact = recon.projection_run_path / recon.publication.artifact_path
+            artifact.write_bytes(artifact.read_bytes() + b" ")
+            return compiled
+
+    compiler = _TamperingCompiler(
+        tools=tools,
+        rules=[_rule(recon_tool)],
+    )
+    worker = _CountingSimulatedWorker()
+    runner = DynamicHypothesisWaveRunner(
+        compiler=compiler,
+        tools=tools,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+
+    with pytest.raises(HypothesisWaveError, match="projection Run is not integrity-valid"):
+        asyncio.run(runner.run(campaign, recon))
+
+    assert worker.calls == 0
+
+
+def test_hypothesis_wave_rejects_replayed_plan_from_another_surface_snapshot(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a4_campaign(sample_campaign)
+    tools = ToolRegistry()
+    recon_tool = demo_mcp_tool()
+    tools.register(recon_tool)
+    tools.register(MockAgentProbe())
+    recon_runner = _recon_runner(
+        tmp_path,
+        campaign,
+        tools=tools,
+        recon_tool=recon_tool,
+    )
+    current_recon = asyncio.run(recon_runner.run(campaign))
+    foreign_recon = asyncio.run(recon_runner.run(campaign))
+    foreign = DeterministicHypothesisCompiler(
+        tools=tools,
+        rules=[_rule(recon_tool)],
+    ).compile(campaign, foreign_recon)
+
+    class _ReplayingCompiler(DeterministicHypothesisCompiler):
+        def compile(
+            self,
+            campaign: CampaignManifest,
+            recon: ReconWaveOutcome,
+        ) -> CompiledHypothesisWave:
+            return foreign
+
+    worker = _CountingSimulatedWorker()
+    runner = DynamicHypothesisWaveRunner(
+        compiler=_ReplayingCompiler(
+            tools=tools,
+            rules=[_rule(recon_tool)],
+        ),
+        tools=tools,
+        policy=PolicyEngine(),
+        worker=worker,
+        output_root=tmp_path,
+    )
+
+    with pytest.raises(HypothesisWaveError, match="Hypothesis Set differs"):
+        asyncio.run(runner.run(campaign, current_recon))
+
+    assert worker.calls == 0
 
 
 def test_dynamic_hypothesis_wave_requires_attenuated_capability_depth(
@@ -406,8 +592,7 @@ def test_a4_composition_is_opt_in_and_does_not_replan_existing_campaign(
     )
     assert all(step.get("attack_surface") is None for step in existing_plan["steps"])
     assert all(
-        step["request"]["request_id"]
-        != outcome.hypothesis_wave.plan.steps[0].request.request_id
+        step["request"]["request_id"] != outcome.hypothesis_wave.plan.steps[0].request.request_id
         for step in existing_plan["steps"]
     )
     shared_budget = json.loads(

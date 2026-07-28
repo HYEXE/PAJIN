@@ -309,8 +309,12 @@ publishes non-executable server/resource/resource-template/prompt/tool Surfaces 
 portable names, required flags, URI schemes, protocol/capability identity, and SHA-256 schema or
 URI digests. It does not retain descriptions, raw schemas/URIs, resource content, prompt content
 or values, server process commands, or discovered execution authority. One argument-free Planner
-uses the existing sealed single-Recon-wave path; multi-adapter scheduling and Snapshot-to-Plan
-orchestration remain ORCH-001/002 work.
+uses the existing sealed single-Recon-wave path. ORCH-001 now adds an immutable revision-1 Surface
+Snapshot authority and additive Plan/Task digests over its exact projection/source roots, sealed
+artifact SHA-256, Surface Set, Hypothesis authority, and complete Specialist steps. The dynamic
+Hypothesis runner reconstructs that binding before capability issuance and every Tool dispatch,
+while existing Discovery Hypothesis v1alpha1 wire shapes remain unchanged. Multi-adapter
+scheduling and bounded multi-wave orchestration remain ORCH-002 work.
 
 ## 10. Definition of Done
 

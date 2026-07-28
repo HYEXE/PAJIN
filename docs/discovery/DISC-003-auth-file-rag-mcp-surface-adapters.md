@@ -150,10 +150,11 @@ does not alter the cumulative HTTP/OpenAPI adapter chain.
 - malformed, duplicate, unsorted, contradictory, overflow, and forged-identity rejection; and
 - exact Registry binding plus sealed single-Recon-wave admission/projection integration.
 
-## Remaining orchestration boundary
+## Orchestration boundary
 
-DISC-003 is complete. ORCH-001/002 own multi-adapter scheduling, Snapshot-to-Plan binding, and
-bounded multi-wave orchestration.
+DISC-003 is complete. ORCH-001 now binds the exact immutable Surface projection revision and digest
+into additive follow-up Plan and Task digests and revalidates them at dispatch. ORCH-002 owns
+multi-adapter scheduling and bounded multi-wave orchestration.
 
 ## Compatibility and rollback
 
@@ -175,4 +176,5 @@ file-upload, RAG, and MCP Surfaces remain readable and must not be rewritten.
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
 - [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
+- [ORCH-001: Surface Snapshot to Plan and Task Binding](../orchestration/ORCH-001-surface-snapshot-plan-task-binding.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

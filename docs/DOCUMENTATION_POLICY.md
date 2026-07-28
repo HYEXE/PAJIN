@@ -12,7 +12,7 @@ documentation website will publish repository-owned material, not become another
 | --- | --- | --- |
 | Executable behavior, schemas, and security boundaries | Code and tests | `src/`, `tests/` |
 | Architecture decisions and immutable rationale | Accepted RFCs and ADRs | `docs/rfc/`, `docs/adr/` |
-| Versioned implementation contracts | Contract specifications | `docs/benchmark/`, `docs/capability/`, `docs/graph/` |
+| Versioned implementation contracts | Contract specifications | `docs/benchmark/`, `docs/capability/`, `docs/discovery/`, `docs/graph/`, `docs/orchestration/` |
 | Requirement-to-implementation traceability | Versioned traceability records | `docs/KISA_TRACEABILITY.md` |
 | Installation and operator entry points | Root README | `README.md` |
 | Navigation and documentation policy | Documentation index and this policy | `docs/README.md`, this file |

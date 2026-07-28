@@ -106,7 +106,8 @@ The exact adapter reference continues into trusted admission authority and proje
   webhooks, GraphQL introspection, or cross-origin server discovery is implemented.
 - DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters. Its cumulative Auth, File Upload,
   and explicit RAG slices plus its separate registered MCP boundary adapter are implemented.
-- ORCH-001/002 own request scheduling, Snapshot-to-Plan binding, and bounded multi-wave execution.
+- ORCH-001 implements Snapshot-to-Plan/Task binding. ORCH-002 owns multi-adapter request
+  scheduling and bounded multi-wave execution.
 
 ## Related documents
 

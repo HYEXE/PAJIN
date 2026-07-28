@@ -99,7 +99,8 @@ shape remains unchanged.
 - DISC-002 implements bounded HTTP route/method/content-type and OpenAPI Surface discovery.
 - DISC-003A/B/C/D implement bounded OpenAPI authentication, file-upload, explicit RAG, and
   registered MCP boundary discovery.
-- ORCH-001/002 own multi-adapter scheduling, multi-wave execution, and Planner integration.
+- ORCH-001 implements Snapshot-to-Plan/Task binding. ORCH-002 owns multi-adapter scheduling,
+  multi-wave execution, and broader Planner integration.
 - Signed adapter releases, durable Registry storage, dynamic plugin loading, and remote Registry
   refresh are not implemented.
 

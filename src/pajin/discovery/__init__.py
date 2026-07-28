@@ -23,6 +23,7 @@ from pajin.discovery.file_upload import HTTPAndOpenAPIFileUploadSurfaceAdapter
 from pajin.discovery.http import HTTPAndOpenAPISurfaceAdapter
 from pajin.discovery.hypothesis import (
     HYPOTHESIS_API_VERSION,
+    ORCHESTRATION_API_VERSION,
     AttackHypothesis,
     AttackHypothesisSet,
     CompiledHypothesisWave,
@@ -33,6 +34,9 @@ from pajin.discovery.hypothesis import (
     HypothesisWaveOutcome,
     HypothesisWavePlan,
     RegisteredHypothesisRule,
+    SurfaceBoundPlan,
+    SurfaceBoundTask,
+    SurfaceSnapshotAuthority,
 )
 from pajin.discovery.mcp import MCPBoundarySurfaceAdapter
 from pajin.discovery.models import (
@@ -110,6 +114,7 @@ __all__ = [
     "DISCOVERY_ADAPTER_API_VERSION",
     "DISCOVERY_API_VERSION",
     "HYPOTHESIS_API_VERSION",
+    "ORCHESTRATION_API_VERSION",
     "RECON_API_VERSION",
     "REPLANNING_API_VERSION",
     "AttackHypothesis",
@@ -171,12 +176,15 @@ __all__ = [
     "ReplanDecision",
     "SingleReconWaveRunner",
     "SurfaceAdmissionError",
+    "SurfaceBoundPlan",
+    "SurfaceBoundTask",
     "SurfaceCandidate",
     "SurfaceEvidenceReference",
     "SurfaceLocator",
     "SurfaceObservation",
     "SurfaceProjectionConflict",
     "SurfaceProjectionPublication",
+    "SurfaceSnapshotAuthority",
     "ToolInterfaceSurfaceLocator",
     "TrustedSurfaceAdapter",
     "TrustedSurfaceAdmission",

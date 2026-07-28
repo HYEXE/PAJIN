@@ -45,17 +45,22 @@ from pajin.workflow.cancellation import (
 )
 
 HYPOTHESIS_API_VERSION = "pajin.dev/discovery-hypothesis/v1alpha1"
+ORCHESTRATION_API_VERSION = "pajin.dev/surface-bound-orchestration/v1alpha1"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
 _PORTABLE_IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"
 _SHA256_PATTERN = r"^[a-f0-9]{64}$"
 _HYPOTHESIS_ID_PATTERN = r"^attack-hypothesis_[a-f0-9]{64}$"
 _HYPOTHESIS_SET_ID_PATTERN = r"^attack-hypothesis-set_[a-f0-9]{64}$"
 _HYPOTHESIS_WAVE_PLAN_ID_PATTERN = r"^hypothesis-wave-plan_[a-f0-9]{64}$"
+_SURFACE_SNAPSHOT_ID_PATTERN = r"^surface-snapshot_[a-f0-9]{64}$"
 _MAX_ARGUMENT_BYTES = 1_000_000
 _MAX_HYPOTHESES = 100
 _MAX_HYPOTHESIS_BYTES = 64 * 1024
 _MAX_HYPOTHESIS_SET_BYTES = 4 * 1024 * 1024
 _MAX_HYPOTHESIS_WAVE_PLAN_BYTES = 4 * 1024 * 1024
+_MAX_SURFACE_SNAPSHOT_BYTES = 16 * 1024
+_MAX_SURFACE_BOUND_TASK_BYTES = 128 * 1024
+_MAX_SURFACE_BOUND_PLAN_BYTES = 4 * 1024 * 1024
 _MAX_SURFACE_SET_BYTES = 4 * 1024 * 1024
 
 
@@ -439,12 +444,224 @@ class HypothesisWavePlan(StrictModel):
         return self
 
 
+class SurfaceSnapshotAuthority(StrictModel):
+    """Exact immutable Surface projection revision consumed by orchestration."""
+
+    api_version: Literal["pajin.dev/surface-bound-orchestration/v1alpha1"] = Field(
+        default="pajin.dev/surface-bound-orchestration/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["SurfaceSnapshotAuthority"] = "SurfaceSnapshotAuthority"
+    snapshot_id: str = Field(default="", alias="snapshotId")
+    revision: Literal[1] = 1
+    snapshot_digest: str = Field(default="", alias="snapshotDigest")
+    campaign: str = Field(
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    projection_run_id: str = Field(
+        alias="projectionRunId",
+        min_length=1,
+        max_length=200,
+        pattern=_IDENTIFIER_PATTERN,
+    )
+    projection_root_digest: str = Field(
+        alias="projectionRootDigest",
+        pattern=_SHA256_PATTERN,
+    )
+    source_run_id: str = Field(
+        alias="sourceRunId",
+        min_length=1,
+        max_length=200,
+        pattern=_IDENTIFIER_PATTERN,
+    )
+    source_root_digest: str = Field(alias="sourceRootDigest", pattern=_SHA256_PATTERN)
+    artifact_path: str = Field(alias="artifactPath", min_length=1, max_length=2_000)
+    artifact_sha256: str = Field(alias="artifactSha256", pattern=_SHA256_PATTERN)
+    surface_set_id: str = Field(
+        alias="surfaceSetId",
+        pattern=r"^attack-surface-set_[a-f0-9]{64}$",
+    )
+
+    @field_validator("artifact_path")
+    @classmethod
+    def validate_artifact_path(cls, value: str) -> str:
+        if value != value.strip() or "\\" in value or value.startswith("/") or value.endswith("/"):
+            raise ValueError("Surface Snapshot artifact path must be portable and relative")
+        parts = value.split("/")
+        if any(
+            not part or part in {".", ".."} or fullmatch(r"^[A-Za-z0-9._-]+$", part) is None
+            for part in parts
+        ):
+            raise ValueError("Surface Snapshot artifact path must be portable and relative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> SurfaceSnapshotAuthority:
+        expected_digest = discovery_digest(
+            "pajin.orchestration.surface-snapshot-authority/v1",
+            {
+                "revision": self.revision,
+                "campaign": self.campaign,
+                "projectionRunId": self.projection_run_id,
+                "projectionRootDigest": self.projection_root_digest,
+                "sourceRunId": self.source_run_id,
+                "sourceRootDigest": self.source_root_digest,
+                "artifactPath": self.artifact_path,
+                "artifactSha256": self.artifact_sha256,
+                "surfaceSetId": self.surface_set_id,
+            },
+        )
+        expected_id = f"surface-snapshot_{expected_digest}"
+        if not self.snapshot_digest:
+            self.snapshot_digest = expected_digest
+        elif self.snapshot_digest != expected_digest:
+            raise ValueError("Surface Snapshot Digest differs from canonical authority")
+        if not self.snapshot_id:
+            self.snapshot_id = expected_id
+        elif self.snapshot_id != expected_id:
+            raise ValueError("Surface Snapshot ID differs from canonical authority")
+        if fullmatch(_SURFACE_SNAPSHOT_ID_PATTERN, self.snapshot_id) is None:
+            raise ValueError("Surface Snapshot ID is malformed")
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Surface Snapshot authority",
+            max_bytes=_MAX_SURFACE_SNAPSHOT_BYTES,
+        )
+        return self
+
+
+class SurfaceBoundTask(StrictModel):
+    """One executable Specialist task bound to an exact Surface Snapshot."""
+
+    api_version: Literal["pajin.dev/surface-bound-orchestration/v1alpha1"] = Field(
+        default="pajin.dev/surface-bound-orchestration/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["SurfaceBoundTask"] = "SurfaceBoundTask"
+    task_digest: str = Field(default="", alias="taskDigest")
+    surface_snapshot_id: str = Field(
+        alias="surfaceSnapshotId",
+        pattern=_SURFACE_SNAPSHOT_ID_PATTERN,
+    )
+    surface_snapshot_revision: Literal[1] = Field(alias="surfaceSnapshotRevision")
+    surface_snapshot_digest: str = Field(
+        alias="surfaceSnapshotDigest",
+        pattern=_SHA256_PATTERN,
+    )
+    hypothesis_set_id: str = Field(
+        alias="hypothesisSetId",
+        pattern=_HYPOTHESIS_SET_ID_PATTERN,
+    )
+    wave_plan_id: str = Field(
+        alias="wavePlanId",
+        pattern=_HYPOTHESIS_WAVE_PLAN_ID_PATTERN,
+    )
+    hypothesis_id: str = Field(alias="hypothesisId", pattern=_HYPOTHESIS_ID_PATTERN)
+    surface_id: str = Field(
+        alias="surfaceId",
+        pattern=r"^attack-surface_[a-f0-9]{64}$",
+    )
+    step: HypothesisSpecialistStep
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> SurfaceBoundTask:
+        if self.step.hypothesis_id != self.hypothesis_id or self.step.surface_id != self.surface_id:
+            raise ValueError("Surface-bound Task differs from its Specialist step")
+        expected = discovery_digest(
+            "pajin.orchestration.surface-bound-task/v1",
+            {
+                "surfaceSnapshotId": self.surface_snapshot_id,
+                "surfaceSnapshotRevision": self.surface_snapshot_revision,
+                "surfaceSnapshotDigest": self.surface_snapshot_digest,
+                "hypothesisSetId": self.hypothesis_set_id,
+                "wavePlanId": self.wave_plan_id,
+                "hypothesisId": self.hypothesis_id,
+                "surfaceId": self.surface_id,
+                "step": self.step.model_dump(mode="json", by_alias=True),
+            },
+        )
+        if not self.task_digest:
+            self.task_digest = expected
+        elif self.task_digest != expected:
+            raise ValueError("Surface-bound Task Digest differs from canonical authority")
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Surface-bound Task",
+            max_bytes=_MAX_SURFACE_BOUND_TASK_BYTES,
+        )
+        return self
+
+
+class SurfaceBoundPlan(StrictModel):
+    """Canonical follow-up Plan whose tasks consume one exact Surface Snapshot."""
+
+    api_version: Literal["pajin.dev/surface-bound-orchestration/v1alpha1"] = Field(
+        default="pajin.dev/surface-bound-orchestration/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["SurfaceBoundPlan"] = "SurfaceBoundPlan"
+    plan_digest: str = Field(default="", alias="planDigest")
+    surface_snapshot: SurfaceSnapshotAuthority = Field(alias="surfaceSnapshot")
+    hypothesis_set_id: str = Field(
+        alias="hypothesisSetId",
+        pattern=_HYPOTHESIS_SET_ID_PATTERN,
+    )
+    wave_plan_id: str = Field(
+        alias="wavePlanId",
+        pattern=_HYPOTHESIS_WAVE_PLAN_ID_PATTERN,
+    )
+    tasks: list[SurfaceBoundTask] = Field(min_length=1, max_length=_MAX_HYPOTHESES)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> SurfaceBoundPlan:
+        hypothesis_ids = [task.hypothesis_id for task in self.tasks]
+        task_digests = [task.task_digest for task in self.tasks]
+        if hypothesis_ids != sorted(hypothesis_ids):
+            raise ValueError("Surface-bound Tasks must be canonically sorted")
+        if len(hypothesis_ids) != len(set(hypothesis_ids)):
+            raise ValueError("Surface-bound Tasks must have unique Hypotheses")
+        if len(task_digests) != len(set(task_digests)):
+            raise ValueError("Surface-bound Task Digests must be unique")
+        snapshot = self.surface_snapshot
+        if any(
+            task.surface_snapshot_id != snapshot.snapshot_id
+            or task.surface_snapshot_revision != snapshot.revision
+            or task.surface_snapshot_digest != snapshot.snapshot_digest
+            or task.hypothesis_set_id != self.hypothesis_set_id
+            or task.wave_plan_id != self.wave_plan_id
+            for task in self.tasks
+        ):
+            raise ValueError("Surface-bound Task belongs to another Plan authority")
+        expected = discovery_digest(
+            "pajin.orchestration.surface-bound-plan/v1",
+            {
+                "surfaceSnapshot": snapshot.model_dump(mode="json", by_alias=True),
+                "hypothesisSetId": self.hypothesis_set_id,
+                "wavePlanId": self.wave_plan_id,
+                "tasks": [task.model_dump(mode="json", by_alias=True) for task in self.tasks],
+            },
+        )
+        if not self.plan_digest:
+            self.plan_digest = expected
+        elif self.plan_digest != expected:
+            raise ValueError("Surface-bound Plan Digest differs from canonical authority")
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Surface-bound Plan",
+            max_bytes=_MAX_SURFACE_BOUND_PLAN_BYTES,
+        )
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledHypothesisWave:
     """Detached deterministic Compiler output."""
 
     hypothesis_set: AttackHypothesisSet
     plan: HypothesisWavePlan
+    surface_bound_plan: SurfaceBoundPlan
 
 
 class DeterministicHypothesisCompiler:
@@ -461,9 +678,7 @@ class DeterministicHypothesisCompiler:
     ) -> None:
         if not isinstance(tools, ToolRegistry):
             raise TypeError("Hypothesis Compiler requires a ToolRegistry")
-        resolved_compiler_id = (
-            self.default_compiler_id if compiler_id is None else compiler_id
-        )
+        resolved_compiler_id = self.default_compiler_id if compiler_id is None else compiler_id
         if (
             not isinstance(resolved_compiler_id, str)
             or fullmatch(_IDENTIFIER_PATTERN, resolved_compiler_id) is None
@@ -593,9 +808,20 @@ class DeterministicHypothesisCompiler:
             hypothesis_set_id=hypothesis_set.hypothesis_set_id,
             steps=steps,
         )
+        snapshot = _surface_snapshot_authority(
+            authoritative_campaign,
+            recon,
+            surface_set,
+        )
+        surface_bound_plan = _build_surface_bound_plan(
+            snapshot,
+            hypothesis_set,
+            plan,
+        )
         return CompiledHypothesisWave(
             hypothesis_set=hypothesis_set.model_copy(deep=True),
             plan=plan.model_copy(deep=True),
+            surface_bound_plan=surface_bound_plan.model_copy(deep=True),
         )
 
 
@@ -655,6 +881,103 @@ def _load_recon_surface_authority(recon: ReconWaveOutcome) -> AttackSurfaceSet:
     return surface_set.model_copy(deep=True)
 
 
+def _surface_snapshot_authority(
+    campaign: CampaignManifest,
+    recon: ReconWaveOutcome,
+    surface_set: AttackSurfaceSet,
+) -> SurfaceSnapshotAuthority:
+    publication = recon.publication
+    if (
+        surface_set.campaign != campaign.metadata.name
+        or surface_set.surface_set_id != publication.surface_set_id
+    ):
+        raise HypothesisWaveError("Surface Snapshot belongs to another Campaign authority")
+    return SurfaceSnapshotAuthority(
+        campaign=campaign.metadata.name,
+        projectionRunId=publication.projection_run_id,
+        projectionRootDigest=publication.projection_root_digest,
+        sourceRunId=publication.source_run_id,
+        sourceRootDigest=publication.source_root_digest,
+        artifactPath=publication.artifact_path,
+        artifactSha256=publication.artifact_sha256,
+        surfaceSetId=publication.surface_set_id,
+    )
+
+
+def _build_surface_bound_plan(
+    snapshot: SurfaceSnapshotAuthority,
+    hypothesis_set: AttackHypothesisSet,
+    plan: HypothesisWavePlan,
+) -> SurfaceBoundPlan:
+    tasks = [
+        SurfaceBoundTask(
+            surfaceSnapshotId=snapshot.snapshot_id,
+            surfaceSnapshotRevision=snapshot.revision,
+            surfaceSnapshotDigest=snapshot.snapshot_digest,
+            hypothesisSetId=hypothesis_set.hypothesis_set_id,
+            wavePlanId=plan.wave_plan_id,
+            hypothesisId=step.hypothesis_id,
+            surfaceId=step.surface_id,
+            step=step.model_copy(deep=True),
+        )
+        for step in plan.steps
+    ]
+    return SurfaceBoundPlan(
+        surfaceSnapshot=snapshot.model_copy(deep=True),
+        hypothesisSetId=hypothesis_set.hypothesis_set_id,
+        wavePlanId=plan.wave_plan_id,
+        tasks=tasks,
+    )
+
+
+def _require_current_surface_bound_plan(
+    campaign: CampaignManifest,
+    recon: ReconWaveOutcome,
+    hypothesis_set: AttackHypothesisSet,
+    plan: HypothesisWavePlan,
+    surface_bound_plan: SurfaceBoundPlan,
+) -> None:
+    surface_set = _load_recon_surface_authority(recon)
+    current_snapshot = _surface_snapshot_authority(campaign, recon, surface_set)
+    if (
+        hypothesis_set.campaign != current_snapshot.campaign
+        or hypothesis_set.source_projection_run_id != current_snapshot.projection_run_id
+        or hypothesis_set.source_projection_root_digest != current_snapshot.projection_root_digest
+        or hypothesis_set.source_surface_artifact_sha256 != current_snapshot.artifact_sha256
+        or hypothesis_set.surface_set_id != current_snapshot.surface_set_id
+    ):
+        raise HypothesisWaveError(
+            "Hypothesis Set differs from the current Surface Snapshot authority"
+        )
+    if (
+        plan.compiler_id != hypothesis_set.compiler_id
+        or plan.hypothesis_set_id != hypothesis_set.hypothesis_set_id
+    ):
+        raise HypothesisWaveError("Hypothesis Wave Plan differs from its Hypothesis Set authority")
+    surface_by_id = {surface.surface_id: surface for surface in surface_set.surfaces}
+    hypothesis_by_id = {
+        hypothesis.hypothesis_id: hypothesis for hypothesis in hypothesis_set.hypotheses
+    }
+    if set(hypothesis_by_id) != {step.hypothesis_id for step in plan.steps} or any(
+        hypothesis.surface_id not in surface_by_id
+        or surface_by_id[hypothesis.surface_id].target_id != hypothesis.target_id
+        or hypothesis.surface_set_id != surface_set.surface_set_id
+        for hypothesis in hypothesis_set.hypotheses
+    ):
+        raise HypothesisWaveError(
+            "Hypothesis membership differs from the current Surface Snapshot authority"
+        )
+    if any(
+        step.surface_id != hypothesis_by_id[step.hypothesis_id].surface_id for step in plan.steps
+    ):
+        raise HypothesisWaveError("Hypothesis Task differs from its Surface authority")
+    expected = _build_surface_bound_plan(current_snapshot, hypothesis_set, plan)
+    if surface_bound_plan != expected:
+        raise HypothesisWaveError(
+            "Surface-bound Plan differs from the current Surface Snapshot authority"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class HypothesisWaveOutcome:
     """Sealed result of one compiled Dynamic Specialist Wave."""
@@ -663,6 +986,7 @@ class HypothesisWaveOutcome:
     run_path: Path
     hypothesis_set: AttackHypothesisSet
     plan: HypothesisWavePlan
+    surface_bound_plan: SurfaceBoundPlan
     tool_results: tuple[ToolResult, ...]
 
 
@@ -780,6 +1104,7 @@ class DynamicHypothesisWaveRunner:
             run_path=store.path,
             hypothesis_set=compiled.hypothesis_set.model_copy(deep=True),
             plan=compiled.plan.model_copy(deep=True),
+            surface_bound_plan=compiled.surface_bound_plan.model_copy(deep=True),
             tool_results=tuple(result.model_copy(deep=True) for result in results),
         )
 
@@ -808,6 +1133,9 @@ class DynamicHypothesisWaveRunner:
         plan = HypothesisWavePlan.model_validate(
             compiled.plan.model_dump(mode="python", by_alias=True)
         )
+        surface_bound_plan = SurfaceBoundPlan.model_validate(
+            compiled.surface_bound_plan.model_dump(mode="python", by_alias=True)
+        )
         store.write_json(
             "hypothesis-set.json",
             hypothesis_set.model_dump(mode="json", by_alias=True),
@@ -815,6 +1143,10 @@ class DynamicHypothesisWaveRunner:
         store.write_json(
             "hypothesis-wave-plan.json",
             plan.model_dump(mode="json", by_alias=True),
+        )
+        store.write_json(
+            "surface-bound-plan.json",
+            surface_bound_plan.model_dump(mode="json", by_alias=True),
         )
         store.append_event(
             "discovery.hypothesis-set.compiled",
@@ -828,9 +1160,21 @@ class DynamicHypothesisWaveRunner:
                     hypothesis.hypothesis_id for hypothesis in hypothesis_set.hypotheses
                 ],
                 "hypothesisCount": len(hypothesis_set.hypotheses),
+                "surfaceSnapshotId": surface_bound_plan.surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": surface_bound_plan.surface_snapshot.revision,
+                "surfaceSnapshotDigest": surface_bound_plan.surface_snapshot.snapshot_digest,
+                "surfaceBoundPlanDigest": surface_bound_plan.plan_digest,
+                "surfaceBoundTaskDigests": [task.task_digest for task in surface_bound_plan.tasks],
             },
         )
 
+        _require_current_surface_bound_plan(
+            campaign,
+            recon,
+            hypothesis_set,
+            plan,
+            surface_bound_plan,
+        )
         state.stage = "hypothesis-capability-issuance"
         if campaign.spec.budgets.max_spawn_depth < 1:
             raise CapabilityError(
@@ -861,11 +1205,12 @@ class DynamicHypothesisWaveRunner:
         store.append_event("capability.issued", root.model_dump(mode="json"))
         grants = {}
         hypothesis_by_id = {
-            hypothesis.hypothesis_id: hypothesis
-            for hypothesis in hypothesis_set.hypotheses
+            hypothesis.hypothesis_id: hypothesis for hypothesis in hypothesis_set.hypotheses
         }
+        bound_task_by_hypothesis = {task.hypothesis_id: task for task in surface_bound_plan.tasks}
         for step in plan.steps:
             hypothesis = hypothesis_by_id[step.hypothesis_id]
+            bound_task = bound_task_by_hypothesis[step.hypothesis_id]
             grant = ledger.delegate(
                 root.grant_id,
                 subject=step.specialist_id,
@@ -886,6 +1231,11 @@ class DynamicHypothesisWaveRunner:
                     "toolId": step.request.tool_id,
                     "target": step.request.target,
                     "maxToolCalls": step.max_tool_calls,
+                    "surfaceSnapshotId": surface_bound_plan.surface_snapshot.snapshot_id,
+                    "surfaceSnapshotRevision": surface_bound_plan.surface_snapshot.revision,
+                    "surfaceSnapshotDigest": (surface_bound_plan.surface_snapshot.snapshot_digest),
+                    "surfaceBoundPlanDigest": surface_bound_plan.plan_digest,
+                    "surfaceBoundTaskDigest": bound_task.task_digest,
                 },
             )
 
@@ -900,6 +1250,13 @@ class DynamicHypothesisWaveRunner:
         results: list[ToolResult] = []
         for step in plan.steps:
             grant = grants[step.hypothesis_id]
+            _require_current_surface_bound_plan(
+                campaign,
+                recon,
+                hypothesis_set,
+                plan,
+                surface_bound_plan,
+            )
             state.budget.check_tool_call()
             if not ledger.can_consume(grant.grant_id):
                 raise CapabilityError("Hypothesis Specialist has no remaining authorized call")
@@ -913,11 +1270,7 @@ class DynamicHypothesisWaveRunner:
                 ledger.consume(grant.grant_id)
                 state.budget.record_tool_call()
             results.append(outcome.result.model_copy(deep=True))
-        failed = [
-            result
-            for result in results
-            if not result.success or result.error is not None
-        ]
+        failed = [result for result in results if not result.success or result.error is not None]
         if failed:
             raise HypothesisWaveError(
                 f"Hypothesis Wave failed {len(failed)} of {len(results)} Tool calls"
@@ -938,6 +1291,11 @@ class DynamicHypothesisWaveRunner:
                 "toolCalls": len(results),
                 "maxWaves": plan.max_waves,
                 "stopCondition": plan.stop_condition,
+                "surfaceSnapshotId": surface_bound_plan.surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": surface_bound_plan.surface_snapshot.revision,
+                "surfaceSnapshotDigest": surface_bound_plan.surface_snapshot.snapshot_digest,
+                "surfaceBoundPlanDigest": surface_bound_plan.plan_digest,
+                "surfaceBoundTaskDigests": [task.task_digest for task in surface_bound_plan.tasks],
             },
         )
         self._write_state(
@@ -948,6 +1306,10 @@ class DynamicHypothesisWaveRunner:
                 "hypothesisSetId": hypothesis_set.hypothesis_set_id,
                 "wavePlanId": plan.wave_plan_id,
                 "stopCondition": plan.stop_condition,
+                "surfaceSnapshotId": surface_bound_plan.surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": surface_bound_plan.surface_snapshot.revision,
+                "surfaceSnapshotDigest": surface_bound_plan.surface_snapshot.snapshot_digest,
+                "surfaceBoundPlanDigest": surface_bound_plan.plan_digest,
             },
         )
         store.append_event(
@@ -963,6 +1325,7 @@ class DynamicHypothesisWaveRunner:
             CompiledHypothesisWave(
                 hypothesis_set=hypothesis_set.model_copy(deep=True),
                 plan=plan.model_copy(deep=True),
+                surface_bound_plan=surface_bound_plan.model_copy(deep=True),
             ),
             results,
         )
