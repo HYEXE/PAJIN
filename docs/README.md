@@ -11,6 +11,7 @@ document. Product direction, priorities, current progress, and blockers live in 
 - [Architecture decision records](adr/)
 - [Capability contracts](capability/)
 - [Canonical Graph contracts](graph/)
+- [Discovery contracts](discovery/)
 - [Benchmark contracts](benchmark/)
 - [KISA traceability matrix](KISA_TRACEABILITY.md)
 - [Project README](../README.md)

@@ -282,6 +282,14 @@ publication, version-pinned reads, requested object-lock receipts, and a signed 
 inventory to an external anti-rollback anchor. The local backend proves only that contract; actual
 provider transport/scheduling, independent-host drills, managed key services, authoritative
 object-lock evidence, and independent anchor persistence remain deployment work.
+The first unified-discovery boundary is specified by
+[ADR-0059](../adr/0059-versioned-discovery-adapter-authority.md) and
+[DISC-001](../discovery/DISC-001-versioned-discovery-adapter-registry.md). It introduces a
+code-owned common adapter protocol, immutable exact-version references, full Tool and stable
+execution-context binding, and live drift detection. Registry-backed Surface admission records
+the exact adapter reference, while existing Scope, Authorization, sealed-evidence, and Tool-risk
+gates remain authoritative. HTTP and schema adapters plus multi-wave Planner integration remain
+later slices.
 
 ## 10. Definition of Done
 
@@ -312,3 +320,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0055: Explicit Existing Mode Capability Adapters](../adr/0055-explicit-existing-mode-capability-adapters.md)
 - [ADR-0057: Signed and Encrypted Graph Backup Retention Objects](../adr/0057-signed-encrypted-graph-backup-retention.md)
 - [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](../adr/0058-immutable-graph-backup-repository-inventory.md)
+- [ADR-0059: Versioned Discovery Adapter Authority](../adr/0059-versioned-discovery-adapter-authority.md)

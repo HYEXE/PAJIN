@@ -1,5 +1,16 @@
 """Evidence-bound attack-surface discovery contracts."""
 
+from pajin.discovery.adapters import (
+    DISCOVERY_ADAPTER_API_VERSION,
+    DiscoveryAdapter,
+    DiscoveryAdapterDefinition,
+    DiscoveryAdapterError,
+    DiscoveryAdapterReference,
+    DiscoveryAdapterRegistry,
+    DiscoveryAdapterToolBinding,
+    DiscoverySurfaceKind,
+    RegisteredDiscoveryAdapter,
+)
 from pajin.discovery.admission import (
     SurfaceAdmissionError,
     SurfaceCandidate,
@@ -65,6 +76,7 @@ from pajin.discovery.replanning import (
 )
 
 __all__ = [
+    "DISCOVERY_ADAPTER_API_VERSION",
     "DISCOVERY_API_VERSION",
     "HYPOTHESIS_API_VERSION",
     "RECON_API_VERSION",
@@ -79,6 +91,13 @@ __all__ = [
     "BoundedReplanningRunner",
     "CompiledHypothesisWave",
     "DeterministicHypothesisCompiler",
+    "DiscoveryAdapter",
+    "DiscoveryAdapterDefinition",
+    "DiscoveryAdapterError",
+    "DiscoveryAdapterReference",
+    "DiscoveryAdapterRegistry",
+    "DiscoveryAdapterToolBinding",
+    "DiscoverySurfaceKind",
     "DynamicHypothesisWaveRunner",
     "HTTPSurfaceLocator",
     "HypothesisObservation",
@@ -93,6 +112,7 @@ __all__ = [
     "ReconWaveError",
     "ReconWaveOutcome",
     "ReconWavePlan",
+    "RegisteredDiscoveryAdapter",
     "RegisteredHypothesisRule",
     "RegisteredMCPReconPlanner",
     "RegisteredObservationRule",

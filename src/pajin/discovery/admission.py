@@ -14,6 +14,11 @@ from typing import Protocol
 
 from pydantic import TypeAdapter
 
+from pajin.discovery.adapters import (
+    DiscoveryAdapterError,
+    DiscoveryAdapterReference,
+    DiscoveryAdapterRegistry,
+)
 from pajin.discovery.canonicalization import canonical_json_bytes, discovery_digest
 from pajin.discovery.models import (
     AttackSurface,
@@ -96,6 +101,7 @@ class TrustedSurfaceAdmission:
     surface_set: AttackSurfaceSet
     authority_digest: str
     _authority: object
+    adapter_reference: DiscoveryAdapterReference | None = None
 
     def require_valid_authority(self) -> None:
         """Reject serialized, copied, or post-admission-mutated authority objects."""
@@ -109,6 +115,7 @@ class TrustedSurfaceAdmission:
             source_verification=self.source_verification,
             evidence_reference=self.evidence_reference,
             surface_set=self.surface_set,
+            adapter_reference=self.adapter_reference,
         )
         if self.authority_digest != expected:
             raise SurfaceAdmissionError("trusted Surface admission authority was mutated")
@@ -130,10 +137,35 @@ class TrustedSurfaceProducer:
         self._tools = tools
         self._adapters: dict[str, TrustedSurfaceAdapter] = {}
         self._tool_specs: dict[str, ToolSpec] = {}
+        self._adapter_registry: DiscoveryAdapterRegistry | None = None
+        self._adapter_references: dict[str, DiscoveryAdapterReference] = {}
         for adapter in adapters:
             self._register_adapter(adapter)
         if not self._adapters:
             raise ValueError("Trusted Surface Producer requires at least one adapter")
+
+    @classmethod
+    def from_adapter_registry(
+        cls,
+        *,
+        tools: ToolRegistry,
+        registry: DiscoveryAdapterRegistry,
+        adapter_references: Iterable[DiscoveryAdapterReference],
+    ) -> TrustedSurfaceProducer:
+        """Construct an exact-version producer from one shared authority registry."""
+
+        registry.require_tool_registry(tools)
+        selected = registry.select(adapter_references)
+        producer = cls(
+            tools=tools,
+            adapters=(registered.adapter for registered in selected),
+        )
+        producer._adapter_registry = registry
+        producer._adapter_references = {
+            registered.definition.tool.tool_id: registered.definition.reference()
+            for registered in selected
+        }
+        return producer
 
     def produce_from_run(
         self,
@@ -166,7 +198,7 @@ class TrustedSurfaceProducer:
                 decision=recorded_decision,
                 evidence_reference=reference,
             )
-            adapter, tool_spec = self._trusted_adapter(request.tool_id)
+            adapter, tool_spec, adapter_reference = self._trusted_adapter(request.tool_id)
             evaluated_at = _normalize_admission_time(admitted_at)
             target_id = _admitted_target_id(campaign, request)
             _revalidate_source_authority(
@@ -195,6 +227,7 @@ class TrustedSurfaceProducer:
                 source_verification=snapshot.verification,
                 evidence_reference=reference,
                 surface_set=surface_set,
+                adapter_reference=adapter_reference,
             )
         except SurfaceAdmissionError:
             raise
@@ -227,7 +260,11 @@ class TrustedSurfaceProducer:
     def _trusted_adapter(
         self,
         tool_id: str,
-    ) -> tuple[TrustedSurfaceAdapter, ToolSpec]:
+    ) -> tuple[
+        TrustedSurfaceAdapter,
+        ToolSpec,
+        DiscoveryAdapterReference | None,
+    ]:
         try:
             adapter = self._adapters[tool_id]
             expected_spec = self._tool_specs[tool_id]
@@ -238,7 +275,27 @@ class TrustedSurfaceProducer:
             ) from exc
         if current_spec != expected_spec:
             raise SurfaceAdmissionError("trusted Recon Tool contract changed after registration")
-        return adapter, current_spec
+        reference = self._adapter_references.get(tool_id)
+        if self._adapter_registry is not None:
+            if reference is None:
+                raise SurfaceAdmissionError(
+                    "Recon result Tool has no versioned discovery adapter authority"
+                )
+            try:
+                registered = self._adapter_registry.resolve(reference)
+            except DiscoveryAdapterError as exc:
+                raise SurfaceAdmissionError(
+                    "versioned discovery adapter authority is unavailable or has drifted"
+                ) from exc
+            if (
+                registered.adapter is not adapter
+                or registered.definition.tool.tool_id != tool_id
+                or registered.definition.tool.tool_version != current_spec.version
+            ):
+                raise SurfaceAdmissionError(
+                    "versioned discovery adapter differs from its trusted registration"
+                )
+        return adapter, current_spec, reference
 
     @staticmethod
     def _validate_source_events(
@@ -559,12 +616,20 @@ def _trusted_admission(
     source_verification: RunIntegrityVerification,
     evidence_reference: str,
     surface_set: AttackSurfaceSet,
+    adapter_reference: DiscoveryAdapterReference | None = None,
 ) -> TrustedSurfaceAdmission:
     trusted_set = AttackSurfaceSet.model_validate(surface_set.model_dump(mode="python"))
     trusted_verification = RunIntegrityVerification.model_validate(
         source_verification.model_dump(mode="python")
     )
     trusted_spec = ToolSpec.model_validate(source_tool_spec.model_dump(mode="python"))
+    trusted_adapter_reference = (
+        DiscoveryAdapterReference.model_validate(
+            adapter_reference.model_dump(mode="json", by_alias=True)
+        )
+        if adapter_reference is not None
+        else None
+    )
     resolved_path = source_run_path.resolve()
     authority_digest = _trusted_admission_digest(
         producer_id=producer_id,
@@ -573,6 +638,7 @@ def _trusted_admission(
         source_verification=trusted_verification,
         evidence_reference=evidence_reference,
         surface_set=trusted_set,
+        adapter_reference=trusted_adapter_reference,
     )
     return TrustedSurfaceAdmission(
         producer_id=producer_id,
@@ -583,6 +649,7 @@ def _trusted_admission(
         surface_set=trusted_set,
         authority_digest=authority_digest,
         _authority=_ADMISSION_AUTHORITY,
+        adapter_reference=trusted_adapter_reference,
     )
 
 
@@ -594,6 +661,7 @@ def _trusted_admission_digest(
     source_verification: RunIntegrityVerification,
     evidence_reference: str,
     surface_set: AttackSurfaceSet,
+    adapter_reference: DiscoveryAdapterReference | None = None,
 ) -> str:
     return discovery_digest(
         "pajin.discovery.trusted-surface-admission/v1",
@@ -613,6 +681,11 @@ def _trusted_admission_digest(
             "sourceRunPath": str(source_run_path),
             "sourceVerification": source_verification.model_dump(mode="json"),
             "evidenceReference": evidence_reference,
+            "adapterReference": (
+                adapter_reference.model_dump(mode="json", by_alias=True)
+                if adapter_reference is not None
+                else None
+            ),
             "surfaceSet": surface_set.model_dump(mode="json", by_alias=True),
         },
     )

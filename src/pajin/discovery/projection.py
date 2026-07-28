@@ -62,26 +62,35 @@ def publish_surface_projection(
         )
     except FileExistsError as exc:
         raise SurfaceProjectionConflict("Surface projection already exists") from exc
+    event_payload: dict[str, object] = {
+        "producerId": admission.producer_id,
+        "sourceToolId": admission.source_tool_spec.tool_id,
+        "sourceToolVersion": admission.source_tool_spec.version,
+        "sourceRunId": source.run_id,
+        "sourceRootDigest": source.root_digest,
+        "sourceEvidence": admission.evidence_reference,
+        "surfaceSetId": surface_set.surface_set_id,
+        "surfaceCount": len(surface_set.surfaces),
+        "observationCount": len(surface_set.observations),
+        "requestIds": sorted(
+            {observation.request_id for observation in surface_set.observations}
+        ),
+        "artifact": artifact_path,
+        "surfaceSetJsonSha256": sha256(
+            surface_set.model_dump_json(by_alias=True).encode("utf-8")
+        ).hexdigest(),
+    }
+    if admission.adapter_reference is not None:
+        event_payload.update(
+            {
+                "adapterId": admission.adapter_reference.adapter_id,
+                "adapterVersion": admission.adapter_reference.adapter_version,
+                "adapterDigest": admission.adapter_reference.adapter_digest,
+            }
+        )
     store.append_event(
         "discovery.attack-surface-set.published",
-        {
-            "producerId": admission.producer_id,
-            "sourceToolId": admission.source_tool_spec.tool_id,
-            "sourceToolVersion": admission.source_tool_spec.version,
-            "sourceRunId": source.run_id,
-            "sourceRootDigest": source.root_digest,
-            "sourceEvidence": admission.evidence_reference,
-            "surfaceSetId": surface_set.surface_set_id,
-            "surfaceCount": len(surface_set.surfaces),
-            "observationCount": len(surface_set.observations),
-            "requestIds": sorted(
-                {observation.request_id for observation in surface_set.observations}
-            ),
-            "artifact": artifact_path,
-            "surfaceSetJsonSha256": sha256(
-                surface_set.model_dump_json(by_alias=True).encode("utf-8")
-            ).hexdigest(),
-        },
+        event_payload,
     )
     seal = store.seal()
     artifact = _published_artifact(seal, artifact_path)

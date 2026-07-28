@@ -13,6 +13,7 @@ from typing import Literal, Protocol, cast
 
 from pydantic import Field, model_validator
 
+from pajin.discovery.adapters import DiscoverySurfaceKind
 from pajin.discovery.admission import (
     SurfaceCandidate,
     TrustedSurfaceProducer,
@@ -161,11 +162,25 @@ class MCPInterfaceSurfaceAdapter:
             raise ValueError("MCP input schema digest must be lowercase SHA-256")
         registration = tool.registration
         self.tool_id = tool.spec.tool_id
+        self.adapter_id = f"pajin.discovery.mcp-interface:{self.tool_id}"
+        self.adapter_version = "1.0.0"
         self.producer_id = f"pajin.discovery.mcp-interface.v1:{self.tool_id}"
+        self.supported_surface_kinds: tuple[DiscoverySurfaceKind, ...] = ("tool-interface",)
         self._tool_version = tool.spec.version
         self._registry_id = registration.server_id
         self._remote_tool_id = registration.remote_tool_name
         self._input_schema_digest = input_schema_digest
+
+    def stable_execution_context(self) -> Mapping[str, object]:
+        """Bind every non-secret MCP identity used to interpret Tool results."""
+
+        return {
+            "toolId": self.tool_id,
+            "toolVersion": self._tool_version,
+            "registryId": self._registry_id,
+            "remoteToolId": self._remote_tool_id,
+            "inputSchemaDigest": self._input_schema_digest,
+        }
 
     def extract_surfaces(
         self,

@@ -7,6 +7,7 @@ import pytest
 
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.discovery import (
+    DiscoveryAdapterRegistry,
     MCPInterfaceSurfaceAdapter,
     ReconWaveError,
     ReconWavePlan,
@@ -43,7 +44,14 @@ def _recon_runner(
         tool=recon_tool,
         input_schema_digest=_INPUT_SCHEMA_DIGEST,
     )
-    producer = TrustedSurfaceProducer(tools=registry, adapters=[adapter])
+    adapter_registry = DiscoveryAdapterRegistry(tools=registry, adapters=[adapter])
+    producer = TrustedSurfaceProducer.from_adapter_registry(
+        tools=registry,
+        registry=adapter_registry,
+        adapter_references=[
+            definition.reference() for definition in adapter_registry.definitions()
+        ],
+    )
     selected_planner = planner or RegisteredMCPReconPlanner(
         tool=recon_tool,
         target_id=campaign.spec.targets[0].id,
@@ -185,6 +193,17 @@ def test_single_recon_wave_seals_source_admits_and_publishes_projection(
         )
         == 1
     )
+    publication_event = next(
+        event
+        for event in projection_events
+        if event.event_type == "discovery.attack-surface-set.published"
+    )
+    assert publication_event.payload["adapterId"] == (
+        f"pajin.discovery.mcp-interface:{tool.spec.tool_id}"
+    )
+    assert publication_event.payload["adapterVersion"] == "1.0.0"
+    assert isinstance(publication_event.payload["adapterDigest"], str)
+    assert len(publication_event.payload["adapterDigest"]) == 64
     assert verify_run_integrity(outcome.source_run_path) == source
 
 
