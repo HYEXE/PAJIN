@@ -1,6 +1,6 @@
 # DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters
 
-- Status: in progress (`DISC-003A` implemented)
+- Status: in progress (`DISC-003A` and `DISC-003B` implemented)
 - Date: 2026-07-29
 - Prerequisites: DISC-001, DISC-002, trusted Surface admission
 
@@ -38,6 +38,31 @@ OAuth2 requirement scopes must be declared by the referenced flow. Scopes on non
 schemes, duplicate alternatives, repeated anonymous alternatives, unknown schemes, malformed
 scheme shapes, and `mutualTLS` in OpenAPI 3.0 fail closed.
 
+## DISC-003B: OpenAPI file-upload boundary
+
+`HTTPAndOpenAPIFileUploadSurfaceAdapter` is the cumulative exact-version interpreter for the same
+`HTTPGetTool`: it preserves DISC-002 HTTP routes and DISC-003A authentication Surfaces, then adds
+non-executable `http-file-upload` locators for direct file-bearing request schemas.
+
+Each locator binds the exact admitted route, request-body requirement, and sorted inputs. An input
+records only:
+
+- the outer request content type;
+- an optional multipart field name;
+- required and multiple flags;
+- binary or base64 representation; and
+- explicitly declared part content types.
+
+The bounded subset recognizes raw `format: binary`/`byte` string bodies, multipart object
+properties, direct arrays of those properties, and OpenAPI 3.1 `contentEncoding: base64`.
+Referenced request bodies and schemas are not resolved and emit no upload Surface. Nested schema
+composition, nested object files, and raw arrays are unsupported.
+
+Malformed required sets, unknown multipart encoding fields, duplicate media declarations,
+contradictory encodings, wildcard outer upload types, and OpenAPI 3.1 encoding fields in 3.0
+documents fail closed. The adapter never retains or produces file bytes, filenames, form values,
+filesystem paths, destinations, or upload URLs.
+
 ## Authority and admission
 
 The adapter remains bound to the exact DISC-001 ID, version, implementation digest, stable
@@ -46,8 +71,8 @@ HTTP proxy receipt as DISC-002. Every authentication locator nests a previously 
 trusted admission reuses the existing Campaign method, allow, deny, wildcard-template, and
 possible-deny-overlap checks before publication.
 
-The locator is descriptive only. It cannot acquire credentials, call an identity provider,
-materialize route parameters, schedule a request, or relax Scope.
+Both locators are descriptive only. They cannot acquire credentials, call an identity provider,
+materialize route parameters, read or upload a file, schedule a request, or relax Scope.
 
 ## Verification
 
@@ -60,28 +85,36 @@ materialize route parameters, schedule a request, or relax Scope.
 - exact locator consistency and defensive factory copies;
 - Registry definition and stable-context binding; and
 - sealed admission, reused route authority, and projection audit integration.
+- raw binary, multipart binary/base64, array multiplicity, required fields, declared media types,
+  and canonical ordering;
+- referenced-schema non-resolution and no file byte/destination retention;
+- malformed required/encoding/media declarations, contradictory versions, raw arrays, and
+  declaration-overflow rejection; and
+- cumulative HTTP/Auth/File Registry definition plus sealed admission/projection integration.
 
 ## Remaining sub-slices
 
-- `DISC-003B`: bounded file-upload boundary discovery;
 - `DISC-003C`: bounded RAG corpus/index/retrieval boundary discovery; and
 - `DISC-003D`: bounded MCP server/resource/prompt/tool boundary discovery.
 
-None of these remaining adapters is implied by the authentication locator. Planner and
+Neither remaining adapter is implied by the file-upload locator. Planner and
 multi-wave orchestration wiring also remains outside DISC-003.
 
 ## Compatibility and rollback
 
-The existing DISC-002 adapter and its exact reference remain unchanged. The authentication
-adapter is a separate additive exact-version definition and must be selected explicitly. Existing
-`http-endpoint`, `http-route`, and `tool-interface` artifacts keep their wire shape and identity.
+The existing DISC-002 and DISC-003A adapters and their exact references remain unchanged. The
+file-upload adapter is a separate cumulative exact-version definition and must be selected
+explicitly. Existing `http-endpoint`, `http-route`, `http-authentication`, and `tool-interface`
+artifacts keep their wire shape and identity.
 
-Rollback removes the DISC-003A adapter reference from composition. Already sealed authentication
-Surfaces remain readable and must not be rewritten.
+Rollback removes the DISC-003B adapter reference and may select DISC-003A to retain authentication
+discovery. Already sealed authentication and file-upload Surfaces remain readable and must not be
+rewritten.
 
 ## Related documents
 
 - [DISC-002: HTTP and OpenAPI Surface Adapter](DISC-002-http-openapi-surface-adapter.md)
 - [DISC-001: Versioned Discovery Adapter Registry](DISC-001-versioned-discovery-adapter-registry.md)
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
+- [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

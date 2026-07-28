@@ -11,8 +11,10 @@ import pytest
 from pajin.discovery import (
     DiscoveryAdapterRegistry,
     HTTPAndOpenAPIAuthenticationSurfaceAdapter,
+    HTTPAndOpenAPIFileUploadSurfaceAdapter,
     HTTPAndOpenAPISurfaceAdapter,
     HTTPAuthenticationSurfaceLocator,
+    HTTPFileUploadSurfaceLocator,
     HTTPRouteSurfaceLocator,
     SurfaceAdmissionError,
     TrustedSurfaceProducer,
@@ -625,6 +627,80 @@ def test_versioned_openapi_authentication_admission_reuses_route_authority(
     assert (
         event.payload["adapterId"]
         == "pajin.discovery.http-openapi-authentication:http.get"
+    )
+    assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
+
+
+def test_versioned_openapi_file_upload_admission_reuses_route_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign_for_http_openapi(sample_campaign)
+    document = _openapi_document()
+    paths = document["paths"]
+    assert isinstance(paths, dict)
+    users = paths["/users/{user_id}"]
+    assert isinstance(users, dict)
+    post = users["post"]
+    assert isinstance(post, dict)
+    post["requestBody"] = {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["document"],
+                    "properties": {
+                        "document": {
+                            "type": "string",
+                            "format": "binary",
+                        }
+                    },
+                }
+            }
+        },
+    }
+    source = _sealed_http_source(tmp_path, campaign, document)
+    tools = ToolRegistry()
+    tool = HTTPGetTool()
+    tools.register(tool)
+    adapter = HTTPAndOpenAPIFileUploadSurfaceAdapter(
+        tool=tool,
+        allowed_methods=("GET", "POST"),
+    )
+    registry = DiscoveryAdapterRegistry(tools=tools, adapters=[adapter])
+    producer = TrustedSurfaceProducer.from_adapter_registry(
+        tools=tools,
+        registry=registry,
+        adapter_references=[definition.reference() for definition in registry.definitions()],
+    )
+
+    admission = producer.produce_from_run(
+        source.path,
+        evidence_reference=EVIDENCE_REFERENCE,
+        expected_run_id=source.run_id,
+        admitted_at=NOW + timedelta(minutes=1),
+    )
+
+    upload = next(
+        surface.locator
+        for surface in admission.surface_set.surfaces
+        if isinstance(surface.locator, HTTPFileUploadSurfaceLocator)
+    )
+    assert upload.route.path_template == "/users/{user_id}"
+    assert upload.route.method == "POST"
+    assert upload.request_body_required is True
+    assert upload.uploads[0].field_name == "document"
+    projection = RunStore.create(tmp_path / "upload-projection", campaign.metadata.name)
+    publish_surface_projection(projection, admission)
+    event = next(
+        item
+        for item in load_verified_run_events(projection.path)
+        if item.event_type == "discovery.attack-surface-set.published"
+    )
+    assert (
+        event.payload["adapterId"]
+        == "pajin.discovery.http-openapi-file-upload:http.get"
     )
     assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
 

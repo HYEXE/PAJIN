@@ -296,8 +296,11 @@ performs no `$ref` or YAML expansion, and reuses Campaign Scope and method admis
 publication. DISC-003A now adds a separate exact-version OpenAPI authentication adapter whose
 non-executable locator preserves route-bound scheme identities, OR/AND requirements, declared
 scope names, and optional anonymous access. Authentication URLs and material are neither retained
-nor fetched, and the nested route reuses DISC-002 admission authority. File Upload, RAG, MCP, and
-Planner integration remain pending.
+nor fetched, and the nested route reuses DISC-002 admission authority. DISC-003B adds a cumulative
+exact-version file-upload adapter for direct raw binary/base64 bodies and multipart file fields.
+It preserves only route-bound shape and declared media types, resolves no `$ref`, retains no file
+bytes or destinations, and reuses the same route admission. RAG, MCP, and Planner integration
+remain pending.
 
 ## 10. Definition of Done
 
@@ -331,3 +334,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0059: Versioned Discovery Adapter Authority](../adr/0059-versioned-discovery-adapter-authority.md)
 - [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](../adr/0060-bounded-http-openapi-route-discovery.md)
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
+- [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)

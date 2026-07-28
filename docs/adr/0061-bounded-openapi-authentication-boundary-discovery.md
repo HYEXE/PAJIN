@@ -52,5 +52,6 @@ immutable and readable.
 
 - [DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters](../discovery/DISC-003-auth-file-rag-mcp-surface-adapters.md)
 - [DISC-002: HTTP and OpenAPI Surface Adapter](../discovery/DISC-002-http-openapi-surface-adapter.md)
+- [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](0060-bounded-http-openapi-route-discovery.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

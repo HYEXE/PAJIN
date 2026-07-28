@@ -48,6 +48,7 @@ _ROUTE_PARAMETER_PATTERN = r"\{([A-Za-z_][A-Za-z0-9_.-]{0,99})\}"
 _ROUTE_LITERAL_SEGMENT_PATTERN = r"(?:[A-Za-z0-9._~!$&'()+,;=:@-]|%[0-9A-F]{2})+"
 _MEDIA_TYPE_PATTERN = r"^[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+$"
 _HTTP_AUTH_SCHEME_PATTERN = r"^[A-Za-z][A-Za-z0-9+.-]{0,99}$"
+_FORM_FIELD_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,199}$"
 
 
 def _normalize_utc(value: datetime, *, label: str) -> datetime:
@@ -408,6 +409,134 @@ class HTTPAuthenticationSurfaceLocator(StrictModel):
         return self
 
 
+class HTTPFileUploadInput(StrictModel):
+    """One declared file-bearing input without file bytes or a destination."""
+
+    request_content_type: str = Field(min_length=1, max_length=200)
+    field_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        pattern=_FORM_FIELD_PATTERN,
+    )
+    required: bool
+    multiple: bool = False
+    encoding: Literal["base64", "binary"]
+    declared_content_types: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("request_content_type")
+    @classmethod
+    def normalize_request_content_type(cls, value: str) -> str:
+        media_type = value.lower()
+        if (
+            value != value.strip()
+            or "*" in media_type
+            or fullmatch(_MEDIA_TYPE_PATTERN, media_type) is None
+        ):
+            raise ValueError("File upload request content type is invalid")
+        return media_type
+
+    @field_validator("required", "multiple", mode="before")
+    @classmethod
+    def require_boolean(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("File upload flags must be booleans")
+        return value
+
+    @field_validator("declared_content_types", mode="before")
+    @classmethod
+    def normalize_declared_content_types(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("File upload declared content types must be a list or tuple")
+        normalized: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("File upload declared content type must be text")
+            media_type = item.lower()
+            wildcard_is_valid = (
+                "*" not in media_type
+                or media_type == "*/*"
+                or (media_type.count("*") == 1 and media_type.endswith("/*"))
+            )
+            if (
+                item != item.strip()
+                or fullmatch(_MEDIA_TYPE_PATTERN, media_type) is None
+                or not wildcard_is_valid
+            ):
+                raise ValueError("File upload declared content type is invalid")
+            normalized.append(media_type)
+        if normalized != sorted(set(normalized)):
+            raise ValueError(
+                "File upload declared content types must be unique and sorted"
+            )
+        return tuple(normalized)
+
+    @model_validator(mode="after")
+    def validate_input_shape(self) -> HTTPFileUploadInput:
+        is_multipart = self.request_content_type == "multipart/form-data"
+        if is_multipart and self.field_name is None:
+            raise ValueError("Multipart file upload requires a field name")
+        if not is_multipart and self.field_name is not None:
+            raise ValueError("Raw file upload cannot declare a multipart field")
+        if not is_multipart and self.multiple:
+            raise ValueError("Raw file upload cannot declare multiple files")
+        return self
+
+
+class HTTPFileUploadSurfaceLocator(StrictModel):
+    """Non-executable file-bearing request boundary declared for one HTTP route."""
+
+    kind: Literal["http-file-upload"] = "http-file-upload"
+    route: HTTPRouteSurfaceLocator
+    request_body_required: bool
+    uploads: tuple[HTTPFileUploadInput, ...] = Field(min_length=1, max_length=64)
+
+    @field_validator("request_body_required", mode="before")
+    @classmethod
+    def require_request_body_boolean(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("File upload request-body flag must be a boolean")
+        return value
+
+    @model_validator(mode="after")
+    def validate_upload_contract(self) -> HTTPFileUploadSurfaceLocator:
+        identities = [
+            (item.request_content_type, item.field_name or "") for item in self.uploads
+        ]
+        if identities != sorted(set(identities)):
+            raise ValueError("File upload input identities must be unique and sorted")
+        keys = [
+            (
+                item.request_content_type,
+                item.field_name or "",
+                item.encoding,
+                item.multiple,
+                item.required,
+                item.declared_content_types,
+            )
+            for item in self.uploads
+        ]
+        if keys != sorted(keys):
+            raise ValueError("File upload inputs must be sorted canonically")
+        route_content_types = set(self.route.request_content_types)
+        if any(
+            item.request_content_type not in route_content_types
+            for item in self.uploads
+        ):
+            raise ValueError(
+                "File upload content types must be declared by the bound HTTP route"
+            )
+        for item in self.uploads:
+            if (
+                item.request_content_type != "multipart/form-data"
+                and item.required != self.request_body_required
+            ):
+                raise ValueError(
+                    "Raw file upload requirement must match the request body requirement"
+                )
+        return self
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -427,6 +556,7 @@ SurfaceLocator = Annotated[
     HTTPSurfaceLocator
     | HTTPRouteSurfaceLocator
     | HTTPAuthenticationSurfaceLocator
+    | HTTPFileUploadSurfaceLocator
     | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
@@ -712,6 +842,21 @@ def http_authentication_surface_locator(
             requirement.model_copy(deep=True) for requirement in requirements
         ),
         allows_anonymous=allows_anonymous,
+    )
+
+
+def http_file_upload_surface_locator(
+    *,
+    route: HTTPRouteSurfaceLocator,
+    request_body_required: bool,
+    uploads: tuple[HTTPFileUploadInput, ...],
+) -> HTTPFileUploadSurfaceLocator:
+    """Build one canonical non-executable file-upload boundary."""
+
+    return HTTPFileUploadSurfaceLocator(
+        route=route.model_copy(deep=True),
+        request_body_required=request_body_required,
+        uploads=tuple(upload.model_copy(deep=True) for upload in uploads),
     )
 
 

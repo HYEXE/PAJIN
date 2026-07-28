@@ -26,6 +26,7 @@ from pajin.discovery.models import (
     AttackSurface,
     AttackSurfaceSet,
     HTTPAuthenticationSurfaceLocator,
+    HTTPFileUploadSurfaceLocator,
     HTTPRouteSurfaceLocator,
     HTTPSurfaceLocator,
     SurfaceEvidenceReference,
@@ -702,6 +703,11 @@ def _admit_candidates(
 
 def _revalidate_surface_scope(campaign: CampaignManifest, locator: SurfaceLocator) -> None:
     if isinstance(locator, HTTPAuthenticationSurfaceLocator):
+        if locator.route.method not in campaign.spec.rules_of_engagement.allowed_methods:
+            raise SurfaceAdmissionError("discovered HTTP method exceeds Campaign authority")
+        _require_route_in_scope(campaign, locator.route)
+        return
+    if isinstance(locator, HTTPFileUploadSurfaceLocator):
         if locator.route.method not in campaign.spec.rules_of_engagement.allowed_methods:
             raise SurfaceAdmissionError("discovered HTTP method exceeds Campaign authority")
         _require_route_in_scope(campaign, locator.route)

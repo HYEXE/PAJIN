@@ -24,6 +24,7 @@ DISCOVERY_ADAPTER_API_VERSION: Literal["pajin.dev/discovery-adapter/v1alpha1"] =
 DiscoverySurfaceKind = Literal[
     "http-authentication",
     "http-endpoint",
+    "http-file-upload",
     "http-route",
     "tool-interface",
 ]

@@ -19,6 +19,7 @@ from pajin.discovery.admission import (
     TrustedSurfaceProducer,
 )
 from pajin.discovery.authentication import HTTPAndOpenAPIAuthenticationSurfaceAdapter
+from pajin.discovery.file_upload import HTTPAndOpenAPIFileUploadSurfaceAdapter
 from pajin.discovery.http import HTTPAndOpenAPISurfaceAdapter
 from pajin.discovery.hypothesis import (
     HYPOTHESIS_API_VERSION,
@@ -41,6 +42,8 @@ from pajin.discovery.models import (
     HTTPAuthenticationRequirementEntry,
     HTTPAuthenticationScheme,
     HTTPAuthenticationSurfaceLocator,
+    HTTPFileUploadInput,
+    HTTPFileUploadSurfaceLocator,
     HTTPRouteSurfaceLocator,
     HTTPSurfaceLocator,
     SurfaceEvidenceReference,
@@ -50,6 +53,7 @@ from pajin.discovery.models import (
     attack_surface,
     attack_surface_set,
     http_authentication_surface_locator,
+    http_file_upload_surface_locator,
     http_route_path_template,
     http_route_scope_url,
     http_route_surface_locator,
@@ -111,11 +115,14 @@ __all__ = [
     "DiscoverySurfaceKind",
     "DynamicHypothesisWaveRunner",
     "HTTPAndOpenAPIAuthenticationSurfaceAdapter",
+    "HTTPAndOpenAPIFileUploadSurfaceAdapter",
     "HTTPAndOpenAPISurfaceAdapter",
     "HTTPAuthenticationRequirement",
     "HTTPAuthenticationRequirementEntry",
     "HTTPAuthenticationScheme",
     "HTTPAuthenticationSurfaceLocator",
+    "HTTPFileUploadInput",
+    "HTTPFileUploadSurfaceLocator",
     "HTTPRouteSurfaceLocator",
     "HTTPSurfaceLocator",
     "HypothesisObservation",
@@ -151,6 +158,7 @@ __all__ = [
     "attack_surface",
     "attack_surface_set",
     "http_authentication_surface_locator",
+    "http_file_upload_surface_locator",
     "http_route_path_template",
     "http_route_scope_url",
     "http_route_surface_locator",
