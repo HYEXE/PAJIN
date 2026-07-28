@@ -16,9 +16,7 @@ from pajin.discovery.canonicalization import canonical_json_bytes, discovery_dig
 from pajin.domain.models import StrictModel
 from pajin.policy.scope import normalize_target_url
 
-DISCOVERY_API_VERSION: Literal["pajin.dev/discovery/v1alpha1"] = (
-    "pajin.dev/discovery/v1alpha1"
-)
+DISCOVERY_API_VERSION: Literal["pajin.dev/discovery/v1alpha1"] = "pajin.dev/discovery/v1alpha1"
 
 _MAX_ARTIFACT_BYTES = 64 * 1024
 _MAX_SURFACE_SET_BYTES = 4 * 1024 * 1024
@@ -38,6 +36,10 @@ _PortableIdentifier = Annotated[
     str,
     Field(min_length=1, max_length=200, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$"),
 ]
+_MCPServerIdentifier = Annotated[
+    str,
+    Field(min_length=1, max_length=200, pattern=r"^[a-z0-9][a-z0-9-]*$"),
+]
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
 
@@ -49,6 +51,9 @@ _ROUTE_LITERAL_SEGMENT_PATTERN = r"(?:[A-Za-z0-9._~!$&'()+,;=:@-]|%[0-9A-F]{2})+
 _MEDIA_TYPE_PATTERN = r"^[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+$"
 _HTTP_AUTH_SCHEME_PATTERN = r"^[A-Za-z][A-Za-z0-9+.-]{0,99}$"
 _FORM_FIELD_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._\-\[\]]{0,199}$"
+_MCP_NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+_MCP_URI_SCHEME_PATTERN = r"^[a-z][a-z0-9+.-]{0,31}$"
+_MCP_PROTOCOL_VERSION_PATTERN = r"^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
 
 
 def _normalize_utc(value: datetime, *, label: str) -> datetime:
@@ -392,9 +397,7 @@ class HTTPAuthenticationSurfaceLocator(StrictModel):
         if requirement_keys != sorted(set(requirement_keys)):
             raise ValueError("Authentication requirements must be unique and sorted")
         referenced = {
-            entry.scheme_id
-            for requirement in self.requirements
-            for entry in requirement.schemes
+            entry.scheme_id for requirement in self.requirements for entry in requirement.schemes
         }
         if referenced != set(scheme_ids):
             raise ValueError("Authentication schemes must exactly match referenced requirements")
@@ -466,9 +469,7 @@ class HTTPFileUploadInput(StrictModel):
                 raise ValueError("File upload declared content type is invalid")
             normalized.append(media_type)
         if normalized != sorted(set(normalized)):
-            raise ValueError(
-                "File upload declared content types must be unique and sorted"
-            )
+            raise ValueError("File upload declared content types must be unique and sorted")
         return tuple(normalized)
 
     @model_validator(mode="after")
@@ -500,9 +501,7 @@ class HTTPFileUploadSurfaceLocator(StrictModel):
 
     @model_validator(mode="after")
     def validate_upload_contract(self) -> HTTPFileUploadSurfaceLocator:
-        identities = [
-            (item.request_content_type, item.field_name or "") for item in self.uploads
-        ]
+        identities = [(item.request_content_type, item.field_name or "") for item in self.uploads]
         if identities != sorted(set(identities)):
             raise ValueError("File upload input identities must be unique and sorted")
         keys = [
@@ -519,13 +518,8 @@ class HTTPFileUploadSurfaceLocator(StrictModel):
         if keys != sorted(keys):
             raise ValueError("File upload inputs must be sorted canonically")
         route_content_types = set(self.route.request_content_types)
-        if any(
-            item.request_content_type not in route_content_types
-            for item in self.uploads
-        ):
-            raise ValueError(
-                "File upload content types must be declared by the bound HTTP route"
-            )
+        if any(item.request_content_type not in route_content_types for item in self.uploads):
+            raise ValueError("File upload content types must be declared by the bound HTTP route")
         for item in self.uploads:
             if (
                 item.request_content_type != "multipart/form-data"
@@ -566,6 +560,102 @@ class HTTPRAGSurfaceLocator(StrictModel):
         return self
 
 
+class MCPServerSurfaceLocator(StrictModel):
+    """Non-executable identity and advertised domains of one registered MCP server."""
+
+    kind: Literal["mcp-server"] = "mcp-server"
+    server_id: _MCPServerIdentifier
+    protocol_version: str = Field(
+        min_length=10,
+        max_length=10,
+        pattern=_MCP_PROTOCOL_VERSION_PATTERN,
+    )
+    capabilities: tuple[Literal["prompts", "resources", "tools"], ...] = Field(
+        default=(),
+        max_length=3,
+    )
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def normalize_capabilities(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("MCP server capabilities must be a list or tuple")
+        normalized = tuple(value)
+        if normalized != tuple(sorted(set(normalized))):
+            raise ValueError("MCP server capabilities must be unique and sorted")
+        return normalized
+
+
+class MCPResourceSurfaceLocator(StrictModel):
+    """Digest-only identity of one advertised MCP resource without its URI or content."""
+
+    kind: Literal["mcp-resource"] = "mcp-resource"
+    server_id: _MCPServerIdentifier
+    uri_scheme: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=_MCP_URI_SCHEME_PATTERN,
+    )
+    uri_sha256: _Sha256
+
+
+class MCPResourceTemplateSurfaceLocator(StrictModel):
+    """Digest-only identity of one advertised MCP resource URI template."""
+
+    kind: Literal["mcp-resource-template"] = "mcp-resource-template"
+    server_id: _MCPServerIdentifier
+    uri_scheme: str = Field(
+        min_length=1,
+        max_length=32,
+        pattern=_MCP_URI_SCHEME_PATTERN,
+    )
+    template_sha256: _Sha256
+
+
+class MCPPromptArgument(StrictModel):
+    """One non-value MCP prompt argument declaration."""
+
+    name: str = Field(min_length=1, max_length=128, pattern=_MCP_NAME_PATTERN)
+    required: bool
+
+    @field_validator("required", mode="before")
+    @classmethod
+    def require_boolean(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("MCP prompt argument required flag must be a boolean")
+        return value
+
+
+class MCPPromptSurfaceLocator(StrictModel):
+    """Non-executable shape of one advertised MCP prompt."""
+
+    kind: Literal["mcp-prompt"] = "mcp-prompt"
+    server_id: _MCPServerIdentifier
+    prompt_name: str = Field(min_length=1, max_length=128, pattern=_MCP_NAME_PATTERN)
+    arguments: tuple[MCPPromptArgument, ...] = Field(default=(), max_length=32)
+
+    @field_validator("arguments")
+    @classmethod
+    def validate_arguments(
+        cls,
+        value: tuple[MCPPromptArgument, ...],
+    ) -> tuple[MCPPromptArgument, ...]:
+        names = [argument.name for argument in value]
+        if names != sorted(set(names)):
+            raise ValueError("MCP prompt arguments must be unique and sorted")
+        return value
+
+
+class MCPToolSurfaceLocator(StrictModel):
+    """Non-executable schema identity of one advertised MCP tool."""
+
+    kind: Literal["mcp-tool"] = "mcp-tool"
+    server_id: _MCPServerIdentifier
+    tool_name: str = Field(min_length=1, max_length=128, pattern=_MCP_NAME_PATTERN)
+    input_schema_digest: _Sha256
+    output_schema_digest: _Sha256 | None = None
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -587,6 +677,11 @@ SurfaceLocator = Annotated[
     | HTTPAuthenticationSurfaceLocator
     | HTTPFileUploadSurfaceLocator
     | HTTPRAGSurfaceLocator
+    | MCPPromptSurfaceLocator
+    | MCPResourceSurfaceLocator
+    | MCPResourceTemplateSurfaceLocator
+    | MCPServerSurfaceLocator
+    | MCPToolSurfaceLocator
     | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
@@ -868,9 +963,7 @@ def http_authentication_surface_locator(
     return HTTPAuthenticationSurfaceLocator(
         route=route.model_copy(deep=True),
         schemes=tuple(scheme.model_copy(deep=True) for scheme in schemes),
-        requirements=tuple(
-            requirement.model_copy(deep=True) for requirement in requirements
-        ),
+        requirements=tuple(requirement.model_copy(deep=True) for requirement in requirements),
         allows_anonymous=allows_anonymous,
     )
 
@@ -904,6 +997,83 @@ def http_rag_surface_locator(
         boundary=boundary,
         corpus_ids=corpus_ids,
         index_ids=index_ids,
+    )
+
+
+def mcp_server_surface_locator(
+    *,
+    server_id: str,
+    protocol_version: str,
+    capabilities: tuple[Literal["prompts", "resources", "tools"], ...] = (),
+) -> MCPServerSurfaceLocator:
+    """Build one canonical non-executable MCP server boundary."""
+
+    return MCPServerSurfaceLocator(
+        server_id=server_id,
+        protocol_version=protocol_version,
+        capabilities=capabilities,
+    )
+
+
+def mcp_resource_surface_locator(
+    *,
+    server_id: str,
+    uri_scheme: str,
+    uri_sha256: str,
+) -> MCPResourceSurfaceLocator:
+    """Build one digest-only MCP resource boundary."""
+
+    return MCPResourceSurfaceLocator(
+        server_id=server_id,
+        uri_scheme=uri_scheme,
+        uri_sha256=uri_sha256,
+    )
+
+
+def mcp_resource_template_surface_locator(
+    *,
+    server_id: str,
+    uri_scheme: str,
+    template_sha256: str,
+) -> MCPResourceTemplateSurfaceLocator:
+    """Build one digest-only MCP resource-template boundary."""
+
+    return MCPResourceTemplateSurfaceLocator(
+        server_id=server_id,
+        uri_scheme=uri_scheme,
+        template_sha256=template_sha256,
+    )
+
+
+def mcp_prompt_surface_locator(
+    *,
+    server_id: str,
+    prompt_name: str,
+    arguments: tuple[MCPPromptArgument, ...] = (),
+) -> MCPPromptSurfaceLocator:
+    """Build one non-executable MCP prompt boundary."""
+
+    return MCPPromptSurfaceLocator(
+        server_id=server_id,
+        prompt_name=prompt_name,
+        arguments=tuple(argument.model_copy(deep=True) for argument in arguments),
+    )
+
+
+def mcp_tool_surface_locator(
+    *,
+    server_id: str,
+    tool_name: str,
+    input_schema_digest: str,
+    output_schema_digest: str | None = None,
+) -> MCPToolSurfaceLocator:
+    """Build one non-executable MCP tool schema boundary."""
+
+    return MCPToolSurfaceLocator(
+        server_id=server_id,
+        tool_name=tool_name,
+        input_schema_digest=input_schema_digest,
+        output_schema_digest=output_schema_digest,
     )
 
 

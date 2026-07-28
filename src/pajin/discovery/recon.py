@@ -33,7 +33,7 @@ from pajin.runtime.store import RunStore
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import RequestRateLimitLedger, ToolGateway
-from pajin.tools.mcp import RegisteredMCPTool
+from pajin.tools.mcp import RegisteredMCPDiscoveryTool, RegisteredMCPTool
 from pajin.workflow.cancellation import (
     await_with_campaign_deadline,
     ensure_cancellation_context,
@@ -148,6 +148,56 @@ class RegisteredMCPReconPlanner:
                 target=target.endpoint,
                 method="POST",
                 arguments=json.loads(json.dumps(self._arguments)),
+            ),
+        )
+
+
+class RegisteredMCPBoundaryReconPlanner:
+    """Plan one argument-free enumeration of a code-registered MCP server."""
+
+    planner_id = "pajin.discovery.mcp-boundary-recon.v1"
+
+    def __init__(
+        self,
+        *,
+        tool: RegisteredMCPDiscoveryTool,
+        target_id: str,
+    ) -> None:
+        if not isinstance(tool, RegisteredMCPDiscoveryTool):
+            raise TypeError("registered MCP boundary planner requires a RegisteredMCPDiscoveryTool")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("registered MCP boundary planner requires a target ID")
+        self._tool_id = tool.spec.tool_id
+        self._tool_version = tool.spec.version
+        self._target_id = target_id
+
+    def plan(self, campaign: CampaignManifest) -> ReconWavePlan:
+        targets = [target for target in campaign.spec.targets if target.id == self._target_id]
+        if len(targets) != 1:
+            raise ReconWaveError("Recon planner target is not declared exactly once")
+        target = targets[0]
+        request_digest = discovery_digest(
+            "pajin.discovery.recon-request/v1",
+            {
+                "campaign": campaign.metadata.name,
+                "targetId": target.id,
+                "target": target.endpoint,
+                "toolId": self._tool_id,
+                "toolVersion": self._tool_version,
+                "method": "POST",
+                "arguments": {},
+            },
+        )
+        return ReconWavePlan(
+            plannerId=self.planner_id,
+            targetId=target.id,
+            request=ToolRequest(
+                request_id=f"recon_{request_digest[:32]}",
+                agent_id=f"recon-specialist:{self.planner_id}",
+                tool_id=self._tool_id,
+                target=target.endpoint,
+                method="POST",
+                arguments={},
             ),
         )
 
@@ -391,9 +441,7 @@ class SingleReconWaveRunner:
         root = ledger.issue_root(
             campaign,
             subject=(
-                f"recon-supervisor:{plan.planner_id}"
-                if can_delegate
-                else plan.request.agent_id
+                f"recon-supervisor:{plan.planner_id}" if can_delegate else plan.request.agent_id
             ),
             tools={plan.request.tool_id},
             targets={plan.request.target},

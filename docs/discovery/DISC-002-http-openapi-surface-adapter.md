@@ -105,7 +105,7 @@ The exact adapter reference continues into trusted admission authority and proje
 - No crawler, redirect following, HTML link extraction, OpenAPI YAML, `$ref` graph, callbacks,
   webhooks, GraphQL introspection, or cross-origin server discovery is implemented.
 - DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters. Its cumulative Auth, File Upload,
-  and explicit RAG slices are implemented by separate exact-version adapters; MCP remains pending.
+  and explicit RAG slices plus its separate registered MCP boundary adapter are implemented.
 - ORCH-001/002 own request scheduling, Snapshot-to-Plan binding, and bounded multi-wave execution.
 
 ## Related documents

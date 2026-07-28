@@ -12,6 +12,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+from hashlib import sha256
 from typing import Protocol
 from uuid import uuid4
 
@@ -259,7 +260,12 @@ class SimulatedWorkerBackend:
         return {
             "implementationVersion": "pajin.simulated-worker/v1",
             "allowedImage": self.allowed_image,
-            "supportedCommands": ["mcp-call", "mock-agent-probe", "sleep-check"],
+            "supportedCommands": [
+                "mcp-call",
+                "mcp-discover",
+                "mock-agent-probe",
+                "sleep-check",
+            ],
             "networkMode": NetworkMode.NONE.value,
             "secretLeases": False,
         }
@@ -277,7 +283,12 @@ class SimulatedWorkerBackend:
             return self._rejected(job, started_at, "network access is not supported")
         if job.secret_requests or secrets:
             return self._rejected(job, started_at, "secret leases are not supported")
-        if job.command not in (["mock-agent-probe"], ["mcp-call"], ["sleep-check"]):
+        if job.command not in (
+            ["mock-agent-probe"],
+            ["mcp-call"],
+            ["mcp-discover"],
+            ["sleep-check"],
+        ):
             return self._rejected(job, started_at, "worker action is not supported")
         try:
             decoded = parse_strict_json_bytes(
@@ -290,6 +301,8 @@ class SimulatedWorkerBackend:
             payload = decoded
             if job.command == ["mock-agent-probe"]:
                 output_data = self._mock_agent_output(payload)
+            elif job.command == ["mcp-discover"]:
+                output_data = self._mcp_discovery_output(payload)
             elif job.command == ["mcp-call"]:
                 if payload.get("serverId") != "demo-security":
                     output_data = {
@@ -381,6 +394,59 @@ class SimulatedWorkerBackend:
             ),
             "target": target,
             "networkPerformed": False,
+        }
+
+    @staticmethod
+    def _mcp_discovery_output(payload: dict[str, object]) -> dict[str, object]:
+        if set(payload) != {"serverId"}:
+            raise ValueError("MCP discovery input must contain only a server ID")
+        if payload.get("serverId") != "demo-security":
+            raise ValueError("MCP discovery server is not registered")
+
+        def digest(value: object) -> str:
+            encoded = json.dumps(
+                value,
+                ensure_ascii=False,
+                allow_nan=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+            return sha256(encoded).hexdigest()
+
+        resource_uri = "pajin://policy"
+        template_uri = "pajin://guidance/{topic}"
+        input_schema = {
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "type": "object",
+        }
+        return {
+            "protocolVersion": "2025-06-18",
+            "capabilities": ["prompts", "resources", "tools"],
+            "tools": [
+                {
+                    "name": "inspect_text",
+                    "inputSchemaDigest": digest(input_schema),
+                }
+            ],
+            "resources": [
+                {
+                    "uriScheme": "pajin",
+                    "uriSha256": sha256(resource_uri.encode("utf-8")).hexdigest(),
+                }
+            ],
+            "resourceTemplates": [
+                {
+                    "uriScheme": "pajin",
+                    "templateSha256": sha256(template_uri.encode("utf-8")).hexdigest(),
+                }
+            ],
+            "prompts": [
+                {
+                    "name": "inspect_prompt",
+                    "arguments": [{"name": "text", "required": True}],
+                }
+            ],
         }
 
 

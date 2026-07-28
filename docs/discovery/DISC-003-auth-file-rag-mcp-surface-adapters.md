@@ -1,6 +1,6 @@
 # DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters
 
-- Status: in progress (`DISC-003A`, `DISC-003B`, and `DISC-003C` implemented)
+- Status: implemented (`DISC-003A` through `DISC-003D`)
 - Date: 2026-07-29
 - Prerequisites: DISC-001, DISC-002, trusted Surface admission
 
@@ -80,6 +80,33 @@ request or response fields never imply a RAG boundary. Unsupported versions, unk
 and declaration overflow fail closed. The adapter never retains or fetches corpus documents,
 queries, retrieved chunks, embeddings, vector values, credentials, or destination URLs.
 
+## DISC-003D: Registered MCP boundary
+
+`RegisteredMCPDiscoveryTool` is separate from normal registered MCP invocation. It sends only a
+sealed server ID to the fixed `mcp-discover` Worker action; neither an agent nor the host adapter
+can provide an executable, process argument, cursor, resource URI, prompt value, or discovered
+tool name.
+
+The isolated bridge initializes the cataloged server and enumerates only its advertised tools,
+resources, resource templates, and prompts. Enumeration is limited to eight pages and 64 entries
+per category, with at most 32 arguments per prompt. Duplicate entries, repeated cursors, malformed
+identifiers, noncanonical ordering, capability contradictions, and overflow fail closed.
+
+The host-visible result and five new non-executable locators preserve only:
+
+- server ID, negotiated protocol version, and sorted capabilities;
+- tool names and canonical input/output schema digests;
+- resource and resource-template URI schemes plus full-value SHA-256 digests; and
+- prompt names plus sorted argument names and required flags.
+
+Resource reads, template resolution, prompt retrieval, discovered tool calls, descriptions,
+annotations, server instructions, raw schemas, raw URIs/templates, resource contents, prompt
+contents, and prompt values are not retained or performed.
+
+`MCPBoundarySurfaceAdapter` binds that exact digest-only result to the registered server and emits
+at most 257 Surfaces. `RegisteredMCPBoundaryReconPlanner` supplies the argument-free request to the
+existing single-call sealed Recon/admission/projection pipeline.
+
 ## Authority and admission
 
 The adapter remains bound to the exact DISC-001 ID, version, implementation digest, stable
@@ -90,7 +117,8 @@ wildcard-template, and possible-deny-overlap checks before publication.
 
 All domain locators are descriptive only. They cannot acquire credentials, call an identity
 provider, materialize route parameters, read or upload a file, access a corpus or index, schedule
-a request, or relax Scope.
+a request, execute an MCP interface, or relax Scope. The MCP boundary uses a separate Tool and
+does not alter the cumulative HTTP/OpenAPI adapter chain.
 
 ## Verification
 
@@ -115,24 +143,29 @@ a request, or relax Scope.
   rejection;
 - no corpus content, query, retrieved content, embedding, vector, or destination retention; and
 - cumulative HTTP/Auth/File/RAG Registry definition plus sealed admission/projection integration.
+- sealed server-only Worker input and no process-command exposure;
+- bounded/paginated server, resource, resource-template, prompt, and tool enumeration;
+- digest-only resource/template/schema identities and no content, description, URI, schema, or
+  prompt-value retention;
+- malformed, duplicate, unsorted, contradictory, overflow, and forged-identity rejection; and
+- exact Registry binding plus sealed single-Recon-wave admission/projection integration.
 
-## Remaining sub-slices
+## Remaining orchestration boundary
 
-- `DISC-003D`: bounded MCP server/resource/prompt/tool boundary discovery.
-
-The MCP adapter is not implied by the RAG locator. Planner and multi-wave orchestration wiring
-also remains outside DISC-003.
+DISC-003 is complete. ORCH-001/002 own multi-adapter scheduling, Snapshot-to-Plan binding, and
+bounded multi-wave orchestration.
 
 ## Compatibility and rollback
 
-The existing DISC-002 and DISC-003A/B adapters and their exact references remain unchanged. The
-RAG adapter is a separate cumulative exact-version definition and must be selected explicitly.
+The existing DISC-002 and DISC-003A/B/C adapters and their exact references remain unchanged. The
+RAG adapter remains a separate cumulative exact-version definition. MCP boundary discovery uses a
+separate registered Tool and exact adapter definition that must be selected explicitly.
 Existing `http-endpoint`, `http-route`, `http-authentication`, `http-file-upload`, and
 `tool-interface` artifacts keep their wire shape and identity.
 
-Rollback removes the DISC-003C adapter reference and may select DISC-003B to retain file-upload
-discovery. Already sealed authentication, file-upload, and RAG Surfaces remain readable and must
-not be rewritten.
+Rollback removes the MCP boundary adapter reference and discovery Tool registration without
+changing registered MCP invocation or the HTTP/OpenAPI chain. Already sealed authentication,
+file-upload, RAG, and MCP Surfaces remain readable and must not be rewritten.
 
 ## Related documents
 
@@ -141,4 +174,5 @@ not be rewritten.
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
+- [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

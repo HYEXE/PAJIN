@@ -1625,7 +1625,7 @@ def _run_bounded_child(
     )
 
 
-def mcp_call(payload: dict[str, Any]) -> dict[str, Any]:
+def _run_mcp_bridge(payload: dict[str, Any]) -> dict[str, Any]:
     completed = _run_bounded_child(
         ["python", "/app/mcp_bridge.py"],
         input_bytes=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
@@ -1645,6 +1645,18 @@ def mcp_call(payload: dict[str, Any]) -> dict[str, Any]:
     if completed.returncode != 0:
         raise RuntimeError(f"MCP bridge exited with code {completed.returncode}")
     return _strict_json_object(stdout, label="MCP bridge output")
+
+
+def mcp_call(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != {"serverId", "toolName", "arguments"}:
+        raise ValueError("MCP call input fields do not match the registered envelope")
+    return _run_mcp_bridge(payload)
+
+
+def mcp_discover(payload: dict[str, Any]) -> dict[str, Any]:
+    if set(payload) != {"serverId"}:
+        raise ValueError("MCP discovery input must contain only a registered server ID")
+    return _run_mcp_bridge(payload)
 
 
 def _isolation_action(payload: dict[str, Any]) -> dict[str, Any]:
@@ -1674,6 +1686,7 @@ _UNPRIVILEGED_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "ctf-crypto-single-byte-xor": ctf_crypto_single_byte_xor,
     "direct-network-check": direct_network_check,
     "mcp-call": mcp_call,
+    "mcp-discover": mcp_discover,
 }
 _PROVIDER_ACTION = "openai-chat-completion"
 

@@ -13,7 +13,8 @@ registration.
 
 DISC-001 defines the common adapter boundary only. HTTP/OpenAPI route, authentication, file
 upload, and explicit RAG Surface extraction are implemented by cumulative additive adapters.
-MCP, orchestration waves, and Planner integration remain separate slices.
+Registered MCP boundary extraction uses a separate Tool and adapter. Multi-adapter orchestration
+remains a separate slice.
 
 ## Common protocol
 
@@ -22,7 +23,8 @@ A `DiscoveryAdapter` declares:
 - stable adapter ID and version;
 - producer ID and one registered Tool ID;
 - a sorted, unique set of supported `http-authentication`, `http-endpoint`,
-  `http-file-upload`, `http-rag`, `http-route`, or `tool-interface` Surface kinds;
+  `http-file-upload`, `http-rag`, `http-route`, `mcp-prompt`, `mcp-resource`,
+  `mcp-resource-template`, `mcp-server`, `mcp-tool`, or `tool-interface` Surface kinds;
 - whether successful extraction requires replay of a host-trusted network execution receipt;
 - an explicit non-secret `stable_execution_context()`; and
 - `extract_surfaces(request, result)`, which returns non-authoritative `SurfaceCandidate` values.
@@ -74,7 +76,8 @@ receipt requirement.
 The adapter reference is included in the process-local admission authority digest and the
 `discovery.attack-surface-set.published` audit event. The current MCP interface adapter implements
 the common protocol and binds its registered MCP server/tool identity, Tool version, and input
-schema digest as stable context.
+schema digest as stable context. DISC-003D adds a separate exact MCP boundary adapter whose stable
+context binds the registered server and digest-only retention/limit policy.
 
 The earlier `TrustedSurfaceProducer(tools=..., adapters=...)` constructor remains available for
 compatibility. It does not fabricate a versioned reference, and its existing projection event
@@ -94,8 +97,8 @@ shape remains unchanged.
 ## Remaining boundaries
 
 - DISC-002 implements bounded HTTP route/method/content-type and OpenAPI Surface discovery.
-- DISC-003A/B/C implement bounded OpenAPI authentication, file-upload, and explicit RAG boundary
-  discovery; the MCP domain adapter remains pending.
+- DISC-003A/B/C/D implement bounded OpenAPI authentication, file-upload, explicit RAG, and
+  registered MCP boundary discovery.
 - ORCH-001/002 own multi-adapter scheduling, multi-wave execution, and Planner integration.
 - Signed adapter releases, durable Registry storage, dynamic plugin loading, and remote Registry
   refresh are not implemented.

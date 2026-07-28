@@ -12,7 +12,12 @@ from pajin.domain.validation import FindingDisposition, ValidationReasonCode
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.worker import NetworkMode, SimulatedWorkerBackend, WorkerJob, WorkerStatus
 from pajin.tools.base import ToolRegistry
-from pajin.tools.mcp import MCPToolRegistration, RegisteredMCPTool, demo_mcp_tool
+from pajin.tools.mcp import (
+    MCPToolRegistration,
+    RegisteredMCPTool,
+    demo_mcp_discovery_tool,
+    demo_mcp_tool,
+)
 from pajin.workflow.local import LocalCampaignRunner
 
 
@@ -76,6 +81,65 @@ def test_registered_mcp_tool_exposes_only_catalog_identifiers_to_worker() -> Non
     }
     assert "demo_mcp_server.py" not in job.stdin
     assert "/usr/local/bin/python" not in job.stdin
+
+
+def test_registered_mcp_discovery_exposes_only_sealed_server_identity() -> None:
+    tool = demo_mcp_discovery_tool()
+    request = ToolRequest(
+        agent_id="recon:test",
+        tool_id=tool.spec.tool_id,
+        target="https://mcp.internal/demo-security",
+        method="POST",
+        arguments={},
+    )
+
+    job = tool.prepare(request)
+
+    assert job.command == ["mcp-discover"]
+    assert job.network is NetworkMode.NONE
+    assert json.loads(job.stdin) == {"serverId": "demo-security"}
+    assert "demo_mcp_server.py" not in job.stdin
+    assert "/usr/local/bin/python" not in job.stdin
+    assert tool.spec.risk_tier is ToolRiskTier.T0
+    assert tool.spec.categories == {"discovery", "mcp"}
+
+
+def test_registered_mcp_discovery_interprets_only_digest_boundary() -> None:
+    tool = demo_mcp_discovery_tool()
+    request = ToolRequest(
+        agent_id="recon:test",
+        tool_id=tool.spec.tool_id,
+        target="https://mcp.internal/demo-security",
+        method="POST",
+        arguments={},
+    )
+
+    worker_result = asyncio.run(SimulatedWorkerBackend().run(tool.prepare(request)))
+    result = tool.interpret(request, worker_result)
+    serialized = json.dumps(result.data, sort_keys=True)
+
+    assert result.success
+    assert result.data["mcpServerId"] == "demo-security"
+    assert result.data["capabilities"] == ["prompts", "resources", "tools"]
+    assert "pajin://policy" not in serialized
+    assert "pajin://guidance/{topic}" not in serialized
+    assert "description" not in serialized.lower()
+    assert '"inputSchema":' not in serialized
+    assert "promptValue" not in serialized
+
+
+def test_registered_mcp_discovery_rejects_agent_selected_arguments() -> None:
+    tool = demo_mcp_discovery_tool()
+    request = ToolRequest(
+        agent_id="recon:test",
+        tool_id=tool.spec.tool_id,
+        target="https://mcp.internal/demo-security",
+        method="POST",
+        arguments={"serverId": "retargeted-server"},
+    )
+
+    with pytest.raises(ValueError, match="does not accept agent-selected arguments"):
+        tool.prepare(request)
 
 
 @pytest.mark.parametrize(

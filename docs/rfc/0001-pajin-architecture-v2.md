@@ -303,7 +303,14 @@ bytes or destinations, and reuses the same route admission. DISC-003C adds a cum
 exact-version RAG adapter that reads only versioned operation-level `x-pajin-rag` declarations,
 preserves route-bound corpus/index identifiers and boundary type, performs no prose/schema
 inference, and retains no corpus content, queries, retrieved chunks, embeddings, vectors, or
-destinations. MCP and Planner integration remain pending.
+destinations. DISC-003D adds a separate registered MCP discovery Tool and exact adapter. Its fixed
+Worker action accepts only a sealed server ID, performs bounded capability-aware pagination, and
+publishes non-executable server/resource/resource-template/prompt/tool Surfaces containing only
+portable names, required flags, URI schemes, protocol/capability identity, and SHA-256 schema or
+URI digests. It does not retain descriptions, raw schemas/URIs, resource content, prompt content
+or values, server process commands, or discovered execution authority. One argument-free Planner
+uses the existing sealed single-Recon-wave path; multi-adapter scheduling and Snapshot-to-Plan
+orchestration remain ORCH-001/002 work.
 
 ## 10. Definition of Done
 
@@ -338,3 +345,5 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](../adr/0060-bounded-http-openapi-route-discovery.md)
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
+- [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
+- [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)

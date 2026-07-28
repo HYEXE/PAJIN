@@ -19,7 +19,14 @@ from pajin.tools.bug_bounty import (
     BooleanSQLiProbeTool,
 )
 from pajin.tools.http import HTTPGetTool
-from pajin.tools.mcp import MCPToolRegistration, RegisteredMCPTool, demo_mcp_tool
+from pajin.tools.mcp import (
+    MCPDiscoveryRegistration,
+    MCPToolRegistration,
+    RegisteredMCPDiscoveryTool,
+    RegisteredMCPTool,
+    demo_mcp_discovery_tool,
+    demo_mcp_tool,
+)
 from pajin.tools.mock import MockAgentProbe
 
 __all__ = [
@@ -35,13 +42,16 @@ __all__ = [
     "BooleanSQLiProbeTool",
     "ChatMessage",
     "HTTPGetTool",
+    "MCPDiscoveryRegistration",
     "MCPToolRegistration",
     "MockAgentProbe",
     "ProbeCheck",
     "ProbeTurn",
+    "RegisteredMCPDiscoveryTool",
     "RegisteredMCPTool",
     "Tool",
     "ToolRegistry",
     "ToolSpec",
+    "demo_mcp_discovery_tool",
     "demo_mcp_tool",
 ]

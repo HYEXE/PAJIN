@@ -23,6 +23,9 @@ from pajin.cli_support.check_contracts import (
     mcp_registered_call_matches as _mcp_registered_call_matches,
 )
 from pajin.cli_support.check_contracts import (
+    mcp_registered_discovery_matches as _mcp_registered_discovery_matches,
+)
+from pajin.cli_support.check_contracts import (
     mcp_rejection_matches as _mcp_rejection_matches,
 )
 from pajin.cli_support.check_contracts import (
@@ -1871,10 +1874,14 @@ def check_mcp() -> None:
         backend = DockerWorkerBackend(allowed_images={"pajin-worker:dev"})
         results = asyncio.run(_run_mcp_checks(backend))
         registered = results["registered"]
+        registered_discovery = results["registered_discovery"]
         unknown_server = results["unknown_server"]
         unknown_tool = results["unknown_tool"]
         checks = {
             "registered MCP call": _mcp_registered_call_matches(registered),
+            "registered MCP boundary discovery": _mcp_registered_discovery_matches(
+                registered_discovery
+            ),
             "unknown server rejected with typed code": _mcp_rejection_matches(
                 unknown_server,
                 expected_code="server-not-registered",

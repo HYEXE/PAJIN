@@ -347,6 +347,31 @@ def test_mcp_check_requires_exact_typed_catalog_rejections(
     class FakeDockerWorker:
         async def run(self, job: WorkerJob) -> WorkerResult:
             payload = json.loads(job.stdin)
+            if job.command == ["mcp-discover"]:
+                return _worker_result(
+                    json.dumps(
+                        {
+                            "protocolVersion": "2025-06-18",
+                            "capabilities": ["prompts", "resources", "tools"],
+                            "tools": [
+                                {
+                                    "name": "inspect_text",
+                                    "inputSchemaDigest": "a" * 64,
+                                }
+                            ],
+                            "resources": [{"uriScheme": "pajin", "uriSha256": "b" * 64}],
+                            "resourceTemplates": [
+                                {"uriScheme": "pajin", "templateSha256": "c" * 64}
+                            ],
+                            "prompts": [
+                                {
+                                    "name": "inspect_prompt",
+                                    "arguments": [{"name": "text", "required": True}],
+                                }
+                            ],
+                        }
+                    )
+                )
             if payload["serverId"] == "demo-security" and payload["toolName"] == "inspect_text":
                 return _worker_result(
                     json.dumps(
@@ -393,6 +418,7 @@ def test_mcp_check_requires_exact_typed_catalog_rejections(
 
     assert result.exit_code == expected_exit, result.output
     assert "registered MCP call" in result.output
+    assert "registered MCP boundary discovery" in result.output
     assert "unknown server rejected with typed code" in result.output
     assert "unknown tool rejected with typed code" in result.output
 

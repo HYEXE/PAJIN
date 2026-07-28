@@ -89,13 +89,81 @@ async def run_mcp_checks(backend: DockerWorkerBackend) -> dict[str, WorkerResult
         )
 
     registered = await invoke("demo-security", "inspect_text")
+    registered_discovery = await backend.run(
+        WorkerJob(
+            image="pajin-worker:dev",
+            command=["mcp-discover"],
+            stdin=json.dumps({"serverId": "demo-security"}),
+        )
+    )
     unknown_server = await invoke("unregistered-server", "inspect_text")
     unknown_tool = await invoke("demo-security", "unregistered_tool")
     return {
         "registered": registered,
+        "registered_discovery": registered_discovery,
         "unknown_server": unknown_server,
         "unknown_tool": unknown_tool,
     }
+
+
+def mcp_registered_discovery_matches(result: WorkerResult) -> bool:
+    """Validate the fixed demo server's digest-only discovery boundary."""
+
+    if result.status is not WorkerStatus.SUCCEEDED:
+        return False
+    payload = decode_strict_worker_json_object(
+        result,
+        label="registered MCP discovery result",
+    )
+    if (
+        set(payload)
+        != {
+            "protocolVersion",
+            "capabilities",
+            "tools",
+            "resources",
+            "resourceTemplates",
+            "prompts",
+        }
+        or payload.get("capabilities") != ["prompts", "resources", "tools"]
+        or not isinstance(payload.get("protocolVersion"), str)
+    ):
+        return False
+    tools = cli_json_object_list(payload.get("tools"), label="MCP discovery tools")
+    resources = cli_json_object_list(
+        payload.get("resources"),
+        label="MCP discovery resources",
+    )
+    templates = cli_json_object_list(
+        payload.get("resourceTemplates"),
+        label="MCP discovery resource templates",
+    )
+    prompts = cli_json_object_list(payload.get("prompts"), label="MCP discovery prompts")
+    if len(tools) != 1 or len(resources) != 1 or len(templates) != 1 or len(prompts) != 1:
+        return False
+    tool_digest = tools[0].get("inputSchemaDigest")
+    resource_digest = resources[0].get("uriSha256")
+    template_digest = templates[0].get("templateSha256")
+    digests = (tool_digest, resource_digest, template_digest)
+    return (
+        set(tools[0]) <= {"name", "inputSchemaDigest", "outputSchemaDigest"}
+        and tools[0].get("name") == "inspect_text"
+        and resources[0].get("uriScheme") == "pajin"
+        and set(resources[0]) == {"uriScheme", "uriSha256"}
+        and templates[0].get("uriScheme") == "pajin"
+        and set(templates[0]) == {"uriScheme", "templateSha256"}
+        and prompts[0]
+        == {
+            "name": "inspect_prompt",
+            "arguments": [{"name": "text", "required": True}],
+        }
+        and all(
+            isinstance(digest, str)
+            and len(digest) == 64
+            and all(character in "0123456789abcdef" for character in digest)
+            for digest in digests
+        )
+    )
 
 
 def mcp_registered_call_matches(result: WorkerResult) -> bool:

@@ -27,6 +27,11 @@ DiscoverySurfaceKind = Literal[
     "http-file-upload",
     "http-rag",
     "http-route",
+    "mcp-prompt",
+    "mcp-resource",
+    "mcp-resource-template",
+    "mcp-server",
+    "mcp-tool",
     "tool-interface",
 ]
 
