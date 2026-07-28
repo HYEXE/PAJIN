@@ -293,8 +293,11 @@ the first HTTP/OpenAPI adapter over exact bounded `HTTPGetTool` evidence. Admiss
 host-trusted Worker HTTP receipt before extraction. The adapter preserves OpenAPI path parameters
 and content types in non-executable `http-route` locators, accepts same-origin inline JSON only,
 performs no `$ref` or YAML expansion, and reuses Campaign Scope and method admission before
-publication. Auth/File Upload/RAG/MCP adapters plus multi-wave Planner integration remain later
-slices.
+publication. DISC-003A now adds a separate exact-version OpenAPI authentication adapter whose
+non-executable locator preserves route-bound scheme identities, OR/AND requirements, declared
+scope names, and optional anonymous access. Authentication URLs and material are neither retained
+nor fetched, and the nested route reuses DISC-002 admission authority. File Upload, RAG, MCP, and
+Planner integration remain pending.
 
 ## 10. Definition of Done
 
@@ -327,3 +330,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0058: Immutable Graph Backup Repository and Anti-Rollback Inventory](../adr/0058-immutable-graph-backup-repository-inventory.md)
 - [ADR-0059: Versioned Discovery Adapter Authority](../adr/0059-versioned-discovery-adapter-authority.md)
 - [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](../adr/0060-bounded-http-openapi-route-discovery.md)
+- [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)

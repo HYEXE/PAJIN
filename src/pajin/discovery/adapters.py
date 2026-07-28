@@ -21,7 +21,12 @@ DISCOVERY_ADAPTER_API_VERSION: Literal["pajin.dev/discovery-adapter/v1alpha1"] =
     "pajin.dev/discovery-adapter/v1alpha1"
 )
 
-DiscoverySurfaceKind = Literal["http-endpoint", "http-route", "tool-interface"]
+DiscoverySurfaceKind = Literal[
+    "http-authentication",
+    "http-endpoint",
+    "http-route",
+    "tool-interface",
+]
 
 _MAX_ADAPTER_DEFINITION_BYTES = 256 * 1024
 _MAX_ADAPTER_CONTEXT_BYTES = 64 * 1024

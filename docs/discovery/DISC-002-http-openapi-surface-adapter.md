@@ -104,11 +104,13 @@ The exact adapter reference continues into trusted admission authority and proje
 - `http-route` is additive and explicitly non-executable.
 - No crawler, redirect following, HTML link extraction, OpenAPI YAML, `$ref` graph, callbacks,
   webhooks, GraphQL introspection, or cross-origin server discovery is implemented.
-- DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters.
+- DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters. Its first additive Auth slice is
+  implemented by a separate exact-version adapter; File Upload, RAG, and MCP remain pending.
 - ORCH-001/002 own request scheduling, Snapshot-to-Plan binding, and bounded multi-wave execution.
 
 ## Related documents
 
 - [DISC-001: Versioned Discovery Adapter Registry](DISC-001-versioned-discovery-adapter-registry.md)
+- [DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters](DISC-003-auth-file-rag-mcp-surface-adapters.md)
 - [ADR-0060: Bounded HTTP and OpenAPI Route Discovery](../adr/0060-bounded-http-openapi-route-discovery.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

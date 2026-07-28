@@ -47,6 +47,7 @@ _SURFACE_SET_ID_PATTERN = r"^attack-surface-set_[a-f0-9]{64}$"
 _ROUTE_PARAMETER_PATTERN = r"\{([A-Za-z_][A-Za-z0-9_.-]{0,99})\}"
 _ROUTE_LITERAL_SEGMENT_PATTERN = r"(?:[A-Za-z0-9._~!$&'()+,;=:@-]|%[0-9A-F]{2})+"
 _MEDIA_TYPE_PATTERN = r"^[a-z0-9!#$&^_.+*-]+/[a-z0-9!#$&^_.+*-]+$"
+_HTTP_AUTH_SCHEME_PATTERN = r"^[A-Za-z][A-Za-z0-9+.-]{0,99}$"
 
 
 def _normalize_utc(value: datetime, *, label: str) -> datetime:
@@ -238,6 +239,175 @@ class HTTPRouteSurfaceLocator(StrictModel):
         return tuple(normalized)
 
 
+class HTTPAuthenticationScheme(StrictModel):
+    """Non-secret identity of one referenced OpenAPI authentication scheme."""
+
+    scheme_id: _PortableIdentifier
+    scheme_type: Literal["apiKey", "http", "oauth2", "openIdConnect", "mutualTLS"]
+    location: Literal["header", "query", "cookie"] | None = None
+    parameter_name: str | None = Field(default=None, min_length=1, max_length=200)
+    http_scheme: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        pattern=_HTTP_AUTH_SCHEME_PATTERN,
+    )
+    oauth_flows: tuple[
+        Literal["authorizationCode", "clientCredentials", "implicit", "password"],
+        ...,
+    ] = Field(default=(), max_length=4)
+
+    @field_validator("parameter_name")
+    @classmethod
+    def validate_parameter_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = _require_safe_text(value, label="Authentication parameter name")
+        if any(character.isspace() for character in value):
+            raise ValueError("Authentication parameter name cannot contain whitespace")
+        return value
+
+    @field_validator("http_scheme", mode="before")
+    @classmethod
+    def normalize_http_scheme(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
+
+    @field_validator("oauth_flows", mode="before")
+    @classmethod
+    def normalize_oauth_flows(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("OAuth flows must be a list or tuple")
+        if any(not isinstance(item, str) for item in value):
+            raise ValueError("OAuth flow must be text")
+        normalized = tuple(sorted(value))
+        if normalized != tuple(dict.fromkeys(normalized)):
+            raise ValueError("OAuth flows must be unique and sorted")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_scheme_shape(self) -> HTTPAuthenticationScheme:
+        if self.scheme_type == "apiKey":
+            if (
+                self.location is None
+                or self.parameter_name is None
+                or self.http_scheme is not None
+                or self.oauth_flows
+            ):
+                raise ValueError("apiKey authentication scheme fields are inconsistent")
+            return self
+        if self.scheme_type == "http":
+            if (
+                self.http_scheme is None
+                or self.location is not None
+                or self.parameter_name is not None
+                or self.oauth_flows
+            ):
+                raise ValueError("HTTP authentication scheme fields are inconsistent")
+            return self
+        if self.scheme_type == "oauth2":
+            if (
+                not self.oauth_flows
+                or self.location is not None
+                or self.parameter_name is not None
+                or self.http_scheme is not None
+            ):
+                raise ValueError("OAuth2 authentication scheme fields are inconsistent")
+            return self
+        if (
+            self.location is not None
+            or self.parameter_name is not None
+            or self.http_scheme is not None
+            or self.oauth_flows
+        ):
+            raise ValueError("Authentication scheme contains fields for another scheme type")
+        return self
+
+
+class HTTPAuthenticationRequirementEntry(StrictModel):
+    """One scheme and its non-secret OAuth/OpenID scope names."""
+
+    scheme_id: _PortableIdentifier
+    scopes: tuple[str, ...] = Field(default=(), max_length=32)
+
+    @field_validator("scopes", mode="before")
+    @classmethod
+    def normalize_scopes(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Authentication scopes must be a list or tuple")
+        scopes: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise ValueError("Authentication scope must be text")
+            scope = _require_safe_text(item, label="Authentication scope")
+            if not scope or len(scope) > 200 or any(character.isspace() for character in scope):
+                raise ValueError("Authentication scope is invalid")
+            scopes.append(scope)
+        if scopes != sorted(set(scopes)):
+            raise ValueError("Authentication scopes must be unique and sorted")
+        return tuple(scopes)
+
+
+class HTTPAuthenticationRequirement(StrictModel):
+    """One AND requirement inside OpenAPI's OR security alternatives."""
+
+    schemes: tuple[HTTPAuthenticationRequirementEntry, ...] = Field(
+        min_length=1,
+        max_length=16,
+    )
+
+    @field_validator("schemes")
+    @classmethod
+    def validate_schemes(
+        cls,
+        value: tuple[HTTPAuthenticationRequirementEntry, ...],
+    ) -> tuple[HTTPAuthenticationRequirementEntry, ...]:
+        scheme_ids = [item.scheme_id for item in value]
+        if scheme_ids != sorted(set(scheme_ids)):
+            raise ValueError("Authentication requirement schemes must be unique and sorted")
+        return value
+
+
+class HTTPAuthenticationSurfaceLocator(StrictModel):
+    """Non-executable authentication boundary declared for one HTTP route."""
+
+    kind: Literal["http-authentication"] = "http-authentication"
+    route: HTTPRouteSurfaceLocator
+    schemes: tuple[HTTPAuthenticationScheme, ...] = Field(min_length=1, max_length=32)
+    requirements: tuple[HTTPAuthenticationRequirement, ...] = Field(
+        min_length=1,
+        max_length=16,
+    )
+    allows_anonymous: bool = False
+
+    @model_validator(mode="after")
+    def validate_authentication_contract(self) -> HTTPAuthenticationSurfaceLocator:
+        scheme_ids = [item.scheme_id for item in self.schemes]
+        if scheme_ids != sorted(set(scheme_ids)):
+            raise ValueError("Authentication schemes must be unique and sorted")
+        requirement_keys = [
+            tuple((entry.scheme_id, entry.scopes) for entry in requirement.schemes)
+            for requirement in self.requirements
+        ]
+        if requirement_keys != sorted(set(requirement_keys)):
+            raise ValueError("Authentication requirements must be unique and sorted")
+        referenced = {
+            entry.scheme_id
+            for requirement in self.requirements
+            for entry in requirement.schemes
+        }
+        if referenced != set(scheme_ids):
+            raise ValueError("Authentication schemes must exactly match referenced requirements")
+        scheme_by_id = {item.scheme_id: item for item in self.schemes}
+        for requirement in self.requirements:
+            for entry in requirement.schemes:
+                scheme = scheme_by_id[entry.scheme_id]
+                if entry.scopes and scheme.scheme_type not in {"oauth2", "openIdConnect"}:
+                    raise ValueError(
+                        "Authentication scopes require an OAuth2 or OpenID Connect scheme"
+                    )
+        return self
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -254,7 +424,10 @@ class ToolInterfaceSurfaceLocator(StrictModel):
 
 
 SurfaceLocator = Annotated[
-    HTTPSurfaceLocator | HTTPRouteSurfaceLocator | ToolInterfaceSurfaceLocator,
+    HTTPSurfaceLocator
+    | HTTPRouteSurfaceLocator
+    | HTTPAuthenticationSurfaceLocator
+    | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
 _SURFACE_LOCATOR_ADAPTER: TypeAdapter[SurfaceLocator] = TypeAdapter(SurfaceLocator)
@@ -521,6 +694,25 @@ def http_route_path_template(locator: HTTPRouteSurfaceLocator) -> str:
     parsed = urlsplit(locator.base_url)
     base_path = parsed.path.rstrip("/")
     return f"{base_path}{locator.path_template}" if base_path else locator.path_template
+
+
+def http_authentication_surface_locator(
+    *,
+    route: HTTPRouteSurfaceLocator,
+    schemes: tuple[HTTPAuthenticationScheme, ...],
+    requirements: tuple[HTTPAuthenticationRequirement, ...],
+    allows_anonymous: bool = False,
+) -> HTTPAuthenticationSurfaceLocator:
+    """Build one canonical non-executable HTTP authentication boundary."""
+
+    return HTTPAuthenticationSurfaceLocator(
+        route=route.model_copy(deep=True),
+        schemes=tuple(scheme.model_copy(deep=True) for scheme in schemes),
+        requirements=tuple(
+            requirement.model_copy(deep=True) for requirement in requirements
+        ),
+        allows_anonymous=allows_anonymous,
+    )
 
 
 def tool_interface_surface_locator(

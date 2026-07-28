@@ -25,6 +25,7 @@ from pajin.discovery.canonicalization import canonical_json_bytes, discovery_dig
 from pajin.discovery.models import (
     AttackSurface,
     AttackSurfaceSet,
+    HTTPAuthenticationSurfaceLocator,
     HTTPRouteSurfaceLocator,
     HTTPSurfaceLocator,
     SurfaceEvidenceReference,
@@ -700,6 +701,11 @@ def _admit_candidates(
 
 
 def _revalidate_surface_scope(campaign: CampaignManifest, locator: SurfaceLocator) -> None:
+    if isinstance(locator, HTTPAuthenticationSurfaceLocator):
+        if locator.route.method not in campaign.spec.rules_of_engagement.allowed_methods:
+            raise SurfaceAdmissionError("discovered HTTP method exceeds Campaign authority")
+        _require_route_in_scope(campaign, locator.route)
+        return
     if isinstance(locator, HTTPSurfaceLocator | HTTPRouteSurfaceLocator):
         if locator.method not in campaign.spec.rules_of_engagement.allowed_methods:
             raise SurfaceAdmissionError("discovered HTTP method exceeds Campaign authority")

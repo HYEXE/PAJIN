@@ -11,9 +11,9 @@ The Registry prevents a caller, model, or serialized proposal from selecting an 
 interpreter, silently moving to a newer version, or changing interpretation settings after
 registration.
 
-DISC-001 defines the common adapter boundary only. HTTP/OpenAPI Surface extraction,
-Auth/File Upload/RAG/MCP adapters, orchestration waves, and Planner integration remain separate
-slices.
+DISC-001 defines the common adapter boundary only. HTTP/OpenAPI route and authentication Surface
+extraction are implemented by separate additive adapters. File Upload/RAG/MCP adapters,
+orchestration waves, and Planner integration remain separate slices.
 
 ## Common protocol
 
@@ -21,8 +21,8 @@ A `DiscoveryAdapter` declares:
 
 - stable adapter ID and version;
 - producer ID and one registered Tool ID;
-- a sorted, unique set of supported `http-endpoint`, `http-route`, or `tool-interface` Surface
-  kinds;
+- a sorted, unique set of supported `http-authentication`, `http-endpoint`, `http-route`, or
+  `tool-interface` Surface kinds;
 - whether successful extraction requires replay of a host-trusted network execution receipt;
 - an explicit non-secret `stable_execution_context()`; and
 - `extract_surfaces(request, result)`, which returns non-authoritative `SurfaceCandidate` values.
@@ -94,7 +94,8 @@ shape remains unchanged.
 ## Remaining boundaries
 
 - DISC-002 implements bounded HTTP route/method/content-type and OpenAPI Surface discovery.
-- DISC-003 owns Auth, File Upload, RAG, and MCP domain adapters.
+- DISC-003A implements bounded OpenAPI authentication boundary discovery; File Upload, RAG, and
+  MCP domain adapters remain pending.
 - ORCH-001/002 own multi-adapter scheduling, multi-wave execution, and Planner integration.
 - Signed adapter releases, durable Registry storage, dynamic plugin loading, and remote Registry
   refresh are not implemented.
@@ -103,4 +104,5 @@ shape remains unchanged.
 
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)
 - [ADR-0059: Versioned Discovery Adapter Authority](../adr/0059-versioned-discovery-adapter-authority.md)
+- [DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters](DISC-003-auth-file-rag-mcp-surface-adapters.md)
 - [ADR-0051: Versioned Capability Definition and Exact Tool Binding](../adr/0051-versioned-capability-definition-and-tool-binding.md)

@@ -10,7 +10,9 @@ import pytest
 
 from pajin.discovery import (
     DiscoveryAdapterRegistry,
+    HTTPAndOpenAPIAuthenticationSurfaceAdapter,
     HTTPAndOpenAPISurfaceAdapter,
+    HTTPAuthenticationSurfaceLocator,
     HTTPRouteSurfaceLocator,
     SurfaceAdmissionError,
     TrustedSurfaceProducer,
@@ -560,6 +562,70 @@ def test_versioned_http_openapi_admission_binds_routes_scope_and_projection_audi
         if item.event_type == "discovery.attack-surface-set.published"
     )
     assert event.payload["adapterId"] == "pajin.discovery.http-openapi:http.get"
+    assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
+
+
+def test_versioned_openapi_authentication_admission_reuses_route_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign_for_http_openapi(sample_campaign)
+    document = _openapi_document()
+    document["components"] = {
+        "securitySchemes": {
+            "BearerAuth": {
+                "type": "http",
+                "scheme": "bearer",
+                "bearerFormat": "JWT",
+            }
+        }
+    }
+    document["security"] = [{"BearerAuth": []}]
+    source = _sealed_http_source(tmp_path, campaign, document)
+    tools = ToolRegistry()
+    tool = HTTPGetTool()
+    tools.register(tool)
+    adapter = HTTPAndOpenAPIAuthenticationSurfaceAdapter(
+        tool=tool,
+        allowed_methods=("GET", "POST"),
+    )
+    registry = DiscoveryAdapterRegistry(tools=tools, adapters=[adapter])
+    producer = TrustedSurfaceProducer.from_adapter_registry(
+        tools=tools,
+        registry=registry,
+        adapter_references=[definition.reference() for definition in registry.definitions()],
+    )
+
+    admission = producer.produce_from_run(
+        source.path,
+        evidence_reference=EVIDENCE_REFERENCE,
+        expected_run_id=source.run_id,
+        admitted_at=NOW + timedelta(minutes=1),
+    )
+
+    authentication_surfaces = [
+        surface
+        for surface in admission.surface_set.surfaces
+        if isinstance(surface.locator, HTTPAuthenticationSurfaceLocator)
+    ]
+    assert {
+        (surface.locator.route.method, surface.locator.route.path_template)
+        for surface in authentication_surfaces
+    } == {
+        ("GET", "/users/{user_id}"),
+        ("POST", "/users/{user_id}"),
+    }
+    projection = RunStore.create(tmp_path / "auth-projection", campaign.metadata.name)
+    publish_surface_projection(projection, admission)
+    event = next(
+        item
+        for item in load_verified_run_events(projection.path)
+        if item.event_type == "discovery.attack-surface-set.published"
+    )
+    assert (
+        event.payload["adapterId"]
+        == "pajin.discovery.http-openapi-authentication:http.get"
+    )
     assert event.payload["adapterDigest"] == admission.adapter_reference.adapter_digest
 
 

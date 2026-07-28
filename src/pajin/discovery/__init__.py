@@ -18,6 +18,7 @@ from pajin.discovery.admission import (
     TrustedSurfaceAdmission,
     TrustedSurfaceProducer,
 )
+from pajin.discovery.authentication import HTTPAndOpenAPIAuthenticationSurfaceAdapter
 from pajin.discovery.http import HTTPAndOpenAPISurfaceAdapter
 from pajin.discovery.hypothesis import (
     HYPOTHESIS_API_VERSION,
@@ -36,6 +37,10 @@ from pajin.discovery.models import (
     DISCOVERY_API_VERSION,
     AttackSurface,
     AttackSurfaceSet,
+    HTTPAuthenticationRequirement,
+    HTTPAuthenticationRequirementEntry,
+    HTTPAuthenticationScheme,
+    HTTPAuthenticationSurfaceLocator,
     HTTPRouteSurfaceLocator,
     HTTPSurfaceLocator,
     SurfaceEvidenceReference,
@@ -44,6 +49,7 @@ from pajin.discovery.models import (
     ToolInterfaceSurfaceLocator,
     attack_surface,
     attack_surface_set,
+    http_authentication_surface_locator,
     http_route_path_template,
     http_route_scope_url,
     http_route_surface_locator,
@@ -104,7 +110,12 @@ __all__ = [
     "DiscoveryAdapterToolBinding",
     "DiscoverySurfaceKind",
     "DynamicHypothesisWaveRunner",
+    "HTTPAndOpenAPIAuthenticationSurfaceAdapter",
     "HTTPAndOpenAPISurfaceAdapter",
+    "HTTPAuthenticationRequirement",
+    "HTTPAuthenticationRequirementEntry",
+    "HTTPAuthenticationScheme",
+    "HTTPAuthenticationSurfaceLocator",
     "HTTPRouteSurfaceLocator",
     "HTTPSurfaceLocator",
     "HypothesisObservation",
@@ -139,6 +150,7 @@ __all__ = [
     "TrustedSurfaceProducer",
     "attack_surface",
     "attack_surface_set",
+    "http_authentication_surface_locator",
     "http_route_path_template",
     "http_route_scope_url",
     "http_route_surface_locator",
