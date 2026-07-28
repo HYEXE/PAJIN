@@ -15,7 +15,7 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 from re import fullmatch
-from typing import Annotated, Literal, Self, cast
+from typing import TYPE_CHECKING, Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
@@ -61,6 +61,13 @@ from pajin.runtime.safe_files import (
     parse_strict_json_bytes,
     read_bounded_regular_bytes,
 )
+
+if TYPE_CHECKING:
+    from pajin.graph.backup_retention import (
+        SQLiteGraphBackupSigner,
+        SQLiteGraphBackupVerificationKey,
+        SQLiteGraphRetainedBackupManifest,
+    )
 
 _SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
@@ -423,6 +430,30 @@ class SQLiteGraphStore:
             created_at=created_at or datetime.now(UTC),
         )
 
+    def create_retained_backup(
+        self,
+        destination: Path,
+        *,
+        encryption_key_id: str,
+        encryption_key: bytes,
+        signer: SQLiteGraphBackupSigner,
+        created_at: datetime | None = None,
+    ) -> SQLiteGraphRetainedBackupManifest:
+        """Create one encrypted and externally signed retention object."""
+
+        from pajin.graph.backup_retention import (
+            create_retained_sqlite_graph_backup,
+        )
+
+        return create_retained_sqlite_graph_backup(
+            self,
+            destination,
+            encryption_key_id=encryption_key_id,
+            encryption_key=encryption_key,
+            signer=signer,
+            created_at=created_at,
+        )
+
     @classmethod
     def restore_backup(
         cls,
@@ -439,6 +470,32 @@ class SQLiteGraphStore:
             campaign_id=campaign_id,
         )
         return cls(destination, campaign_id=campaign_id)
+
+    @classmethod
+    def restore_retained_backup(
+        cls,
+        retained_backup: Path,
+        *,
+        destination: Path,
+        campaign_id: str,
+        encryption_key_id: str,
+        encryption_key: bytes,
+        trusted_signing_keys: Iterable[SQLiteGraphBackupVerificationKey],
+    ) -> SQLiteGraphStore:
+        """Verify and decrypt a retained backup only into a new database path."""
+
+        from pajin.graph.backup_retention import (
+            restore_retained_sqlite_graph_backup,
+        )
+
+        return restore_retained_sqlite_graph_backup(
+            retained_backup,
+            destination=destination,
+            campaign_id=campaign_id,
+            encryption_key_id=encryption_key_id,
+            encryption_key=encryption_key,
+            trusted_signing_keys=trusted_signing_keys,
+        )
 
 
 class SQLiteGraphEventLog:

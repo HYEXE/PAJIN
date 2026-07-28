@@ -35,12 +35,16 @@ from pajin.graph import (
     GraphStaleDecisionError,
     GraphSurface,
     InMemoryGraphEventLog,
+    SQLiteGraphBackupSigner,
+    SQLiteGraphBackupVerificationKey,
     SQLiteGraphStore,
     SQLiteGraphStoreError,
     SurfaceProposal,
     TrustedGraphLineageRegistry,
     graph_snapshot_ref,
     sqlite_graph_backup_manifest_path,
+    sqlite_graph_backup_public_key,
+    sqlite_graph_retained_backup_manifest_path,
 )
 from pajin.graph.models import GraphContentOrigin
 
@@ -55,6 +59,10 @@ DIGEST_C = "c" * 64
 DIGEST_D = "d" * 64
 DIGEST_E = "e" * 64
 DIGEST_F = "f" * 64
+BACKUP_SIGNING_KEY = bytes(range(32))
+BACKUP_ENCRYPTION_KEY = bytes(reversed(range(32)))
+BACKUP_SIGNING_KEY_ID = "graph-backup-signing-2026"
+BACKUP_ENCRYPTION_KEY_ID = "graph-backup-encryption-2026"
 
 
 def _lineage(tag: str) -> GraphProposalLineage:
@@ -174,6 +182,20 @@ def _run_hard_exit(script: str, *arguments: str) -> subprocess.CompletedProcess[
         capture_output=True,
         text=True,
         timeout=30,
+    )
+
+
+def _backup_verification_key() -> SQLiteGraphBackupVerificationKey:
+    return SQLiteGraphBackupVerificationKey(
+        keyId=BACKUP_SIGNING_KEY_ID,
+        publicKeyBase64url=sqlite_graph_backup_public_key(BACKUP_SIGNING_KEY),
+    )
+
+
+def _backup_signer() -> SQLiteGraphBackupSigner:
+    return SQLiteGraphBackupSigner.from_private_key_bytes(
+        key=_backup_verification_key(),
+        private_key=BACKUP_SIGNING_KEY,
     )
 
 
@@ -322,6 +344,217 @@ def test_backup_and_restore_fail_closed_on_existing_or_tampered_material(
             destination=tmp_path / "tampered" / "canonical-graph.sqlite3",
             campaign_id=CAMPAIGN,
         )
+
+
+def test_signed_encrypted_retained_backup_restores_from_detached_process(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(source)
+    projection = GraphProjectionCoordinator(
+        event_log=store.event_log,
+        projection_store=store.projection_store,
+    ).refresh().projection
+    snapshot = GraphSnapshotAuthority(
+        creator_id=SNAPSHOT_CREATOR_ID,
+        creator_digest=DIGEST_B,
+        projection_store=store.projection_store,
+        snapshot_store=store.snapshot_store,
+        clock=lambda: NOW + timedelta(seconds=4),
+    ).capture(GraphSnapshotReason.RECOVERY)
+    retained = tmp_path / "retention-source" / "graph-lab.sqlite3.enc"
+
+    manifest = store.create_retained_backup(
+        retained,
+        encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+        encryption_key=BACKUP_ENCRYPTION_KEY,
+        signer=_backup_signer(),
+        created_at=NOW + timedelta(seconds=5),
+    )
+
+    ciphertext = retained.read_bytes()
+    assert retained.is_file()
+    assert sqlite_graph_retained_backup_manifest_path(retained).is_file()
+    assert not ciphertext.startswith(b"SQLite format 3")
+    assert b"SQLite format 3" not in ciphertext
+    retained_manifest_bytes = sqlite_graph_retained_backup_manifest_path(retained).read_bytes()
+    assert BACKUP_ENCRYPTION_KEY.hex().encode() not in retained_manifest_bytes
+    assert BACKUP_SIGNING_KEY.hex().encode() not in retained_manifest_bytes
+    assert {item.name for item in retained.parent.iterdir()} == {
+        retained.name,
+        sqlite_graph_retained_backup_manifest_path(retained).name,
+    }
+    assert manifest.statement.backup_manifest.projection_digest == (projection.projection_digest)
+    assert manifest.statement.backup_manifest.snapshot_head_digest == (snapshot.snapshot_digest)
+
+    detached = tmp_path / "detached-retention" / retained.name
+    detached.parent.mkdir()
+    detached.write_bytes(ciphertext)
+    sqlite_graph_retained_backup_manifest_path(detached).write_bytes(
+        sqlite_graph_retained_backup_manifest_path(retained).read_bytes()
+    )
+    restored_path = tmp_path / "independent-restore" / "canonical-graph.sqlite3"
+    child = _run_hard_exit(
+        """
+import os
+import sys
+from pathlib import Path
+from pajin.graph import SQLiteGraphBackupVerificationKey, SQLiteGraphStore
+
+trusted_key = SQLiteGraphBackupVerificationKey(
+    keyId=sys.argv[5],
+    publicKeyBase64url=sys.argv[6],
+)
+restored = SQLiteGraphStore.restore_retained_backup(
+    Path(sys.argv[1]),
+    destination=Path(sys.argv[2]),
+    campaign_id=sys.argv[3],
+    encryption_key_id=sys.argv[4],
+    encryption_key=bytes.fromhex(sys.argv[7]),
+    trusted_signing_keys=(trusted_key,),
+)
+if (
+    len(restored.event_log.events()) != 2
+    or restored.projection_store.current().revision != 2
+    or len(restored.snapshot_store.snapshots()) != 1
+):
+    os._exit(70)
+os._exit(94)
+""",
+        str(detached),
+        str(restored_path),
+        CAMPAIGN,
+        BACKUP_ENCRYPTION_KEY_ID,
+        BACKUP_SIGNING_KEY_ID,
+        _backup_verification_key().public_key_base64url,
+        BACKUP_ENCRYPTION_KEY.hex(),
+    )
+
+    assert child.returncode == 94, child.stderr
+    restored = SQLiteGraphStore(restored_path, campaign_id=CAMPAIGN)
+    assert restored.event_log.events() == store.event_log.events()
+    assert restored.projection_store.current() == projection
+    assert restored.snapshot_store.snapshots() == (snapshot,)
+
+
+def test_retained_backup_rejects_untrusted_or_wrong_keys_without_destination(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(source)
+    retained = tmp_path / "retention" / "graph-lab.sqlite3.enc"
+    store.create_retained_backup(
+        retained,
+        encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+        encryption_key=BACKUP_ENCRYPTION_KEY,
+        signer=_backup_signer(),
+        created_at=NOW + timedelta(seconds=5),
+    )
+
+    with pytest.raises(SQLiteGraphStoreError, match="already exists"):
+        store.create_retained_backup(
+            retained,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=BACKUP_ENCRYPTION_KEY,
+            signer=_backup_signer(),
+            created_at=NOW + timedelta(seconds=6),
+        )
+
+    untrusted_destination = tmp_path / "untrusted-restore" / "canonical-graph.sqlite3"
+    with pytest.raises(SQLiteGraphStoreError, match="signing key is not trusted"):
+        SQLiteGraphStore.restore_retained_backup(
+            retained,
+            destination=untrusted_destination,
+            campaign_id=CAMPAIGN,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=BACKUP_ENCRYPTION_KEY,
+            trusted_signing_keys=(),
+        )
+    assert not untrusted_destination.exists()
+
+    wrong_key_destination = tmp_path / "wrong-key-restore" / "canonical-graph.sqlite3"
+    with pytest.raises(SQLiteGraphStoreError, match="authentication failed"):
+        SQLiteGraphStore.restore_retained_backup(
+            retained,
+            destination=wrong_key_destination,
+            campaign_id=CAMPAIGN,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=b"x" * 32,
+            trusted_signing_keys=(_backup_verification_key(),),
+        )
+    assert not wrong_key_destination.exists()
+
+    existing_destination = tmp_path / "existing" / "canonical-graph.sqlite3"
+    existing_destination.parent.mkdir()
+    existing_destination.write_bytes(b"do-not-replace")
+    with pytest.raises(SQLiteGraphStoreError, match="already exists"):
+        SQLiteGraphStore.restore_retained_backup(
+            retained,
+            destination=existing_destination,
+            campaign_id=CAMPAIGN,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=BACKUP_ENCRYPTION_KEY,
+            trusted_signing_keys=(_backup_verification_key(),),
+        )
+    assert existing_destination.read_bytes() == b"do-not-replace"
+
+
+def test_retained_backup_rejects_signature_and_ciphertext_tampering(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(source)
+    signed = tmp_path / "retention" / "signed.sqlite3.enc"
+    store.create_retained_backup(
+        signed,
+        encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+        encryption_key=BACKUP_ENCRYPTION_KEY,
+        signer=_backup_signer(),
+        created_at=NOW + timedelta(seconds=5),
+    )
+    signed_manifest_path = sqlite_graph_retained_backup_manifest_path(signed)
+    signed_manifest = bytearray(signed_manifest_path.read_bytes())
+    signature_offset = signed_manifest.index(b'"signatureBase64url":"') + len(
+        b'"signatureBase64url":"'
+    )
+    signed_manifest[signature_offset] = (
+        ord("A") if signed_manifest[signature_offset] != ord("A") else ord("B")
+    )
+    signed_manifest_path.write_bytes(signed_manifest)
+    signature_destination = tmp_path / "signature-tamper" / "canonical-graph.sqlite3"
+    with pytest.raises(SQLiteGraphStoreError, match="signature verification failed"):
+        SQLiteGraphStore.restore_retained_backup(
+            signed,
+            destination=signature_destination,
+            campaign_id=CAMPAIGN,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=BACKUP_ENCRYPTION_KEY,
+            trusted_signing_keys=(_backup_verification_key(),),
+        )
+    assert not signature_destination.exists()
+
+    tampered = tmp_path / "retention" / "tampered.sqlite3.enc"
+    store.create_retained_backup(
+        tampered,
+        encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+        encryption_key=BACKUP_ENCRYPTION_KEY,
+        signer=_backup_signer(),
+        created_at=NOW + timedelta(seconds=6),
+    )
+    ciphertext = bytearray(tampered.read_bytes())
+    ciphertext[-1] ^= 1
+    tampered.write_bytes(ciphertext)
+    ciphertext_destination = tmp_path / "ciphertext-tamper" / "canonical-graph.sqlite3"
+    with pytest.raises(SQLiteGraphStoreError, match="ciphertext digest differs"):
+        SQLiteGraphStore.restore_retained_backup(
+            tampered,
+            destination=ciphertext_destination,
+            campaign_id=CAMPAIGN,
+            encryption_key_id=BACKUP_ENCRYPTION_KEY_ID,
+            encryption_key=BACKUP_ENCRYPTION_KEY,
+            trusted_signing_keys=(_backup_verification_key(),),
+        )
+    assert not ciphertext_destination.exists()
 
 
 def test_process_hard_exit_after_projection_commit_preserves_committed_revision(

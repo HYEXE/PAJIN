@@ -1,6 +1,6 @@
 # GRAPH-005: Durable Single-Campaign SQLite Graph Store
 
-- Status: Durable adapter, verified backup/restore, and hard-exit recovery locally verified; Linux CI pending
+- Status: Durable adapter, signed/encrypted retention, independent restore, and hard-exit recovery locally verified; Linux CI pending
 - Date: 2026-07-28
 - Decision: [ADR-0049](../adr/0049-durable-single-campaign-sqlite-graph-store.md)
 - Implementation: `pajin.graph.sqlite_store`
@@ -126,12 +126,30 @@ requires both and therefore treats such output as incomplete.
 checks the exact database digest, repeats the complete logical-state verification, compares that
 state to the manifest, and publishes only to a previously absent destination. It never overwrites
 a live or previously restored database. This is a self-consistency and local disaster-recovery
-boundary, not an external authenticity claim: the pair is not signed, encrypted, remotely
-retained, or anchored outside the host.
+boundary, not an external authenticity claim.
+
+## Signed and encrypted retention
+
+`SQLiteGraphStore.create_retained_backup()` creates the verified plaintext pair only in a private
+temporary workspace. It encrypts the bounded database with AES-256-GCM and a fresh 96-bit nonce,
+then signs a domain-separated canonical statement with an externally supplied Ed25519 signer. The
+statement binds the complete plaintext backup manifest, encryption-key ID, nonce, ciphertext
+digest, and ciphertext length. The published pair contains ciphertext and a signed manifest;
+neither the 32-byte encryption key nor the Ed25519 private key is serialized.
+
+`restore_retained_backup()` requires the expected external encryption key and ID plus an
+out-of-band trusted Ed25519 public-key set. Signature verification precedes ciphertext read and
+decryption. Restore then verifies the ciphertext digest, AEAD authentication, plaintext digest,
+and the complete ADR-0049 logical state before exclusively publishing a new database.
+
+The conformance drill copies the pair to a detached directory and restores it in a fresh process
+without the source database. This proves transport independence inside the test host. It does not
+claim an actual off-host transfer, retention schedule, object lock, KMS integration, or external
+anti-rollback inventory.
 
 ## Verified conformance
 
-The focused Graph suite passes 70 tests locally.
+The focused Graph suite passes 73 tests locally.
 Two POSIX link tests are correctly skipped on Windows and remain Linux CI obligations.
 
 The durable tests cover:
@@ -147,6 +165,9 @@ The durable tests cover:
 - stale Decision rejection when the durable Event Log is ahead;
 - exact backup/restore of Events, Projection, Snapshot, and consumed Permit state;
 - manifest and database tamper rejection plus no-overwrite restore; and
+- encrypted retained-object publication without serialized secret material;
+- external signing-key trust, wrong-key, signature-tamper, and ciphertext-tamper rejection;
+- detached fresh-process restore with exact Event, Projection, and Snapshot state; and
 - real subprocess `os._exit` immediately after Projection commit, before transaction commit, and
   after backup publication.
 
@@ -172,8 +193,8 @@ dispatch claim in one SQLite transaction. The following remain after GRAPH-005/0
 - multi-host leader election, leases, or PostgreSQL/HA storage;
 - exhaustive process-kill and power-loss injection at every remaining SQLite/filesystem
   synchronization boundary;
-- scheduled/off-host retention, restore drills on another host, compaction, encryption at rest,
-  signed manifests, or external integrity anchoring;
+- actual remote retention transport and scheduling, restore drills on another host, object lock,
+  compaction, KMS/HSM integration, or external anti-rollback inventory;
 - admission queue/runtime service wiring; or
 - B2.9 collaboration projections and Supervisor execution.
 

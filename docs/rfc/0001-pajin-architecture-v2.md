@@ -274,7 +274,11 @@ Worker.
 The single-Campaign Graph Store now also emits a content-addressed backup manifest, verifies the
 full Event/Node/Projection/Snapshot/Permit state before backup and restore, restores only to a new
 path, and has subprocess hard-exit coverage for committed, uncommitted, and backup-publication
-boundaries. This remains host-local self-consistency rather than signed off-host disaster recovery.
+boundaries. An additive retained format encrypts that verified database with externally supplied
+AES-256-GCM key material and signs a canonical ciphertext statement with an external Ed25519 key.
+A detached fresh-process drill verifies signature, AEAD, plaintext identity, and complete logical
+state before a new-path restore. Actual remote transport/scheduling, independent-host drills,
+managed key services, object lock, and external anti-rollback inventory remain deployment work.
 
 ## 10. Definition of Done
 

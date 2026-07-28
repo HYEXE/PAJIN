@@ -134,7 +134,7 @@ RunStore append but before Gateway entry, and after a durable external Gateway s
 but before the completed event. Reopen and two retries preserve one Permit, record one immutable
 reconciliation, and execute the retry Worker zero times.
 
-The concentrated Capability/Graph regression suite on Windows is `155 passed, 2 skipped`;
+The concentrated Capability/Graph regression suite on Windows is `158 passed, 2 skipped`;
 the skips are the existing POSIX symlink/hard-link semantics checks.
 
 ## Remaining boundaries
@@ -142,7 +142,8 @@ the skips are the existing POSIX symlink/hard-link semantics checks.
 - durable Capability Registry and compiler rotation policy;
 - exhaustive process-kill and power-loss testing at every remaining SQLite, RunStore, and
   filesystem synchronization boundary;
-- signed/encrypted off-host backup retention and independent restore drills;
+- actual off-host backup transport/scheduling, independent-host restore drills, managed key
+  service integration, object lock, and external anti-rollback inventory;
 - multi-host leader/lease and PostgreSQL/HA adapters; and
 - B2.9 Handoff projections and Supervisor shadow mode.
 
