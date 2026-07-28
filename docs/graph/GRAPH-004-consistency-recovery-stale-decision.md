@@ -87,7 +87,9 @@ This reference algorithm is replay recovery, not durable two-store crash atomici
 [GRAPH-005](GRAPH-005-durable-sqlite-graph-store.md) now applies it to a separate
 single-Campaign SQLite store with cross-process host-local CAS and reopen persistence. Multi-host
 leadership remains open. GRAPH-005 now also verifies content-addressed backup/restore and the first
-subprocess hard-exit commit, rollback, and backup-publication boundaries.
+subprocess hard-exit commit, rollback, and backup-publication boundaries. GRAPH-006 additionally
+verifies process termination after Permit commit, after the RunStore claimed append, and after an
+external Gateway side-effect marker.
 
 ## Snapshot-bound stale decision preflight
 
@@ -137,7 +139,8 @@ GRAPH-006 combines the final latest-revision check with a consumed ActionPermit 
 one transaction. The following remain open:
 
 - multi-host leader fencing, lease expiry, and PostgreSQL/HA storage;
-- exhaustive process-kill/power-loss injection across every SQLite and filesystem sync boundary;
+- exhaustive process-kill/power-loss injection across every remaining SQLite and filesystem sync
+  boundary;
 - semantic CampaignFact corroboration/invalidation workflows;
 - scheduled/off-host retention, compaction, encryption, signed backup manifests, and external
   integrity anchoring; and

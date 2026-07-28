@@ -1,7 +1,7 @@
 # CAP-005: Existing Mode, Tool, and Replay Adapters
 
-- Status: locally implemented
-- Date: 2026-07-27
+- Status: locally implemented with hard-exit dispatch recovery verification
+- Date: 2026-07-28
 - Prerequisites: ARCH-001, CAP-001, CAP-002, CAP-003, CAP-004, ADR-0051 through ADR-0054
 
 ## Purpose
@@ -201,6 +201,8 @@ they do not satisfy the production exit gate.
   Proposal/Permit/request binding, and request-unit cost enforcement;
 - hash-chained claimed/completed linkage, exact Gateway outcome digest, tamper rejection,
   failure/cancellation/expiry terminal events, and pre-execution audit-write fail-closed behavior;
+- real subprocess termination after Permit commit, after the claimed RunStore append, and after a
+  durable external Gateway side-effect marker, with zero retry Worker calls and one reconciliation;
 - missing, duplicated, substituted-key, release-set tamper, and mapping-drift rejection;
 - exact seven-delivery/seven-Oracle/three-Replay operational evidence with sealed source hashes;
 - exact successful Web + AI dispatch pair, distinct request/dispatch identity, sealed evidence
@@ -236,9 +238,8 @@ repeated retry resolves the same record and cannot append another record or ente
   execution observations remain follow-up work;
 - the sealed Web + AI gate verifier and Worker-daemon deployment wiring are implemented; one
   actual isolated Hybrid Campaign run using organization-issued releases remains required;
-- real process termination across the Permit/RunStore/external Gateway windows beyond the
-  deterministic in-process injections; GRAPH-005 now covers verified Graph backup/restore and
-  subprocess commit/rollback/publication hard exits, but not that external side-effect window;
+- exhaustive process-kill and power-loss injection at the remaining internal RunStore, SQLite,
+  Worker, and filesystem synchronization boundaries;
 - additional Bug Bounty, CTF, discovery, RAG, and administrative adapters; and
 - Linux CI and clean-clone verification.
 

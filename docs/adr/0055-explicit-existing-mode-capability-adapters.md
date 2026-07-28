@@ -75,7 +75,9 @@ analysis.
   organization-issued releases already exist.
 - Graph SQLite, RunStore, and Worker side effects are separate durability domains. A crash can
   leave a consumed Permit with no lifecycle event or only a claimed event; automatic redispatch
-  remains forbidden.
+  remains forbidden. Real subprocess hard exits at the Permit-commit, claimed-append, and external
+  side-effect boundaries verify that restart records one reconciliation and invokes no retry
+  Worker.
 - The small amount of explicit inventory duplication is intentional security configuration and
   must change through review.
 

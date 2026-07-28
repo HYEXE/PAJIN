@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -1092,6 +1095,137 @@ class _CountingSimulatedWorker(SimulatedWorkerBackend):
         return await super().run(*args, **kwargs)
 
 
+_CAPABILITY_DISPATCH_HARD_EXIT_PROBE = """
+import asyncio
+import os
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+
+from pajin.capabilities import CapabilityDispatchStage, ExistingModeCapabilityGatewayDispatcher
+from pajin.control_plane.capability_deployment import load_capability_graph_deployment
+from pajin.control_plane.executors import CampaignJobExecutor
+from pajin.control_plane.models import JobView
+from pajin.runtime.worker import SimulatedWorkerBackend
+
+NOW = datetime(2026, 7, 27, 6, tzinfo=UTC)
+
+
+class DurableMarkerSimulatedWorker(SimulatedWorkerBackend):
+    def __init__(self, marker: Path) -> None:
+        self._marker = marker
+
+    async def run(self, *args, **kwargs):
+        self._marker.parent.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(
+            self._marker,
+            os.O_CREAT
+            | os.O_EXCL
+            | os.O_WRONLY
+            | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        try:
+            os.write(descriptor, b"gateway-side-effect\\n")
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        return await super().run(*args, **kwargs)
+
+
+async def main() -> None:
+    deployment_path = Path(sys.argv[1])
+    deployment_sha256 = sys.argv[2]
+    job_path = Path(sys.argv[3])
+    crash_point = sys.argv[4]
+    marker = Path(sys.argv[5])
+    exit_codes = {
+        "after-permit-commit": 71,
+        "after-claimed-audit": 72,
+        "after-gateway-side-effect": 73,
+    }
+    runtime = load_capability_graph_deployment(
+        deployment_path,
+        expected_sha256=deployment_sha256,
+        clock=lambda: NOW,
+    )
+    executor = CampaignJobExecutor(
+        output_root=marker.parent / "unused-local-runs",
+        worker=DurableMarkerSimulatedWorker(marker),
+        capability_deployment=runtime,
+    )
+    job = JobView.model_validate_json(job_path.read_bytes())
+    original_append = ExistingModeCapabilityGatewayDispatcher._append_dispatch_event
+
+    def hard_exit(self, **kwargs):
+        stage = kwargs["stage"]
+        if (
+            crash_point == "after-permit-commit"
+            and stage is CapabilityDispatchStage.CLAIMED
+        ):
+            os._exit(exit_codes[crash_point])
+        if (
+            crash_point == "after-gateway-side-effect"
+            and stage is CapabilityDispatchStage.COMPLETED
+        ):
+            os._exit(exit_codes[crash_point])
+        event = original_append(self, **kwargs)
+        if (
+            crash_point == "after-claimed-audit"
+            and stage is CapabilityDispatchStage.CLAIMED
+        ):
+            os._exit(exit_codes[crash_point])
+        return event
+
+    ExistingModeCapabilityGatewayDispatcher._append_dispatch_event = hard_exit
+    await executor.execute(job)
+    os._exit(99)
+
+
+asyncio.run(main())
+"""
+
+
+def _run_capability_dispatch_hard_exit(
+    *,
+    deployment_path: Path,
+    deployment_sha256: str,
+    job: JobView,
+    crash_point: str,
+    marker: Path,
+) -> subprocess.CompletedProcess[str]:
+    project_root = Path(__file__).parents[1]
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    job_path = marker.parent / f"{crash_point}-job.json"
+    job_path.write_text(job.model_dump_json(by_alias=True), encoding="utf-8")
+    environment = os.environ.copy()
+    source_root = str(project_root / "src")
+    inherited_pythonpath = environment.get("PYTHONPATH")
+    environment["PYTHONPATH"] = (
+        source_root
+        if not inherited_pythonpath
+        else f"{source_root}{os.pathsep}{inherited_pythonpath}"
+    )
+    return subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            _CAPABILITY_DISPATCH_HARD_EXIT_PROBE,
+            str(deployment_path),
+            deployment_sha256,
+            str(job_path),
+            crash_point,
+            str(marker),
+        ],
+        cwd=project_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
 def _seed_worker_graph(
     path: Path,
     *,
@@ -1464,19 +1598,14 @@ async def test_worker_reconciles_crash_after_permit_claim_without_redispatch(
         / runtime.deployment.mission_envelope.run_id
     )
     events = load_verified_run_events(run_path)
-    assert not any(
-        event.event_type.startswith("capability.dispatch.") for event in events
-    )
+    assert not any(event.event_type.startswith("capability.dispatch.") for event in events)
     records = [
         CapabilityDispatchReconciliation.model_validate(event.payload)
         for event in events
         if event.event_type == CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE
     ]
     assert len(records) == 1
-    assert (
-        records[0].status
-        is CapabilityDispatchReconciliationStatus.CONSUMED_WITHOUT_CLAIM
-    )
+    assert records[0].status is CapabilityDispatchReconciliationStatus.CONSUMED_WITHOUT_CLAIM
     assert records[0].manual_review_required is True
     assert records[0].redispatch_allowed is False
 
@@ -1526,9 +1655,7 @@ async def test_worker_reconciles_post_gateway_crash_as_outcome_unknown(
     )
     events = load_verified_run_events(run_path)
     lifecycle = [
-        event.event_type
-        for event in events
-        if event.event_type.startswith("capability.dispatch.")
+        event.event_type for event in events if event.event_type.startswith("capability.dispatch.")
     ]
     assert lifecycle == ["capability.dispatch.claimed"]
     records = [
@@ -1537,10 +1664,108 @@ async def test_worker_reconciles_post_gateway_crash_as_outcome_unknown(
         if event.event_type == CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE
     ]
     assert len(records) == 1
-    assert (
-        records[0].status
-        is CapabilityDispatchReconciliationStatus.CLAIMED_OUTCOME_UNKNOWN
+    assert records[0].status is CapabilityDispatchReconciliationStatus.CLAIMED_OUTCOME_UNKNOWN
+    assert records[0].manual_review_required is True
+    assert records[0].redispatch_allowed is False
+
+
+@pytest.mark.parametrize(
+    ("crash_point", "exit_code", "expected_status", "gateway_side_effect"),
+    [
+        pytest.param(
+            "after-permit-commit",
+            71,
+            CapabilityDispatchReconciliationStatus.CONSUMED_WITHOUT_CLAIM,
+            False,
+            id="permit-commit",
+        ),
+        pytest.param(
+            "after-claimed-audit",
+            72,
+            CapabilityDispatchReconciliationStatus.CLAIMED_OUTCOME_UNKNOWN,
+            False,
+            id="claimed-audit",
+        ),
+        pytest.param(
+            "after-gateway-side-effect",
+            73,
+            CapabilityDispatchReconciliationStatus.CLAIMED_OUTCOME_UNKNOWN,
+            True,
+            id="gateway-side-effect",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_worker_process_hard_exit_reconciles_without_redispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    crash_point: str,
+    exit_code: int,
+    expected_status: CapabilityDispatchReconciliationStatus,
+    gateway_side_effect: bool,
+) -> None:
+    _, job_input, deployment_path, content = _capability_worker_fixture(
+        tmp_path,
+        sample_campaign,
     )
+    job = _capability_worker_job(job_input)
+    marker = tmp_path / "external-gateway" / "side-effect.txt"
+
+    child = _run_capability_dispatch_hard_exit(
+        deployment_path=deployment_path,
+        deployment_sha256=sha256(content).hexdigest(),
+        job=job,
+        crash_point=crash_point,
+        marker=marker,
+    )
+
+    assert child.returncode == exit_code, child.stderr
+    assert marker.exists() is gateway_side_effect
+    if gateway_side_effect:
+        assert marker.read_bytes() == b"gateway-side-effect\n"
+
+    reopened = load_capability_graph_deployment(
+        deployment_path,
+        expected_sha256=sha256(content).hexdigest(),
+        clock=lambda: NOW,
+    )
+    retry_worker = _CountingSimulatedWorker()
+    retry_executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-retry-runs",
+        worker=retry_worker,
+        capability_deployment=reopened,
+    )
+    for attempt in (2, 3):
+        with pytest.raises(
+            PermanentExecutionError,
+            match=expected_status.value,
+        ):
+            await retry_executor.execute(job.model_copy(update={"attempts": attempt}))
+
+    assert retry_worker.calls == 0
+    permits = reopened.graph_store.permit_store.permits()
+    assert len(permits) == 1
+    run_path = (
+        Path(reopened.deployment.run_root)
+        / sample_campaign.metadata.name
+        / reopened.deployment.mission_envelope.run_id
+    )
+    events = load_verified_run_events(run_path)
+    lifecycle = [
+        event.event_type for event in events if event.event_type.startswith("capability.dispatch.")
+    ]
+    assert lifecycle == (
+        []
+        if expected_status is CapabilityDispatchReconciliationStatus.CONSUMED_WITHOUT_CLAIM
+        else ["capability.dispatch.claimed"]
+    )
+    records = [
+        CapabilityDispatchReconciliation.model_validate(event.payload)
+        for event in events
+        if event.event_type == CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE
+    ]
+    assert len(records) == 1
+    assert records[0].status is expected_status
     assert records[0].manual_review_required is True
     assert records[0].redispatch_allowed is False
 

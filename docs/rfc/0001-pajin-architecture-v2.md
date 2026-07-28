@@ -267,6 +267,10 @@ non-atomic crash windows without redispatch: no `claimed` event is
 `consumed-without-claim`, while a lone `claimed` event is `claimed-outcome-unknown`. Incomplete
 states are content-addressed to the consumed Permit and the earliest seal covering their evidence,
 recorded once, and require manual review.
+Real child-process hard exits now cover the Permit-commit/no-claim boundary, the
+claimed-append/pre-Gateway boundary, and the durable external-side-effect/pre-terminal boundary.
+Restart preserves one consumed Permit, records one reconciliation, and never invokes the retry
+Worker.
 The single-Campaign Graph Store now also emits a content-addressed backup manifest, verifies the
 full Event/Node/Projection/Snapshot/Permit state before backup and restore, restores only to a new
 path, and has subprocess hard-exit coverage for committed, uncommitted, and backup-publication

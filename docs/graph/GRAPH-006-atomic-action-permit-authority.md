@@ -1,7 +1,7 @@
 # GRAPH-006: Atomic ActionPermit Authority
 
-- Status: locally implemented
-- Date: 2026-07-26
+- Status: locally implemented with hard-exit crash-window verification
+- Date: 2026-07-28
 - Prerequisites: GRAPH-003, GRAPH-004, GRAPH-005, ADR-0047, ADR-0049
 
 ## Purpose
@@ -128,15 +128,20 @@ reconciliation, and proves repeated retries do not invoke Gateway or duplicate t
 GRAPH-005 additionally backs up and restores consumed Permits with their exact Snapshot/compiler
 bindings. A real subprocess hard exit preserves a committed Projection, rolls back an uncommitted
 writer mutation, and leaves a published backup restorable after immediate process termination.
+The Worker bridge now also terminates a real child process at three non-atomic boundaries:
+immediately after Permit commit but before the claimed event, immediately after the claimed
+RunStore append but before Gateway entry, and after a durable external Gateway side-effect marker
+but before the completed event. Reopen and two retries preserve one Permit, record one immutable
+reconciliation, and execute the retry Worker zero times.
 
-The concentrated Capability/Graph regression suite on Windows is `152 passed, 2 skipped`;
+The concentrated Capability/Graph regression suite on Windows is `155 passed, 2 skipped`;
 the skips are the existing POSIX symlink/hard-link semantics checks.
 
 ## Remaining boundaries
 
 - durable Capability Registry and compiler rotation policy;
-- real process termination across the Permit/RunStore/external Gateway crash windows beyond the
-  deterministic injections, plus exhaustive power-loss testing at every sync boundary;
+- exhaustive process-kill and power-loss testing at every remaining SQLite, RunStore, and
+  filesystem synchronization boundary;
 - signed/encrypted off-host backup retention and independent restore drills;
 - multi-host leader/lease and PostgreSQL/HA adapters; and
 - B2.9 Handoff projections and Supervisor shadow mode.

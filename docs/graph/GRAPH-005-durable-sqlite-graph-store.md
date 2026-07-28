@@ -150,6 +150,10 @@ The durable tests cover:
 - real subprocess `os._exit` immediately after Projection commit, before transaction commit, and
   after backup publication.
 
+The adjacent GRAPH-006 Worker bridge now also exercises real subprocess termination after Permit
+commit, after the RunStore claimed append, and after a durable external Gateway side-effect
+marker. Reopen reconciliation preserves the consumed Permit and never redispatches.
+
 ## Compatibility, migration, and rollback
 
 This adapter is opt-in and has no legacy Mode, CLI, API, or `RunStore` format change. There is no
@@ -166,8 +170,8 @@ GRAPH-006 now combines the latest-revision comparison with a consumed-on-issuanc
 dispatch claim in one SQLite transaction. The following remain after GRAPH-005/006:
 
 - multi-host leader election, leases, or PostgreSQL/HA storage;
-- process termination across the external Gateway side-effect window and exhaustive power-loss
-  injection at every SQLite/filesystem synchronization boundary;
+- exhaustive process-kill and power-loss injection at every remaining SQLite/filesystem
+  synchronization boundary;
 - scheduled/off-host retention, restore drills on another host, compaction, encryption at rest,
   signed manifests, or external integrity anchoring;
 - admission queue/runtime service wiring; or
