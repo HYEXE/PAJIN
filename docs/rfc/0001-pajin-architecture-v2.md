@@ -318,7 +318,10 @@ the A5 control path to an exact two- or three-wave deterministic authority. It b
 Campaign, ORCH-001 Snapshot, Compiler states, Observation rules, and transitions; selects only
 from the current wave's admitted Observations; binds every wave's ORCH-001 Plan digest into the
 append-only graph; and stops repeated state or `A -> B -> A` cycles before another dispatch.
-Multi-adapter scheduling remains separate future work.
+WALK-001 now adds the first Phase 4 executable segment: one Campaign-bound HTTP Recon request is
+bound to the exact DISC-003B adapter and must admit an `http-file-upload` Surface before an
+immutable projection can be published. It performs no upload and grants no route authority.
+Multi-adapter scheduling and the WALK-002 RAG-injection Hypothesis remain separate future work.
 
 ## 10. Definition of Done
 
@@ -357,3 +360,4 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
 - [ADR-0065: Surface Snapshot-Bound Orchestration](../adr/0065-surface-snapshot-bound-orchestration.md)
 - [ADR-0066: Deterministic Two-to-Three-Wave Orchestration](../adr/0066-deterministic-two-three-wave-orchestration.md)
+- [ADR-0067: File Upload Surface Walking Slice](../adr/0067-file-upload-surface-walking-slice.md)

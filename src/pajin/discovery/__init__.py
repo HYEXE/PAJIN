@@ -87,6 +87,7 @@ from pajin.discovery.projection import (
 from pajin.discovery.rag import HTTPAndOpenAPIRAGSurfaceAdapter
 from pajin.discovery.recon import (
     RECON_API_VERSION,
+    HTTPFileUploadReconPlanner,
     MCPInterfaceSurfaceAdapter,
     ReconPlanner,
     ReconWaveError,
@@ -150,6 +151,7 @@ __all__ = [
     "HTTPAuthenticationScheme",
     "HTTPAuthenticationSurfaceLocator",
     "HTTPFileUploadInput",
+    "HTTPFileUploadReconPlanner",
     "HTTPFileUploadSurfaceLocator",
     "HTTPRAGSurfaceLocator",
     "HTTPRouteSurfaceLocator",
