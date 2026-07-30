@@ -313,8 +313,12 @@ uses the existing sealed single-Recon-wave path. ORCH-001 now adds an immutable 
 Snapshot authority and additive Plan/Task digests over its exact projection/source roots, sealed
 artifact SHA-256, Surface Set, Hypothesis authority, and complete Specialist steps. The dynamic
 Hypothesis runner reconstructs that binding before capability issuance and every Tool dispatch,
-while existing Discovery Hypothesis v1alpha1 wire shapes remain unchanged. Multi-adapter
-scheduling and bounded multi-wave orchestration remain ORCH-002 work.
+while existing Discovery Hypothesis v1alpha1 wire shapes remain unchanged. ORCH-002 now extends
+the A5 control path to an exact two- or three-wave deterministic authority. It binds the complete
+Campaign, ORCH-001 Snapshot, Compiler states, Observation rules, and transitions; selects only
+from the current wave's admitted Observations; binds every wave's ORCH-001 Plan digest into the
+append-only graph; and stops repeated state or `A -> B -> A` cycles before another dispatch.
+Multi-adapter scheduling remains separate future work.
 
 ## 10. Definition of Done
 
@@ -351,3 +355,5 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
 - [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
+- [ADR-0065: Surface Snapshot-Bound Orchestration](../adr/0065-surface-snapshot-bound-orchestration.md)
+- [ADR-0066: Deterministic Two-to-Three-Wave Orchestration](../adr/0066-deterministic-two-three-wave-orchestration.md)

@@ -1033,6 +1033,18 @@ class DynamicHypothesisWaveRunner:
 
         return self._compiler.registered_rule_ids
 
+    def compile_authority(
+        self,
+        campaign: CampaignManifest,
+        recon: ReconWaveOutcome,
+    ) -> CompiledHypothesisWave:
+        """Compile the exact ORCH-001 Plan without issuing capability or dispatching."""
+
+        authoritative_campaign = CampaignManifest.model_validate(
+            campaign.model_dump(mode="python", by_alias=True)
+        )
+        return self._compiler.compile(authoritative_campaign, recon)
+
     async def run(
         self,
         campaign: CampaignManifest,

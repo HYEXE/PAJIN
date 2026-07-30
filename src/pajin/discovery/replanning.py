@@ -18,12 +18,19 @@ from pajin.discovery.hypothesis import (
     AttackHypothesis,
     AttackHypothesisSet,
     DynamicHypothesisWaveRunner,
+    HypothesisWaveError,
     HypothesisWaveOutcome,
     HypothesisWavePlan,
+    SurfaceBoundPlan,
+    SurfaceSnapshotAuthority,
 )
 from pajin.discovery.recon import ReconWaveOutcome
 from pajin.domain.models import CampaignManifest, StrictModel, ToolResult
-from pajin.runtime.control import BudgetController, BudgetExceeded, ExecutionCancellationContext
+from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
+    ExecutionCancellationContext,
+)
 from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import (
     RunIntegrityError,
@@ -38,6 +45,7 @@ from pajin.workflow.cancellation import (
 )
 
 REPLANNING_API_VERSION = "pajin.dev/discovery-replanning/v1alpha1"
+MULTI_WAVE_API_VERSION = "pajin.dev/deterministic-multi-wave/v1alpha1"
 _IDENTIFIER_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$"
 _SHA256_PATTERN = r"^[a-f0-9]{64}$"
 _OBSERVATION_ID_PATTERN = r"^hypothesis-observation_[a-f0-9]{64}$"
@@ -45,6 +53,8 @@ _RELATIONSHIP_ID_PATTERN = r"^observation-relationship_[a-f0-9]{64}$"
 _GRAPH_ID_PATTERN = r"^observation-graph_[a-f0-9]{64}$"
 _DECISION_ID_PATTERN = r"^replan-decision_[a-f0-9]{64}$"
 _POLICY_ID_PATTERN = r"^bounded-replanning-policy_[a-f0-9]{64}$"
+_COMPILER_STATE_ID_PATTERN = r"^deterministic-compiler-state_[a-f0-9]{64}$"
+_MULTI_WAVE_AUTHORITY_ID_PATTERN = r"^deterministic-multi-wave-authority_[a-f0-9]{64}$"
 _MAX_VALUE_BYTES = 64 * 1024
 _MAX_ARTIFACT_BYTES = 16 * 1024 * 1024
 _MAX_GRAPH_ITEMS = 400
@@ -63,6 +73,7 @@ ReplanReason = Literal[
     "no-transition",
     "novelty-below-threshold",
     "repeated-state",
+    "cycle-detected",
     "max-waves-reached",
 ]
 
@@ -130,10 +141,7 @@ class RegisteredObservationRule(StrictModel):
     @field_validator("field_path")
     @classmethod
     def validate_field_path(cls, value: list[str]) -> list[str]:
-        if any(
-            fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$", part) is None
-            for part in value
-        ):
+        if any(fullmatch(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$", part) is None for part in value):
             raise ValueError("Observation rule field path is malformed")
         return value
 
@@ -156,9 +164,7 @@ class RegisteredObservationRule(StrictModel):
         """Classify an exact registered result field without caller or LLM authority."""
 
         if hypothesis.rule_id != self.source_hypothesis_rule_id:
-            raise BoundedReplanningError(
-                "Observation rule belongs to another Hypothesis rule"
-            )
+            raise BoundedReplanningError("Observation rule belongs to another Hypothesis rule")
         if result.tool_id != hypothesis.required_tool_id:
             raise BoundedReplanningError("Tool result differs from its Hypothesis authority")
         current: object = result.model_dump(mode="json")
@@ -233,7 +239,7 @@ class RegisteredReplanTransition(StrictModel):
 
 
 class BoundedReplanningPolicy(StrictModel):
-    """Runtime-owned limits for the A5 two-wave vertical slice."""
+    """Runtime-owned limits for the deterministic two-or-three-wave baseline."""
 
     api_version: Literal["pajin.dev/discovery-replanning/v1alpha1"] = Field(
         default="pajin.dev/discovery-replanning/v1alpha1",
@@ -241,8 +247,8 @@ class BoundedReplanningPolicy(StrictModel):
     )
     kind: Literal["BoundedReplanningPolicy"] = "BoundedReplanningPolicy"
     policy_id: str = Field(default="", alias="policyId")
-    max_waves: Literal[2] = Field(default=2, alias="maxWaves")
-    max_replans: Literal[1] = Field(default=1, alias="maxReplans")
+    max_waves: Literal[2, 3] = Field(default=2, alias="maxWaves")
+    max_replans: Literal[1, 2] = Field(default=1, alias="maxReplans")
     novelty_threshold: float = Field(
         default=1.0,
         alias="noveltyThreshold",
@@ -253,6 +259,8 @@ class BoundedReplanningPolicy(StrictModel):
 
     @model_validator(mode="after")
     def validate_identity(self) -> BoundedReplanningPolicy:
+        if self.max_replans != self.max_waves - 1:
+            raise ValueError("Bounded Replanning max replans must equal max waves minus one")
         expected = "bounded-replanning-policy_" + discovery_digest(
             "pajin.discovery.bounded-replanning-policy/v1",
             {
@@ -267,6 +275,176 @@ class BoundedReplanningPolicy(StrictModel):
             raise ValueError("Bounded Replanning Policy ID differs from canonical authority")
         if fullmatch(_POLICY_ID_PATTERN, self.policy_id) is None:
             raise ValueError("Bounded Replanning Policy ID is malformed")
+        return self
+
+
+class DeterministicCompilerState(StrictModel):
+    """One fully compiled ORCH-001 Plan state eligible for a bounded follow-up."""
+
+    api_version: Literal["pajin.dev/deterministic-multi-wave/v1alpha1"] = Field(
+        default="pajin.dev/deterministic-multi-wave/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["DeterministicCompilerState"] = "DeterministicCompilerState"
+    state_id: str = Field(default="", alias="stateId")
+    compiler_id: str = Field(
+        alias="compilerId",
+        min_length=1,
+        max_length=200,
+        pattern=_IDENTIFIER_PATTERN,
+    )
+    rule_ids: list[str] = Field(alias="ruleIds", min_length=1, max_length=100)
+    hypothesis_set_id: str = Field(
+        alias="hypothesisSetId",
+        pattern=r"^attack-hypothesis-set_[a-f0-9]{64}$",
+    )
+    wave_plan_id: str = Field(
+        alias="wavePlanId",
+        pattern=r"^hypothesis-wave-plan_[a-f0-9]{64}$",
+    )
+    surface_bound_plan: SurfaceBoundPlan = Field(alias="surfaceBoundPlan")
+
+    @model_validator(mode="after")
+    def validate_identity(self) -> DeterministicCompilerState:
+        if self.rule_ids != sorted(self.rule_ids) or len(self.rule_ids) != len(set(self.rule_ids)):
+            raise ValueError("Compiler State rule IDs must be unique and sorted")
+        if any(fullmatch(_IDENTIFIER_PATTERN, item) is None for item in self.rule_ids):
+            raise ValueError("Compiler State rule ID is malformed")
+        if (
+            self.surface_bound_plan.hypothesis_set_id != self.hypothesis_set_id
+            or self.surface_bound_plan.wave_plan_id != self.wave_plan_id
+        ):
+            raise ValueError("Compiler State ORCH-001 Plan differs from its Hypothesis authority")
+        expected = "deterministic-compiler-state_" + discovery_digest(
+            "pajin.discovery.deterministic-compiler-state/v1",
+            {
+                "compilerId": self.compiler_id,
+                "ruleIds": self.rule_ids,
+                "hypothesisSetId": self.hypothesis_set_id,
+                "wavePlanId": self.wave_plan_id,
+                "surfaceBoundPlan": self.surface_bound_plan.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+            },
+        )
+        if not self.state_id:
+            self.state_id = expected
+        elif self.state_id != expected:
+            raise ValueError("Compiler State ID differs from canonical authority")
+        if fullmatch(_COMPILER_STATE_ID_PATTERN, self.state_id) is None:
+            raise ValueError("Compiler State ID is malformed")
+        return self
+
+
+class DeterministicMultiWaveAuthority(StrictModel):
+    """Complete immutable authority for one deterministic two-or-three-wave Run."""
+
+    api_version: Literal["pajin.dev/deterministic-multi-wave/v1alpha1"] = Field(
+        default="pajin.dev/deterministic-multi-wave/v1alpha1",
+        alias="apiVersion",
+    )
+    kind: Literal["DeterministicMultiWaveAuthority"] = "DeterministicMultiWaveAuthority"
+    authority_id: str = Field(default="", alias="authorityId")
+    authority_digest: str = Field(default="", alias="authorityDigest")
+    campaign_authority: CampaignManifest = Field(alias="campaignAuthority")
+    surface_snapshot: SurfaceSnapshotAuthority = Field(alias="surfaceSnapshot")
+    policy: BoundedReplanningPolicy
+    compiler_states: list[DeterministicCompilerState] = Field(
+        alias="compilerStates",
+        min_length=1,
+        max_length=3,
+    )
+    observation_rules: list[RegisteredObservationRule] = Field(
+        alias="observationRules",
+        min_length=1,
+        max_length=100,
+    )
+    transitions: list[RegisteredReplanTransition] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+    @model_validator(mode="after")
+    def validate_authority(self) -> DeterministicMultiWaveAuthority:
+        if self.surface_snapshot.campaign != self.campaign_authority.metadata.name:
+            raise ValueError("Multi-wave Surface Snapshot belongs to another Campaign")
+        compiler_order = [item.compiler_id for item in self.compiler_states]
+        if compiler_order != sorted(compiler_order) or len(compiler_order) != len(
+            set(compiler_order)
+        ):
+            raise ValueError("Multi-wave Compiler States must be unique and sorted")
+        observation_order = [item.source_hypothesis_rule_id for item in self.observation_rules]
+        if observation_order != sorted(observation_order) or len(observation_order) != len(
+            set(observation_order)
+        ):
+            raise ValueError("Multi-wave Observation rules must be unique and sorted")
+        transition_order = [item.transition_id for item in self.transitions]
+        if transition_order != sorted(transition_order) or len(transition_order) != len(
+            set(transition_order)
+        ):
+            raise ValueError("Multi-wave transitions must be unique and sorted")
+
+        states_by_compiler = {item.compiler_id: item for item in self.compiler_states}
+        if any(
+            item.surface_bound_plan.surface_snapshot != self.surface_snapshot
+            for item in self.compiler_states
+        ):
+            raise ValueError("Multi-wave Compiler State expands or replaces the Surface Snapshot")
+        known_rule_ids = {rule_id for state in self.compiler_states for rule_id in state.rule_ids}
+        if not known_rule_ids <= set(observation_order):
+            raise ValueError(
+                "every Multi-wave Compiler rule requires Observation authority"
+            )
+        for transition in self.transitions:
+            next_state = states_by_compiler.get(transition.next_compiler_id)
+            if (
+                transition.source_hypothesis_rule_id not in known_rule_ids
+                or next_state is None
+                or transition.next_rule_ids != next_state.rule_ids
+            ):
+                raise ValueError("Multi-wave transition differs from its Compiler State authority")
+
+        payload = {
+            "campaignAuthority": self.campaign_authority.model_dump(
+                mode="json",
+                by_alias=True,
+            ),
+            "surfaceSnapshot": self.surface_snapshot.model_dump(
+                mode="json",
+                by_alias=True,
+            ),
+            "policy": self.policy.model_dump(mode="json", by_alias=True),
+            "compilerStates": [
+                item.model_dump(mode="json", by_alias=True) for item in self.compiler_states
+            ],
+            "observationRules": [
+                item.model_dump(mode="json", by_alias=True) for item in self.observation_rules
+            ],
+            "transitions": [
+                item.model_dump(mode="json", by_alias=True) for item in self.transitions
+            ],
+        }
+        expected_digest = discovery_digest(
+            "pajin.discovery.deterministic-multi-wave-authority/v1",
+            payload,
+        )
+        expected_id = f"deterministic-multi-wave-authority_{expected_digest}"
+        if not self.authority_digest:
+            self.authority_digest = expected_digest
+        elif self.authority_digest != expected_digest:
+            raise ValueError("Multi-wave Authority Digest differs from canonical authority")
+        if not self.authority_id:
+            self.authority_id = expected_id
+        elif self.authority_id != expected_id:
+            raise ValueError("Multi-wave Authority ID differs from canonical authority")
+        if fullmatch(_MULTI_WAVE_AUTHORITY_ID_PATTERN, self.authority_id) is None:
+            raise ValueError("Multi-wave Authority ID is malformed")
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Deterministic Multi-wave authority",
+            max_bytes=_MAX_ARTIFACT_BYTES,
+        )
         return self
 
 
@@ -285,7 +463,7 @@ class HypothesisObservation(StrictModel):
         max_length=200,
         pattern=_IDENTIFIER_PATTERN,
     )
-    wave_index: int = Field(alias="waveIndex", ge=1, le=2)
+    wave_index: int = Field(alias="waveIndex", ge=1, le=3)
     source_run_id: str = Field(
         alias="sourceRunId",
         min_length=1,
@@ -399,7 +577,7 @@ class ObservationRelationship(StrictModel):
 
 
 class ObservationGraphSnapshot(StrictModel):
-    """Append-only canonical graph state after one or two Hypothesis waves."""
+    """Append-only canonical graph state after one to three Hypothesis waves."""
 
     api_version: Literal["pajin.dev/discovery-replanning/v1alpha1"] = Field(
         default="pajin.dev/discovery-replanning/v1alpha1",
@@ -416,7 +594,7 @@ class ObservationGraphSnapshot(StrictModel):
         alias="surfaceSetId",
         pattern=r"^attack-surface-set_[a-f0-9]{64}$",
     )
-    wave_count: int = Field(alias="waveCount", ge=1, le=2)
+    wave_count: int = Field(alias="waveCount", ge=1, le=3)
     previous_snapshot_id: str | None = Field(
         default=None,
         alias="previousSnapshotId",
@@ -430,7 +608,12 @@ class ObservationGraphSnapshot(StrictModel):
     hypothesis_set_ids: list[str] = Field(
         alias="hypothesisSetIds",
         min_length=1,
-        max_length=2,
+        max_length=3,
+    )
+    surface_bound_plan_digests: list[str] = Field(
+        default_factory=list,
+        alias="surfaceBoundPlanDigests",
+        max_length=3,
     )
     hypothesis_ids: list[str] = Field(
         alias="hypothesisIds",
@@ -456,27 +639,27 @@ class ObservationGraphSnapshot(StrictModel):
     def validate_graph(self) -> ObservationGraphSnapshot:
         self._validate_collections()
         self._validate_relationships()
-        expected = "observation-graph_" + discovery_digest(
-            "pajin.discovery.observation-graph-snapshot/v1",
-            {
-                "campaign": self.campaign,
-                "surfaceSetId": self.surface_set_id,
-                "waveCount": self.wave_count,
-                "previousSnapshotId": self.previous_snapshot_id,
-                "surfaceIds": self.surface_ids,
-                "hypothesisSetIds": self.hypothesis_set_ids,
-                "hypothesisIds": self.hypothesis_ids,
-                "observations": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in self.observations
-                ],
-                "relationships": [
-                    item.model_dump(mode="json", by_alias=True)
-                    for item in self.relationships
-                ],
-                "generatedAt": _utc_wire(self.generated_at),
-            },
-        )
+        payload = {
+            "campaign": self.campaign,
+            "surfaceSetId": self.surface_set_id,
+            "waveCount": self.wave_count,
+            "previousSnapshotId": self.previous_snapshot_id,
+            "surfaceIds": self.surface_ids,
+            "hypothesisSetIds": self.hypothesis_set_ids,
+            "hypothesisIds": self.hypothesis_ids,
+            "observations": [
+                item.model_dump(mode="json", by_alias=True) for item in self.observations
+            ],
+            "relationships": [
+                item.model_dump(mode="json", by_alias=True) for item in self.relationships
+            ],
+            "generatedAt": _utc_wire(self.generated_at),
+        }
+        identity_domain = "pajin.discovery.observation-graph-snapshot/v1"
+        if self.surface_bound_plan_digests:
+            payload["surfaceBoundPlanDigests"] = self.surface_bound_plan_digests
+            identity_domain = "pajin.discovery.observation-graph-snapshot/v2"
+        expected = "observation-graph_" + discovery_digest(identity_domain, payload)
         if not self.snapshot_id:
             self.snapshot_id = expected
         elif self.snapshot_id != expected:
@@ -495,14 +678,22 @@ class ObservationGraphSnapshot(StrictModel):
             set(self.surface_ids)
         ):
             raise ValueError("Observation Graph Surface IDs must be unique and sorted")
-        if self.hypothesis_ids != sorted(self.hypothesis_ids) or len(
-            self.hypothesis_ids
-        ) != len(set(self.hypothesis_ids)):
+        if self.hypothesis_ids != sorted(self.hypothesis_ids) or len(self.hypothesis_ids) != len(
+            set(self.hypothesis_ids)
+        ):
             raise ValueError("Observation Graph Hypothesis IDs must be unique and sorted")
-        if len(self.hypothesis_set_ids) != self.wave_count or len(
-            self.hypothesis_set_ids
-        ) != len(set(self.hypothesis_set_ids)):
+        if len(self.hypothesis_set_ids) != self.wave_count or len(self.hypothesis_set_ids) != len(
+            set(self.hypothesis_set_ids)
+        ):
             raise ValueError("Observation Graph must bind one unique Hypothesis Set per wave")
+        if self.surface_bound_plan_digests and (
+            len(self.surface_bound_plan_digests) != self.wave_count
+            or len(self.surface_bound_plan_digests) != len(set(self.surface_bound_plan_digests))
+            or any(
+                fullmatch(_SHA256_PATTERN, item) is None for item in self.surface_bound_plan_digests
+            )
+        ):
+            raise ValueError("Observation Graph must bind one unique Surface-bound Plan per wave")
         if (self.wave_count == 1) != (self.previous_snapshot_id is None):
             raise ValueError("Observation Graph previous snapshot lineage is invalid")
 
@@ -514,16 +705,13 @@ class ObservationGraphSnapshot(StrictModel):
             {item.observation_id for item in self.observations}
         ) != len(self.observations):
             raise ValueError("Observation Graph observations must be unique and sorted")
-        if {item.wave_index for item in self.observations} != set(
-            range(1, self.wave_count + 1)
-        ):
+        if {item.wave_index for item in self.observations} != set(range(1, self.wave_count + 1)):
             raise ValueError("Observation Graph must contain observations for every wave")
         if any(
             item.hypothesis_id not in self.hypothesis_ids
             or item.hypothesis_set_id not in self.hypothesis_set_ids
             or item.surface_id not in self.surface_ids
-            or item.hypothesis_set_id
-            != self.hypothesis_set_ids[item.wave_index - 1]
+            or item.hypothesis_set_id != self.hypothesis_set_ids[item.wave_index - 1]
             for item in self.observations
         ):
             raise ValueError("Observation belongs outside the Graph authority")
@@ -537,9 +725,7 @@ class ObservationGraphSnapshot(StrictModel):
         ):
             raise ValueError("Observation Graph relationships must be unique and sorted")
         observation_ids = {item.observation_id for item in self.observations}
-        observations_by_id = {
-            item.observation_id: item for item in self.observations
-        }
+        observations_by_id = {item.observation_id: item for item in self.observations}
         hypothesis_ids = set(self.hypothesis_ids)
         surface_ids = set(self.surface_ids)
         for relationship in self.relationships:
@@ -595,8 +781,8 @@ class ReplanDecision(StrictModel):
     graph_snapshot_id: str = Field(alias="graphSnapshotId", pattern=_GRAPH_ID_PATTERN)
     action: ReplanAction
     reason: ReplanReason
-    completed_waves: int = Field(alias="completedWaves", ge=1, le=2)
-    replan_count: int = Field(alias="replanCount", ge=0, le=1)
+    completed_waves: int = Field(alias="completedWaves", ge=1, le=3)
+    replan_count: int = Field(alias="replanCount", ge=0, le=2)
     novelty_score: float = Field(
         alias="noveltyScore",
         ge=0,
@@ -609,8 +795,8 @@ class ReplanDecision(StrictModel):
         le=1,
         allow_inf_nan=False,
     )
-    max_waves: Literal[2] = Field(default=2, alias="maxWaves")
-    max_replans: Literal[1] = Field(default=1, alias="maxReplans")
+    max_waves: Literal[2, 3] = Field(default=2, alias="maxWaves")
+    max_replans: Literal[1, 2] = Field(default=1, alias="maxReplans")
     transition_id: str | None = Field(
         default=None,
         alias="transitionId",
@@ -631,6 +817,16 @@ class ReplanDecision(StrictModel):
         max_length=100,
     )
     state_digest: str = Field(alias="stateDigest", pattern=_SHA256_PATTERN)
+    multi_wave_authority_id: str | None = Field(
+        default=None,
+        alias="multiWaveAuthorityId",
+        pattern=_MULTI_WAVE_AUTHORITY_ID_PATTERN,
+    )
+    multi_wave_authority_digest: str | None = Field(
+        default=None,
+        alias="multiWaveAuthorityDigest",
+        pattern=_SHA256_PATTERN,
+    )
     decided_at: datetime = Field(alias="decidedAt")
 
     @field_validator("decided_at")
@@ -640,9 +836,46 @@ class ReplanDecision(StrictModel):
 
     @model_validator(mode="after")
     def validate_decision(self) -> ReplanDecision:
-        if self.next_rule_ids != sorted(self.next_rule_ids) or len(
-            self.next_rule_ids
-        ) != len(set(self.next_rule_ids)):
+        self._validate_semantics()
+        payload = {
+            "policyId": self.policy_id,
+            "graphSnapshotId": self.graph_snapshot_id,
+            "action": self.action,
+            "reason": self.reason,
+            "completedWaves": self.completed_waves,
+            "replanCount": self.replan_count,
+            "noveltyScore": self.novelty_score,
+            "noveltyThreshold": self.novelty_threshold,
+            "maxWaves": self.max_waves,
+            "maxReplans": self.max_replans,
+            "transitionId": self.transition_id,
+            "nextCompilerId": self.next_compiler_id,
+            "nextRuleIds": self.next_rule_ids,
+            "stateDigest": self.state_digest,
+            "decidedAt": _utc_wire(self.decided_at),
+        }
+        identity_domain = "pajin.discovery.replan-decision/v1"
+        if self.multi_wave_authority_id is not None:
+            payload["multiWaveAuthorityId"] = self.multi_wave_authority_id
+            payload["multiWaveAuthorityDigest"] = self.multi_wave_authority_digest
+            identity_domain = "pajin.discovery.replan-decision/v2"
+        expected = "replan-decision_" + discovery_digest(identity_domain, payload)
+        if not self.decision_id:
+            self.decision_id = expected
+        elif self.decision_id != expected:
+            raise ValueError("Replan Decision ID differs from canonical authority")
+        if fullmatch(_DECISION_ID_PATTERN, self.decision_id) is None:
+            raise ValueError("Replan Decision ID is malformed")
+        return self
+
+    def _validate_semantics(self) -> None:
+        if self.max_replans != self.max_waves - 1:
+            raise ValueError("Replan Decision wave and replan limits disagree")
+        if (self.multi_wave_authority_id is None) != (self.multi_wave_authority_digest is None):
+            raise ValueError("Replan Decision Multi-wave authority is only partially bound")
+        if self.next_rule_ids != sorted(self.next_rule_ids) or len(self.next_rule_ids) != len(
+            set(self.next_rule_ids)
+        ):
             raise ValueError("Replan Decision next rule IDs must be unique and sorted")
         if any(fullmatch(_IDENTIFIER_PATTERN, item) is None for item in self.next_rule_ids):
             raise ValueError("Replan Decision next rule ID is malformed")
@@ -652,34 +885,15 @@ class ReplanDecision(StrictModel):
             and bool(self.next_rule_ids)
         )
         if self.action == "execute-next-wave":
-            if (
-                self.reason != "transition-selected"
-                or not has_transition
-                or self.completed_waves != 1
-                or self.replan_count != 1
-                or self.novelty_score < self.novelty_threshold
-            ):
-                raise ValueError("executable Replan Decision is not novel and bounded")
+            self._validate_execute_shape(has_transition)
         elif self.reason == "max-waves-reached":
-            if (
-                self.completed_waves != self.max_waves
-                or self.replan_count != self.max_replans
-                or has_transition
-                or self.novelty_score != 0
-            ):
-                raise ValueError("final Replan stop decision is malformed")
+            self._validate_max_wave_stop(has_transition)
         elif self.reason == "no-transition":
-            if (
-                self.completed_waves != 1
-                or self.replan_count != 0
-                or has_transition
-                or self.novelty_score != 0
-            ):
-                raise ValueError("no-transition Replan stop decision is malformed")
+            self._validate_no_transition_stop(has_transition)
         elif (
-            self.reason not in {"novelty-below-threshold", "repeated-state"}
-            or self.completed_waves != 1
-            or self.replan_count != 0
+            self.reason not in {"novelty-below-threshold", "repeated-state", "cycle-detected"}
+            or self.completed_waves >= self.max_waves
+            or self.replan_count != self.completed_waves - 1
             or not has_transition
             or (
                 self.reason == "novelty-below-threshold"
@@ -688,44 +902,46 @@ class ReplanDecision(StrictModel):
         ):
             raise ValueError("bounded Replan stop decision is malformed")
 
-        expected = "replan-decision_" + discovery_digest(
-            "pajin.discovery.replan-decision/v1",
-            {
-                "policyId": self.policy_id,
-                "graphSnapshotId": self.graph_snapshot_id,
-                "action": self.action,
-                "reason": self.reason,
-                "completedWaves": self.completed_waves,
-                "replanCount": self.replan_count,
-                "noveltyScore": self.novelty_score,
-                "noveltyThreshold": self.novelty_threshold,
-                "maxWaves": self.max_waves,
-                "maxReplans": self.max_replans,
-                "transitionId": self.transition_id,
-                "nextCompilerId": self.next_compiler_id,
-                "nextRuleIds": self.next_rule_ids,
-                "stateDigest": self.state_digest,
-                "decidedAt": _utc_wire(self.decided_at),
-            },
-        )
-        if not self.decision_id:
-            self.decision_id = expected
-        elif self.decision_id != expected:
-            raise ValueError("Replan Decision ID differs from canonical authority")
-        if fullmatch(_DECISION_ID_PATTERN, self.decision_id) is None:
-            raise ValueError("Replan Decision ID is malformed")
-        return self
+    def _validate_execute_shape(self, has_transition: bool) -> None:
+        if (
+            self.reason != "transition-selected"
+            or not has_transition
+            or self.completed_waves >= self.max_waves
+            or self.replan_count != self.completed_waves
+            or self.novelty_score < self.novelty_threshold
+        ):
+            raise ValueError("executable Replan Decision is not novel and bounded")
+
+    def _validate_max_wave_stop(self, has_transition: bool) -> None:
+        if (
+            self.completed_waves != self.max_waves
+            or self.replan_count != self.max_replans
+            or has_transition
+            or self.novelty_score != 0
+        ):
+            raise ValueError("final Replan stop decision is malformed")
+
+    def _validate_no_transition_stop(self, has_transition: bool) -> None:
+        if (
+            self.completed_waves >= self.max_waves
+            or self.replan_count != self.completed_waves - 1
+            or has_transition
+            or self.novelty_score != 0
+        ):
+            raise ValueError("no-transition Replan stop decision is malformed")
 
 
 @dataclass(frozen=True, slots=True)
 class BoundedReplanningOutcome:
-    """Sealed A5 control result and its optional second Hypothesis wave."""
+    """Sealed deterministic multi-wave control result and follow-up waves."""
 
     run_id: str
     run_path: Path
     graphs: tuple[ObservationGraphSnapshot, ...]
     decisions: tuple[ReplanDecision, ...]
     next_wave: HypothesisWaveOutcome | None
+    follow_up_waves: tuple[HypothesisWaveOutcome, ...] = ()
+    authority: DeterministicMultiWaveAuthority | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -733,6 +949,7 @@ class _VerifiedHypothesisWave:
     root_digest: str
     hypothesis_set: AttackHypothesisSet
     plan: HypothesisWavePlan
+    surface_bound_plan: SurfaceBoundPlan
     results: tuple[ToolResult, ...]
 
 
@@ -764,6 +981,7 @@ def _load_hypothesis_wave_authority(
                 "campaign.json": _MAX_ARTIFACT_BYTES,
                 "hypothesis-set.json": _MAX_ARTIFACT_BYTES,
                 "hypothesis-wave-plan.json": _MAX_ARTIFACT_BYTES,
+                "surface-bound-plan.json": _MAX_ARTIFACT_BYTES,
                 "hypothesis-results.json": _MAX_ARTIFACT_BYTES,
                 "run.json": _MAX_ARTIFACT_BYTES,
             },
@@ -778,6 +996,9 @@ def _load_hypothesis_wave_authority(
         plan = HypothesisWavePlan.model_validate_json(
             snapshot.artifact_bytes("hypothesis-wave-plan.json")
         )
+        surface_bound_plan = SurfaceBoundPlan.model_validate_json(
+            snapshot.artifact_bytes("surface-bound-plan.json")
+        )
         results = tuple(
             TypeAdapter(list[ToolResult]).validate_json(
                 snapshot.artifact_bytes("hypothesis-results.json")
@@ -785,9 +1006,7 @@ def _load_hypothesis_wave_authority(
         )
         run_state = json.loads(snapshot.artifact_bytes("run.json"))
     except (KeyError, OSError, RunIntegrityError, TypeError, ValueError) as exc:
-        raise BoundedReplanningError(
-            "Hypothesis Wave Run is not a valid sealed authority"
-        ) from exc
+        raise BoundedReplanningError("Hypothesis Wave Run is not a valid sealed authority") from exc
     if stored_campaign != campaign:
         raise BoundedReplanningError("Hypothesis Wave belongs to another Campaign")
     if not isinstance(run_state, dict) or (
@@ -796,11 +1015,20 @@ def _load_hypothesis_wave_authority(
         or run_state.get("purpose") != "dynamic-hypothesis-wave"
         or run_state.get("hypothesisSetId") != hypothesis_set.hypothesis_set_id
         or run_state.get("wavePlanId") != plan.wave_plan_id
+        or run_state.get("surfaceSnapshotId") != surface_bound_plan.surface_snapshot.snapshot_id
+        or run_state.get("surfaceSnapshotRevision") != surface_bound_plan.surface_snapshot.revision
+        or run_state.get("surfaceSnapshotDigest")
+        != surface_bound_plan.surface_snapshot.snapshot_digest
+        or run_state.get("surfaceBoundPlanDigest") != surface_bound_plan.plan_digest
     ):
         raise BoundedReplanningError("Hypothesis Wave terminal state is not authoritative")
     if (
         hypothesis_set.compiler_id != plan.compiler_id
         or hypothesis_set.hypothesis_set_id != plan.hypothesis_set_id
+        or surface_bound_plan.hypothesis_set_id != hypothesis_set.hypothesis_set_id
+        or surface_bound_plan.wave_plan_id != plan.wave_plan_id
+        or surface_bound_plan.surface_snapshot.campaign != hypothesis_set.campaign
+        or surface_bound_plan.surface_snapshot.surface_set_id != hypothesis_set.surface_set_id
         or [item.hypothesis_id for item in hypothesis_set.hypotheses]
         != [item.hypothesis_id for item in plan.steps]
         or len(results) != len(plan.steps)
@@ -831,35 +1059,47 @@ def _load_hypothesis_wave_authority(
         and event.payload.get("wavePlanId") == plan.wave_plan_id
     ]
     if len(compiled_events) != 1 or len(completed_events) != 1:
-        raise BoundedReplanningError(
-            "Hypothesis Wave audit authority is missing or ambiguous"
-        )
+        raise BoundedReplanningError("Hypothesis Wave audit authority is missing or ambiguous")
+    expected_task_digests = [item.task_digest for item in surface_bound_plan.tasks]
+    for event in (compiled_events[0], completed_events[0]):
+        if (
+            event.payload.get("surfaceSnapshotId")
+            != surface_bound_plan.surface_snapshot.snapshot_id
+            or event.payload.get("surfaceSnapshotRevision")
+            != surface_bound_plan.surface_snapshot.revision
+            or event.payload.get("surfaceSnapshotDigest")
+            != surface_bound_plan.surface_snapshot.snapshot_digest
+            or event.payload.get("surfaceBoundPlanDigest") != surface_bound_plan.plan_digest
+            or event.payload.get("surfaceBoundTaskDigests") != expected_task_digests
+        ):
+            raise BoundedReplanningError("Hypothesis Wave ORCH-001 audit authority disagrees")
     if (
         outcome.run_path.resolve() != snapshot.run_path
         or outcome.hypothesis_set != hypothesis_set
         or outcome.plan != plan
+        or outcome.surface_bound_plan != surface_bound_plan
         or outcome.tool_results != results
     ):
-        raise BoundedReplanningError(
-            "Hypothesis Wave outcome differs from its sealed Run"
-        )
+        raise BoundedReplanningError("Hypothesis Wave outcome differs from its sealed Run")
     return _VerifiedHypothesisWave(
         root_digest=snapshot.verification.root_digest,
         hypothesis_set=hypothesis_set.model_copy(deep=True),
         plan=plan.model_copy(deep=True),
+        surface_bound_plan=surface_bound_plan.model_copy(deep=True),
         results=tuple(result.model_copy(deep=True) for result in results),
     )
 
 
 class BoundedReplanningRunner:
-    """Promote observations and execute at most one novel follow-up wave."""
+    """Promote observations through a deterministic two-or-three-wave baseline."""
 
     def __init__(
         self,
         *,
         observation_rules: Sequence[RegisteredObservationRule],
         transitions: Sequence[RegisteredReplanTransition],
-        next_wave: DynamicHypothesisWaveRunner,
+        next_wave: DynamicHypothesisWaveRunner | None = None,
+        next_waves: Sequence[DynamicHypothesisWaveRunner] | None = None,
         output_root: Path,
         policy: BoundedReplanningPolicy | None = None,
     ) -> None:
@@ -881,16 +1121,45 @@ class BoundedReplanningRunner:
         transition_ids = [item.transition_id for item in registered_transitions]
         if len(transition_ids) != len(set(transition_ids)):
             raise ValueError("Replan transition IDs must be unique")
-        if not isinstance(next_wave, DynamicHypothesisWaveRunner):
-            raise TypeError("Bounded Replanner requires a Dynamic Hypothesis Wave runner")
-        next_rule_ids = list(next_wave.registered_rule_ids)
-        if any(
-            item.next_compiler_id != next_wave.compiler_id
-            or item.next_rule_ids != next_rule_ids
-            for item in registered_transitions
+        if next_wave is not None and next_waves is not None:
+            raise ValueError("configure either next_wave or next_waves, not both")
+        configured_waves = (
+            tuple(next_waves)
+            if next_waves is not None
+            else (() if next_wave is None else (next_wave,))
+        )
+        if not configured_waves or any(
+            not isinstance(item, DynamicHypothesisWaveRunner) for item in configured_waves
         ):
+            raise TypeError("Bounded Replanner requires one or two Dynamic Hypothesis Wave runners")
+        resolved_policy = (
+            policy.model_copy(deep=True) if policy is not None else BoundedReplanningPolicy()
+        )
+        if len(configured_waves) > resolved_policy.max_replans:
+            raise ValueError("configured follow-up Waves exceed the Replanning policy")
+        compiler_ids = [item.compiler_id for item in configured_waves]
+        if len(compiler_ids) != len(set(compiler_ids)):
+            raise ValueError("follow-up Wave Compiler IDs must be unique")
+        waves_by_compiler = {item.compiler_id: item for item in configured_waves}
+        if any(
+            transition.next_compiler_id not in waves_by_compiler
+            or transition.next_rule_ids
+            != list(waves_by_compiler[transition.next_compiler_id].registered_rule_ids)
+            for transition in registered_transitions
+        ):
+            raise ValueError("Replan transitions must match a configured next Compiler authority")
+        if set(waves_by_compiler) != {item.next_compiler_id for item in registered_transitions}:
+            raise ValueError("every configured follow-up Compiler must be transition-bound")
+        observed_rule_ids = set(source_rule_ids)
+        follow_up_rule_ids = {
+            rule_id for wave in configured_waves for rule_id in wave.registered_rule_ids
+        }
+        transition_source_rule_ids = {
+            item.source_hypothesis_rule_id for item in registered_transitions
+        }
+        if not (follow_up_rule_ids | transition_source_rule_ids) <= observed_rule_ids:
             raise ValueError(
-                "Replan transitions must match the configured next Compiler authority"
+                "every follow-up and transition source rule requires Observation authority"
             )
         self._observation_rules = tuple(
             sorted(rules, key=lambda item: item.source_hypothesis_rule_id)
@@ -898,11 +1167,10 @@ class BoundedReplanningRunner:
         self._transitions = tuple(
             sorted(registered_transitions, key=lambda item: item.transition_id)
         )
-        self._next_wave = next_wave
+        self._next_waves = tuple(configured_waves)
+        self._next_wave_by_compiler = waves_by_compiler
         self._output_root = output_root
-        self._policy = (
-            policy.model_copy(deep=True) if policy is not None else BoundedReplanningPolicy()
-        )
+        self._policy = resolved_policy
 
     async def run(
         self,
@@ -935,7 +1203,12 @@ class BoundedReplanningRunner:
         )
         state = _ReplanningState(budget=budget, rate_limits=rate_limits)
         try:
-            graphs, decisions, next_outcome = await await_with_campaign_deadline(
+            (
+                graphs,
+                decisions,
+                follow_up_waves,
+                authority,
+            ) = await await_with_campaign_deadline(
                 self._execute(
                     authoritative_campaign,
                     recon,
@@ -983,7 +1256,9 @@ class BoundedReplanningRunner:
             run_path=store.path,
             graphs=tuple(item.model_copy(deep=True) for item in graphs),
             decisions=tuple(item.model_copy(deep=True) for item in decisions),
-            next_wave=next_outcome,
+            next_wave=follow_up_waves[0] if follow_up_waves else None,
+            follow_up_waves=tuple(follow_up_waves),
+            authority=authority.model_copy(deep=True),
         )
 
     async def _execute(
@@ -997,7 +1272,8 @@ class BoundedReplanningRunner:
     ) -> tuple[
         list[ObservationGraphSnapshot],
         list[ReplanDecision],
-        HypothesisWaveOutcome | None,
+        list[HypothesisWaveOutcome],
+        DeterministicMultiWaveAuthority,
     ]:
         store.append_event(
             "campaign.started",
@@ -1014,10 +1290,7 @@ class BoundedReplanningRunner:
         )
         store.write_json(
             "observation-rules.json",
-            [
-                item.model_dump(mode="json", by_alias=True)
-                for item in self._observation_rules
-            ],
+            [item.model_dump(mode="json", by_alias=True) for item in self._observation_rules],
         )
         store.write_json(
             "replan-transitions.json",
@@ -1027,134 +1300,315 @@ class BoundedReplanningRunner:
         state.stage = "initial-wave-verification"
         initial = _load_hypothesis_wave_authority(campaign, initial_wave)
         if initial.hypothesis_set.surface_set_id != recon.surface_set.surface_set_id:
-            raise BoundedReplanningError(
-                "initial Hypothesis Wave and Recon projection disagree"
-            )
-        graph_one = self._graph_for_wave(
+            raise BoundedReplanningError("initial Hypothesis Wave and Recon projection disagree")
+        authority = self._build_authority(campaign, recon, initial)
+        self._record_authority(store, authority)
+        graph = self._graph_for_wave(
             campaign=campaign,
             verified=initial,
             run_id=initial_wave.run_id,
             wave_index=1,
             previous=None,
         )
-        self._record_graph(store, graph_one)
+        self._record_graph(store, graph)
 
-        state.stage = "replan-decision"
-        match = self._select_transition(initial, graph_one)
-        if match is None:
-            decision = self._decision(
-                graph=graph_one,
-                action="stop",
-                reason="no-transition",
-                novelty_score=0,
-                state_digest=self._graph_state_digest(graph_one),
+        graphs = [graph]
+        decisions: list[ReplanDecision] = []
+        follow_up_waves: list[HypothesisWaveOutcome] = []
+        verified = initial
+        seen_run_ids = {initial_wave.run_id}
+        seen_state_digests = [
+            self._next_plan_state_digest(
+                authority.surface_snapshot,
+                self._compiler_state(
+                    authority,
+                    initial.hypothesis_set.compiler_id,
+                    sorted({item.rule_id for item in initial.hypothesis_set.hypotheses}),
+                ),
             )
-            self._record_decision(store, decision)
-            self._complete(store, state, [graph_one], [decision], None)
-            return [graph_one], [decision], None
+        ]
 
-        transition = match.transition
-        novelty_score = self._novelty_score(initial, transition)
-        next_state_digest = self._next_plan_state_digest(
-            graph_one.surface_set_id,
-            transition.next_compiler_id,
-            transition.next_rule_ids,
-        )
-        initial_state_digest = self._next_plan_state_digest(
-            graph_one.surface_set_id,
-            initial.hypothesis_set.compiler_id,
-            sorted({item.rule_id for item in initial.hypothesis_set.hypotheses}),
-        )
-        if next_state_digest == initial_state_digest:
-            decision = self._decision(
-                graph=graph_one,
-                action="stop",
-                reason="repeated-state",
+        while True:
+            graph = graphs[-1]
+            state.stage = "replan-decision"
+            self._require_current_authority(campaign, recon, initial, authority)
+            if graph.wave_count == self._policy.max_waves:
+                decision = self._decision(
+                    authority=authority,
+                    graph=graph,
+                    action="stop",
+                    reason="max-waves-reached",
+                    replan_count=len(follow_up_waves),
+                    novelty_score=0,
+                    state_digest=self._graph_state_digest(graph),
+                )
+                self._record_decision(store, decision)
+                decisions.append(decision)
+                self._complete(
+                    store,
+                    state,
+                    authority,
+                    graphs,
+                    decisions,
+                    follow_up_waves,
+                )
+                return graphs, decisions, follow_up_waves, authority
+
+            match = self._select_transition(verified, graph)
+            if match is None:
+                decision = self._decision(
+                    authority=authority,
+                    graph=graph,
+                    action="stop",
+                    reason="no-transition",
+                    replan_count=len(follow_up_waves),
+                    novelty_score=0,
+                    state_digest=self._graph_state_digest(graph),
+                )
+                self._record_decision(store, decision)
+                decisions.append(decision)
+                self._complete(
+                    store,
+                    state,
+                    authority,
+                    graphs,
+                    decisions,
+                    follow_up_waves,
+                )
+                return graphs, decisions, follow_up_waves, authority
+
+            transition = match.transition
+            novelty_score = self._novelty_score(verified, transition)
+            next_compiler_state = self._compiler_state(
+                authority,
+                transition.next_compiler_id,
+                transition.next_rule_ids,
+            )
+            next_state_digest = self._next_plan_state_digest(
+                authority.surface_snapshot,
+                next_compiler_state,
+            )
+            if next_state_digest == seen_state_digests[-1]:
+                stop_reason: ReplanReason = "repeated-state"
+            elif next_state_digest in seen_state_digests:
+                stop_reason = "cycle-detected"
+            elif novelty_score < self._policy.novelty_threshold:
+                stop_reason = "novelty-below-threshold"
+            else:
+                stop_reason = "transition-selected"
+
+            if stop_reason != "transition-selected":
+                decision = self._decision(
+                    authority=authority,
+                    graph=graph,
+                    action="stop",
+                    reason=stop_reason,
+                    replan_count=len(follow_up_waves),
+                    novelty_score=novelty_score,
+                    state_digest=next_state_digest,
+                    transition=transition,
+                )
+                self._record_decision(store, decision)
+                decisions.append(decision)
+                self._complete(
+                    store,
+                    state,
+                    authority,
+                    graphs,
+                    decisions,
+                    follow_up_waves,
+                )
+                return graphs, decisions, follow_up_waves, authority
+
+            next_runner = self._next_wave_by_compiler[transition.next_compiler_id]
+            if list(next_runner.registered_rule_ids) != transition.next_rule_ids:
+                raise BoundedReplanningError("next Compiler drifted from the Multi-wave authority")
+            execute_decision = self._decision(
+                authority=authority,
+                graph=graph,
+                action="execute-next-wave",
+                reason="transition-selected",
+                replan_count=len(follow_up_waves) + 1,
                 novelty_score=novelty_score,
                 state_digest=next_state_digest,
                 transition=transition,
             )
-            self._record_decision(store, decision)
-            self._complete(store, state, [graph_one], [decision], None)
-            return [graph_one], [decision], None
-        if novelty_score < self._policy.novelty_threshold:
-            decision = self._decision(
-                graph=graph_one,
-                action="stop",
-                reason="novelty-below-threshold",
-                novelty_score=novelty_score,
-                state_digest=next_state_digest,
-                transition=transition,
+            self._record_decision(store, execute_decision)
+            decisions.append(execute_decision)
+            store.append_event(
+                "discovery.replan.wave-dispatched",
+                {
+                    "decisionId": execute_decision.decision_id,
+                    "multiWaveAuthorityId": authority.authority_id,
+                    "multiWaveAuthorityDigest": authority.authority_digest,
+                    "sourceSurfaceBoundPlanDigest": (verified.surface_bound_plan.plan_digest),
+                    "transitionId": transition.transition_id,
+                    "nextCompilerId": transition.next_compiler_id,
+                    "nextRuleIds": transition.next_rule_ids,
+                    "nextSurfaceBoundPlanDigest": (
+                        next_compiler_state.surface_bound_plan.plan_digest
+                    ),
+                    "waveIndex": graph.wave_count + 1,
+                },
             )
-            self._record_decision(store, decision)
-            self._complete(store, state, [graph_one], [decision], None)
-            return [graph_one], [decision], None
 
-        execute_decision = self._decision(
-            graph=graph_one,
-            action="execute-next-wave",
-            reason="transition-selected",
-            novelty_score=novelty_score,
-            state_digest=next_state_digest,
-            transition=transition,
+            state.stage = f"wave-{graph.wave_count + 1}-execution"
+            next_outcome = await next_runner.run(
+                campaign,
+                recon,
+                cancellation=cancellation,
+                budget=state.budget,
+                rate_limits=state.rate_limits,
+            )
+            state.stage = f"wave-{graph.wave_count + 1}-verification"
+            next_verified = _load_hypothesis_wave_authority(campaign, next_outcome)
+            next_rules = sorted({item.rule_id for item in next_verified.hypothesis_set.hypotheses})
+            if (
+                next_verified.hypothesis_set.compiler_id != transition.next_compiler_id
+                or next_rules != transition.next_rule_ids
+                or next_verified.surface_bound_plan.surface_snapshot != authority.surface_snapshot
+                or next_verified.hypothesis_set.hypothesis_set_id
+                != next_compiler_state.hypothesis_set_id
+                or next_verified.plan.wave_plan_id != next_compiler_state.wave_plan_id
+                or next_verified.surface_bound_plan != next_compiler_state.surface_bound_plan
+                or next_outcome.run_id in seen_run_ids
+            ):
+                raise BoundedReplanningError(
+                    "next Hypothesis Wave expands or differs from the Replan authority"
+                )
+
+            next_graph = self._graph_for_wave(
+                campaign=campaign,
+                verified=next_verified,
+                run_id=next_outcome.run_id,
+                wave_index=graph.wave_count + 1,
+                previous=graph,
+                transition_match=match,
+            )
+            self._record_graph(store, next_graph)
+            graphs.append(next_graph)
+            follow_up_waves.append(next_outcome)
+            seen_run_ids.add(next_outcome.run_id)
+            seen_state_digests.append(next_state_digest)
+            verified = next_verified
+
+    def _build_authority(
+        self,
+        campaign: CampaignManifest,
+        recon: ReconWaveOutcome,
+        initial: _VerifiedHypothesisWave,
+    ) -> DeterministicMultiWaveAuthority:
+        states_by_compiler: dict[str, DeterministicCompilerState] = {}
+
+        def add_state(
+            hypothesis_set: AttackHypothesisSet,
+            plan: HypothesisWavePlan,
+            surface_bound_plan: SurfaceBoundPlan,
+        ) -> None:
+            if surface_bound_plan.surface_snapshot != initial.surface_bound_plan.surface_snapshot:
+                raise BoundedReplanningError(
+                    "follow-up Compiler expands or replaces the Surface Snapshot"
+                )
+            state = DeterministicCompilerState(
+                compilerId=hypothesis_set.compiler_id,
+                ruleIds=sorted({item.rule_id for item in hypothesis_set.hypotheses}),
+                hypothesisSetId=hypothesis_set.hypothesis_set_id,
+                wavePlanId=plan.wave_plan_id,
+                surfaceBoundPlan=surface_bound_plan.model_copy(deep=True),
+            )
+            current = states_by_compiler.get(hypothesis_set.compiler_id)
+            if current is not None and current != state:
+                raise BoundedReplanningError(
+                    "one Compiler ID maps to multiple deterministic states"
+                )
+            states_by_compiler[hypothesis_set.compiler_id] = state
+
+        add_state(
+            initial.hypothesis_set,
+            initial.plan,
+            initial.surface_bound_plan,
         )
-        self._record_decision(store, execute_decision)
+        try:
+            for wave in self._next_waves:
+                compiled = wave.compile_authority(campaign, recon)
+                if compiled.hypothesis_set.compiler_id != wave.compiler_id or sorted(
+                    {item.rule_id for item in compiled.hypothesis_set.hypotheses}
+                ) != list(wave.registered_rule_ids):
+                    raise BoundedReplanningError(
+                        "follow-up Compiler preview differs from its registration"
+                    )
+                add_state(
+                    compiled.hypothesis_set,
+                    compiled.plan,
+                    compiled.surface_bound_plan,
+                )
+            return DeterministicMultiWaveAuthority(
+                campaignAuthority=campaign.model_copy(deep=True),
+                surfaceSnapshot=(initial.surface_bound_plan.surface_snapshot.model_copy(deep=True)),
+                policy=self._policy.model_copy(deep=True),
+                compilerStates=sorted(
+                    states_by_compiler.values(),
+                    key=lambda item: item.compiler_id,
+                ),
+                observationRules=[item.model_copy(deep=True) for item in self._observation_rules],
+                transitions=[item.model_copy(deep=True) for item in self._transitions],
+            )
+        except (HypothesisWaveError, TypeError, ValueError) as exc:
+            raise BoundedReplanningError("deterministic Multi-wave authority is invalid") from exc
+
+    def _require_current_authority(
+        self,
+        campaign: CampaignManifest,
+        recon: ReconWaveOutcome,
+        initial: _VerifiedHypothesisWave,
+        authority: DeterministicMultiWaveAuthority,
+    ) -> None:
+        if self._build_authority(campaign, recon, initial) != authority:
+            raise BoundedReplanningError(
+                "deterministic Multi-wave authority changed before decision"
+            )
+
+    @staticmethod
+    def _compiler_state(
+        authority: DeterministicMultiWaveAuthority,
+        compiler_id: str,
+        rule_ids: Sequence[str],
+    ) -> DeterministicCompilerState:
+        matches = [
+            item
+            for item in authority.compiler_states
+            if item.compiler_id == compiler_id and item.rule_ids == list(rule_ids)
+        ]
+        if len(matches) != 1:
+            raise BoundedReplanningError(
+                "Compiler state is absent or ambiguous in Multi-wave authority"
+            )
+        return matches[0]
+
+    @staticmethod
+    def _record_authority(
+        store: RunStore,
+        authority: DeterministicMultiWaveAuthority,
+    ) -> None:
+        store.write_json(
+            "deterministic-multi-wave-authority.json",
+            authority.model_dump(mode="json", by_alias=True),
+        )
         store.append_event(
-            "discovery.replan.wave-dispatched",
+            "discovery.multi-wave.authority-bound",
             {
-                "decisionId": execute_decision.decision_id,
-                "transitionId": transition.transition_id,
-                "nextCompilerId": transition.next_compiler_id,
-                "nextRuleIds": transition.next_rule_ids,
-                "waveIndex": 2,
+                "authorityId": authority.authority_id,
+                "authorityDigest": authority.authority_digest,
+                "policyId": authority.policy.policy_id,
+                "maxWaves": authority.policy.max_waves,
+                "maxReplans": authority.policy.max_replans,
+                "surfaceSnapshotId": authority.surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": authority.surface_snapshot.revision,
+                "surfaceSnapshotDigest": authority.surface_snapshot.snapshot_digest,
+                "compilerStateIds": [item.state_id for item in authority.compiler_states],
+                "artifact": "deterministic-multi-wave-authority.json",
             },
         )
-
-        state.stage = "next-wave-execution"
-        next_outcome = await self._next_wave.run(
-            campaign,
-            recon,
-            cancellation=cancellation,
-            budget=state.budget,
-            rate_limits=state.rate_limits,
-        )
-        state.stage = "next-wave-verification"
-        next_verified = _load_hypothesis_wave_authority(campaign, next_outcome)
-        next_rules = sorted(
-            {item.rule_id for item in next_verified.hypothesis_set.hypotheses}
-        )
-        if (
-            next_verified.hypothesis_set.compiler_id != transition.next_compiler_id
-            or next_rules != transition.next_rule_ids
-            or next_verified.hypothesis_set.surface_set_id != graph_one.surface_set_id
-            or next_outcome.run_id == initial_wave.run_id
-        ):
-            raise BoundedReplanningError(
-                "next Hypothesis Wave differs from the Replan Decision authority"
-            )
-
-        state.stage = "final-observation-graph"
-        graph_two = self._graph_for_wave(
-            campaign=campaign,
-            verified=next_verified,
-            run_id=next_outcome.run_id,
-            wave_index=2,
-            previous=graph_one,
-            transition_match=match,
-        )
-        self._record_graph(store, graph_two)
-        final_decision = self._decision(
-            graph=graph_two,
-            action="stop",
-            reason="max-waves-reached",
-            novelty_score=0,
-            state_digest=self._graph_state_digest(graph_two),
-        )
-        self._record_decision(store, final_decision)
-        graphs = [graph_one, graph_two]
-        decisions = [execute_decision, final_decision]
-        self._complete(store, state, graphs, decisions, next_outcome)
-        return graphs, decisions, next_outcome
 
     def _observations(
         self,
@@ -1163,20 +1617,14 @@ class BoundedReplanningRunner:
         run_id: str,
         wave_index: int,
     ) -> list[HypothesisObservation]:
-        rules = {
-            item.source_hypothesis_rule_id: item for item in self._observation_rules
-        }
-        hypotheses = {
-            item.hypothesis_id: item for item in verified.hypothesis_set.hypotheses
-        }
+        rules = {item.source_hypothesis_rule_id: item for item in self._observation_rules}
+        hypotheses = {item.hypothesis_id: item for item in verified.hypothesis_set.hypotheses}
         observations: list[HypothesisObservation] = []
         for step, result in zip(verified.plan.steps, verified.results, strict=True):
             hypothesis = hypotheses[step.hypothesis_id]
             rule = rules.get(hypothesis.rule_id)
             if rule is None:
-                raise BoundedReplanningError(
-                    "Hypothesis result has no registered Observation rule"
-                )
+                raise BoundedReplanningError("Hypothesis result has no registered Observation rule")
             result_payload = result.model_dump(mode="json")
             observations.append(
                 HypothesisObservation(
@@ -1227,14 +1675,13 @@ class BoundedReplanningRunner:
             observations = new_observations
             relationships = new_relationships
             hypothesis_set_ids = [verified.hypothesis_set.hypothesis_set_id]
-            hypothesis_ids = [
-                item.hypothesis_id for item in verified.hypothesis_set.hypotheses
-            ]
+            surface_bound_plan_digests = [verified.surface_bound_plan.plan_digest]
+            hypothesis_ids = [item.hypothesis_id for item in verified.hypothesis_set.hypotheses]
             surface_ids = [item.surface_id for item in verified.hypothesis_set.hypotheses]
         else:
             if transition_match is None:
                 raise BoundedReplanningError(
-                    "second Observation Graph requires its transition authority"
+                    "follow-up Observation Graph requires its transition authority"
                 )
             observations = [
                 item.model_copy(deep=True) for item in previous.observations
@@ -1261,7 +1708,11 @@ class BoundedReplanningRunner:
                 )
             hypothesis_set_ids = [
                 *previous.hypothesis_set_ids,
-                verified.hypothesis_set.hypothesis_set_id
+                verified.hypothesis_set.hypothesis_set_id,
+            ]
+            surface_bound_plan_digests = [
+                *previous.surface_bound_plan_digests,
+                verified.surface_bound_plan.plan_digest,
             ]
             hypothesis_ids = previous.hypothesis_ids + [
                 item.hypothesis_id for item in verified.hypothesis_set.hypotheses
@@ -1276,6 +1727,7 @@ class BoundedReplanningRunner:
             previousSnapshotId=previous.snapshot_id if previous is not None else None,
             surfaceIds=sorted(set(surface_ids)),
             hypothesisSetIds=hypothesis_set_ids,
+            surfaceBoundPlanDigests=surface_bound_plan_digests,
             hypothesisIds=sorted(set(hypothesis_ids)),
             observations=sorted(
                 observations,
@@ -1293,11 +1745,11 @@ class BoundedReplanningRunner:
         verified: _VerifiedHypothesisWave,
         graph: ObservationGraphSnapshot,
     ) -> _TransitionMatch | None:
-        hypotheses = {
-            item.hypothesis_id: item for item in verified.hypothesis_set.hypotheses
-        }
+        hypotheses = {item.hypothesis_id: item for item in verified.hypothesis_set.hypotheses}
         matches: list[_TransitionMatch] = []
         for observation in graph.observations:
+            if observation.wave_index != graph.wave_count:
+                continue
             hypothesis = hypotheses[observation.hypothesis_id]
             for transition in self._transitions:
                 if (
@@ -1320,26 +1772,23 @@ class BoundedReplanningRunner:
         verified: _VerifiedHypothesisWave,
         transition: RegisteredReplanTransition,
     ) -> float:
-        current_rule_ids = {
-            item.rule_id for item in verified.hypothesis_set.hypotheses
-        }
-        novel_count = sum(
-            item not in current_rule_ids for item in transition.next_rule_ids
-        )
+        current_rule_ids = {item.rule_id for item in verified.hypothesis_set.hypotheses}
+        novel_count = sum(item not in current_rule_ids for item in transition.next_rule_ids)
         return novel_count / len(transition.next_rule_ids)
 
     @staticmethod
     def _next_plan_state_digest(
-        surface_set_id: str,
-        compiler_id: str,
-        rule_ids: Sequence[str],
+        surface_snapshot: SurfaceSnapshotAuthority,
+        compiler_state: DeterministicCompilerState,
     ) -> str:
         return discovery_digest(
-            "pajin.discovery.replan-plan-state/v1",
+            "pajin.discovery.replan-plan-state/v2",
             {
-                "surfaceSetId": surface_set_id,
-                "compilerId": compiler_id,
-                "ruleIds": list(rule_ids),
+                "surfaceSnapshotId": surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": surface_snapshot.revision,
+                "surfaceSnapshotDigest": surface_snapshot.snapshot_digest,
+                "compilerStateId": compiler_state.state_id,
+                "surfaceBoundPlanDigest": (compiler_state.surface_bound_plan.plan_digest),
             },
         )
 
@@ -1353,32 +1802,32 @@ class BoundedReplanningRunner:
     def _decision(
         self,
         *,
+        authority: DeterministicMultiWaveAuthority,
         graph: ObservationGraphSnapshot,
         action: ReplanAction,
         reason: ReplanReason,
+        replan_count: int,
         novelty_score: float,
         state_digest: str,
         transition: RegisteredReplanTransition | None = None,
     ) -> ReplanDecision:
-        execute = action == "execute-next-wave"
-        final = reason == "max-waves-reached"
         return ReplanDecision(
             policyId=self._policy.policy_id,
             graphSnapshotId=graph.snapshot_id,
             action=action,
             reason=reason,
             completedWaves=graph.wave_count,
-            replanCount=1 if execute or final else 0,
+            replanCount=replan_count,
             noveltyScore=novelty_score,
             noveltyThreshold=self._policy.novelty_threshold,
             maxWaves=self._policy.max_waves,
             maxReplans=self._policy.max_replans,
             transitionId=transition.transition_id if transition is not None else None,
-            nextCompilerId=(
-                transition.next_compiler_id if transition is not None else None
-            ),
+            nextCompilerId=(transition.next_compiler_id if transition is not None else None),
             nextRuleIds=transition.next_rule_ids if transition is not None else [],
             stateDigest=state_digest,
+            multiWaveAuthorityId=authority.authority_id,
+            multiWaveAuthorityDigest=authority.authority_digest,
             decidedAt=graph.generated_at,
         )
 
@@ -1392,6 +1841,7 @@ class BoundedReplanningRunner:
                 "snapshotId": graph.snapshot_id,
                 "previousSnapshotId": graph.previous_snapshot_id,
                 "waveCount": graph.wave_count,
+                "surfaceBoundPlanDigests": graph.surface_bound_plan_digests,
                 "observationCount": len(graph.observations),
                 "relationshipCount": len(graph.relationships),
                 "artifact": path,
@@ -1412,6 +1862,9 @@ class BoundedReplanningRunner:
                 "completedWaves": decision.completed_waves,
                 "replanCount": decision.replan_count,
                 "noveltyScore": decision.novelty_score,
+                "stateDigest": decision.state_digest,
+                "multiWaveAuthorityId": decision.multi_wave_authority_id,
+                "multiWaveAuthorityDigest": decision.multi_wave_authority_digest,
                 "artifact": path,
             },
         )
@@ -1420,9 +1873,10 @@ class BoundedReplanningRunner:
         self,
         store: RunStore,
         state: _ReplanningState,
+        authority: DeterministicMultiWaveAuthority,
         graphs: Sequence[ObservationGraphSnapshot],
         decisions: Sequence[ReplanDecision],
-        next_wave: HypothesisWaveOutcome | None,
+        follow_up_waves: Sequence[HypothesisWaveOutcome],
     ) -> None:
         state.stage = "replanning-finalization"
         self._write_state(
@@ -1431,22 +1885,28 @@ class BoundedReplanningRunner:
             status="completed",
             extra={
                 "waveCount": graphs[-1].wave_count,
-                "replanCount": sum(
-                    item.action == "execute-next-wave" for item in decisions
-                ),
+                "replanCount": sum(item.action == "execute-next-wave" for item in decisions),
                 "finalGraphSnapshotId": graphs[-1].snapshot_id,
                 "finalDecisionId": decisions[-1].decision_id,
-                "nextWaveRunId": next_wave.run_id if next_wave is not None else None,
+                "nextWaveRunId": (follow_up_waves[0].run_id if follow_up_waves else None),
+                "followUpWaveRunIds": [item.run_id for item in follow_up_waves],
+                "multiWaveAuthorityId": authority.authority_id,
+                "multiWaveAuthorityDigest": authority.authority_digest,
+                "surfaceSnapshotId": authority.surface_snapshot.snapshot_id,
+                "surfaceSnapshotRevision": authority.surface_snapshot.revision,
+                "surfaceSnapshotDigest": authority.surface_snapshot.snapshot_digest,
+                "surfaceBoundPlanDigests": (graphs[-1].surface_bound_plan_digests),
             },
         )
         store.append_event(
             "discovery.replanning.completed",
             {
                 "waveCount": graphs[-1].wave_count,
-                "replanCount": sum(
-                    item.action == "execute-next-wave" for item in decisions
-                ),
+                "replanCount": sum(item.action == "execute-next-wave" for item in decisions),
                 "finalDecisionId": decisions[-1].decision_id,
+                "multiWaveAuthorityId": authority.authority_id,
+                "multiWaveAuthorityDigest": authority.authority_digest,
+                "surfaceBoundPlanDigests": (graphs[-1].surface_bound_plan_digests),
             },
         )
         store.append_event(
@@ -1454,6 +1914,7 @@ class BoundedReplanningRunner:
             {
                 "purpose": "bounded-replanning",
                 "finalDecisionId": decisions[-1].decision_id,
+                "multiWaveAuthorityId": authority.authority_id,
             },
         )
         state.terminalized = True

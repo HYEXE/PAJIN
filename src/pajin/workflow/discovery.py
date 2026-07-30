@@ -42,7 +42,7 @@ class DiscoveryCampaignOutcome:
 
 
 class DiscoveryCampaignRunner:
-    """Run A3-A5 behind explicit flags without changing the existing Planner input."""
+    """Run A3-A5/ORCH-002 without changing the existing Planner input."""
 
     def __init__(
         self,
@@ -81,9 +81,7 @@ class DiscoveryCampaignRunner:
         if enable_recon and self._recon is None:
             raise ValueError("Recon was enabled without a configured Recon runner")
         if enable_hypothesis_wave and self._hypothesis_wave is None:
-            raise ValueError(
-                "Hypothesis Wave was enabled without a configured Hypothesis runner"
-            )
+            raise ValueError("Hypothesis Wave was enabled without a configured Hypothesis runner")
         if enable_replanning and self._replanning is None:
             raise ValueError(
                 "Bounded Replanning was enabled without a configured Replanning runner"
@@ -140,8 +138,9 @@ class DiscoveryCampaignRunner:
                 budget=shared_budget,
                 rate_limits=shared_rate_limits,
             )
-        # A5 still passes no Surface, Hypothesis, Observation, or result into the
-        # existing one-time Planner. Its two-wave authority remains a separate Run.
+        # ORCH-002 still passes no Surface, Hypothesis, Observation, or result into
+        # the existing one-time Planner. Its bounded multi-wave authority remains
+        # a separate Run.
         campaign_outcome = await self._campaign.run(
             authoritative_campaign,
             cancellation=cancellation,
