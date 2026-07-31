@@ -711,9 +711,10 @@ class DeterministicHypothesisCompiler:
         authoritative_campaign = CampaignManifest.model_validate(
             campaign.model_dump(mode="python", by_alias=True)
         )
-        surface_set = _load_recon_surface_authority(recon)
-        if surface_set.campaign != authoritative_campaign.metadata.name:
-            raise HypothesisWaveError("Surface projection belongs to another Campaign")
+        surface_set, snapshot = load_recon_surface_authority(
+            authoritative_campaign,
+            recon,
+        )
 
         hypotheses: list[AttackHypothesis] = []
         requests_by_hypothesis: dict[str, ToolRequest] = {}
@@ -808,11 +809,6 @@ class DeterministicHypothesisCompiler:
             hypothesis_set_id=hypothesis_set.hypothesis_set_id,
             steps=steps,
         )
-        snapshot = _surface_snapshot_authority(
-            authoritative_campaign,
-            recon,
-            surface_set,
-        )
         surface_bound_plan = _build_surface_bound_plan(
             snapshot,
             hypothesis_set,
@@ -823,6 +819,26 @@ class DeterministicHypothesisCompiler:
             plan=plan.model_copy(deep=True),
             surface_bound_plan=surface_bound_plan.model_copy(deep=True),
         )
+
+
+def load_recon_surface_authority(
+    campaign: CampaignManifest,
+    recon: ReconWaveOutcome,
+) -> tuple[AttackSurfaceSet, SurfaceSnapshotAuthority]:
+    """Re-verify one sealed Recon projection and materialize its Snapshot authority."""
+
+    authoritative_campaign = CampaignManifest.model_validate(
+        campaign.model_dump(mode="python", by_alias=True)
+    )
+    surface_set = _load_recon_surface_authority(recon)
+    if surface_set.campaign != authoritative_campaign.metadata.name:
+        raise HypothesisWaveError("Surface projection belongs to another Campaign")
+    snapshot = _surface_snapshot_authority(
+        authoritative_campaign,
+        recon,
+        surface_set,
+    )
+    return surface_set.model_copy(deep=True), snapshot.model_copy(deep=True)
 
 
 def _load_recon_surface_authority(recon: ReconWaveOutcome) -> AttackSurfaceSet:

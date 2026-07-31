@@ -321,7 +321,12 @@ append-only graph; and stops repeated state or `A -> B -> A` cycles before anoth
 WALK-001 now adds the first Phase 4 executable segment: one Campaign-bound HTTP Recon request is
 bound to the exact DISC-003B adapter and must admit an `http-file-upload` Surface before an
 immutable projection can be published. It performs no upload and grants no route authority.
-Multi-adapter scheduling and the WALK-002 RAG-injection Hypothesis remain separate future work.
+WALK-002 adds an exact DISC-003C Recon plan requiring upload and explicit RAG Surfaces, then binds
+a deterministic H-17 RAG-injection Hypothesis to the complete Campaign digest, ORCH-001 Snapshot,
+registered rule, and co-located `corpus-ingest` plus file-upload Surface identities and locators.
+The Hypothesis is persisted in a separate sealed Run with fixed `not-authorized` state and creates
+no Tool request, Capability, payload, corpus write, or Worker dispatch. Multi-adapter scheduling
+and WALK-003 MCP Tool Authorization remain separate future work.
 
 ## 10. Definition of Done
 
@@ -357,6 +362,7 @@ Current Git baseline, verification state, and remaining milestone work are maint
 - [ADR-0061: Bounded OpenAPI Authentication Boundary Discovery](../adr/0061-bounded-openapi-authentication-boundary-discovery.md)
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
+- [ADR-0068: Snapshot-Bound RAG Injection Hypothesis](../adr/0068-snapshot-bound-rag-injection-hypothesis.md)
 - [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
 - [ADR-0065: Surface Snapshot-Bound Orchestration](../adr/0065-surface-snapshot-bound-orchestration.md)
 - [ADR-0066: Deterministic Two-to-Three-Wave Orchestration](../adr/0066-deterministic-two-three-wave-orchestration.md)

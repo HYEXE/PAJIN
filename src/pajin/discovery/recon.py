@@ -174,6 +174,80 @@ class HTTPFileUploadReconPlanner:
         )
 
 
+class HTTPRAGInjectionReconPlanner:
+    """Plan one exact HTTP GET for co-admitted upload and RAG Surfaces."""
+
+    planner_id = "pajin.walk.rag-injection-recon.v1"
+
+    def __init__(
+        self,
+        *,
+        tool: HTTPGetTool,
+        target_id: str,
+        adapter_reference: DiscoveryAdapterReference,
+    ) -> None:
+        if not isinstance(tool, HTTPGetTool):
+            raise TypeError("RAG-injection Recon planner requires an HTTPGetTool")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("RAG-injection Recon planner requires a target ID")
+        try:
+            reference = DiscoveryAdapterReference.model_validate(
+                adapter_reference.model_dump(mode="python", by_alias=True)
+            )
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                "RAG-injection Recon planner requires an exact adapter reference"
+            ) from exc
+        expected_adapter_id = f"pajin.discovery.http-openapi-rag:{tool.spec.tool_id}"
+        if reference.adapter_id != expected_adapter_id or reference.adapter_version != "1.0.0":
+            raise ValueError("RAG-injection Recon planner requires the DISC-003C adapter")
+        self._tool_id = tool.spec.tool_id
+        self._tool_version = tool.spec.version
+        self._target_id = target_id
+        self._adapter_reference = reference
+
+    def plan(self, campaign: CampaignManifest) -> ReconWavePlan:
+        targets = [target for target in campaign.spec.targets if target.id == self._target_id]
+        if len(targets) != 1:
+            raise ReconWaveError("RAG-injection Recon planner target is not declared exactly once")
+        target = targets[0]
+        required_surface_kinds: tuple[DiscoverySurfaceKind, ...] = (
+            "http-file-upload",
+            "http-rag",
+        )
+        request_digest = discovery_digest(
+            "pajin.discovery.recon-request/v1",
+            {
+                "campaign": campaign.metadata.name,
+                "targetId": target.id,
+                "target": target.endpoint,
+                "toolId": self._tool_id,
+                "toolVersion": self._tool_version,
+                "method": "GET",
+                "arguments": {},
+                "adapterReference": self._adapter_reference.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+                "requiredSurfaceKinds": list(required_surface_kinds),
+            },
+        )
+        return ReconWavePlan(
+            plannerId=self.planner_id,
+            targetId=target.id,
+            request=ToolRequest(
+                request_id=f"recon_{request_digest[:32]}",
+                agent_id=f"recon-specialist:{self.planner_id}",
+                tool_id=self._tool_id,
+                target=target.endpoint,
+                method="GET",
+                arguments={},
+            ),
+            adapterReference=self._adapter_reference.model_copy(deep=True),
+            requiredSurfaceKinds=required_surface_kinds,
+        )
+
+
 class RegisteredMCPReconPlanner:
     """Plan one deterministic call to a code-registered local MCP interface."""
 

@@ -37,6 +37,7 @@ from pajin.discovery.hypothesis import (
     SurfaceBoundPlan,
     SurfaceBoundTask,
     SurfaceSnapshotAuthority,
+    load_recon_surface_authority,
 )
 from pajin.discovery.mcp import MCPBoundarySurfaceAdapter
 from pajin.discovery.models import (
@@ -88,6 +89,7 @@ from pajin.discovery.rag import HTTPAndOpenAPIRAGSurfaceAdapter
 from pajin.discovery.recon import (
     RECON_API_VERSION,
     HTTPFileUploadReconPlanner,
+    HTTPRAGInjectionReconPlanner,
     MCPInterfaceSurfaceAdapter,
     ReconPlanner,
     ReconWaveError,
@@ -113,6 +115,16 @@ from pajin.discovery.replanning import (
     RegisteredReplanTransition,
     ReplanDecision,
 )
+from pajin.discovery.walking import (
+    WALKING_HYPOTHESIS_API_VERSION,
+    DeterministicRAGInjectionHypothesisCompiler,
+    RAGInjectionHypothesisAuthority,
+    RAGInjectionHypothesisError,
+    RAGInjectionHypothesisOutcome,
+    RAGInjectionHypothesisRunner,
+    RegisteredRAGInjectionHypothesisRule,
+    default_rag_injection_hypothesis_rule,
+)
 
 __all__ = [
     "DISCOVERY_ADAPTER_API_VERSION",
@@ -122,6 +134,7 @@ __all__ = [
     "ORCHESTRATION_API_VERSION",
     "RECON_API_VERSION",
     "REPLANNING_API_VERSION",
+    "WALKING_HYPOTHESIS_API_VERSION",
     "AttackHypothesis",
     "AttackHypothesisSet",
     "AttackSurface",
@@ -134,6 +147,7 @@ __all__ = [
     "DeterministicCompilerState",
     "DeterministicHypothesisCompiler",
     "DeterministicMultiWaveAuthority",
+    "DeterministicRAGInjectionHypothesisCompiler",
     "DiscoveryAdapter",
     "DiscoveryAdapterDefinition",
     "DiscoveryAdapterError",
@@ -153,6 +167,7 @@ __all__ = [
     "HTTPFileUploadInput",
     "HTTPFileUploadReconPlanner",
     "HTTPFileUploadSurfaceLocator",
+    "HTTPRAGInjectionReconPlanner",
     "HTTPRAGSurfaceLocator",
     "HTTPRouteSurfaceLocator",
     "HTTPSurfaceLocator",
@@ -171,6 +186,10 @@ __all__ = [
     "MCPToolSurfaceLocator",
     "ObservationGraphSnapshot",
     "ObservationRelationship",
+    "RAGInjectionHypothesisAuthority",
+    "RAGInjectionHypothesisError",
+    "RAGInjectionHypothesisOutcome",
+    "RAGInjectionHypothesisRunner",
     "ReconPlanner",
     "ReconWaveError",
     "ReconWaveOutcome",
@@ -180,6 +199,7 @@ __all__ = [
     "RegisteredMCPBoundaryReconPlanner",
     "RegisteredMCPReconPlanner",
     "RegisteredObservationRule",
+    "RegisteredRAGInjectionHypothesisRule",
     "RegisteredReplanTransition",
     "ReplanDecision",
     "SingleReconWaveRunner",
@@ -199,6 +219,7 @@ __all__ = [
     "TrustedSurfaceProducer",
     "attack_surface",
     "attack_surface_set",
+    "default_rag_injection_hypothesis_rule",
     "http_authentication_surface_locator",
     "http_file_upload_surface_locator",
     "http_rag_surface_locator",
@@ -206,6 +227,7 @@ __all__ = [
     "http_route_scope_url",
     "http_route_surface_locator",
     "http_surface_locator",
+    "load_recon_surface_authority",
     "mcp_prompt_surface_locator",
     "mcp_resource_surface_locator",
     "mcp_resource_template_surface_locator",
