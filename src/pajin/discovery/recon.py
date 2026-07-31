@@ -361,6 +361,84 @@ class RegisteredMCPBoundaryReconPlanner:
         )
 
 
+class MCPToolAuthorizationReconPlanner:
+    """Plan exact MCP boundary discovery for the WALK-003 authorization hypothesis."""
+
+    planner_id = "pajin.walk.mcp-tool-authorization-recon.v1"
+
+    def __init__(
+        self,
+        *,
+        tool: RegisteredMCPDiscoveryTool,
+        target_id: str,
+        adapter_reference: DiscoveryAdapterReference,
+    ) -> None:
+        if not isinstance(tool, RegisteredMCPDiscoveryTool):
+            raise TypeError(
+                "MCP Tool authorization Recon planner requires a RegisteredMCPDiscoveryTool"
+            )
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("MCP Tool authorization Recon planner requires a target ID")
+        try:
+            reference = DiscoveryAdapterReference.model_validate(
+                adapter_reference.model_dump(mode="python", by_alias=True)
+            )
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                "MCP Tool authorization Recon planner requires an exact adapter reference"
+            ) from exc
+        expected_adapter_id = f"pajin.discovery.mcp-boundary:{tool.spec.tool_id}"
+        if reference.adapter_id != expected_adapter_id or reference.adapter_version != "1.0.0":
+            raise ValueError("MCP Tool authorization Recon planner requires the DISC-003D adapter")
+        self._tool_id = tool.spec.tool_id
+        self._tool_version = tool.spec.version
+        self._target_id = target_id
+        self._adapter_reference = reference
+
+    def plan(self, campaign: CampaignManifest) -> ReconWavePlan:
+        targets = [target for target in campaign.spec.targets if target.id == self._target_id]
+        if len(targets) != 1:
+            raise ReconWaveError(
+                "MCP Tool authorization Recon planner target is not declared exactly once"
+            )
+        target = targets[0]
+        required_surface_kinds: tuple[DiscoverySurfaceKind, ...] = (
+            "mcp-server",
+            "mcp-tool",
+        )
+        request_digest = discovery_digest(
+            "pajin.discovery.recon-request/v1",
+            {
+                "campaign": campaign.metadata.name,
+                "targetId": target.id,
+                "target": target.endpoint,
+                "toolId": self._tool_id,
+                "toolVersion": self._tool_version,
+                "method": "POST",
+                "arguments": {},
+                "adapterReference": self._adapter_reference.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+                "requiredSurfaceKinds": list(required_surface_kinds),
+            },
+        )
+        return ReconWavePlan(
+            plannerId=self.planner_id,
+            targetId=target.id,
+            request=ToolRequest(
+                request_id=f"recon_{request_digest[:32]}",
+                agent_id=f"recon-specialist:{self.planner_id}",
+                tool_id=self._tool_id,
+                target=target.endpoint,
+                method="POST",
+                arguments={},
+            ),
+            adapterReference=self._adapter_reference.model_copy(deep=True),
+            requiredSurfaceKinds=required_surface_kinds,
+        )
+
+
 class MCPInterfaceSurfaceAdapter:
     """Admit only the exact MCP interface identity returned by a registered Tool."""
 

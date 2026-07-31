@@ -325,8 +325,12 @@ WALK-002 adds an exact DISC-003C Recon plan requiring upload and explicit RAG Su
 a deterministic H-17 RAG-injection Hypothesis to the complete Campaign digest, ORCH-001 Snapshot,
 registered rule, and co-located `corpus-ingest` plus file-upload Surface identities and locators.
 The Hypothesis is persisted in a separate sealed Run with fixed `not-authorized` state and creates
-no Tool request, Capability, payload, corpus write, or Worker dispatch. Multi-adapter scheduling
-and WALK-003 MCP Tool Authorization remain separate future work.
+no Tool request, Capability, payload, corpus write, or Worker dispatch. WALK-003 adds a separate
+exact DISC-003D Recon Snapshot and binds its MCP server/tool Surface, input-schema digest, immutable
+Capability definition, registered local/remote Tool identity, independent-user-approval rule, and
+the complete sealed WALK-002 lineage into a content-addressed `registered-not-authorized`
+Hypothesis. It creates no activation, Grant, Permit, request, argument, or Worker dispatch.
+Multi-adapter scheduling and WALK-004 Observation Graph/Replan remain separate future work.
 
 ## 10. Definition of Done
 
