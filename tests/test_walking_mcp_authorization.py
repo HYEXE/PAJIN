@@ -18,9 +18,11 @@ from pajin.capabilities.models import CapabilityMaturity, CapabilitySideEffectCl
 from pajin.discovery import (
     DeterministicMCPToolAuthorizationHypothesisCompiler,
     DeterministicRAGInjectionHypothesisCompiler,
+    DeterministicWalkingObservationReplanCompiler,
     DiscoveryAdapterRegistry,
     HTTPAndOpenAPIRAGSurfaceAdapter,
     HTTPRAGInjectionReconPlanner,
+    MCPAuthorizationObservationEvidence,
     MCPBoundarySurfaceAdapter,
     MCPToolAuthorizationHypothesisAuthority,
     MCPToolAuthorizationHypothesisError,
@@ -30,7 +32,13 @@ from pajin.discovery import (
     RAGInjectionHypothesisRunner,
     SingleReconWaveRunner,
     TrustedSurfaceProducer,
+    WalkingGraphRelationship,
+    WalkingObservationReplanAuthority,
+    WalkingObservationReplanError,
+    WalkingObservationReplanRunner,
+    load_walking_observation_replan_authority,
     mcp_tool_authorization_rule,
+    walking_observation_replan_rule,
 )
 from pajin.domain.models import CampaignManifest, ToolRiskTier
 from pajin.policy.engine import PolicyEngine
@@ -58,6 +66,32 @@ from pajin.tools.mcp import (
 
 HTTP_TARGET = "https://staging.example.invalid/api/openapi.json"
 MCP_TARGET = "https://staging.example.invalid/api/mcp"
+
+
+def _nested_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {key for child in value.values() for key in _nested_keys(child)}
+    if isinstance(value, list):
+        return {key for child in value for key in _nested_keys(child)}
+    return set()
+
+
+def _different_paths(left: object, right: object, path: str = "") -> list[str]:
+    if type(left) is not type(right):
+        return [path]
+    if isinstance(left, dict) and isinstance(right, dict):
+        paths: list[str] = []
+        for key in sorted(set(left) | set(right)):
+            paths.extend(_different_paths(left.get(key), right.get(key), f"{path}.{key}"))
+        return paths
+    if isinstance(left, list) and isinstance(right, list):
+        paths = []
+        for index, (left_item, right_item) in enumerate(zip(left, right, strict=False)):
+            paths.extend(_different_paths(left_item, right_item, f"{path}[{index}]"))
+        if len(left) != len(right):
+            paths.append(f"{path}.length")
+        return paths
+    return [] if left == right else [path]
 
 
 def _campaign(sample_campaign: CampaignManifest) -> CampaignManifest:
@@ -272,6 +306,27 @@ def _compiler(mcp_recon, *, schema_digest: str | None = None, approval: bool = T
     )
 
 
+def _mcp_outcome(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    rag = _rag_outcome(tmp_path, campaign, monkeypatch)
+    mcp = _mcp_recon(tmp_path, campaign)
+    return MCPToolAuthorizationHypothesisRunner(
+        compiler=_compiler(mcp),
+        output_root=tmp_path,
+    ).run(campaign, rag, mcp)
+
+
+def _replan_compiler(source) -> DeterministicWalkingObservationReplanCompiler:
+    return DeterministicWalkingObservationReplanCompiler(
+        rule=walking_observation_replan_rule(
+            source_hypothesis_rule_id=source.hypotheses[0].rule_id,
+        )
+    )
+
+
 def test_mcp_tool_authorization_recon_binds_disc_003d_and_surface_kinds(
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -336,6 +391,9 @@ def test_walking_mcp_authorization_seals_registered_but_non_executable_authority
         }
         for event in events
     )
+    (outcome.run_path / outcome.artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingObservationReplanError, match="not sealed and valid"):
+        load_walking_observation_replan_authority(campaign, outcome)
 
 
 @pytest.mark.parametrize("failure", ["schema", "approval"])
@@ -391,3 +449,263 @@ def test_mcp_authorization_authority_rejects_digest_forgery(
 
     with pytest.raises(ValueError, match="Hypothesis Digest differs"):
         MCPToolAuthorizationHypothesisAuthority.model_validate(payload)
+
+
+def test_walking_observation_replan_admits_state_and_selects_new_plan(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+
+    first = compiler.compile(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    second = compiler.compile(
+        campaign.model_copy(deep=True),
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    first_payload = first.model_dump(mode="json", by_alias=True)
+    second_payload = second.model_dump(mode="json", by_alias=True)
+    assert first_payload == second_payload, _different_paths(first_payload, second_payload)
+    assert first.observation.admission_state == "admitted"
+    assert first.plan.action == "request-independent-approval"
+    assert first.plan.execution_state == "proposed-not-authorized"
+    assert first.plan.plan_state_digest != baseline
+    assert {item.relation for item in first.graph.relationships} == {
+        "supports",
+        "enables",
+        "depends-on",
+    }
+    assert first.plan.required_capability == source.hypotheses[0].capability.reference()
+
+    outcome = WalkingObservationReplanRunner(
+        compiler=compiler,
+        output_root=tmp_path,
+    ).run(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_observation_replan_authority(campaign, outcome) == first
+    artifact = json.loads((outcome.run_path / outcome.artifact_path).read_text("utf-8"))
+    assert artifact == first.model_dump(mode="json", by_alias=True)
+    serialized = json.dumps(artifact, sort_keys=True)
+    assert "ToolRequest" not in serialized
+    assert "arguments" not in _nested_keys(artifact)
+    events = load_verified_run_events(outcome.run_path)
+    assert not any(
+        event.event_type
+        in {
+            "capability.issued",
+            "capability.activated",
+            "action-permit.issued",
+            "tool.requested",
+            "worker.dispatched",
+        }
+        for event in events
+    )
+
+
+def test_walking_observation_replan_rejects_forged_evidence_and_source_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+    payload = evidence.model_dump(mode="json", by_alias=True)
+    payload.update(
+        {
+            "evidenceId": "",
+            "evidenceDigest": "",
+            "sourceRootDigest": "0" * 64,
+        }
+    )
+    forged = MCPAuthorizationObservationEvidence.model_validate(payload)
+
+    with pytest.raises(WalkingObservationReplanError, match="differs from sealed"):
+        compiler.compile(
+            campaign,
+            source,
+            forged,
+            expected_previous_state_digest=baseline,
+        )
+
+    substituted = replace(source, run_id="another-run")
+    with pytest.raises(WalkingObservationReplanError, match="not sealed and valid"):
+        compiler.compile(
+            campaign,
+            substituted,
+            evidence,
+            expected_previous_state_digest=baseline,
+        )
+
+    forged_hypothesis = source.hypotheses[0].model_copy(
+        update={"hypothesis_id": "mcp-tool-authorization-hypothesis_" + "0" * 64},
+        deep=True,
+    )
+    with pytest.raises(WalkingObservationReplanError, match="differs from sealed"):
+        compiler.compile(
+            campaign,
+            replace(source, hypotheses=(forged_hypothesis,)),
+            evidence,
+            expected_previous_state_digest=baseline,
+        )
+
+
+def test_walking_observation_replan_blocks_stale_repeated_and_cyclic_state(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+
+    with pytest.raises(WalkingObservationReplanError, match="stale"):
+        compiler.compile(
+            campaign,
+            source,
+            evidence,
+            expected_previous_state_digest="0" * 64,
+        )
+
+    prior_outcome = WalkingObservationReplanRunner(
+        compiler=compiler,
+        output_root=tmp_path,
+    ).run(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    first = prior_outcome.authority
+    with pytest.raises(WalkingObservationReplanError, match="cycle or repeated"):
+        compiler.compile(
+            campaign,
+            source,
+            evidence,
+            expected_previous_state_digest=first.plan.plan_state_digest,
+            prior_outcome=prior_outcome,
+        )
+
+    payload = first.model_dump(mode="json", by_alias=True)
+    payload.update(
+        {
+            "authorityId": "",
+            "authorityDigest": "",
+            "statePath": [baseline, "1" * 64, baseline, first.plan.plan_state_digest],
+        }
+    )
+    with pytest.raises(ValueError, match="cycle or repeated"):
+        WalkingObservationReplanAuthority.model_validate(payload)
+
+
+def test_walking_observation_graph_rejects_noncanonical_relationship_topology(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+    authority = compiler.compile(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    payload = authority.model_dump(mode="json", by_alias=True)
+    payload.update({"authorityId": "", "authorityDigest": ""})
+    relationship = payload["graph"]["relationships"][0]
+    relationship.update(
+        {
+            "relationshipId": "",
+            "relationshipDigest": "",
+            "relation": "contradicts",
+        }
+    )
+    mutated = WalkingGraphRelationship.model_validate(relationship)
+    payload["graph"]["relationships"][0] = mutated.model_dump(mode="json", by_alias=True)
+    payload["graph"]["relationships"].sort(key=lambda item: item["relationshipId"])
+    payload["graph"].update({"snapshotId": "", "snapshotDigest": ""})
+
+    with pytest.raises(ValueError, match="topology is malformed"):
+        WalkingObservationReplanAuthority.model_validate(payload)
+
+
+@pytest.mark.parametrize("expansion", ["scope", "snapshot", "capability"])
+def test_walking_observation_replan_authority_rejects_expansion(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    expansion: str,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+    authority = compiler.compile(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    payload = authority.model_dump(mode="json", by_alias=True)
+    payload.update({"authorityId": "", "authorityDigest": ""})
+    match = "Campaign authority differs"
+    if expansion == "scope":
+        payload["campaignManifest"]["spec"]["targets"][0]["endpoint"] = (
+            "https://expanded.example.invalid"
+        )
+    else:
+        payload["plan"].update({"planId": "", "planDigest": "", "planStateDigest": ""})
+        match = "Plan expands or differs"
+        if expansion == "snapshot":
+            payload["plan"]["mcpSurfaceSnapshotDigest"] = "0" * 64
+        else:
+            payload["plan"]["requiredCapability"]["capabilityDigest"] = "0" * 64
+
+    with pytest.raises(ValueError, match=match):
+        WalkingObservationReplanAuthority.model_validate(payload)
+
+
+def test_walking_observation_replan_rejects_mutated_sealed_artifact(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    compiler = _replan_compiler(source)
+    evidence = compiler.evidence(campaign, source)
+    baseline = compiler.baseline_state_digest(campaign, source)
+    (source.run_path / source.artifact_path).write_text("[]", encoding="utf-8")
+
+    with pytest.raises(WalkingObservationReplanError, match="not sealed and valid"):
+        compiler.compile(
+            campaign,
+            source,
+            evidence,
+            expected_previous_state_digest=baseline,
+        )

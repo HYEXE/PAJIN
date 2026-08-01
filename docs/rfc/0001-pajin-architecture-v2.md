@@ -330,7 +330,13 @@ exact DISC-003D Recon Snapshot and binds its MCP server/tool Surface, input-sche
 Capability definition, registered local/remote Tool identity, independent-user-approval rule, and
 the complete sealed WALK-002 lineage into a content-addressed `registered-not-authorized`
 Hypothesis. It creates no activation, Grant, Permit, request, argument, or Worker dispatch.
-Multi-adapter scheduling and WALK-004 Observation Graph/Replan remain separate future work.
+WALK-004 re-verifies that sealed authority, admits only its exact state as a content-addressed
+Observation, and selects a `proposed-not-authorized` independent-approval request Plan. Its immutable
+Graph records typed support, enablement, and dependency edges; expected-state and bounded-history
+checks reject stale, repeated, or cyclic state, while complete Campaign, Snapshot, Capability, rule,
+and approval bindings prevent authority expansion. It creates no activation, approval receipt,
+Permit, request, argument, or dispatch. Multi-adapter scheduling and WALK-005 execution/validation
+remain separate future work.
 
 ## 10. Definition of Done
 
@@ -372,3 +378,5 @@ are maintained in the root [handoff](../../HANDOFF.md).
 - [ADR-0065: Surface Snapshot-Bound Orchestration](../adr/0065-surface-snapshot-bound-orchestration.md)
 - [ADR-0066: Deterministic Two-to-Three-Wave Orchestration](../adr/0066-deterministic-two-three-wave-orchestration.md)
 - [ADR-0067: File Upload Surface Walking Slice](../adr/0067-file-upload-surface-walking-slice.md)
+- [ADR-0069: Snapshot-Bound MCP Tool Authorization Hypothesis](../adr/0069-snapshot-bound-mcp-tool-authorization-hypothesis.md)
+- [ADR-0071: Evidence-Bound Walking Observation Replan](../adr/0071-evidence-bound-walking-observation-replan.md)

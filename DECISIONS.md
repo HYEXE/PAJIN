@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0071: Evidence-Bound Walking Observation Replan](docs/adr/0071-evidence-bound-walking-observation-replan.md)
 - [ADR-0070: Repository-Owned Planning and Handoff Authority](docs/adr/0070-repository-owned-planning-and-handoff-authority.md)
 - [ADR-0069: Snapshot-Bound MCP Tool Authorization Hypothesis](docs/adr/0069-snapshot-bound-mcp-tool-authorization-hypothesis.md)
 - [ADR-0068: Snapshot-Bound RAG Injection Hypothesis](docs/adr/0068-snapshot-bound-rag-injection-hypothesis.md)

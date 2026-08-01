@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `WALK-004` Observation Graph·Replan
+- 현재 우선순위: `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest
 
 ## 제품 목표
 
@@ -26,42 +26,37 @@ File Upload
 - [x] `WALK-002` Snapshot-bound RAG Injection Hypothesis 생성
 - [x] `WALK-003` 실행을 활성화하지 않고 H-17 의존성을 정확한 등록 MCP Tool Authorization
   Hypothesis에 결박
-- [ ] `WALK-004` Observation을 Graph에 Admission하고 bounded replan 생성
+- [x] `WALK-004` Observation을 Graph에 Admission하고 bounded replan 생성
 - [ ] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
 Benchmark에서 결정론적 Baseline과 Shadow Decision을 비교할 수 있어야 한다.
 
-### WALK-004 목표
+### WALK-004 완료 결과
 
-비실행 WALK-003 Authorization Hypothesis에서 나온 admitted Observation이 새로운 Graph
-상태를 만들고, 기존의 모든 권위를 보존하면서 실제로 다른 후속 Plan을 선택해야 한다.
+- [x] `pajin.dev/walking-observation-replan/v1alpha1` content-addressed authority를 추가했다.
+- [x] 봉인된 WALK-003 `registered-not-authorized` 상태만 Observation으로 Admission한다.
+- [x] admitted Observation이 baseline과 다른 `request-independent-approval` Plan을 선택한다.
+- [x] Graph에 `supports`, `enables`, `depends-on` 관계를 기록하고 `contradicts` 어휘를
+  예약했다. 불일치 증거는 Graph 생성 전에 거부한다.
+- [x] forged evidence, Run·Hypothesis 치환, stale·repeated·cyclic state 및
+  Scope·Snapshot·Capability 확대를 fail closed한다.
+- [x] 봉인된 artifact와 exact audit event에서 전체 권위를 재구성하는 reader를 제공한다.
+- [x] 실행 상태는 `proposed-not-authorized`이며 Grant, Permit, ToolRequest, MCP argument,
+  Worker dispatch를 생성하지 않는다.
+- [x] 기존 A4/A5, ORCH-001/002, WALK-001/002/003 wire shape과 reader를 변경하지 않았다.
 
-필수 경계:
+### WALK-005 목표
 
-- WALK-002와 WALK-003의 봉인된 의존성 전체를 결박한다.
-- Campaign, HTTP/RAG Snapshot, MCP Snapshot, Capability Definition, ToolSpec, 승인 요구 및
-  Rule identity를 전이 전후에 정확히 보존한다.
-- 현재 상태의 증거에 결박된 Observation만 Admission한다.
-- 자유형 문장을 실행 권위로 사용하지 않고 `supports`, `contradicts`, `enables`,
-  `depends-on` 관계를 기록한다.
-- 후속 dispatch 전에 repeated state, cycle, stale state, 다른 Run 치환, Scope·Snapshot 확대를
-  차단한다.
-- 실행은 계속 opt-in이며 Capability, 승인, Graph, Permit, Gateway, Budget, Policy 권위의
-  독립 검증을 받아야 한다.
-- 기존 A4/A5, ORCH-001/002, WALK-001/002/003 및 artifact reader 호환성을 유지한다.
+WALK-004의 비실행 승인 요청 Plan 뒤에 별도로 승인되고 허가된 실행 결과만 Candidate로
+Admission하며, 기존 Atomic Validation·Restricted Replay·Report·Retest 권위를 재사용해 첫
+Hybrid Chain의 검증 폐루프를 닫는다.
 
-WALK-004 완료 기준:
-
-- [ ] 버전형 content-addressed Observation-to-Replan Authority가 존재한다.
-- [ ] 하나의 admitted Observation이 선택된 후속 Plan을 실제로 바꾼다.
-- [ ] forged evidence, cross-Hypothesis/Run substitution, repeated state, cycle, stale state,
-  Scope·Snapshot·Capability 확대를 다루는 음성 테스트가 존재한다.
-- [ ] 봉인된 artifact와 audit event만으로 모든 의존성을 재구성할 수 있다.
-- [ ] 집중 테스트, Ruff 전체, Linux 대상 strict mypy, 가능한 범위의 전체 pytest 결과를
-  `HANDOFF.md`에 기록한다.
-- [ ] 호환성, 마이그레이션, 롤백 및 새 ADR을 문서화한다.
+먼저 기존 Candidate, Claim, Replay, Report, Retest 계약과 WALK-004 사이에서 이미 충족된
+부분과 실제 누락된 연결을 조사한다. 승인 receipt, CapabilityGrant, ActionPermit, Gateway,
+Budget, Policy 경계를 새 Plan이 우회하거나 암묵적으로 생성하지 않도록 최소 additive
+bridge를 설계한다.
 
 ## 이전 기반 작업
 
