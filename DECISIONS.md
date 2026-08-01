@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0091: Bind Hybrid Provider Topology Before Runtime Registration](docs/adr/0091-hybrid-provider-topology-before-runtime.md)
 - [ADR-0090: Compose Exact Target Selections Before Implementing a Hybrid Provider](docs/adr/0090-non-runnable-hybrid-target-composition.md)
 - [ADR-0089: Add a Separate Runnable Local-Docker Identity for AI/RAG/MCP](docs/adr/0089-local-ai-rag-mcp-docker-provider.md)
 - [ADR-0088: Register the Walking AI/RAG/MCP Scenario as Non-runnable](docs/adr/0088-non-runnable-ai-rag-mcp-target-fixture.md)

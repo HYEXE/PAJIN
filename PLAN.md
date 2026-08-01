@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D3B` runnable Hybrid multi-provider lifecycle
+- 현재 우선순위: `P0-D3B2` runnable Hybrid multi-container lifecycle·bridge evidence
 
 ## 제품 목표
 
@@ -216,6 +216,14 @@ reversal·repetition·누락, catalog/profile/factory/provider policy 변경, pr
 identity 아래 coordinated isolation, cross-provider fence·cleanup order, exact transfer artifact와 bridge
 receipt를 구현하고 partial lifecycle 음성 경계를 통과한 뒤에만 runnable 상태를 허용한다.
 
+`P0-D3B1`은 runnable 구현 전에 기존 component 사이의 실제 데이터 불연속과 single-target lifecycle
+가정을 명시적으로 고정한다. 새 Hybrid Factory·adapter identity, 두 Target·한 Worker의 shared internal
+network, 단일 coordinate·fence, startup·bridge·reverse-cleanup order와 canonical transfer artifact schema를
+P0-D3 selection에 결박한다. 현재 SQLi 응답에는 필요한 `documentContent`가 없으므로 image binding,
+adapter registration, Manifest·execution·measurement eligibility와 bridge observation은 모두 false다.
+다음 `P0-D3B2`가 Hybrid 전용 seeded source와 AI ingestion, 실제 multi-container adapter·receipt를
+구현하고 partial failure와 higher-fence recovery를 증명해야 한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -251,6 +259,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D2B` local AI/RAG/MCP provider·별도 runnable catalog
   - [x] `P0-D3` Traditional Web/API + AI/RAG/MCP non-runnable composition authority
   - [ ] `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
+    - [x] `P0-D3B1` Hybrid provider topology·transfer artifact schema authority
+    - [ ] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

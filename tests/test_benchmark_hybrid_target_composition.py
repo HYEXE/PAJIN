@@ -18,13 +18,17 @@ from pajin.benchmark import (
     BenchmarkTargetProfileSelectionAuthority,
     DockerAIRAGMCPTargetProfile,
     DockerBugBountyTargetProfile,
+    HybridProviderContractError,
+    HybridProviderTopologyAuthority,
     HybridTargetCompositionAuthority,
     HybridTargetGroundTruthBinding,
     HybridTargetSelectionAuthority,
+    HybridTransferArtifactSchemaAuthority,
     RegisteredBenchmarkTargetFactoryAdapter,
     bind_hybrid_target_ground_truth,
     registered_ai_rag_mcp_docker_ground_truth,
     registered_ai_rag_mcp_docker_target_catalog,
+    registered_hybrid_provider_topology,
     registered_hybrid_target_composition,
     registered_traditional_web_api_ground_truth,
     registered_traditional_web_api_target_catalog,
@@ -482,3 +486,152 @@ def test_hybrid_authorities_reject_digest_bridge_and_flag_forgery() -> None:
         raw_selection[field] = True
         with pytest.raises(ValidationError, match="Input should be False"):
             HybridTargetSelectionAuthority.model_validate(raw_selection)
+
+
+def test_hybrid_provider_topology_binds_transfer_without_claiming_execution() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+
+    topology = registered_hybrid_provider_topology(selection, private_binding)
+
+    public = topology.model_dump(mode="json", by_alias=True)
+    assert topology.predecessor_selection == selection
+    assert topology.ground_truth_binding_digest == private_binding.binding_digest
+    assert topology.transfer_schema.bridge_digest == composition.bridge.bridge_digest
+    assert (
+        topology.transfer_schema.source_component_digest
+        == composition.components[0].component_digest
+    )
+    assert (
+        topology.transfer_schema.destination_component_digest
+        == composition.components[1].component_digest
+    )
+    assert topology.service_startup_order == (
+        "hybrid-traditional-target",
+        "hybrid-ai-rag-mcp-target",
+        "hybrid-benchmark-worker",
+    )
+    assert topology.cleanup_order == tuple(reversed(topology.service_startup_order))
+    assert topology.image_binding_state == "required-not-bound"
+    assert topology.provider_execution_authorized is False
+    assert topology.bridge_execution_observed is False
+    assert "cases" not in str(public)
+
+
+def test_hybrid_provider_topology_is_deterministic() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+
+    first = registered_hybrid_provider_topology(selection, private_binding)
+    second = registered_hybrid_provider_topology(selection, private_binding)
+
+    assert first == second
+    assert first.authority_id == f"hybrid-provider-topology:{first.authority_digest}"
+    assert first.transfer_schema.schema_id == (
+        f"hybrid-transfer-artifact-schema:{first.transfer_schema.schema_digest}"
+    )
+
+
+def test_hybrid_provider_topology_rejects_cross_selection_private_binding() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+    inputs = _inputs()
+    alternate_adapter = _adapter(
+        adapter_id="target-adapter:docker-ai-rag-mcp-alternate",
+        factory_id="target-factory:docker-ai-rag-mcp",
+        factory_digest=inputs.ai_profile.target_factory_digest,
+    )
+    raw_ai = inputs.ai_selection.model_dump(mode="json", by_alias=True)
+    raw_ai["authorityId"] = ""
+    raw_ai["authorityDigest"] = ""
+    raw_ai["adapterDigest"] = alternate_adapter.adapter_digest
+    alternate_ai_selection = BenchmarkTargetProfileSelectionAuthority.model_validate(raw_ai)
+    alternate = _registered_composition(
+        inputs,
+        ai_selection=alternate_ai_selection,
+        ai_adapter=alternate_adapter,
+    )
+    alternate_binding = bind_hybrid_target_ground_truth(
+        alternate,
+        traditional_ground_truth=inputs.traditional_binding,
+        ai_ground_truth=inputs.ai_binding,
+    )
+
+    with pytest.raises(HybridProviderContractError, match="registration failed"):
+        registered_hybrid_provider_topology(selection, alternate_binding)
+
+
+def test_hybrid_transfer_schema_rejects_component_and_field_substitution() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+    topology = registered_hybrid_provider_topology(selection, private_binding)
+
+    raw = topology.transfer_schema.model_dump(mode="json", by_alias=True)
+    raw["schemaId"] = ""
+    raw["schemaDigest"] = ""
+    raw["destinationComponentDigest"] = raw["sourceComponentDigest"]
+    with pytest.raises(ValidationError, match="must be distinct"):
+        HybridTransferArtifactSchemaAuthority.model_validate(raw)
+
+    raw = topology.transfer_schema.model_dump(mode="json", by_alias=True)
+    raw["schemaId"] = ""
+    raw["schemaDigest"] = ""
+    raw["artifactFields"][0] = "substitutedField"
+    with pytest.raises(ValidationError, match="field order differs"):
+        HybridTransferArtifactSchemaAuthority.model_validate(raw)
+
+
+def test_hybrid_provider_topology_rejects_order_scope_and_flag_forgery() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+    topology = registered_hybrid_provider_topology(selection, private_binding)
+
+    for field in (
+        "serviceStartupOrder",
+        "cleanupOrder",
+        "bridgeExecutionOrder",
+    ):
+        raw = topology.model_dump(mode="json", by_alias=True)
+        raw["authorityId"] = ""
+        raw["authorityDigest"] = ""
+        raw[field] = list(reversed(raw[field]))
+        with pytest.raises(ValidationError, match="order differs"):
+            HybridProviderTopologyAuthority.model_validate(raw)
+
+    raw = topology.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["serviceStartupOrder"].append("scope-expanded-service")
+    with pytest.raises(ValidationError, match="at most 3 items"):
+        HybridProviderTopologyAuthority.model_validate(raw)
+
+    for field in (
+        "providerExecutionAuthorized",
+        "benchmarkManifestEligible",
+        "measurementAdmissionEligible",
+        "bridgeExecutionObserved",
+    ):
+        raw = topology.model_dump(mode="json", by_alias=True)
+        raw[field] = True
+        with pytest.raises(ValidationError, match="Input should be False"):
+            HybridProviderTopologyAuthority.model_validate(raw)
+
+
+def test_hybrid_provider_topology_rejects_transfer_and_digest_forgery() -> None:
+    composition, private_binding = _composition_inputs()
+    selection = select_hybrid_target_composition(composition, private_binding)
+    topology = registered_hybrid_provider_topology(selection, private_binding)
+
+    raw = topology.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["transferSchema"]["schemaId"] = ""
+    raw["transferSchema"]["schemaDigest"] = ""
+    raw["transferSchema"]["sourceComponentDigest"] = "f" * 64
+    with pytest.raises(ValidationError, match="transfer binding differs"):
+        HybridProviderTopologyAuthority.model_validate(raw)
+
+    raw = topology.model_dump(mode="json", by_alias=True)
+    raw["authorityDigest"] = "f" * 64
+    with pytest.raises(ValidationError, match="Authority Digest differs"):
+        HybridProviderTopologyAuthority.model_validate(raw)

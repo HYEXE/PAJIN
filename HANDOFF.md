@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 작업 시작 기준: `f9e96526d51757a041f9f8a75dd105e24dd2ed22` (`P0-D2B`)
-- 현재 구현 체크포인트: `P0-D3` non-runnable Hybrid Target composition authority
-- 다음 구현: `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
+- 작업 시작 기준: `8a906a2ac5e44fc1d633f27f64034eac7d9e9c01` (`P0-D3`)
+- 현재 구현 체크포인트: `P0-D3B1` Hybrid provider topology·transfer authority
+- 다음 구현: `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
 
 ## 재개 전 확인
 
@@ -20,6 +20,22 @@ git status --porcelain=v2 --branch
 `origin/main`, 실제 원격 `refs/heads/main`이 모두 같아야 한다.
 
 ## 현재 구현 상태
+
+P0-D3B1은 P0-D3 selection을 실행했다고 주장하지 않고, runnable Hybrid provider가 충족해야 할
+새 Factory·adapter identity와 다중 컨테이너 경계를 content-addressed authority로 결박한다.
+
+- 두 Target과 한 Worker는 하나의 unpublished internal bridge, 단일 coordinate·fence를 사용한다.
+- startup은 Traditional→AI→Worker, cleanup은 정확한 역순이며 bridge 단계도 probe→source seal→extract
+  →transfer seal→upload→AI probe로 고정된다.
+- transfer artifact는 sealed Traditional 응답의 `/records/0/documentContent`에서 본문을 추출하고 source
+  Observation·response digest, document ID·content를 canonical JSON으로 기록해야 한다.
+- 현재 SQLi 응답에는 이 필드가 없으므로 Hybrid 전용 seeded source semantics가 다음 구현에 필요하다.
+- image binding·adapter registration·Manifest·execution·measurement eligibility·bridge observation은 모두
+  false/non-executed 상태다.
+- P0-D3 private binding을 다시 열어 selection 전체를 재구성하므로 cross-composition binding과 component
+  치환이 차단된다.
+
+P0-D3의 exact two-component composition과 non-runnable 경계는 그대로 유지된다.
 
 P0-D3는 P0-D1 Traditional Web/API와 P0-D2B local AI/RAG/MCP의 exact
 `BenchmarkTargetProfileSelectionAuthority`를 ordinal 1·2 component로 결박한다.
@@ -40,20 +56,23 @@ P0-D3는 P0-D1 Traditional Web/API와 P0-D2B local AI/RAG/MCP의 exact
 
 핵심 구현 위치:
 
+- `src/pajin/benchmark/hybrid_provider_contract.py`
 - `src/pajin/benchmark/hybrid_target_composition.py`
 - `src/pajin/benchmark/__init__.py`
 - `tests/test_benchmark_hybrid_target_composition.py`
+- `docs/benchmark/P0-D3B1-hybrid-provider-topology-contract.md`
+- `docs/adr/0091-hybrid-provider-topology-before-runtime.md`
 - `docs/benchmark/P0-D3-hybrid-target-composition.md`
 - `docs/adr/0090-non-runnable-hybrid-target-composition.md`
 
 ## 마지막 검증
 
-- P0-D3 계약 테스트: 11 passed
-- Benchmark/Target/문서 회귀 묶음: 92 passed, 2 skipped
+- P0-D3/P0-D3B1 계약 테스트: 17 passed
+- 문서 정책 테스트 포함 계약 묶음: 19 passed
+- Benchmark/Target/문서 회귀 묶음: 98 passed, 2 skipped
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 202 source files 통과
-- 문서 정책 테스트: 2 passed
-- 전체 `pytest -x -q`: 232 passed, 5 skipped 뒤 기존 Windows symlink 권한
+- Linux 대상 strict mypy: 203 source files 통과
+- 전체 `pytest -x -q`: 238 passed, 5 skipped 뒤 기존 Windows symlink 권한
   `WinError 1314`에서 중단
 
 ```powershell
@@ -66,32 +85,29 @@ git diff --check
 
 ## 커밋 전 검토 초점
 
-- 두 independent component 성공을 Hybrid chain completion으로 합산하지 않는다.
-- 기존 one-Factory Manifest에 composition digest를 넣지 않는다.
+- topology authority를 실행 capability나 provider receipt로 사용하지 않는다.
+- 기존 component image가 실제 transfer를 수행한다고 허위 주장하지 않는다.
+- transfer body는 반드시 sealed source response에서 파생되며 code-owned prompt로 대체하지 않는다.
 - public authority에 private Ground Truth case를 노출하지 않는다.
-- builder 검증에만 의존하지 않고 final selection에서 private registration·binding을 재대조한다.
-- bridge state와 모든 execution·measurement eligibility는 false/non-executed로 고정한다.
-- 기존 P0-D1/P0-D2/P0-D2B wire와 provider 동작을 변경하지 않는다.
+- 기존 single-target Manifest·Docker evidence wire를 변경하지 않는다.
 
 ## 다음 조치
 
-`P0-D3B`를 진행한다.
+`P0-D3B2`를 진행한다.
 
-1. 기존 recoverable runner가 one adapter/coordinate를 가정하는 지점을 확인하고, composition을 기존
-   Manifest digest로 위장하지 않는 별도 Hybrid Factory identity를 설계한다.
-2. SQLi Target과 AI Target을 하나의 shared internal bridge 또는 coordinated network에 배치하고 exact
-   transfer artifact를 component 1 output에서 component 2 upload input으로 생성한다.
-3. 두 component의 reset·isolation·execution·cleanup과 fence를 하나의 ordered operation journal과
-   bridge receipt에 결박한다.
+1. Hybrid 전용 Traditional·AI Target과 Worker image를 구현하고 exact image ID profile을 만든다.
+2. `HybridProviderTopologyAuthority`의 startup·bridge·cleanup order를 하나의 adapter와 operation journal에
+   구현한다.
+3. source response, transfer artifact, destination upload와 final AI result를 별도 digest·receipt로 결박한다.
 4. component 1 성공/2 실패, transfer 치환, partial cleanup, reverse order, cross-coordinate receipt,
    replay와 higher-fence recovery를 fail closed한다.
-5. 위 경계가 실제 Docker에서 증명되기 전에는 P0-D3 selection을 runnable로 변경하거나 Hybrid metric을
-   만들지 않는다.
+5. fake-provider와 real-Docker 검증이 모두 통과하기 전에는 runnable selection이나 Hybrid metric을 만들지
+   않는다.
 
 ## 알려진 경계
 
-- P0-D3는 structural composition일 뿐 runnable provider가 아니다.
-- bridge data-flow는 선언만 됐으며 실제 transfer artifact나 receipt가 없다.
+- P0-D3B1도 topology/schema authority일 뿐 runnable provider가 아니다.
+- bridge data-flow는 schema만 등록됐으며 실제 transfer artifact나 receipt가 없다.
 - 두 component는 각자 host-local provider이고 cross-provider fence·cleanup authority가 없다.
 - catalog distribution, anti-rollback activation과 Hybrid Harness source binding은 없다.
 - 전체 pytest는 Windows symlink 권한 제약으로 끝까지 실행되지 않는다.
