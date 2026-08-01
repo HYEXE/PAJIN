@@ -456,6 +456,7 @@ def _validate_lifecycle(
     if len(lifecycle) == 2 and (
         lifecycle[0].activation_set_digest != lifecycle[1].activation_set_digest
         or lifecycle[0].release != lifecycle[1].release
+        or lifecycle[0].capability_grant_digest != lifecycle[1].capability_grant_digest
     ):
         raise CapabilityDispatchReconciliationError(
             "Capability dispatch terminal authority differs from its claimed event"

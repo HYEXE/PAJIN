@@ -335,8 +335,16 @@ Observation, and selects a `proposed-not-authorized` independent-approval reques
 Graph records typed support, enablement, and dependency edges; expected-state and bounded-history
 checks reject stale, repeated, or cyclic state, while complete Campaign, Snapshot, Capability, rule,
 and approval bindings prevent authority expansion. It creates no activation, approval receipt,
-Permit, request, argument, or dispatch. Multi-adapter scheduling and WALK-005 execution/validation
-remain separate future work.
+Permit, request, argument, or dispatch. WALK-005A now reopens that sealed Plan plus a separate
+execution Run and admits an unconfirmed Candidate only when an explicit approval receipt binds the
+exact canonical CapabilityGrant and precedes a consumed ActionPermit claim, claimed and terminal
+audit events bind that same Grant digest, and the existing reconciliation path proves a completed
+Gateway lifecycle,
+and sealed target output explicitly reports missing independent authorization enforcement and
+internal-data access. It reuses deterministic Atomic Claims but creates no semantic decision,
+ReplayOutcome, confirmation, report eligibility, or Retest result. The default demo inspector does
+not synthesize these target observables. Multi-adapter scheduling and WALK-005B MCP Claim-bound
+Replay remain separate future work.
 
 ## 10. Definition of Done
 

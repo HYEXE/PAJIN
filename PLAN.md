@@ -28,6 +28,9 @@ File Upload
   Hypothesis에 결박
 - [x] `WALK-004` Observation을 Graph에 Admission하고 bounded replan 생성
 - [ ] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
+  - [x] `WALK-005A` 승인·Permit·봉인 Gateway 실행 기반 Candidate·Atomic Claim Admission
+  - [ ] `WALK-005B` MCP Claim-bound Restricted Replay·검증 projection
+  - [ ] `WALK-005C` Report·Remediation Retest 폐루프
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
@@ -57,6 +60,19 @@ Hybrid Chain의 검증 폐루프를 닫는다.
 부분과 실제 누락된 연결을 조사한다. 승인 receipt, CapabilityGrant, ActionPermit, Gateway,
 Budget, Policy 경계를 새 Plan이 우회하거나 암묵적으로 생성하지 않도록 최소 additive
 bridge를 설계한다.
+
+`WALK-005A`는 완료됐다. WALK-004 authority와 별도 실행 Run을 다시 열고, 정확한 승인
+receipt가 canonical CapabilityGrant digest에 결박된 채 consumed ActionPermit dispatch보다 먼저
+봉인됐으며 claimed·terminal event가 같은 Grant와 기존 reconciliation의 성공한 Gateway
+lifecycle을 증명할 때만 미확정 A02 Candidate와 validity·impact·severity Atomic Claim을 생성한다.
+의심 입력만으로 승인 실패나 내부 데이터 접근을 합성하지 않으며, 기본 demo MCP
+inspector는 해당 대상 관찰값을 내지 않으므로 이 Candidate를 만들 수 없다.
+
+다음 `WALK-005B`는 기존 KISA M03/M06/A04 Replay를 이름만 바꾸지 않는다. WALK-005A의 exact
+Candidate·Claim과 원 실행 authority를 입력으로 삼아 새 request identity, fresh Capability,
+별도 승인·Permit·Gateway Run, exact observable을 결박하는 MCP 전용 Restricted Replay 최소
+계약을 추가한다. Replay가 성공하기 전 Candidate는 `candidate-admitted-not-confirmed`를
+벗어나지 않는다.
 
 ## 이전 기반 작업
 

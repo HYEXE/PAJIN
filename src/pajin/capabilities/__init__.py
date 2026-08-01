@@ -15,6 +15,7 @@ from pajin.capabilities.activation import (
     PreparedCapabilityAction,
     activate_existing_mode_capabilities,
     capability_gateway_outcome_digest,
+    capability_grant_digest,
     capability_normalized_parameters_digest,
     capability_tool_request_digest,
 )
@@ -318,6 +319,7 @@ __all__ = [
     "capability_definition_digest",
     "capability_definition_from_tool",
     "capability_gateway_outcome_digest",
+    "capability_grant_digest",
     "capability_lifecycle_public_key",
     "capability_normalized_parameters_digest",
     "capability_parameter_schema_digest",

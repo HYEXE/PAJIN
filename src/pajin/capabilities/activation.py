@@ -115,6 +115,10 @@ class CapabilityDispatchAuditEvent(StrictModel):
     request_id: str = Field(alias="requestId", min_length=1, max_length=200)
     request_digest: _Sha256 = Field(alias="requestDigest")
     normalized_parameters_digest: _Sha256 = Field(alias="normalizedParametersDigest")
+    capability_grant_digest: _Sha256 | None = Field(
+        default=None,
+        alias="capabilityGrantDigest",
+    )
     gateway_outcome_digest: _Sha256 | None = Field(
         default=None,
         alias="gatewayOutcomeDigest",
@@ -175,10 +179,13 @@ class CapabilityDispatchAuditEvent(StrictModel):
             or self.error_type is not None
         ):
             raise ValueError("non-terminal Capability dispatch cannot claim Gateway result fields")
+        excluded_digest_fields = {"event_id", "event_digest"}
+        if self.capability_grant_digest is None:
+            excluded_digest_fields.add("capability_grant_digest")
         material = self.model_dump(
             mode="json",
             by_alias=True,
-            exclude={"event_id", "event_digest"},
+            exclude=excluded_digest_fields,
         )
         digest = capability_definition_digest(
             "pajin.capability.dispatch-audit-event/v1",
@@ -501,6 +508,7 @@ class ExistingModeCapabilityGatewayDispatcher:
             self._append_dispatch_event(
                 permit=permit,
                 prepared=canonical_prepared,
+                grant=canonical_grant,
                 stage=CapabilityDispatchStage.CLAIMED,
                 occurred_at=claimed_at,
             )
@@ -508,6 +516,7 @@ class ExistingModeCapabilityGatewayDispatcher:
                 self._append_dispatch_event(
                     permit=permit,
                     prepared=canonical_prepared,
+                    grant=canonical_grant,
                     stage=CapabilityDispatchStage.EXPIRED,
                     occurred_at=self._dispatch_time(),
                 )
@@ -526,6 +535,7 @@ class ExistingModeCapabilityGatewayDispatcher:
                 self._append_dispatch_event(
                     permit=permit,
                     prepared=canonical_prepared,
+                    grant=canonical_grant,
                     stage=CapabilityDispatchStage.CANCELLED,
                     occurred_at=self._dispatch_time(),
                     error_type=audit_safe_exception_type(exc),
@@ -535,6 +545,7 @@ class ExistingModeCapabilityGatewayDispatcher:
                 self._append_dispatch_event(
                     permit=permit,
                     prepared=canonical_prepared,
+                    grant=canonical_grant,
                     stage=CapabilityDispatchStage.FAILED,
                     occurred_at=self._dispatch_time(),
                     error_type=audit_safe_exception_type(exc),
@@ -543,6 +554,7 @@ class ExistingModeCapabilityGatewayDispatcher:
             self._append_dispatch_event(
                 permit=permit,
                 prepared=canonical_prepared,
+                grant=canonical_grant,
                 stage=CapabilityDispatchStage.COMPLETED,
                 occurred_at=self._dispatch_time(),
                 outcome=outcome,
@@ -619,6 +631,7 @@ class ExistingModeCapabilityGatewayDispatcher:
         *,
         permit: ActionPermit,
         prepared: PreparedCapabilityAction,
+        grant: CapabilityGrant,
         stage: CapabilityDispatchStage,
         occurred_at: datetime,
         outcome: GatewayOutcome | None = None,
@@ -639,6 +652,7 @@ class ExistingModeCapabilityGatewayDispatcher:
             requestId=permit.request_id,
             requestDigest=permit.request_digest,
             normalizedParametersDigest=permit.normalized_parameters_digest,
+            capabilityGrantDigest=capability_grant_digest(grant),
             gatewayOutcomeDigest=(
                 capability_gateway_outcome_digest(outcome) if outcome is not None else None
             ),
@@ -753,6 +767,19 @@ def capability_tool_request_digest(request: ToolRequest) -> str:
             "Capability Tool request is not strict canonical JSON"
         ) from exc
     return sha256(encoded).hexdigest()
+
+
+def capability_grant_digest(grant: CapabilityGrant) -> str:
+    """Bind the exact canonical Gateway grant with deterministic set ordering."""
+
+    canonical = _canonical_model(grant, CapabilityGrant, label="Capability Grant")
+    material = canonical.model_dump(mode="json")
+    material["tools"] = sorted(canonical.tools)
+    material["targets"] = sorted(canonical.targets)
+    return capability_definition_digest(
+        "pajin.capability.runtime-grant/v1",
+        material,
+    )
 
 
 def capability_gateway_outcome_digest(outcome: GatewayOutcome) -> str:

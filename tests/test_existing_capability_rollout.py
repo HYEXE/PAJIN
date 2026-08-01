@@ -54,6 +54,7 @@ from pajin.capabilities import (
     activate_existing_mode_capabilities,
     admit_existing_mode_capability_releases,
     capability_gateway_outcome_digest,
+    capability_grant_digest,
     capability_lifecycle_public_key,
     capability_normalized_parameters_digest,
     capability_tool_request_digest,
@@ -494,6 +495,19 @@ def _mock_action(
     return activation, prepared
 
 
+def test_dispatch_event_reads_legacy_payload_without_grant_digest(tmp_path: Path) -> None:
+    activation, _ = _mock_action(_admit())
+    store = RunStore.create(tmp_path, "hybrid-exit-campaign")
+    _append_hybrid_dispatches(store, activation)
+    store.seal()
+    payload = dict(load_verified_run_events(store.path)[0].payload)
+
+    assert payload.pop("capabilityGrantDigest") is None
+    event = CapabilityDispatchAuditEvent.model_validate(payload)
+
+    assert event.capability_grant_digest is None
+
+
 class _PermitDispatcherStub:
     def __init__(self, permit: SimpleNamespace) -> None:
         self.permit = permit
@@ -917,6 +931,8 @@ async def test_gateway_dispatch_requires_exact_prepared_graph_authority(
     assert completed.permit_digest == permit.permit_digest
     assert completed.dispatch_id == permit.dispatch_id
     assert completed.activation_set_digest == prepared.activation_set_digest
+    assert claimed.capability_grant_digest == capability_grant_digest(grant)
+    assert completed.capability_grant_digest == claimed.capability_grant_digest
     assert completed.gateway_outcome_digest == capability_gateway_outcome_digest(result.result)
     assert completed.executed is True
     assert completed.policy_allowed is True
