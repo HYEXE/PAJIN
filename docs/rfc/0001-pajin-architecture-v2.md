@@ -351,7 +351,12 @@ receipt that must be sealed before the fresh Permit's dispatch claim, reuses the
 Gateway verifier, rejects reuse of all seven original execution identities, and requires exact
 request semantics plus a freshly derived matching validity Claim statement. Its sealed public
 projection is only `reproduced` with confirmation eligibility fixed to false. Multi-adapter
-scheduling and WALK-005C confirmation/report/retest policy remain separate future work.
+scheduling remains separate future work. WALK-005C1 then applies an MCP-specific confirmation
+policy: only the Plan-bound fresh validity replay drives product confirmation, while impact and
+severity remain source-bound information-only. It seals the validated Finding, typed report and
+exact Markdown rendering, and a `planned-not-applied` remediation baseline without inventing KISA
+ReplayOutcome, Oracle, ticket, external-host attestation, remediation application, or Retest
+authority. WALK-005C2 baseline-bound remediation Retest remains separate future work.
 
 ## 10. Definition of Done
 

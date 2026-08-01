@@ -33,6 +33,8 @@ File Upload
     - [x] `WALK-005B1` validity Claim-bound 비실행 Replay Plan authority
     - [x] `WALK-005B2` Plan-bound fresh 실행·Claim 검증 projection
   - [ ] `WALK-005C` Report·Remediation Retest 폐루프
+    - [x] `WALK-005C1` MCP 확인 정책·Report·비실행 Remediation baseline
+    - [ ] `WALK-005C2` baseline-bound fresh Retest·보수적 lifecycle 판정
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
@@ -81,6 +83,13 @@ Permit claim 전에 봉인하고, 기존 WALK-005A verifier로 별도 Gateway �
 대비 Run·request·approval·Grant·Permit·dispatch·Worker ID가 모두 fresh하고 요청 의미와 새 validity
 Claim statement가 exact equality일 때만 `reproduced / confirmationEligible=false` projection을
 봉인한다. 다음 `WALK-005C`에서 확인 정책, 보고서, remediation Retest 폐루프를 연결한다.
+
+`WALK-005C1`은 B2 authority를 다시 열어 Plan-bound fresh validity replay만 MCP 전용 제품 확인
+근거로 채택한다. impact·severity는 replay됐다고 확장하지 않고 `source-bound-information-only`로
+고정한다. validated Finding, typed Report와 exact Markdown, `planned-not-applied` Remediation
+Plan을 하나의 content-addressed authority와 봉인 Run으로 묶는다. 다음 `WALK-005C2`는 이
+baseline과 별도의 fresh B2 실행을 결박해 `still-vulnerable` 또는 `inconclusive`를 판정하고,
+독립적인 수정 증명 없이는 `fixed`를 금지한다.
 
 ## 이전 기반 작업
 

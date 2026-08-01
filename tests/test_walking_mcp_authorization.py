@@ -47,7 +47,10 @@ from pajin.discovery import (
     WalkingExecutionEvidence,
     WalkingGraphRelationship,
     WalkingMCPClaimReplayError,
+    WalkingMCPClaimReplayOutcome,
     WalkingMCPClaimReplayRunner,
+    WalkingMCPConfirmationError,
+    WalkingMCPConfirmationRunner,
     WalkingMCPReplayPlan,
     WalkingMCPReplayPlanError,
     WalkingMCPReplayPlanRunner,
@@ -56,6 +59,7 @@ from pajin.discovery import (
     WalkingObservationReplanRunner,
     load_walking_candidate_admission_authority,
     load_walking_mcp_claim_replay_authority,
+    load_walking_mcp_confirmation_authority,
     load_walking_mcp_replay_plan,
     load_walking_observation_replan_authority,
     mcp_tool_authorization_rule,
@@ -1320,3 +1324,85 @@ def test_walking_mcp_claim_replay_rejects_unbound_or_reused_execution(
         WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
             campaign, plan, reused_worker
         )
+
+
+def _walking_mcp_claim_replay_outcome(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> WalkingMCPClaimReplayOutcome:
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    original = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign, replan, original
+    )
+    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, source)
+    replay = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_confirmation_replay",
+        replay_plan=plan.plan,
+    )
+    return WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
+        campaign, plan, replay
+    )
+
+
+def test_walking_mcp_confirmation_seals_report_and_remediation_baseline(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replay = _walking_mcp_claim_replay_outcome(tmp_path, campaign, monkeypatch)
+
+    outcome = WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
+        campaign, replay
+    )
+    authority = outcome.authority
+
+    assert authority.lifecycle_state == "confirmed-remediation-planned-retest-required"
+    assert authority.confirmed_finding.validated is True
+    assert authority.decision.confirmation_basis == "plan-bound-fresh-mcp-validity-replay"
+    assert authority.decision.impact_assurance == "source-bound-information-only"
+    assert authority.decision.severity_assurance == "source-bound-information-only"
+    assert authority.remediation.execution_state == "planned-not-applied"
+    assert authority.remediation.retest_required is True
+    assert authority.report.decision_id == authority.decision.decision_id
+    report_bytes = (outcome.run_path / outcome.report_path).read_bytes()
+    assert report_bytes.startswith(b"# PAJIN Walking MCP Confirmed Finding")
+    assert b"not a KISA ReplayOutcome" in report_bytes
+    assert [event.event_type for event in load_verified_run_events(outcome.run_path)] == [
+        "campaign.started",
+        "walking.mcp-confirmation-authority.created",
+        "campaign.completed",
+    ]
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_mcp_confirmation_authority(campaign, outcome) == authority
+
+
+def test_walking_mcp_confirmation_rejects_source_substitution_and_report_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replay = _walking_mcp_claim_replay_outcome(tmp_path, campaign, monkeypatch)
+    forged = replace(
+        replay,
+        authority=replay.authority.model_copy(update={"campaign_digest": "f" * 64}),
+    )
+
+    with pytest.raises(WalkingMCPConfirmationError):
+        WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
+            campaign, forged
+        )
+
+    outcome = WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
+        campaign, replay
+    )
+    (outcome.run_path / outcome.report_path).write_text("forged", encoding="utf-8")
+
+    with pytest.raises(WalkingMCPConfirmationError):
+        load_walking_mcp_confirmation_authority(campaign, outcome)
