@@ -64,10 +64,12 @@ must implement and verify a real isolated Docker or external provider adapter, i
 evidence retrieval, network policy, key lifecycle/registry, and cleanup recovery. Docker daemon
 availability must be checked before that validation.
 
-The current Runner creates its sealed output only after the provider lifecycle and attestation
-finish. A hard process exit or host loss before sealing can therefore lose local stage/cleanup
-evidence. P0-C1 does not claim crash recovery; P0-C2 must add durable provider-operation journaling,
-fencing, startup reconciliation, cleanup retry, and sealed failure authority.
+The base P0-C1 Runner still creates its sealed output only after the provider lifecycle and
+attestation finish and therefore does not claim crash recovery by itself. The additive
+[P0-C2A recovery layer](P0-C2A-durable-target-operation-recovery.md) now supplies durable
+provider-operation journaling, fencing, startup reconciliation, cleanup retry, and a sealed
+measurement-ineligible failure authority. Real Docker/provider evidence, network policy, and key
+registry/rotation remain P0-C2B.
 
 ## Related documents
 

@@ -114,7 +114,13 @@ isolation before execution, attempts cleanup after execution failure, preserves 
 Observation identity, verifies an Ed25519 measurement signature over all stage and Observation
 digests, and emits a BENCH-003B1-compatible sealed Observation Run. The included adapter is a test
 contract fixture only; real Docker/provider execution, evidence retrieval, network policy, key
-registry/rotation, and cleanup recovery remain P0-C2 work.
+registry/rotation, and cleanup recovery remain P0-C2 work. P0-C2A now closes the local hard-exit
+gap with intent-before-call SQLite journaling, idempotency operation IDs, monotonic provider fences,
+startup reconciliation, bounded cleanup retry, and a sealed measurement-ineligible Recovery
+Authority. A spawned-process regression exits immediately after a durable execution intent and
+proves that cleanup is reconciled before another coordinate starts. Real Docker/provider evidence,
+enforced network policy, and measurement-key registry/rotation remain P0-C2B work; no live provider
+validation is claimed while the Docker daemon is unavailable.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

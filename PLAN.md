@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-C2` real Docker/provider Target Factory adapter·key registry
+- 현재 우선순위: `P0-C2B` real Docker/provider adapter·evidence·network policy·key registry
 
 ## 제품 목표
 
@@ -135,6 +135,14 @@ Observation은 외부 Ed25519 measurement key로 서명되며 public Trust Ancho
 real Docker/external provider implementation, evidence retrieval, network policy, key registry/rotation,
 cleanup recovery를 연결한다.
 
+`P0-C2A`는 P0-C1 앞에 recoverable provider 계층을 추가했다. 각 호출의 idempotency operation
+ID와 단조 fence를 provider 계약에 전달하고 intent-before-call·validated-result journal을 SQLite
+트랜잭션으로 남긴다. 새 실행 전 open attempt를 더 높은 fence로 회수하고 cleanup을 bounded retry한
+뒤, 성공 여부를 `measurementAdmissionEligible=false`인 별도 sealed Recovery Authority로 기록한다.
+실제 spawn process가 execution intent 직후 `os._exit(23)`으로 종료되는 회귀에서도 다음 시작이
+cleanup을 복구하기 전 새 reset을 실행하지 않는다. 실제 Docker/provider evidence·network policy와
+measurement key registry/rotation은 Docker daemon 가용성을 전제로 하는 `P0-C2B`로 남긴다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -159,7 +167,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
 - [ ] `P0-C` reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
   - [x] `P0-C1` provider-neutral lifecycle·sealed Observation·external measurement signature
-  - [ ] `P0-C2` real Docker/provider adapter·evidence·network policy·key registry
+  - [x] `P0-C2A` durable operation journal·idempotency/fencing·startup cleanup recovery
+  - [ ] `P0-C2B` real Docker/provider adapter·evidence·network policy·key registry
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약

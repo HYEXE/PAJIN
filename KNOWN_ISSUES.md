@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 156 passed, 3 skipped 이후
+- 결과: 165 passed, 3 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -16,16 +16,28 @@
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
 
-## P0-C1 sealing 전 프로세스 종료 복구
+## P0-C2A provider fence의 실제 강제 검증
 
-- 상태: 활성 설계 제약
-- 확인 위치: `BenchmarkTargetFactoryRunner`는 provider lifecycle과 attestation을 완료한 뒤
-  output `RunStore`를 생성한다.
-- 영향: provider reset/isolation/execution/cleanup 중 프로세스가 종료되면 호출이 발생했어도
-  stage receipt와 cleanup 결과가 로컬 sealed Run에 남지 않을 수 있다. P0-C1은 정상 반환 및
-  Python 예외 경로의 cleanup만 보장하고 hard-exit/host-loss recovery를 주장하지 않는다.
-- 해소 조건: P0-C2에서 provider operation journal, idempotency/fencing, startup reconciliation,
-  cleanup retry 및 sealed failure authority를 구현하고 hard-exit 테스트를 통과한다.
+- 상태: 활성 운영 검증 공백
+- 현재 보장: core는 각 provider 호출 전에 intent를 내구 저장하고 단조 fence와 idempotency
+  operation ID를 전달하며, stale local journal writer를 차단한다. spawn process hard-exit 뒤
+  startup cleanup reconciliation도 결정론적 provider fixture로 통과한다.
+- 영향: 실제 Docker/cloud provider가 더 높은 fence를 관찰한 뒤 오래된 호출을 거부하는지는
+  아직 live provider에서 검증하지 않았다. provider가 계약을 무시하면 cross-host stale 작업을
+  core의 로컬 SQLite journal만으로 중단시킬 수 없다.
+- 해소 조건: P0-C2B 실제 provider adapter가 fence를 원격 상태에 원자적으로 적용하고 stale
+  호출 음성 테스트 및 provider evidence를 봉인한다.
+
+## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
+
+- 상태: 활성 보수적 중복 가능성
+- 조건: Recovery Authority Run을 seal한 직후 journal attempt를 `reconciled`로 바꾸기 전에
+  프로세스가 종료된다.
+- 영향: 다음 시작은 이미 journaled된 성공 cleanup receipt를 재사용해 provider를 다시
+  호출하지 않지만 동일 attempt에 대한 새 Recovery Authority Run을 하나 더 봉인할 수 있다.
+  측정 Admission은 두 Run 모두 false라 안전성이나 metric에는 영향을 주지 않는다.
+- 해소 조건: sealed Run ID를 journal terminal transition과 연결하는 재개 가능한 publication
+  marker를 추가하고 동일 authority의 재봉인을 제거한다.
 
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 
@@ -51,9 +63,12 @@
 
 ## Docker daemon 가용성
 
-- 상태: 컨테이너 의존 작업 전에 재확인 필요
-- 마지막 관찰: WALK-001/WALK-002 검증 전 비활성
+- 상태: 비활성
+- 마지막 관찰: 2026-08-01 P0-C2 시작 전
+- 증상: `docker version --format '{{json .Server}}'`가
+  `open //./pipe/docker_engine: The system cannot find the file specified`로 실패했다. 현재
+  sandbox에서는 `C:\Users\hyeon\.docker\config.json` 접근 경고도 함께 발생한다.
 - 영향: 실제 컨테이너 MCP·egress 검증을 실행하지 못했으며 결정론적 구조 fixture로 계약을
-  검증했다.
+  검증했다. P0-C2A는 provider-neutral 복구 계약만 구현하며 Docker 실행 성공을 주장하지 않는다.
 - 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 Docker daemon 상태를 확인한다.
   실제로 실행하지 않은 컨테이너 검증을 성공으로 보고하지 않는다.

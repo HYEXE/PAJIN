@@ -384,6 +384,12 @@ further dispatch; cleanup remains mandatory after a valid isolation; and an exte
 measurement signature binds every receipt plus the final B1-compatible Observation in one sealed
 Run. The deterministic adapter is a contract fixture only. Real Docker/provider execution,
 evidence retrieval, network policy, key registry/rotation, and cleanup recovery remain P0-C2.
+P0-C2A adds the provider-neutral crash boundary: every operation carries an idempotency ID and
+monotonic fence, intent is durably journaled before dispatch, open attempts are reconciled before
+new work, cleanup has a bounded retry, and the exact recovery journal is sealed as a
+measurement-ineligible failure authority. This is additive to P0-C1 and does not convert recovery
+evidence into benchmark metrics. Real Docker/provider evidence, network enforcement, and
+measurement-key registry/rotation remain P0-C2B.
 
 ## 10. Definition of Done
 
