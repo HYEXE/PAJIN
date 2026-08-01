@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `BENCH-003B` 측정된 Baseline·Shadow Candidate Result Harness
+- 현재 우선순위: `BENCH-003B2` WALK-006 Shadow policy-bound Candidate measurement
 
 ## 제품 목표
 
@@ -114,6 +114,12 @@ metric 이름은 보존하지만 값과 delta는 비워 두고, `not-measured-no
 `BENCH-003B`는 동일 seed·repetition·reset·isolation·cleanup 좌표의 실제 baseline/candidate
 `BenchmarkResult`를 생성한 뒤에만 기존 numeric `BenchmarkComparison`을 허용한다.
 
+`BENCH-003B1`은 동일 measurement authority가 봉인한 두 arm의 전체 좌표별 raw count·시간·비용·
+Replay·정책·human·cleanup 관찰만 Admission하고, 12개 metric을 코드로 집계해 두 completed Result와
+canonical Comparison을 함께 봉인한다. 외부 측정 authority의 의미적 진실성은 별도 trust root이며
+Supervisor activation은 false다. 다음 `BENCH-003B2`는 candidate implementation/version/configuration을
+exact WALK-006 Shadow policy와 sealed BENCH-003A source publication에 결박한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -134,6 +140,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [ ] `BENCH-003` Deterministic Baseline·Adaptive Candidate 비교
   - [x] `BENCH-003A` Walking Baseline·Shadow Decision structural-only comparison
   - [ ] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
+    - [x] `BENCH-003B1` sealed raw Observation admission·두 Result·numeric comparison
+    - [ ] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
 - reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정

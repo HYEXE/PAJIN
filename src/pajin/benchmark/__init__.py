@@ -1,5 +1,19 @@
 """Public benchmark contracts."""
 
+from pajin.benchmark.measurement import (
+    WALKING_BENCHMARK_MEASURED_COMPARISON_API_VERSION,
+    WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION,
+    WalkingBenchmarkMeasuredComparisonAuthority,
+    WalkingBenchmarkMeasuredComparisonOutcome,
+    WalkingBenchmarkMeasuredComparisonRunner,
+    WalkingBenchmarkMeasurementError,
+    WalkingBenchmarkObservationBinding,
+    WalkingBenchmarkRunObservation,
+    WalkingBenchmarkRunObservationOutcome,
+    WalkingBenchmarkRunObservationRecorder,
+    load_walking_benchmark_measured_comparison_authority,
+    load_walking_benchmark_run_observation,
+)
 from pajin.benchmark.models import (
     BENCHMARK_COMPARISON_API_VERSION,
     BENCHMARK_GROUND_TRUTH_API_VERSION,
@@ -46,6 +60,8 @@ __all__ = [
     "BENCHMARK_METRIC_ORDER",
     "BENCHMARK_RESULT_API_VERSION",
     "REQUIRED_BENCHMARK_METRICS",
+    "WALKING_BENCHMARK_MEASURED_COMPARISON_API_VERSION",
+    "WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION",
     "WALKING_SHADOW_BENCHMARK_COMPARISON_API_VERSION",
     "BenchmarkArm",
     "BenchmarkArmKind",
@@ -64,6 +80,14 @@ __all__ = [
     "BenchmarkRunBinding",
     "BenchmarkRunProtocol",
     "GroundTruthVisibility",
+    "WalkingBenchmarkMeasuredComparisonAuthority",
+    "WalkingBenchmarkMeasuredComparisonOutcome",
+    "WalkingBenchmarkMeasuredComparisonRunner",
+    "WalkingBenchmarkMeasurementError",
+    "WalkingBenchmarkObservationBinding",
+    "WalkingBenchmarkRunObservation",
+    "WalkingBenchmarkRunObservationOutcome",
+    "WalkingBenchmarkRunObservationRecorder",
     "WalkingDeterministicBaselineDecision",
     "WalkingShadowBenchmarkComparisonAuthority",
     "WalkingShadowBenchmarkComparisonError",
@@ -73,5 +97,7 @@ __all__ = [
     "benchmark_digest",
     "canonical_benchmark_json",
     "compare_benchmark_results",
+    "load_walking_benchmark_measured_comparison_authority",
+    "load_walking_benchmark_run_observation",
     "load_walking_shadow_benchmark_comparison_authority",
 ]

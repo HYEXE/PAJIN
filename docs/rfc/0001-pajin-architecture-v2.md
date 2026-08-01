@@ -369,7 +369,12 @@ BENCH-003 baseline-versus-Shadow comparison remains separate. BENCH-003A first b
 WALK-006 publication to a baseline-only BENCH-001 Manifest and records only a structural terminal
 Decision delta. It preserves the ordered twelve-metric contract but supplies no values or deltas,
 and fixes canonical BenchmarkComparison and Supervisor activation eligibility to false.
-BENCH-003B measured baseline and candidate Results remain separate future work.
+BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
+over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
+twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes
+Supervisor activation eligibility to false. The external producer remains the semantic measurement
+trust root. BENCH-003B2 exact WALK-006 policy/configuration and source-publication binding remains
+separate future work.
 
 ## 10. Definition of Done
 
