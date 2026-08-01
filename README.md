@@ -204,6 +204,12 @@ coverage, and computes all twelve BENCH-001 metrics from the sealed raw Observat
 authority binds the Manifest, catalog selection, sources, evidence bundle, and Result while keeping
 candidate comparison and Supervisor activation ineligible.
 
+P0-E2A defines the generic Scanner baseline contract without pretending that a Scanner has run. It
+binds required Scanner executable/configuration identity, a fixed SARIF 2.1.0 parser contract, the
+exact P0-D1 Target selection, and every seed/repetition coordinate. Scanner execution, raw output,
+Benchmark Result, comparison, and Supervisor activation all remain ineligible until a concrete
+provider-backed P0-E2B implementation exists.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

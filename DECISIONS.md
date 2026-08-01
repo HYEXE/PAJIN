@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0096: Bind a Scanner Contract Before Claiming Measurement](docs/adr/0096-bind-scanner-contract-before-measurement.md)
 - [ADR-0095: Require Catalog and Registry Evidence for a Deterministic Baseline](docs/adr/0095-catalog-and-registry-governed-deterministic-baseline.md)
 - [ADR-0094: Bind Mutation Semantics Before Provider Materialization](docs/adr/0094-non-runnable-mutation-target-authority.md)
 - [ADR-0093: Separate Holdout Target Authority from the Active Target Catalog](docs/adr/0093-separate-holdout-target-authority.md)

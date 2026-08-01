@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 작업 시작 기준: `6d38519694aafd5572b8794963e3edfa61ddd45d` (`P0-D5`)
-- 현재 구현 체크포인트: `P0-E1` Deterministic PAJIN baseline measurement authority
-- 다음 구현: `P0-E2` 일반 Scanner baseline measurement authority
+- 작업 시작 기준: `5d96d81f6d27fc57700946a26bfe4dd71d19ee18` (`P0-E1`)
+- 현재 구현 체크포인트: `P0-E2A` Generic Scanner baseline measurement plan
+- 다음 구현: `P0-E2B` 실제 Scanner provider·raw output·measurement authority
 
 ## 재개 전 확인
 
@@ -21,40 +21,37 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-P0-E1은 P0-D1 runnable catalog와 P0-C2B2A2 registry-governed Harness를 하나의 실제 baseline
-measurement authority로 연결한다.
+P0-E2A는 저장소에 일반 Scanner runtime·parser·artifact identity가 없는 상태에서 허위 실측을 막는
+contract-first 경계다.
 
-- 각 Harness와 Target Run을 reader로 다시 열고 signed registry activation·admission·attestation을
-  검증한다.
-- sealed execution receipt로 Docker provider evidence를 다시 조회하고, exact image·fixed probe·private
-  Ground Truth matcher를 다시 검증한다.
-- 정확히 하나의 deterministic baseline arm과 Manifest의 전체 seed/repetition 좌표를 요구한다.
-- caller aggregate를 받지 않고 sealed raw Observation에서 기존 BENCH-003B1과 동일한 12 metric을
-  계산한다.
-- Manifest, catalog selection, source binding, raw Observation bundle, Result와 audit event를 별도
-  content-addressed Run으로 봉인한다.
-- candidate comparison과 Supervisor activation eligibility는 literal false다.
+- code-owned generic Scanner contract가 scanner ID/version, executable artifact SHA-256,
+  configuration digest와 SARIF 2.1.0 parser contract를 요구한다.
+- Scanner baseline Manifest는 정확히 하나의 deterministic arm, 고정 implementation/configuration과
+  mutation 없음만 허용한다.
+- 기존 P0-D1 selector로 Manifest·adapter·Docker profile·catalog·private Ground Truth를 다시 검증한다.
+- 전체 seed/repetition 좌표를 canonical plan에 한 번씩 결박한다.
+- scanner identity, invocation receipt, raw output, Benchmark Result, comparison, Supervisor activation은
+  모두 literal false다.
 
 핵심 구현 위치:
 
-- `src/pajin/benchmark/deterministic_baseline.py`
-- `src/pajin/benchmark/target_catalog.py`
-- `src/pajin/benchmark/measurement.py`
-- `tests/test_benchmark_deterministic_baseline.py`
-- `docs/benchmark/P0-E1-deterministic-pajin-baseline-measurement.md`
-- `docs/adr/0095-catalog-and-registry-governed-deterministic-baseline.md`
+- `src/pajin/benchmark/scanner_baseline.py`
+- `src/pajin/benchmark/__init__.py`
+- `tests/test_benchmark_scanner_baseline.py`
+- `docs/benchmark/P0-E2A-generic-scanner-baseline-plan.md`
+- `docs/adr/0096-bind-scanner-contract-before-measurement.md`
 
 ## 마지막 검증
 
-- P0-E1 단독 테스트: 6 passed
-- P0-E1·catalog·registry·BENCH-003·Holdout·Mutation·문서·계약 집중 회귀: 81 passed
+- P0-E2A 단독 테스트: 13 passed
+- P0-E2A·P0-E1·Target catalog·BENCH-001·문서 집중 회귀: 37 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 207 source files 통과
-- 전체 `pytest -x -q`: 283 passed, 6 skipped 뒤 기존 Windows symlink 권한
+- Linux 대상 strict mypy: 208 source files 통과
+- 전체 `pytest -x -q`: 296 passed, 6 skipped 뒤 기존 Windows symlink 권한
   `WinError 1314`에서 중단
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_deterministic_baseline.py tests\test_benchmark_target_catalog.py tests\test_benchmark_measurement_registry.py tests\test_benchmark_measurement_registry_distribution.py tests\test_walking_benchmark_measurement.py tests\test_benchmark_holdout_target_factory.py tests\test_benchmark_mutation_target_factory.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_scanner_baseline.py tests\test_benchmark_deterministic_baseline.py tests\test_benchmark_target_catalog.py tests\test_benchmark_contract.py tests\test_documentation.py
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -63,31 +60,30 @@ git diff --check
 
 ## 커밋 전 검토 초점
 
-- catalog selection digest만 사후 부착해 catalog matcher 실행을 가장할 수 없는지 확인한다.
-- provider evidence가 exact execution receipt·operation·coordinate·image와 결박되는지 확인한다.
-- source reader가 Harness·Target·registry activation과 catalog evidence를 모두 다시 여는지 확인한다.
-- 누락·중복·추가 seed/repetition과 cross-Manifest·cross-arm replay가 거부되는지 확인한다.
-- raw Observation 또는 evidence bundle과 다른 Result를 봉인할 수 없는지 확인한다.
-- candidate comparison·Supervisor activation flag가 false에서 상승할 수 없는지 확인한다.
+- 특정 Scanner product·binary·image가 구현 없이 등록된 것처럼 보이지 않는지 확인한다.
+- parser contract·identity fields·Manifest implementation/configuration 치환이 거부되는지 확인한다.
+- alternate Target profile/catalog/Ground Truth와 candidate·mutation scope 확대를 차단하는지 확인한다.
+- 전체 좌표의 누락·중복·재정렬이 authority 생성 전에 거부되는지 확인한다.
+- 실행·raw output·Result·comparison·Supervisor flag가 false에서 상승할 수 없는지 확인한다.
 
 ## 다음 조치
 
-`P0-E2`를 진행한다.
+`P0-E2B`를 진행한다.
 
-1. 저장소에 이미 일반 Scanner adapter·CLI·SARIF/JSON parser 또는 scanner identity 계약이 있는지 먼저
-   조사한다.
-2. 없으면 특정 외부 Scanner를 임의 선택하거나 설치하지 않고, scanner registration·invocation·output
-   evidence를 비실행 contract로 먼저 묶어야 하는지 판단한다.
-3. runnable 수직 슬라이스가 가능하면 P0-E1과 같은 Manifest·Target·registry 좌표를 재사용하되 scanner
-   binary/image/version/configuration과 raw output digest를 별도 authority에 결박한다.
-4. synthetic output이나 PAJIN Observation 변환을 실제 Scanner 측정으로 오인하지 않으며 candidate
-   comparison과 Supervisor activation은 계속 false로 유지한다.
+1. 실제 Scanner artifact 후보와 라이선스·배포·출력 안정성·Docker isolation 적합성을 결정한다.
+2. 선택한 artifact의 immutable image/binary digest와 configuration을 별도 registration에 결박한다.
+3. fresh P0-D1 Target isolation 안에서 invocation receipt와 bounded raw SARIF artifact를 봉인한다.
+4. code-owned parser로 raw output을 Observation으로 변환하고 recovery·cleanup·measurement registry
+   admission을 거친 뒤에만 completed Result를 허용한다.
+
+구체 외부 Scanner 선택은 제품·공급망 결정이므로 현재 구현이 임의로 확정하지 않는다. 선택 전에도
+parser와 runtime boundary를 더 구체화할 수 있는 범위는 계속 조사한다.
 
 ## 알려진 경계
 
-- P0-E1은 local deterministic P0-D1 Docker lab 측정이며 production Web/API benchmark가 아니다.
-- catalog distribution은 아직 signed durable activation이 아니며 code-owned local registration이다.
-- P0-E1은 PAJIN baseline 하나만 측정하고 Scanner 또는 single-agent 비교를 수행하지 않는다.
+- P0-E2A는 measurement plan이며 Scanner 측정 결과가 아니다.
+- P0-E1 local deterministic PAJIN Result와 비교할 Scanner Result는 아직 없다.
+- catalog distribution과 provider fence의 기존 local 범위는 그대로다.
 - 전체 pytest는 Windows symlink 권한 제약으로 끝까지 실행되지 않을 수 있다.
 
 자세한 조건은 `KNOWN_ISSUES.md`에 있다. 현재 roadmap과 handoff 권위는 각각 `PLAN.md`와 이 문서다.

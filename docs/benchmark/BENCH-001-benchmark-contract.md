@@ -86,5 +86,6 @@ measurement.
    and Mutation Target Factory
    ([P0-D5 Mutation authority](P0-D5-mutation-target-factory-authority.md))
 3. [P0-E1 deterministic PAJIN baseline measurement](P0-E1-deterministic-pajin-baseline-measurement.md)
-4. measurement of generic scanner and single-agent baselines
+4. [P0-E2A generic Scanner baseline plan](P0-E2A-generic-scanner-baseline-plan.md),
+   followed by provider-backed Scanner and single-agent measurements
 5. exact CAP-006 Capability benchmark mappings and sealed Oracle/Replay observations

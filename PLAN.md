@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E2` 일반 Scanner baseline measurement authority
+- 현재 우선순위: `P0-E2B` 실제 Scanner provider·measurement authority
 
 ## 제품 목표
 
@@ -253,6 +253,13 @@ sealed raw Observation에서 12개 BENCH-001 metric을 재계산하고 Result와
 경계를 일반 Scanner baseline에 그대로 오인 적용하지 않고, scanner identity·invocation·output evidence와
 동일 Target 좌표를 결박하는 별도 최소 authority를 설계한다.
 
+저장소에는 Scanner runtime·parser·binary/image identity가 없었으므로 `P0-E2A`는 특정 제품이나 synthetic
+output을 실측으로 가장하지 않는다. code-owned generic Scanner contract가 scanner ID/version, executable
+SHA-256, configuration digest와 SARIF 2.1.0 parser contract를 요구하고, exact P0-D1 selection과 전체
+seed/repetition 좌표를 비실행 measurement plan에 결박한다. identity·invocation receipt·raw output·Result·
+comparison·Supervisor activation은 모두 false다. `P0-E2B`는 구체 Scanner artifact와 provider 경계를
+명시적으로 선택한 뒤 fresh Target isolation·recovery·cleanup·registry admission을 실제로 증명해야 한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -295,6 +302,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [ ] Baseline 측정
   - [x] `P0-E1` Deterministic PAJIN baseline measurement authority
   - [ ] `P0-E2` 일반 Scanner baseline measurement authority
+    - [x] `P0-E2A` Scanner identity·parser·좌표 결박 비실행 measurement plan
+    - [ ] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
   - [ ] `P0-E3` Single-agent baseline measurement authority
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
