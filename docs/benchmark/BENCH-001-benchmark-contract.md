@@ -82,6 +82,7 @@ measurement.
 
 1. P0-C reset/isolation/cleanup harness and sealed Benchmark Run Artifact
 2. P0-D Web/API, AI/RAG/MCP, hybrid, and holdout Target Factory
+   ([P0-D4 Holdout authority](P0-D4-holdout-target-factory-authority.md))
 3. measurement of the current deterministic PAJIN baseline
 4. exact CAP-006 Capability benchmark mappings and sealed Oracle/Replay observations
 5. GRAPH-001 Minimum Graph Model

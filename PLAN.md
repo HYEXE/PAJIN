@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D4` Holdout Target Factory authority
+- 현재 우선순위: `P0-D5` Mutation Target Factory authority
 
 ## 제품 목표
 
@@ -228,9 +228,14 @@ adapter registration, Manifest·execution·measurement eligibility와 bridge obs
 coordinate·fence·internal network에서 SQLi expanded response의 `documentContent`를 canonical transfer
 artifact로 seal하고, exact upload·RAG·MCP 결과와 ordered bridge receipt를 evidence에 결박한다. 성공
 flag만 맞춘 body 치환, image·catalog·matcher 치환, partial start, stale fence와 cleanup 순서 변경은 fail
-closed한다. fake provider와 real Docker에서 causal bridge와 reverse cleanup을 검증했다. 다음
-`P0-D4`는 active profile과 분리된 Holdout Target의 비공개 Ground Truth·selection·노출 방지 경계를 먼저
-정의한다.
+closed한다. fake provider와 real Docker에서 causal bridge와 reverse cleanup을 검증했다.
+
+`P0-D4`는 기존 Traditional Web/API active selection을 다시 검증한 뒤 별도 Holdout Factory identity,
+private suite·binding, public commitment registration과 non-runnable selection을 결박한다. 공개 artifact에는
+case·Finding·matcher·evaluation seed가 없으며 seeded/holdout replay, seed 재사용, active catalog 확대,
+cross-profile·private binding 치환을 fail closed한다. 실제 Holdout provider와 measurement admission은 계속
+false다. 다음 `P0-D5`는 기존 빈 mutation allowlist를 임의 입력으로 넓히지 않고, code-registered Mutation
+profile·base Target binding·reset provenance·비실행 selection authority부터 정의한다.
 
 ## 이전 기반 작업
 
@@ -269,7 +274,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
     - [x] `P0-D3B1` Hybrid provider topology·transfer artifact schema authority
     - [x] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
-  - [ ] `P0-D4` Holdout Target Factory authority
+  - [x] `P0-D4` Holdout Target Factory authority
+  - [ ] `P0-D5` Mutation Target Factory authority
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

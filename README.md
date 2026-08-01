@@ -183,6 +183,13 @@ bridge and the two private Ground Truth bindings, but fixes the bridge to
 execution authority is created. A future runnable slice must prove coordinated isolation, transfer,
 fencing, cleanup, and measurement under one Hybrid identity.
 
+P0-D4 adds a separate, non-runnable Holdout Target Factory authority above the existing Traditional
+Web/API selection. Complete Holdout cases, matcher identity, and evaluation seeds remain in a
+private suite and binding; public profile, registration, and selection artifacts carry only exact
+commitments. Seeded/holdout replay, active-seed reuse, catalog expansion, cross-profile replay, and
+authority-flag escalation fail closed. This deterministic fixture proves wire separation, not a
+production secret store or runnable Holdout evaluator.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

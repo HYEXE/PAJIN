@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0093: Separate Holdout Target Authority from the Active Target Catalog](docs/adr/0093-separate-holdout-target-authority.md)
 - [ADR-0092: Implement the First Hybrid Chain as a Separate Local Docker Factory](docs/adr/0092-runnable-local-hybrid-docker-provider.md)
 - [ADR-0091: Bind Hybrid Provider Topology Before Runtime Registration](docs/adr/0091-hybrid-provider-topology-before-runtime.md)
 - [ADR-0090: Compose Exact Target Selections Before Implementing a Hybrid Provider](docs/adr/0090-non-runnable-hybrid-target-composition.md)
