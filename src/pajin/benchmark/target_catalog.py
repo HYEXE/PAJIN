@@ -49,6 +49,10 @@ BENCHMARK_TARGET_PROFILE_SELECTION_API_VERSION: Literal[
 
 _Identifier = Annotated[str, Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$")]
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
+_ApiVersion = Annotated[
+    str,
+    Field(pattern=r"^pajin\.dev/[a-z0-9][a-z0-9./-]{1,198}$"),
+]
 _MAX_REGISTRATION_BYTES = 128 * 1024
 _MAX_CATALOG_BYTES = 512 * 1024
 _MAX_BINDING_BYTES = 512 * 1024
@@ -125,22 +129,25 @@ class BenchmarkTargetProfileRegistration(StrictModel):
         alias="registrationDigest",
         max_length=64,
     )
-    target_family: Literal["traditional-web-api"] = Field(alias="targetFamily")
+    target_family: Literal["traditional-web-api", "ai-rag-mcp"] = Field(
+        alias="targetFamily"
+    )
     target_profile_id: _Identifier = Field(alias="targetProfileId")
     target_profile_version: _Identifier = Field(alias="targetProfileVersion")
     target_factory_id: _Identifier = Field(alias="targetFactoryId")
     target_factory_version: _Identifier = Field(alias="targetFactoryVersion")
     target_factory_digest: _Sha256 = Field(alias="targetFactoryDigest")
-    provider_profile_api_version: Literal[
-        "pajin.dev/docker-bug-bounty-target-profile/v1alpha1"
-    ] = Field(alias="providerProfileApiVersion")
+    provider_profile_api_version: _ApiVersion = Field(alias="providerProfileApiVersion")
     provider_profile_digest: _Sha256 = Field(alias="providerProfileDigest")
     mutation_profile_ids: tuple[_Identifier, ...] = Field(
         default=(),
         alias="mutationProfileIds",
         max_length=32,
     )
-    network_policy: Literal["docker-internal-bridge-no-published-ports"] = Field(
+    network_policy: Literal[
+        "docker-internal-bridge-no-published-ports",
+        "not-provisioned-contract-only",
+    ] = Field(
         default="docker-internal-bridge-no-published-ports",
         alias="networkPolicy",
     )
@@ -185,7 +192,10 @@ class BenchmarkTargetProfileCatalog(StrictModel):
         alias="apiVersion",
     )
     kind: Literal["BenchmarkTargetProfileCatalog"] = "BenchmarkTargetProfileCatalog"
-    catalog_id: Literal["target-catalog:pajin-traditional-web-api"] = Field(
+    catalog_id: Literal[
+        "target-catalog:pajin-traditional-web-api",
+        "target-catalog:pajin-ai-rag-mcp",
+    ] = Field(
         default="target-catalog:pajin-traditional-web-api",
         alias="catalogId",
     )
@@ -199,6 +209,13 @@ class BenchmarkTargetProfileCatalog(StrictModel):
 
     @model_validator(mode="after")
     def bind_catalog(self) -> Self:
+        expected_family = (
+            "traditional-web-api"
+            if self.catalog_id == "target-catalog:pajin-traditional-web-api"
+            else "ai-rag-mcp"
+        )
+        if any(item.target_family != expected_family for item in self.registrations):
+            raise ValueError("Benchmark Target catalog ID and registration family differ")
         keys = [
             (item.target_profile_id, item.target_profile_version)
             for item in self.registrations

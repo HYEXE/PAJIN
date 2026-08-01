@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D2` AI/RAG/MCP Target Factory catalog·ground-truth profile
+- 현재 우선순위: `P0-D2B` local AI/RAG/MCP provider·catalog promotion
 
 ## 제품 목표
 
@@ -186,6 +186,16 @@ measurement registry와 sealed Harness 권위를 대체하지 않는다. 다음 
 RAG·MCP chain과 실제 실행 provider의 현재 범위를 먼저 대조해, 실행할 수 없는 기능을 catalog가
 허가하는 허상을 만들지 않는 AI/RAG/MCP profile 최소 슬라이스를 정의한다.
 
+`P0-D2`는 기존 WALK-002~WALK-005C1 chain을 두 번째 `ai-rag-mcp` catalog와 private seeded
+Ground Truth profile로 등록했다. 실제 P0-C Target lifecycle이 없고 WALK 실행 증거의
+`networkLogTrusted=false`이므로 profile은 `fixture-contract-only`, selection은
+`registered-fixture-not-runnable`, `providerExecutionAuthorized=false`,
+`measurementAdmissionEligible=false`로 고정한다. selection에는 adapter digest가 없으며 Benchmark
+runner나 governed Harness 입력이 될 수 없다. shared catalog는 기존 P0-D1 wire 값을 바꾸지 않고
+두 code-owned catalog ID와 family의 exact 대응만 허용한다. 다음 `P0-D2B`는 reset·seed·isolation·
+execution·receipt-bound evidence·cleanup을 실제로 수행하는 local AI/RAG/MCP provider를 구현한 뒤에만
+catalog를 runnable 상태로 승격하는 별도 수직 슬라이스다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -217,7 +227,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 - [ ] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
   - [x] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
-  - [ ] `P0-D2` AI/RAG/MCP Target Factory catalog·ground-truth profile
+  - [x] `P0-D2` AI/RAG/MCP non-runnable fixture catalog·ground-truth profile
+  - [ ] `P0-D2B` local AI/RAG/MCP provider·catalog promotion
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

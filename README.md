@@ -160,6 +160,13 @@ provider operation, then requires receipt-bound Docker execution evidence and me
 match the registered SQLi case. The selection is explicitly non-executable and does not replace
 measurement-registry activation or sealed Harness admission.
 
+P0-D2 registers the walking File Upload -> RAG -> MCP authorization -> Internal Data Access chain
+as a second AI/RAG/MCP catalog and private seeded Ground Truth profile. It deliberately records the
+current truth: the profile is `fixture-contract-only`, its network evidence is untrusted, and both
+provider execution authorization and measurement admission are false. No Target adapter or
+Benchmark Observation is synthesized from the existing walking test fixture; a real isolated
+provider lifecycle remains required before this family can become runnable.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

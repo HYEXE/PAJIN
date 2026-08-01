@@ -426,6 +426,13 @@ receipt-bound execution evidence plus registered counts before returning the Obs
 selection remains content-addressed but non-executable; registry activation and governed Harness
 admission retain their existing authority.
 
+P0-D2 adds the walking File Upload/RAG/MCP authorization chain as a second catalogued family while
+preserving its actual fixture boundary. The profile binds exact WALK-002/003/005A/005B2/005C1
+contract versions and a private seeded chain matcher, but declares contract-only availability,
+untrusted network evidence, no provider execution authorization, and no measurement eligibility.
+It creates neither a Target adapter nor a Benchmark Observation; runnable AI/RAG/MCP measurement
+still requires a separate P0-C lifecycle implementation.
+
 ## 10. Definition of Done
 
 Each vertical slice requires:

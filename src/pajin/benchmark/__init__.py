@@ -1,5 +1,16 @@
 """Public benchmark contracts."""
 
+from pajin.benchmark.ai_target_catalog import (
+    AI_RAG_MCP_WALKING_MATCHER_DIGEST,
+    AI_RAG_MCP_WALKING_TARGET_PROFILE_API_VERSION,
+    BENCHMARK_TARGET_FIXTURE_SELECTION_API_VERSION,
+    AIRAGMCPWalkingTargetProfile,
+    BenchmarkTargetFixtureSelectionAuthority,
+    registered_ai_rag_mcp_ground_truth,
+    registered_ai_rag_mcp_target_catalog,
+    registered_ai_rag_mcp_walking_target_profile,
+    select_ai_rag_mcp_target_fixture,
+)
 from pajin.benchmark.docker_provider import (
     DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION,
     DOCKER_BUG_BOUNTY_TARGET_PROFILE_API_VERSION,
@@ -169,6 +180,8 @@ from pajin.benchmark.target_recovery import (
 )
 
 __all__ = [
+    "AI_RAG_MCP_WALKING_MATCHER_DIGEST",
+    "AI_RAG_MCP_WALKING_TARGET_PROFILE_API_VERSION",
     "BENCHMARK_COMPARISON_API_VERSION",
     "BENCHMARK_GROUND_TRUTH_API_VERSION",
     "BENCHMARK_MANIFEST_API_VERSION",
@@ -184,6 +197,7 @@ __all__ = [
     "BENCHMARK_RESULT_API_VERSION",
     "BENCHMARK_TARGET_COORDINATE_API_VERSION",
     "BENCHMARK_TARGET_FACTORY_ADAPTER_API_VERSION",
+    "BENCHMARK_TARGET_FIXTURE_SELECTION_API_VERSION",
     "BENCHMARK_TARGET_GROUND_TRUTH_BINDING_API_VERSION",
     "BENCHMARK_TARGET_OPERATION_API_VERSION",
     "BENCHMARK_TARGET_PROFILE_CATALOG_API_VERSION",
@@ -199,6 +213,7 @@ __all__ = [
     "WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION",
     "WALKING_SHADOW_BENCHMARK_COMPARISON_API_VERSION",
     "WALKING_SHADOW_MEASURED_BENCHMARK_API_VERSION",
+    "AIRAGMCPWalkingTargetProfile",
     "BenchmarkArm",
     "BenchmarkArmKind",
     "BenchmarkComparison",
@@ -247,6 +262,7 @@ __all__ = [
     "BenchmarkTargetFactoryAdapter",
     "BenchmarkTargetFactoryError",
     "BenchmarkTargetFactoryRunner",
+    "BenchmarkTargetFixtureSelectionAuthority",
     "BenchmarkTargetGroundTruthBinding",
     "BenchmarkTargetOperation",
     "BenchmarkTargetOperationJournal",
@@ -307,9 +323,13 @@ __all__ = [
     "load_walking_benchmark_run_observation",
     "load_walking_shadow_benchmark_comparison_authority",
     "load_walking_shadow_measured_benchmark_authority",
+    "registered_ai_rag_mcp_ground_truth",
+    "registered_ai_rag_mcp_target_catalog",
+    "registered_ai_rag_mcp_walking_target_profile",
     "registered_traditional_web_api_ground_truth",
     "registered_traditional_web_api_target_catalog",
     "resolve_benchmark_measurement_registry_key",
+    "select_ai_rag_mcp_target_fixture",
     "select_traditional_web_api_target_profile",
     "verify_benchmark_measurement_attestation",
     "verify_benchmark_measurement_registry_distribution_bundle",

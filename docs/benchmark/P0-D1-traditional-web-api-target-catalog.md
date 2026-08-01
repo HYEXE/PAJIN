@@ -112,7 +112,8 @@ Manifest, Ground Truth, provider profile, or historical result digest.
 
 ## Remaining work
 
-P0-D must add separately registered AI/RAG/MCP, Hybrid, Holdout, and Mutation profiles. Catalog
+P0-D2 now adds a separately registered, explicitly non-runnable AI/RAG/MCP fixture profile. P0-D
+must still add a real AI/RAG/MCP provider plus Hybrid, Holdout, and Mutation profiles. Catalog
 distribution signatures, durable revision activation, cross-host provider fencing, generic Ground
 Truth matcher execution, and sealed linkage of the catalog selection into the final governed
 Harness authority remain outside P0-D1.
@@ -121,4 +122,5 @@ Harness authority remain outside P0-D1.
 
 - [BENCH-001 contract](BENCH-001-benchmark-contract.md)
 - [P0-C2B2B contract](P0-C2B2B-local-docker-provider-evidence.md)
+- [P0-D2 contract](P0-D2-ai-rag-mcp-target-fixture-catalog.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

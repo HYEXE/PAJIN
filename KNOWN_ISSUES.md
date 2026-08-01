@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 206 passed, 4 skipped 이후
+- 결과: 216 passed, 4 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -42,6 +42,19 @@
   않는다.
 - 해소 조건: 별도 catalog distribution Trust Anchor와 contiguous durable activation을 추가하고,
   exact catalog selection Run/root/artifact를 governed Harness authority와 reader에 결박한다.
+
+## P0-D2 AI/RAG/MCP profile의 non-runnable fixture 범위
+
+- 상태: 의도적으로 실행과 측정을 금지한 선행 계약
+- 현재 보장: WALK-002/003/005A/005B2/005C1의 exact API version, 실제 state·target observation,
+  private seeded Ground Truth를 content-addressed profile과 catalog selection에 결박한다. selection은
+  adapter digest가 없고 `providerExecutionAuthorized=false`, `measurementAdmissionEligible=false`다.
+- 영향: 현재 WALK Gateway 증거는 deterministic fixture이며 `networkLogTrusted=false`다. Target reset,
+  isolation, provider fence, receipt-bound provider evidence, cleanup, measurement attestation이 없으므로
+  실제 Benchmark Run이나 metric 근거로 사용할 수 없다.
+- 해소 조건: 별도 local AI/RAG/MCP Target과 recoverable provider adapter를 구현하고 실제 network·
+  lifecycle evidence, cleanup recovery, registry-governed live conformance를 검증한 뒤 새 runnable
+  registration revision으로 승격한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
