@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 258 passed, 6 skipped 이후
+- 결과: 277 passed, 6 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -91,6 +91,17 @@
 - 해소 조건: access-controlled external evaluator, high-entropy one-time seed, signed bounded adjudication
   projection, leakage-safe log policy와 isolated provider lifecycle을 별도 authority로 구현한다.
 
+## P0-D5 Mutation authority의 비실행 materialization 범위
+
+- 상태: 의도적으로 non-runnable인 계약 경계
+- 현재 보장: exact base Target selection, code-owned mutation seed·state·ordered operations, derived
+  Manifest와 declared reset plan을 content-addressed authority로 결박한다. base catalog의 빈 mutation
+  allowlist는 유지하고 scope expansion·cross-profile replay·순서·seed·state 치환을 차단한다.
+- 영향: 실제 Target state를 restore·mutate·verify하지 않으며 reset receipt도 없다. 이 authority를
+  Benchmark Result나 measurement admission 근거로 사용할 수 없다.
+- 해소 조건: provider-specific materializer, observed base/expected-state evidence, fenced cleanup/recovery와
+  registry-governed Harness admission을 새 runnable authority로 구현한다.
+
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
 - 상태: 활성 보수적 중복 가능성
@@ -119,7 +130,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 205 source files 통과
+- 현재 결과: 206 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브

@@ -190,6 +190,13 @@ commitments. Seeded/holdout replay, active-seed reuse, catalog expansion, cross-
 authority-flag escalation fail closed. This deterministic fixture proves wire separation, not a
 production secret store or runnable Holdout evaluator.
 
+P0-D5 adds a separate non-runnable Mutation Target Factory authority without widening the P0-D1
+catalog's empty mutation allowlist. It revalidates the exact unmutated base selection, derives a
+Manifest that changes only `mutationProfileId`, and binds the public deterministic mutation seed,
+base and expected state digests, ordered restore/apply/verify operations, benchmark seeds, and a
+declared reset plan. The plan has no reset receipt and all materialization, execution, and
+measurement flags remain false.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

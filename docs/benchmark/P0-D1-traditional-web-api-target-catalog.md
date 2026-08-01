@@ -112,11 +112,11 @@ Manifest, Ground Truth, provider profile, or historical result digest.
 
 ## Remaining work
 
-P0-D2 now adds a separately registered, explicitly non-runnable AI/RAG/MCP fixture profile. P0-D
-must still add a real AI/RAG/MCP provider plus Hybrid, Holdout, and Mutation profiles. Catalog
-distribution signatures, durable revision activation, cross-host provider fencing, generic Ground
-Truth matcher execution, and sealed linkage of the catalog selection into the final governed
-Harness authority remain outside P0-D1.
+P0-D2 through P0-D5 add separate AI/RAG/MCP, Hybrid, Holdout, and Mutation authorities. The
+[P0-D5 Mutation authority](P0-D5-mutation-target-factory-authority.md) deliberately defines mutation
+semantics without widening this catalog. Catalog distribution signatures, durable revision
+activation, cross-host provider fencing, generic Ground Truth matcher execution, and sealed linkage
+of the catalog selection into the final governed Harness authority remain outside P0-D1.
 
 ## Related documents
 

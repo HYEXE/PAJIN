@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D5` Mutation Target Factory authority
+- 현재 우선순위: `P0-E1` Deterministic PAJIN baseline measurement authority
 
 ## 제품 목표
 
@@ -237,6 +237,14 @@ cross-profile·private binding 치환을 fail closed한다. 실제 Holdout provi
 false다. 다음 `P0-D5`는 기존 빈 mutation allowlist를 임의 입력으로 넓히지 않고, code-registered Mutation
 profile·base Target binding·reset provenance·비실행 selection authority부터 정의한다.
 
+`P0-D5`는 기존 P0-D1 catalog와 빈 mutation allowlist를 그대로 보존하면서 별도 Mutation profile,
+registration, derived Manifest, reset plan과 non-runnable selection을 추가했다. base selector를 다시 실행하고
+derived Manifest는 `mutationProfileId` 하나만 달라야 한다. mutation seed·base/expected state·세 operation의
+순서와 state chain, benchmark seed와 reset provenance를 content-addressed authority로 결박한다. reset receipt,
+materialization, execution, measurement admission은 모두 false다. 이로써 P0-D contract-first Target family 축을
+완료하고, 다음 `P0-E1`에서 기존 registry-governed Harness와 runnable deterministic Target을 실제 baseline
+measurement authority로 연결한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -266,7 +274,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-C2B2A1` signed registry distribution·durable anti-rollback activation
   - [x] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
   - [x] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
-- [ ] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
+- [x] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
   - [x] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
   - [x] `P0-D2` AI/RAG/MCP non-runnable fixture catalog·ground-truth profile
   - [x] `P0-D2B` local AI/RAG/MCP provider·별도 runnable catalog
@@ -275,8 +283,11 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-D3B1` Hybrid provider topology·transfer artifact schema authority
     - [x] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
   - [x] `P0-D4` Holdout Target Factory authority
-  - [ ] `P0-D5` Mutation Target Factory authority
-- Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
+  - [x] `P0-D5` Mutation Target Factory authority
+- [ ] Baseline 측정
+  - [ ] `P0-E1` Deterministic PAJIN baseline measurement authority
+  - [ ] `P0-E2` 일반 Scanner baseline measurement authority
+  - [ ] `P0-E3` Single-agent baseline measurement authority
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - `PROF-002` 기존 CampaignMode Compatibility Adapter
