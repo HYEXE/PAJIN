@@ -5,6 +5,7 @@
 - Topology API: `pajin.dev/hybrid-provider-topology/v1alpha1`
 - Decision: [ADR-0091](../adr/0091-hybrid-provider-topology-before-runtime.md)
 - Predecessor: [P0-D3](P0-D3-hybrid-target-composition.md)
+- Runnable successor: [P0-D3B2](P0-D3B2-local-hybrid-docker-provider.md)
 
 ## Scope
 

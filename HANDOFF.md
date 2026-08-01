@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 작업 시작 기준: `8a906a2ac5e44fc1d633f27f64034eac7d9e9c01` (`P0-D3`)
-- 현재 구현 체크포인트: `P0-D3B1` Hybrid provider topology·transfer authority
-- 다음 구현: `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
+- 작업 시작 기준: `90df69fcc14af1784843736eaa37d012c713a785` (`P0-D3B1`)
+- 현재 구현 체크포인트: `P0-D3B2` runnable local Hybrid Docker provider
+- 다음 구현: `P0-D4` Holdout Target Factory authority
 
 ## 재개 전 확인
 
@@ -21,62 +21,50 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-P0-D3B1은 P0-D3 selection을 실행했다고 주장하지 않고, runnable Hybrid provider가 충족해야 할
-새 Factory·adapter identity와 다중 컨테이너 경계를 content-addressed authority로 결박한다.
+P0-D3B2는 P0-D3B1 topology를 새 Hybrid Factory·profile·catalog·Ground Truth matcher와 세 Docker
+image에 결박하고 recoverable runner로 실제 실행한다.
 
-- 두 Target과 한 Worker는 하나의 unpublished internal bridge, 단일 coordinate·fence를 사용한다.
-- startup은 Traditional→AI→Worker, cleanup은 정확한 역순이며 bridge 단계도 probe→source seal→extract
-  →transfer seal→upload→AI probe로 고정된다.
-- transfer artifact는 sealed Traditional 응답의 `/records/0/documentContent`에서 본문을 추출하고 source
-  Observation·response digest, document ID·content를 canonical JSON으로 기록해야 한다.
-- 현재 SQLi 응답에는 이 필드가 없으므로 Hybrid 전용 seeded source semantics가 다음 구현에 필요하다.
-- image binding·adapter registration·Manifest·execution·measurement eligibility·bridge observation은 모두
-  false/non-executed 상태다.
-- P0-D3 private binding을 다시 열어 selection 전체를 재구성하므로 cross-composition binding과 component
-  치환이 차단된다.
-
-P0-D3의 exact two-component composition과 non-runnable 경계는 그대로 유지된다.
-
-P0-D3는 P0-D1 Traditional Web/API와 P0-D2B local AI/RAG/MCP의 exact
-`BenchmarkTargetProfileSelectionAuthority`를 ordinal 1·2 component로 결박한다.
-
-- component는 code-owned catalog, family, profile, Factory/version, provider API, internal-network
-  policy, empty mutation set, provider/profile digest equality를 요구한다.
-- catalog, Factory, adapter, Manifest와 private Ground Truth binding identity는 두 component 사이에서
-  모두 달라야 한다. reversal·repetition·partial composition이 차단된다.
-- bridge는 Boolean-SQLi Finding/Surface에서 AI upload/RAG/MCP Finding/Surface로 향하는
-  `synthetic-record-to-untrusted-document` 관계이며 `declared-not-executed`로 고정된다.
-- public composition과 selection에는 private cases가 없다. 별도
-  `HybridTargetGroundTruthBinding`이 두 complete seeded case와 matcher를 결박한다.
-- final selection이 private registration과 binding digest를 component selection에 다시 대조하므로
-  self-consistent한 private profile 치환도 차단된다.
-- Hybrid Target Factory, `BenchmarkManifest`, provider receipt, Observation, metric, Harness authority는
-  생성하지 않는다. Factory registration, Manifest eligibility, provider execution, measurement
-  admission은 모두 false다.
+- Hybrid Traditional Target의 Boolean-SQLi expanded response가 실제 `documentContent`를 제공한다.
+- Worker는 complete source body를 seal하고 canonical transfer artifact를 만든 뒤 그 exact content만 AI
+  Target에 upload한다. upload·RAG·MCP response 전체도 Base64·SHA-256으로 기록하고 host가 재검증한다.
+- transfer artifact는 schema·source Observation·source response·document identity를 묶고 bridge receipt는
+  topology·coordinate·operation·fence·ordered steps와 source/upload/query digest를 결박한다.
+- 세 container는 하나의 unpublished internal bridge와 단일 coordinate·fence를 사용한다. startup은
+  Traditional→AI→Worker이고 cleanup은 Worker→AI→Traditional→network 역순이다.
+- 두 seeded Finding, 네 Surface, 한 Hybrid chain의 code-owned matcher를 Manifest Ground Truth에 묶는다.
+  P0-D3B1 private predecessor digest만으로는 measurement를 만들 수 없다.
+- partial AI startup은 성공으로 기록되지 않으며 higher-fence recovery cleanup만 남은 리소스를 제거한다.
+- 기존 P0-D3 selection은 계속 non-runnable이다. 실행은 새 Hybrid local-Docker catalog selection과
+  recoverable runner에서만 허용된다.
 
 핵심 구현 위치:
 
+- `src/pajin/benchmark/hybrid_docker_provider.py`
 - `src/pajin/benchmark/hybrid_provider_contract.py`
 - `src/pajin/benchmark/hybrid_target_composition.py`
+- `src/pajin/benchmark/docker_provider.py`
+- `src/pajin/benchmark/target_catalog.py`
 - `src/pajin/benchmark/__init__.py`
+- `tests/test_benchmark_hybrid_docker_provider.py`
 - `tests/test_benchmark_hybrid_target_composition.py`
-- `docs/benchmark/P0-D3B1-hybrid-provider-topology-contract.md`
-- `docs/adr/0091-hybrid-provider-topology-before-runtime.md`
-- `docs/benchmark/P0-D3-hybrid-target-composition.md`
-- `docs/adr/0090-non-runnable-hybrid-target-composition.md`
+- `containers/hybrid-traditional-target/`
+- `containers/hybrid-ai-rag-mcp-target/`
+- `containers/hybrid-benchmark-worker/`
+- `docs/benchmark/P0-D3B2-local-hybrid-docker-provider.md`
+- `docs/adr/0092-runnable-local-hybrid-docker-provider.md`
 
 ## 마지막 검증
 
-- P0-D3/P0-D3B1 계약 테스트: 17 passed
-- 문서 정책 테스트 포함 계약 묶음: 19 passed
-- Benchmark/Target/문서 회귀 묶음: 98 passed, 2 skipped
+- P0-D3B2 fake-provider·계약 집중 테스트: 57 passed, 3 skipped
+- P0-D3B2 real-Docker conformance: 1 passed
+- Benchmark/Target/문서 회귀 묶음: 104 passed, 3 skipped
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 203 source files 통과
-- 전체 `pytest -x -q`: 238 passed, 5 skipped 뒤 기존 Windows symlink 권한
+- Linux 대상 strict mypy: 204 source files 통과
+- 전체 `pytest -x -q`: 244 passed, 6 skipped 뒤 기존 Windows symlink 권한
   `WinError 1314`에서 중단
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_hybrid_target_composition.py tests\test_benchmark_target_catalog.py tests\test_benchmark_ai_target_catalog.py tests\test_benchmark_docker_provider.py tests\test_benchmark_target_recovery.py tests\test_benchmark_target_factory.py tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_measurement_registry.py tests\test_benchmark_contract.py tests\test_documentation.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_hybrid_docker_provider.py tests\test_benchmark_hybrid_target_composition.py tests\test_benchmark_target_catalog.py tests\test_benchmark_ai_target_catalog.py tests\test_benchmark_docker_provider.py tests\test_benchmark_target_recovery.py tests\test_benchmark_target_factory.py tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_measurement_registry.py tests\test_benchmark_contract.py tests\test_documentation.py
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -85,31 +73,29 @@ git diff --check
 
 ## 커밋 전 검토 초점
 
-- topology authority를 실행 capability나 provider receipt로 사용하지 않는다.
-- 기존 component image가 실제 transfer를 수행한다고 허위 주장하지 않는다.
-- transfer body는 반드시 sealed source response에서 파생되며 code-owned prompt로 대체하지 않는다.
-- public authority에 private Ground Truth case를 노출하지 않는다.
-- 기존 single-target Manifest·Docker evidence wire를 변경하지 않는다.
+- success flag만 맞고 decoded response body가 다른 결과를 거부한다.
+- transfer content가 sealed SQLi response에서 파생되지 않으면 거부한다.
+- bridge receipt가 topology·schema·coordinate·operation·fence와 exact equality인지 확인한다.
+- partial start와 cleanup 역순·higher fence recovery를 확인한다.
+- P0-D3 non-runnable selection과 기존 single-target evidence wire를 변경하지 않는다.
 
 ## 다음 조치
 
-`P0-D3B2`를 진행한다.
+`P0-D4`를 진행한다.
 
-1. Hybrid 전용 Traditional·AI Target과 Worker image를 구현하고 exact image ID profile을 만든다.
-2. `HybridProviderTopologyAuthority`의 startup·bridge·cleanup order를 하나의 adapter와 operation journal에
-   구현한다.
-3. source response, transfer artifact, destination upload와 final AI result를 별도 digest·receipt로 결박한다.
-4. component 1 성공/2 실패, transfer 치환, partial cleanup, reverse order, cross-coordinate receipt,
-   replay와 higher-fence recovery를 fail closed한다.
-5. fake-provider와 real-Docker 검증이 모두 통과하기 전에는 runnable selection이나 Hybrid metric을 만들지
-   않는다.
+1. 기존 Benchmark Ground Truth visibility와 catalog 공개 범위를 읽고 Holdout case가 active profile
+   selection·로그·public artifact에 노출될 수 있는 지점을 찾는다.
+2. active Target과 identity가 분리된 Holdout registration·private binding·selection authority의 최소 계약을
+   설계한다.
+3. Holdout contents·matcher·seed 누출, active/holdout replay, catalog scope expansion을 fail closed한다.
+4. 실제 Holdout provider를 만들기 전에는 execution·measurement eligibility를 false로 유지한다.
 
 ## 알려진 경계
 
-- P0-D3B1도 topology/schema authority일 뿐 runnable provider가 아니다.
-- bridge data-flow는 schema만 등록됐으며 실제 transfer artifact나 receipt가 없다.
-- 두 component는 각자 host-local provider이고 cross-provider fence·cleanup authority가 없다.
-- catalog distribution, anti-rollback activation과 Hybrid Harness source binding은 없다.
+- P0-D3B2는 host-local deterministic no-model lab이다.
+- MCP endpoint는 AI Target 내부 protocol boundary이며 별도 service 격리를 증명하지 않는다.
+- provider fence는 host-local SQLite이며 cross-host control-plane CAS가 아니다.
+- catalog distribution, anti-rollback activation과 production model behavior는 아직 증명하지 않는다.
 - 전체 pytest는 Windows symlink 권한 제약으로 끝까지 실행되지 않는다.
 
 자세한 조건은 `KNOWN_ISSUES.md`에 있다. 현재 roadmap과 handoff 권위는 각각 `PLAN.md`와 이 문서다.

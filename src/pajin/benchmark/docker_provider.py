@@ -1628,6 +1628,8 @@ def _require_lock_schema(connection: sqlite3.Connection) -> None:
 def _accept_provider_operation(
     path: Path,
     operation: BenchmarkTargetOperation,
+    *,
+    evidence_loader: Callable[[str], StrictModel] | None = None,
 ) -> tuple[BenchmarkTargetStageReceipt, WalkingBenchmarkRunObservation | None] | None:
     scope = _provider_scope(operation)
     with _provider_write_transaction(path) as connection:
@@ -1654,14 +1656,20 @@ def _accept_provider_operation(
             if existing["state"] == "completed":
                 receipt, observation = _parse_provider_result(existing["result_json"])
                 try:
-                    evidence = DockerBenchmarkProviderEvidence.model_validate_json(
-                        existing["evidence_json"]
+                    raw_evidence = existing["evidence_json"]
+                    if not isinstance(raw_evidence, str):
+                        raise ValueError("evidence is not text")
+                    evidence = (
+                        DockerBenchmarkProviderEvidence.model_validate_json(raw_evidence)
+                        if evidence_loader is None
+                        else evidence_loader(raw_evidence)
                     )
                 except ValueError as exc:
                     raise DockerBenchmarkProviderError(
                         "Docker provider cached evidence is invalid"
                     ) from exc
-                if evidence.evidence_digest != receipt.provider_evidence_digest:
+                evidence_digest = getattr(evidence, "evidence_digest", None)
+                if evidence_digest != receipt.provider_evidence_digest:
                     raise DockerBenchmarkProviderError(
                         "Docker provider cached evidence binding differs"
                     )
@@ -1747,7 +1755,7 @@ def _complete_provider_operation(
     *,
     receipt: BenchmarkTargetStageReceipt,
     observation: WalkingBenchmarkRunObservation | None,
-    evidence: DockerBenchmarkProviderEvidence,
+    evidence: StrictModel,
 ) -> None:
     result = {
         "receipt": receipt.model_dump(mode="json", by_alias=True),

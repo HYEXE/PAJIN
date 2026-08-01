@@ -130,7 +130,7 @@ class BenchmarkTargetProfileRegistration(StrictModel):
         alias="registrationDigest",
         max_length=64,
     )
-    target_family: Literal["traditional-web-api", "ai-rag-mcp"] = Field(
+    target_family: Literal["traditional-web-api", "ai-rag-mcp", "hybrid"] = Field(
         alias="targetFamily"
     )
     target_profile_id: _Identifier = Field(alias="targetProfileId")
@@ -197,6 +197,7 @@ class BenchmarkTargetProfileCatalog(StrictModel):
         "target-catalog:pajin-traditional-web-api",
         "target-catalog:pajin-ai-rag-mcp",
         "target-catalog:pajin-ai-rag-mcp-local-docker",
+        "target-catalog:pajin-hybrid-local-docker",
     ] = Field(
         default="target-catalog:pajin-traditional-web-api",
         alias="catalogId",
@@ -211,11 +212,12 @@ class BenchmarkTargetProfileCatalog(StrictModel):
 
     @model_validator(mode="after")
     def bind_catalog(self) -> Self:
-        expected_family = (
-            "traditional-web-api"
-            if self.catalog_id == "target-catalog:pajin-traditional-web-api"
-            else "ai-rag-mcp"
-        )
+        expected_family = {
+            "target-catalog:pajin-traditional-web-api": "traditional-web-api",
+            "target-catalog:pajin-ai-rag-mcp": "ai-rag-mcp",
+            "target-catalog:pajin-ai-rag-mcp-local-docker": "ai-rag-mcp",
+            "target-catalog:pajin-hybrid-local-docker": "hybrid",
+        }[self.catalog_id]
         if any(item.target_family != expected_family for item in self.registrations):
             raise ValueError("Benchmark Target catalog ID and registration family differ")
         keys = [

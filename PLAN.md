@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D3B2` runnable Hybrid multi-container lifecycle·bridge evidence
+- 현재 우선순위: `P0-D4` Holdout Target Factory authority
 
 ## 제품 목표
 
@@ -224,6 +224,14 @@ adapter registration, Manifest·execution·measurement eligibility와 bridge obs
 다음 `P0-D3B2`가 Hybrid 전용 seeded source와 AI ingestion, 실제 multi-container adapter·receipt를
 구현하고 partial failure와 higher-fence recovery를 증명해야 한다.
 
+`P0-D3B2`는 새 Hybrid Factory·catalog·Ground Truth matcher와 세 Docker image를 구현했다. 하나의
+coordinate·fence·internal network에서 SQLi expanded response의 `documentContent`를 canonical transfer
+artifact로 seal하고, exact upload·RAG·MCP 결과와 ordered bridge receipt를 evidence에 결박한다. 성공
+flag만 맞춘 body 치환, image·catalog·matcher 치환, partial start, stale fence와 cleanup 순서 변경은 fail
+closed한다. fake provider와 real Docker에서 causal bridge와 reverse cleanup을 검증했다. 다음
+`P0-D4`는 active profile과 분리된 Holdout Target의 비공개 Ground Truth·selection·노출 방지 경계를 먼저
+정의한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -258,9 +266,10 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D2` AI/RAG/MCP non-runnable fixture catalog·ground-truth profile
   - [x] `P0-D2B` local AI/RAG/MCP provider·별도 runnable catalog
   - [x] `P0-D3` Traditional Web/API + AI/RAG/MCP non-runnable composition authority
-  - [ ] `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
+  - [x] `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
     - [x] `P0-D3B1` Hybrid provider topology·transfer artifact schema authority
-    - [ ] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
+    - [x] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
+  - [ ] `P0-D4` Holdout Target Factory authority
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

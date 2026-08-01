@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 238 passed, 5 skipped 이후
+- 결과: 244 passed, 6 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -69,18 +69,16 @@
   artifact와 bridge execution receipt, combined matcher와 measurement authority를 실제 provider 및
   partial-failure conformance로 검증한다.
 
-## P0-D3B1 Hybrid provider topology의 non-runnable 범위
+## P0-D3B2 Hybrid provider의 host-local 합성 범위
 
-- 상태: 의도적으로 실행 권한이 없는 topology·transfer schema
-- 현재 보장: P0-D3 selection·private binding, 새 Hybrid Factory·adapter identity, 두 Target·한 Worker의
-  startup·bridge·reverse-cleanup order, shared internal network, 단일 coordinate·fence 요구사항과 transfer
-  artifact field·source pointer를 content-addressed authority로 결박한다.
-- 영향: 실제 image ID, adapter, Manifest, operation journal, bridge receipt와 Observation은 없다. 현재 SQLi
-  Target 응답에는 `/records/0/documentContent`가 없으므로 기존 두 component 실행을 연결해 Hybrid
-  completion으로 해석할 수 없다.
-- 해소 조건: Hybrid 전용 seeded Target images와 multi-container adapter를 구현하고 source seal→transfer
-  seal→destination upload의 exact receipt, partial failure cleanup, replay·cross-coordinate·higher-fence
-  recovery를 fake provider와 real Docker에서 검증한다.
+- 상태: 실행 가능하지만 local Docker·deterministic no-model 합성 lab
+- 현재 보장: 세 exact image, 한 internal network·coordinate·fence, causal source response→transfer artifact
+  →upload→RAG/MCP receipt, Hybrid matcher와 reverse cleanup을 fake provider와 real Docker에서 검증한다.
+- 영향: MCP endpoint는 AI Target process 내부 protocol boundary이며 별도 service 격리가 아니다. provider
+  fence는 host-local SQLite에 의존하고, catalog distribution·anti-rollback activation과 production model
+  behavior는 증명하지 않는다.
+- 해소 조건: 필요 시 별도 MCP/model services, 외부 provider compare-and-set fence, signed catalog
+  distribution과 governed Harness source binding을 별도 profile·ADR로 구현한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
