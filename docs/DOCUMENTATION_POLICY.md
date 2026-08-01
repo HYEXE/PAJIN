@@ -2,9 +2,10 @@
 
 ## Purpose
 
-PAJIN uses a hybrid documentation model. The repository owns records that must change with code;
-Notion owns planning and operating context that changes independently of code. A future
-documentation website will publish repository-owned material, not become another authority.
+PAJIN uses a repository-first documentation model. A clean clone contains the code-coupled
+contracts, decisions, roadmap, current handoff, and known limitations required to resume work. A
+future documentation website may publish repository-owned material but does not become another
+authority. The former Notion roadmap is retained only as a historical snapshot.
 
 ## Authority map
 
@@ -16,28 +17,40 @@ documentation website will publish repository-owned material, not become another
 | Requirement-to-implementation traceability | Versioned traceability records | `docs/KISA_TRACEABILITY.md` |
 | Installation and operator entry points | Root README | `README.md` |
 | Navigation and documentation policy | Documentation index and this policy | `docs/README.md`, this file |
-| Roadmap, priority, progress, blockers, and milestones | [PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a) | Not stored as a repository plan |
+| Repository-wide working rules | Root agent instructions | `AGENTS.md` |
+| Roadmap, priority, milestones, and completion criteria | Current repository plan | `PLAN.md` |
+| Current checkpoint, verification, and next action | Executable handoff | `HANDOFF.md` |
+| Reproduced unresolved limitations | Known-issues register | `KNOWN_ISSUES.md` |
+| Decision navigation | ADR routing index | `DECISIONS.md` |
 | Published product documentation | Future generated documentation site | Generated from canonical repository files |
 
 When records conflict, executable code and tests take precedence over repository documents, and
-repository contracts take precedence over Notion implementation summaries. Notion remains the
-authority for what should be worked on next and the current verification state.
+repository contracts and accepted ADRs take precedence over operational status documents.
+`PLAN.md` determines priority, while `HANDOFF.md` records the latest checkpoint and must be
+verified against Git and the filesystem before use.
 
 ## Repository rules
 
-1. Repository Markdown has one canonical file and one canonical language: English.
-2. Do not add sibling `.en.md` or `.ko.md` files. Translation belongs in Notion or a generated
-   publication pipeline.
-3. Do not copy roadmaps, sprint status, commit-by-commit progress, meeting notes, or task backlogs
-   into the repository.
-4. Update a contract or security-boundary document in the same commit as the behavior it governs.
-5. Accepted ADRs are append-only decision history. Supersede an accepted decision with a new ADR
+1. README, RFC, ADR, versioned contracts, and other technical documentation use one canonical
+   English file per subject.
+2. The five root operational-state documents use Korean so the primary operator and subsequent
+   agents share one unambiguous working language. Keep commands, paths, identifiers, schemas, and
+   quoted diagnostics in their original form.
+3. Do not add sibling `.en.md` or `.ko.md` files. Translation belongs in a generated publication
+   pipeline.
+4. Keep operational state only in the five root documents defined above. Do not create additional
+   roadmap, sprint-log, meeting-note, handoff, or backlog files.
+5. Update a contract or security-boundary document in the same commit as the behavior it governs.
+6. Accepted ADRs are append-only decision history. Supersede an accepted decision with a new ADR
    and cross-link the two; do not silently rewrite its rationale.
-6. Prefer one durable link to the live Notion roadmap over repeated status prose.
-7. Add a document only when code review, release reproducibility, offline operation, or security
-   auditability would be materially weaker without it.
+7. Keep `PLAN.md`, `HANDOFF.md`, and `KNOWN_ISSUES.md` bounded and current. Replace stale state
+   rather than appending commit-by-commit history.
+8. Keep `DECISIONS.md` as an index; do not duplicate ADR bodies or rationale there.
+9. Add another document only when code review, release reproducibility, offline operation, or
+   security auditability would be materially weaker without it.
 
-The removed localized files and repository product plan remain recoverable from Git history.
+The former Notion roadmap remains available as historical context but is not updated as a parallel
+source of truth after the repository cutover.
 
 ## Lifecycle
 
@@ -46,8 +59,8 @@ The removed localized files and repository product plan remain recoverable from 
 - ADRs record decisions and their consequences.
 - Contract documents define versioned inputs, outputs, invariants, negative cases, migration, and
   rollback expectations.
-- Completed work is reflected in the relevant contract and Notion status; it does not create a new
-  repository progress report.
+- Completed work is reflected in the relevant contract and the current root plan/handoff state; it
+  does not create a new progress report.
 - Obsolete non-ADR documents are deleted after their durable requirements are consolidated into
   code, tests, or a current contract.
 

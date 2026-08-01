@@ -22,11 +22,11 @@ See [ARCH-001](docs/rfc/0001-pajin-architecture-v2.md),
 [ADR-0053](docs/adr/0053-inert-deterministic-capability-scaffolds.md), and
 [ADR-0054](docs/adr/0054-signed-reviewed-capability-lifecycle.md).
 
-The repository keeps code-coupled contracts and decisions only. Use the
-[documentation index](docs/README.md) to navigate those records and the
-[documentation authority policy](docs/DOCUMENTATION_POLICY.md) before adding a new document.
-Current priorities, implementation status, and milestone tracking live in the
-[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a).
+The repository owns both code-coupled records and current development state. Use the
+[documentation index](docs/README.md) to navigate contracts and decisions, the
+[implementation plan](PLAN.md) for priority, the [current handoff](HANDOFF.md) for the verified
+checkpoint, and the [documentation authority policy](docs/DOCUMENTATION_POLICY.md) before adding a
+new document.
 
 ## B2.8g resumable multipart portable Artifact transport
 
@@ -85,9 +85,8 @@ Worker daemon provide the first durable execution path without replacing the loc
 
 ## Current implementation status
 
-The implementation overview below is release-neutral. Consult the
-[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a)
-for the current Git baseline and verification state.
+The implementation overview below is release-neutral. Consult the [repository plan](PLAN.md) for
+priority and the [current handoff](HANDOFF.md) for the Git baseline and verification state.
 
 | Area | Current scope |
 | --- | --- |
@@ -1649,7 +1648,7 @@ run-scoped Secret Leases. `PydanticAIAgentRuntime` is limited to PydanticAI's ex
 Agent construction. Every MCP, CLI, browser, sandbox, and network-backed model call must cross its
 PAJIN policy boundary.
 
-See the [live product roadmap in Notion](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a),
+See the [repository plan](PLAN.md), the [current handoff](HANDOFF.md),
 the [documentation index](docs/README.md),
 the [KISA traceability matrix](docs/KISA_TRACEABILITY.md), and the complete
 [ADR decision record](docs/adr/). Selected implementation decisions are

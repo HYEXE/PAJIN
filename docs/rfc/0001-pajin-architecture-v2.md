@@ -342,10 +342,11 @@ Each vertical slice requires:
 - canonical digests and audit events for material decisions and admissions;
 - reproducible execution from a clean clone;
 - benchmark results and regression metrics; and
-- updated Notion status, compatibility, migration, and rollback boundaries.
+- updated repository plan/handoff state, compatibility, migration, and rollback boundaries.
 
-Current Git baseline, verification state, and remaining milestone work are maintained in the
-[PAJIN Notion roadmap](https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a).
+Current priority and remaining milestone work are maintained in the root
+[repository plan](../../PLAN.md). The Git baseline, verification state, and next executable action
+are maintained in the root [handoff](../../HANDOFF.md).
 
 ## 11. Related decisions
 
