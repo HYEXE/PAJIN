@@ -103,7 +103,11 @@ priority and the [current handoff](HANDOFF.md) for the Git baseline and verifica
 BENCH-003B1 additionally admits complete sealed raw observations for both benchmark arms, derives
 all twelve metrics in code, and seals two Results plus the canonical numeric Comparison. The
 external measurement producer remains the semantic trust root, exact WALK-006 candidate-policy
-binding is deferred to BENCH-003B2, and Supervisor activation remains ineligible.
+binding is supplied by BENCH-003B2, and Supervisor activation remains ineligible. B2 requires the
+measured Manifest envelope and baseline arm to match A exactly and binds the adaptive candidate's
+implementation ID, version, and configuration digest to the sealed WALK-006 policy without
+rewriting any Result or metric. Provider-backed Target Factory execution and measurement
+attestation remain follow-up work.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

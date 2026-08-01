@@ -17,10 +17,17 @@ from pajin.benchmark import (
     BenchmarkArmKind,
     BenchmarkManifest,
     BenchmarkRunProtocol,
+    WalkingBenchmarkMeasuredComparisonRunner,
+    WalkingBenchmarkRunObservation,
+    WalkingBenchmarkRunObservationRecorder,
     WalkingShadowBenchmarkComparisonAuthority,
     WalkingShadowBenchmarkComparisonError,
     WalkingShadowBenchmarkComparisonRunner,
+    WalkingShadowMeasuredBenchmarkAuthority,
+    WalkingShadowMeasuredBenchmarkError,
+    WalkingShadowMeasuredBenchmarkRunner,
     load_walking_shadow_benchmark_comparison_authority,
+    load_walking_shadow_measured_benchmark_authority,
 )
 from pajin.capabilities.activation import (
     CapabilityDispatchAuditEvent,
@@ -1765,3 +1772,192 @@ def test_walking_shadow_benchmark_rejects_candidate_arm_metrics_and_source_mutat
             manifest,
             source,
         )
+
+
+def _walking_shadow_measured_manifest(
+    structural: WalkingShadowBenchmarkComparisonAuthority,
+    *,
+    configuration_digest: str | None = None,
+) -> BenchmarkManifest:
+    policy = structural.source.policy
+    candidate = BenchmarkArm(
+        armId="arm:walking-shadow-candidate",
+        kind=BenchmarkArmKind.ADAPTIVE_CANDIDATE,
+        implementationId=policy.policy_id,
+        implementationVersion=policy.policy_version,
+        configurationDigest=configuration_digest or policy.policy_digest,
+        adaptiveSupervisor=True,
+    )
+    raw = structural.manifest.model_dump(mode="json", by_alias=True)
+    raw["arms"].append(candidate.model_dump(mode="json", by_alias=True))
+    return BenchmarkManifest.model_validate(raw)
+
+
+def _walking_shadow_run_observation(
+    manifest: BenchmarkManifest,
+    arm_index: int,
+) -> WalkingBenchmarkRunObservation:
+    arm = manifest.arms[arm_index]
+    candidate = arm.kind is BenchmarkArmKind.ADAPTIVE_CANDIDATE
+    started_at = datetime(2026, 8, 1, 4 + arm_index, 0, tzinfo=UTC)
+    return WalkingBenchmarkRunObservation(
+        benchmarkId=manifest.benchmark_id,
+        manifestDigest=manifest.digest(),
+        armId=arm.arm_id,
+        armKind=arm.kind,
+        configurationDigest=arm.configuration_digest,
+        targetFactoryDigest=manifest.target_factory_digest,
+        campaignDigest=manifest.campaign_digest,
+        groundTruthDigest=manifest.ground_truth_digest,
+        protocolId=manifest.protocol.protocol_id,
+        protocolVersion=manifest.protocol.protocol_version,
+        measurementAuthorityId="measurement-authority:walking-shadow-oracle",
+        measurementAuthorityVersion="1.0.0",
+        measurementAuthorityDigest="d" * 64,
+        seed=7,
+        repetition=1,
+        startedAt=started_at,
+        completedAt=started_at + timedelta(minutes=5),
+        cleanupSucceeded=True,
+        toolCallCount=12,
+        modelCallCount=0,
+        costUsd=9.0 if candidate else 10.0,
+        knownAttackSurfaceCount=10,
+        discoveredKnownAttackSurfaceCount=9 if candidate else 8,
+        knownFindingCount=4,
+        matchedKnownFindingCount=3 if candidate else 2,
+        candidateFindingCount=4,
+        validCandidateFindingCount=3 if candidate else 2,
+        unexpectedValidFindingCount=0,
+        confirmedFindingCount=3 if candidate else 2,
+        groundTruthChainCount=2,
+        completedGroundTruthChainCount=2 if candidate else 1,
+        firstValidOrConfirmedFindingSeconds=60.0 if candidate else 120.0,
+        replayAttemptCount=2,
+        replaySuccessCount=2 if candidate else 1,
+        policyRejectionOrViolationCount=1 if candidate else 2,
+        humanDecisionCount=2,
+        humanInterventionOrOverturnCount=1 if candidate else 0,
+    )
+
+
+def _walking_shadow_measured_sources(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _, shadow = _walking_shadow_supervisor_outcome(tmp_path, campaign, monkeypatch)
+    structural_manifest = _walking_shadow_benchmark_manifest(
+        shadow.authority.campaign_digest
+    )
+    structural = WalkingShadowBenchmarkComparisonRunner(
+        output_root=tmp_path / "structural"
+    ).run(campaign, structural_manifest, shadow)
+    measured_manifest = _walking_shadow_measured_manifest(structural.authority)
+    recorder = WalkingBenchmarkRunObservationRecorder(output_root=tmp_path / "observations")
+    observations = tuple(
+        recorder.run(
+            measured_manifest,
+            _walking_shadow_run_observation(measured_manifest, arm_index),
+        )
+        for arm_index in range(2)
+    )
+    measured = WalkingBenchmarkMeasuredComparisonRunner(
+        output_root=tmp_path / "measured"
+    ).run(measured_manifest, observations)
+    return structural, measured
+
+
+def test_walking_shadow_measured_benchmark_binds_exact_policy_and_sources(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    structural, measured = _walking_shadow_measured_sources(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+    structural_root = verify_run_integrity(structural.run_path).root_digest
+    measured_root = verify_run_integrity(measured.run_path).root_digest
+
+    outcome = WalkingShadowMeasuredBenchmarkRunner(output_root=tmp_path / "bound").run(
+        campaign,
+        structural,
+        measured,
+    )
+    authority = outcome.authority
+
+    assert authority.measurement_state == "measured-shadow-policy-bound"
+    assert authority.benchmark_comparison_eligible is True
+    assert authority.supervisor_activation_eligible is False
+    assert (
+        authority.candidate_policy_digest
+        == authority.structural_source.source.policy.policy_digest
+        == authority.measured_source.manifest.arms[1].configuration_digest
+    )
+    assert authority.structural_source_root_digest == structural_root
+    assert authority.measured_source_root_digest == measured_root
+    assert [event.event_type for event in load_verified_run_events(outcome.run_path)] == [
+        "campaign.started",
+        "benchmark.walking-shadow-measured.created",
+        "campaign.completed",
+    ]
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_shadow_measured_benchmark_authority(campaign, outcome) == authority
+
+
+def test_walking_shadow_measured_benchmark_rejects_foreign_policy_and_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    structural, measured = _walking_shadow_measured_sources(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+    foreign_manifest = _walking_shadow_measured_manifest(
+        structural.authority,
+        configuration_digest="9" * 64,
+    )
+    recorder = WalkingBenchmarkRunObservationRecorder(output_root=tmp_path / "foreign-observations")
+    foreign_observations = tuple(
+        recorder.run(
+            foreign_manifest,
+            _walking_shadow_run_observation(foreign_manifest, arm_index),
+        )
+        for arm_index in range(2)
+    )
+    foreign_measured = WalkingBenchmarkMeasuredComparisonRunner(
+        output_root=tmp_path / "foreign-measured"
+    ).run(foreign_manifest, foreign_observations)
+    runner = WalkingShadowMeasuredBenchmarkRunner(output_root=tmp_path / "bound")
+
+    with pytest.raises(WalkingShadowMeasuredBenchmarkError):
+        runner.run(campaign, structural, foreign_measured)
+
+    outcome = runner.run(campaign, structural, measured)
+    raw = outcome.authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["candidatePolicyDigest"] = "9" * 64
+    with pytest.raises(ValidationError):
+        WalkingShadowMeasuredBenchmarkAuthority.model_validate(raw)
+
+    raw = outcome.authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["measuredSourceArtifactSha256"] = "9" * 64
+    with pytest.raises(ValidationError):
+        WalkingShadowMeasuredBenchmarkAuthority.model_validate(raw)
+
+    (outcome.run_path / outcome.artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingShadowMeasuredBenchmarkError):
+        load_walking_shadow_measured_benchmark_authority(campaign, outcome)
+
+    (measured.run_path / measured.authority_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingShadowMeasuredBenchmarkError):
+        runner.run(campaign, structural, measured)

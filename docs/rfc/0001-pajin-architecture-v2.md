@@ -373,8 +373,11 @@ BENCH-003B1 next admits only complete sealed raw observations from one exact mea
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes
 Supervisor activation eligibility to false. The external producer remains the semantic measurement
-trust root. BENCH-003B2 exact WALK-006 policy/configuration and source-publication binding remains
-separate future work.
+trust root. BENCH-003B2 exact WALK-006 policy/configuration and source-publication binding is an
+additive final layer: it preserves B1 values, requires the measured Manifest envelope and
+baseline arm to equal A, binds the adaptive candidate implementation ID/version/configuration
+digest to the exact sealed WALK-006 policy, and retains activation eligibility false. A
+provider-backed Target Factory measurement adapter and attestation remain future work.
 
 ## 10. Definition of Done
 

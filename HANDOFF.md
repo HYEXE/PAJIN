@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 현재 Git 기준: `f1f4f8e824adf044789042c18171c05fcc064740`
-- 현재 구현 체크포인트: `BENCH-003B1` sealed raw Observation admission 구현, 커밋 전
-- 다음 구현: `BENCH-003B2` WALK-006 Shadow policy/configuration·source binding
+- 현재 Git 기준: `d9b658eec6247b4c07bbbd9033f3db16bc37eb9e`
+- 현재 구현 체크포인트: `BENCH-003B2` WALK-006 Shadow policy-bound measurement 구현, 커밋 전
+- 다음 구현: `P0-C` provider-backed Target Factory measurement adapter
 
 ## 재개 전 확인
 
@@ -18,14 +18,14 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `f1f4f8e`이었다. BENCH-003A는 이미
-커밋·push됐고 BENCH-003B1 변경이 worktree에 존재한다. 예상 변경 범위:
+이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `d9b658e`이었다. BENCH-003B1은 이미
+커밋·push됐고 BENCH-003B2 변경이 worktree에 존재한다. 예상 변경 범위:
 
-- `src/pajin/benchmark/measurement.py`
+- `src/pajin/benchmark/shadow_measurement.py`
 - `src/pajin/benchmark/__init__.py`
-- `tests/test_walking_benchmark_measurement.py`
-- `docs/benchmark/BENCH-003B1-walking-measurement-admission.md`
-- `docs/adr/0079-sealed-raw-observation-benchmark-admission.md`
+- `tests/test_walking_mcp_authorization.py`
+- `docs/benchmark/BENCH-003B2-walking-shadow-policy-binding.md`
+- `docs/adr/0080-shadow-policy-bound-measured-benchmark.md`
 - `docs/rfc/0001-pajin-architecture-v2.md`
 - `README.md`, `PLAN.md`, `HANDOFF.md`, `DECISIONS.md`
 
@@ -34,33 +34,32 @@ merge, rebase, cherry-pick, 서버 또는 background helper는 없다.
 
 ## 현재 구현 상태
 
-`WALK-001`~`WALK-006`, `BENCH-003A`, `BENCH-003B1`이 구현됐다. 새 BENCH-003B1 경계는
-다음을 보장한다.
+`WALK-001`~`WALK-006`과 `BENCH-003A/B1/B2`가 구현됐다. 새 BENCH-003B2 경계는 다음을
+보장한다.
 
-- 두 arm과 Manifest의 모든 seed/repetition 좌표별 raw 관찰이 정확히 한 번 있어야 한다.
-- reset·isolation·cleanup, budget, Ground Truth count, 시간·비용·Replay·정책·human 관찰을
-  source Run/root/artifact digest에 결박한다.
-- caller가 aggregate metric을 제공할 수 없고 12개 값을 raw 관찰에서만 코드로 집계한다.
-- 두 completed Result와 canonical numeric Comparison 및 raw bundle을 한 Run에 봉인한다.
-- 외부 measurement authority를 의미적 trust root로 명시하고 Supervisor activation은 false다.
-- exact WALK-006 policy/configuration binding은 BENCH-003B2로 남긴다.
+- sealed BENCH-003A와 BENCH-003B1 source Run/root/artifact SHA를 함께 결박한다.
+- measured Manifest envelope와 baseline arm이 A와 exact equality여야 한다.
+- candidate implementation ID/version/configuration digest가 WALK-006 policy와 같아야 한다.
+- B1 Result·metric·Comparison을 다시 계산하거나 바꾸지 않는다.
+- benchmark comparison eligibility는 true지만 Supervisor activation은 false다.
+- 외부 measurement authority의 의미적 진실성은 여전히 명시적 trust root다.
 
 핵심 구현 위치:
 
-- `src/pajin/benchmark/measurement.py`
-- `tests/test_walking_benchmark_measurement.py`
-- `docs/benchmark/BENCH-003B1-walking-measurement-admission.md`
-- `docs/adr/0079-sealed-raw-observation-benchmark-admission.md`
+- `src/pajin/benchmark/shadow_measurement.py`
+- `tests/test_walking_mcp_authorization.py`
+- `docs/benchmark/BENCH-003B2-walking-shadow-policy-binding.md`
+- `docs/adr/0080-shadow-policy-bound-measured-benchmark.md`
 
 ## 마지막 검증
 
-현재 BENCH-003B1 worktree 기준:
+현재 BENCH-003B2 worktree 기준:
 
-- BENCH/WALK/Capability/Replanning/문서 집중 회귀: 90 passed
-- BENCH-003B1 + 문서 집중 회귀: 5 passed
-- BENCH-003B1 양성 경로 5회 반복 결정성 검증: 매회 1 passed
+- BENCH/WALK/Capability/Replanning/문서 집중 회귀: 92 passed
+- WALK + 문서 집중 회귀: 38 passed
+- BENCH-003B2 양성 경로 5회 반복 결정성 검증: 매회 1 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 192 source files 통과
+- Linux 대상 strict mypy: 193 source files 통과
 - 전체 `pytest -x -q`: 150 passed, 3 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
 
@@ -83,14 +82,14 @@ git diff --check
 현재 변경은 사용자 승인에 따라 다음 순서로 자동 진행한다.
 
 1. 관련 파일만 stage하고 staged diff와 민감정보 포함 여부를 확인한다.
-2. 한국어 Conventional Commit으로 BENCH-003B1 체크포인트를 생성한다.
+2. 한국어 Conventional Commit으로 BENCH-003B2 체크포인트를 생성한다.
 3. `git -c http.sslBackend=schannel push origin main`으로 push한다.
 4. local HEAD, tracking `origin/main`, 실제 원격 SHA와 clean worktree를 검증한다.
 
-BENCH-003B1을 사전 커밋 검토·검증·push한 뒤 `BENCH-003B2`를 시작한다. adaptive candidate의
-implementation ID/version/configuration digest를 exact WALK-006 code-owned policy 및 sealed
-BENCH-003A source publication에 결박한다. 일반 측정 authority만으로 실제 Shadow 효과를 주장하지
-않으며, 외부 attestation과 Supervisor activation threshold는 별도 후속 경계로 유지한다.
+BENCH-003B2를 사전 커밋 검토·검증·push한 뒤 `P0-C`를 시작한다. provider-backed Target
+Factory adapter가 모든 coordinate마다 reset·isolation·execution·raw observation·cleanup을 실제로
+수행하고, B1 measurement authority identity에 외부 attestation을 결박하는 최소 경계를 설계한다.
+운영 Target이나 비용 발생 외부 자원은 사용자 승인 없이 생성하지 않는다.
 
 ## 외부 상태
 

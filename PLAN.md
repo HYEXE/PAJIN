@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `BENCH-003B2` WALK-006 Shadow policy-bound Candidate measurement
+- 현재 우선순위: `P0-C` provider-backed Target Factory reset·isolation·cleanup measurement adapter
 
 ## 제품 목표
 
@@ -120,6 +120,13 @@ canonical Comparison을 함께 봉인한다. 외부 측정 authority의 의미�
 Supervisor activation은 false다. 다음 `BENCH-003B2`는 candidate implementation/version/configuration을
 exact WALK-006 Shadow policy와 sealed BENCH-003A source publication에 결박한다.
 
+`BENCH-003B2`는 B1 numeric output을 다시 계산하지 않고 sealed A/B1 source를 함께 연다.
+measured Manifest의 전체 envelope와 baseline arm은 A와 exact equality이고, candidate
+implementation ID/version/configuration digest는 WALK-006 code-owned policy와 같아야 한다. 양쪽
+source Run/root/artifact SHA를 content-addressed authority에 결박하며 activation eligibility는 false다.
+BENCH-003 Harness는 닫혔지만 fixture가 운영 증거라는 뜻은 아니다. 다음 `P0-C`는 실제 Target
+Factory reset·isolation·execution·observation·cleanup과 measurement authority attestation을 구현한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -137,11 +144,11 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - 기존 Mode, API, Artifact 호환·Deprecation 정책
 - `BENCH-001` Metric·Ground Truth·Run Protocol
 - `BENCH-002` Result Schema·Artifact Format
-- [ ] `BENCH-003` Deterministic Baseline·Adaptive Candidate 비교
+- [x] `BENCH-003` Deterministic Baseline·Adaptive Candidate 비교
   - [x] `BENCH-003A` Walking Baseline·Shadow Decision structural-only comparison
-  - [ ] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
+  - [x] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
     - [x] `BENCH-003B1` sealed raw Observation admission·두 Result·numeric comparison
-    - [ ] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
+    - [x] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
 - reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정

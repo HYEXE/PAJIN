@@ -52,6 +52,14 @@ from pajin.benchmark.shadow import (
     WalkingShadowDecisionDelta,
     load_walking_shadow_benchmark_comparison_authority,
 )
+from pajin.benchmark.shadow_measurement import (
+    WALKING_SHADOW_MEASURED_BENCHMARK_API_VERSION,
+    WalkingShadowMeasuredBenchmarkAuthority,
+    WalkingShadowMeasuredBenchmarkError,
+    WalkingShadowMeasuredBenchmarkOutcome,
+    WalkingShadowMeasuredBenchmarkRunner,
+    load_walking_shadow_measured_benchmark_authority,
+)
 
 __all__ = [
     "BENCHMARK_COMPARISON_API_VERSION",
@@ -63,6 +71,7 @@ __all__ = [
     "WALKING_BENCHMARK_MEASURED_COMPARISON_API_VERSION",
     "WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION",
     "WALKING_SHADOW_BENCHMARK_COMPARISON_API_VERSION",
+    "WALKING_SHADOW_MEASURED_BENCHMARK_API_VERSION",
     "BenchmarkArm",
     "BenchmarkArmKind",
     "BenchmarkComparison",
@@ -94,10 +103,15 @@ __all__ = [
     "WalkingShadowBenchmarkComparisonOutcome",
     "WalkingShadowBenchmarkComparisonRunner",
     "WalkingShadowDecisionDelta",
+    "WalkingShadowMeasuredBenchmarkAuthority",
+    "WalkingShadowMeasuredBenchmarkError",
+    "WalkingShadowMeasuredBenchmarkOutcome",
+    "WalkingShadowMeasuredBenchmarkRunner",
     "benchmark_digest",
     "canonical_benchmark_json",
     "compare_benchmark_results",
     "load_walking_benchmark_measured_comparison_authority",
     "load_walking_benchmark_run_observation",
     "load_walking_shadow_benchmark_comparison_authority",
+    "load_walking_shadow_measured_benchmark_authority",
 ]
