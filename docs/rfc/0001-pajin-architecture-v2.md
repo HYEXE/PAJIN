@@ -378,6 +378,12 @@ additive final layer: it preserves B1 values, requires the measured Manifest env
 baseline arm to equal A, binds the adaptive candidate implementation ID/version/configuration
 digest to the exact sealed WALK-006 policy, and retains activation eligibility false. A
 provider-backed Target Factory measurement adapter and attestation remain future work.
+P0-C1 establishes the provider-neutral boundary for that work: exact Manifest coordinates drive
+ordered reset, isolation, execution, and cleanup receipts; foreign evidence is rejected before
+further dispatch; cleanup remains mandatory after a valid isolation; and an external Ed25519
+measurement signature binds every receipt plus the final B1-compatible Observation in one sealed
+Run. The deterministic adapter is a contract fixture only. Real Docker/provider execution,
+evidence retrieval, network policy, key registry/rotation, and cleanup recovery remain P0-C2.
 
 ## 10. Definition of Done
 

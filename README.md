@@ -109,6 +109,13 @@ implementation ID, version, and configuration digest to the sealed WALK-006 poli
 rewriting any Result or metric. Provider-backed Target Factory execution and measurement
 attestation remain follow-up work.
 
+P0-C1 now adds a provider-neutral per-coordinate Target Factory lifecycle. It validates reset and
+isolation before execution, attempts cleanup after execution failure, preserves exact raw
+Observation identity, verifies an Ed25519 measurement signature over all stage and Observation
+digests, and emits a BENCH-003B1-compatible sealed Observation Run. The included adapter is a test
+contract fixture only; real Docker/provider execution, evidence retrieval, network policy, key
+registry/rotation, and cleanup recovery remain P0-C2 work.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 150 passed, 3 skipped 이후
+- 결과: 156 passed, 3 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -16,17 +16,26 @@
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
 
+## P0-C1 sealing 전 프로세스 종료 복구
+
+- 상태: 활성 설계 제약
+- 확인 위치: `BenchmarkTargetFactoryRunner`는 provider lifecycle과 attestation을 완료한 뒤
+  output `RunStore`를 생성한다.
+- 영향: provider reset/isolation/execution/cleanup 중 프로세스가 종료되면 호출이 발생했어도
+  stage receipt와 cleanup 결과가 로컬 sealed Run에 남지 않을 수 있다. P0-C1은 정상 반환 및
+  Python 예외 경로의 cleanup만 보장하고 hard-exit/host-loss recovery를 주장하지 않는다.
+- 해소 조건: P0-C2에서 provider operation journal, idempotency/fencing, startup reconciliation,
+  cleanup retry 및 sealed failure authority를 구현하고 hard-exit 테스트를 통과한다.
+
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 
-- 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-01
+- 상태: 현재 재현되지 않음, 재발 가능 환경 제약
+- 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 결과: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
+- 현재 결과: 194 source files 통과
+- 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
-- 영향: 일반 mypy 진입점은 소스 분석 전에 실패할 수 있다.
-- 검증된 대안: 같은 mypy 버전의 순수 Python 소스와 메모리 내 `librt` 호환 계층을
-  사용한 Linux 대상 strict 분석에서 185개 소스 파일이 통과했다.
-- 해소 조건: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
+- 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
   모듈을 허용한다. mypy 실행을 위해 정책을 비활성화하지 않는다.
 
 ## Git OpenSSL CA 경로

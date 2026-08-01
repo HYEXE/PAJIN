@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0081: Provider-Neutral Benchmark Target Lifecycle with External Measurement Signature](docs/adr/0081-provider-neutral-benchmark-target-lifecycle.md)
 - [ADR-0080: Bind Measured Candidate Configuration to the Sealed Shadow Policy](docs/adr/0080-shadow-policy-bound-measured-benchmark.md)
 - [ADR-0079: Sealed Raw Observation Admission Before Measured Comparison](docs/adr/0079-sealed-raw-observation-benchmark-admission.md)
 - [ADR-0078: Shadow Decision Structural Benchmark Before Metric Comparison](docs/adr/0078-shadow-decision-structural-benchmark.md)

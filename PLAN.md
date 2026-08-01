@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-C` provider-backed Target Factory reset·isolation·cleanup measurement adapter
+- 현재 우선순위: `P0-C2` real Docker/provider Target Factory adapter·key registry
 
 ## 제품 목표
 
@@ -127,6 +127,14 @@ source Run/root/artifact SHA를 content-addressed authority에 결박하며 acti
 BENCH-003 Harness는 닫혔지만 fixture가 운영 증거라는 뜻은 아니다. 다음 `P0-C`는 실제 Target
 Factory reset·isolation·execution·observation·cleanup과 measurement authority attestation을 구현한다.
 
+`P0-C1`은 provider-neutral async adapter와 좌표별 reset→isolation→execution→cleanup receipt를
+정의한다. 다음 provider 호출 전에 각 authority를 검증하고, 유효한 isolation 이후 execution이
+실패하거나 foreign raw Observation을 반환해도 cleanup을 먼저 시도한다. 네 receipt와 final B1
+Observation은 외부 Ed25519 measurement key로 서명되며 public Trust Anchor로 검증된 뒤 같은 Run에
+봉인된다. deterministic 테스트 adapter는 계약만 증명하며 실제 provider가 아니다. 다음 `P0-C2`는
+real Docker/external provider implementation, evidence retrieval, network policy, key registry/rotation,
+cleanup recovery를 연결한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -149,7 +157,9 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
     - [x] `BENCH-003B1` sealed raw Observation admission·두 Result·numeric comparison
     - [x] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
-- reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
+- [ ] `P0-C` reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
+  - [x] `P0-C1` provider-neutral lifecycle·sealed Observation·external measurement signature
+  - [ ] `P0-C2` real Docker/provider adapter·evidence·network policy·key registry
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
