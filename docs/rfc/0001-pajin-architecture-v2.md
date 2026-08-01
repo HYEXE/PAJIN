@@ -365,7 +365,11 @@ adds a separate snapshot-only, code-registered policy over the sealed C2 lifecyc
 human-only remediation-review Task with no Capability and an autonomous Stop/escalation Decision,
 while fixing the result to shadow-only, baseline-unmodified, and not applied. It does not activate
 the existing execution Supervisor or claim Phase 6 model binding and benchmark gates. Measured
-BENCH-003 baseline-versus-Shadow comparison remains separate future work.
+BENCH-003 baseline-versus-Shadow comparison remains separate. BENCH-003A first binds the exact
+WALK-006 publication to a baseline-only BENCH-001 Manifest and records only a structural terminal
+Decision delta. It preserves the ordered twelve-metric contract but supplies no values or deltas,
+and fixes canonical BenchmarkComparison and Supervisor activation eligibility to false.
+BENCH-003B measured baseline and candidate Results remain separate future work.
 
 ## 10. Definition of Done
 

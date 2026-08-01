@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 현재 Git 기준: `fbbf72e569bcfbe5e3c0c07a1d01f21b469355f1`
-- 현재 구현 체크포인트: `WALK-006` Shadow Supervisor Decision 기록 구현, 커밋 전
-- 다음 구현: `BENCH-003` Deterministic Baseline·Shadow Decision 비교
+- 현재 Git 기준: `7df812773b9b693388171f4b380390b33f8dfb9c`
+- 현재 구현 체크포인트: `BENCH-003A` Shadow Decision structural comparison 구현, 커밋 전
+- 다음 구현: `BENCH-003B` 동일 좌표 measured Result Harness·numeric comparison
 
 ## 재개 전 확인
 
@@ -18,46 +18,46 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `fbbf72e5`였다. WALK-005C2는 이미
-커밋·push됐고 WALK-006 변경이 worktree에 존재한다. 예상 변경 범위:
+이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `7df81277`이었다. WALK-006은 이미
+커밋·push됐고 BENCH-003A 변경이 worktree에 존재한다. 예상 변경 범위:
 
-- `src/pajin/discovery/walking_shadow.py`
-- `src/pajin/discovery/__init__.py`
+- `src/pajin/benchmark/shadow.py`
+- `src/pajin/benchmark/__init__.py`
 - `tests/test_walking_mcp_authorization.py`
-- `docs/orchestration/WALK-006-shadow-supervisor-decision-record.md`
-- `docs/adr/0077-walking-shadow-supervisor-record.md`
+- `docs/benchmark/BENCH-003A-walking-shadow-decision-comparison.md`
+- `docs/adr/0078-shadow-decision-structural-benchmark.md`
 - `docs/rfc/0001-pajin-architecture-v2.md`
-- `PLAN.md`, `HANDOFF.md`, `DECISIONS.md`
+- `README.md`, `PLAN.md`, `HANDOFF.md`, `DECISIONS.md`
 
 이 범위 밖의 변경이 보이면 사용자 변경으로 간주하고 먼저 원인을 확인한다. 진행 중인
 merge, rebase, cherry-pick, 서버 또는 background helper는 없다.
 
 ## 현재 구현 상태
 
-`WALK-001`~`WALK-006`이 구현됐다. 새 WALK-006 경계는 다음을 보장한다.
+`WALK-001`~`WALK-006`과 `BENCH-003A`가 구현됐다. 새 BENCH-003A 경계는 다음을 보장한다.
 
-- sealed C2 `still-vulnerable` authority와 publication provenance만 Snapshot 입력으로 받는다.
-- code-registered Shadow policy와 human remediation-review Task·Stop Decision을 exact하게 결박한다.
-- Task는 Capability가 없고 `proposed-not-authorized`이며 Stop은 execution을 허용하지 않는다.
-- 결과는 `shadowMode=true`, `baselineMutated=false`, `recorded-not-applied`로 고정한다.
-- source Run·TaskGraph·Campaign을 변경하거나 모델·Tool·Permit을 생성하지 않는다.
+- baseline-only BENCH-001 Manifest와 exact WALK-006 source publication을 결박한다.
+- completed C2의 deterministic terminal Decision과 Shadow Task·Stop의 구조 delta만 기록한다.
+- human review Task 추가 외 autonomous execution·Capability 변화가 없음을 고정한다.
+- 12개 필수 metric 이름만 보존하고 metric 값·delta를 만들지 않는다.
+- numeric BenchmarkComparison과 Supervisor activation eligibility를 모두 false로 유지한다.
 
 핵심 구현 위치:
 
-- `src/pajin/discovery/walking_shadow.py`
+- `src/pajin/benchmark/shadow.py`
 - `tests/test_walking_mcp_authorization.py`
-- `docs/orchestration/WALK-006-shadow-supervisor-decision-record.md`
-- `docs/adr/0077-walking-shadow-supervisor-record.md`
+- `docs/benchmark/BENCH-003A-walking-shadow-decision-comparison.md`
+- `docs/adr/0078-shadow-decision-structural-benchmark.md`
 
 ## 마지막 검증
 
-현재 WALK-006 worktree 기준:
+현재 BENCH-003A worktree 기준:
 
-- WALK/Capability/Replanning/Benchmark/문서 집중 회귀: 85 passed
-- WALK-006 포함 WALK + 문서 집중 회귀: 34 passed
-- WALK-006 양성 경로 5회 반복 결정성 검증: 매회 1 passed
+- WALK/Capability/Replanning/Benchmark/문서 집중 회귀: 87 passed
+- BENCH-003A 포함 WALK + 문서 집중 회귀: 36 passed
+- BENCH-003A 양성 경로 5회 반복 결정성 검증: 매회 1 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 190 source files 통과
+- Linux 대상 strict mypy: 191 source files 통과
 - 전체 `pytest -x -q`: 150 passed, 3 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
 
@@ -79,13 +79,14 @@ git diff --check
 현재 변경은 사용자 승인에 따라 다음 순서로 자동 진행한다.
 
 1. 관련 파일만 stage하고 staged diff와 민감정보 포함 여부를 확인한다.
-2. 한국어 Conventional Commit으로 WALK-006 체크포인트를 생성한다.
+2. 한국어 Conventional Commit으로 BENCH-003A 체크포인트를 생성한다.
 3. `git -c http.sslBackend=schannel push origin main`으로 push한다.
 4. local HEAD, tracking `origin/main`, 실제 원격 SHA와 clean worktree를 검증한다.
 
-WALK-006을 사전 커밋 검토·검증·push한 뒤 `BENCH-003`을 시작한다. 기존 BENCH-001 manifest와
-result digest 계약을 다시 열어 동일 좌표의 deterministic baseline과 WALK-006 Shadow record를
-비교하되, 측정하지 않은 yield·비용·지연 값을 합성하지 않는 최소 comparison authority를 설계한다.
+BENCH-003A를 사전 커밋 검토·검증·push한 뒤 `BENCH-003B`를 시작한다. BENCH-001의 exact
+reset·isolation·cleanup protocol과 seed/repetition 좌표를 실제 sealed Run에 결박하고, 12개 metric
+전부가 근거 있는 관찰에서 계산될 때만 baseline/candidate `BenchmarkResult`와 numeric comparison을
+생성하는 최소 Harness를 설계한다.
 
 ## 외부 상태
 

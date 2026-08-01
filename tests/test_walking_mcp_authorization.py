@@ -11,6 +11,17 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from pajin.benchmark import (
+    BENCHMARK_METRIC_ORDER,
+    BenchmarkArm,
+    BenchmarkArmKind,
+    BenchmarkManifest,
+    BenchmarkRunProtocol,
+    WalkingShadowBenchmarkComparisonAuthority,
+    WalkingShadowBenchmarkComparisonError,
+    WalkingShadowBenchmarkComparisonRunner,
+    load_walking_shadow_benchmark_comparison_authority,
+)
 from pajin.capabilities.activation import (
     CapabilityDispatchAuditEvent,
     CapabilityDispatchStage,
@@ -1608,5 +1619,149 @@ def test_walking_shadow_supervisor_rejects_capability_execution_and_source_mutat
     with pytest.raises(WalkingShadowSupervisorError):
         WalkingShadowSupervisorRunner(output_root=tmp_path / "shadow").run(
             campaign,
+            source,
+        )
+
+
+def _walking_shadow_benchmark_manifest(campaign_digest: str) -> BenchmarkManifest:
+    return BenchmarkManifest(
+        benchmarkId="benchmark:walking-shadow-v1",
+        targetFactoryId="target-factory:walking-hybrid",
+        targetFactoryVersion="1.0.0",
+        targetFactoryDigest="a" * 64,
+        targetProfileId="hybrid:file-rag-mcp",
+        targetProfileVersion="1.0.0",
+        mutationProfileId=None,
+        campaignDigest=campaign_digest,
+        groundTruthDigest="b" * 64,
+        protocol=BenchmarkRunProtocol(
+            protocolId="pajin:walking-shadow-protocol",
+            protocolVersion="1.0.0",
+            seeds=[7],
+            repetitionsPerSeed=1,
+            timeoutSeconds=600,
+            maxCostUsd=25,
+            maxToolCalls=500,
+            maxModelCalls=0,
+        ),
+        arms=[
+            BenchmarkArm(
+                armId="arm:walking-deterministic-baseline",
+                kind=BenchmarkArmKind.DETERMINISTIC_BASELINE,
+                implementationId="pajin:walking-deterministic-baseline",
+                implementationVersion="1.0.0",
+                configurationDigest="c" * 64,
+                adaptiveSupervisor=False,
+            )
+        ],
+    )
+
+
+def _walking_shadow_supervisor_outcome(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    _, _, retest = _walking_mcp_retest_outcome(tmp_path, campaign, monkeypatch)
+    shadow = WalkingShadowSupervisorRunner(output_root=tmp_path / "shadow").run(
+        campaign,
+        retest,
+    )
+    return retest, shadow
+
+
+def test_walking_shadow_benchmark_compares_structure_without_metric_values(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    _, source = _walking_shadow_supervisor_outcome(tmp_path, campaign, monkeypatch)
+    manifest = _walking_shadow_benchmark_manifest(source.authority.campaign_digest)
+    source_root = verify_run_integrity(source.run_path).root_digest
+
+    outcome = WalkingShadowBenchmarkComparisonRunner(output_root=tmp_path / "benchmark").run(
+        campaign,
+        manifest,
+        source,
+    )
+    authority = outcome.authority
+
+    assert authority.comparison_state == "structural-decision-only"
+    assert authority.measurement_state == "not-measured-no-benchmark-results"
+    assert authority.metric_deltas == ()
+    assert authority.required_metrics == tuple(BENCHMARK_METRIC_ORDER)
+    assert authority.benchmark_comparison_eligible is False
+    assert authority.supervisor_activation_eligible is False
+    assert authority.decision_delta.human_review_task_added is True
+    assert authority.decision_delta.autonomous_execution_changed is False
+    assert authority.decision_delta.capability_set_changed is False
+    assert verify_run_integrity(source.run_path).root_digest == source_root
+    assert [event.event_type for event in load_verified_run_events(outcome.run_path)] == [
+        "campaign.started",
+        "benchmark.walking-shadow-comparison.created",
+        "campaign.completed",
+    ]
+    assert verify_run_integrity(outcome.run_path).valid
+    assert (
+        load_walking_shadow_benchmark_comparison_authority(campaign, outcome)
+        == authority
+    )
+
+
+def test_walking_shadow_benchmark_rejects_candidate_arm_metrics_and_source_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    _, source = _walking_shadow_supervisor_outcome(tmp_path, campaign, monkeypatch)
+    manifest = _walking_shadow_benchmark_manifest(source.authority.campaign_digest)
+    candidate = BenchmarkArm(
+        armId="arm:unmeasured-adaptive-candidate",
+        kind=BenchmarkArmKind.ADAPTIVE_CANDIDATE,
+        implementationId="pajin:unmeasured-shadow",
+        implementationVersion="1.0.0",
+        configurationDigest="d" * 64,
+        adaptiveSupervisor=True,
+    )
+    two_arm_manifest = manifest.model_copy(update={"arms": [manifest.arms[0], candidate]})
+
+    with pytest.raises(WalkingShadowBenchmarkComparisonError):
+        WalkingShadowBenchmarkComparisonRunner(output_root=tmp_path / "benchmark").run(
+            campaign,
+            two_arm_manifest,
+            source,
+        )
+
+    outcome = WalkingShadowBenchmarkComparisonRunner(output_root=tmp_path / "benchmark").run(
+        campaign,
+        manifest,
+        source,
+    )
+    raw = outcome.authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["metricDeltas"] = [
+        {
+            "metric": BENCHMARK_METRIC_ORDER[0].value,
+            "unit": "ratio",
+            "baselineValue": 0.0,
+            "candidateValue": 0.0,
+            "candidateMinusBaseline": 0.0,
+        }
+    ]
+    with pytest.raises(ValidationError):
+        WalkingShadowBenchmarkComparisonAuthority.model_validate(raw)
+
+    (outcome.run_path / outcome.artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingShadowBenchmarkComparisonError):
+        load_walking_shadow_benchmark_comparison_authority(campaign, outcome)
+
+    (source.run_path / source.artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingShadowBenchmarkComparisonError):
+        WalkingShadowBenchmarkComparisonRunner(output_root=tmp_path / "benchmark").run(
+            campaign,
+            manifest,
             source,
         )

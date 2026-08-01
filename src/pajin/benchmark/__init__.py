@@ -28,6 +28,16 @@ from pajin.benchmark.models import (
     canonical_benchmark_json,
     compare_benchmark_results,
 )
+from pajin.benchmark.shadow import (
+    WALKING_SHADOW_BENCHMARK_COMPARISON_API_VERSION,
+    WalkingDeterministicBaselineDecision,
+    WalkingShadowBenchmarkComparisonAuthority,
+    WalkingShadowBenchmarkComparisonError,
+    WalkingShadowBenchmarkComparisonOutcome,
+    WalkingShadowBenchmarkComparisonRunner,
+    WalkingShadowDecisionDelta,
+    load_walking_shadow_benchmark_comparison_authority,
+)
 
 __all__ = [
     "BENCHMARK_COMPARISON_API_VERSION",
@@ -36,6 +46,7 @@ __all__ = [
     "BENCHMARK_METRIC_ORDER",
     "BENCHMARK_RESULT_API_VERSION",
     "REQUIRED_BENCHMARK_METRICS",
+    "WALKING_SHADOW_BENCHMARK_COMPARISON_API_VERSION",
     "BenchmarkArm",
     "BenchmarkArmKind",
     "BenchmarkComparison",
@@ -53,7 +64,14 @@ __all__ = [
     "BenchmarkRunBinding",
     "BenchmarkRunProtocol",
     "GroundTruthVisibility",
+    "WalkingDeterministicBaselineDecision",
+    "WalkingShadowBenchmarkComparisonAuthority",
+    "WalkingShadowBenchmarkComparisonError",
+    "WalkingShadowBenchmarkComparisonOutcome",
+    "WalkingShadowBenchmarkComparisonRunner",
+    "WalkingShadowDecisionDelta",
     "benchmark_digest",
     "canonical_benchmark_json",
     "compare_benchmark_results",
+    "load_walking_shadow_benchmark_comparison_authority",
 ]

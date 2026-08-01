@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `BENCH-003` Deterministic Baseline·Shadow Decision 비교
+- 현재 우선순위: `BENCH-003B` 측정된 Baseline·Shadow Candidate Result Harness
 
 ## 제품 목표
 
@@ -107,6 +107,13 @@ content-addressed authority로 기록한다. Task는 Capability가 없고 `propo
 Run을 변경하거나 모델·Tool을 호출하지 않는다. 다음 `BENCH-003`은 동일 benchmark 좌표에서
 이 Shadow record와 deterministic baseline을 실제 비교하는 측정 경계를 구현한다.
 
+`BENCH-003A`는 baseline-only BENCH-001 Manifest와 WALK-006 sealed authority를 결박해
+deterministic terminal Decision과 Shadow Task·Stop Decision의 구조 차이만 기록한다. 12개 필수
+metric 이름은 보존하지만 값과 delta는 비워 두고, `not-measured-no-benchmark-results`,
+`benchmarkComparisonEligible=false`, `supervisorActivationEligible=false`로 고정한다. 다음
+`BENCH-003B`는 동일 seed·repetition·reset·isolation·cleanup 좌표의 실제 baseline/candidate
+`BenchmarkResult`를 생성한 뒤에만 기존 numeric `BenchmarkComparison`을 허용한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -124,7 +131,9 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - 기존 Mode, API, Artifact 호환·Deprecation 정책
 - `BENCH-001` Metric·Ground Truth·Run Protocol
 - `BENCH-002` Result Schema·Artifact Format
-- `BENCH-003` Deterministic Baseline·Adaptive Candidate 비교
+- [ ] `BENCH-003` Deterministic Baseline·Adaptive Candidate 비교
+  - [x] `BENCH-003A` Walking Baseline·Shadow Decision structural-only comparison
+  - [ ] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
 - reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정

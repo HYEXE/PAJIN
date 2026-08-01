@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0078: Shadow Decision Structural Benchmark Before Metric Comparison](docs/adr/0078-shadow-decision-structural-benchmark.md)
 - [ADR-0077: Walking Shadow Supervisor Decision Record](docs/adr/0077-walking-shadow-supervisor-record.md)
 - [ADR-0076: Baseline-Bound MCP Remediation Retest](docs/adr/0076-baseline-bound-mcp-retest.md)
 - [ADR-0075: MCP Replay Confirmation and Remediation Baseline](docs/adr/0075-mcp-replay-confirmation-baseline.md)
