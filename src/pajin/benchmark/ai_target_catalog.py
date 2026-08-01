@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
+from pajin.benchmark.docker_provider import (
+    DOCKER_AI_RAG_MCP_TARGET_PROFILE_API_VERSION,
+    DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION,
+    DockerAIRAGMCPTargetFactoryAdapter,
+    DockerAIRAGMCPTargetProfile,
+)
 from pajin.benchmark.models import (
     BenchmarkGroundTruth,
     BenchmarkGroundTruthCase,
@@ -19,7 +25,10 @@ from pajin.benchmark.target_catalog import (
     BenchmarkTargetGroundTruthBinding,
     BenchmarkTargetProfileCatalog,
     BenchmarkTargetProfileRegistration,
+    BenchmarkTargetProfileSelectionAuthority,
+    _CatalogBoundDockerTargetFactoryAdapter,
 )
+from pajin.benchmark.target_factory import RegisteredBenchmarkTargetFactoryAdapter
 from pajin.discovery.walking import WALKING_HYPOTHESIS_API_VERSION
 from pajin.discovery.walking_closure import WALKING_MCP_CONFIRMATION_API_VERSION
 from pajin.discovery.walking_mcp import WALKING_MCP_AUTHORIZATION_API_VERSION
@@ -46,6 +55,9 @@ _MAX_SELECTION_BYTES = 512 * 1024
 _CATALOG_ID: Literal["target-catalog:pajin-ai-rag-mcp"] = (
     "target-catalog:pajin-ai-rag-mcp"
 )
+_LOCAL_DOCKER_CATALOG_ID: Literal[
+    "target-catalog:pajin-ai-rag-mcp-local-docker"
+] = "target-catalog:pajin-ai-rag-mcp-local-docker"
 _GROUND_TRUTH_ID = "ground-truth:rag-mcp-authorization-internal-data"
 _FINDING_ID = "finding:rag-mcp-authorization-internal-data"
 _SURFACE_IDS = (
@@ -87,6 +99,49 @@ AI_RAG_MCP_WALKING_MATCHER_DIGEST = benchmark_digest(
             "mcpServerId": "demo-security",
             "mcpToolName": "inspect_text",
             "networkLogTrusted": False,
+        },
+        "expectedFindingId": _FINDING_ID,
+        "surfaceIds": list(_SURFACE_IDS),
+        "chainId": _CHAIN_ID,
+    },
+    max_bytes=64 * 1024,
+)
+
+_DOCKER_MATCHER_ID = "matcher:docker-ai-rag-mcp-chain-probe"
+AI_RAG_MCP_DOCKER_MATCHER_DIGEST = benchmark_digest(
+    "pajin.benchmark.ai-rag-mcp-docker-matcher/v1",
+    {
+        "matcherId": _DOCKER_MATCHER_ID,
+        "matcherVersion": _MATCHER_VERSION,
+        "providerContracts": [
+            DOCKER_AI_RAG_MCP_TARGET_PROFILE_API_VERSION,
+            DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION,
+        ],
+        "workerAction": "ai-rag-mcp-chain-probe",
+        "requiredChecks": [
+            "authorizationNotEnforced",
+            "internalDataAccessed",
+            "mcpArgumentInfluenced",
+            "ragRetrievedDocument",
+            "syntheticLabOnly",
+            "uploadAccepted",
+        ],
+        "requiredTargetObservations": {
+            "inputMarker": "ignore previous",
+            "authorizationEnforced": False,
+            "internalDataAccessed": True,
+            "mcpArgument": "internal://policy",
+            "mcpServerId": "demo-security",
+            "mcpToolName": "inspect_text",
+            "observation": "untrusted text contains an instruction-hijacking pattern",
+            "ragDocumentId": "document:untrusted-upload",
+            "synthetic": True,
+        },
+        "requiredProviderEvidence": {
+            "networkInternal": True,
+            "publishedPortCount": 0,
+            "probeVulnerable": True,
+            "workerExitCode": 0,
         },
         "expectedFindingId": _FINDING_ID,
         "surfaceIds": list(_SURFACE_IDS),
@@ -371,6 +426,191 @@ def select_ai_rag_mcp_target_fixture(
         ) from exc
 
 
+def registered_ai_rag_mcp_docker_ground_truth(
+    profile: DockerAIRAGMCPTargetProfile,
+    *,
+    benchmark_id: str,
+) -> BenchmarkGroundTruth:
+    """Build the seeded private case for the runnable local Docker profile."""
+
+    authoritative_profile = _canonical_docker_profile(profile)
+    return BenchmarkGroundTruth(
+        benchmarkId=benchmark_id,
+        targetFactoryDigest=authoritative_profile.target_factory_digest,
+        cases=[
+            BenchmarkGroundTruthCase(
+                groundTruthId=_GROUND_TRUTH_ID,
+                expectedFindingId=_FINDING_ID,
+                surfaceIds=list(_SURFACE_IDS),
+                chainId=_CHAIN_ID,
+                matcherId=_DOCKER_MATCHER_ID,
+                matcherVersion=_MATCHER_VERSION,
+                matcherDigest=AI_RAG_MCP_DOCKER_MATCHER_DIGEST,
+                visibility=GroundTruthVisibility.SEEDED,
+            )
+        ],
+    )
+
+
+def registered_ai_rag_mcp_docker_target_catalog(
+    profile: DockerAIRAGMCPTargetProfile,
+    ground_truth: BenchmarkGroundTruth,
+) -> BenchmarkTargetProfileCatalog:
+    """Register exact runnable local images without changing the fixture-only catalog."""
+
+    authoritative_profile = _canonical_docker_profile(profile)
+    authoritative_ground_truth = _canonical_ground_truth(ground_truth)
+    expected_ground_truth = registered_ai_rag_mcp_docker_ground_truth(
+        authoritative_profile,
+        benchmark_id=authoritative_ground_truth.benchmark_id,
+    )
+    if authoritative_ground_truth != expected_ground_truth:
+        raise BenchmarkTargetCatalogError(
+            "Docker AI/RAG/MCP Ground Truth differs from the code-registered profile"
+        )
+    registration = BenchmarkTargetProfileRegistration(
+        targetFamily="ai-rag-mcp",
+        targetProfileId=authoritative_profile.profile_id,
+        targetProfileVersion=authoritative_profile.profile_version,
+        targetFactoryId="target-factory:docker-ai-rag-mcp",
+        targetFactoryVersion=authoritative_profile.profile_version,
+        targetFactoryDigest=authoritative_profile.target_factory_digest,
+        providerProfileApiVersion=authoritative_profile.api_version,
+        providerProfileDigest=authoritative_profile.target_factory_digest,
+        mutationProfileIds=(),
+        networkPolicy="docker-internal-bridge-no-published-ports",
+        groundTruthDigest=authoritative_ground_truth.digest(),
+    )
+    return BenchmarkTargetProfileCatalog(
+        catalogId=_LOCAL_DOCKER_CATALOG_ID,
+        registrations=(registration,),
+    )
+
+
+def select_ai_rag_mcp_docker_target_profile(
+    manifest: BenchmarkManifest,
+    *,
+    adapter: RegisteredBenchmarkTargetFactoryAdapter,
+    profile: DockerAIRAGMCPTargetProfile,
+    catalog: BenchmarkTargetProfileCatalog,
+    ground_truth: BenchmarkGroundTruth,
+) -> BenchmarkTargetProfileSelectionAuthority:
+    """Select one exact runnable profile, adapter, Manifest, and private binding."""
+
+    try:
+        authoritative_manifest = BenchmarkManifest.model_validate(
+            manifest.model_dump(mode="json", by_alias=True)
+        )
+        authoritative_adapter = RegisteredBenchmarkTargetFactoryAdapter.model_validate(
+            adapter.model_dump(mode="json", by_alias=True)
+        )
+        authoritative_profile = _canonical_docker_profile(profile)
+        authoritative_catalog = BenchmarkTargetProfileCatalog.model_validate(
+            catalog.model_dump(mode="json", by_alias=True)
+        )
+        authoritative_ground_truth = _canonical_ground_truth(ground_truth)
+        expected_catalog = registered_ai_rag_mcp_docker_target_catalog(
+            authoritative_profile,
+            authoritative_ground_truth,
+        )
+        if authoritative_catalog != expected_catalog:
+            raise ValueError("Docker AI/RAG/MCP catalog differs from registered profile")
+        registration = authoritative_catalog.registrations[0]
+        binding = BenchmarkTargetGroundTruthBinding(
+            registration=registration,
+            groundTruth=authoritative_ground_truth,
+        )
+        if (
+            authoritative_manifest.benchmark_id != authoritative_ground_truth.benchmark_id
+            or authoritative_manifest.target_profile_id != registration.target_profile_id
+            or authoritative_manifest.target_profile_version
+            != registration.target_profile_version
+            or authoritative_manifest.target_factory_id != registration.target_factory_id
+            or authoritative_manifest.target_factory_version
+            != registration.target_factory_version
+            or authoritative_manifest.target_factory_digest
+            != registration.target_factory_digest
+            or authoritative_manifest.ground_truth_digest
+            != registration.ground_truth_digest
+            or authoritative_manifest.mutation_profile_id is not None
+            or authoritative_adapter.target_factory_id != registration.target_factory_id
+            or authoritative_adapter.target_factory_version
+            != registration.target_factory_version
+            or authoritative_adapter.target_factory_digest
+            != registration.target_factory_digest
+        ):
+            raise ValueError("Benchmark Manifest or adapter differs from Docker AI selection")
+        return BenchmarkTargetProfileSelectionAuthority(
+            catalogId=authoritative_catalog.catalog_id,
+            catalogRevision=authoritative_catalog.catalog_revision,
+            catalogDigest=authoritative_catalog.catalog_digest,
+            registration=registration,
+            manifestDigest=authoritative_manifest.digest(),
+            adapterDigest=authoritative_adapter.adapter_digest,
+            providerProfileDigest=authoritative_profile.target_factory_digest,
+            groundTruthBindingDigest=binding.binding_digest,
+            groundTruthDigest=authoritative_ground_truth.digest(),
+        )
+    except (ValueError, TypeError) as exc:
+        raise BenchmarkTargetCatalogError(
+            "Docker AI/RAG/MCP Target catalog selection failed"
+        ) from exc
+
+
+class CatalogBoundDockerAIRAGMCPTargetFactoryAdapter(
+    _CatalogBoundDockerTargetFactoryAdapter
+):
+    """Apply the runnable AI catalog and private Ground Truth gate to the provider."""
+
+    def __init__(
+        self,
+        *,
+        provider: DockerAIRAGMCPTargetFactoryAdapter,
+        manifest: BenchmarkManifest,
+        catalog: BenchmarkTargetProfileCatalog,
+        ground_truth: BenchmarkGroundTruth,
+    ) -> None:
+        self._provider = provider
+        self._profile = _canonical_docker_profile(provider.profile)
+        self._definition = RegisteredBenchmarkTargetFactoryAdapter.model_validate(
+            provider.definition.model_dump(mode="json", by_alias=True)
+        )
+        self._manifest = BenchmarkManifest.model_validate(
+            manifest.model_dump(mode="json", by_alias=True)
+        )
+        self._ground_truth = _canonical_ground_truth(ground_truth)
+        self._selection = select_ai_rag_mcp_docker_target_profile(
+            self._manifest,
+            adapter=self._definition,
+            profile=self.profile,
+            catalog=catalog,
+            ground_truth=self._ground_truth,
+        )
+
+    @property
+    def profile(self) -> DockerAIRAGMCPTargetProfile:
+        return DockerAIRAGMCPTargetProfile.model_validate(
+            self._profile.model_dump(mode="json", by_alias=True)
+        )
+
+    def _require_provider_identity(self) -> None:
+        try:
+            current_definition = RegisteredBenchmarkTargetFactoryAdapter.model_validate(
+                self._provider.definition.model_dump(mode="json", by_alias=True)
+            )
+            current_profile = _canonical_docker_profile(
+                cast(DockerAIRAGMCPTargetProfile, self._provider.profile)
+            )
+        except (ValueError, TypeError) as exc:
+            raise BenchmarkTargetCatalogError(
+                "Docker AI/RAG/MCP provider identity is structurally invalid"
+            ) from exc
+        if current_definition != self._definition or current_profile != self._profile:
+            raise BenchmarkTargetCatalogError(
+                "Docker AI/RAG/MCP provider identity changed after catalog selection"
+            )
+
+
 def _canonical_profile(profile: AIRAGMCPWalkingTargetProfile) -> AIRAGMCPWalkingTargetProfile:
     return AIRAGMCPWalkingTargetProfile.model_validate(
         profile.model_dump(mode="json", by_alias=True)
@@ -380,4 +620,12 @@ def _canonical_profile(profile: AIRAGMCPWalkingTargetProfile) -> AIRAGMCPWalking
 def _canonical_ground_truth(ground_truth: BenchmarkGroundTruth) -> BenchmarkGroundTruth:
     return BenchmarkGroundTruth.model_validate(
         ground_truth.model_dump(mode="json", by_alias=True)
+    )
+
+
+def _canonical_docker_profile(
+    profile: DockerAIRAGMCPTargetProfile,
+) -> DockerAIRAGMCPTargetProfile:
+    return DockerAIRAGMCPTargetProfile.model_validate(
+        profile.model_dump(mode="json", by_alias=True)
     )

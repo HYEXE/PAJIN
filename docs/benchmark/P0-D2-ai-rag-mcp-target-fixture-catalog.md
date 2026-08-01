@@ -110,12 +110,12 @@ the corresponding public catalog, and a non-runnable selection. Operators must n
 selection into a benchmark lifecycle or report metrics from it. Rollback stops selecting the
 fixture and preserves its content-addressed records; it does not relabel the fixture as runnable.
 
-## Remaining work
+## Successor boundary
 
-A later P0-D slice must implement a real, isolated AI/RAG/MCP Target lifecycle with reset, seed,
-execution, receipt-bound evidence, cleanup, and measurement authority before this profile can gain
-a runnable registration. Holdout and Mutation profiles remain separate work and must not reuse
-seeded fixture contents.
+[P0-D2B](P0-D2B-local-ai-rag-mcp-docker-provider.md) now provides a real isolated lifecycle under a
+separate profile, Target Factory, adapter, catalog, and Docker-specific matcher. This fixture does
+not gain a runnable registration and remains contract-only. Holdout and Mutation profiles remain
+separate work and must not reuse seeded fixture contents.
 
 ## Related documents
 

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D2B` local AI/RAG/MCP provider·catalog promotion
+- 현재 우선순위: `P0-D3` Hybrid Target composition authority
 
 ## 제품 목표
 
@@ -196,6 +196,17 @@ runner나 governed Harness 입력이 될 수 없다. shared catalog는 기존 P0
 execution·receipt-bound evidence·cleanup을 실제로 수행하는 local AI/RAG/MCP provider를 구현한 뒤에만
 catalog를 runnable 상태로 승격하는 별도 수직 슬라이스다.
 
+`P0-D2B`는 contract-only fixture를 변경하지 않고 별도 Docker profile·Factory·adapter·catalog로
+실행 경계를 추가했다. 고정 Worker가 내부 전용 bridge에서 document upload -> deterministic RAG query
+-> Target 내부 MCP HTTP endpoint -> synthetic internal marker chain을 실제 수행한다. 공통 Docker
+lifecycle은 기존 durable fence·hardening·receipt evidence·cleanup을 재사용하고, AI 전용 parser는
+성공 flag뿐 아니라 bounded Base64 body, SHA-256, decoded response 전체를 exact 검증한다. Walking
+fixture의 `networkLogTrusted=false` matcher를 재사용하지 않고 Docker profile/evidence와 실제 응답을
+묶는 별도 matcher digest를 사용한다. model call과 외부 서비스는 없고 MCP endpoint도 별도
+deployment가 아니라 Target container 내부 protocol boundary다. 다음 `P0-D3`는 P0-D1과 P0-D2B의
+서로 다른 Factory authority를 하나의 Hybrid Target/chain으로 결합할 때 필요한 composition identity,
+lifecycle 순서, Ground Truth 및 음성 경계를 먼저 정의한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -228,7 +239,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [ ] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
   - [x] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
   - [x] `P0-D2` AI/RAG/MCP non-runnable fixture catalog·ground-truth profile
-  - [ ] `P0-D2B` local AI/RAG/MCP provider·catalog promotion
+  - [x] `P0-D2B` local AI/RAG/MCP provider·별도 runnable catalog
+  - [ ] `P0-D3` Traditional Web/API + AI/RAG/MCP Hybrid Target composition authority
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

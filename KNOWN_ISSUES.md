@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 216 passed, 4 skipped 이후
+- 결과: 221 passed, 5 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -43,18 +43,18 @@
 - 해소 조건: 별도 catalog distribution Trust Anchor와 contiguous durable activation을 추가하고,
   exact catalog selection Run/root/artifact를 governed Harness authority와 reader에 결박한다.
 
-## P0-D2 AI/RAG/MCP profile의 non-runnable fixture 범위
+## P0-D2 fixture와 P0-D2B runnable provider의 분리 범위
 
-- 상태: 의도적으로 실행과 측정을 금지한 선행 계약
+- 상태: 의도적으로 분리된 선행 fixture와 host-local runnable provider
 - 현재 보장: WALK-002/003/005A/005B2/005C1의 exact API version, 실제 state·target observation,
   private seeded Ground Truth를 content-addressed profile과 catalog selection에 결박한다. selection은
   adapter digest가 없고 `providerExecutionAuthorized=false`, `measurementAdmissionEligible=false`다.
-- 영향: 현재 WALK Gateway 증거는 deterministic fixture이며 `networkLogTrusted=false`다. Target reset,
-  isolation, provider fence, receipt-bound provider evidence, cleanup, measurement attestation이 없으므로
-  실제 Benchmark Run이나 metric 근거로 사용할 수 없다.
-- 해소 조건: 별도 local AI/RAG/MCP Target과 recoverable provider adapter를 구현하고 실제 network·
-  lifecycle evidence, cleanup recovery, registry-governed live conformance를 검증한 뒤 새 runnable
-  registration revision으로 승격한다.
+- 영향: P0-D2 fixture는 계속 adapter digest가 없고 `networkLogTrusted=false`이므로 실제 Benchmark
+  Run이나 metric 근거로 사용할 수 없다. P0-D2B는 별도 profile·Factory·catalog·Docker matcher로
+  runnable 경계를 제공하지만 host-local single-container, deterministic no-model lab이다. MCP endpoint는
+  Target 내부에 있어 별도 MCP service/process 격리를 증명하지 않는다.
+- 해소 조건: fixture는 non-runnable 상태로 보존한다. production 범위가 필요하면 separate MCP service,
+  model-backed RAG, external provider trust와 cross-host fence를 새 profile·ADR로 구현한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
@@ -105,8 +105,8 @@
 
 - 상태: 현재 가용, 세션 의존 환경 제약
 - 마지막 관찰: 2026-08-01
-- 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B real Target conformance가
-  통과했고 종료 뒤 `pajin-bench-*` container와 network가 남지 않았다.
+- 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B SQLi와 P0-D2B AI/RAG/MCP
+  real Target conformance가 통과했고 종료 뒤 `pajin-bench-*` container와 network가 남지 않았다.
 - 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
   opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.
 - 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 daemon 상태와 exact image ID를 다시

@@ -40,6 +40,9 @@ from pajin.domain.models import StrictModel
 DOCKER_BUG_BOUNTY_TARGET_PROFILE_API_VERSION: Literal[
     "pajin.dev/docker-bug-bounty-target-profile/v1alpha1"
 ] = "pajin.dev/docker-bug-bounty-target-profile/v1alpha1"
+DOCKER_AI_RAG_MCP_TARGET_PROFILE_API_VERSION: Literal[
+    "pajin.dev/docker-ai-rag-mcp-target-profile/v1alpha1"
+] = "pajin.dev/docker-ai-rag-mcp-target-profile/v1alpha1"
 DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION: Literal[
     "pajin.dev/docker-benchmark-provider-evidence/v1alpha1"
 ] = "pajin.dev/docker-benchmark-provider-evidence/v1alpha1"
@@ -54,6 +57,12 @@ _ADAPTER_LABEL = "pajin.benchmark.adapter-digest"
 _COORDINATE_LABEL = "pajin.benchmark.coordinate-digest"
 _FENCE_LABEL = "pajin.benchmark.fence"
 _ROLE_LABEL = "pajin.benchmark.role"
+_AI_RAG_MCP_SCENARIO = "ai-rag-mcp.docker.file-upload-rag-tool-authorization"
+_AI_RAG_MCP_TARGET = "http://target:8080"
+_AI_RAG_MCP_DOCUMENT_ID = "document:untrusted-upload"
+_AI_RAG_MCP_INPUT_MARKER = "ignore previous"
+_AI_RAG_MCP_TOOL_ARGUMENT = "internal://policy"
+_AI_RAG_MCP_OBSERVATION = "untrusted text contains an instruction-hijacking pattern"
 
 
 class DockerBenchmarkProviderError(RuntimeError):
@@ -112,6 +121,90 @@ class DockerBugBountyTargetProfile(StrictModel):
             raise ValueError("Docker Bug Bounty Target Factory Digest differs")
         object.__setattr__(self, "target_factory_digest", digest)
         return self
+
+
+class DockerAIRAGMCPTargetProfile(StrictModel):
+    """Content-addressed images and policy for the runnable synthetic AI chain."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/docker-ai-rag-mcp-target-profile/v1alpha1"] = Field(
+        default=DOCKER_AI_RAG_MCP_TARGET_PROFILE_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["DockerAIRAGMCPTargetProfile"] = "DockerAIRAGMCPTargetProfile"
+    profile_id: Literal[
+        "ai-rag-mcp.docker.file-upload-rag-tool-authorization"
+    ] = Field(
+        default="ai-rag-mcp.docker.file-upload-rag-tool-authorization",
+        alias="profileId",
+    )
+    profile_version: Literal["1.0.0"] = Field(default="1.0.0", alias="profileVersion")
+    target_image: Literal["pajin-ai-rag-mcp-target:dev"] = Field(alias="targetImage")
+    target_image_id: _ImageId = Field(alias="targetImageId")
+    worker_image: Literal["pajin-ai-rag-mcp-benchmark-worker:dev"] = Field(
+        alias="workerImage"
+    )
+    worker_image_id: _ImageId = Field(alias="workerImageId")
+    network_mode: Literal["internal-bridge"] = Field(
+        default="internal-bridge",
+        alias="networkMode",
+    )
+    target_state: Literal["vulnerable-missing-independent-approval"] = Field(
+        default="vulnerable-missing-independent-approval",
+        alias="targetState",
+    )
+    target_factory_digest: str = Field(default="", alias="targetFactoryDigest", max_length=64)
+
+    @field_validator("target_image", "worker_image")
+    @classmethod
+    def require_safe_image_reference(cls, value: str) -> str:
+        if value.strip() != value or any(character in value for character in "\x00\r\n"):
+            raise ValueError("Docker image reference is unsafe")
+        return value
+
+    @model_validator(mode="after")
+    def bind_target_factory(self) -> Self:
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"target_factory_digest"},
+        )
+        digest = benchmark_digest(
+            "pajin.benchmark.docker-ai-rag-mcp-target-profile/v1",
+            material,
+            max_bytes=64 * 1024,
+        )
+        if self.target_factory_digest and self.target_factory_digest != digest:
+            raise ValueError("Docker AI/RAG/MCP Target Factory Digest differs")
+        object.__setattr__(self, "target_factory_digest", digest)
+        return self
+
+
+class _DockerTargetProfile(Protocol):
+    @property
+    def profile_id(self) -> str: ...
+
+    @property
+    def profile_version(self) -> str: ...
+
+    @property
+    def target_image(self) -> str: ...
+
+    @property
+    def target_image_id(self) -> str: ...
+
+    @property
+    def worker_image(self) -> str: ...
+
+    @property
+    def worker_image_id(self) -> str: ...
+
+    @property
+    def target_factory_digest(self) -> str: ...
+
+
+DockerTargetProfile = DockerBugBountyTargetProfile | DockerAIRAGMCPTargetProfile
 
 
 class DockerBenchmarkProviderEvidence(StrictModel):
@@ -255,8 +348,8 @@ class SubprocessDockerCommandRunner:
         )
 
 
-class DockerBugBountyTargetFactoryAdapter:
-    """Recoverable local Docker implementation for one synthetic Boolean-SQLi lab."""
+class _DockerTargetFactoryAdapter:
+    """Shared recoverable Docker lifecycle for fixed, code-owned benchmark scenarios."""
 
     def __init__(
         self,
@@ -268,9 +361,33 @@ class DockerBugBountyTargetFactoryAdapter:
         measurement_private_key: bytes,
         command_runner: DockerCommandRunner | None = None,
     ) -> None:
-        self._profile = DockerBugBountyTargetProfile.model_validate(
+        profile_copy = DockerBugBountyTargetProfile.model_validate(
             profile.model_dump(mode="json", by_alias=True)
         )
+        self._initialize_provider(
+            state_path=state_path,
+            profile=profile_copy,
+            manifest=manifest,
+            trust_anchor=trust_anchor,
+            measurement_private_key=measurement_private_key,
+            command_runner=command_runner,
+            adapter_id="target-adapter:docker-bug-bounty",
+            target_factory_id="target-factory:docker-bug-bounty",
+        )
+
+    def _initialize_provider(
+        self,
+        *,
+        state_path: Path,
+        profile: _DockerTargetProfile,
+        manifest: BenchmarkManifest,
+        trust_anchor: BenchmarkMeasurementTrustAnchor,
+        measurement_private_key: bytes,
+        command_runner: DockerCommandRunner | None,
+        adapter_id: str,
+        target_factory_id: str,
+    ) -> None:
+        self._profile: _DockerTargetProfile = profile
         self._manifest = BenchmarkManifest.model_validate(
             manifest.model_dump(mode="json", by_alias=True)
         )
@@ -283,9 +400,9 @@ class DockerBugBountyTargetFactoryAdapter:
             trust_anchor=self._trust_anchor,
         )
         self._definition = RegisteredBenchmarkTargetFactoryAdapter(
-            adapterId="target-adapter:docker-bug-bounty",
+            adapterId=adapter_id,
             adapterVersion="1.0.0",
-            targetFactoryId="target-factory:docker-bug-bounty",
+            targetFactoryId=target_factory_id,
             targetFactoryVersion=self._profile.profile_version,
             targetFactoryDigest=self._profile.target_factory_digest,
             measurementAuthorityId=self._trust_anchor.authority_id,
@@ -307,8 +424,12 @@ class DockerBugBountyTargetFactoryAdapter:
         return self._definition.model_copy(deep=True)
 
     @property
-    def profile(self) -> DockerBugBountyTargetProfile:
-        return self._profile.model_copy(deep=True)
+    def profile(self) -> DockerTargetProfile:
+        return DockerBugBountyTargetProfile.model_validate(
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
+                mode="json", by_alias=True
+            )
+        )
 
     def evidence(
         self,
@@ -501,8 +622,7 @@ class DockerBugBountyTargetFactoryAdapter:
                 "65532:65532",
                 "--tmpfs",
                 "/tmp:rw,noexec,nosuid,nodev,size=16m",
-                "--env",
-                f"PAJIN_BUG_BOUNTY_LAB_PROFILE={self._profile.target_profile}",
+                *self._target_environment_arguments(),
                 *self._label_arguments(labels, role="target"),
                 self._profile.target_image_id,
             )
@@ -582,16 +702,13 @@ class DockerBugBountyTargetFactoryAdapter:
                 "/tmp:rw,noexec,nosuid,nodev,size=16m",
                 *self._label_arguments(labels, role="worker"),
                 self._profile.worker_image_id,
-                "bug-bounty-sqli-probe",
+                self._worker_action(),
             )
         )
         payload = (
             canonical_benchmark_json(
-                {
-                    "scenarioId": self._profile.profile_id,
-                    "target": "http://target:8080/v1/users/lookup",
-                },
-                label="Docker Bug Bounty Worker input",
+                self._worker_payload(),
+                label=self._worker_input_label(),
                 max_bytes=16 * 1024,
             )
             + b"\n"
@@ -599,7 +716,7 @@ class DockerBugBountyTargetFactoryAdapter:
         worker_result = self._checked(
             ("start", "--attach", "--interactive", names.worker), stdin=payload
         )
-        probe = _parse_probe_output(worker_result.stdout)
+        probe = self._parse_worker_output(worker_result.stdout)
         worker = self._container_inspect(names.worker)
         target = self._container_inspect(names.target)
         network = self._network_inspect(names.network)
@@ -634,7 +751,7 @@ class DockerBugBountyTargetFactoryAdapter:
             probe_output_sha256=sha256(
                 canonical_benchmark_json(
                     probe,
-                    label="Docker Bug Bounty Worker output",
+                    label=self._worker_output_label(),
                     max_bytes=512 * 1024,
                 )
             ).hexdigest(),
@@ -642,6 +759,28 @@ class DockerBugBountyTargetFactoryAdapter:
         )
         receipt = self._receipt(coordinate, operation, evidence, started, completed)
         return receipt, self._observation(coordinate, receipt), evidence
+
+    def _target_environment_arguments(self) -> tuple[str, ...]:
+        profile = cast(DockerBugBountyTargetProfile, self._profile)
+        return ("--env", f"PAJIN_BUG_BOUNTY_LAB_PROFILE={profile.target_profile}")
+
+    def _worker_action(self) -> str:
+        return "bug-bounty-sqli-probe"
+
+    def _worker_payload(self) -> Mapping[str, object]:
+        return {
+            "scenarioId": self._profile.profile_id,
+            "target": "http://target:8080/v1/users/lookup",
+        }
+
+    def _worker_input_label(self) -> str:
+        return "Docker Bug Bounty Worker input"
+
+    def _worker_output_label(self) -> str:
+        return "Docker Bug Bounty Worker output"
+
+    def _parse_worker_output(self, raw: bytes) -> dict[str, object]:
+        return _parse_probe_output(raw)
 
     def _cleanup(
         self,
@@ -909,7 +1048,7 @@ class DockerBugBountyTargetFactoryAdapter:
             worker,
             expected_image_id=self._profile.worker_image_id,
             expected_network=network_name,
-            expected_command=["bug-bounty-sqli-probe"],
+            expected_command=[self._worker_action()],
         )
 
     def _wait_for_healthy_target(self, name: str) -> Mapping[str, object]:
@@ -972,6 +1111,119 @@ class DockerBugBountyTargetFactoryAdapter:
         if result.returncode != 0:
             raise DockerBenchmarkProviderError("Docker provider command failed")
         return result
+
+
+class DockerBugBountyTargetFactoryAdapter(_DockerTargetFactoryAdapter):
+    """Recoverable local Docker implementation for one synthetic Boolean-SQLi lab."""
+
+    @property
+    def profile(self) -> DockerBugBountyTargetProfile:
+        return DockerBugBountyTargetProfile.model_validate(
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
+                mode="json", by_alias=True
+            )
+        )
+
+
+class DockerAIRAGMCPTargetFactoryAdapter(_DockerTargetFactoryAdapter):
+    """Recoverable local Docker implementation of the synthetic AI/RAG/MCP chain."""
+
+    def __init__(
+        self,
+        *,
+        state_path: Path,
+        profile: DockerAIRAGMCPTargetProfile,
+        manifest: BenchmarkManifest,
+        trust_anchor: BenchmarkMeasurementTrustAnchor,
+        measurement_private_key: bytes,
+        command_runner: DockerCommandRunner | None = None,
+    ) -> None:
+        profile_copy = DockerAIRAGMCPTargetProfile.model_validate(
+            profile.model_dump(mode="json", by_alias=True)
+        )
+        self._initialize_provider(
+            state_path=state_path,
+            profile=profile_copy,
+            manifest=manifest,
+            trust_anchor=trust_anchor,
+            measurement_private_key=measurement_private_key,
+            command_runner=command_runner,
+            adapter_id="target-adapter:docker-ai-rag-mcp",
+            target_factory_id="target-factory:docker-ai-rag-mcp",
+        )
+
+    @property
+    def profile(self) -> DockerAIRAGMCPTargetProfile:
+        return DockerAIRAGMCPTargetProfile.model_validate(
+            cast(DockerAIRAGMCPTargetProfile, self._profile).model_dump(
+                mode="json", by_alias=True
+            )
+        )
+
+    def _target_environment_arguments(self) -> tuple[str, ...]:
+        profile = cast(DockerAIRAGMCPTargetProfile, self._profile)
+        return ("--env", f"PAJIN_AI_RAG_MCP_TARGET_STATE={profile.target_state}")
+
+    def _worker_action(self) -> str:
+        return "ai-rag-mcp-chain-probe"
+
+    def _worker_payload(self) -> Mapping[str, object]:
+        return {"scenarioId": self._profile.profile_id, "target": _AI_RAG_MCP_TARGET}
+
+    def _worker_input_label(self) -> str:
+        return "Docker AI/RAG/MCP Worker input"
+
+    def _worker_output_label(self) -> str:
+        return "Docker AI/RAG/MCP Worker output"
+
+    def _parse_worker_output(self, raw: bytes) -> dict[str, object]:
+        return _parse_ai_rag_mcp_probe_output(raw)
+
+    def _observation(
+        self,
+        coordinate: BenchmarkTargetCoordinate,
+        receipt: BenchmarkTargetStageReceipt,
+    ) -> WalkingBenchmarkRunObservation:
+        arm = coordinate.arm
+        return WalkingBenchmarkRunObservation(
+            benchmarkId=coordinate.benchmark_id,
+            manifestDigest=coordinate.manifest_digest,
+            armId=arm.arm_id,
+            armKind=arm.kind,
+            configurationDigest=arm.configuration_digest,
+            targetFactoryDigest=self._profile.target_factory_digest,
+            campaignDigest=self._manifest.campaign_digest,
+            groundTruthDigest=self._manifest.ground_truth_digest,
+            protocolId=self._manifest.protocol.protocol_id,
+            protocolVersion=self._manifest.protocol.protocol_version,
+            measurementAuthorityId=self._definition.measurement_authority_id,
+            measurementAuthorityVersion=self._definition.measurement_authority_version,
+            measurementAuthorityDigest=self._definition.measurement_authority_digest,
+            seed=coordinate.seed,
+            repetition=coordinate.repetition,
+            startedAt=receipt.started_at,
+            completedAt=receipt.completed_at,
+            cleanupSucceeded=False,
+            toolCallCount=1,
+            modelCallCount=0,
+            costUsd=0.0,
+            knownAttackSurfaceCount=3,
+            discoveredKnownAttackSurfaceCount=3,
+            knownFindingCount=1,
+            matchedKnownFindingCount=1,
+            candidateFindingCount=1,
+            validCandidateFindingCount=1,
+            unexpectedValidFindingCount=0,
+            confirmedFindingCount=1,
+            groundTruthChainCount=1,
+            completedGroundTruthChainCount=1,
+            firstValidOrConfirmedFindingSeconds=0.0,
+            replayAttemptCount=1,
+            replaySuccessCount=1,
+            policyRejectionOrViolationCount=0,
+            humanDecisionCount=1,
+            humanInterventionOrOverturnCount=0,
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -1083,6 +1335,113 @@ def _require_probe_observations(observations: list[object]) -> None:
             or body_value.get("queryMode") != query_mode
         ):
             raise DockerBenchmarkProviderError("Docker worker probe body differs")
+
+
+def _parse_ai_rag_mcp_probe_output(raw: bytes) -> dict[str, object]:
+    if not 1 <= len(raw) <= 512 * 1024:
+        raise DockerBenchmarkProviderError(
+            "Docker AI/RAG/MCP worker output is missing or too large"
+        )
+    try:
+        value = json.loads(raw)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise DockerBenchmarkProviderError("Docker AI/RAG/MCP worker output is not JSON") from exc
+    if not isinstance(value, dict):
+        raise DockerBenchmarkProviderError("Docker AI/RAG/MCP worker output is not an object")
+    checks = value.get("checks")
+    observations = value.get("observations")
+    expected_checks = {
+        "authorizationNotEnforced",
+        "internalDataAccessed",
+        "mcpArgumentInfluenced",
+        "ragRetrievedDocument",
+        "syntheticLabOnly",
+        "uploadAccepted",
+    }
+    if (
+        set(value)
+        != {"checks", "networkPerformed", "observations", "scenarioId", "target", "vulnerable"}
+        or value.get("scenarioId") != _AI_RAG_MCP_SCENARIO
+        or value.get("target") != _AI_RAG_MCP_TARGET
+        or value.get("vulnerable") is not True
+        or value.get("networkPerformed") is not True
+        or not isinstance(checks, dict)
+        or set(checks) != expected_checks
+        or any(item is not True for item in checks.values())
+        or not isinstance(observations, list)
+        or len(observations) != 2
+    ):
+        raise DockerBenchmarkProviderError("Docker AI/RAG/MCP worker probe result differs")
+    _require_ai_rag_mcp_observations(observations)
+    canonical_benchmark_json(
+        value,
+        label="Docker AI/RAG/MCP Worker output",
+        max_bytes=512 * 1024,
+    )
+    return cast(dict[str, object], value)
+
+
+def _require_ai_rag_mcp_observations(observations: list[object]) -> None:
+    expected_bodies: tuple[tuple[str, dict[str, object]], ...] = (
+        (
+            "upload",
+            {
+                "accepted": True,
+                "documentId": _AI_RAG_MCP_DOCUMENT_ID,
+                "synthetic": True,
+            },
+        ),
+        (
+            "agent-query",
+            {
+                "authorizationEnforced": False,
+                "inputMarker": _AI_RAG_MCP_INPUT_MARKER,
+                "internalDataAccessed": True,
+                "mcpArgument": _AI_RAG_MCP_TOOL_ARGUMENT,
+                "mcpServerId": "demo-security",
+                "mcpToolName": "inspect_text",
+                "observation": _AI_RAG_MCP_OBSERVATION,
+                "ragDocumentId": _AI_RAG_MCP_DOCUMENT_ID,
+                "synthetic": True,
+            },
+        ),
+    )
+    for raw, (name, expected_body) in zip(observations, expected_bodies, strict=True):
+        if not isinstance(raw, dict) or set(raw) != {
+            "bodySha256",
+            "name",
+            "responseBodyBase64",
+            "status",
+            "synthetic",
+        }:
+            raise DockerBenchmarkProviderError(
+                "Docker AI/RAG/MCP worker probe observation shape differs"
+            )
+        body_digest = raw.get("bodySha256")
+        encoded_body = raw.get("responseBodyBase64")
+        if (
+            raw.get("name") != name
+            or raw.get("status") != 200
+            or raw.get("synthetic") is not True
+            or not isinstance(body_digest, str)
+            or len(body_digest) != 64
+            or any(character not in "0123456789abcdef" for character in body_digest)
+            or not isinstance(encoded_body, str)
+        ):
+            raise DockerBenchmarkProviderError("Docker AI/RAG/MCP worker probe observation differs")
+        try:
+            body = base64.b64decode(encoded_body, validate=True)
+            body_value = json.loads(body)
+        except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise DockerBenchmarkProviderError(
+                "Docker AI/RAG/MCP worker probe body is invalid"
+            ) from exc
+        if (
+            not 1 <= len(body) <= 128 * 1024
+            or not compare_digest(sha256(body).hexdigest(), body_digest)
+            or body_value != expected_body
+        ):
+            raise DockerBenchmarkProviderError("Docker AI/RAG/MCP worker probe body differs")
 
 
 def _decode_command_output(raw: bytes, *, label: str) -> str:

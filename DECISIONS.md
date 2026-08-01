@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0089: Add a Separate Runnable Local-Docker Identity for AI/RAG/MCP](docs/adr/0089-local-ai-rag-mcp-docker-provider.md)
 - [ADR-0088: Register the Walking AI/RAG/MCP Scenario as Non-runnable](docs/adr/0088-non-runnable-ai-rag-mcp-target-fixture.md)
 - [ADR-0087: Separate Public Target Registration from Private Ground Truth](docs/adr/0087-traditional-web-api-target-catalog.md)
 - [ADR-0086: Enforce the First Concrete Benchmark Provider on a Local Docker Boundary](docs/adr/0086-local-docker-benchmark-provider.md)

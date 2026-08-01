@@ -433,6 +433,14 @@ untrusted network evidence, no provider execution authorization, and no measurem
 It creates neither a Target adapter nor a Benchmark Observation; runnable AI/RAG/MCP measurement
 still requires a separate P0-C lifecycle implementation.
 
+P0-D2B supplies that lifecycle as a separate local-Docker profile rather than revising the
+contract-only fixture. It reuses the P0-C2B2B durable fence, resource hardening, receipt evidence,
+and cleanup machinery through fixed scenario hooks. A synthetic Target exposes document upload,
+deterministic RAG query, and MCP HTTP boundaries on one internal-only container; a fixed Worker
+performs the real network chain and the host independently validates exact decoded bodies and
+hashes. The runnable catalog binds the adapter and image IDs to the private seeded chain. This is a
+zero-model-call benchmark and not a claim of separate MCP deployment or production RAG behavior.
+
 ## 10. Definition of Done
 
 Each vertical slice requires:

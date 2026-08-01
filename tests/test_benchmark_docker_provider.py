@@ -12,8 +12,11 @@ from pathlib import Path
 import pytest
 
 from pajin.benchmark import (
+    AI_RAG_MCP_DOCKER_MATCHER_DIGEST,
+    AI_RAG_MCP_WALKING_MATCHER_DIGEST,
     BenchmarkArm,
     BenchmarkArmKind,
+    BenchmarkGroundTruth,
     BenchmarkManifest,
     BenchmarkMeasurementKeyState,
     BenchmarkMeasurementRegistryActivationStore,
@@ -26,10 +29,14 @@ from pajin.benchmark import (
     BenchmarkRegistryGovernedHarnessRunner,
     BenchmarkRunProtocol,
     BenchmarkTargetAttempt,
+    BenchmarkTargetCatalogError,
     BenchmarkTargetOperation,
     BenchmarkTargetRecoveryRequest,
     BenchmarkTargetStageReceipt,
+    CatalogBoundDockerAIRAGMCPTargetFactoryAdapter,
     CatalogBoundDockerBugBountyTargetFactoryAdapter,
+    DockerAIRAGMCPTargetFactoryAdapter,
+    DockerAIRAGMCPTargetProfile,
     DockerBenchmarkProviderError,
     DockerBugBountyTargetFactoryAdapter,
     DockerBugBountyTargetProfile,
@@ -39,8 +46,11 @@ from pajin.benchmark import (
     benchmark_measurement_registry_distribution_public_key_base64url,
     benchmark_target_coordinate,
     load_registry_governed_benchmark_observation,
+    registered_ai_rag_mcp_docker_ground_truth,
+    registered_ai_rag_mcp_docker_target_catalog,
     registered_traditional_web_api_ground_truth,
     registered_traditional_web_api_target_catalog,
+    select_ai_rag_mcp_docker_target_profile,
 )
 
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
@@ -48,6 +58,8 @@ MEASUREMENT_KEY = bytes(range(32))
 DISTRIBUTION_KEY = bytes(range(32, 64))
 TARGET_IMAGE_ID = "sha256:" + "a" * 64
 WORKER_IMAGE_ID = "sha256:" + "b" * 64
+AI_TARGET_IMAGE_ID = "sha256:" + "c" * 64
+AI_WORKER_IMAGE_ID = "sha256:" + "d" * 64
 
 
 class _FakeDocker:
@@ -181,6 +193,61 @@ class _MalformedProbeDocker(_FakeDocker):
         return result
 
 
+class _FakeAIDocker(_FakeDocker):
+    def __init__(
+        self,
+        *,
+        malformed_probe: bool = False,
+        substituted_body: bool = False,
+    ) -> None:
+        super().__init__()
+        self.image_ids = {
+            "pajin-ai-rag-mcp-target:dev": AI_TARGET_IMAGE_ID,
+            "pajin-ai-rag-mcp-benchmark-worker:dev": AI_WORKER_IMAGE_ID,
+        }
+        self.malformed_probe = malformed_probe
+        self.substituted_body = substituted_body
+
+    def run(
+        self,
+        arguments: tuple[str, ...],
+        *,
+        stdin: bytes | None = None,
+    ) -> DockerCommandResult:
+        if arguments[0] == "create":
+            result = super().run(arguments, stdin=stdin)
+            name = arguments[arguments.index("--name") + 1]
+            details = self.containers[name]
+            role = details["Role"]
+            details["Image"] = AI_TARGET_IMAGE_ID if role == "target" else AI_WORKER_IMAGE_ID
+            config = details["Config"]
+            assert isinstance(config, dict)
+            config["Cmd"] = None if role == "target" else ["ai-rag-mcp-chain-probe"]
+            return result
+        if arguments[:3] == ("start", "--attach", "--interactive"):
+            name = arguments[-1]
+            details = self.containers[name]
+            assert stdin is not None
+            assert json.loads(stdin) == {
+                "scenarioId": "ai-rag-mcp.docker.file-upload-rag-tool-authorization",
+                "target": "http://target:8080",
+            }
+            state = details["State"]
+            assert isinstance(state, dict)
+            state["Running"] = False
+            state["ExitCode"] = 0
+            network_name = str(details["Network"])
+            containers = self.networks[network_name]["Containers"]
+            assert isinstance(containers, dict)
+            containers.pop(_id(name), None)
+            if self.malformed_probe:
+                return _ok(b"{}")
+            return _ok(
+                _ai_probe_output(internal_data_accessed=not self.substituted_body)
+            )
+        return super().run(arguments, stdin=stdin)
+
+
 class _BlockingDocker(_FakeDocker):
     def __init__(self) -> None:
         super().__init__()
@@ -263,6 +330,63 @@ def _probe_output() -> bytes:
     ).encode()
 
 
+def _ai_probe_output(*, internal_data_accessed: bool = True) -> bytes:
+    bodies = (
+        (
+            "upload",
+            {
+                "accepted": True,
+                "documentId": "document:untrusted-upload",
+                "synthetic": True,
+            },
+        ),
+        (
+            "agent-query",
+            {
+                "authorizationEnforced": False,
+                "inputMarker": "ignore previous",
+                "internalDataAccessed": internal_data_accessed,
+                "mcpArgument": "internal://policy",
+                "mcpServerId": "demo-security",
+                "mcpToolName": "inspect_text",
+                "observation": "untrusted text contains an instruction-hijacking pattern",
+                "ragDocumentId": "document:untrusted-upload",
+                "synthetic": True,
+            },
+        ),
+    )
+    observations = []
+    for name, value in bodies:
+        body = json.dumps(value, separators=(",", ":")).encode()
+        observations.append(
+            {
+                "name": name,
+                "status": 200,
+                "synthetic": True,
+                "bodySha256": sha256(body).hexdigest(),
+                "responseBodyBase64": base64.b64encode(body).decode(),
+            }
+        )
+    return json.dumps(
+        {
+            "target": "http://target:8080",
+            "scenarioId": "ai-rag-mcp.docker.file-upload-rag-tool-authorization",
+            "vulnerable": True,
+            "checks": {
+                "uploadAccepted": True,
+                "ragRetrievedDocument": True,
+                "mcpArgumentInfluenced": True,
+                "authorizationNotEnforced": True,
+                "internalDataAccessed": True,
+                "syntheticLabOnly": True,
+            },
+            "observations": observations,
+            "networkPerformed": True,
+        },
+        separators=(",", ":"),
+    ).encode()
+
+
 def _profile(
     *,
     target_image_id: str = TARGET_IMAGE_ID,
@@ -273,6 +397,49 @@ def _profile(
         targetImageId=target_image_id,
         workerImage="pajin-benchmark-worker:dev",
         workerImageId=worker_image_id,
+    )
+
+
+def _ai_profile() -> DockerAIRAGMCPTargetProfile:
+    return DockerAIRAGMCPTargetProfile(
+        targetImage="pajin-ai-rag-mcp-target:dev",
+        targetImageId=AI_TARGET_IMAGE_ID,
+        workerImage="pajin-ai-rag-mcp-benchmark-worker:dev",
+        workerImageId=AI_WORKER_IMAGE_ID,
+    )
+
+
+def _ai_manifest(profile: DockerAIRAGMCPTargetProfile) -> BenchmarkManifest:
+    return BenchmarkManifest(
+        benchmarkId="benchmark:docker-ai-rag-mcp-v1",
+        targetFactoryId="target-factory:docker-ai-rag-mcp",
+        targetFactoryVersion=profile.profile_version,
+        targetFactoryDigest=profile.target_factory_digest,
+        targetProfileId=profile.profile_id,
+        targetProfileVersion=profile.profile_version,
+        mutationProfileId=None,
+        campaignDigest="c" * 64,
+        groundTruthDigest="d" * 64,
+        protocol=BenchmarkRunProtocol(
+            protocolId="pajin:docker-ai-rag-mcp-protocol",
+            protocolVersion="1.0.0",
+            seeds=[7],
+            repetitionsPerSeed=1,
+            timeoutSeconds=120,
+            maxCostUsd=1,
+            maxToolCalls=10,
+            maxModelCalls=1,
+        ),
+        arms=[
+            BenchmarkArm(
+                armId="arm:docker-ai-rag-mcp-baseline",
+                kind=BenchmarkArmKind.DETERMINISTIC_BASELINE,
+                implementationId="pajin:docker-ai-rag-mcp-baseline",
+                implementationVersion="1.0.0",
+                configurationDigest="e" * 64,
+                adaptiveSupervisor=False,
+            )
+        ],
     )
 
 
@@ -374,6 +541,212 @@ def test_docker_provider_runs_internal_lab_and_retrieves_bound_evidence(tmp_path
     assert authority.observation.matched_known_finding_count == 1
     assert not docker.containers
     assert not docker.networks
+
+
+def test_ai_rag_mcp_docker_provider_runs_real_chain_contract(tmp_path: Path) -> None:
+    docker = _FakeAIDocker()
+    profile = _ai_profile()
+    manifest = _ai_manifest(profile)
+    adapter = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=docker,
+    )
+
+    outcome = asyncio.run(
+        RecoverableBenchmarkTargetFactoryRunner(
+            output_root=tmp_path / "runs",
+            journal_path=tmp_path / "target-journal.sqlite3",
+            adapter=adapter,
+            trust_anchor=_measurement_anchor(),
+        ).run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+
+    authority = outcome.authority
+    execution = adapter.evidence(authority.execution_receipt)
+    assert adapter.profile == profile
+    assert execution.probe_vulnerable is True
+    assert authority.observation.known_attack_surface_count == 3
+    assert authority.observation.completed_ground_truth_chain_count == 1
+    assert not docker.containers
+    assert not docker.networks
+
+
+def test_ai_rag_mcp_docker_provider_rejects_unproved_worker_output(tmp_path: Path) -> None:
+    docker = _FakeAIDocker(malformed_probe=True)
+    profile = _ai_profile()
+    manifest = _ai_manifest(profile)
+    adapter = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=docker,
+    )
+    coordinate = benchmark_target_coordinate(
+        manifest,
+        arm_id=manifest.arms[0].arm_id,
+        seed=7,
+        repetition=1,
+    )
+    attempt = BenchmarkTargetAttempt(
+        adapterDigest=adapter.definition.adapter_digest,
+        coordinateDigest=coordinate.coordinate_digest,
+        fence=1,
+        startedAt=NOW,
+    )
+    reset = asyncio.run(adapter.reset(coordinate, _operation(attempt, "reset")))
+    isolation = asyncio.run(
+        adapter.establish_isolation(
+            coordinate,
+            reset,
+            _operation(attempt, "isolation"),
+        )
+    )
+
+    with pytest.raises(DockerBenchmarkProviderError, match="probe result"):
+        asyncio.run(adapter.execute(coordinate, isolation, _operation(attempt, "execution")))
+
+
+def test_ai_rag_mcp_docker_provider_rejects_true_flags_with_substituted_body(
+    tmp_path: Path,
+) -> None:
+    docker = _FakeAIDocker(substituted_body=True)
+    profile = _ai_profile()
+    manifest = _ai_manifest(profile)
+    adapter = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=docker,
+    )
+    coordinate = benchmark_target_coordinate(
+        manifest,
+        arm_id=manifest.arms[0].arm_id,
+        seed=7,
+        repetition=1,
+    )
+    attempt = BenchmarkTargetAttempt(
+        adapterDigest=adapter.definition.adapter_digest,
+        coordinateDigest=coordinate.coordinate_digest,
+        fence=1,
+        startedAt=NOW,
+    )
+    reset = asyncio.run(adapter.reset(coordinate, _operation(attempt, "reset")))
+    isolation = asyncio.run(
+        adapter.establish_isolation(
+            coordinate,
+            reset,
+            _operation(attempt, "isolation"),
+        )
+    )
+
+    with pytest.raises(DockerBenchmarkProviderError, match="probe body differs"):
+        asyncio.run(adapter.execute(coordinate, isolation, _operation(attempt, "execution")))
+
+
+def test_ai_rag_mcp_docker_provider_runs_through_exact_runnable_catalog(
+    tmp_path: Path,
+) -> None:
+    docker = _FakeAIDocker()
+    profile = _ai_profile()
+    ground_truth = registered_ai_rag_mcp_docker_ground_truth(
+        profile,
+        benchmark_id="benchmark:docker-ai-rag-mcp-v1",
+    )
+    manifest = _ai_manifest(profile).model_copy(
+        update={"ground_truth_digest": ground_truth.digest()}
+    )
+    provider = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=docker,
+    )
+    adapter = CatalogBoundDockerAIRAGMCPTargetFactoryAdapter(
+        provider=provider,
+        manifest=manifest,
+        catalog=registered_ai_rag_mcp_docker_target_catalog(profile, ground_truth),
+        ground_truth=ground_truth,
+    )
+
+    outcome = asyncio.run(
+        RecoverableBenchmarkTargetFactoryRunner(
+            output_root=tmp_path / "runs",
+            journal_path=tmp_path / "target-journal.sqlite3",
+            adapter=adapter,
+            trust_anchor=_measurement_anchor(),
+        ).run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+
+    assert adapter.selection.registration.network_policy == (
+        "docker-internal-bridge-no-published-ports"
+    )
+    assert outcome.authority.observation.discovered_known_attack_surface_count == 3
+    assert outcome.authority.observation.matched_known_finding_count == 1
+    assert provider.evidence(outcome.authority.execution_receipt).probe_vulnerable is True
+
+
+def test_ai_rag_mcp_runnable_catalog_uses_distinct_matcher_and_exact_adapter(
+    tmp_path: Path,
+) -> None:
+    profile = _ai_profile()
+    ground_truth = registered_ai_rag_mcp_docker_ground_truth(
+        profile,
+        benchmark_id="benchmark:docker-ai-rag-mcp-v1",
+    )
+    manifest = _ai_manifest(profile).model_copy(
+        update={"ground_truth_digest": ground_truth.digest()}
+    )
+    provider = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=_FakeAIDocker(),
+    )
+    catalog = registered_ai_rag_mcp_docker_target_catalog(profile, ground_truth)
+
+    case = ground_truth.cases[0]
+    assert case.matcher_digest == AI_RAG_MCP_DOCKER_MATCHER_DIGEST
+    assert case.matcher_digest != AI_RAG_MCP_WALKING_MATCHER_DIGEST
+    forged_adapter = provider.definition.model_copy(
+        update={"target_factory_digest": "f" * 64}
+    )
+    with pytest.raises(BenchmarkTargetCatalogError, match="selection failed"):
+        select_ai_rag_mcp_docker_target_profile(
+            manifest,
+            adapter=forged_adapter,
+            profile=profile,
+            catalog=catalog,
+            ground_truth=ground_truth,
+        )
+
+    substituted_raw = ground_truth.model_dump(mode="json", by_alias=True)
+    substituted_raw["cases"][0]["matcherId"] = "matcher:sealed-walking-rag-mcp-confirmation"
+    substituted_raw["cases"][0]["matcherDigest"] = AI_RAG_MCP_WALKING_MATCHER_DIGEST
+    substituted = BenchmarkGroundTruth.model_validate(substituted_raw)
+    with pytest.raises(BenchmarkTargetCatalogError, match="differs"):
+        registered_ai_rag_mcp_docker_target_catalog(profile, substituted)
 
 
 def test_docker_provider_runs_through_registered_target_catalog(tmp_path: Path) -> None:
@@ -879,6 +1252,74 @@ def test_real_docker_bug_bounty_provider_conformance(tmp_path: Path) -> None:
     assert observation.observation == outcome.target.authority.observation
     assert isolation.network_internal is True
     assert isolation.published_port_count == 0
+    assert cleanup.resources_absent is True
+
+
+@pytest.mark.skipif(
+    os.environ.get("PAJIN_TEST_DOCKER_AI_BENCHMARK") != "1",
+    reason="real Docker AI/RAG/MCP benchmark conformance is opt-in",
+)
+def test_real_docker_ai_rag_mcp_provider_conformance(tmp_path: Path) -> None:
+    import subprocess
+
+    def image_id(reference: str) -> str:
+        result = subprocess.run(
+            ["docker", "image", "inspect", reference, "--format", "{{.Id}}"],
+            capture_output=True,
+            check=True,
+            text=True,
+            timeout=30,
+        )
+        return result.stdout.strip()
+
+    profile = DockerAIRAGMCPTargetProfile(
+        targetImage="pajin-ai-rag-mcp-target:dev",
+        targetImageId=image_id("pajin-ai-rag-mcp-target:dev"),
+        workerImage="pajin-ai-rag-mcp-benchmark-worker:dev",
+        workerImageId=image_id("pajin-ai-rag-mcp-benchmark-worker:dev"),
+    )
+    ground_truth = registered_ai_rag_mcp_docker_ground_truth(
+        profile,
+        benchmark_id="benchmark:docker-ai-rag-mcp-v1",
+    )
+    manifest = _ai_manifest(profile).model_copy(
+        update={"ground_truth_digest": ground_truth.digest()}
+    )
+    provider = DockerAIRAGMCPTargetFactoryAdapter(
+        state_path=tmp_path / "docker-ai-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+    )
+    adapter = CatalogBoundDockerAIRAGMCPTargetFactoryAdapter(
+        provider=provider,
+        manifest=manifest,
+        catalog=registered_ai_rag_mcp_docker_target_catalog(profile, ground_truth),
+        ground_truth=ground_truth,
+    )
+
+    outcome = asyncio.run(
+        RecoverableBenchmarkTargetFactoryRunner(
+            output_root=tmp_path / "runs",
+            journal_path=tmp_path / "target-journal.sqlite3",
+            adapter=adapter,
+            trust_anchor=_measurement_anchor(),
+        ).run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+
+    isolation = provider.evidence(outcome.authority.isolation_receipt)
+    execution = provider.evidence(outcome.authority.execution_receipt)
+    cleanup = provider.evidence(outcome.authority.cleanup_receipt)
+    assert isolation.network_internal is True
+    assert isolation.published_port_count == 0
+    assert execution.probe_vulnerable is True
+    assert outcome.authority.observation.completed_ground_truth_chain_count == 1
     assert cleanup.resources_absent is True
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated, Literal, Protocol, Self
+from typing import Annotated, Literal, Protocol, Self, cast
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
 
@@ -10,6 +10,7 @@ from pajin.benchmark.docker_provider import (
     DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION,
     DockerBenchmarkProviderEvidence,
     DockerBugBountyTargetProfile,
+    DockerTargetProfile,
 )
 from pajin.benchmark.measurement import WalkingBenchmarkRunObservation
 from pajin.benchmark.models import (
@@ -195,6 +196,7 @@ class BenchmarkTargetProfileCatalog(StrictModel):
     catalog_id: Literal[
         "target-catalog:pajin-traditional-web-api",
         "target-catalog:pajin-ai-rag-mcp",
+        "target-catalog:pajin-ai-rag-mcp-local-docker",
     ] = Field(
         default="target-catalog:pajin-traditional-web-api",
         alias="catalogId",
@@ -499,7 +501,7 @@ class _DockerCatalogProvider(Protocol):
     def definition(self) -> RegisteredBenchmarkTargetFactoryAdapter: ...
 
     @property
-    def profile(self) -> DockerBugBountyTargetProfile: ...
+    def profile(self) -> DockerTargetProfile: ...
 
     def evidence(
         self,
@@ -545,8 +547,8 @@ class _DockerCatalogProvider(Protocol):
     ) -> BenchmarkMeasurementAttestation: ...
 
 
-class CatalogBoundDockerBugBountyTargetFactoryAdapter:
-    """Add the P0-D1 catalog and private Ground Truth gate to the P0-C2B2B provider."""
+class _CatalogBoundDockerTargetFactoryAdapter:
+    """Shared catalog gate for fixed, code-owned Docker benchmark scenarios."""
 
     def __init__(
         self,
@@ -557,7 +559,9 @@ class CatalogBoundDockerBugBountyTargetFactoryAdapter:
         ground_truth: BenchmarkGroundTruth,
     ) -> None:
         self._provider = provider
-        self._profile = _canonical_profile(provider.profile)
+        self._profile: DockerTargetProfile = _canonical_profile(
+            cast(DockerBugBountyTargetProfile, provider.profile)
+        )
         self._definition = RegisteredBenchmarkTargetFactoryAdapter.model_validate(
             provider.definition.model_dump(mode="json", by_alias=True)
         )
@@ -578,8 +582,12 @@ class CatalogBoundDockerBugBountyTargetFactoryAdapter:
         return self._definition.model_copy(deep=True)
 
     @property
-    def profile(self) -> DockerBugBountyTargetProfile:
-        return self._profile.model_copy(deep=True)
+    def profile(self) -> DockerTargetProfile:
+        return DockerBugBountyTargetProfile.model_validate(
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
+                mode="json", by_alias=True
+            )
+        )
 
     @property
     def selection(self) -> BenchmarkTargetProfileSelectionAuthority:
@@ -700,7 +708,9 @@ class CatalogBoundDockerBugBountyTargetFactoryAdapter:
             current_definition = RegisteredBenchmarkTargetFactoryAdapter.model_validate(
                 self._provider.definition.model_dump(mode="json", by_alias=True)
             )
-            current_profile = _canonical_profile(self._provider.profile)
+            current_profile = _canonical_profile(
+                cast(DockerBugBountyTargetProfile, self._provider.profile)
+            )
         except (ValueError, TypeError) as exc:
             raise BenchmarkTargetCatalogError(
                 "Target provider identity is structurally invalid"
@@ -798,6 +808,20 @@ class CatalogBoundDockerBugBountyTargetFactoryAdapter:
                 "Docker execution evidence does not match registered Ground Truth"
             )
         return authoritative_receipt, authoritative_observation
+
+
+class CatalogBoundDockerBugBountyTargetFactoryAdapter(
+    _CatalogBoundDockerTargetFactoryAdapter
+):
+    """Add the P0-D1 catalog and private Ground Truth gate to the SQLi provider."""
+
+    @property
+    def profile(self) -> DockerBugBountyTargetProfile:
+        return DockerBugBountyTargetProfile.model_validate(
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
+                mode="json", by_alias=True
+            )
+        )
 
 
 def _canonical_profile(

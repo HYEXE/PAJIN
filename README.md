@@ -167,6 +167,15 @@ provider execution authorization and measurement admission are false. No Target 
 Benchmark Observation is synthesized from the existing walking test fixture; a real isolated
 provider lifecycle remains required before this family can become runnable.
 
+P0-D2B adds that runnable boundary under a separate local-Docker identity instead of changing the
+P0-D2 fixture authority. A pinned Target image implements fixed upload, RAG-query, and MCP HTTP
+endpoints; a standard-library-only Worker performs the real internal-network chain. The provider
+reuses the existing durable fence, hardened-container, receipt-evidence, and cleanup lifecycle but
+validates an exact AI-specific command and decoded response bodies. The runnable catalog binds the
+adapter and exact image IDs to the same private seeded chain. The lab uses no model call and its MCP
+endpoint is inside the Target container, so it does not claim production MCP or model-backed RAG
+conformance.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 
