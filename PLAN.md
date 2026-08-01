@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `WALK-006` Shadow Supervisor Decision 기록
+- 현재 우선순위: `BENCH-003` Deterministic Baseline·Shadow Decision 비교
 
 ## 제품 목표
 
@@ -35,7 +35,7 @@ File Upload
   - [x] `WALK-005C` Report·Remediation Retest 폐루프
     - [x] `WALK-005C1` MCP 확인 정책·Report·비실행 Remediation baseline
     - [x] `WALK-005C2` baseline-bound fresh Retest·보수적 lifecycle 판정
-- [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
+- [x] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
 Benchmark에서 결정론적 Baseline과 Shadow Decision을 비교할 수 있어야 한다.
@@ -99,6 +99,13 @@ replay와 Run·request·approval·Grant·Permit·dispatch·Worker ID가 모두 �
 `remediationAppliedAttested=false`, regression `not-measured`를 고정하고, 음성·실패·불완전
 실행을 `fixed`로 해석하지 않는다. 이로써 첫 Walking chain은 Retest까지 닫혔으며 다음 구현은
 `WALK-006` Shadow Supervisor Decision 기록이다.
+
+`WALK-006`은 봉인된 C2 `still-vulnerable` lifecycle만 snapshot-only 입력으로 받아 code-registered
+Shadow policy가 선택했을 human remediation-review Task와 자율 실행 Stop·escalation Decision을
+content-addressed authority로 기록한다. Task는 Capability가 없고 `proposed-not-authorized`, Stop은
+`executionAllowed=false`, 전체 결과는 `recorded-not-applied`다. 기존 TaskGraph·Campaign·source
+Run을 변경하거나 모델·Tool을 호출하지 않는다. 다음 `BENCH-003`은 동일 benchmark 좌표에서
+이 Shadow record와 deterministic baseline을 실제 비교하는 측정 경계를 구현한다.
 
 ## 이전 기반 작업
 

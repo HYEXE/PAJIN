@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 현재 Git 기준: `f6632595bca00b5e61e84d8816557f13af78389b`
-- 현재 구현 체크포인트: `WALK-005C2` baseline-bound fresh MCP Retest 구현, 커밋 전
-- 다음 구현: `WALK-006` Shadow Supervisor Decision 기록
+- 현재 Git 기준: `fbbf72e569bcfbe5e3c0c07a1d01f21b469355f1`
+- 현재 구현 체크포인트: `WALK-006` Shadow Supervisor Decision 기록 구현, 커밋 전
+- 다음 구현: `BENCH-003` Deterministic Baseline·Shadow Decision 비교
 
 ## 재개 전 확인
 
@@ -18,14 +18,14 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `f6632595`였다. WALK-005C1은 이미
-커밋·push됐고 WALK-005C2 변경이 worktree에 존재한다. 예상 변경 범위:
+이 문서를 작성할 때 `main`, HEAD, 로컬 `origin/main`은 `fbbf72e5`였다. WALK-005C2는 이미
+커밋·push됐고 WALK-006 변경이 worktree에 존재한다. 예상 변경 범위:
 
-- `src/pajin/discovery/walking_closure.py`
+- `src/pajin/discovery/walking_shadow.py`
 - `src/pajin/discovery/__init__.py`
 - `tests/test_walking_mcp_authorization.py`
-- `docs/orchestration/WALK-005C2-baseline-bound-mcp-remediation-retest.md`
-- `docs/adr/0076-baseline-bound-mcp-retest.md`
+- `docs/orchestration/WALK-006-shadow-supervisor-decision-record.md`
+- `docs/adr/0077-walking-shadow-supervisor-record.md`
 - `docs/rfc/0001-pajin-architecture-v2.md`
 - `PLAN.md`, `HANDOFF.md`, `DECISIONS.md`
 
@@ -34,38 +34,37 @@ merge, rebase, cherry-pick, 서버 또는 background helper는 없다.
 
 ## 현재 구현 상태
 
-`WALK-001`~`WALK-005C2`가 구현됐다. 새 C2 경계는 다음을 보장한다.
+`WALK-001`~`WALK-006`이 구현됐다. 새 WALK-006 경계는 다음을 보장한다.
 
-- C1 publication 뒤에 승인·실행된 exact B2 authority만 Retest로 받는다.
-- B1 Plan·Candidate·Finding·validity Claim과 두 publication root를 assessment에 결박한다.
-- baseline replay 대비 Run·request·approval·Grant·Permit·dispatch·Worker ID를 모두 fresh하게
-  요구한다.
-- 양성 validity 재현은 `still-vulnerable`로만 판정한다.
-- `fixed`, remediation 적용, regression 측정을 합성하지 않으며 C2 자체는 Tool을 실행하지 않는다.
+- sealed C2 `still-vulnerable` authority와 publication provenance만 Snapshot 입력으로 받는다.
+- code-registered Shadow policy와 human remediation-review Task·Stop Decision을 exact하게 결박한다.
+- Task는 Capability가 없고 `proposed-not-authorized`이며 Stop은 execution을 허용하지 않는다.
+- 결과는 `shadowMode=true`, `baselineMutated=false`, `recorded-not-applied`로 고정한다.
+- source Run·TaskGraph·Campaign을 변경하거나 모델·Tool·Permit을 생성하지 않는다.
 
 핵심 구현 위치:
 
-- `src/pajin/discovery/walking_closure.py`
+- `src/pajin/discovery/walking_shadow.py`
 - `tests/test_walking_mcp_authorization.py`
-- `docs/orchestration/WALK-005C2-baseline-bound-mcp-remediation-retest.md`
-- `docs/adr/0076-baseline-bound-mcp-retest.md`
+- `docs/orchestration/WALK-006-shadow-supervisor-decision-record.md`
+- `docs/adr/0077-walking-shadow-supervisor-record.md`
 
 ## 마지막 검증
 
-현재 WALK-005C2 worktree 기준:
+현재 WALK-006 worktree 기준:
 
-- WALK/Capability/Replanning/문서 집중 회귀: 75 passed
-- WALK-005C2 포함 WALK + 문서 집중 회귀: 32 passed
-- WALK-005C2 양성 경로 5회 반복 결정성 검증: 매회 1 passed
+- WALK/Capability/Replanning/Benchmark/문서 집중 회귀: 85 passed
+- WALK-006 포함 WALK + 문서 집중 회귀: 34 passed
+- WALK-006 양성 경로 5회 반복 결정성 검증: 매회 1 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 189 source files 통과
+- Linux 대상 strict mypy: 190 source files 통과
 - 전체 `pytest -x -q`: 150 passed, 3 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
 
 재현 명령:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_walking_mcp_authorization.py tests\test_discovery_replanning.py tests\test_existing_capability_rollout.py tests\test_documentation.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_walking_mcp_authorization.py tests\test_discovery_replanning.py tests\test_existing_capability_rollout.py tests\test_documentation.py tests\test_benchmark_contract.py
 .\.venv\Scripts\ruff.exe check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -80,13 +79,13 @@ git diff --check
 현재 변경은 사용자 승인에 따라 다음 순서로 자동 진행한다.
 
 1. 관련 파일만 stage하고 staged diff와 민감정보 포함 여부를 확인한다.
-2. 한국어 Conventional Commit으로 WALK-005C2 체크포인트를 생성한다.
+2. 한국어 Conventional Commit으로 WALK-006 체크포인트를 생성한다.
 3. `git -c http.sslBackend=schannel push origin main`으로 push한다.
 4. local HEAD, tracking `origin/main`, 실제 원격 SHA와 clean worktree를 검증한다.
 
-WALK-005C2를 사전 커밋 검토·검증·push한 뒤 `WALK-006`을 시작한다. 기존 deterministic
-baseline 실행을 바꾸지 않고 Shadow Supervisor가 선택했을 Task와 Stop Decision만 별도 sealed
-authority로 기록할 수 있는 현재 Supervisor·TaskGraph·Benchmark 토대를 먼저 조사한다.
+WALK-006을 사전 커밋 검토·검증·push한 뒤 `BENCH-003`을 시작한다. 기존 BENCH-001 manifest와
+result digest 계약을 다시 열어 동일 좌표의 deterministic baseline과 WALK-006 Shadow record를
+비교하되, 측정하지 않은 yield·비용·지연 값을 합성하지 않는 최소 comparison authority를 설계한다.
 
 ## 외부 상태
 

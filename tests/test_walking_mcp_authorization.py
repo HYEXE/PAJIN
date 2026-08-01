@@ -60,12 +60,17 @@ from pajin.discovery import (
     WalkingObservationReplanAuthority,
     WalkingObservationReplanError,
     WalkingObservationReplanRunner,
+    WalkingShadowStopDecision,
+    WalkingShadowSupervisorError,
+    WalkingShadowSupervisorRunner,
+    WalkingShadowTaskProposal,
     load_walking_candidate_admission_authority,
     load_walking_mcp_claim_replay_authority,
     load_walking_mcp_confirmation_authority,
     load_walking_mcp_replay_plan,
     load_walking_mcp_retest_authority,
     load_walking_observation_replan_authority,
+    load_walking_shadow_supervisor_authority,
     mcp_tool_authorization_rule,
     walking_independent_approval_receipt,
     walking_mcp_replay_approval_receipt,
@@ -1537,3 +1542,71 @@ def test_walking_mcp_retest_rejects_reused_replay_fixed_state_and_report_mutatio
     (outcome.run_path / outcome.report_path).write_text("forged", encoding="utf-8")
     with pytest.raises(WalkingMCPRetestError):
         load_walking_mcp_retest_authority(campaign, outcome)
+
+
+def test_walking_shadow_supervisor_records_human_task_and_stop_without_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    _, _, source = _walking_mcp_retest_outcome(tmp_path, campaign, monkeypatch)
+    source_root = verify_run_integrity(source.run_path).root_digest
+
+    outcome = WalkingShadowSupervisorRunner(output_root=tmp_path / "shadow").run(
+        campaign,
+        source,
+    )
+    authority = outcome.authority
+
+    assert authority.shadow_mode is True
+    assert authority.baseline_mutated is False
+    assert authority.decision_state == "recorded-not-applied"
+    assert authority.selected_task.task_kind == "human-remediation-review"
+    assert authority.selected_task.required_capabilities == ()
+    assert authority.selected_task.execution_state == "proposed-not-authorized"
+    assert authority.stop_decision.action == "stop-autonomous-execution"
+    assert authority.stop_decision.escalation_required is True
+    assert authority.stop_decision.execution_allowed is False
+    assert verify_run_integrity(source.run_path).root_digest == source_root
+    assert [event.event_type for event in load_verified_run_events(outcome.run_path)] == [
+        "campaign.started",
+        "walking.shadow-supervisor-authority.created",
+        "campaign.completed",
+    ]
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_shadow_supervisor_authority(campaign, outcome) == authority
+
+
+def test_walking_shadow_supervisor_rejects_capability_execution_and_source_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    _, _, source = _walking_mcp_retest_outcome(tmp_path, campaign, monkeypatch)
+    outcome = WalkingShadowSupervisorRunner(output_root=tmp_path / "shadow").run(
+        campaign,
+        source,
+    )
+
+    raw_task = outcome.authority.selected_task.model_dump(mode="json", by_alias=True)
+    raw_task["proposalId"] = ""
+    raw_task["proposalDigest"] = ""
+    raw_task["requiredCapabilities"] = ["mcp.execute"]
+    with pytest.raises(ValidationError):
+        WalkingShadowTaskProposal.model_validate(raw_task)
+
+    raw_stop = outcome.authority.stop_decision.model_dump(mode="json", by_alias=True)
+    raw_stop["decisionId"] = ""
+    raw_stop["decisionDigest"] = ""
+    raw_stop["executionAllowed"] = True
+    with pytest.raises(ValidationError):
+        WalkingShadowStopDecision.model_validate(raw_stop)
+
+    (source.run_path / source.authority_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(WalkingShadowSupervisorError):
+        WalkingShadowSupervisorRunner(output_root=tmp_path / "shadow").run(
+            campaign,
+            source,
+        )

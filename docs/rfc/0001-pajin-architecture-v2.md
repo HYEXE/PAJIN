@@ -361,7 +361,11 @@ after confirmation with the exact same Plan and Claim but seven fresh execution 
 binds both publication roots and emits only a sealed `still-vulnerable` assessment, with fixed
 eligibility false, remediation application unattested, and regression not measured. Failed or
 negative evidence is not converted into remediation success. WALK-006 Shadow Supervisor recording
-remains separate future work.
+adds a separate snapshot-only, code-registered policy over the sealed C2 lifecycle. It records a
+human-only remediation-review Task with no Capability and an autonomous Stop/escalation Decision,
+while fixing the result to shadow-only, baseline-unmodified, and not applied. It does not activate
+the existing execution Supervisor or claim Phase 6 model binding and benchmark gates. Measured
+BENCH-003 baseline-versus-Shadow comparison remains separate future work.
 
 ## 10. Definition of Done
 
