@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-C2B2B` real Docker/provider adapter·evidence·network policy
+- 현재 우선순위: `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
 
 ## 제품 목표
 
@@ -167,6 +167,15 @@ reader는 세 Run과 exact accepted revision, 현재 out-of-band distribution Tr
 차단하고, 정상 완료 뒤 measurement registry rotation은 historical exact revision으로 보존하며,
 distribution signing-key revocation은 과거 결과에도 적용한다. 실제 provider 경계는 `P0-C2B2B`다.
 
+`P0-C2B2B`는 고정 synthetic Boolean-SQLi lab의 실제 local Docker provider를 구현했다. exact
+Target·Worker image ID, provider-owned durable fence·stage order·idempotency 결과, 별도 SQLite
+operation lock, `--internal` network, 무포트·non-root·read-only container policy, real Worker probe,
+receipt-bound provider evidence, higher-fence cleanup을 하나의 recoverable adapter로 결박한다. fake
+Docker 음성 경계와 Docker Desktop 4.78.0 / Engine 29.5.3 live conformance가 통과했다. 이 경계는
+host-local 단일 profile이며 cross-host·일반 Target catalog를 주장하지 않는다. 다음 `P0-D1`은 이
+구체 구현을 임의 image 실행기로 넓히지 않고 Traditional Web/API Target catalog와 ground-truth
+profile 계약부터 분리한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -189,14 +198,15 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `BENCH-003B` 동일 좌표 sealed Result Harness·numeric comparison
     - [x] `BENCH-003B1` sealed raw Observation admission·두 Result·numeric comparison
     - [x] `BENCH-003B2` exact WALK-006 policy/configuration·source publication binding
-- [ ] `P0-C` reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
+- [x] `P0-C` reset, seed, isolation, cleanup, measurement, adjudication, sealed Benchmark Harness
   - [x] `P0-C1` provider-neutral lifecycle·sealed Observation·external measurement signature
   - [x] `P0-C2A` durable operation journal·idempotency/fencing·startup cleanup recovery
   - [x] `P0-C2B1` measurement Trust Registry·rotation·retirement·revocation admission
   - [x] `P0-C2B2A1` signed registry distribution·durable anti-rollback activation
   - [x] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
-  - [ ] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
-- Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
+  - [x] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
+- [ ] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
+  - [ ] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

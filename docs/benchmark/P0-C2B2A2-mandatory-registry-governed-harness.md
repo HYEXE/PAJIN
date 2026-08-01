@@ -60,16 +60,18 @@ missing durable revision, current distribution-key revocation, cross-bundle subs
 Admission source mutation, Harness activation/authority mutation, and audit event mutation fail
 closed before a governed Observation is returned.
 
-## Compatibility and remaining work
+## Compatibility and provider integration
 
 No P0-C1, P0-C2A, P0-C2B1, BENCH-003B1, or P0-C2B2A1 wire format changes. The new Authority, runner,
-outcome, and reader are additive. P0-C2B2B must implement a real Docker/provider adapter, retrieve
-provider evidence, enforce network policy, and prove stale provider fence rejection. Docker daemon
-availability is required before claiming live container verification.
+outcome, and reader are additive. P0-C2B2B now supplies a real local Docker provider, retrievable
+receipt-bound evidence, internal-network enforcement, stale provider-fence rejection, and live
+container verification. Its recoverable runner plugs into this Harness through the existing
+`BenchmarkTargetRunExecutor` protocol without a provider-specific bypass.
 
 ## Related documents
 
 - [P0-C2B2A1 contract](P0-C2B2A1-signed-measurement-registry-distribution.md)
 - [P0-C2B1 contract](P0-C2B1-benchmark-measurement-trust-registry.md)
 - [P0-C2A contract](P0-C2A-durable-target-operation-recovery.md)
+- [P0-C2B2B contract](P0-C2B2B-local-docker-provider-evidence.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

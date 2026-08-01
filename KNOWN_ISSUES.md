@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 186 passed, 3 skipped 이후
+- 결과: 197 passed, 4 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -16,17 +16,18 @@
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
 
-## P0-C2A provider fence의 실제 강제 검증
+## P0-C2B2B provider fence의 host-local 범위
 
-- 상태: 활성 운영 검증 공백
-- 현재 보장: core는 각 provider 호출 전에 intent를 내구 저장하고 단조 fence와 idempotency
-  operation ID를 전달하며, stale local journal writer를 차단한다. spawn process hard-exit 뒤
-  startup cleanup reconciliation도 결정론적 provider fixture로 통과한다.
-- 영향: 실제 Docker/cloud provider가 더 높은 fence를 관찰한 뒤 오래된 호출을 거부하는지는
-  아직 live provider에서 검증하지 않았다. provider가 계약을 무시하면 cross-host stale 작업을
-  core의 로컬 SQLite journal만으로 중단시킬 수 없다.
-- 해소 조건: P0-C2B 실제 provider adapter가 fence를 원격 상태에 원자적으로 적용하고 stale
-  호출 음성 테스트 및 provider evidence를 봉인한다.
+- 상태: 활성 분산 운영 공백
+- 현재 보장: local Docker adapter는 별도 SQLite provider state에 fence를 side effect 전에
+  영속하고 stale 호출을 Docker 전에 차단한다. 별도 SQLite operation lock이 같은 host의 live
+  mutation과 higher-fence cleanup을 직렬화하며, receipt-bound evidence와 실제 Docker
+  conformance가 이를 검증한다.
+- 영향: 이 강제 경계는 하나의 host와 provider state 경로에 한정된다. 서로 다른 host나 원격
+  Docker/cloud control plane이 같은 Target을 공유하면 local SQLite만으로 stale writer를 차단할
+  수 없다.
+- 해소 조건: 원격 provider의 원자적 compare-and-set fence 또는 lease authority와 독립 provider
+  evidence를 구현하고 cross-host stale-call 음성 검증을 수행한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
@@ -56,7 +57,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 198 source files 통과
+- 현재 결과: 199 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
@@ -75,12 +76,11 @@
 
 ## Docker daemon 가용성
 
-- 상태: 비활성
-- 마지막 관찰: 2026-08-01 P0-C2 시작 전
-- 증상: `docker version --format '{{json .Server}}'`가
-  `open //./pipe/docker_engine: The system cannot find the file specified`로 실패했다. 현재
-  sandbox에서는 `C:\Users\hyeon\.docker\config.json` 접근 경고도 함께 발생한다.
-- 영향: 실제 컨테이너 MCP·egress 검증을 실행하지 못했으며 결정론적 구조 fixture로 계약을
-  검증했다. P0-C2A는 provider-neutral 복구 계약만 구현하며 Docker 실행 성공을 주장하지 않는다.
-- 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 Docker daemon 상태를 확인한다.
-  실제로 실행하지 않은 컨테이너 검증을 성공으로 보고하지 않는다.
+- 상태: 현재 가용, 세션 의존 환경 제약
+- 마지막 관찰: 2026-08-01
+- 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B real Target conformance가
+  통과했고 종료 뒤 `pajin-bench-*` container와 network가 남지 않았다.
+- 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
+  opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.
+- 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 daemon 상태와 exact image ID를 다시
+  확인한다. 실행하지 않은 live 검증을 성공으로 보고하지 않는다.

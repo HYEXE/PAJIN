@@ -106,44 +106,50 @@ external measurement producer remains the semantic trust root, exact WALK-006 ca
 binding is supplied by BENCH-003B2, and Supervisor activation remains ineligible. B2 requires the
 measured Manifest envelope and baseline arm to match A exactly and binds the adaptive candidate's
 implementation ID, version, and configuration digest to the sealed WALK-006 policy without
-rewriting any Result or metric. Provider-backed Target Factory execution and measurement
-attestation remain follow-up work.
+rewriting any Result or metric. P0-C1 through P0-C2B2B now supply the provider lifecycle,
+measurement attestation, registry governance, and first live local Docker Target implementation.
 
 P0-C1 now adds a provider-neutral per-coordinate Target Factory lifecycle. It validates reset and
 isolation before execution, attempts cleanup after execution failure, preserves exact raw
 Observation identity, verifies an Ed25519 measurement signature over all stage and Observation
-digests, and emits a BENCH-003B1-compatible sealed Observation Run. The included adapter is a test
-contract fixture only; real Docker/provider execution, evidence retrieval, network policy, key
-registry/rotation, and cleanup recovery remain P0-C2 work. P0-C2A now closes the local hard-exit
+digests, and emits a BENCH-003B1-compatible sealed Observation Run. The included deterministic
+adapter remains a test fixture. P0-C2A closes the local hard-exit
 gap with intent-before-call SQLite journaling, idempotency operation IDs, monotonic provider fences,
 startup reconciliation, bounded cleanup retry, and a sealed measurement-ineligible Recovery
 Authority. A spawned-process regression exits immediately after a durable execution intent and
-proves that cleanup is reconciled before another coordinate starts. Real Docker/provider evidence,
-enforced network policy remain P0-C2B2B work; measurement-key lifecycle and signed durable local
-activation are implemented by P0-C2B1/P0-C2B2A1. No live provider validation is claimed while the
-Docker daemon is unavailable.
+proves that cleanup is reconciled before another coordinate starts. Measurement-key lifecycle,
+signed durable activation, and mandatory governed admission are implemented by P0-C2B1 and
+P0-C2B2A1/A2.
 
 P0-C2B1 adds a Benchmark-specific measurement Trust Registry without reusing Replay Target keys.
 Fresh runs require the one active key before reset; retired keys verify only bounded historical
 evidence, and revoked keys fail all verification. Contiguous revisions retain their exact
 predecessor and reject rollback, gaps, key substitution, and lifecycle resurrection. A separate
 sealed admission binds the registry revision to the exact P0-C1 source Run. Signed/durable registry
-distribution and mandatory governed admission are implemented by P0-C2B2A1/A2; live provider
-evidence and network enforcement remain P0-C2B2B.
+distribution and mandatory governed admission are implemented by P0-C2B2A1/A2. P0-C2B2B connects
+that chain to the first live local Docker provider.
 
 P0-C2B2A1 signs each complete measurement-registry transition with a separate Ed25519 distribution
 authority and activates it through an append-only SQLite checkpoint. Bootstrap is revision one;
 later activations require the durable head's exact bundle and registry predecessors, so restart,
 rollback, gaps, equivocation, and Trust Anchor substitution fail closed while the local checkpoint
-remains intact. P0-C2B2A2 supplies mandatory sealed Harness admission, while live provider/network
-validation remains P0-C2B2B.
+remains intact. P0-C2B2A2 supplies mandatory sealed Harness admission.
 
 P0-C2B2A2 makes that activation mandatory for the `registry-governed` API. It activates before
 reset, reopens the exact Target and registry Admission Runs after execution, and seals all three
 authorities together. Its dedicated reader requires the durable exact revision and the current
 out-of-band distribution Trust Anchor before returning an Observation. Mid-run rotation and current
-distribution-key revocation fail closed. Live Docker/provider evidence and network enforcement
-remain P0-C2B2B.
+distribution-key revocation fail closed.
+
+P0-C2B2B implements the first concrete recoverable provider for the synthetic local Bug Bounty
+Boolean-SQLi lab. Exact Target and Worker image IDs are bound to the Target Factory profile; a
+provider-owned durable fence and process-lifetime SQLite operation lock reject stale or racing
+local mutations. The adapter creates an internal bridge with no published ports, applies non-root
+and read-only container restrictions, validates the fixed real probe in a dedicated
+standard-library-only `pajin-benchmark-worker:dev` image, removes all resources,
+and binds bounded Docker evidence to every existing stage receipt. Fake-provider regressions and an
+opt-in live Docker Desktop conformance test cover recovery and cleanup. This is a host-local single
+profile boundary, not a generic or cross-host provider implementation.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

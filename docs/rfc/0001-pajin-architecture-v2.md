@@ -376,37 +376,46 @@ Supervisor activation eligibility to false. The external producer remains the se
 trust root. BENCH-003B2 exact WALK-006 policy/configuration and source-publication binding is an
 additive final layer: it preserves B1 values, requires the measured Manifest envelope and
 baseline arm to equal A, binds the adaptive candidate implementation ID/version/configuration
-digest to the exact sealed WALK-006 policy, and retains activation eligibility false. A
-provider-backed Target Factory measurement adapter and attestation remain future work.
+digest to the exact sealed WALK-006 policy, and retains activation eligibility false. P0-C1 through
+P0-C2B2B now provide the lifecycle, attestation, registry governance, and first live local Docker
+Target adapter; broader Target Factory families remain future work.
 P0-C1 establishes the provider-neutral boundary for that work: exact Manifest coordinates drive
 ordered reset, isolation, execution, and cleanup receipts; foreign evidence is rejected before
 further dispatch; cleanup remains mandatory after a valid isolation; and an external Ed25519
 measurement signature binds every receipt plus the final B1-compatible Observation in one sealed
-Run. The deterministic adapter is a contract fixture only. Real Docker/provider execution,
-evidence retrieval, network policy, key registry/rotation, and cleanup recovery remain P0-C2.
+Run. The deterministic adapter remains a contract fixture; P0-C2 supplies durable recovery, key
+governance, and the first real local Docker provider.
 P0-C2A adds the provider-neutral crash boundary: every operation carries an idempotency ID and
 monotonic fence, intent is durably journaled before dispatch, open attempts are reconciled before
 new work, cleanup has a bounded retry, and the exact recovery journal is sealed as a
 measurement-ineligible failure authority. This is additive to P0-C1 and does not convert recovery
-evidence into benchmark metrics. Real Docker/provider evidence, network enforcement, and
-measurement-key registry/rotation remain P0-C2B.
+evidence into benchmark metrics. The local provider implementation and measurement-key governance
+are completed by P0-C2B.
 P0-C2B1 introduces that Benchmark-specific key lifecycle as an additive out-of-band registry.
 Fresh measurement requires the active key before reset, retired keys are historical-only, and
 revoked keys invalidate all verification. Contiguous registry revisions and exact predecessor
 digests prevent a caller from silently skipping transition validation inside sealed admission. The
 admission binds the source Run/root/artifact/signature without changing P0-C1 or BENCH-003B wire
 formats. Signed durable registry distribution and mandatory governed admission are supplied by
-P0-C2B2A1/A2; live provider/network evidence remains P0-C2B2B.
+P0-C2B2A1/A2; P0-C2B2B supplies the live local provider boundary.
 P0-C2B2A1 signs the complete registry transition under a separate Benchmark distribution authority
 and persists accepted bundles in an append-only SQLite activation checkpoint. Revision-one-only
 bootstrap and exact durable-head comparison reject restart rollback, gaps, equivocation, and
-predecessor substitution. P0-C2B2A2 binds that activation to mandatory sealed Harness admission;
-live provider evidence and network enforcement remain P0-C2B2B.
+predecessor substitution. P0-C2B2A2 binds that activation to mandatory sealed Harness admission.
 P0-C2B2A2 closes that integration gap with a mandatory registry-governed Harness. It activates the
 signed bundle before reset, then binds the exact activation, Target Run, and registry Admission Run
 in one sealed authority. Only its reader returns a governed Observation after reopening all sources,
-checking the durable exact revision, and applying the current distribution Trust Anchor. Live
-provider evidence and network enforcement remain P0-C2B2B.
+checking the durable exact revision, and applying the current distribution Trust Anchor.
+
+P0-C2B2B completes the first concrete provider slice for the fixed synthetic Bug Bounty
+Boolean-SQLi lab. A content-addressed profile binds exact Target and Worker image IDs and an
+internal Docker bridge. Provider-owned SQLite state enforces operation idempotency, stage order,
+and monotonic fences, while a separate SQLite operation lock prevents a live lower-fence mutation
+from racing higher-fence cleanup on the same host. The adapter verifies non-root, read-only,
+capability-dropped containers, no published ports, actual network probe semantics, final resource
+absence, and receipt-bound provider evidence. It integrates with the existing registry-governed
+Harness without changing earlier wire contracts. Cross-host providers and the broader P0-D Target
+Factory families remain future work.
 
 ## 10. Definition of Done
 

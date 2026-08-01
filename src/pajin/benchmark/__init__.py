@@ -1,5 +1,16 @@
 """Public benchmark contracts."""
 
+from pajin.benchmark.docker_provider import (
+    DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION,
+    DOCKER_BUG_BOUNTY_TARGET_PROFILE_API_VERSION,
+    DockerBenchmarkProviderError,
+    DockerBenchmarkProviderEvidence,
+    DockerBugBountyTargetFactoryAdapter,
+    DockerBugBountyTargetProfile,
+    DockerCommandResult,
+    DockerCommandRunner,
+    SubprocessDockerCommandRunner,
+)
 from pajin.benchmark.measurement import (
     WALKING_BENCHMARK_MEASURED_COMPARISON_API_VERSION,
     WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION,
@@ -160,6 +171,8 @@ __all__ = [
     "BENCHMARK_TARGET_OPERATION_API_VERSION",
     "BENCHMARK_TARGET_RECOVERY_AUTHORITY_API_VERSION",
     "BENCHMARK_TARGET_RUN_AUTHORITY_API_VERSION",
+    "DOCKER_BENCHMARK_PROVIDER_EVIDENCE_API_VERSION",
+    "DOCKER_BUG_BOUNTY_TARGET_PROFILE_API_VERSION",
     "REQUIRED_BENCHMARK_METRICS",
     "WALKING_BENCHMARK_MEASURED_COMPARISON_API_VERSION",
     "WALKING_BENCHMARK_RUN_OBSERVATION_API_VERSION",
@@ -223,10 +236,17 @@ __all__ = [
     "BenchmarkTargetRunOutcome",
     "BenchmarkTargetStage",
     "BenchmarkTargetStageReceipt",
+    "DockerBenchmarkProviderError",
+    "DockerBenchmarkProviderEvidence",
+    "DockerBugBountyTargetFactoryAdapter",
+    "DockerBugBountyTargetProfile",
+    "DockerCommandResult",
+    "DockerCommandRunner",
     "GroundTruthVisibility",
     "RecoverableBenchmarkTargetFactoryAdapter",
     "RecoverableBenchmarkTargetFactoryRunner",
     "RegisteredBenchmarkTargetFactoryAdapter",
+    "SubprocessDockerCommandRunner",
     "WalkingBenchmarkMeasuredComparisonAuthority",
     "WalkingBenchmarkMeasuredComparisonOutcome",
     "WalkingBenchmarkMeasuredComparisonRunner",

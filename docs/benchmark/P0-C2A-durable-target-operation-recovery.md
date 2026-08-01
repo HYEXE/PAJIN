@@ -77,12 +77,12 @@ P0-C1 models, artifacts, events, readers, and the existing provider-neutral adap
 unchanged. `RecoverableBenchmarkTargetFactoryRunner` adapts the new durable provider contract into
 the existing P0-C1 Runner, so completed Runs remain BENCH-003B1-compatible.
 
-P0-C2A does not claim a real Docker or cloud implementation. P0-C2B1 now adds the separate
-measurement-key registry with rotation/revocation. Signed durable local registry activation is
-implemented by P0-C2B2A1, and mandatory governed admission by P0-C2B2A2. Provider evidence
-retrieval, enforced network policy, and a live provider conformance run remain P0-C2B2B. The local
-journal coordinates cooperating processes on one filesystem; durable
-cross-host ownership still depends on the provider enforcing the supplied fence.
+P0-C2A itself does not claim a real Docker or cloud implementation. P0-C2B1 adds the separate
+measurement-key registry with rotation/revocation, P0-C2B2A1 adds signed durable local registry
+activation, and P0-C2B2A2 makes governed admission mandatory. P0-C2B2B now supplies the first local
+Docker adapter, provider evidence retrieval, enforced internal-network policy, stale-fence
+rejection, and a live conformance run. The core journal still coordinates only one filesystem;
+P0-C2B2B's provider fence is host-local and durable cross-host ownership remains unimplemented.
 The journal assumes the local host and filesystem remain in the operator's trust boundary. Its
 content-addressed records detect accidental inconsistency during model reconstruction but are not a
 signature against an attacker who can rewrite the entire live database. The sealed Recovery
@@ -91,5 +91,6 @@ Authority becomes the immutable audit boundary after reconciliation.
 ## Related documents
 
 - [P0-C1 contract](P0-C1-provider-neutral-target-factory-lifecycle.md)
+- [P0-C2B2B contract](P0-C2B2B-local-docker-provider-evidence.md)
 - [BENCH-003B1 contract](BENCH-003B1-walking-measurement-admission.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

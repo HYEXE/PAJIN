@@ -685,9 +685,9 @@ def test_registry_governed_harness_rejects_forged_bundle_before_reset(tmp_path: 
     registry = _registry_one()
     anchor, signer = _distribution_authority()
     bundle = _distribution_bundle(registry, signer=signer)
-    replacement = "A" if bundle.signature_base64url[-1] != "A" else "B"
+    replacement = "A" if bundle.signature_base64url[0] != "A" else "B"
     forged = bundle.model_copy(
-        update={"signature_base64url": bundle.signature_base64url[:-1] + replacement}
+        update={"signature_base64url": replacement + bundle.signature_base64url[1:]}
     )
     provider = _Provider(manifest, registry.active_key.trust_anchor, KEY_A)
 

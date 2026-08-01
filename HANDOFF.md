@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 작업 시작 기준: `ef137213d56933f24369aced367c4baa07c56c2b` (`P0-C2B2A1`)
-- 현재 구현 체크포인트: `P0-C2B2A2` mandatory sealed registry-governed Harness
-- 다음 구현: `P0-C2B2B` real Docker/provider adapter·evidence·network policy
+- 작업 시작 기준: `e68404011c39f7061f11dc5bfd4605e4500f4fe1` (`P0-C2B2A2`)
+- 현재 구현 체크포인트: `P0-C2B2B` local Docker provider·evidence·network policy
+- 다음 구현: `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
 
 ## 재개 전 확인
 
@@ -24,41 +24,49 @@ git status --porcelain=v2 --branch
 ## 현재 구현 상태
 
 `WALK-001`~`WALK-006`, `BENCH-003A/B1/B2`, `P0-C1`, `P0-C2A`, `P0-C2B1`,
-`P0-C2B2A1/A2`가 구현됐다. P0-C2B2A2는 다음 경계를 추가한다.
+`P0-C2B2A1/A2/B`가 구현됐다. P0-C2B2B는 다음 경계를 추가한다.
 
-- signed distribution bundle과 durable activation을 provider reset 전에 필수 검증한다.
-- 기존 P0-C1/P0-C2A runner를 P0-C2B1 active-key wrapper로 실행해 lifecycle을 중복하지 않는다.
-- 실행 뒤 Target Run과 registry Admission Run을 재개방하고 activation이 seal 시점의 latest head인지 확인한다.
-- complete activation·distribution Trust Anchor·Admission Authority와 exact Target/Admission
-  Run·root·artifact SHA-256·authority/signature/Observation digest를 새 Harness Authority에 결박한다.
-- governed outcome에는 lower-level Observation 변환 메서드를 두지 않고 전용 reader만 제공한다.
-- reader는 세 sealed Run, exact accepted activation revision, 현재 out-of-band distribution Trust
-  Anchor를 재검증한 뒤에만 registry-governed Observation을 반환한다.
-- 실행 중 rotation은 publication을 차단하고, 완료 뒤 measurement registry rotation은 historical
-  exact revision으로 보존하며, distribution signing-key revocation은 과거 결과에도 적용한다.
-- source·activation·authority·audit mutation과 empty/wrong activation store가 fail closed한다.
+- 고정 synthetic Boolean-SQLi profile이 Target·Worker image reference와 exact image ID,
+  `internal-bridge` policy를 Target Factory digest에 결박한다.
+- provider-owned SQLite가 core journal과 별도로 operation ID, attempt, stage order, monotonic fence,
+  completed result를 영속하고 stale fence를 Docker 호출 전에 차단한다.
+- 별도 SQLite operation lock이 live lower-fence mutation과 higher-fence cleanup을 같은 host에서
+  직렬화하며 process crash 때 자동 해제된다.
+- deterministic labelled network·Target·Worker를 생성하고 internal network, 무포트, non-root,
+  read-only, cap-drop, no-new-privileges, CPU·memory·PID 제한을 inspect로 검증한다.
+- 실제 Worker의 고정 `bug-bounty-sqli-probe` 결과만 Observation으로 변환하고 cleanup 뒤 모든
+  container와 network의 부재를 요구한다.
+- bounded provider evidence를 stage receipt digest에 결박하고 exact receipt로만 재조회한다.
+- 기존 P0-C2A runner와 P0-C2B2A2 governed Harness에 provider 전용 우회 없이 연결된다.
 
 핵심 구현 위치:
 
+- `src/pajin/benchmark/docker_provider.py`
+- `src/pajin/benchmark/target_recovery.py`
 - `src/pajin/benchmark/measurement_harness.py`
-- `src/pajin/benchmark/measurement_registry_distribution.py`
 - `src/pajin/benchmark/__init__.py`
-- `tests/test_benchmark_measurement_registry.py`
-- `docs/benchmark/P0-C2B2A2-mandatory-registry-governed-harness.md`
-- `docs/adr/0085-mandatory-registry-governed-benchmark-harness.md`
+- `tests/test_benchmark_docker_provider.py`
+- `docs/benchmark/P0-C2B2B-local-docker-provider-evidence.md`
+- `docs/adr/0086-local-docker-benchmark-provider.md`
 
 ## 마지막 검증
 
-- Benchmark registry·Target·문서 집중 테스트: 49 passed
+- Docker provider·Benchmark registry·Target·문서 집중 테스트: 60 passed, 1 skipped
+  - skip: opt-in real Docker conformance
+- real Docker conformance: 1 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 198 source files 통과
-- 전체 `pytest -x -q`: 186 passed, 3 skipped 후 기존 Windows symlink 생성 권한
+- Linux 대상 strict mypy: 199 source files 통과
+- 전체 `pytest -x -q`: 197 passed, 4 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
+- live conformance 종료 뒤 `pajin-bench-*` container·network 없음 확인
 
 재현 명령:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_measurement_registry.py tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_target_factory.py tests\test_benchmark_target_recovery.py tests\test_walking_benchmark_measurement.py tests\test_benchmark_contract.py tests\test_documentation.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_docker_provider.py tests\test_benchmark_measurement_registry.py tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_target_factory.py tests\test_benchmark_target_recovery.py tests\test_walking_benchmark_measurement.py tests\test_benchmark_contract.py tests\test_documentation.py
+docker build --tag pajin-benchmark-worker:dev containers\benchmark-worker
+docker build --tag pajin-bug-bounty-target:dev containers\bug-bounty-target
+$env:PAJIN_TEST_DOCKER_BENCHMARK='1'; .\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_docker_provider.py::test_real_docker_bug_bounty_provider_conformance
 .\.venv\Scripts\ruff.exe check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -69,29 +77,29 @@ git diff --check
 
 ## 다음 조치
 
-P0-C2B2A2 delivery 후 `P0-C2B2B`를 진행한다.
+P0-C2B2B delivery 후 `P0-D1`을 진행한다.
 
-1. 먼저 Docker daemon을 재확인하고 기존 `DockerWorkerBackend`, compose Target, container
-   entrypoint, network 설정을 read-only로 조사한다.
-2. daemon과 로컬 image가 가용하면 `RecoverableBenchmarkTargetFactoryAdapter`를 구현해 reset,
-   isolation, execution, cleanup/reconcile, measurement attestation을 실제 컨테이너 lifecycle에 연결한다.
-3. operation ID와 fence를 provider label/state에 원자적으로 반영하고 stale fence 거부를 검증한다.
-4. container/image/network/exit 상태를 canonical provider evidence로 수집하고 receipt digest에 결박한다.
-5. egress deny-by-default와 명시적 allow policy를 실제 network inspection으로 음성 검증한다.
-6. 구현된 adapter를 P0-C2B2A2 governed Harness에 넣어 live sealed Observation까지 검증한다.
+1. `BENCH-001`, P0-C1/C2 계약과 현재 Bug Bounty profile을 읽고 단일 profile의 고정값과
+   일반 Traditional Web/API Target catalog authority를 구분한다.
+2. arbitrary image/command 실행 권한을 만들지 않고 code-registered Target profile ID·version·digest,
+   exact image identities, scenario, Ground Truth mapping, mutation eligibility를 정의한다.
+3. unknown·duplicate·stale profile, image substitution, cross-profile Ground Truth, capability/network
+   policy 확대를 fail closed하는 최소 contract와 registry부터 구현한다.
+4. P0-C2B2B adapter가 catalog의 exact registered profile만 선택하도록 additive wrapper를 연결한다.
+5. 다음 실제 profile 추가는 catalog authority와 기존 synthetic lab 연결이 검증된 뒤 별도 기능으로
+   진행한다.
 
-Docker daemon은 2026-08-01 마지막 확인에서 `//./pipe/docker_engine` 부재로 비활성이다. daemon이
-계속 비활성이면 실제 Docker 성공을 주장하지 않고, 안전하게 검증 가능한 adapter contract와
-negative preflight까지만 분리해 진행한다. 운영 Target, 비용 발생 외부 자원, 비밀 key 값은 추가
-승인 없이 생성하거나 사용하지 않는다.
+Docker daemon은 2026-08-01에 Docker Desktop 4.78.0 / Engine 29.5.3으로 가동됐고 live conformance가
+통과했다. 다음 세션에는 daemon과 exact image ID를 다시 확인한다. 운영 Target, 비용 발생 외부 자원,
+비밀 key 값은 추가 승인 없이 생성하거나 사용하지 않는다.
 
 ## 알려진 경계
 
-- 실제 Docker/cloud provider의 fence enforcement, provider evidence, network policy는 아직 검증되지 않았다.
+- provider fence와 operation lock은 한 host의 SQLite·Docker 경계이며 cross-host를 보장하지 않는다.
 - activation database 전체 삭제·교체를 막는 외부 복구 anchor는 없다.
 - distribution Trust Anchor rotation, remote HTTPS fetch, transparency/federation은 아직 없다.
 - Recovery Authority seal과 journal terminal 전이 사이 hard exit는 같은 보수적 authority를 중복 생성할 수 있다.
-- Docker daemon은 현재 비활성이다.
+- Docker daemon 가용성은 세션 의존이며 live test는 opt-in이다.
 
 자세한 재현 조건과 해소 기준은 `KNOWN_ISSUES.md`에 있다.
 
