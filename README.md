@@ -122,6 +122,14 @@ proves that cleanup is reconciled before another coordinate starts. Real Docker/
 enforced network policy, and measurement-key registry/rotation remain P0-C2B work; no live provider
 validation is claimed while the Docker daemon is unavailable.
 
+P0-C2B1 adds a Benchmark-specific measurement Trust Registry without reusing Replay Target keys.
+Fresh runs require the one active key before reset; retired keys verify only bounded historical
+evidence, and revoked keys fail all verification. Contiguous revisions retain their exact
+predecessor and reject rollback, gaps, key substitution, and lifecycle resurrection. A separate
+sealed admission binds the registry revision to the exact P0-C1 source Run. Signed/durable registry
+distribution, mandatory BENCH-003B admission, live provider evidence, and network enforcement remain
+P0-C2B2.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

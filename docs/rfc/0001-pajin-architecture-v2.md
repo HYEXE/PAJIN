@@ -390,6 +390,12 @@ new work, cleanup has a bounded retry, and the exact recovery journal is sealed 
 measurement-ineligible failure authority. This is additive to P0-C1 and does not convert recovery
 evidence into benchmark metrics. Real Docker/provider evidence, network enforcement, and
 measurement-key registry/rotation remain P0-C2B.
+P0-C2B1 introduces that Benchmark-specific key lifecycle as an additive out-of-band registry.
+Fresh measurement requires the active key before reset, retired keys are historical-only, and
+revoked keys invalidate all verification. Contiguous registry revisions and exact predecessor
+digests prevent a caller from silently skipping transition validation inside sealed admission. The
+admission binds the source Run/root/artifact/signature without changing P0-C1 or BENCH-003B wire
+formats. Signed durable registry distribution and live provider/network evidence remain P0-C2B2.
 
 ## 10. Definition of Done
 

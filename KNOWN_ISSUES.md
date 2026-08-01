@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 165 passed, 3 skipped 이후
+- 결과: 173 passed, 3 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -38,6 +38,29 @@
   측정 Admission은 두 Run 모두 false라 안전성이나 metric에는 영향을 주지 않는다.
 - 해소 조건: sealed Run ID를 journal terminal transition과 연결하는 재개 가능한 publication
   marker를 추가하고 동일 authority의 재봉인을 제거한다.
+
+## P0-C2B1 registry 배포와 최신 revision 영속성
+
+- 상태: 활성 운영 권위 공백
+- 현재 보장: 각 registry는 content-addressed이며 revision 2부터 exact predecessor를 sealed
+  Admission Authority에 포함한다. transition verifier는 rollback·gap·key substitution·lifecycle
+  resurrection을 차단한다.
+- 영향: registry 파일의 배포 origin은 아직 별도 서명되지 않았고, 마지막 accepted revision을
+  독립 durable store에 pin하지 않는다. 운영자가 predecessor/checkpoint를 모두 잃으면 공격자가
+  오래된 revision 1을 새 bootstrap처럼 제시하는 상황을 로컬 모델만으로 구분할 수 없다.
+- 해소 조건: P0-C2B2에서 measurement registry distribution signature와 durable anti-rollback
+  checkpoint를 실제 provider 배포 경로에 연결한다.
+
+## P0-C2B1 admission의 BENCH-003B 필수화
+
+- 상태: 활성 통합 공백
+- 현재 보장: registry wrapper는 provider reset 전에 active key를 검증하고 별도 sealed Admission
+  Authority를 생성한다. P0-C1/P0-C2A direct runner와 기존 BENCH-003B1 reader는 호환성을 위해
+  그대로 유지된다.
+- 영향: 기존 direct runner나 Observation outcome만 사용하는 호출자는 registry admission을
+  우회할 수 있다. 그런 경로는 registry-governed measurement를 주장할 수 없다.
+- 해소 조건: P0-C2B2 실제 provider Harness가 combined target/admission outcome과 reader 검증을
+  필수 입력으로 요구한다.
 
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 

@@ -31,8 +31,9 @@ canonical statement containing the adapter, coordinate, four receipt digests, an
 ID/digest. The Runner verifies that signature before any output is admitted.
 
 Private key bytes are accepted only by the signer helper and are never serialized to a Run artifact.
-The Trust Anchor contains only the raw public key and content digest. Key rotation, validity windows,
-revocation, and a provider registry remain P0-C2 follow-up work.
+The Trust Anchor contains only the raw public key and content digest. P0-C2B1 adds an out-of-band
+measurement Trust Registry with validity windows, rotation, retirement, and revocation while
+preserving this wire shape. Signed durable registry distribution remains P0-C2B2 follow-up work.
 
 ## Observation and BENCH-003B1 compatibility
 
@@ -61,15 +62,17 @@ cleanup attempt, and output/event mutation fail closed. Cleanup failure is recor
 BENCH-001 and BENCH-003A/B wire formats are unchanged. The adapter Protocol has no implementation
 side effects by itself. Tests use a deterministic contract adapter and fixed test key only. P0-C2
 must implement and verify a real isolated Docker or external provider adapter, including provider
-evidence retrieval, network policy, key lifecycle/registry, and cleanup recovery. Docker daemon
-availability must be checked before that validation.
+evidence retrieval and network policy. P0-C2A supplies cleanup recovery and P0-C2B1 supplies the
+additive key lifecycle registry. Docker daemon availability must be checked before live validation.
 
 The base P0-C1 Runner still creates its sealed output only after the provider lifecycle and
 attestation finish and therefore does not claim crash recovery by itself. The additive
 [P0-C2A recovery layer](P0-C2A-durable-target-operation-recovery.md) now supplies durable
 provider-operation journaling, fencing, startup reconciliation, cleanup retry, and a sealed
-measurement-ineligible failure authority. Real Docker/provider evidence, network policy, and key
-registry/rotation remain P0-C2B.
+measurement-ineligible failure authority. The
+[P0-C2B1 registry](P0-C2B1-benchmark-measurement-trust-registry.md) now supplies active, retired,
+and revoked measurement-key admission. Real Docker/provider evidence, network policy, signed
+registry distribution, and mandatory BENCH-003B admission remain P0-C2B2.
 
 ## Related documents
 

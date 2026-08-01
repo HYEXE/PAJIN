@@ -734,6 +734,12 @@ class RecoverableBenchmarkTargetFactoryRunner:
         self._journal = BenchmarkTargetOperationJournal(journal_path)
         self._cleanup_retry_limit = cleanup_retry_limit
 
+    @property
+    def definition(self) -> RegisteredBenchmarkTargetFactoryAdapter:
+        """Expose the provider identity for additive preflight policy wrappers."""
+
+        return self._provider.definition
+
     async def reconcile_pending(self) -> tuple[Path, ...]:
         """Fence and reconcile all unfinished attempts before admitting new work."""
 

@@ -560,6 +560,12 @@ class BenchmarkTargetFactoryRunner:
         self._adapter = adapter
         self._trust_anchor = trust_anchor
 
+    @property
+    def definition(self) -> RegisteredBenchmarkTargetFactoryAdapter:
+        """Expose the adapter identity for additive preflight policy wrappers."""
+
+        return self._adapter.definition
+
     async def run(
         self,
         manifest: BenchmarkManifest,
