@@ -197,6 +197,13 @@ base and expected state digests, ordered restore/apply/verify operations, benchm
 declared reset plan. The plan has no reset receipt and all materialization, execution, and
 measurement flags remain false.
 
+P0-E1 publishes the first measured deterministic PAJIN baseline from the runnable P0-D1 target. It
+reopens every registry-governed Harness and Target Run, reloads execution evidence by the sealed
+receipt, reruns the catalog's private Ground Truth matcher, requires complete seed/repetition
+coverage, and computes all twelve BENCH-001 metrics from the sealed raw Observations. The resulting
+authority binds the Manifest, catalog selection, sources, evidence bundle, and Result while keeping
+candidate comparison and Supervisor activation ineligible.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

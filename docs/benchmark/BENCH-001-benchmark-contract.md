@@ -7,9 +7,9 @@
 ## Purpose
 
 This versioned data contract compares PAJIN's deterministic baseline and a future adaptive
-candidate under the same target, Campaign, ground truth, seeds, budgets, and run protocol. This
-slice does not implement the benchmark harness, vulnerable Target Factory, measured baselines, or
-Supervisor activation.
+candidate under the same target, Campaign, ground truth, seeds, budgets, and run protocol. Later
+contracts implement the Target lifecycle, registry-governed Harness, and the first P0-E1 measured
+PAJIN baseline. Supervisor activation remains outside this contract.
 
 ## Artifacts
 
@@ -85,6 +85,6 @@ measurement.
    ([P0-D4 Holdout authority](P0-D4-holdout-target-factory-authority.md))
    and Mutation Target Factory
    ([P0-D5 Mutation authority](P0-D5-mutation-target-factory-authority.md))
-3. measurement of the current deterministic PAJIN baseline
-4. exact CAP-006 Capability benchmark mappings and sealed Oracle/Replay observations
-5. GRAPH-001 Minimum Graph Model
+3. [P0-E1 deterministic PAJIN baseline measurement](P0-E1-deterministic-pajin-baseline-measurement.md)
+4. measurement of generic scanner and single-agent baselines
+5. exact CAP-006 Capability benchmark mappings and sealed Oracle/Replay observations

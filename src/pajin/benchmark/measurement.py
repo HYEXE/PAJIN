@@ -845,7 +845,7 @@ def _build_result(
             )
             for binding in selected
         ],
-        metrics=_aggregate_metrics(observations),
+        metrics=aggregate_walking_benchmark_metrics(observations),
         evidence=[BenchmarkEvidenceReference(reference=bundle_path, sha256=evidence_sha)],
         openWorldCandidateIds=sorted(
             {
@@ -857,9 +857,13 @@ def _build_result(
     )
 
 
-def _aggregate_metrics(
+def aggregate_walking_benchmark_metrics(
     observations: tuple[WalkingBenchmarkRunObservation, ...],
 ) -> list[BenchmarkMetricObservation]:
+    """Aggregate the twelve BENCH-001 metrics from exact raw observations."""
+
+    if not observations:
+        raise ValueError("Benchmark metric aggregation requires observations")
     surface_found = sum(item.discovered_known_attack_surface_count for item in observations)
     surface_total = sum(item.known_attack_surface_count for item in observations)
     finding_found = sum(item.matched_known_finding_count for item in observations)

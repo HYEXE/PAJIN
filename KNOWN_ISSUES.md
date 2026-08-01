@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 277 passed, 6 skipped 이후
+- 결과: 283 passed, 6 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -101,6 +101,18 @@
   Benchmark Result나 measurement admission 근거로 사용할 수 없다.
 - 해소 조건: provider-specific materializer, observed base/expected-state evidence, fenced cleanup/recovery와
   registry-governed Harness admission을 새 runnable authority로 구현한다.
+
+## P0-E1 측정의 local deterministic Target 범위
+
+- 상태: 의도적으로 제한된 첫 실측 baseline
+- 현재 보장: exact P0-D1 catalog selection, registry-governed Harness, sealed Target Run, execution
+  receipt-bound Docker evidence와 private Ground Truth matcher를 다시 검증한 뒤 전체 seed/repetition raw
+  Observation에서 12개 BENCH-001 metric을 계산한다.
+- 영향: 결과는 고정된 local Docker SQLi lab의 deterministic PAJIN baseline이다. production Web/API
+  conformance, 일반 Scanner·single-agent 성능, cross-host provider fence 또는 signed catalog distribution을
+  증명하지 않는다. candidate comparison과 Supervisor activation은 false다.
+- 해소 조건: 별도 Scanner·single-agent measurement authority, signed catalog distribution과 필요한 외부
+  provider trust 경계를 구현하고 동일 benchmark 좌표의 sealed Result를 비교한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 

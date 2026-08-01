@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E1` Deterministic PAJIN baseline measurement authority
+- 현재 우선순위: `P0-E2` 일반 Scanner baseline measurement authority
 
 ## 제품 목표
 
@@ -245,6 +245,14 @@ materialization, execution, measurement admission은 모두 false다. 이로써 
 완료하고, 다음 `P0-E1`에서 기존 registry-governed Harness와 runnable deterministic Target을 실제 baseline
 measurement authority로 연결한다.
 
+`P0-E1`은 P0-D1 runnable catalog와 P0-C2B2A2 registry-governed Harness를 실제 측정 경계에서
+결합한다. 각 Harness·Target Run을 다시 열고 execution receipt로 provider evidence를 재조회한 뒤 private
+Ground Truth matcher를 다시 실행한다. Manifest의 baseline seed/repetition 전체 좌표가 한 번씩 존재할 때만
+sealed raw Observation에서 12개 BENCH-001 metric을 재계산하고 Result와 source binding을 별도 authority로
+봉인한다. candidate comparison과 Supervisor activation은 false다. 다음 `P0-E2`는 이 PAJIN 전용 실행
+경계를 일반 Scanner baseline에 그대로 오인 적용하지 않고, scanner identity·invocation·output evidence와
+동일 Target 좌표를 결박하는 별도 최소 authority를 설계한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -285,7 +293,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D4` Holdout Target Factory authority
   - [x] `P0-D5` Mutation Target Factory authority
 - [ ] Baseline 측정
-  - [ ] `P0-E1` Deterministic PAJIN baseline measurement authority
+  - [x] `P0-E1` Deterministic PAJIN baseline measurement authority
   - [ ] `P0-E2` 일반 Scanner baseline measurement authority
   - [ ] `P0-E3` Single-agent baseline measurement authority
 - `ENG-001` 공통 Campaign Execution Engine 계약

@@ -25,6 +25,7 @@ from pajin.benchmark.target_factory import (
     BenchmarkMeasurementAttestation,
     BenchmarkMeasurementAttestationStatement,
     BenchmarkTargetCoordinate,
+    BenchmarkTargetRunAuthority,
     BenchmarkTargetStage,
     BenchmarkTargetStageReceipt,
     RegisteredBenchmarkTargetFactoryAdapter,
@@ -600,6 +601,39 @@ class _CatalogBoundDockerTargetFactoryAdapter:
         receipt: BenchmarkTargetStageReceipt,
     ) -> DockerBenchmarkProviderEvidence:
         return self._provider.evidence(receipt)
+
+    def verify_target_run_match(
+        self,
+        authority: BenchmarkTargetRunAuthority,
+    ) -> DockerBenchmarkProviderEvidence:
+        """Recheck one sealed Target Run against catalog evidence for later measurement."""
+
+        self._require_provider_identity()
+        try:
+            authoritative = BenchmarkTargetRunAuthority.model_validate(
+                authority.model_dump(mode="json", by_alias=True)
+            )
+            evidence = self._provider.evidence(authoritative.execution_receipt)
+        except (ValueError, TypeError) as exc:
+            raise BenchmarkTargetCatalogError(
+                "Catalog Target Run audit input is structurally invalid"
+            ) from exc
+        if (
+            authoritative.manifest != self._manifest
+            or authoritative.adapter != self._definition
+        ):
+            raise BenchmarkTargetCatalogError(
+                "Catalog Target Run differs from selected Manifest or adapter"
+            )
+        _, _ = self._require_registered_match(
+            authoritative.coordinate,
+            authoritative.execution_receipt,
+            evidence,
+            authoritative.observation,
+        )
+        return DockerBenchmarkProviderEvidence.model_validate(
+            evidence.model_dump(mode="json", by_alias=True)
+        )
 
     async def reset(
         self,
