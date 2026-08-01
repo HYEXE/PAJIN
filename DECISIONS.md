@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0076: Baseline-Bound MCP Remediation Retest](docs/adr/0076-baseline-bound-mcp-retest.md)
 - [ADR-0075: MCP Replay Confirmation and Remediation Baseline](docs/adr/0075-mcp-replay-confirmation-baseline.md)
 - [ADR-0074: Plan-Bound Fresh MCP Claim Replay](docs/adr/0074-plan-bound-fresh-mcp-claim-replay.md)
 - [ADR-0073: Claim-Bound Non-Executable MCP Replay Plan](docs/adr/0073-claim-bound-non-executable-mcp-replay-plan.md)

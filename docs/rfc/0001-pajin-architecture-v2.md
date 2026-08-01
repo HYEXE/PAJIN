@@ -356,7 +356,12 @@ policy: only the Plan-bound fresh validity replay drives product confirmation, w
 severity remain source-bound information-only. It seals the validated Finding, typed report and
 exact Markdown rendering, and a `planned-not-applied` remediation baseline without inventing KISA
 ReplayOutcome, Oracle, ticket, external-host attestation, remediation application, or Retest
-authority. WALK-005C2 baseline-bound remediation Retest remains separate future work.
+authority. WALK-005C2 reopens that C1 baseline and accepts only another B2 authority approved and executed
+after confirmation with the exact same Plan and Claim but seven fresh execution identities. It
+binds both publication roots and emits only a sealed `still-vulnerable` assessment, with fixed
+eligibility false, remediation application unattested, and regression not measured. Failed or
+negative evidence is not converted into remediation success. WALK-006 Shadow Supervisor recording
+remains separate future work.
 
 ## 10. Definition of Done
 

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest
+- 현재 우선순위: `WALK-006` Shadow Supervisor Decision 기록
 
 ## 제품 목표
 
@@ -27,14 +27,14 @@ File Upload
 - [x] `WALK-003` 실행을 활성화하지 않고 H-17 의존성을 정확한 등록 MCP Tool Authorization
   Hypothesis에 결박
 - [x] `WALK-004` Observation을 Graph에 Admission하고 bounded replan 생성
-- [ ] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
+- [x] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
   - [x] `WALK-005A` 승인·Permit·봉인 Gateway 실행 기반 Candidate·Atomic Claim Admission
   - [x] `WALK-005B` MCP Claim-bound Restricted Replay·검증 projection
     - [x] `WALK-005B1` validity Claim-bound 비실행 Replay Plan authority
     - [x] `WALK-005B2` Plan-bound fresh 실행·Claim 검증 projection
-  - [ ] `WALK-005C` Report·Remediation Retest 폐루프
+  - [x] `WALK-005C` Report·Remediation Retest 폐루프
     - [x] `WALK-005C1` MCP 확인 정책·Report·비실행 Remediation baseline
-    - [ ] `WALK-005C2` baseline-bound fresh Retest·보수적 lifecycle 판정
+    - [x] `WALK-005C2` baseline-bound fresh Retest·보수적 lifecycle 판정
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
@@ -88,8 +88,17 @@ Claim statement가 exact equality일 때만 `reproduced / confirmationEligible=f
 근거로 채택한다. impact·severity는 replay됐다고 확장하지 않고 `source-bound-information-only`로
 고정한다. validated Finding, typed Report와 exact Markdown, `planned-not-applied` Remediation
 Plan을 하나의 content-addressed authority와 봉인 Run으로 묶는다. 다음 `WALK-005C2`는 이
-baseline과 별도의 fresh B2 실행을 결박해 `still-vulnerable` 또는 `inconclusive`를 판정하고,
-독립적인 수정 증명 없이는 `fixed`를 금지한다.
+baseline과 별도의 fresh B2 실행을 결박해 양성 재현을 `still-vulnerable`로 판정한다. 음성·실패
+실행은 성공한 lifecycle 결과로 바꾸지 않고 fail closed하며, 독립적인 수정 증명 없이는 `fixed`를
+금지한다.
+
+`WALK-005C2`는 C1 confirmation publication 뒤에 승인·실행된 별도 B2 authority만 Retest로
+받아들인다. B1 Plan·Candidate·Finding·validity Claim은 exact equality여야 하고, baseline
+replay와 Run·request·approval·Grant·Permit·dispatch·Worker ID가 모두 달라야 한다. B2가 양성
+재현만 나타내므로 현재 lifecycle 결과는 `still-vulnerable`로 제한한다. `fixedEligible=false`,
+`remediationAppliedAttested=false`, regression `not-measured`를 고정하고, 음성·실패·불완전
+실행을 `fixed`로 해석하지 않는다. 이로써 첫 Walking chain은 Retest까지 닫혔으며 다음 구현은
+`WALK-006` Shadow Supervisor Decision 기록이다.
 
 ## 이전 기반 작업
 

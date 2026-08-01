@@ -54,6 +54,9 @@ from pajin.discovery import (
     WalkingMCPReplayPlan,
     WalkingMCPReplayPlanError,
     WalkingMCPReplayPlanRunner,
+    WalkingMCPRetestAssessment,
+    WalkingMCPRetestError,
+    WalkingMCPRetestRunner,
     WalkingObservationReplanAuthority,
     WalkingObservationReplanError,
     WalkingObservationReplanRunner,
@@ -61,6 +64,7 @@ from pajin.discovery import (
     load_walking_mcp_claim_replay_authority,
     load_walking_mcp_confirmation_authority,
     load_walking_mcp_replay_plan,
+    load_walking_mcp_retest_authority,
     load_walking_observation_replan_authority,
     mcp_tool_authorization_rule,
     walking_independent_approval_receipt,
@@ -447,7 +451,11 @@ def _walking_execution_evidence(
         requested_at=now,
     )
     approval = ToolLoopApproval(
-        approval_id="approval_" + ("b" if identity_suffix else "a") * 32,
+        approval_id=(
+            "approval_" + sha256(identity_suffix.encode()).hexdigest()[:32]
+            if identity_suffix
+            else "approval_" + "a" * 32
+        ),
         call_fingerprint=fingerprint,
         tool_id=request.tool_id,
         target=request.target,
@@ -1406,3 +1414,126 @@ def test_walking_mcp_confirmation_rejects_source_substitution_and_report_mutatio
 
     with pytest.raises(WalkingMCPConfirmationError):
         load_walking_mcp_confirmation_authority(campaign, outcome)
+
+
+def _walking_mcp_confirmation_baseline(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    original = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign, replan, original
+    )
+    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, source)
+    replay_evidence = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_baseline_replay",
+        replay_plan=plan.plan,
+    )
+    replay = WalkingMCPClaimReplayRunner(output_root=tmp_path / "baseline-replay").run(
+        campaign, plan, replay_evidence
+    )
+    baseline = WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
+        campaign, replay
+    )
+    return replan, plan, replay, baseline
+
+
+def _walking_mcp_retest_outcome(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    replan, plan, baseline_replay, baseline = _walking_mcp_confirmation_baseline(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+    retest_evidence = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_retest_replay",
+        replay_plan=plan.plan,
+    )
+    retest_replay = WalkingMCPClaimReplayRunner(output_root=tmp_path / "retest-replay").run(
+        campaign, plan, retest_evidence
+    )
+    outcome = WalkingMCPRetestRunner(output_root=tmp_path / "retest").run(
+        campaign,
+        baseline,
+        retest_replay,
+    )
+    return baseline_replay, baseline, outcome
+
+
+def test_walking_mcp_retest_closes_still_vulnerable_lifecycle(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    baseline_replay, baseline, outcome = _walking_mcp_retest_outcome(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+    authority = outcome.authority
+    assessment = authority.assessment
+
+    assert authority.lifecycle_state == "retest-completed-still-vulnerable"
+    assert assessment.status == "still-vulnerable"
+    assert assessment.fixed_eligible is False
+    assert assessment.remediation_applied_attested is False
+    assert assessment.regression_status == "not-measured"
+    assert assessment.baseline_authority_id == baseline.authority.authority_id
+    assert assessment.retest_authority_id != baseline_replay.authority.authority_id
+    assert assessment.retest_request_id != assessment.baseline_request_id
+    assert [event.event_type for event in load_verified_run_events(outcome.run_path)] == [
+        "campaign.started",
+        "walking.mcp-retest-authority.created",
+        "campaign.completed",
+    ]
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_mcp_retest_authority(campaign, outcome) == authority
+
+
+def test_walking_mcp_retest_rejects_reused_replay_fixed_state_and_report_mutation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    _, _, baseline_replay, baseline = _walking_mcp_confirmation_baseline(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+
+    with pytest.raises(WalkingMCPRetestError):
+        WalkingMCPRetestRunner(output_root=tmp_path / "retest").run(
+            campaign,
+            baseline,
+            baseline_replay,
+        )
+
+    _, _, outcome = _walking_mcp_retest_outcome(
+        tmp_path / "valid",
+        campaign,
+        monkeypatch,
+    )
+    raw = outcome.authority.assessment.model_dump(mode="json", by_alias=True)
+    raw["assessmentId"] = ""
+    raw["assessmentDigest"] = ""
+    raw["status"] = "fixed"
+    raw["fixedEligible"] = True
+    with pytest.raises(ValidationError):
+        WalkingMCPRetestAssessment.model_validate(raw)
+
+    (outcome.run_path / outcome.report_path).write_text("forged", encoding="utf-8")
+    with pytest.raises(WalkingMCPRetestError):
+        load_walking_mcp_retest_authority(campaign, outcome)
