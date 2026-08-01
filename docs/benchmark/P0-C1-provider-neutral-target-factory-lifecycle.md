@@ -72,7 +72,8 @@ provider-operation journaling, fencing, startup reconciliation, cleanup retry, a
 measurement-ineligible failure authority. The
 [P0-C2B1 registry](P0-C2B1-benchmark-measurement-trust-registry.md) now supplies active, retired,
 and revoked measurement-key admission, and P0-C2B2A1 adds signed durable local activation.
-Mandatory BENCH-003B admission and live provider evidence/network enforcement remain P0-C2B2A2/B.
+P0-C2B2A2 adds mandatory governed admission. Live provider evidence/network enforcement remains
+P0-C2B2B.
 
 ## Related documents
 

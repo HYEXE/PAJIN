@@ -14,6 +14,14 @@ from pajin.benchmark.measurement import (
     load_walking_benchmark_measured_comparison_authority,
     load_walking_benchmark_run_observation,
 )
+from pajin.benchmark.measurement_harness import (
+    BENCHMARK_REGISTRY_GOVERNED_HARNESS_API_VERSION,
+    BenchmarkRegistryGovernedHarnessAuthority,
+    BenchmarkRegistryGovernedHarnessError,
+    BenchmarkRegistryGovernedHarnessOutcome,
+    BenchmarkRegistryGovernedHarnessRunner,
+    load_registry_governed_benchmark_observation,
+)
 from pajin.benchmark.measurement_registry import (
     BENCHMARK_MEASUREMENT_REGISTRY_ADMISSION_API_VERSION,
     BENCHMARK_MEASUREMENT_TRUST_REGISTRY_API_VERSION,
@@ -145,6 +153,7 @@ __all__ = [
     "BENCHMARK_MEASUREMENT_TRUST_ANCHOR_API_VERSION",
     "BENCHMARK_MEASUREMENT_TRUST_REGISTRY_API_VERSION",
     "BENCHMARK_METRIC_ORDER",
+    "BENCHMARK_REGISTRY_GOVERNED_HARNESS_API_VERSION",
     "BENCHMARK_RESULT_API_VERSION",
     "BENCHMARK_TARGET_COORDINATE_API_VERSION",
     "BENCHMARK_TARGET_FACTORY_ADAPTER_API_VERSION",
@@ -189,6 +198,10 @@ __all__ = [
     "BenchmarkMetricStatus",
     "BenchmarkMetricUnit",
     "BenchmarkRegistryBoundTargetRunOutcome",
+    "BenchmarkRegistryGovernedHarnessAuthority",
+    "BenchmarkRegistryGovernedHarnessError",
+    "BenchmarkRegistryGovernedHarnessOutcome",
+    "BenchmarkRegistryGovernedHarnessRunner",
     "BenchmarkRegistryTargetFactoryRunner",
     "BenchmarkResult",
     "BenchmarkResultStatus",
@@ -242,6 +255,7 @@ __all__ = [
     "load_benchmark_measurement_registry_admission",
     "load_benchmark_target_recovery_authority",
     "load_benchmark_target_run_authority",
+    "load_registry_governed_benchmark_observation",
     "load_walking_benchmark_measured_comparison_authority",
     "load_walking_benchmark_run_observation",
     "load_walking_shadow_benchmark_comparison_authority",

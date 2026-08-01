@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0085: Require One Sealed Authority for Registry-Governed Measurements](docs/adr/0085-mandatory-registry-governed-benchmark-harness.md)
 - [ADR-0084: Sign and Durably Order Benchmark Measurement Registries](docs/adr/0084-signed-measurement-registry-distribution.md)
 - [ADR-0083: Separate Benchmark Measurement Key Lifecycle from Replay Target Trust](docs/adr/0083-benchmark-measurement-trust-registry.md)
 - [ADR-0082: Durable Fenced Target Operations Before Provider-Specific Adapters](docs/adr/0082-durable-target-operation-recovery.md)

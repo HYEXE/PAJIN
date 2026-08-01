@@ -583,6 +583,35 @@ class BenchmarkMeasurementRegistryActivationStore:
             return None
         return _activation_from_row(row)
 
+    def get(
+        self,
+        *,
+        trust_domain: str,
+        issuer: str,
+        registry_id: str,
+        revision: int,
+    ) -> BenchmarkMeasurementRegistryActivation | None:
+        """Return one exact accepted revision for sealed historical verification."""
+
+        if revision < 1:
+            raise ValueError("Benchmark registry activation revision must be positive")
+        try:
+            with _activation_read_transaction(self.path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM activations
+                    WHERE trust_domain = ? AND issuer = ? AND registry_id = ? AND revision = ?
+                    """,
+                    (trust_domain, issuer, registry_id, revision),
+                ).fetchone()
+        except sqlite3.Error as exc:
+            raise BenchmarkMeasurementRegistryDistributionError(
+                "Benchmark registry activation checkpoint read failed"
+            ) from exc
+        if row is None:
+            return None
+        return _activation_from_row(row)
+
 
 def benchmark_measurement_registry_distribution_public_key_base64url(
     private_key: bytes,

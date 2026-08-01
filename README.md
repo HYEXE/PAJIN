@@ -128,15 +128,22 @@ Fresh runs require the one active key before reset; retired keys verify only bou
 evidence, and revoked keys fail all verification. Contiguous revisions retain their exact
 predecessor and reject rollback, gaps, key substitution, and lifecycle resurrection. A separate
 sealed admission binds the registry revision to the exact P0-C1 source Run. Signed/durable registry
-distribution is implemented by P0-C2B2A1; mandatory BENCH-003B admission, live provider evidence,
-and network enforcement remain P0-C2B2A2/B.
+distribution and mandatory governed admission are implemented by P0-C2B2A1/A2; live provider
+evidence and network enforcement remain P0-C2B2B.
 
 P0-C2B2A1 signs each complete measurement-registry transition with a separate Ed25519 distribution
 authority and activates it through an append-only SQLite checkpoint. Bootstrap is revision one;
 later activations require the durable head's exact bundle and registry predecessors, so restart,
 rollback, gaps, equivocation, and Trust Anchor substitution fail closed while the local checkpoint
-remains intact. Mandatory sealed Harness admission remains P0-C2B2A2, and live provider/network
+remains intact. P0-C2B2A2 supplies mandatory sealed Harness admission, while live provider/network
 validation remains P0-C2B2B.
+
+P0-C2B2A2 makes that activation mandatory for the `registry-governed` API. It activates before
+reset, reopens the exact Target and registry Admission Runs after execution, and seals all three
+authorities together. Its dedicated reader requires the durable exact revision and the current
+out-of-band distribution Trust Anchor before returning an Observation. Mid-run rotation and current
+distribution-key revocation fail closed. Live Docker/provider evidence and network enforcement
+remain P0-C2B2B.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

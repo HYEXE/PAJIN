@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-C2B2A2` mandatory sealed registry-governed Harness admission
+- 현재 우선순위: `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 
 ## 제품 목표
 
@@ -150,15 +150,22 @@ adapter definition과 대조하고, retired key는 bounded historical verificati
 과거 증거도 거부한다. revision 2부터 exact predecessor registry를 sealed Admission Authority에
 포함해 rollback·gap·key substitution·resurrection을 차단한다. P0-C1/P0-C2A가 공통 runner Protocol을
 노출하므로 lifecycle을 중복 구현하지 않는다. registry distribution signature·durable latest revision은
-P0-C2B2A1에서 구현됐고, BENCH-003B mandatory admission과 실제 provider evidence·network policy는
-각각 `P0-C2B2A2`, `P0-C2B2B`로 남긴다.
+P0-C2B2A1, BENCH-003B mandatory admission은 P0-C2B2A2에서 구현됐고 실제 provider
+evidence·network policy는 `P0-C2B2B`로 남긴다.
 
 `P0-C2B2A1`은 measurement registry를 별도 Ed25519 distribution key로 서명하고, 7일 이하의
 bounded bundle에 현재·직전 registry와 이전 bundle digest를 함께 결박한다. host-local SQLite
 activation store는 revision 1만 bootstrap하고 이후 contiguous revision만 append-only로 수용해
-restart 뒤 rollback·gap·equivocation·predecessor substitution을 차단한다. verified activation을
-exact target/admission outcome에 sealed 결박하는 mandatory Harness는 `P0-C2B2A2`, 실제
-Docker/provider evidence와 network policy는 `P0-C2B2B`로 남긴다.
+restart 뒤 rollback·gap·equivocation·predecessor substitution을 차단한다. verified activation의
+mandatory sealed Harness 결박은 P0-C2B2A2에서 구현됐고, 실제 Docker/provider evidence와 network
+policy는 `P0-C2B2B`로 남긴다.
+
+`P0-C2B2A2`는 signed activation을 provider reset 전에 필수화하고, 실행 뒤 exact Target Run,
+P0-C2B1 Admission Run, durable activation을 하나의 sealed Harness Authority로 결박한다. 전용
+reader는 세 Run과 exact accepted revision, 현재 out-of-band distribution Trust Anchor를 모두
+재검증한 뒤에만 registry-governed Observation을 반환한다. 실행 중 rotation은 publication을
+차단하고, 정상 완료 뒤 measurement registry rotation은 historical exact revision으로 보존하며,
+distribution signing-key revocation은 과거 결과에도 적용한다. 실제 provider 경계는 `P0-C2B2B`다.
 
 ## 이전 기반 작업
 
@@ -187,7 +194,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-C2A` durable operation journal·idempotency/fencing·startup cleanup recovery
   - [x] `P0-C2B1` measurement Trust Registry·rotation·retirement·revocation admission
   - [x] `P0-C2B2A1` signed registry distribution·durable anti-rollback activation
-  - [ ] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
+  - [x] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
   - [ ] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정

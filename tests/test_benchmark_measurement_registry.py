@@ -13,7 +13,13 @@ from pajin.benchmark import (
     BenchmarkMeasurementAttestation,
     BenchmarkMeasurementAttestationStatement,
     BenchmarkMeasurementAttestor,
+    BenchmarkMeasurementRegistryActivationStore,
+    BenchmarkMeasurementRegistryDistributionKey,
+    BenchmarkMeasurementRegistryDistributionSigner,
+    BenchmarkMeasurementRegistryDistributionTrustAnchor,
     BenchmarkMeasurementTrustAnchor,
+    BenchmarkRegistryGovernedHarnessError,
+    BenchmarkRegistryGovernedHarnessRunner,
     BenchmarkRunProtocol,
     BenchmarkTargetCoordinate,
     BenchmarkTargetFactoryRunner,
@@ -21,6 +27,8 @@ from pajin.benchmark import (
     RegisteredBenchmarkTargetFactoryAdapter,
     WalkingBenchmarkRunObservation,
     benchmark_measurement_public_key_base64url,
+    benchmark_measurement_registry_distribution_public_key_base64url,
+    load_registry_governed_benchmark_observation,
 )
 from pajin.benchmark.measurement_registry import (
     BenchmarkMeasurementAdmissionMode,
@@ -37,6 +45,7 @@ from pajin.benchmark.measurement_registry import (
 NOW = datetime(2026, 8, 1, 8, 0, tzinfo=UTC)
 KEY_A = bytes(range(32))
 KEY_B = bytes(range(32, 64))
+DISTRIBUTION_KEY = bytes(range(64, 96))
 
 
 def _manifest() -> BenchmarkManifest:
@@ -537,3 +546,351 @@ def test_registry_admission_reader_rejects_source_and_output_mutation(tmp_path: 
             third.target,
             third.admission,
         )
+
+
+def _distribution_authority() -> tuple[
+    BenchmarkMeasurementRegistryDistributionTrustAnchor,
+    BenchmarkMeasurementRegistryDistributionSigner,
+]:
+    anchor = BenchmarkMeasurementRegistryDistributionTrustAnchor(
+        trustDomain="benchmark-registry:harness-test",
+        issuer="benchmark-registry-issuer:harness-test",
+        keys=[
+            BenchmarkMeasurementRegistryDistributionKey(
+                keyId="distribution-key:harness",
+                publicKeyBase64url=(
+                    benchmark_measurement_registry_distribution_public_key_base64url(
+                        DISTRIBUTION_KEY
+                    )
+                ),
+                state=BenchmarkMeasurementKeyState.ACTIVE,
+                notBefore=datetime.now(UTC) - timedelta(days=1),
+            )
+        ],
+    )
+    signer = BenchmarkMeasurementRegistryDistributionSigner.from_private_key_bytes(
+        active_key_id=anchor.active_key.key_id,
+        private_key=DISTRIBUTION_KEY,
+        trust_anchor=anchor,
+    )
+    return anchor, signer
+
+
+def _distribution_bundle(
+    registry: BenchmarkMeasurementTrustRegistry,
+    *,
+    signer: BenchmarkMeasurementRegistryDistributionSigner,
+    predecessor_registry: BenchmarkMeasurementTrustRegistry | None = None,
+    previous_bundle_digest: str | None = None,
+):
+    issued_at = max(datetime.now(UTC) - timedelta(minutes=2), registry.issued_at)
+    return signer.sign(
+        registry=registry,
+        predecessor_registry=predecessor_registry,
+        previous_bundle_digest=previous_bundle_digest,
+        issued_at=issued_at,
+        not_before=issued_at,
+        expires_at=issued_at + timedelta(days=1),
+    )
+
+
+def _run_governed_harness(tmp_path: Path):
+    manifest = _manifest()
+    registry = _registry_one()
+    anchor, signer = _distribution_authority()
+    bundle = _distribution_bundle(registry, signer=signer)
+    provider = _Provider(manifest, registry.active_key.trust_anchor, KEY_A)
+    activation_store = BenchmarkMeasurementRegistryActivationStore(
+        tmp_path / "registry-activation.sqlite3"
+    )
+    outcome = asyncio.run(
+        BenchmarkRegistryGovernedHarnessRunner(
+            output_root=tmp_path / "runs",
+            activation_store=activation_store,
+            bundle=bundle,
+            distribution_trust_anchor=anchor,
+            target_runner=BenchmarkTargetFactoryRunner(
+                output_root=tmp_path / "runs",
+                adapter=provider,
+                trust_anchor=registry.active_key.trust_anchor,
+            ),
+        ).run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+    return manifest, activation_store, provider, outcome
+
+
+def test_registry_governed_harness_is_the_mandatory_observation_reader(tmp_path: Path) -> None:
+    manifest, activation_store, provider, outcome = _run_governed_harness(tmp_path)
+
+    observation = load_registry_governed_benchmark_observation(
+        manifest,
+        outcome,
+        activation_store=activation_store,
+        distribution_trust_anchor=outcome.authority.distribution_trust_anchor,
+    )
+    assert provider.calls == ["reset", "isolation", "execution", "cleanup", "attestation"]
+    assert observation.observation == outcome.target.authority.observation
+    assert outcome.authority.measurement_admission_eligible is True
+    assert outcome.authority.registry_admission_authority == outcome.admission.authority
+
+
+def test_registry_governed_harness_rejects_stale_activation_before_reset(tmp_path: Path) -> None:
+    manifest = _manifest()
+    first_registry = _registry_one()
+    second_registry = _registry_two(first_registry)
+    anchor, signer = _distribution_authority()
+    first = _distribution_bundle(first_registry, signer=signer)
+    second = _distribution_bundle(
+        second_registry,
+        signer=signer,
+        predecessor_registry=first_registry,
+        previous_bundle_digest=first.bundle_digest,
+    )
+    activation_store = BenchmarkMeasurementRegistryActivationStore(
+        tmp_path / "registry-activation.sqlite3"
+    )
+    activation_store.activate(first, trust_anchor=anchor, now=datetime.now(UTC))
+    activation_store.activate(second, trust_anchor=anchor, now=datetime.now(UTC))
+    provider = _Provider(manifest, first_registry.active_key.trust_anchor, KEY_A)
+
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError, match="before provider reset"):
+        asyncio.run(
+            BenchmarkRegistryGovernedHarnessRunner(
+                output_root=tmp_path / "runs",
+                activation_store=activation_store,
+                bundle=first,
+                distribution_trust_anchor=anchor,
+                target_runner=BenchmarkTargetFactoryRunner(
+                    output_root=tmp_path / "runs",
+                    adapter=provider,
+                    trust_anchor=first_registry.active_key.trust_anchor,
+                ),
+            ).run(
+                manifest,
+                arm_id=manifest.arms[0].arm_id,
+                seed=7,
+                repetition=1,
+            )
+        )
+    assert provider.calls == []
+
+
+def test_registry_governed_harness_rejects_forged_bundle_before_reset(tmp_path: Path) -> None:
+    manifest = _manifest()
+    registry = _registry_one()
+    anchor, signer = _distribution_authority()
+    bundle = _distribution_bundle(registry, signer=signer)
+    replacement = "A" if bundle.signature_base64url[-1] != "A" else "B"
+    forged = bundle.model_copy(
+        update={"signature_base64url": bundle.signature_base64url[:-1] + replacement}
+    )
+    provider = _Provider(manifest, registry.active_key.trust_anchor, KEY_A)
+
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError, match="before provider reset"):
+        asyncio.run(
+            BenchmarkRegistryGovernedHarnessRunner(
+                output_root=tmp_path / "runs",
+                activation_store=BenchmarkMeasurementRegistryActivationStore(
+                    tmp_path / "registry-activation.sqlite3"
+                ),
+                bundle=forged,
+                distribution_trust_anchor=anchor,
+                target_runner=BenchmarkTargetFactoryRunner(
+                    output_root=tmp_path / "runs",
+                    adapter=provider,
+                    trust_anchor=registry.active_key.trust_anchor,
+                ),
+            ).run(
+                manifest,
+                arm_id=manifest.arms[0].arm_id,
+                seed=7,
+                repetition=1,
+            )
+        )
+    assert provider.calls == []
+
+
+def test_registry_governed_reader_rejects_all_source_and_audit_mutation(
+    tmp_path: Path,
+) -> None:
+    manifest, activation_store, _provider, outcome = _run_governed_harness(
+        tmp_path / "harness"
+    )
+    activation_path = outcome.run_path / "benchmark-measurement-registry-activation.json"
+    activation_path.write_text("{}", encoding="utf-8")
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            outcome,
+            activation_store=activation_store,
+            distribution_trust_anchor=outcome.authority.distribution_trust_anchor,
+        )
+
+    manifest, activation_store, _provider, target_mutated = _run_governed_harness(
+        tmp_path / "target"
+    )
+    (target_mutated.target.run_path / target_mutated.target.authority_path).write_text(
+        "{}",
+        encoding="utf-8",
+    )
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            target_mutated,
+            activation_store=activation_store,
+            distribution_trust_anchor=target_mutated.authority.distribution_trust_anchor,
+        )
+
+    manifest, activation_store, _provider, admission_mutated = _run_governed_harness(
+        tmp_path / "admission"
+    )
+    (
+        admission_mutated.admission.run_path / admission_mutated.admission.authority_path
+    ).write_text("{}", encoding="utf-8")
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            admission_mutated,
+            activation_store=activation_store,
+            distribution_trust_anchor=admission_mutated.authority.distribution_trust_anchor,
+        )
+
+    manifest, activation_store, _provider, events_mutated = _run_governed_harness(
+        tmp_path / "events"
+    )
+    (events_mutated.run_path / "events.jsonl").write_text("{}\n", encoding="utf-8")
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            events_mutated,
+            activation_store=activation_store,
+            distribution_trust_anchor=events_mutated.authority.distribution_trust_anchor,
+        )
+
+
+def test_registry_governed_reader_requires_durable_exact_activation(tmp_path: Path) -> None:
+    manifest, _activation_store, _provider, outcome = _run_governed_harness(
+        tmp_path / "source"
+    )
+    empty_store = BenchmarkMeasurementRegistryActivationStore(
+        tmp_path / "empty" / "registry-activation.sqlite3"
+    )
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError, match="source authorities"):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            outcome,
+            activation_store=empty_store,
+            distribution_trust_anchor=outcome.authority.distribution_trust_anchor,
+        )
+
+
+def test_registry_governed_reader_preserves_sealed_history_after_rotation(
+    tmp_path: Path,
+) -> None:
+    manifest, activation_store, _provider, outcome = _run_governed_harness(tmp_path)
+    first = outcome.authority.activation.bundle
+    second_registry = _registry_two(first.statement.registry)
+    anchor = outcome.authority.distribution_trust_anchor
+    signer = BenchmarkMeasurementRegistryDistributionSigner.from_private_key_bytes(
+        active_key_id=anchor.active_key.key_id,
+        private_key=DISTRIBUTION_KEY,
+        trust_anchor=anchor,
+    )
+    second = _distribution_bundle(
+        second_registry,
+        signer=signer,
+        predecessor_registry=first.statement.registry,
+        previous_bundle_digest=first.bundle_digest,
+    )
+    activation_store.activate(second, trust_anchor=anchor, now=datetime.now(UTC))
+
+    observation = load_registry_governed_benchmark_observation(
+        manifest,
+        outcome,
+        activation_store=activation_store,
+        distribution_trust_anchor=anchor,
+    )
+    assert observation.observation == outcome.target.authority.observation
+
+
+def test_registry_governed_reader_applies_current_distribution_key_revocation(
+    tmp_path: Path,
+) -> None:
+    manifest, activation_store, _provider, outcome = _run_governed_harness(tmp_path)
+    sealed_anchor = outcome.authority.distribution_trust_anchor
+    revoked_anchor = BenchmarkMeasurementRegistryDistributionTrustAnchor(
+        trustDomain=sealed_anchor.trust_domain,
+        issuer=sealed_anchor.issuer,
+        keys=[
+            sealed_anchor.active_key.model_copy(
+                update={"state": BenchmarkMeasurementKeyState.REVOKED}
+            ),
+            BenchmarkMeasurementRegistryDistributionKey(
+                keyId="distribution-key:new",
+                publicKeyBase64url=(
+                    benchmark_measurement_registry_distribution_public_key_base64url(KEY_B)
+                ),
+                state=BenchmarkMeasurementKeyState.ACTIVE,
+                notBefore=datetime.now(UTC) - timedelta(days=1),
+            ),
+        ],
+    )
+
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError, match="could not be verified"):
+        load_registry_governed_benchmark_observation(
+            manifest,
+            outcome,
+            activation_store=activation_store,
+            distribution_trust_anchor=revoked_anchor,
+        )
+
+
+def test_registry_governed_harness_rejects_mid_run_activation_change(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    first_registry = _registry_one()
+    second_registry = _registry_two(first_registry)
+    anchor, signer = _distribution_authority()
+    first = _distribution_bundle(first_registry, signer=signer)
+    second = _distribution_bundle(
+        second_registry,
+        signer=signer,
+        predecessor_registry=first_registry,
+        previous_bundle_digest=first.bundle_digest,
+    )
+    activation_store = BenchmarkMeasurementRegistryActivationStore(
+        tmp_path / "registry-activation.sqlite3"
+    )
+
+    class _RotatingProvider(_Provider):
+        async def execute(self, coordinate, isolation):
+            activation_store.activate(second, trust_anchor=anchor, now=datetime.now(UTC))
+            return await super().execute(coordinate, isolation)
+
+    provider = _RotatingProvider(manifest, first_registry.active_key.trust_anchor, KEY_A)
+    with pytest.raises(BenchmarkRegistryGovernedHarnessError, match="changed during"):
+        asyncio.run(
+            BenchmarkRegistryGovernedHarnessRunner(
+                output_root=tmp_path / "runs",
+                activation_store=activation_store,
+                bundle=first,
+                distribution_trust_anchor=anchor,
+                target_runner=BenchmarkTargetFactoryRunner(
+                    output_root=tmp_path / "runs",
+                    adapter=provider,
+                    trust_anchor=first_registry.active_key.trust_anchor,
+                ),
+            ).run(
+                manifest,
+                arm_id=manifest.arms[0].arm_id,
+                seed=7,
+                repetition=1,
+            )
+        )
+    assert provider.calls == ["reset", "isolation", "execution", "cleanup", "attestation"]

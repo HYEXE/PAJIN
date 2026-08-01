@@ -58,9 +58,9 @@ unsafe linked database paths fail closed.
 ## Compatibility and remaining work
 
 P0-C2B1 models, admission artifacts, and direct runners are unchanged. The distribution bundle and
-activation store are additive and do not yet make registry admission mandatory for BENCH-003B.
-P0-C2B2A2 must bind the verified bundle and activation to the exact target/admission outcome in a
-sealed Harness authority before exposing a registry-governed Observation.
+activation store are additive. P0-C2B2A2 now binds the verified bundle and activation to the exact
+target/admission outcome in a sealed Harness authority before exposing a registry-governed
+Observation.
 
 The activation store trusts the local host and filesystem. Deleting the entire database also
 deletes its remembered head, so an external backup or independently anchored transparency log is
@@ -71,5 +71,6 @@ P0-C2B2B.
 ## Related documents
 
 - [P0-C2B1 contract](P0-C2B1-benchmark-measurement-trust-registry.md)
+- [P0-C2B2A2 contract](P0-C2B2A2-mandatory-registry-governed-harness.md)
 - [ADR-0083](../adr/0083-benchmark-measurement-trust-registry.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-01
 - 브랜치: `main`
-- 작업 시작 기준: `cb27dc21d6bc653d9d3e1b74361d1cce1b36e425` (`P0-C2B1`)
-- 현재 구현 체크포인트: `P0-C2B2A1` signed measurement registry distribution
-- 다음 구현: `P0-C2B2A2` mandatory sealed registry-governed Harness admission
+- 작업 시작 기준: `ef137213d56933f24369aced367c4baa07c56c2b` (`P0-C2B2A1`)
+- 현재 구현 체크포인트: `P0-C2B2A2` mandatory sealed registry-governed Harness
+- 다음 구현: `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 
 ## 재개 전 확인
 
@@ -24,40 +24,41 @@ git status --porcelain=v2 --branch
 ## 현재 구현 상태
 
 `WALK-001`~`WALK-006`, `BENCH-003A/B1/B2`, `P0-C1`, `P0-C2A`, `P0-C2B1`,
-`P0-C2B2A1`이 구현됐다. P0-C2B2A1은 다음 경계를 추가한다.
+`P0-C2B2A1/A2`가 구현됐다. P0-C2B2A2는 다음 경계를 추가한다.
 
-- measurement registry 배포 전용 out-of-band Ed25519 Trust Anchor를 사용한다.
-- signed statement가 현재·직전 registry, registry revision과 같은 sequence, 이전 bundle digest,
-  trust domain·issuer, 7일 이하의 validity window를 결박한다.
-- unknown/revoked distribution key를 거부하고 retired key는 발행 시점이 유효기간 안인 과거 bundle만 검증한다.
-- host-local SQLite activation store가 `synchronous=FULL`, `journal_mode=DELETE`,
-  `BEGIN IMMEDIATE`로 accepted head를 저장한다.
-- revision 1만 bootstrap하고 이후 contiguous revision만 허용해 restart rollback·gap·equivocation·
-  predecessor mismatch·Trust Anchor substitution을 차단한다.
-- update·delete·replace trigger와 file/ancestor/sidecar/symlink/junction/hardlink 검사를 적용한다.
-- restart reader가 SQLite row identity와 content-addressed activation 내부 bundle을 exact equality로 재검증한다.
-- private distribution key는 signer helper 밖으로 직렬화되지 않는다.
+- signed distribution bundle과 durable activation을 provider reset 전에 필수 검증한다.
+- 기존 P0-C1/P0-C2A runner를 P0-C2B1 active-key wrapper로 실행해 lifecycle을 중복하지 않는다.
+- 실행 뒤 Target Run과 registry Admission Run을 재개방하고 activation이 seal 시점의 latest head인지 확인한다.
+- complete activation·distribution Trust Anchor·Admission Authority와 exact Target/Admission
+  Run·root·artifact SHA-256·authority/signature/Observation digest를 새 Harness Authority에 결박한다.
+- governed outcome에는 lower-level Observation 변환 메서드를 두지 않고 전용 reader만 제공한다.
+- reader는 세 sealed Run, exact accepted activation revision, 현재 out-of-band distribution Trust
+  Anchor를 재검증한 뒤에만 registry-governed Observation을 반환한다.
+- 실행 중 rotation은 publication을 차단하고, 완료 뒤 measurement registry rotation은 historical
+  exact revision으로 보존하며, distribution signing-key revocation은 과거 결과에도 적용한다.
+- source·activation·authority·audit mutation과 empty/wrong activation store가 fail closed한다.
 
 핵심 구현 위치:
 
+- `src/pajin/benchmark/measurement_harness.py`
 - `src/pajin/benchmark/measurement_registry_distribution.py`
 - `src/pajin/benchmark/__init__.py`
-- `tests/test_benchmark_measurement_registry_distribution.py`
-- `docs/benchmark/P0-C2B2A1-signed-measurement-registry-distribution.md`
-- `docs/adr/0084-signed-measurement-registry-distribution.md`
+- `tests/test_benchmark_measurement_registry.py`
+- `docs/benchmark/P0-C2B2A2-mandatory-registry-governed-harness.md`
+- `docs/adr/0085-mandatory-registry-governed-benchmark-harness.md`
 
 ## 마지막 검증
 
-- Benchmark registry·Target·문서 집중 테스트: 41 passed
+- Benchmark registry·Target·문서 집중 테스트: 49 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 197 source files 통과
-- 전체 `pytest -x -q`: 178 passed, 3 skipped 후 기존 Windows symlink 생성 권한
+- Linux 대상 strict mypy: 198 source files 통과
+- 전체 `pytest -x -q`: 186 passed, 3 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
 
 재현 명령:
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_measurement_registry.py tests\test_benchmark_target_factory.py tests\test_benchmark_target_recovery.py tests\test_walking_benchmark_measurement.py tests\test_benchmark_contract.py tests\test_documentation.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_measurement_registry.py tests\test_benchmark_measurement_registry_distribution.py tests\test_benchmark_target_factory.py tests\test_benchmark_target_recovery.py tests\test_walking_benchmark_measurement.py tests\test_benchmark_contract.py tests\test_documentation.py
 .\.venv\Scripts\ruff.exe check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -68,24 +69,28 @@ git diff --check
 
 ## 다음 조치
 
-P0-C2B2A1 delivery 후 `P0-C2B2A2`를 다음 순서로 진행한다.
+P0-C2B2A2 delivery 후 `P0-C2B2B`를 진행한다.
 
-1. verified `BenchmarkMeasurementRegistryActivation`을 exact P0-C2B1 target/admission outcome에 결박하는 새 sealed Harness Authority를 설계한다.
-2. Harness reader가 activation bundle signature/current validity, durable store head, target Run,
-   registry admission Run을 모두 다시 열어 검증한 뒤에만 Observation을 반환하게 한다.
-3. existing direct P0-C1/P0-C2A/B1 reader는 호환성을 위해 유지하되 registry-governed API에서는 우회할 수 없게 한다.
-4. activation/source/admission/Harness artifact와 audit event mutation, stale activation, cross-bundle substitution을 Worker 결과 사용 전에 차단한다.
-5. 그 다음 `P0-C2B2B`에서 Docker daemon 가용성을 확인하고 실제 provider evidence·network policy를 구현한다.
+1. 먼저 Docker daemon을 재확인하고 기존 `DockerWorkerBackend`, compose Target, container
+   entrypoint, network 설정을 read-only로 조사한다.
+2. daemon과 로컬 image가 가용하면 `RecoverableBenchmarkTargetFactoryAdapter`를 구현해 reset,
+   isolation, execution, cleanup/reconcile, measurement attestation을 실제 컨테이너 lifecycle에 연결한다.
+3. operation ID와 fence를 provider label/state에 원자적으로 반영하고 stale fence 거부를 검증한다.
+4. container/image/network/exit 상태를 canonical provider evidence로 수집하고 receipt digest에 결박한다.
+5. egress deny-by-default와 명시적 allow policy를 실제 network inspection으로 음성 검증한다.
+6. 구현된 adapter를 P0-C2B2A2 governed Harness에 넣어 live sealed Observation까지 검증한다.
 
-Docker daemon은 2026-08-01 재확인에서 `//./pipe/docker_engine` 부재로 비활성이다. 운영 Target,
-비용 발생 외부 자원, 비밀 key 값은 추가 승인 없이 생성하거나 사용하지 않는다.
+Docker daemon은 2026-08-01 마지막 확인에서 `//./pipe/docker_engine` 부재로 비활성이다. daemon이
+계속 비활성이면 실제 Docker 성공을 주장하지 않고, 안전하게 검증 가능한 adapter contract와
+negative preflight까지만 분리해 진행한다. 운영 Target, 비용 발생 외부 자원, 비밀 key 값은 추가
+승인 없이 생성하거나 사용하지 않는다.
 
 ## 알려진 경계
 
-- activation database 전체가 삭제·교체되면 remembered head도 사라지므로 외부 복구 anchor는 없다.
+- 실제 Docker/cloud provider의 fence enforcement, provider evidence, network policy는 아직 검증되지 않았다.
+- activation database 전체 삭제·교체를 막는 외부 복구 anchor는 없다.
 - distribution Trust Anchor rotation, remote HTTPS fetch, transparency/federation은 아직 없다.
-- signed activation은 아직 exact target/admission과 하나의 mandatory sealed Harness authority로 결박되지 않았다.
-- provider의 exact fence 강제와 실제 network policy는 deterministic fixture 밖에서 검증되지 않았다.
+- Recovery Authority seal과 journal terminal 전이 사이 hard exit는 같은 보수적 authority를 중복 생성할 수 있다.
 - Docker daemon은 현재 비활성이다.
 
 자세한 재현 조건과 해소 기준은 `KNOWN_ISSUES.md`에 있다.

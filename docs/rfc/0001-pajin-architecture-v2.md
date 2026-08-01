@@ -395,13 +395,18 @@ Fresh measurement requires the active key before reset, retired keys are histori
 revoked keys invalidate all verification. Contiguous registry revisions and exact predecessor
 digests prevent a caller from silently skipping transition validation inside sealed admission. The
 admission binds the source Run/root/artifact/signature without changing P0-C1 or BENCH-003B wire
-formats. Signed durable registry distribution is supplied by P0-C2B2A1; mandatory Harness
-admission and live provider/network evidence remain P0-C2B2A2/B.
+formats. Signed durable registry distribution and mandatory governed admission are supplied by
+P0-C2B2A1/A2; live provider/network evidence remains P0-C2B2B.
 P0-C2B2A1 signs the complete registry transition under a separate Benchmark distribution authority
 and persists accepted bundles in an append-only SQLite activation checkpoint. Revision-one-only
 bootstrap and exact durable-head comparison reject restart rollback, gaps, equivocation, and
-predecessor substitution. P0-C2B2A2 must still bind that activation to mandatory sealed Harness
-admission; live provider evidence and network enforcement remain P0-C2B2B.
+predecessor substitution. P0-C2B2A2 binds that activation to mandatory sealed Harness admission;
+live provider evidence and network enforcement remain P0-C2B2B.
+P0-C2B2A2 closes that integration gap with a mandatory registry-governed Harness. It activates the
+signed bundle before reset, then binds the exact activation, Target Run, and registry Admission Run
+in one sealed authority. Only its reader returns a governed Observation after reopening all sources,
+checking the durable exact revision, and applying the current distribution Trust Anchor. Live
+provider evidence and network enforcement remain P0-C2B2B.
 
 ## 10. Definition of Done
 
