@@ -441,6 +441,14 @@ performs the real network chain and the host independently validates exact decod
 hashes. The runnable catalog binds the adapter and image IDs to the private seeded chain. This is a
 zero-model-call benchmark and not a claim of separate MCP deployment or production RAG behavior.
 
+P0-D3 records an ordered structural composition of the exact Traditional Web/API and local
+AI/RAG/MCP selections. A content-addressed bridge declares the intended synthetic SQLi-output-to-
+document-upload flow but remains `declared-not-executed`. Private component Ground Truth stays out
+of the public composition and is re-bound during final selection. Because the current Manifest and
+provider lifecycle each name one Factory, P0-D3 creates no combined Factory, Manifest, receipt,
+Observation, metric, or execution authority. Runnable Hybrid measurement requires a coordinated
+multi-provider lifecycle and explicit transfer evidence in a successor contract.
+
 ## 10. Definition of Done
 
 Each vertical slice requires:

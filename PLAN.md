@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D3` Hybrid Target composition authority
+- 현재 우선순위: `P0-D3B` runnable Hybrid multi-provider lifecycle
 
 ## 제품 목표
 
@@ -207,6 +207,15 @@ deployment가 아니라 Target container 내부 protocol boundary다. 다음 `P0
 서로 다른 Factory authority를 하나의 Hybrid Target/chain으로 결합할 때 필요한 composition identity,
 lifecycle 순서, Ground Truth 및 음성 경계를 먼저 정의한다.
 
+`P0-D3`는 두 runnable component를 실행 결과로 합치지 않고 exact selection·순서·private Ground
+Truth와 `declared-not-executed` bridge를 별도 content-addressed authority로 묶는다. 기존
+`BenchmarkManifest`가 Factory 하나만 표현하므로 Hybrid Factory·Manifest·receipt·Observation·metric은
+만들지 않으며 execution·measurement·Manifest eligibility를 모두 false로 고정한다. component
+reversal·repetition·누락, catalog/profile/factory/provider policy 변경, private registration·Surface
+치환과 cross-composition replay가 fail closed한다. 다음 `P0-D3B`는 하나의 Hybrid Factory/Manifest
+identity 아래 coordinated isolation, cross-provider fence·cleanup order, exact transfer artifact와 bridge
+receipt를 구현하고 partial lifecycle 음성 경계를 통과한 뒤에만 runnable 상태를 허용한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -240,7 +249,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
   - [x] `P0-D2` AI/RAG/MCP non-runnable fixture catalog·ground-truth profile
   - [x] `P0-D2B` local AI/RAG/MCP provider·별도 runnable catalog
-  - [ ] `P0-D3` Traditional Web/API + AI/RAG/MCP Hybrid Target composition authority
+  - [x] `P0-D3` Traditional Web/API + AI/RAG/MCP non-runnable composition authority
+  - [ ] `P0-D3B` runnable Hybrid multi-provider lifecycle·bridge evidence
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

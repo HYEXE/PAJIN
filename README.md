@@ -176,6 +176,13 @@ adapter and exact image IDs to the same private seeded chain. The lab uses no mo
 endpoint is inside the Target container, so it does not claim production MCP or model-backed RAG
 conformance.
 
+P0-D3 composes the exact P0-D1 and P0-D2B selections into an ordered Hybrid contract without
+pretending that a combined provider exists. It binds a declared SQLi-output-to-document-upload
+bridge and the two private Ground Truth bindings, but fixes the bridge to
+`declared-not-executed`. No Hybrid Target Factory, Manifest, receipt, Observation, metric, or
+execution authority is created. A future runnable slice must prove coordinated isolation, transfer,
+fencing, cleanup, and measurement under one Hybrid identity.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

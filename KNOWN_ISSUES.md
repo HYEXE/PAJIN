@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 221 passed, 5 skipped 이후
+- 결과: 232 passed, 5 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -55,6 +55,19 @@
   Target 내부에 있어 별도 MCP service/process 격리를 증명하지 않는다.
 - 해소 조건: fixture는 non-runnable 상태로 보존한다. production 범위가 필요하면 separate MCP service,
   model-backed RAG, external provider trust와 cross-host fence를 새 profile·ADR로 구현한다.
+
+## P0-D3 Hybrid composition의 non-runnable 범위
+
+- 상태: 의도적으로 실행·측정을 금지한 structural composition
+- 현재 보장: exact P0-D1/P0-D2B selection, component order와 distinct identity, private Ground Truth,
+  code-owned bridge를 content-addressed authority로 결박하고 substitution·repetition·scope expansion을
+  차단한다.
+- 영향: bridge는 `declared-not-executed`이며 combined Target Factory·Manifest·operation journal·transfer
+  artifact·receipt·Observation이 없다. 독립 component Run 두 개를 Hybrid chain completion이나 metric으로
+  합산할 수 없다.
+- 해소 조건: 별도 Hybrid Factory/Manifest identity, coordinated network·fence·cleanup, exact transfer
+  artifact와 bridge execution receipt, combined matcher와 measurement authority를 실제 provider 및
+  partial-failure conformance로 검증한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
