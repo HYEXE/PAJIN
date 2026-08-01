@@ -119,16 +119,24 @@ gap with intent-before-call SQLite journaling, idempotency operation IDs, monoto
 startup reconciliation, bounded cleanup retry, and a sealed measurement-ineligible Recovery
 Authority. A spawned-process regression exits immediately after a durable execution intent and
 proves that cleanup is reconciled before another coordinate starts. Real Docker/provider evidence,
-enforced network policy, and measurement-key registry/rotation remain P0-C2B work; no live provider
-validation is claimed while the Docker daemon is unavailable.
+enforced network policy remain P0-C2B2B work; measurement-key lifecycle and signed durable local
+activation are implemented by P0-C2B1/P0-C2B2A1. No live provider validation is claimed while the
+Docker daemon is unavailable.
 
 P0-C2B1 adds a Benchmark-specific measurement Trust Registry without reusing Replay Target keys.
 Fresh runs require the one active key before reset; retired keys verify only bounded historical
 evidence, and revoked keys fail all verification. Contiguous revisions retain their exact
 predecessor and reject rollback, gaps, key substitution, and lifecycle resurrection. A separate
 sealed admission binds the registry revision to the exact P0-C1 source Run. Signed/durable registry
-distribution, mandatory BENCH-003B admission, live provider evidence, and network enforcement remain
-P0-C2B2.
+distribution is implemented by P0-C2B2A1; mandatory BENCH-003B admission, live provider evidence,
+and network enforcement remain P0-C2B2A2/B.
+
+P0-C2B2A1 signs each complete measurement-registry transition with a separate Ed25519 distribution
+authority and activates it through an append-only SQLite checkpoint. Bootstrap is revision one;
+later activations require the durable head's exact bundle and registry predecessors, so restart,
+rollback, gaps, equivocation, and Trust Anchor substitution fail closed while the local checkpoint
+remains intact. Mandatory sealed Harness admission remains P0-C2B2A2, and live provider/network
+validation remains P0-C2B2B.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

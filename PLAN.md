@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-C2B2` real Docker/provider adapter·evidence·network policy
+- 현재 우선순위: `P0-C2B2A2` mandatory sealed registry-governed Harness admission
 
 ## 제품 목표
 
@@ -140,16 +140,25 @@ ID와 단조 fence를 provider 계약에 전달하고 intent-before-call·valida
 트랜잭션으로 남긴다. 새 실행 전 open attempt를 더 높은 fence로 회수하고 cleanup을 bounded retry한
 뒤, 성공 여부를 `measurementAdmissionEligible=false`인 별도 sealed Recovery Authority로 기록한다.
 실제 spawn process가 execution intent 직후 `os._exit(23)`으로 종료되는 회귀에서도 다음 시작이
-cleanup을 복구하기 전 새 reset을 실행하지 않는다. 실제 Docker/provider evidence·network policy와
-measurement key registry/rotation은 Docker daemon 가용성을 전제로 하는 `P0-C2B`로 남긴다.
+cleanup을 복구하기 전 새 reset을 실행하지 않는다. measurement key registry/rotation과 signed
+activation은 후속 로컬 슬라이스에서 구현됐고, 실제 Docker/provider evidence·network policy는
+daemon 가용성을 전제로 하는 `P0-C2B2B`로 남긴다.
 
 `P0-C2B1`은 P0-C1 Trust Anchor를 보존한 별도 measurement key registry와
 active·retired·revoked lifecycle을 추가했다. 새 측정은 provider reset 전에 active key를 exact
 adapter definition과 대조하고, retired key는 bounded historical verification만 허용하며 revoked key는
 과거 증거도 거부한다. revision 2부터 exact predecessor registry를 sealed Admission Authority에
 포함해 rollback·gap·key substitution·resurrection을 차단한다. P0-C1/P0-C2A가 공통 runner Protocol을
-노출하므로 lifecycle을 중복 구현하지 않는다. registry distribution signature·durable latest revision,
-실제 provider evidence·network policy 및 BENCH-003B mandatory admission은 `P0-C2B2`로 남긴다.
+노출하므로 lifecycle을 중복 구현하지 않는다. registry distribution signature·durable latest revision은
+P0-C2B2A1에서 구현됐고, BENCH-003B mandatory admission과 실제 provider evidence·network policy는
+각각 `P0-C2B2A2`, `P0-C2B2B`로 남긴다.
+
+`P0-C2B2A1`은 measurement registry를 별도 Ed25519 distribution key로 서명하고, 7일 이하의
+bounded bundle에 현재·직전 registry와 이전 bundle digest를 함께 결박한다. host-local SQLite
+activation store는 revision 1만 bootstrap하고 이후 contiguous revision만 append-only로 수용해
+restart 뒤 rollback·gap·equivocation·predecessor substitution을 차단한다. verified activation을
+exact target/admission outcome에 sealed 결박하는 mandatory Harness는 `P0-C2B2A2`, 실제
+Docker/provider evidence와 network policy는 `P0-C2B2B`로 남긴다.
 
 ## 이전 기반 작업
 
@@ -177,7 +186,9 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-C1` provider-neutral lifecycle·sealed Observation·external measurement signature
   - [x] `P0-C2A` durable operation journal·idempotency/fencing·startup cleanup recovery
   - [x] `P0-C2B1` measurement Trust Registry·rotation·retirement·revocation admission
-  - [ ] `P0-C2B2` real Docker/provider adapter·evidence·network policy·mandatory registry admission
+  - [x] `P0-C2B2A1` signed registry distribution·durable anti-rollback activation
+  - [ ] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
+  - [ ] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 - Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약

@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0084: Sign and Durably Order Benchmark Measurement Registries](docs/adr/0084-signed-measurement-registry-distribution.md)
 - [ADR-0083: Separate Benchmark Measurement Key Lifecycle from Replay Target Trust](docs/adr/0083-benchmark-measurement-trust-registry.md)
 - [ADR-0082: Durable Fenced Target Operations Before Provider-Specific Adapters](docs/adr/0082-durable-target-operation-recovery.md)
 - [ADR-0081: Provider-Neutral Benchmark Target Lifecycle with External Measurement Signature](docs/adr/0081-provider-neutral-benchmark-target-lifecycle.md)

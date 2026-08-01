@@ -78,9 +78,10 @@ unchanged. `RecoverableBenchmarkTargetFactoryRunner` adapts the new durable prov
 the existing P0-C1 Runner, so completed Runs remain BENCH-003B1-compatible.
 
 P0-C2A does not claim a real Docker or cloud implementation. P0-C2B1 now adds the separate
-measurement-key registry with rotation/revocation. Provider evidence retrieval, enforced network
-policy, signed registry distribution, mandatory admission, and a live provider conformance run
-remain P0-C2B2. The local journal coordinates cooperating processes on one filesystem; durable
+measurement-key registry with rotation/revocation. Signed durable local registry activation is
+implemented by P0-C2B2A1. Provider evidence retrieval, enforced network policy, mandatory admission,
+and a live provider conformance run remain P0-C2B2A2/B. The local journal coordinates cooperating
+processes on one filesystem; durable
 cross-host ownership still depends on the provider enforcing the supplied fence.
 The journal assumes the local host and filesystem remain in the operator's trust boundary. Its
 content-addressed records detect accidental inconsistency during model reconstruction but are not a

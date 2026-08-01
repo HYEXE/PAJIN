@@ -68,14 +68,15 @@ audit event mutation, and a registry revision admitted before its own issue time
 ## Compatibility and remaining work
 
 All P0-C1/P0-C2A models, artifacts, readers, and direct runners remain available. The registry
-wrapper and admission Run are opt-in additive boundaries. This slice does not sign registry
-distribution, durably persist the latest accepted revision, or claim a live Docker/provider run.
-P0-C2B2 must connect the combined recovery + registry path to an actual provider, enforce network
-policy, retrieve provider evidence, and make registry admission mandatory in the measured Harness.
+wrapper and admission Run are opt-in additive boundaries. P0-C2B2A1 now signs registry distribution
+and durably persists the latest accepted revision. P0-C2B2A2 must make verified activation and
+registry admission mandatory in the measured Harness. P0-C2B2B must connect the combined recovery +
+registry path to an actual provider, enforce network policy, and retrieve provider evidence.
 
 ## Related documents
 
 - [P0-C1 contract](P0-C1-provider-neutral-target-factory-lifecycle.md)
 - [P0-C2A contract](P0-C2A-durable-target-operation-recovery.md)
+- [P0-C2B2A1 contract](P0-C2B2A1-signed-measurement-registry-distribution.md)
 - [BENCH-003B1 contract](BENCH-003B1-walking-measurement-admission.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

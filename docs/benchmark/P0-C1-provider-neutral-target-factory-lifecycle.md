@@ -33,7 +33,7 @@ ID/digest. The Runner verifies that signature before any output is admitted.
 Private key bytes are accepted only by the signer helper and are never serialized to a Run artifact.
 The Trust Anchor contains only the raw public key and content digest. P0-C2B1 adds an out-of-band
 measurement Trust Registry with validity windows, rotation, retirement, and revocation while
-preserving this wire shape. Signed durable registry distribution remains P0-C2B2 follow-up work.
+preserving this wire shape. P0-C2B2A1 adds signed durable local registry activation.
 
 ## Observation and BENCH-003B1 compatibility
 
@@ -71,8 +71,8 @@ attestation finish and therefore does not claim crash recovery by itself. The ad
 provider-operation journaling, fencing, startup reconciliation, cleanup retry, and a sealed
 measurement-ineligible failure authority. The
 [P0-C2B1 registry](P0-C2B1-benchmark-measurement-trust-registry.md) now supplies active, retired,
-and revoked measurement-key admission. Real Docker/provider evidence, network policy, signed
-registry distribution, and mandatory BENCH-003B admission remain P0-C2B2.
+and revoked measurement-key admission, and P0-C2B2A1 adds signed durable local activation.
+Mandatory BENCH-003B admission and live provider evidence/network enforcement remain P0-C2B2A2/B.
 
 ## Related documents
 
