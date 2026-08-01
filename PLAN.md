@@ -30,6 +30,8 @@ File Upload
 - [ ] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
   - [x] `WALK-005A` 승인·Permit·봉인 Gateway 실행 기반 Candidate·Atomic Claim Admission
   - [ ] `WALK-005B` MCP Claim-bound Restricted Replay·검증 projection
+    - [x] `WALK-005B1` validity Claim-bound 비실행 Replay Plan authority
+    - [ ] `WALK-005B2` Plan-bound fresh 실행·Claim 검증 projection
   - [ ] `WALK-005C` Report·Remediation Retest 폐루프
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
@@ -68,11 +70,11 @@ lifecycle을 증명할 때만 미확정 A02 Candidate와 validity·impact·sever
 의심 입력만으로 승인 실패나 내부 데이터 접근을 합성하지 않으며, 기본 demo MCP
 inspector는 해당 대상 관찰값을 내지 않으므로 이 Candidate를 만들 수 없다.
 
-다음 `WALK-005B`는 기존 KISA M03/M06/A04 Replay를 이름만 바꾸지 않는다. WALK-005A의 exact
-Candidate·Claim과 원 실행 authority를 입력으로 삼아 새 request identity, fresh Capability,
-별도 승인·Permit·Gateway Run, exact observable을 결박하는 MCP 전용 Restricted Replay 최소
-계약을 추가한다. Replay가 성공하기 전 Candidate는 `candidate-admitted-not-confirmed`를
-벗어나지 않는다.
+`WALK-005B1`은 기존 KISA M03/M06/A04 Replay를 이름만 바꾸지 않고, WALK-005A의 exact
+validity Claim과 원 실행·요청·Tool·target·parameter digest를 content-addressed 비실행 Plan에
+결박한다. replay Run·request·approval·Grant·Permit·dispatch·Worker identity는 모두 fresh해야
+한다. 다음 `WALK-005B2`가 이 Plan digest를 dispatch 전에 봉인하고 별도 Gateway 실행과 Claim
+검증 projection을 만들기 전까지 Candidate는 `candidate-admitted-not-confirmed`를 벗어나지 않는다.
 
 ## 이전 기반 작업
 

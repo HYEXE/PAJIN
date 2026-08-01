@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0073: Claim-Bound Non-Executable MCP Replay Plan](docs/adr/0073-claim-bound-non-executable-mcp-replay-plan.md)
 - [ADR-0072: Approved and Permitted Walking Candidate Admission](docs/adr/0072-approved-permitted-walking-candidate-admission.md)
 - [ADR-0071: Evidence-Bound Walking Observation Replan](docs/adr/0071-evidence-bound-walking-observation-replan.md)
 - [ADR-0070: Repository-Owned Planning and Handoff Authority](docs/adr/0070-repository-owned-planning-and-handoff-authority.md)

@@ -9,6 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from pajin.capabilities.activation import (
     CapabilityDispatchAuditEvent,
@@ -45,10 +46,14 @@ from pajin.discovery import (
     WalkingCandidateAdmissionRunner,
     WalkingExecutionEvidence,
     WalkingGraphRelationship,
+    WalkingMCPReplayPlan,
+    WalkingMCPReplayPlanError,
+    WalkingMCPReplayPlanRunner,
     WalkingObservationReplanAuthority,
     WalkingObservationReplanError,
     WalkingObservationReplanRunner,
     load_walking_candidate_admission_authority,
+    load_walking_mcp_replay_plan,
     load_walking_observation_replan_authority,
     mcp_tool_authorization_rule,
     walking_independent_approval_receipt,
@@ -1121,3 +1126,99 @@ def test_walking_candidate_admission_rejects_mutated_dispatch_evidence(
             replan,
             execution,
         )
+
+
+def test_walking_mcp_replay_plan_binds_exact_validity_claim_without_execution_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    execution = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign,
+        replan,
+        execution,
+    )
+    runner = WalkingMCPReplayPlanRunner(output_root=tmp_path / "replay-plans")
+
+    first = runner.run(campaign, source)
+    second = runner.run(campaign, source)
+
+    assert first.plan.plan_id == second.plan.plan_id
+    assert first.plan.plan_digest == second.plan.plan_digest
+    assert first.run_id != second.run_id
+    assert first.plan.claim.claim_type.value == "validity"
+    assert first.plan.source_run_id == source.run_id
+    assert first.plan.source_root_digest == verify_run_integrity(source.run_path).root_digest
+    assert (
+        first.plan.source_artifact_sha256
+        == sha256((source.run_path / source.artifact_path).read_bytes()).hexdigest()
+    )
+    assert first.plan.original_request_id == execution.request.request_id
+    assert first.plan.execution_state == "planned-not-authorized"
+    assert first.plan.freshness_requirements == (
+        "approval-id",
+        "capability-grant-id",
+        "dispatch-id",
+        "execution-run-id",
+        "permit-id",
+        "request-id",
+        "worker-execution-id",
+    )
+    assert verify_run_integrity(first.run_path).valid
+    assert load_walking_mcp_replay_plan(campaign, first) == first.plan
+
+
+def test_walking_mcp_replay_plan_rejects_mutated_candidate_authority(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    execution = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign,
+        replan,
+        execution,
+    )
+    (source.run_path / source.artifact_path).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(WalkingMCPReplayPlanError):
+        WalkingMCPReplayPlanRunner(output_root=tmp_path / "replay-plan").run(
+            campaign,
+            source,
+        )
+
+
+def test_walking_mcp_replay_plan_rejects_claim_and_freshness_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    execution = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign,
+        replan,
+        execution,
+    )
+    outcome = WalkingMCPReplayPlanRunner(output_root=tmp_path / "replay-plan").run(
+        campaign,
+        source,
+    )
+    raw = outcome.plan.model_dump(mode="json", by_alias=True)
+    raw["planId"] = ""
+    raw["planDigest"] = ""
+    raw["claim"] = source.authority.atomic_claims[1].model_dump(mode="json", by_alias=True)
+
+    with pytest.raises(ValidationError, match="exact validity Claim"):
+        WalkingMCPReplayPlan.model_validate(raw)
+
+    raw["claim"] = outcome.plan.claim.model_dump(mode="json", by_alias=True)
+    raw["freshnessRequirements"] = raw["freshnessRequirements"][:-1]
+    with pytest.raises(ValidationError):
+        WalkingMCPReplayPlan.model_validate(raw)

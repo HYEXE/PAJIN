@@ -155,6 +155,14 @@ from pajin.discovery.walking_replanning import (
     load_walking_observation_replan_authority,
     walking_observation_replan_rule,
 )
+from pajin.discovery.walking_replay import (
+    WALKING_MCP_REPLAY_PLAN_API_VERSION,
+    WalkingMCPReplayPlan,
+    WalkingMCPReplayPlanError,
+    WalkingMCPReplayPlanOutcome,
+    WalkingMCPReplayPlanRunner,
+    load_walking_mcp_replay_plan,
+)
 from pajin.discovery.walking_validation import (
     WALKING_CANDIDATE_ADMISSION_API_VERSION,
     SealedWalkingCapabilityExecution,
@@ -179,6 +187,7 @@ __all__ = [
     "WALKING_CANDIDATE_ADMISSION_API_VERSION",
     "WALKING_HYPOTHESIS_API_VERSION",
     "WALKING_MCP_AUTHORIZATION_API_VERSION",
+    "WALKING_MCP_REPLAY_PLAN_API_VERSION",
     "WALKING_OBSERVATION_REPLAN_API_VERSION",
     "AdmittedMCPAuthorizationObservation",
     "AttackHypothesis",
@@ -285,6 +294,10 @@ __all__ = [
     "WalkingFollowUpPlan",
     "WalkingGraphRelationship",
     "WalkingIndependentApprovalReceipt",
+    "WalkingMCPReplayPlan",
+    "WalkingMCPReplayPlanError",
+    "WalkingMCPReplayPlanOutcome",
+    "WalkingMCPReplayPlanRunner",
     "WalkingObservationGraphSnapshot",
     "WalkingObservationReplanAuthority",
     "WalkingObservationReplanError",
@@ -302,6 +315,7 @@ __all__ = [
     "http_surface_locator",
     "load_recon_surface_authority",
     "load_walking_candidate_admission_authority",
+    "load_walking_mcp_replay_plan",
     "load_walking_observation_replan_authority",
     "mcp_prompt_surface_locator",
     "mcp_resource_surface_locator",

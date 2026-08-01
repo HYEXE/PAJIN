@@ -338,13 +338,16 @@ and approval bindings prevent authority expansion. It creates no activation, app
 Permit, request, argument, or dispatch. WALK-005A now reopens that sealed Plan plus a separate
 execution Run and admits an unconfirmed Candidate only when an explicit approval receipt binds the
 exact canonical CapabilityGrant and precedes a consumed ActionPermit claim, claimed and terminal
-audit events bind that same Grant digest, and the existing reconciliation path proves a completed
-Gateway lifecycle,
-and sealed target output explicitly reports missing independent authorization enforcement and
+audit events bind that same Grant digest, the existing reconciliation path proves a completed
+Gateway lifecycle, and sealed target output explicitly reports missing independent authorization enforcement and
 internal-data access. It reuses deterministic Atomic Claims but creates no semantic decision,
 ReplayOutcome, confirmation, report eligibility, or Retest result. The default demo inspector does
-not synthesize these target observables. Multi-adapter scheduling and WALK-005B MCP Claim-bound
-Replay remain separate future work.
+not synthesize these target observables. WALK-005B1 now reopens that sealed Candidate authority and
+binds its exact validity Claim, original execution/request semantics, and seven mandatory freshness
+identities into a content-addressed `planned-not-authorized` MCP Replay Plan. It creates no approval,
+Grant, Permit, request, ticket, dispatch, ReplayOutcome, or confirmation, and does not relabel the
+Candidate as an implemented KISA Replay scenario. Multi-adapter scheduling and WALK-005B2 Plan-bound
+execution remain separate future work.
 
 ## 10. Definition of Done
 
