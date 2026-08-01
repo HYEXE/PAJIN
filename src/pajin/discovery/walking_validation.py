@@ -652,6 +652,40 @@ def _load_execution(
     )
 
 
+def load_sealed_walking_capability_execution(
+    replan: WalkingObservationReplanAuthority,
+    evidence: WalkingExecutionEvidence,
+) -> SealedWalkingCapabilityExecution:
+    """Rebuild one approved, permitted, sealed execution without admitting a Candidate."""
+
+    try:
+        return _load_execution(replan, evidence)
+    except (
+        CapabilityDispatchReconciliationError,
+        OSError,
+        RunIntegrityError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        raise WalkingCandidateAdmissionError(
+            "Walking sealed Capability execution could not be verified"
+        ) from exc
+
+
+def walking_candidate_from_execution(
+    replan: WalkingObservationReplanAuthority,
+    execution: SealedWalkingCapabilityExecution,
+) -> CandidateFinding:
+    """Derive the exact unconfirmed Candidate semantics from one verified execution."""
+
+    try:
+        return _candidate(replan, execution)
+    except (ValidationError, ValueError) as exc:
+        raise WalkingCandidateAdmissionError(
+            "Walking execution does not prove Candidate observables"
+        ) from exc
+
+
 def _candidate(
     replan: WalkingObservationReplanAuthority,
     execution: SealedWalkingCapabilityExecution,

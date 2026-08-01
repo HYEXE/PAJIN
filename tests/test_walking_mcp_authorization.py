@@ -46,6 +46,8 @@ from pajin.discovery import (
     WalkingCandidateAdmissionRunner,
     WalkingExecutionEvidence,
     WalkingGraphRelationship,
+    WalkingMCPClaimReplayError,
+    WalkingMCPClaimReplayRunner,
     WalkingMCPReplayPlan,
     WalkingMCPReplayPlanError,
     WalkingMCPReplayPlanRunner,
@@ -53,10 +55,12 @@ from pajin.discovery import (
     WalkingObservationReplanError,
     WalkingObservationReplanRunner,
     load_walking_candidate_admission_authority,
+    load_walking_mcp_claim_replay_authority,
     load_walking_mcp_replay_plan,
     load_walking_observation_replan_authority,
     mcp_tool_authorization_rule,
     walking_independent_approval_receipt,
+    walking_mcp_replay_approval_receipt,
     walking_observation_replan_rule,
 )
 from pajin.domain.models import (
@@ -388,6 +392,9 @@ def _walking_execution_evidence(
     authorization_enforced: bool = False,
     internal_data_accessed: bool = True,
     record_approval: bool = True,
+    identity_suffix: str = "",
+    replay_plan: WalkingMCPReplayPlan | None = None,
+    worker_execution_id: str | None = None,
 ) -> WalkingExecutionEvidence:
     authority = replan.authority
     definition = authority.source.hypothesis.capability
@@ -401,7 +408,7 @@ def _walking_execution_evidence(
         riskTier=definition.risk_tier,
     )
     request = ToolRequest(
-        request_id="tool_walk_candidate",
+        request_id=f"tool_walk_candidate{identity_suffix}",
         agent_id="agent:walking-candidate-probe",
         tool_id=definition.tool.tool_id,
         target=MCP_TARGET,
@@ -424,7 +431,7 @@ def _walking_execution_evidence(
     ).hexdigest()
     now = datetime.now(UTC)
     intent = PendingToolIntent(
-        call_id="call_walk_candidate",
+        call_id=f"call_walk_candidate{identity_suffix}",
         function_name="rag_document_probe",
         arguments=request.arguments,
         arguments_json=arguments_json,
@@ -436,7 +443,7 @@ def _walking_execution_evidence(
         requested_at=now,
     )
     approval = ToolLoopApproval(
-        approval_id="approval_" + "a" * 32,
+        approval_id="approval_" + ("b" if identity_suffix else "a") * 32,
         call_fingerprint=fingerprint,
         tool_id=request.tool_id,
         target=request.target,
@@ -445,7 +452,7 @@ def _walking_execution_evidence(
         expires_at=now + timedelta(minutes=5),
     )
     grant = CapabilityGrant(
-        grant_id="grant_walk_candidate",
+        grant_id=f"grant_walk_candidate{identity_suffix}",
         subject=request.agent_id,
         campaign=campaign.metadata.name,
         tools={request.tool_id},
@@ -501,9 +508,22 @@ def _walking_execution_evidence(
             approval_receipt.model_dump(mode="json", by_alias=True),
             occurred_at=approval.approved_at,
         )
+        if replay_plan is not None:
+            replay_receipt = walking_mcp_replay_approval_receipt(
+                replay_plan,
+                request,
+                intent,
+                approval,
+                grant,
+            )
+            store.append_event(
+                "walking.mcp-replay-plan.approved",
+                replay_receipt.model_dump(mode="json", by_alias=True),
+                occurred_at=approval.approved_at,
+            )
     started_at = now + timedelta(seconds=3)
     worker = WorkerResult(
-        execution_id="worker-walk-candidate",
+        execution_id=worker_execution_id or f"worker-walk-candidate{identity_suffix}",
         backend="simulated",
         status=WorkerStatus.SUCCEEDED,
         exit_code=0,
@@ -1222,3 +1242,81 @@ def test_walking_mcp_replay_plan_rejects_claim_and_freshness_substitution(
     raw["freshnessRequirements"] = raw["freshnessRequirements"][:-1]
     with pytest.raises(ValidationError):
         WalkingMCPReplayPlan.model_validate(raw)
+
+
+def test_walking_mcp_claim_replay_requires_fresh_plan_bound_execution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    original = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign, replan, original
+    )
+    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, source)
+    replay = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_replay",
+        replay_plan=plan.plan,
+    )
+
+    outcome = WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
+        campaign, plan, replay
+    )
+    authority = outcome.authority
+
+    assert authority.validation_state == "validity-reproduced-not-confirmed"
+    assert authority.projection.status.value == "reproduced"
+    assert authority.projection.confirmation_eligible is False
+    assert authority.projection.claim_id == plan.plan.claim.claim_id
+    assert authority.execution.request.request_id != original.request.request_id
+    assert authority.execution.run_id != original.permit.run_id
+    assert verify_run_integrity(outcome.run_path).valid
+    assert load_walking_mcp_claim_replay_authority(campaign, outcome) == authority
+
+
+def test_walking_mcp_claim_replay_rejects_unbound_or_reused_execution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    original = _walking_execution_evidence(tmp_path, campaign, replan)
+    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign, replan, original
+    )
+    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, source)
+    unbound = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_unbound",
+    )
+
+    with pytest.raises(WalkingMCPClaimReplayError):
+        WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
+            campaign, plan, unbound
+        )
+
+    with pytest.raises(WalkingMCPClaimReplayError):
+        WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
+            campaign, plan, original
+        )
+
+    reused_worker = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_reused_worker",
+        replay_plan=plan.plan,
+        worker_execution_id="worker-walk-candidate",
+    )
+    with pytest.raises(WalkingMCPClaimReplayError, match="could not be verified"):
+        WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
+            campaign, plan, reused_worker
+        )

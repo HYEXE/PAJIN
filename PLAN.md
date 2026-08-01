@@ -29,9 +29,9 @@ File Upload
 - [x] `WALK-004` Observation을 Graph에 Admission하고 bounded replan 생성
 - [ ] `WALK-005` Candidate·Atomic Validation·Replay·Report·Retest 폐루프 완성
   - [x] `WALK-005A` 승인·Permit·봉인 Gateway 실행 기반 Candidate·Atomic Claim Admission
-  - [ ] `WALK-005B` MCP Claim-bound Restricted Replay·검증 projection
+  - [x] `WALK-005B` MCP Claim-bound Restricted Replay·검증 projection
     - [x] `WALK-005B1` validity Claim-bound 비실행 Replay Plan authority
-    - [ ] `WALK-005B2` Plan-bound fresh 실행·Claim 검증 projection
+    - [x] `WALK-005B2` Plan-bound fresh 실행·Claim 검증 projection
   - [ ] `WALK-005C` Report·Remediation Retest 폐루프
 - [ ] `WALK-006` Shadow Supervisor가 선택했을 Task와 Stop Decision 기록
 
@@ -75,6 +75,12 @@ validity Claim과 원 실행·요청·Tool·target·parameter digest를 content-
 결박한다. replay Run·request·approval·Grant·Permit·dispatch·Worker identity는 모두 fresh해야
 한다. 다음 `WALK-005B2`가 이 Plan digest를 dispatch 전에 봉인하고 별도 Gateway 실행과 Claim
 검증 projection을 만들기 전까지 Candidate는 `candidate-admitted-not-confirmed`를 벗어나지 않는다.
+
+`WALK-005B2`는 B1 Plan/Claim digest와 exact approval·request·Grant를 replay receipt에 결박해
+Permit claim 전에 봉인하고, 기존 WALK-005A verifier로 별도 Gateway 실행을 재검증한다. 원 실행
+대비 Run·request·approval·Grant·Permit·dispatch·Worker ID가 모두 fresh하고 요청 의미와 새 validity
+Claim statement가 exact equality일 때만 `reproduced / confirmationEligible=false` projection을
+봉인한다. 다음 `WALK-005C`에서 확인 정책, 보고서, remediation Retest 폐루프를 연결한다.
 
 ## 이전 기반 작업
 

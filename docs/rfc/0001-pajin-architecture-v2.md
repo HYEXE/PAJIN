@@ -346,8 +346,12 @@ not synthesize these target observables. WALK-005B1 now reopens that sealed Cand
 binds its exact validity Claim, original execution/request semantics, and seven mandatory freshness
 identities into a content-addressed `planned-not-authorized` MCP Replay Plan. It creates no approval,
 Grant, Permit, request, ticket, dispatch, ReplayOutcome, or confirmation, and does not relabel the
-Candidate as an implemented KISA Replay scenario. Multi-adapter scheduling and WALK-005B2 Plan-bound
-execution remain separate future work.
+Candidate as an implemented KISA Replay scenario. WALK-005B2 adds a separate Plan-bound approval
+receipt that must be sealed before the fresh Permit's dispatch claim, reuses the exact WALK-005A
+Gateway verifier, rejects reuse of all seven original execution identities, and requires exact
+request semantics plus a freshly derived matching validity Claim statement. Its sealed public
+projection is only `reproduced` with confirmation eligibility fixed to false. Multi-adapter
+scheduling and WALK-005C confirmation/report/retest policy remain separate future work.
 
 ## 10. Definition of Done
 
