@@ -417,6 +417,15 @@ absence, and receipt-bound provider evidence. It integrates with the existing re
 Harness without changing earlier wire contracts. Cross-host providers and the broader P0-D Target
 Factory families remain future work.
 
+P0-D1 establishes the first Target catalog boundary without generalizing that provider. The public
+registration carries the exact profile/factory/provider identities, empty mutation allowlist,
+network policy, and only a private Ground Truth digest. A separate private binding retains the
+complete seeded case and code-owned matcher identity. The additive catalog wrapper validates the
+Manifest, adapter, Docker profile, catalog, and private binding before provider mutation and checks
+receipt-bound execution evidence plus registered counts before returning the Observation. Catalog
+selection remains content-addressed but non-executable; registry activation and governed Harness
+admission retain their existing authority.
+
 ## 10. Definition of Done
 
 Each vertical slice requires:

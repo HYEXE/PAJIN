@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 197 passed, 4 skipped 이후
+- 결과: 206 passed, 4 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -28,6 +28,20 @@
   수 없다.
 - 해소 조건: 원격 provider의 원자적 compare-and-set fence 또는 lease authority와 독립 provider
   evidence를 구현하고 cross-host stale-call 음성 검증을 수행한다.
+
+## P0-D1 Target catalog 배포 권위와 sealed Harness 연결
+
+- 상태: 의도적으로 남긴 catalog 운영 경계
+- 현재 보장: public registration/catalog, private Ground Truth binding, selection authority는
+  domain-separated content digest로 exact equality를 증명한다. catalog wrapper는 provider 호출 전
+  Manifest·adapter·Docker profile·catalog·private Ground Truth를 검증하고 실행 뒤 receipt-bound
+  evidence와 등록된 count를 대조한다. selection은 `providerExecutionAuthorized=false`다.
+- 영향: exact Docker image ID는 trusted provisioning input이다. catalog 자체를 누가 승인했는지,
+  이전 revision으로 rollback하지 않았는지, 최종 registry-governed Harness authority가 어느 catalog
+  selection을 사용했는지는 아직 외부 서명·durable activation·sealed source binding으로 증명하지
+  않는다.
+- 해소 조건: 별도 catalog distribution Trust Anchor와 contiguous durable activation을 추가하고,
+  exact catalog selection Run/root/artifact를 governed Harness authority와 reader에 결박한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 

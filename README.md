@@ -151,6 +151,15 @@ and binds bounded Docker evidence to every existing stage receipt. Fake-provider
 opt-in live Docker Desktop conformance test cover recovery and cleanup. This is a host-local single
 profile boundary, not a generic or cross-host provider implementation.
 
+P0-D1 adds the first code-registered Traditional Web/API catalog boundary above that provider. A
+public content-addressed registration binds the exact Docker profile, Target Factory, empty
+mutation allowlist, internal-network policy, and only the private Ground Truth digest. Complete
+seeded case and matcher contents remain in a separate private binding. An additive wrapper checks
+the Manifest, adapter, provisioned image profile, catalog, and private Ground Truth before any
+provider operation, then requires receipt-bound Docker execution evidence and measured counts to
+match the registered SQLi case. The selection is explicitly non-executable and does not replace
+measurement-registry activation or sealed Harness admission.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

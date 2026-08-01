@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
+- 현재 우선순위: `P0-D2` AI/RAG/MCP Target Factory catalog·ground-truth profile
 
 ## 제품 목표
 
@@ -176,6 +176,16 @@ host-local 단일 profile이며 cross-host·일반 Target catalog를 주장하�
 구체 구현을 임의 image 실행기로 넓히지 않고 Traditional Web/API Target catalog와 ground-truth
 profile 계약부터 분리한다.
 
+`P0-D1`은 첫 Traditional Web/API profile을 public catalog와 private Ground Truth binding으로
+분리했다. public registration은 exact Docker profile·Target Factory·빈 mutation allowlist·internal
+network policy·Ground Truth digest만 결박하고 case와 matcher 원문은 노출하지 않는다. additive
+wrapper는 provider 호출 전에 Manifest·adapter·profile·catalog·private binding을 exact equality로
+검증하고, 실행 뒤 receipt-bound Docker evidence와 등록된 Surface·Finding·chain count가 일치할
+때만 Observation을 반환한다. selection 자체는 `providerExecutionAuthorized=false`이며 기존
+measurement registry와 sealed Harness 권위를 대체하지 않는다. 다음 `P0-D2`는 기존 WALK-002/003
+RAG·MCP chain과 실제 실행 provider의 현재 범위를 먼저 대조해, 실행할 수 없는 기능을 catalog가
+허가하는 허상을 만들지 않는 AI/RAG/MCP profile 최소 슬라이스를 정의한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -206,7 +216,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-C2B2A2` mandatory sealed registry-governed Harness admission
   - [x] `P0-C2B2B` real Docker/provider adapter·evidence·network policy
 - [ ] `P0-D` Traditional Web/API, AI/RAG/MCP, Hybrid, Holdout, Mutation Target Factory
-  - [ ] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
+  - [x] `P0-D1` Traditional Web/API Target Factory catalog·ground-truth profile
+  - [ ] `P0-D2` AI/RAG/MCP Target Factory catalog·ground-truth profile
 - Deterministic PAJIN, 일반 Scanner, Single-agent Baseline 측정
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

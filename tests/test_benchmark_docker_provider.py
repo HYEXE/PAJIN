@@ -29,6 +29,7 @@ from pajin.benchmark import (
     BenchmarkTargetOperation,
     BenchmarkTargetRecoveryRequest,
     BenchmarkTargetStageReceipt,
+    CatalogBoundDockerBugBountyTargetFactoryAdapter,
     DockerBenchmarkProviderError,
     DockerBugBountyTargetFactoryAdapter,
     DockerBugBountyTargetProfile,
@@ -38,6 +39,8 @@ from pajin.benchmark import (
     benchmark_measurement_registry_distribution_public_key_base64url,
     benchmark_target_coordinate,
     load_registry_governed_benchmark_observation,
+    registered_traditional_web_api_ground_truth,
+    registered_traditional_web_api_target_catalog,
 )
 
 NOW = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
@@ -369,6 +372,52 @@ def test_docker_provider_runs_internal_lab_and_retrieves_bound_evidence(tmp_path
     assert execution.network_container_count == 1
     assert cleanup.resources_absent is True
     assert authority.observation.matched_known_finding_count == 1
+    assert not docker.containers
+    assert not docker.networks
+
+
+def test_docker_provider_runs_through_registered_target_catalog(tmp_path: Path) -> None:
+    docker = _FakeDocker()
+    profile = _profile()
+    ground_truth = registered_traditional_web_api_ground_truth(
+        profile,
+        benchmark_id="benchmark:docker-bug-bounty-v1",
+    )
+    manifest = _manifest(profile).model_copy(
+        update={"ground_truth_digest": ground_truth.digest()}
+    )
+    provider = DockerBugBountyTargetFactoryAdapter(
+        state_path=tmp_path / "docker-provider.sqlite3",
+        profile=profile,
+        manifest=manifest,
+        trust_anchor=_measurement_anchor(),
+        measurement_private_key=MEASUREMENT_KEY,
+        command_runner=docker,
+    )
+    adapter = CatalogBoundDockerBugBountyTargetFactoryAdapter(
+        provider=provider,
+        manifest=manifest,
+        catalog=registered_traditional_web_api_target_catalog(profile, ground_truth),
+        ground_truth=ground_truth,
+    )
+
+    outcome = asyncio.run(
+        RecoverableBenchmarkTargetFactoryRunner(
+            output_root=tmp_path / "runs",
+            journal_path=tmp_path / "target-journal.sqlite3",
+            adapter=adapter,
+            trust_anchor=_measurement_anchor(),
+        ).run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+
+    assert adapter.selection.ground_truth_digest == ground_truth.digest()
+    assert outcome.authority.observation.matched_known_finding_count == 1
+    assert provider.evidence(outcome.authority.execution_receipt).probe_vulnerable is True
     assert not docker.containers
     assert not docker.networks
 
@@ -779,13 +828,25 @@ def test_real_docker_bug_bounty_provider_conformance(tmp_path: Path) -> None:
         target_image_id=image_id("pajin-bug-bounty-target:dev"),
         worker_image_id=image_id("pajin-benchmark-worker:dev"),
     )
-    manifest = _manifest(profile)
-    adapter = DockerBugBountyTargetFactoryAdapter(
+    ground_truth = registered_traditional_web_api_ground_truth(
+        profile,
+        benchmark_id="benchmark:docker-bug-bounty-v1",
+    )
+    manifest = _manifest(profile).model_copy(
+        update={"ground_truth_digest": ground_truth.digest()}
+    )
+    provider = DockerBugBountyTargetFactoryAdapter(
         state_path=tmp_path / "docker-provider.sqlite3",
         profile=profile,
         manifest=manifest,
         trust_anchor=_measurement_anchor(),
         measurement_private_key=MEASUREMENT_KEY,
+    )
+    adapter = CatalogBoundDockerBugBountyTargetFactoryAdapter(
+        provider=provider,
+        manifest=manifest,
+        catalog=registered_traditional_web_api_target_catalog(profile, ground_truth),
+        ground_truth=ground_truth,
     )
 
     _, distribution_anchor, bundle = _registry_distribution()
@@ -813,8 +874,8 @@ def test_real_docker_bug_bounty_provider_conformance(tmp_path: Path) -> None:
         activation_store=activation_store,
         distribution_trust_anchor=distribution_anchor,
     )
-    isolation = adapter.evidence(outcome.target.authority.isolation_receipt)
-    cleanup = adapter.evidence(outcome.target.authority.cleanup_receipt)
+    isolation = provider.evidence(outcome.target.authority.isolation_receipt)
+    cleanup = provider.evidence(outcome.target.authority.cleanup_receipt)
     assert observation.observation == outcome.target.authority.observation
     assert isolation.network_internal is True
     assert isolation.published_port_count == 0

@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0087: Separate Public Target Registration from Private Ground Truth](docs/adr/0087-traditional-web-api-target-catalog.md)
 - [ADR-0086: Enforce the First Concrete Benchmark Provider on a Local Docker Boundary](docs/adr/0086-local-docker-benchmark-provider.md)
 - [ADR-0085: Require One Sealed Authority for Registry-Governed Measurements](docs/adr/0085-mandatory-registry-governed-benchmark-harness.md)
 - [ADR-0084: Sign and Durably Order Benchmark Measurement Registries](docs/adr/0084-signed-measurement-registry-distribution.md)

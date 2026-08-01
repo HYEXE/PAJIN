@@ -102,13 +102,15 @@ formats remain unchanged. The new profile, evidence model, adapter, command boun
 exports are additive. The existing registry-governed Harness accepts the recoverable Docker runner
 without a special integration path.
 
-P0-D must generalize beyond this one synthetic Traditional Web/API profile and define catalogued
-AI/RAG/MCP, Hybrid, Holdout, and Mutation Target Factories. Remote provider fencing, independently
-sealed provider evidence, and cross-host ownership remain outside this local slice.
+P0-D1 now places this one synthetic Traditional Web/API profile behind a public catalog/private
+Ground Truth split and an additive exact-selection wrapper. P0-D must still define separately
+catalogued AI/RAG/MCP, Hybrid, Holdout, and Mutation Target Factories. Remote provider fencing,
+independently sealed provider evidence, and cross-host ownership remain outside this local slice.
 
 ## Related documents
 
 - [P0-C2B2A2 contract](P0-C2B2A2-mandatory-registry-governed-harness.md)
 - [P0-C2A contract](P0-C2A-durable-target-operation-recovery.md)
 - [P0-C1 contract](P0-C1-provider-neutral-target-factory-lifecycle.md)
+- [P0-D1 contract](P0-D1-traditional-web-api-target-catalog.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)
