@@ -1428,6 +1428,19 @@ class RunStore:
             self._record_path_identity(destination)
             return destination.relative_to(self.path).as_posix()
 
+    def write_bytes(self, relative_path: str, content: bytes) -> str:
+        """Write exact opaque evidence bytes without newline or JSON normalization."""
+
+        with self._mutation():
+            destination = self._safe_destination(relative_path)
+            self._require_unsealed(destination)
+            if not isinstance(content, bytes):
+                raise TypeError("RunStore binary content must be bytes")
+            self._prepare_destination_parent(destination)
+            _atomic_write_private(destination, content)
+            self._record_path_identity(destination)
+            return destination.relative_to(self.path).as_posix()
+
     def seal(self) -> RunIntegritySeal:
         """Append a seal for every new artifact and event since the previous seal."""
 

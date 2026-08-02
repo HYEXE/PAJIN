@@ -6,9 +6,9 @@
 ## Windows 심볼릭 링크 테스트 권한
 
 - 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-01
+- 마지막 재현: 2026-08-02
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 296 passed, 6 skipped 이후
+- 결과: 302 passed, 7 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -114,15 +114,18 @@
 - 해소 조건: 별도 Scanner·single-agent measurement authority, signed catalog distribution과 필요한 외부
   provider trust 경계를 구현하고 동일 benchmark 좌표의 sealed Result를 비교한다.
 
-## P0-E2A Scanner plan의 비실행 범위
+## P0-E2B Scanner 측정의 local ZAP 범위
 
-- 상태: 구체 Scanner 선택 전 의도적인 contract-only 경계
-- 현재 보장: Scanner ID/version·executable SHA-256·configuration digest 요구사항, SARIF 2.1.0 parser
-  contract, exact P0-D1 Target selection과 전체 seed/repetition 좌표를 content-addressed plan에 결박한다.
-- 영향: 실제 Scanner binary/image, invocation receipt, raw SARIF, normalized Observation과 Benchmark
-  Result가 없다. P0-E2A를 일반 Scanner 성능 측정이나 P0-E1 비교 근거로 사용할 수 없다.
-- 해소 조건: 검토된 구체 Scanner artifact를 선택하고 fresh Target isolation 안에서 실행·raw output
-  sealing·parser·recovery·cleanup·registry-governed admission을 제공하는 P0-E2B를 구현한다.
+- 상태: 의도적으로 제한된 첫 일반 Scanner 실측 baseline
+- 현재 보장: OWASP ZAP 2.17.0의 exact runtime image ID, code-owned automation plan, hardened Scanner
+  container, internal P0-D1 network, receipt-bound raw SARIF와 strict normalization을 registry-governed
+  Harness source 및 completed Result에 결박한다. 실행은 immutable image ID를 사용하고 종료 뒤 관리
+  대상 container와 network 부재를 증명한다.
+- 영향: 결과는 고정된 local Docker SQLi lab과 한 ZAP version/configuration에 한정된다. image ID의
+  trusted provisioning, 일반 Web Scanner 성능, production 공급망, single-agent 성능, cross-host fence를
+  증명하지 않는다. candidate comparison과 Supervisor activation은 false다.
+- 해소 조건: P0-E3 single-agent authority와 필요한 signed catalog distribution·외부 provider trust를
+  별도 구현하고, 동일 좌표에서 모든 비교 metric이 measured인 sealed Result끼리만 비교한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
@@ -152,7 +155,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 206 source files 통과
+- 현재 결과: 211 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
@@ -172,9 +175,10 @@
 ## Docker daemon 가용성
 
 - 상태: 현재 가용, 세션 의존 환경 제약
-- 마지막 관찰: 2026-08-01
+- 마지막 관찰: 2026-08-02
 - 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B SQLi, P0-D2B AI/RAG/MCP,
-  P0-D3B2 Hybrid real Target conformance가 통과했고 종료 뒤 관리 대상 container와 network가 남지 않았다.
+  P0-D3B2 Hybrid와 P0-E2B ZAP real conformance가 통과했고 종료 뒤 관리 대상 container와 network가
+  남지 않았다.
 - 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
   opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.
 - 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 daemon 상태와 exact image ID를 다시

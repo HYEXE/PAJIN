@@ -315,13 +315,22 @@ def test_completed_result_requires_all_metrics_and_exact_cleanup_binding() -> No
         BenchmarkResult.model_validate(raw)
 
     raw = _result(BenchmarkArmKind.DETERMINISTIC_BASELINE).model_dump(mode="json")
+    raw["metrics"][2] = {
+        "metric": BenchmarkMetric.FINDING_PRECISION.value,
+        "unit": BenchmarkMetricUnit.RATIO.value,
+        "status": BenchmarkMetricStatus.NOT_APPLICABLE.value,
+        "reason": "no candidate Finding was observed",
+    }
+    completed = BenchmarkResult.model_validate(raw)
+    assert completed.metrics[2].status is BenchmarkMetricStatus.NOT_APPLICABLE
+
     raw["metrics"][0] = {
         "metric": BenchmarkMetric.ATTACK_SURFACE_RECALL.value,
         "unit": BenchmarkMetricUnit.RATIO.value,
         "status": BenchmarkMetricStatus.NOT_APPLICABLE.value,
-        "reason": "runner failed before measurement",
+        "reason": "invented unavailable denominator",
     }
-    with pytest.raises(ValidationError, match="must measure every required metric"):
+    with pytest.raises(ValidationError, match="without a nullable denominator"):
         BenchmarkResult.model_validate(raw)
 
 

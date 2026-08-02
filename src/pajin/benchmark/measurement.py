@@ -21,6 +21,7 @@ from pajin.benchmark.models import (
     BenchmarkManifest,
     BenchmarkMetric,
     BenchmarkMetricObservation,
+    BenchmarkMetricStatus,
     BenchmarkMetricUnit,
     BenchmarkResult,
     BenchmarkResultStatus,
@@ -112,27 +113,27 @@ class WalkingBenchmarkRunObservation(StrictModel):
     )
     known_finding_count: _PositiveCount = Field(alias="knownFindingCount")
     matched_known_finding_count: _Count = Field(alias="matchedKnownFindingCount")
-    candidate_finding_count: _PositiveCount = Field(alias="candidateFindingCount")
-    valid_candidate_finding_count: _PositiveCount = Field(
+    candidate_finding_count: _Count = Field(alias="candidateFindingCount")
+    valid_candidate_finding_count: _Count = Field(
         alias="validCandidateFindingCount"
     )
     unexpected_valid_finding_count: _Count = Field(
         alias="unexpectedValidFindingCount"
     )
-    confirmed_finding_count: _PositiveCount = Field(alias="confirmedFindingCount")
+    confirmed_finding_count: _Count = Field(alias="confirmedFindingCount")
     ground_truth_chain_count: _PositiveCount = Field(alias="groundTruthChainCount")
     completed_ground_truth_chain_count: _Count = Field(
         alias="completedGroundTruthChainCount"
     )
-    first_valid_or_confirmed_finding_seconds: _FiniteNonNegative = Field(
+    first_valid_or_confirmed_finding_seconds: _FiniteNonNegative | None = Field(
         alias="firstValidOrConfirmedFindingSeconds"
     )
-    replay_attempt_count: _PositiveCount = Field(alias="replayAttemptCount")
+    replay_attempt_count: _Count = Field(alias="replayAttemptCount")
     replay_success_count: _Count = Field(alias="replaySuccessCount")
     policy_rejection_or_violation_count: _Count = Field(
         alias="policyRejectionOrViolationCount"
     )
-    human_decision_count: _PositiveCount = Field(alias="humanDecisionCount")
+    human_decision_count: _Count = Field(alias="humanDecisionCount")
     human_intervention_or_overturn_count: _Count = Field(
         alias="humanInterventionOrOverturnCount"
     )
@@ -182,8 +183,7 @@ class WalkingBenchmarkRunObservation(StrictModel):
         if self.human_intervention_or_overturn_count > self.human_decision_count:
             raise ValueError("Human intervention count exceeds decision opportunities")
         elapsed = (self.completed_at - self.started_at).total_seconds()
-        if self.first_valid_or_confirmed_finding_seconds > elapsed:
-            raise ValueError("First valid Finding time exceeds the observed Run duration")
+        _require_finding_time_semantics(self, elapsed=elapsed)
 
         material = self.model_dump(
             mode="json",
@@ -203,6 +203,23 @@ class WalkingBenchmarkRunObservation(StrictModel):
         object.__setattr__(self, "observation_digest", digest)
         object.__setattr__(self, "observation_id", observation_id)
         return self
+
+
+def _require_finding_time_semantics(
+    observation: WalkingBenchmarkRunObservation,
+    *,
+    elapsed: float,
+) -> None:
+    first = observation.first_valid_or_confirmed_finding_seconds
+    has_valid_finding = bool(
+        observation.valid_candidate_finding_count or observation.confirmed_finding_count
+    )
+    if first is not None and first > elapsed:
+        raise ValueError("First valid Finding time exceeds the observed Run duration")
+    if first is None and has_valid_finding:
+        raise ValueError("Valid Finding counts require a first-Finding duration")
+    if first is not None and not has_valid_finding:
+        raise ValueError("First-Finding duration requires a valid or confirmed Finding")
 
 
 @dataclass(frozen=True, slots=True)
@@ -873,9 +890,12 @@ def aggregate_walking_benchmark_metrics(
     unexpected_valid = sum(item.unexpected_valid_finding_count for item in observations)
     completed_chains = sum(item.completed_ground_truth_chain_count for item in observations)
     all_chains = sum(item.ground_truth_chain_count for item in observations)
-    first_finding_seconds = math.fsum(
-        item.first_valid_or_confirmed_finding_seconds for item in observations
-    )
+    first_finding_values = [
+        item.first_valid_or_confirmed_finding_seconds
+        for item in observations
+        if item.first_valid_or_confirmed_finding_seconds is not None
+    ]
+    first_finding_seconds = math.fsum(first_finding_values)
     total_cost = math.fsum(item.cost_usd for item in observations)
     confirmed_findings = sum(item.confirmed_finding_count for item in observations)
     replay_successes = sum(item.replay_success_count for item in observations)
@@ -910,19 +930,19 @@ def aggregate_walking_benchmark_metrics(
             completed_chains,
             all_chains,
         ),
-        BenchmarkMetricObservation(
-            metric=BenchmarkMetric.TIME_TO_FIRST_VALID_OR_CONFIRMED_FINDING,
-            unit=BenchmarkMetricUnit.SECONDS,
-            value=first_finding_seconds / run_count,
-            numerator=float(first_finding_seconds),
-            denominator=float(run_count),
+        _average_or_not_applicable_metric(
+            BenchmarkMetric.TIME_TO_FIRST_VALID_OR_CONFIRMED_FINDING,
+            BenchmarkMetricUnit.SECONDS,
+            numerator=first_finding_seconds,
+            denominator=len(first_finding_values),
+            reason="no valid or confirmed Finding was observed",
         ),
-        BenchmarkMetricObservation(
-            metric=BenchmarkMetric.COST_PER_CONFIRMED_FINDING,
-            unit=BenchmarkMetricUnit.USD,
-            value=total_cost / confirmed_findings,
+        _average_or_not_applicable_metric(
+            BenchmarkMetric.COST_PER_CONFIRMED_FINDING,
+            BenchmarkMetricUnit.USD,
             numerator=total_cost,
-            denominator=float(confirmed_findings),
+            denominator=confirmed_findings,
+            reason="no confirmed Finding was observed",
         ),
         _ratio_metric(BenchmarkMetric.REPLAY_SUCCESS_RATE, replay_successes, replay_attempts),
         BenchmarkMetricObservation(
@@ -953,11 +973,42 @@ def _ratio_metric(
     numerator: int,
     denominator: int,
 ) -> BenchmarkMetricObservation:
+    if denominator == 0:
+        return BenchmarkMetricObservation(
+            metric=metric,
+            unit=BenchmarkMetricUnit.RATIO,
+            status=BenchmarkMetricStatus.NOT_APPLICABLE,
+            reason="metric denominator is zero",
+        )
     return BenchmarkMetricObservation(
         metric=metric,
         unit=BenchmarkMetricUnit.RATIO,
         value=numerator / denominator,
         numerator=float(numerator),
+        denominator=float(denominator),
+    )
+
+
+def _average_or_not_applicable_metric(
+    metric: BenchmarkMetric,
+    unit: BenchmarkMetricUnit,
+    *,
+    numerator: float,
+    denominator: int,
+    reason: str,
+) -> BenchmarkMetricObservation:
+    if denominator == 0:
+        return BenchmarkMetricObservation(
+            metric=metric,
+            unit=unit,
+            status=BenchmarkMetricStatus.NOT_APPLICABLE,
+            reason=reason,
+        )
+    return BenchmarkMetricObservation(
+        metric=metric,
+        unit=unit,
+        value=numerator / denominator,
+        numerator=numerator,
         denominator=float(denominator),
     )
 

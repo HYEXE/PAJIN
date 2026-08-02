@@ -91,6 +91,16 @@ _EXPECTED_METRIC_UNITS: dict[BenchmarkMetric, BenchmarkMetricUnit] = {
     BenchmarkMetric.CLEANUP_SUCCESS_RATE: BenchmarkMetricUnit.RATIO,
 }
 
+_COMPLETED_NOT_APPLICABLE_METRICS = frozenset(
+    {
+        BenchmarkMetric.FINDING_PRECISION,
+        BenchmarkMetric.TIME_TO_FIRST_VALID_OR_CONFIRMED_FINDING,
+        BenchmarkMetric.COST_PER_CONFIRMED_FINDING,
+        BenchmarkMetric.REPLAY_SUCCESS_RATE,
+        BenchmarkMetric.HUMAN_INTERVENTION_OR_OVERTURN_RATE,
+    }
+)
+
 
 class BenchmarkArmKind(StrEnum):
     DETERMINISTIC_BASELINE = "deterministic-baseline"
@@ -488,10 +498,13 @@ class BenchmarkResult(StrictModel):
             if self.failure_reason is not None:
                 raise ValueError("Completed benchmark result cannot carry a failure reason")
             if any(
-                metric.status is not BenchmarkMetricStatus.MEASURED
+                metric.status is BenchmarkMetricStatus.NOT_APPLICABLE
+                and metric.metric not in _COMPLETED_NOT_APPLICABLE_METRICS
                 for metric in self.metrics
             ):
-                raise ValueError("Completed benchmark result must measure every required metric")
+                raise ValueError(
+                    "Completed benchmark result uses not-applicable without a nullable denominator"
+                )
         elif self.failure_reason is None:
             raise ValueError("Failed or cancelled benchmark result requires a reason")
 

@@ -243,6 +243,21 @@ class DockerBenchmarkProviderEvidence(StrictModel):
     worker_exit_code: int | None = Field(default=None, alias="workerExitCode", ge=0, le=255)
     probe_vulnerable: bool | None = Field(default=None, alias="probeVulnerable")
     probe_output_sha256: _Sha256 | None = Field(default=None, alias="probeOutputSha256")
+    scanner_registration_digest: _Sha256 | None = Field(
+        default=None, alias="scannerRegistrationDigest"
+    )
+    scanner_plan_digest: _Sha256 | None = Field(default=None, alias="scannerPlanDigest")
+    scanner_image_id: _ImageId | None = Field(default=None, alias="scannerImageId")
+    scanner_container_id: _Sha256 | None = Field(
+        default=None, alias="scannerContainerId"
+    )
+    raw_sarif_sha256: _Sha256 | None = Field(default=None, alias="rawSarifSha256")
+    raw_sarif_size_bytes: int | None = Field(
+        default=None, alias="rawSarifSizeBytes", ge=1, le=16 * 1024 * 1024
+    )
+    sarif_normalization_digest: _Sha256 | None = Field(
+        default=None, alias="sarifNormalizationDigest"
+    )
     resources_absent: bool | None = Field(default=None, alias="resourcesAbsent")
     observed_at: datetime = Field(alias="observedAt")
 
@@ -255,6 +270,19 @@ class DockerBenchmarkProviderEvidence(StrictModel):
 
     @model_validator(mode="after")
     def bind_evidence(self) -> Self:
+        scanner_values = (
+            self.scanner_registration_digest,
+            self.scanner_plan_digest,
+            self.scanner_image_id,
+            self.scanner_container_id,
+            self.raw_sarif_sha256,
+            self.raw_sarif_size_bytes,
+            self.sarif_normalization_digest,
+        )
+        if self.stage != BenchmarkTargetStage.EXECUTION and any(
+            value is not None for value in scanner_values
+        ):
+            raise ValueError("Docker non-execution evidence cannot carry Scanner facts")
         if self.stage == BenchmarkTargetStage.RESET:
             if self.isolation_id is not None or self.resources_absent is not True:
                 raise ValueError("Docker reset evidence must prove resource absence")
@@ -270,7 +298,7 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             ):
                 raise ValueError("Docker isolation evidence does not prove the lab boundary")
         elif self.stage == BenchmarkTargetStage.EXECUTION:
-            if (
+            common_invalid = (
                 self.isolation_id is None
                 or self.target_container_id is None
                 or self.worker_container_id is None
@@ -280,11 +308,37 @@ class DockerBenchmarkProviderEvidence(StrictModel):
                 or self.network_container_count != 1
                 or self.target_healthy is not True
                 or self.worker_exit_code != 0
-                or self.probe_vulnerable is not True
+            )
+            scanner_mode = self.scanner_registration_digest is not None
+            scanner_invalid = scanner_mode and (
+                any(value is None for value in scanner_values)
+                or self.scanner_container_id != self.worker_container_id
+                or self.probe_vulnerable is not None
+                or self.probe_output_sha256 is not None
+            )
+            probe_invalid = not scanner_mode and (
+                self.probe_vulnerable is not True
                 or self.probe_output_sha256 is None
-            ):
-                raise ValueError("Docker execution evidence does not prove the fixed probe")
-        elif self.isolation_id is None or self.resources_absent is not True:
+                or any(value is not None for value in scanner_values)
+            )
+            if common_invalid or scanner_invalid or probe_invalid:
+                raise ValueError("Docker execution evidence does not prove its observed workload")
+        elif (
+            self.isolation_id is None
+            or self.resources_absent is not True
+            or any(
+                value is not None
+                for value in (
+                    self.scanner_registration_digest,
+                    self.scanner_plan_digest,
+                    self.scanner_image_id,
+                    self.scanner_container_id,
+                    self.raw_sarif_sha256,
+                    self.raw_sarif_size_bytes,
+                    self.sarif_normalization_digest,
+                )
+            )
+        ):
             raise ValueError("Docker cleanup evidence must prove resource absence")
         material = self.model_dump(mode="json", by_alias=True, exclude={"evidence_digest"})
         digest = benchmark_digest(

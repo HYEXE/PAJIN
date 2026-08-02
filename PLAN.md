@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E2B` 실제 Scanner provider·measurement authority
+- 현재 우선순위: `P0-E3` Single-agent baseline measurement authority
 
 ## 제품 목표
 
@@ -260,6 +260,14 @@ seed/repetition 좌표를 비실행 measurement plan에 결박한다. identity·
 comparison·Supervisor activation은 모두 false다. `P0-E2B`는 구체 Scanner artifact와 provider 경계를
 명시적으로 선택한 뒤 fresh Target isolation·recovery·cleanup·registry admission을 실제로 증명해야 한다.
 
+`P0-E2B`는 OWASP ZAP 2.17.0의 exact image ID와 code-owned Automation Framework plan을 별도
+registration에 결박한다. 기존 fenced P0-D1 lifecycle 안에서 hardened Scanner container를 실행하고 raw
+SARIF bytes와 strict normalization을 receipt-bound provider evidence로 보존한다. registry-governed Harness·
+Target Run·catalog selection을 다시 연 뒤 전체 좌표의 completed Result를 봉인하되, 실제 분모가 없는
+metric만 명시적 `not-applicable`로 기록한다. comparison과 Supervisor activation은 false다. 다음 `P0-E3`는
+이 Scanner authority를 이름만 바꾸지 않고, code/model/tool identity와 bounded single-agent execution을
+별도 plan·provider·raw trace·measurement authority로 결박해야 한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -301,9 +309,9 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [x] `P0-D5` Mutation Target Factory authority
 - [ ] Baseline 측정
   - [x] `P0-E1` Deterministic PAJIN baseline measurement authority
-  - [ ] `P0-E2` 일반 Scanner baseline measurement authority
+  - [x] `P0-E2` 일반 Scanner baseline measurement authority
     - [x] `P0-E2A` Scanner identity·parser·좌표 결박 비실행 measurement plan
-    - [ ] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
+    - [x] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
   - [ ] `P0-E3` Single-agent baseline measurement authority
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile

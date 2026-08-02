@@ -56,9 +56,10 @@ The implementation adds opt-in contracts and exports only. Existing Target, Harn
 and BENCH-003 wire formats do not change. Rollback removes the plan types; it cannot invalidate or
 reinterpret an executed Result because P0-E2A creates none.
 
-## Next runnable boundary
+## Runnable specialization
 
-P0-E2B must choose and pin a concrete Scanner artifact, implement the SARIF parser, execute inside a
-fresh Target isolation with recovery and cleanup, seal the invocation and raw output, and pass the
-same registry-governed measurement admission used by P0-E1. Only then may it emit a completed
-`BenchmarkResult`.
+[P0-E2B](P0-E2B-zap-scanner-baseline-measurement.md) specializes this plan with an exact OWASP ZAP
+2.17.0 image ID, a code-owned Automation Framework configuration, fresh Target isolation,
+receipt-bound raw SARIF, strict normalization, recovery/cleanup, and registry-governed measurement
+admission. P0-E2A remains the product-neutral non-runnable planning authority and is not itself a
+measured Result.

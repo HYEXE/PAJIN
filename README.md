@@ -210,6 +210,13 @@ exact P0-D1 Target selection, and every seed/repetition coordinate. Scanner exec
 Benchmark Result, comparison, and Supervisor activation all remain ineligible until a concrete
 provider-backed P0-E2B implementation exists.
 
+P0-E2B selects OWASP ZAP 2.17.0 and binds each Run to an exact Docker image ID plus a code-owned
+Automation Framework plan. It reuses the fenced P0-D1 lifecycle, runs the Scanner in a separate
+hardened container on the internal target network, seals raw SARIF 2.1.0 bytes unchanged, and
+reopens every provider, Target, Harness, catalog, and registry source before issuing a completed
+baseline Result. Missing semantic denominators are explicit `not-applicable` metrics; comparison
+and Supervisor activation remain ineligible.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 
