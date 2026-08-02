@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
+- 현재 우선순위: `ENG-002B` 동일 fixture 기반 행동 parity와 opt-in 실행 gate
 
 ## 제품 목표
 
@@ -305,8 +305,15 @@ execution 권한은 false다. exact resolver는 Profile을 Campaign에 선택하
 PROF-001 `ai-assessment`, `bug-hunt`, `ctf` Profile에 mapping하는 code-owned compiler를 추가했다.
 complete Campaign input digest, compiler·catalog·Profile identity와 semantic projection output
 digest가 하나의 비실행 compilation authority에 결박된다. Campaign mutation, ROE 적용, pentest
-자동 선택, MissionEnvelope와 Common Engine 실행은 false다. 다음 `ENG-002`는 이 authority를
-사용하는 opt-in adapter와 legacy/common parity를 실행 권한 없이 먼저 증명한다.
+자동 선택, MissionEnvelope와 Common Engine 실행은 false다.
+
+`ENG-002A`는 이 compilation authority를 기존 Mode별 Planner·Validator와 공통 runner·scheduler·
+projector의 exact module-qualified class identity에 결박하는 code-owned adapter catalog를 추가했다.
+Scope·Capability·ToolRequest·Outcome 네 parity dimension은 모두 존재하지만 현재 evidence는 structural
+identity뿐이며 `fixtureMeasured=false`, `parityProven=false`다. runtime construction, Tool Registry,
+Policy, Worker, output path, MissionEnvelope와 Common execution은 계속 false다. 다음 `ENG-002B`는
+동일 fixture의 legacy direct path와 별도 opt-in adapter path를 실제로 실행해 constructor input,
+ToolRequest, receipt, Outcome과 Mode별 후처리를 비교한 뒤에만 behavioral parity를 증명한다.
 
 ## 이전 기반 작업
 
@@ -360,6 +367,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - [x] `PROF-002` 기존 CampaignMode Compatibility Adapter
 - [ ] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
+  - [x] `ENG-002A` exact implementation adapter·structural-only parity authority
+  - [ ] `ENG-002B` 동일 fixture behavioral parity·opt-in execution gate
 
 ## 후속 마일스톤
 

@@ -48,6 +48,13 @@ opt-in; existing runtime paths remain unchanged. See the
 [PROF-002 contract](docs/orchestration/PROF-002-legacy-mode-profile-compatibility.md) and
 [ADR-0103](docs/adr/0103-compile-legacy-modes-to-profile-semantics-only.md).
 
+ENG-002A binds each PROF-002 result to exact current Planner/Validator and shared
+runner/scheduler/projector class identities. It records all four required parity dimensions, while
+marking every dimension unmeasured and unproven. No runtime, Tool/Policy/Worker input, Envelope, or
+execution path is created. See the
+[ENG-002A contract](docs/orchestration/ENG-002A-common-engine-implementation-adapter.md) and
+[ADR-0104](docs/adr/0104-register-implementation-identity-before-runtime-parity.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

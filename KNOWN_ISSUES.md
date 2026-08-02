@@ -61,6 +61,19 @@
 - 해소 조건: `ENG-002`에서 동일 fixture parity와 opt-in execution adapter를 별도 수직 슬라이스로
   구현한다.
 
+## ENG-002A implementation adapter의 structural-only parity 경계
+
+- 상태: 의도적으로 제한된 비실행 adapter selection 경계
+- 현재 보장: PROF-002 compilation을 exact Mode별 Planner·Validator, AI candidate producer와 공통
+  runner·scheduler·projector class identity에 결박하고, cross-Mode substitution·digest drift·parity
+  dimension 누락·authority flag escalation을 wire reload에서 차단한다.
+- 제한: module-qualified class identity는 source/binary attestation이 아니며 constructor configuration,
+  Tool Registry, Policy, Worker, output path, generated ToolRequest, receipt, Outcome과 Mode별 후처리를
+  결박하지 않는다. 네 parity dimension은 구조적으로만 존재하고 모두 측정·증명되지 않았다.
+- 해소 조건: `ENG-002B`에서 동일 fixture를 legacy direct path와 별도 opt-in adapter path로 실행해
+  전체 runtime input·request·receipt·outcome·post-processing의 exact parity를 봉인하고, 모든 음성
+  경계를 통과한 별도 gate에서만 실행 eligibility 변경을 검토한다.
+
 ## P0-C2B2B provider fence의 host-local 범위
 
 - 상태: 활성 분산 운영 공백

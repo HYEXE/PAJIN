@@ -206,6 +206,13 @@ It applies no ROE default, never auto-selects pentest, and keeps Envelope and ex
 false. See [ADR-0103](../adr/0103-compile-legacy-modes-to-profile-semantics-only.md) and the
 [PROF-002 contract](../orchestration/PROF-002-legacy-mode-profile-compatibility.md).
 
+ENG-002A registers exact Mode-specific Planner/Validator identities and the shared runner,
+scheduler, and projector before runtime parity. Adapter selection records all four required parity
+dimensions, but its evidence is structural identity only: fixture measurement, parity proof,
+runtime construction, Envelope compilation, and Common execution remain false. See
+[ADR-0104](../adr/0104-register-implementation-identity-before-runtime-parity.md) and the
+[ENG-002A contract](../orchestration/ENG-002A-common-engine-implementation-adapter.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.
