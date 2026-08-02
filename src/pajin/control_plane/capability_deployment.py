@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hmac
-import json
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -27,7 +26,11 @@ from pajin.capabilities import (
     admit_existing_mode_capability_releases,
     existing_mode_capability_bundle,
 )
-from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.domain.models import (
+    CampaignManifest,
+    StrictModel,
+    campaign_manifest_digest,
+)
 from pajin.graph import (
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
@@ -262,26 +265,7 @@ class CapabilityGraphDeploymentRuntime:
 def capability_graph_campaign_digest(campaign: CampaignManifest) -> str:
     """Fingerprint one canonical Campaign used by the deployment and envelope."""
 
-    canonical = CampaignManifest.model_validate(campaign.model_dump(mode="python", by_alias=True))
-    payload = canonical.model_dump(mode="json", by_alias=True)
-    rules = payload["spec"]["rulesOfEngagement"]
-    for field_name in (
-        "allowedMethods",
-        "allowedToolCategories",
-        "prohibit",
-        "stopOn",
-    ):
-        rules[field_name] = sorted(rules[field_name])
-    for window in rules["testingWindows"]:
-        window["days"] = sorted(window["days"])
-    encoded = json.dumps(
-        payload,
-        allow_nan=False,
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-    ).encode("utf-8")
-    return sha256(encoded).hexdigest()
+    return campaign_manifest_digest(campaign)
 
 
 def load_capability_graph_deployment(

@@ -184,6 +184,14 @@ ledger.
    Mode path.
 6. Directory moves occur only after consumers migrate and parity is proven.
 
+ENG-001 implements the first migration checkpoint as a non-executable, content-addressed contract
+over the shared `MultiAgentCampaignRunner` boundary. It binds each legacy Campaign and source Mode
+to the registered boundary while fixing Profile, MissionEnvelope, parity evidence, and Common
+Engine execution authority to false. This checkpoint does not change a legacy default path; the
+Profile and compatibility adapters remain subsequent Phase 1 work. See
+[ADR-0101](../adr/0101-register-common-engine-boundary-before-profile-activation.md) and the
+[ENG-001 contract](../orchestration/ENG-001-common-campaign-engine-contract.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

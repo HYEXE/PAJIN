@@ -28,6 +28,13 @@ The repository owns both code-coupled records and current development state. Use
 checkpoint, and the [documentation authority policy](docs/DOCUMENTATION_POLICY.md) before adding a
 new document.
 
+ENG-001 now records the existing `MultiAgentCampaignRunner` stages as a content-addressed Common
+Campaign Engine migration contract. Legacy `ai-redteam`, `bug-bounty`, and `ctf` Campaigns can be
+bound to a non-executable plan, but Profile compilation, `MissionEnvelope`, parity evidence, and
+Common Engine execution remain explicitly false. Existing Mode commands and wire formats stay on
+their current paths. See the [ENG-001 contract](docs/orchestration/ENG-001-common-campaign-engine-contract.md)
+and [ADR-0101](docs/adr/0101-register-common-engine-boundary-before-profile-activation.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

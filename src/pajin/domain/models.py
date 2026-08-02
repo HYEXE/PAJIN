@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, datetime, time
 from enum import IntEnum, StrEnum
+from hashlib import sha256
 from typing import Annotated, Any, cast
 from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -442,6 +443,27 @@ class CampaignManifest(StrictModel):
         if len(canonical) > _MAX_CAMPAIGN_CANONICAL_BYTES:
             raise ValueError("campaign manifest exceeds the canonical byte limit")
         return self
+
+
+def campaign_manifest_digest(campaign: CampaignManifest) -> str:
+    """Fingerprint one detached, canonical Campaign authority snapshot."""
+
+    canonical = CampaignManifest.model_validate_json(
+        campaign.model_dump_json(by_alias=True)
+    )
+    payload = canonical.model_dump(mode="json", by_alias=True)
+    rules = payload["spec"]["rulesOfEngagement"]
+    for field_name in (
+        "allowedMethods",
+        "allowedToolCategories",
+        "prohibit",
+        "stopOn",
+    ):
+        rules[field_name] = sorted(rules[field_name])
+    for window in rules["testingWindows"]:
+        window["days"] = sorted(window["days"])
+    encoded = _canonical_json_bytes(payload, label="campaign manifest digest")
+    return sha256(encoded).hexdigest()
 
 
 class CapabilityGrant(StrictModel):

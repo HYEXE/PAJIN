@@ -12,6 +12,7 @@ from pajin.domain.models import (
     ToolRequest,
     ToolResult,
     ToolRiskTier,
+    campaign_manifest_digest,
 )
 from pajin.domain.replay import (
     CompiledReplaySpec,
@@ -111,5 +112,6 @@ __all__ = [
     "ValidationMethod",
     "ValidationPacket",
     "ValidationReasonCode",
+    "campaign_manifest_digest",
     "replay_claim_binding",
 ]

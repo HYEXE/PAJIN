@@ -8,13 +8,36 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-02
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 322 passed, 7 skipped 이후
+- 결과: 333 passed, 8 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
   이는 PAJIN 코드 회귀의 증거가 아니다.
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
+
+## Windows POSIX 디렉터리 mode 검사
+
+- 상태: 활성 환경 제약
+- 마지막 재현: 2026-08-02
+- 명령:
+  `.\.venv\Scripts\python.exe -m pytest -q tests\test_workflow_integrity_regressions.py::test_confirmation_projection_keeps_private_permissions_and_escapes_markdown`
+- 결과: PAJIN이 `0700`으로 생성한 validation·lock 디렉터리를 Windows `stat()`이 `0777`로
+  보고해 `assert 511 == 448`에서 실패한다.
+- 영향: POSIX private-directory mode assertion을 Windows에서 증명할 수 없다. 같은 실행의
+  기능·escaping 검증에 도달하기 전에 플랫폼 mode 표현 차이로 중단되며 ENG-001 회귀 증거는 아니다.
+- 해소 조건: Linux CI에서 검증하거나, 별도 작업으로 Windows ACL을 확인하는 platform-specific
+  assertion과 POSIX mode assertion을 분리한다.
+
+## ENG-001 Common Engine 비실행 경계
+
+- 상태: 의도적으로 제한된 migration 경계
+- 현재 보장: 세 legacy Mode와 기존 `MultiAgentCampaignRunner`의 공유 경계를 code-owned contract로
+  고정하고 complete Campaign·Mode·contract를 content-addressed Plan에 결박한다.
+- 제한: `CampaignProfile`, Profile compiler, `MissionEnvelope`, legacy/common parity evidence가 아직
+  없으며 `commonExecutionAuthorized=false`다.
+- 해소 조건: `PROF-001`, `PROF-002`, `ENG-002`에서 각각 Profile authority, deterministic legacy
+  compilation, 동일 fixture parity와 opt-in execution adapter를 별도 수직 슬라이스로 구현한다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

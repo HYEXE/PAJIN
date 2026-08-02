@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `ENG-001` 공통 Campaign Execution Engine 계약
+- 현재 단계: Phase 1 — Common Engine/Profile Compatibility
+- 현재 우선순위: `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 
 ## 제품 목표
 
@@ -284,10 +284,15 @@ registration에 결박했다. 기존 Policy Tool Loop는 opt-in으로 secret-fre
 Target lifecycle 안에서 실행하고, action별 Docker network route를 Worker execution context에 결박했다.
 Provider evidence는 Target operation, Tool Loop Run/root, raw trace와 exact Worker/proxy image ID를
 결박하고, measurement authority는 completed Target lifecycle과 cleanup을 전체 좌표의 Observation·
-`BenchmarkResult`에 결박한다. 실제 Docker·GPU 적합성은 이 전체 B2 경계를 통과했다. 다음
-`ENG-001`은 이미
-존재하는 Mode별 workflow를 중복 구현하지 않고 공통 Campaign 실행 계약과 compatibility 경계를 먼저
-명시한다.
+`BenchmarkResult`에 결박한다. 실제 Docker·GPU 적합성은 이 전체 B2 경계를 통과했다.
+
+`ENG-001`은 이미 존재하는 `MultiAgentCampaignRunner`를 중복 구현하지 않고, 세 legacy Mode가
+공유하는 Campaign snapshot·budget/rate-limit·Capability/Policy·Worker·validation·sealed audit
+경계를 code-owned contract로 고정했다. 각 legacy Campaign은 exact Mode·canonical Campaign
+digest·registered contract에 결박된 비실행 Plan으로만 투영된다. Profile compilation,
+MissionEnvelope, parity evidence, Common Engine execution은 모두 false이며 기존 실행 경로가
+계속 기본값이다. 다음 `PROF-001`은 이 계약을 권한 루트로 오인하지 않고 Mode 중립 Profile
+authority를 먼저 정의한다.
 
 ## 이전 기반 작업
 
@@ -337,10 +342,10 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-E3A` agent·Provider·model·prompt·tool·trace 결박 비실행 measurement plan
     - [x] `P0-E3B1` local llama.cpp·Qwen registration·secret-free raw trace·live conformance
     - [x] `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
-- [ ] `ENG-001` 공통 Campaign Execution Engine 계약
-- `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
-- `PROF-002` 기존 CampaignMode Compatibility Adapter
-- `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
+- [x] `ENG-001` 공통 Campaign Execution Engine 계약
+- [ ] `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
+- [ ] `PROF-002` 기존 CampaignMode Compatibility Adapter
+- [ ] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
 
 ## 후속 마일스톤
 
