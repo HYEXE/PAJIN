@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `ENG-002C2` explicit opt-in Common execution gate
+- 현재 단계: Phase 5 — 구조화된 협업과 Handoff
+- 현재 우선순위: `MEM-001` CampaignFact Proposal·Record
 
 ## 제품 목표
 
@@ -349,6 +349,15 @@ false다. 다음 `ENG-002C2`는 이 authority만으로 실행을 허용하지 �
 request·parameter, Graph Snapshot·Decision과 기존 GRAPH-006 single-use Permit 대수를 다시 교차 검증하는
 명시적 opt-in gate를 구현한다.
 
+`ENG-002C2`는 C1 compiler의 Permit·dispatch 권한 false를 바꾸지 않고 별도 code-owned execution-gate
+compiler와 authority를 추가한다. 새 MissionEnvelope는 compiler identity 외의 Campaign·Run·Profile·
+Capability·target·risk·budget·rate·autonomy·time 필드가 C1과 정확히 같다. C1 Run과 binding digest로
+fresh execution request ID를 파생하고 나머지 measured request semantics를 보존한 intent를 latest
+GraphDecision에 결박한다. current signed activation과 Capability Grant를 다시 검증한 뒤 기존 GRAPH-006
+원자 Permit과 CAP-005 Gateway dispatcher를 재사용하며 exact retry는 Worker를 다시 호출하지 않는다.
+legacy default path는 바뀌지 않는다. 이로써 Phase 1 ENG-002를 닫고 다음 구현은 `MEM-001` CampaignFact
+Proposal·Record다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -400,16 +409,16 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `ENG-001` 공통 Campaign Execution Engine 계약
 - [x] `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - [x] `PROF-002` 기존 CampaignMode Compatibility Adapter
-- [ ] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
+- [x] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
   - [x] `ENG-002A` exact implementation adapter·structural-only parity authority
   - [x] `ENG-002B` 동일 fixture behavioral parity authority
     - [x] `ENG-002B1` 동일 constructor Planner·ToolRequest parity
     - [x] `ENG-002B2` Capability·receipt·Outcome·Mode 후처리 parity
       - [x] `ENG-002B2A` exact runtime coordinate·독립 completed sealed dual-run source authority
       - [x] `ENG-002B2B` Capability·receipt·Outcome·Mode 후처리 normalized parity admission
-  - [ ] `ENG-002C` parity-bound MissionEnvelope·opt-in Common execution gate
+  - [x] `ENG-002C` parity-bound MissionEnvelope·opt-in Common execution gate
     - [x] `ENG-002C1` PROF-002·B2B 교집합 비확장 MissionEnvelope compiler
-    - [ ] `ENG-002C2` explicit opt-in Common execution gate
+    - [x] `ENG-002C2` explicit opt-in Common execution gate
 
 ## 후속 마일스톤
 

@@ -74,20 +74,20 @@
   전체 runtime input·request·receipt·outcome·post-processing의 exact parity를 봉인하고, 모든 음성
   경계를 통과한 별도 gate에서만 실행 eligibility 변경을 검토한다.
 
-## ENG-002C1 MissionEnvelope compilation의 비실행·재검증 경계
+## ENG-002C2 Common execution gate의 explicit local 경계
 
-- 상태: exact measured authority를 Envelope로 좁히지만 의도적으로 비실행인 migration 경계
-- 현재 보장: B2B에 내장된 exact PROF-002 compilation, successful trusted receipt, verified CAP-005
-  activation과 source Campaign의 Scope·ROE·Capability·budget·rate·time 교집합만 기존 GRAPH-006
-  MissionEnvelope로 컴파일한다. 각 measured request는 정확히 하나의 signed release에 materialize되며
-  제한·혼합 weekly testing window, substitution, expansion과 execution-flag forgery를 fail closed한다.
-- 제한: authority의 embedded signed bundle은 audit material이며 current lifecycle Trust Registry와
-  release head를 대체하지 않는다. MissionEnvelope schema는 exact planned parameter digest를 직접
-  포함하지 않고 C1의 외부 Capability binding이 이를 보존한다. fresh Run ID도 실제 RunStore의 생성·
-  비어 있음·Graph 최신성을 증명하지 않는다. Permit, dispatch, Common execution은 false다.
-- 해소 조건: `ENG-002C2`에서 current verified activation과 release head를 재검증하고 C1 request·parameter
-  binding, latest Graph Snapshot·Decision, 기존 GRAPH-006 single-use Permit과 Gateway lifecycle을 하나의
-  명시적 opt-in gate에서 교차 검증한다. 그 전에는 C1 Envelope를 execution authority로 사용하지 않는다.
+- 상태: 명시적 direct-call CTF 수직 슬라이스에서 실행 가능하지만 default·분산 운영이 아닌 migration 경계
+- 현재 보장: C1 false 권한을 보존한 별도 C2 compiler/Envelope, fresh request intent, exact latest
+  GraphDecision, current signed activation, Capability Grant를 교차 검증하고 기존 GRAPH-006 원자 Permit과
+  CAP-005 Gateway dispatcher만 사용한다. exact retry·request collision·stale Graph·authority/flag 치환은
+  fail closed하며 Worker는 durable first consumption에서 한 번만 호출된다.
+- 제한: caller가 current activation, local Graph store, matching RunStore, Gateway dependency와 Grant를
+  공급한다. organization registry fetch·remote HA·default runtime wiring이 아니며 첫 실제 dispatch 회귀는
+  CTF Profile이다. micro-USD reservation은 caller 선언이지 measured billing evidence가 아니다. Permit claim
+  뒤 Gateway 실패·불확실 결과는 consumed terminal이고 자동 redispatch하지 않는다.
+- 해소 조건: production 활성화 전 organization-issued activation distribution, durable registry/remote
+  Graph authority, explicit operator selection과 AI/Bug Hunt end-to-end dispatch 증거를 별도 계약으로
+  구현한다. 비용이 권한 결정에 쓰이면 trusted provider price/usage evidence를 reservation에 결박한다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

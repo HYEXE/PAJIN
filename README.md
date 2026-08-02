@@ -86,6 +86,14 @@ false. See the
 [ENG-002C1 contract](docs/orchestration/ENG-002C1-parity-bound-mission-envelope-compilation.md) and
 [ADR-0108](docs/adr/0108-compile-mission-authority-by-predecessor-intersection.md).
 
+ENG-002C2 keeps the C1 compiler non-executable and introduces a separate explicit execution-gate
+compiler whose Envelope is identical except for compiler identity. A fresh request intent must be
+bound to the latest Graph Decision before the gate reuses GRAPH-006 atomic Permit consumption and
+CAP-005 signed-release Gateway dispatch. Exact retry never redispatches, and legacy defaults remain
+unchanged. See the
+[ENG-002C2 contract](docs/orchestration/ENG-002C2-explicit-common-execution-gate.md) and
+[ADR-0109](docs/adr/0109-activate-common-execution-with-a-separate-compiler.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

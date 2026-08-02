@@ -103,3 +103,6 @@ The embedded signed bundle is audit material, not a portable replacement for the
 Registry. A later execution gate must receive and revalidate a current verified activation, bind
 the exact planned request and parameter digest into GRAPH-006 proposal/Permit authority, and check
 the current release head immediately before dispatch. C1 alone never makes its Envelope executable.
+
+[ENG-002C2](ENG-002C2-explicit-common-execution-gate.md) implements that gate with a separate
+execution compiler and Envelope identity. The C1 compiler and authority flags remain false.

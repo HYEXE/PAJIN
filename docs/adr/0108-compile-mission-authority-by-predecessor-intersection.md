@@ -58,3 +58,4 @@ PROF-002, B2B, CAP-005, GRAPH-006, and all legacy execution paths remain valid.
 - [ADR-0107: Admit Parity Only from Sealed Semantic Behavior](0107-admit-parity-only-from-sealed-semantic-behavior.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [ENG-002C1 contract](../orchestration/ENG-002C1-parity-bound-mission-envelope-compilation.md)
+- [ENG-002C2 contract](../orchestration/ENG-002C2-explicit-common-execution-gate.md)

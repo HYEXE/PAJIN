@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0109: Activate Common Execution with a Separate Compiler](docs/adr/0109-activate-common-execution-with-a-separate-compiler.md)
 - [ADR-0108: Compile Mission Authority by Predecessor Intersection](docs/adr/0108-compile-mission-authority-by-predecessor-intersection.md)
 - [ADR-0107: Admit Parity Only from Sealed Semantic Behavior](docs/adr/0107-admit-parity-only-from-sealed-semantic-behavior.md)
 - [ADR-0106: Seal Dual Runtime Sources Before Behavioral Parity](docs/adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md)

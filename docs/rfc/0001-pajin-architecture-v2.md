@@ -247,6 +247,14 @@ execution. See
 [ADR-0108](../adr/0108-compile-mission-authority-by-predecessor-intersection.md) and the
 [ENG-002C1 contract](../orchestration/ENG-002C1-parity-bound-mission-envelope-compilation.md).
 
+ENG-002C2 leaves the C1 compiler's execution flags false and activates a separate code-owned gate
+compiler whose MissionEnvelope differs only by compiler identity. A fresh deterministic request
+intent, exact latest Graph Decision, current signed activation, and Capability Grant must intersect
+before the existing GRAPH-006 Permit transaction and CAP-005 Gateway dispatcher are called. The
+gate is explicit module-only wiring; exact retry does not redispatch and no legacy default changes.
+See [ADR-0109](../adr/0109-activate-common-execution-with-a-separate-compiler.md) and the
+[ENG-002C2 contract](../orchestration/ENG-002C2-explicit-common-execution-gate.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.
