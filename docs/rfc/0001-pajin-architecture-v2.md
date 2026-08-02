@@ -229,6 +229,15 @@ Mode post-processing are normalized and compared. See
 [ADR-0106](../adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md) and the
 [ENG-002B2A contract](../orchestration/ENG-002B2A-common-engine-dual-runtime-fixture.md).
 
+ENG-002B2B runs the existing Mode processors over both exact B2A roots and compares normalized
+Scope, Capability attenuation, ToolRequest, Policy/Worker receipt, Outcome, and Mode artifact
+semantics. Only typed fresh identities, allowlisted execution timestamps, and schema-defined sets
+are canonicalized; missing evidence and all remaining drift fail closed. The result admits the
+Profile adapter for the measured fixture but does not compile a MissionEnvelope or authorize
+Common execution. See
+[ADR-0107](../adr/0107-admit-parity-only-from-sealed-semantic-behavior.md) and the
+[ENG-002B2B contract](../orchestration/ENG-002B2B-common-engine-behavioral-parity.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

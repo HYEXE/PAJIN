@@ -70,6 +70,14 @@ Common execution remain false. See the
 [ENG-002B2A contract](docs/orchestration/ENG-002B2A-common-engine-dual-runtime-fixture.md) and
 [ADR-0106](docs/adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md).
 
+ENG-002B2B re-verifies and Mode-processes both exact B2A source roots, then normalizes only typed
+fresh identities, allowlisted execution timestamps, and schema-defined sets. It proves exact
+Scope, Capability attenuation, ToolRequest, Policy/Worker receipt, Outcome, and Mode artifact
+parity for all three legacy Modes. Profile-adapter parity is admitted, while MissionEnvelope and
+Common execution remain false. See the
+[ENG-002B2B contract](docs/orchestration/ENG-002B2B-common-engine-behavioral-parity.md) and
+[ADR-0107](docs/adr/0107-admit-parity-only-from-sealed-semantic-behavior.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
