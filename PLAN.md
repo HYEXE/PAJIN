@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `ENG-002C1` parity-bound 비확장 MissionEnvelope compiler
+- 현재 우선순위: `ENG-002C2` explicit opt-in Common execution gate
 
 ## 제품 목표
 
@@ -339,6 +339,16 @@ MissionEnvelope와 Common execution은 계속 false다. 다음 `ENG-002C1`은 PR
 complete parity authority의 교집합에서만 기존 MissionEnvelope를 비확장으로 컴파일하는 비실행
 bridge를 만든다.
 
+`ENG-002C1`은 B2B에 내장된 exact PROF-002 compilation, 성공하고 network-trusted인 측정 receipt,
+검증된 CAP-005 activation과 source Campaign 권한의 교집합만 기존 GRAPH-006 MissionEnvelope로
+컴파일한다. 측정 Plan의 각 요청은 정확히 하나의 signed Capability release에 materialize돼야 하며,
+Capability·target 집합과 call·request-unit·rate·risk·time 상한은 측정값과 Campaign 상한보다 넓어질
+수 없다. MissionEnvelope가 표현할 수 없는 제한·혼합 weekly testing window는 거부한다. 결과는
+content-addressed audit authority이지만 ActionPermit 발급, Common runtime dispatch, 실행 권한은 모두
+false다. 다음 `ENG-002C2`는 이 authority만으로 실행을 허용하지 않고 current activation, exact planned
+request·parameter, Graph Snapshot·Decision과 기존 GRAPH-006 single-use Permit 대수를 다시 교차 검증하는
+명시적 opt-in gate를 구현한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -398,7 +408,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
       - [x] `ENG-002B2A` exact runtime coordinate·독립 completed sealed dual-run source authority
       - [x] `ENG-002B2B` Capability·receipt·Outcome·Mode 후처리 normalized parity admission
   - [ ] `ENG-002C` parity-bound MissionEnvelope·opt-in Common execution gate
-    - [ ] `ENG-002C1` PROF-002·B2B 교집합 비확장 MissionEnvelope compiler
+    - [x] `ENG-002C1` PROF-002·B2B 교집합 비확장 MissionEnvelope compiler
     - [ ] `ENG-002C2` explicit opt-in Common execution gate
 
 ## 후속 마일스톤

@@ -78,6 +78,14 @@ Common execution remain false. See the
 [ENG-002B2B contract](docs/orchestration/ENG-002B2B-common-engine-behavioral-parity.md) and
 [ADR-0107](docs/adr/0107-admit-parity-only-from-sealed-semantic-behavior.md).
 
+ENG-002C1 now compiles the existing GRAPH-006 `MissionEnvelope` only from the exact intersection
+of the PROF-002 compilation embedded in B2B, successful trusted measured receipts, verified
+CAP-005 activations, and Campaign Scope/ROE/budget/time ceilings. Capability and target sets are
+narrowed to the measured Plan. Permit issuance, Common dispatch, and Common execution remain
+false. See the
+[ENG-002C1 contract](docs/orchestration/ENG-002C1-parity-bound-mission-envelope-compilation.md) and
+[ADR-0108](docs/adr/0108-compile-mission-authority-by-predecessor-intersection.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

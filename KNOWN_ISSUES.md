@@ -74,21 +74,20 @@
   전체 runtime input·request·receipt·outcome·post-processing의 exact parity를 봉인하고, 모든 음성
   경계를 통과한 별도 gate에서만 실행 eligibility 변경을 검토한다.
 
-## ENG-002B2B behavioral parity의 fixture·비실행 경계
+## ENG-002C1 MissionEnvelope compilation의 비실행·재검증 경계
 
-- 상태: exact fixture에서 behavioral parity는 증명됐지만 의도적으로 비실행인 migration 경계
-- 현재 보장: 세 Mode의 B2A 양쪽 source root를 fresh reader로 재검증하고 기존 Mode processor로
-  확장한 뒤, typed ordinal에 결박된 fresh identity·timestamp·schema set만 정규화한다. Scope,
-  Capability attenuation, ToolRequest, Policy·Worker receipt, complete Outcome와 Mode artifact가 모두
-  같아야 content-addressed parity authority를 만든다. 누락·변조·cross-Mode source·semantic drift는
-  fail closed한다.
-- 제한: authority는 이 fixture와 code-owned runtime coordinate에 한정되며 외부 서명, binary/runtime
-  attestation, 일반 production 동등성 증명이 아니다. 첫 arm 후처리 뒤 둘째 arm이 실패하면 첫 Run은
-  seal chain상 안전하게 확장된 채 남지만 parity authority는 없고 같은 B2A pair로 재시도할 수 없다.
-  `MissionEnvelope`, `ActionPermit`, Common execution authorization은 모두 false다.
-- 해소 조건: 실패 시 fresh B2A pair를 다시 생성한다. `ENG-002C1`에서 exact PROF-002 compilation과
-  B2B authority의 교집합만 기존 MissionEnvelope 필드로 비확장 컴파일하고, 별도 opt-in gate가
-  검증되기 전까지 Common execution을 허용하지 않는다.
+- 상태: exact measured authority를 Envelope로 좁히지만 의도적으로 비실행인 migration 경계
+- 현재 보장: B2B에 내장된 exact PROF-002 compilation, successful trusted receipt, verified CAP-005
+  activation과 source Campaign의 Scope·ROE·Capability·budget·rate·time 교집합만 기존 GRAPH-006
+  MissionEnvelope로 컴파일한다. 각 measured request는 정확히 하나의 signed release에 materialize되며
+  제한·혼합 weekly testing window, substitution, expansion과 execution-flag forgery를 fail closed한다.
+- 제한: authority의 embedded signed bundle은 audit material이며 current lifecycle Trust Registry와
+  release head를 대체하지 않는다. MissionEnvelope schema는 exact planned parameter digest를 직접
+  포함하지 않고 C1의 외부 Capability binding이 이를 보존한다. fresh Run ID도 실제 RunStore의 생성·
+  비어 있음·Graph 최신성을 증명하지 않는다. Permit, dispatch, Common execution은 false다.
+- 해소 조건: `ENG-002C2`에서 current verified activation과 release head를 재검증하고 C1 request·parameter
+  binding, latest Graph Snapshot·Decision, 기존 GRAPH-006 single-use Permit과 Gateway lifecycle을 하나의
+  명시적 opt-in gate에서 교차 검증한다. 그 전에는 C1 Envelope를 execution authority로 사용하지 않는다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

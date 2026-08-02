@@ -238,6 +238,15 @@ Common execution. See
 [ADR-0107](../adr/0107-admit-parity-only-from-sealed-semantic-behavior.md) and the
 [ENG-002B2B contract](../orchestration/ENG-002B2B-common-engine-behavioral-parity.md).
 
+ENG-002C1 compiles the existing GRAPH-006 MissionEnvelope from the intersection of the exact
+PROF-002 compilation embedded in B2B, successful trusted measured receipts, verified CAP-005
+activations, and source Campaign ceilings. It narrows Capability, target, count/unit/rate, risk,
+and time authority to the measured Plan and rejects recurring testing-window semantics that the
+Envelope cannot preserve. This checkpoint issues no Permit and authorizes no Common dispatch or
+execution. See
+[ADR-0108](../adr/0108-compile-mission-authority-by-predecessor-intersection.md) and the
+[ENG-002C1 contract](../orchestration/ENG-002C1-parity-bound-mission-envelope-compilation.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.
