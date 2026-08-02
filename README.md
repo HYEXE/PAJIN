@@ -227,8 +227,10 @@ The first P0-E3B vertical slice selects a local, digest-pinned llama.cpp CUDA se
 Qwen3-4B-Instruct-2507 Q8_0 GGUF artifact. The existing Policy Tool Loop now optionally binds
 temperature, top-p, and coordinate seed and seals a canonical secret-free raw model/tool JSONL
 trace. Its strict reader requires two model calls, one fixed minimum-impact SQLi Tool execution,
-Provider usage, and cleanup. Fresh P0-D1 lifecycle and completed Result binding remain pending, so
-this runtime checkpoint is not yet a single-agent baseline measurement.
+Provider usage, and cleanup. P0-E3B2 runs that registration inside every fresh registry-governed
+P0-D1 Target lifecycle, binds action-specific Docker routes, exact Worker/proxy images, Target
+receipts, Tool Loop Run/root, and raw trace evidence, then seals a completed baseline Result.
+Comparison and Supervisor activation remain ineligible.
 
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.

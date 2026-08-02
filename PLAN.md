@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
+- 현재 우선순위: `ENG-001` 공통 Campaign Execution Engine 계약
 
 ## 제품 목표
 
@@ -280,10 +280,14 @@ trace·usage·cleanup·registry admission을 실제로 증명해야 한다.
 OCI image ID·GGUF SHA-256·Provider registration·prompt·Tool catalog·sampling·no-fallback policy를 하나의
 registration에 결박했다. 기존 Policy Tool Loop는 opt-in으로 secret-free canonical model/tool JSONL trace를
 봉인하며, strict reader는 두 model call·정확히 한 번의 고정 SQLi Tool 실행·trusted receipt·usage·cleanup을
-모두 재구성한다. 실제 GPU llama.cpp conformance는 통과했지만 fresh P0-D1 lifecycle과 completed
-`BenchmarkResult`에는 아직 결박하지 않았으므로 baseline 측정 완료로 보지 않는다. 다음 `P0-E3B2`가
-동일 registration과 trace를 registry-governed fresh Target lifecycle 안에서 실행하고 전체 좌표의 sealed
-Observation과 completed Result를 만든다.
+모두 재구성한다. `P0-E3B2`는 동일 registration과 coordinate seed를 registry-governed fresh P0-D1
+Target lifecycle 안에서 실행하고, action별 Docker network route를 Worker execution context에 결박했다.
+Provider evidence는 Target operation, Tool Loop Run/root, raw trace와 exact Worker/proxy image ID를
+결박하고, measurement authority는 completed Target lifecycle과 cleanup을 전체 좌표의 Observation·
+`BenchmarkResult`에 결박한다. 실제 Docker·GPU 적합성은 이 전체 B2 경계를 통과했다. 다음
+`ENG-001`은 이미
+존재하는 Mode별 workflow를 중복 구현하지 않고 공통 Campaign 실행 계약과 compatibility 경계를 먼저
+명시한다.
 
 ## 이전 기반 작업
 
@@ -324,16 +328,16 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-D3B2` runnable multi-container adapter·bridge receipt·recovery evidence
   - [x] `P0-D4` Holdout Target Factory authority
   - [x] `P0-D5` Mutation Target Factory authority
-- [ ] Baseline 측정
+- [x] Baseline 측정
   - [x] `P0-E1` Deterministic PAJIN baseline measurement authority
   - [x] `P0-E2` 일반 Scanner baseline measurement authority
     - [x] `P0-E2A` Scanner identity·parser·좌표 결박 비실행 measurement plan
     - [x] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
-  - [ ] `P0-E3` Single-agent baseline measurement authority
+  - [x] `P0-E3` Single-agent baseline measurement authority
     - [x] `P0-E3A` agent·Provider·model·prompt·tool·trace 결박 비실행 measurement plan
     - [x] `P0-E3B1` local llama.cpp·Qwen registration·secret-free raw trace·live conformance
-    - [ ] `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
-- `ENG-001` 공통 Campaign Execution Engine 계약
+    - [x] `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
+- [ ] `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - `PROF-002` 기존 CampaignMode Compatibility Adapter
 - `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter

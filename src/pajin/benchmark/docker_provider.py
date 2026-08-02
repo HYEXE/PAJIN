@@ -258,6 +258,31 @@ class DockerBenchmarkProviderEvidence(StrictModel):
     sarif_normalization_digest: _Sha256 | None = Field(
         default=None, alias="sarifNormalizationDigest"
     )
+    single_agent_registration_digest: _Sha256 | None = Field(
+        default=None, alias="singleAgentRegistrationDigest"
+    )
+    single_agent_plan_digest: _Sha256 | None = Field(
+        default=None, alias="singleAgentPlanDigest"
+    )
+    single_agent_trace_digest: _Sha256 | None = Field(
+        default=None, alias="singleAgentTraceDigest"
+    )
+    raw_model_tool_trace_sha256: _Sha256 | None = Field(
+        default=None, alias="rawModelToolTraceSha256"
+    )
+    raw_model_tool_trace_size_bytes: int | None = Field(
+        default=None, alias="rawModelToolTraceSizeBytes", ge=1, le=16 * 1024 * 1024
+    )
+    tool_loop_run_id: str | None = Field(default=None, alias="toolLoopRunId", max_length=120)
+    tool_loop_root_digest: _Sha256 | None = Field(
+        default=None, alias="toolLoopRootDigest"
+    )
+    single_agent_worker_image_id: _ImageId | None = Field(
+        default=None, alias="singleAgentWorkerImageId"
+    )
+    egress_proxy_image_id: _ImageId | None = Field(
+        default=None, alias="egressProxyImageId"
+    )
     resources_absent: bool | None = Field(default=None, alias="resourcesAbsent")
     observed_at: datetime = Field(alias="observedAt")
 
@@ -279,10 +304,21 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             self.raw_sarif_size_bytes,
             self.sarif_normalization_digest,
         )
+        single_agent_values = (
+            self.single_agent_registration_digest,
+            self.single_agent_plan_digest,
+            self.single_agent_trace_digest,
+            self.raw_model_tool_trace_sha256,
+            self.raw_model_tool_trace_size_bytes,
+            self.tool_loop_run_id,
+            self.tool_loop_root_digest,
+            self.single_agent_worker_image_id,
+            self.egress_proxy_image_id,
+        )
         if self.stage != BenchmarkTargetStage.EXECUTION and any(
-            value is not None for value in scanner_values
+            value is not None for value in (*scanner_values, *single_agent_values)
         ):
-            raise ValueError("Docker non-execution evidence cannot carry Scanner facts")
+            raise ValueError("Docker non-execution evidence cannot carry workload facts")
         if self.stage == BenchmarkTargetStage.RESET:
             if self.isolation_id is not None or self.resources_absent is not True:
                 raise ValueError("Docker reset evidence must prove resource absence")
@@ -298,10 +334,10 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             ):
                 raise ValueError("Docker isolation evidence does not prove the lab boundary")
         elif self.stage == BenchmarkTargetStage.EXECUTION:
+            single_agent_mode = self.single_agent_registration_digest is not None
             common_invalid = (
                 self.isolation_id is None
                 or self.target_container_id is None
-                or self.worker_container_id is None
                 or self.network_id is None
                 or self.network_internal is not True
                 or self.published_port_count != 0
@@ -311,17 +347,29 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             )
             scanner_mode = self.scanner_registration_digest is not None
             scanner_invalid = scanner_mode and (
-                any(value is None for value in scanner_values)
+                single_agent_mode
+                or self.worker_container_id is None
+                or any(value is None for value in scanner_values)
                 or self.scanner_container_id != self.worker_container_id
                 or self.probe_vulnerable is not None
                 or self.probe_output_sha256 is not None
             )
-            probe_invalid = not scanner_mode and (
-                self.probe_vulnerable is not True
-                or self.probe_output_sha256 is None
+            single_agent_invalid = single_agent_mode and (
+                scanner_mode
+                or any(value is None for value in single_agent_values)
+                or self.worker_container_id is not None
+                or self.probe_vulnerable is not None
+                or self.probe_output_sha256 is not None
                 or any(value is not None for value in scanner_values)
             )
-            if common_invalid or scanner_invalid or probe_invalid:
+            probe_invalid = not scanner_mode and not single_agent_mode and (
+                self.worker_container_id is None
+                or self.probe_vulnerable is not True
+                or self.probe_output_sha256 is None
+                or any(value is not None for value in scanner_values)
+                or any(value is not None for value in single_agent_values)
+            )
+            if common_invalid or scanner_invalid or single_agent_invalid or probe_invalid:
                 raise ValueError("Docker execution evidence does not prove its observed workload")
         elif (
             self.isolation_id is None
@@ -336,6 +384,7 @@ class DockerBenchmarkProviderEvidence(StrictModel):
                     self.raw_sarif_sha256,
                     self.raw_sarif_size_bytes,
                     self.sarif_normalization_digest,
+                    *single_agent_values,
                 )
             )
         ):

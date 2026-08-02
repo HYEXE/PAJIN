@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from hashlib import sha256
-from typing import Annotated, Literal, Self
+from typing import Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, model_validator
 
@@ -232,6 +232,7 @@ class LocalLlamaCppSingleAgentTrace(StrictModel):
     raw_trace_size_bytes: int = Field(alias="rawTraceSizeBytes", ge=1, le=_MAX_TRACE_BYTES)
     model_call_count: Literal[2] = Field(default=2, alias="modelCallCount")
     tool_call_count: Literal[1] = Field(default=1, alias="toolCallCount")
+    model_seed: int | None = Field(default=None, alias="modelSeed", ge=0, le=2**63 - 1)
     prompt_tokens: int = Field(alias="promptTokens", ge=1)
     completion_tokens: int = Field(alias="completionTokens", ge=1)
     total_tokens: int = Field(alias="totalTokens", ge=2)
@@ -247,7 +248,12 @@ class LocalLlamaCppSingleAgentTrace(StrictModel):
     def bind_trace(self) -> Self:
         if self.total_tokens != self.prompt_tokens + self.completion_tokens:
             raise ValueError("single-agent trace token totals differ")
-        material = self.model_dump(mode="json", by_alias=True, exclude={"trace_digest"})
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"trace_digest"},
+            exclude_none=True,
+        )
         digest = benchmark_digest(
             "pajin.benchmark.local-llama-cpp-single-agent-trace/v1",
             material,
@@ -474,6 +480,7 @@ def parse_local_llama_cpp_single_agent_trace(
         registrationDigest=authoritative.registration_digest,
         rawTraceSha256=sha256(raw).hexdigest(),
         rawTraceSizeBytes=len(raw),
+        modelSeed=cast(int, requests[0].request.seed),
         promptTokens=prompt_tokens,
         completionTokens=completion_tokens,
         totalTokens=total_tokens,

@@ -5,6 +5,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
+from pajin.benchmark.models import benchmark_digest
 from pajin.benchmark.single_agent_baseline import (
     registered_generic_single_agent_adapter_contract,
 )
@@ -87,11 +88,13 @@ def _probe_data() -> dict[str, object]:
 
 def _raw_trace(
     registration: LocalLlamaCppSingleAgentRegistration,
+    *,
+    seed: int = 17,
 ) -> bytes:
     records: list[ModelToolTraceRecord] = []
     model_tool_trace_record(records, ModelToolTraceEvent.IDENTITY, registration.trace_identity())
     binding = local_llama_cpp_tool_binding()
-    config = local_llama_cpp_tool_loop_config(seed=17)
+    config = local_llama_cpp_tool_loop_config(seed=seed)
     messages = [
         ProviderMessage(role=ChatRole.DEVELOPER, content=TOOL_LOOP_DEVELOPER_PROMPT),
         ProviderMessage(
@@ -302,12 +305,31 @@ def test_local_trace_reader_binds_two_model_calls_one_tool_and_usage() -> None:
     trace = parse_local_llama_cpp_single_agent_trace(raw, registration=registration)
 
     assert trace.model_call_count == 2
+    assert trace.model_seed == 17
     assert trace.tool_call_count == 1
     assert trace.prompt_tokens == 60
     assert trace.completion_tokens == 20
     assert trace.total_tokens == 80
     assert trace.vulnerable is True
     assert trace.cost_usd == 0
+
+
+def test_pre_b2_normalization_without_model_seed_retains_its_digest() -> None:
+    trace = parse_local_llama_cpp_single_agent_trace(
+        _raw_trace(_registration()), registration=_registration()
+    )
+    raw = trace.model_dump(mode="json", by_alias=True)
+    raw.pop("modelSeed")
+    raw.pop("traceDigest")
+    raw["traceDigest"] = benchmark_digest(
+        "pajin.benchmark.local-llama-cpp-single-agent-trace/v1",
+        raw,
+        max_bytes=256 * 1024,
+    )
+
+    restored = type(trace).model_validate(raw)
+
+    assert restored.model_seed is None
 
 
 def test_local_trace_reader_rejects_identity_or_raw_event_mutation() -> None:

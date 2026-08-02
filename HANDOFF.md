@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-02
 - 브랜치: `main`
-- 작업 시작 기준: `69809fa04b707ba4b3e6691cc4aa397e6762bf69`
-- 현재 구현 체크포인트: `P0-E3B1` local llama.cpp·Qwen registration과 raw trace
-- 다음 구현: `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
+- 작업 시작 기준: `f7fe51fd9631351dd33296231a92427bc39cc836`
+- 현재 구현 체크포인트: `P0-E3B2` registry-governed local single-agent baseline 측정
+- 다음 구현: `ENG-001` 공통 Campaign Execution Engine 계약
 
 ## 재개 전 확인
 
@@ -21,69 +21,73 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-P0-E3B1은 P0-E3A의 generic contract를 다음 exact local runtime에 결박했다.
+P0-E3B2는 P0-E3A plan과 P0-E3B1 local llama.cpp/Qwen registration을 실제 P0-D1 Target
+measurement lifecycle에 결박한다.
 
-- agent: 기존 `pajin.workflow.policy-tool-loop@model-tool-trace-v1`; deterministic fallback 없음
-- runtime: `ghcr.io/ggml-org/llama.cpp:server-cuda13-b9445`의 고정 OCI digest와 관찰 image ID
-- model: `Qwen/Qwen3-4B-Instruct-2507`, exact Q8_0 GGUF revision·filename·SHA-256
-- Provider: local OpenAI-compatible endpoint, registered secret-ref, private-network opt-in, marginal token
-  price USD 0
-- prompt·Tool: exact developer/objective bundle과 고정 `bug-bounty.boolean-sqli-probe`; 모델 작성 payload 없음
-- sampling: temperature 0, top-p 1, coordinate seed, 두 turn, retry 0
-
-`ProviderChatRequest`의 optional sampling 값은 기존 caller에서 생략되며, 등록 Provider Tool을 통해 실제
-요청으로 전달된다. opt-in traced Tool Loop는 `pajin-model-tool-trace-jsonl/v1` canonical JSONL을 봉인한다.
-strict reader는 identity, 두 model request/result/usage, 정확히 한 번의 Tool request/trusted receipt/result,
-strict final finding과 zero-active-lease cleanup을 exact sequence로 다시 검증한다. llama.cpp가 tool-call
-content를 빈 문자열로 반환하는 실제 호환성은 assistant tool-call 메시지에서만 canonical `None`으로
-정규화하며 Tool call 검증은 완화하지 않는다.
+- `DockerSingleAgentTargetFactoryAdapter`는 fresh reset·internal isolation·execution·cleanup과 기존
+  recoverable fence를 재사용한다.
+- Provider action은 host-local llama.cpp가 있는 기본 bridge로, fixed SQLi Tool action은 현재 Target의
+  internal network로 route한다. route map은 Docker Worker execution context v2에 정렬해 결박되며 각
+  Worker는 여전히 전용 internal network와 host-observed egress proxy를 사용한다.
+- provider evidence는 P0-E3A plan, P0-E3B1 registration, normalized/raw trace, Tool Loop Run/root,
+  exact Worker/proxy image ID와 Target 상태를 execution receipt에 결박한다.
+- `SingleAgentBaselineMeasurementRunner`는 registry-governed Harness·Target Run·attestation·receipt·
+  provider evidence·raw trace·normalization을 다시 열고 전체 좌표의 completed `BenchmarkResult`와
+  하나의 content-addressed measurement authority를 봉인한다.
+- trace seed는 exact benchmark coordinate와 같아야 하며 Campaign, plan, trace, image, source 또는
+  cleanup substitution은 실행 authority나 Result admission이 생성되기 전에 fail closed한다.
+- candidate comparison과 Supervisor activation은 계속 false다.
 
 핵심 구현 위치:
 
+- `src/pajin/benchmark/single_agent_docker_provider.py`
+- `src/pajin/benchmark/single_agent_measurement.py`
 - `src/pajin/benchmark/single_agent_runtime.py`
-- `src/pajin/workflow/model_tool_trace.py`
+- `src/pajin/benchmark/docker_provider.py`
+- `src/pajin/runtime/worker.py`
 - `src/pajin/workflow/tool_loop.py`
-- `src/pajin/providers/models.py`
-- `src/pajin/providers/openai_compatible.py`
+- `tests/test_benchmark_single_agent_measurement.py`
 - `tests/test_benchmark_single_agent_runtime.py`
-- `tests/test_tool_loop.py`
+- `tests/test_worker.py`
 - `docs/benchmark/P0-E3B-local-single-agent-runtime.md`
-- `docs/adr/0099-select-local-llama-cpp-single-agent-baseline.md`
+- `docs/adr/0100-bind-single-agent-run-to-governed-target-measurement.md`
 
 ## 실제 적합성 근거
 
 - Docker Desktop 4.78.0 / Engine 29.5.3, NVIDIA RTX 3090에서 실행
-- llama.cpp image ID:
-  `sha256:f92150249e1913ef96e744b5d78f6291f0e4399a7925ffc7b1d0680d82506551`
-- GGUF SHA-256:
-  `ae916ede1c010a26955ee8ae2e908bf8815a3f135ec860439ab924701c69d5f1`
-- local conformance Run: `run_20260802T085303Z_30585cd9`
-- raw trace SHA-256: `a5f0a7635b59ac1759c4032e7882a424e2bb0652e948cac1c60aa0d3a7e741f6`
-- normalized trace digest: `b6591dfd82fa36019e31730c91a360fb889d0c8036d0067f2d6f1bddd1c0763e`
-- Provider usage: prompt 1,374 + completion 62 = total 1,436 tokens
-- 결과: status completed, 정확히 1회 fixed SQLi Tool, trusted host receipts, cleanup succeeded
-
-실행 중 로컬 `pajin-worker:dev`와 `pajin-egress-proxy:dev`가 현재 증거 계약보다 오래된 것이 확인돼
-현재 저장소 소스로 재빌드했다. 전체 dependency 재빌드는 container 내부 pip CA 검증 실패로 중단됐고,
-기존 hash-locked dependency layer 위에 현재 `worker_entry.py`만 올려 local worker를 복구했다. 이는
-로컬 이미지 상태이며 커밋 대상이 아니다. 임시 llama·Target container와 전용 network는 제거했고 GGUF와
-ignore된 conformance Run은 재검증을 위해 유지했다.
+- Target image ID: `sha256:1237af881d2cdbe96cc87dada42a9fd8952abd10ab357463c2efaf8aafd1e5a1`
+- benchmark Worker image ID: `sha256:84c1dad2e13f260c6daee0850c0c76b1be8b7944dccd2c33689ae83b949f04af`
+- agent Worker image ID: `sha256:973fe191b390e28328acc6d4c32bca59417bc0b74f934170258411f6604481f6`
+- egress proxy image ID: `sha256:1a2615628fc7d48dc4d5a67f76ec8cf5511c875085c7fe0822cfa6f19c46b9e4`
+- llama.cpp image ID: `sha256:f92150249e1913ef96e744b5d78f6291f0e4399a7925ffc7b1d0680d82506551`
+- GGUF SHA-256: `ae916ede1c010a26955ee8ae2e908bf8815a3f135ec860439ab924701c69d5f1`
+- Tool Loop Run: `run_20260802T095356Z_2bd38e7f`
+- Target Run: `run_20260802T095419Z_940042da`
+- measurement Run: `run_20260802T095419Z_70ef492f`
+- normalized trace digest: `317b362d506f7e46502245e199d53398027fd3bbc7dc1855ec12d7b4eb50591a`
+- raw trace SHA-256: `7cb390effaccf293b4b1f44a1611458a8bcf285bc052ff85c9473c74dad67de1`
+- Provider usage: prompt 1,371 + completion 62 = total 1,433 tokens
+- Result: `benchmark-result:298db8b9e8176e1ed91cb9758e3e457087d33c61f5b65e2c1f6f2ac8a2bc878d`
+- measurement authority:
+  `single-agent-baseline-measurement:981fac2cf002ace8b4e14d63e26869d90510ebb9510949edbe416370b5c44e17`
+- 결과: status completed, fixed SQLi Tool 1회, model call 2회, cleanup succeeded, recall·precision 1.0
 
 ## 마지막 검증
 
-- 새 runtime/raw trace 집중 테스트: 5 passed
-- Provider·Tool Loop·baseline·문서 집중 회귀: 88 passed, 1 deselected
-- 빈 tool-call content와 Tool message 치환 회귀 포함
+- 실제 local Docker·llama.cpp·Qwen B2 적합성: 1 passed
+- runtime·measurement 집중 테스트: 11 passed, opt-in live 1 skipped
+- benchmark·measurement·registry·문서 집중 회귀: 82 passed, 3 skipped
+- action-specific Worker route: 3 passed
+- Campaign·executor substitution, trace seed substitution, raw trace mutation과 unsafe route 음성 경계 포함
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 214 source files 통과
-- 전체 `pytest -x -q`: 327 passed, 7 skipped 뒤 기존 Windows symlink 권한
+- Linux 대상 strict mypy: 216 source files 통과
+- 전체 `pytest -x -q`: 331 passed, 8 skipped 뒤 기존 Windows symlink 권한
   `WinError 1314`에서 중단
-- 실제 local llama.cpp/Qwen conformance: completed, strict trace reader 통과
 - `git diff --check`: 통과, Windows CRLF 변환 경고만 존재
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_single_agent_runtime.py tests\test_tool_loop.py tests\test_provider.py tests\test_benchmark_single_agent_baseline.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_single_agent_runtime.py tests\test_benchmark_single_agent_baseline.py tests\test_benchmark_contract.py tests\test_documentation.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_single_agent_runtime.py tests\test_benchmark_single_agent_measurement.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_benchmark_docker_provider.py tests\test_walking_benchmark_measurement.py tests\test_worker.py
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -92,21 +96,21 @@ git diff --check
 
 ## 다음 조치
 
-`P0-E3B2`의 가장 작은 수직 슬라이스를 구현한다.
+`ENG-001`의 가장 작은 수직 슬라이스를 설계한다.
 
-1. exact P0-E3B1 registration과 P0-E3A coordinate를 fresh P0-D1 Target operation에 결박한다.
-2. Provider call은 host-local llama.cpp route, fixed SQLi Tool은 P0-D1 internal network route를 사용하되
-   동일 exact `DockerWorkerBackend`의 host-observed receipt 신뢰 경계를 유지한다.
-3. Target operation·cleanup receipt와 Tool Loop Run/root/raw trace SHA를 상호 결박한 invocation authority를
-   봉인하고 substitution·replay·partial cleanup을 fail closed한다.
-4. registry-governed Harness·Target source·invocation trace를 재개방해 각 좌표의 normalized Observation을
-   만들고 전체 좌표의 completed `BenchmarkResult`를 봉인한다.
-5. deterministic fallback이나 PAJIN fixed probe 결과를 agent output으로 가장하지 않는다.
+1. `docs/adr/0046-common-engine-and-campaign-profiles.md`, Architecture v2 RFC와 현재
+   `workflow/` 진입점을 대조해 이미 공통인 Policy·Capability·Worker·Evidence 경계를 구분한다.
+2. 기존 `bug-bounty`, `ctf`, `ai-redteam` 입력과 public wire shape을 깨지 않는 공통 Campaign 실행
+   request/outcome 계약을 먼저 정의한다.
+3. Mode별 planner·scheduler·validation을 중복 구현하거나 한 번에 이관하지 않고, 실행 권한 확대가 없는
+   한 경로의 compatibility adapter를 최소 수직 슬라이스로 연결한다.
+4. Scope·risk·budget·Capability 불변식과 legacy/new path parity를 음성 테스트로 고정한다.
 
 ## 알려진 경계
 
-- P0-E3B1 conformance는 fresh P0-D1 measurement lifecycle이 아니며 baseline Result가 아니다.
+- B2 결과는 host-local Docker·GPU와 한 synthetic SQLi 좌표에 한정되며 일반 single-agent 성능이 아니다.
 - local Provider의 USD 0 가격은 marginal token 가격만 의미하며 GPU 전력·감가상각 비용은 제외한다.
+- 비교와 Supervisor activation은 별도 sealed Result·eligibility 계약 없이는 계속 false다.
 - 전체 pytest는 Windows symlink 권한 제약으로 끝까지 실행되지 않을 수 있다.
 - Docker daemon과 ignore된 local model·Run은 다른 host에서 자동 복원되지 않는다.
 

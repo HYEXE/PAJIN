@@ -7,7 +7,7 @@ import json
 import re
 from abc import abstractmethod
 from base64 import b64encode
-from collections.abc import Awaitable
+from collections.abc import Awaitable, Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -519,6 +519,7 @@ class DockerWorkerBackend:
         docker_executable: str = "docker",
         egress_proxy_image: str = "pajin-egress-proxy:dev",
         external_network: str = "bridge",
+        external_network_routes: Mapping[str, str] | None = None,
     ) -> None:
         if not allowed_images:
             raise ValueError("at least one Docker image must be allowlisted")
@@ -544,19 +545,35 @@ class DockerWorkerBackend:
             or re.fullmatch(_SAFE_RUNTIME_IDENTIFIER_PATTERN, external_network) is None
         ):
             raise ValueError("external Docker network must be a safe identifier")
+        routes = dict(external_network_routes or {})
+        if any(
+            not isinstance(action, str)
+            or re.fullmatch(_SAFE_RUNTIME_IDENTIFIER_PATTERN, action) is None
+            or not isinstance(network, str)
+            or re.fullmatch(_SAFE_RUNTIME_IDENTIFIER_PATTERN, network) is None
+            for action, network in routes.items()
+        ):
+            raise ValueError("external Docker network routes must use safe identifiers")
         self._allowed_images = set(allowed_images)
         self._docker = docker_executable
         self._egress_proxy_image = egress_proxy_image
         self._external_network = external_network
+        self._external_network_routes = routes
 
     def stable_execution_context(self) -> dict[str, object]:
-        return {
+        context: dict[str, object] = {
             "implementationVersion": "pajin.docker-worker/v1",
             "allowedImages": sorted(self._allowed_images),
             "dockerExecutable": self._docker,
             "egressProxyImage": self._egress_proxy_image,
             "externalNetwork": self._external_network,
         }
+        if self._external_network_routes:
+            context["implementationVersion"] = "pajin.docker-worker/v2"
+            context["externalNetworkRoutes"] = dict(
+                sorted(self._external_network_routes.items())
+            )
+        return context
 
     async def run(
         self,
@@ -874,6 +891,9 @@ class DockerWorkerBackend:
         network_name = f"pajin-egress-{suffix}"
         proxy_name = f"pajin-proxy-{suffix}"
         runtime = _EgressRuntime(network_name=network_name, proxy_name=proxy_name)
+        external_network = self._external_network_routes.get(
+            job.command[0], self._external_network
+        )
         ready = False
         try:
             code, _, error = await self._run_cli(
@@ -904,7 +924,7 @@ class DockerWorkerBackend:
                     "--label",
                     f"pajin.execution-id={job.execution_id}",
                     "--network",
-                    self._external_network,
+                    external_network,
                     "--read-only",
                     "--cap-drop",
                     "ALL",

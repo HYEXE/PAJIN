@@ -127,21 +127,21 @@
 - 해소 조건: P0-E3 single-agent authority와 필요한 signed catalog distribution·외부 provider trust를
   별도 구현하고, 동일 좌표에서 모든 비교 metric이 measured인 sealed Result끼리만 비교한다.
 
-## P0-E3B1 Single-agent runtime의 측정 전 범위
+## P0-E3B2 Single-agent 측정의 host-local 범위
 
-- 상태: 실제 local Provider·model·Tool trace는 검증됐지만 Benchmark 측정 admission은 미구현
+- 상태: 제한된 local Docker·GPU baseline 측정 완료
 - 현재 보장: digest-pinned llama.cpp CUDA image, exact Qwen GGUF, Policy Tool Loop implementation,
-  Provider registration, prompt·Tool catalog, sampling·no-fallback configuration을 결박한다. 실제 GPU
-  conformance에서 두 model call, 정확히 한 번의 fixed SQLi Tool 실행, trusted host receipt, Provider usage,
-  zero active Secret Lease cleanup과 strict final finding이 secret-free raw trace reader를 통과했다.
-- 영향: conformance는 전용 임시 Target·network에서 수행한 runtime 적합성 확인이다. fresh P0-D1 Target
-  operation, registry-governed Harness, 전체 seed·repetition 좌표의 normalized Observation과 completed
-  `BenchmarkResult`에 아직 상호 결박되지 않았다. 따라서 single-agent baseline metric, Scanner 비교,
-  Supervisor activation의 근거로 사용할 수 없다. local token 가격 USD 0은 marginal Provider 가격만
-  뜻하며 GPU 전력·감가상각 비용을 포함하지 않는다.
-- 해소 조건: exact registration을 fresh P0-D1 lifecycle 안에서 좌표마다 실행하고 Target operation·cleanup
-  receipt와 raw trace를 상호 결박한 invocation authority를 봉인한다. registry-governed source를 재개방해
-  Observation과 completed `BenchmarkResult`를 생성하는 `P0-E3B2`를 구현한다.
+  Provider registration, prompt·Tool catalog, sampling·no-fallback configuration을 fresh P0-D1 Target
+  coordinate에 결박한다. Provider와 fixed SQLi Tool의 action별 network route, exact Worker/proxy image ID,
+  Target operation·cleanup receipt, Tool Loop Run/root, raw trace SHA-256와 normalization을 다시 검증한 뒤
+  registry-governed source에서 completed `BenchmarkResult`를 봉인한다.
+- 영향: 결과는 고정 local Docker SQLi lab, 한 llama.cpp/Qwen build, 한 seed·repetition 좌표에 한정된다.
+  Docker image ID는 trusted provisioning input이며 cross-host fence, remote Provider trust, 일반 single-agent
+  성능 또는 통계적 비교를 증명하지 않는다. local token 가격 USD 0은 marginal Provider 가격만 뜻하며
+  GPU 전력·감가상각 비용을 포함하지 않는다. candidate comparison과 Supervisor activation은 false다.
+- 해소 조건: 비교가 필요하면 동일 Manifest·좌표·measurement authority의 sealed Scanner와 single-agent
+  Result에서 모든 필수 비교 metric의 측정 가능성을 먼저 검증한다. production 범위는 signed catalog
+  distribution, 외부 Provider trust와 cross-host fence를 별도 authority로 구현한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
@@ -193,7 +193,7 @@
 - 상태: 현재 가용, 세션 의존 환경 제약
 - 마지막 관찰: 2026-08-02
 - 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B SQLi, P0-D2B AI/RAG/MCP,
-  P0-D3B2 Hybrid, P0-E2B ZAP와 P0-E3B1 local llama.cpp/Qwen real conformance가 통과했고 종료 뒤
+  P0-D3B2 Hybrid, P0-E2B ZAP와 P0-E3B2 local llama.cpp/Qwen governed measurement가 통과했고 종료 뒤
   관리 대상 container와 network가 남지 않았다.
 - 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
   opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.

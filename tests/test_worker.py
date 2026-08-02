@@ -579,6 +579,65 @@ def test_docker_backend_rejects_unsafe_runtime_resource_configuration(
         )
 
 
+def test_docker_backend_binds_and_routes_action_specific_external_network(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def scenario() -> None:
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            external_network="bridge",
+            external_network_routes={"bug-bounty-sqli-probe": "pajin-bench-fixed-net"},
+        )
+        context = backend.stable_execution_context()
+        assert context["implementationVersion"] == "pajin.docker-worker/v2"
+        assert context["externalNetworkRoutes"] == {
+            "bug-bounty-sqli-probe": "pajin-bench-fixed-net"
+        }
+        calls: list[list[str]] = []
+
+        async def run_cli(
+            args: list[str], *, timeout: float = 10
+        ) -> tuple[int, str, str]:
+            del timeout
+            calls.append(args)
+            if args[:3] == ["inspect", "--format", "{{.State.Health.Status}}"]:
+                return 0, "healthy", ""
+            return 0, "created", ""
+
+        monkeypatch.setattr(backend, "_run_cli", run_cli)
+        monkeypatch.setattr(backend, "_proxy_health_initial_delay_seconds", 0.0)
+        job = WorkerJob(
+            image="pajin-worker:dev",
+            command=["bug-bounty-sqli-probe"],
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["http://target:8080/**"]),
+        )
+
+        await backend._setup_egress(job)
+
+        proxy_run = next(args for args in calls if args[:2] == ["run", "--detach"])
+        assert proxy_run[proxy_run.index("--network") + 1] == "pajin-bench-fixed-net"
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    "routes",
+    [
+        {"--privileged": "bridge"},
+        {"bug-bounty-sqli-probe": "bridge\nforeign"},
+    ],
+)
+def test_docker_backend_rejects_unsafe_external_network_routes(
+    routes: dict[str, str],
+) -> None:
+    with pytest.raises(ValueError, match="routes must use safe identifiers"):
+        DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            external_network_routes=routes,
+        )
+
+
 def test_docker_proxy_health_wait_allows_delayed_parallel_health_checks(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

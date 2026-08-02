@@ -260,6 +260,13 @@ def _canonical_digest(value: object) -> str:
     return sha256(payload).hexdigest()
 
 
+def tool_loop_campaign_digest(campaign: CampaignManifest) -> str:
+    """Return the exact Campaign digest sealed by Policy Tool Loop Runs."""
+
+    authoritative = _authoritative_campaign_snapshot(campaign)
+    return _canonical_digest(authoritative)
+
+
 def _authoritative_campaign_snapshot(campaign: CampaignManifest) -> CampaignManifest:
     """Detach Tool Loop authority from a caller-retained mutable model alias."""
 
