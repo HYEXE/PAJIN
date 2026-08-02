@@ -35,20 +35,31 @@
 - 현재 보장: 네 Profile의 exact identity·semantics·restrictive controls와 ENG-001 contract를
   content-addressed catalog에 결박하고 unknown version·unregistered substitution·authority flag
   escalation을 차단한다.
-- 제한: Profile은 Campaign이나 source Mode를 포함하지 않으며 legacy adapter, ROE default 적용,
+- 제한: Profile 자체는 Campaign이나 source Mode를 포함하지 않으며 ROE default 적용,
   MissionEnvelope compiler, benchmark measurement, external submission, execution 권한이 모두 false다.
-- 해소 조건: `PROF-002`에서 exact legacy Mode compilation authority를 구현하고 `ENG-002`에서
-  Campaign attenuation·parity가 증명된 opt-in Envelope/execution adapter를 별도로 구현한다.
+  PROF-002 compatibility compiler는 별도 authority로 존재한다.
+- 해소 조건: `ENG-002`에서 Campaign attenuation·parity가 증명된 opt-in Envelope/execution
+  adapter를 별도로 구현한다.
+
+## PROF-002 legacy compatibility compiler 비실행 경계
+
+- 상태: 의도적으로 제한된 direct-call compiler
+- 현재 보장: current v1alpha1 Campaign과 source Mode를 exact PROF-001 Profile, compiler, catalog,
+  input/output digest에 결박하며 factory와 wire reload에서 substitution을 차단한다.
+- 제한: legacy runtime에 연결되지 않았고 persisted audit event·sealed Run·ROE 적용·pentest 자동 선택·
+  MissionEnvelope·execution authority가 없다.
+- 해소 조건: `ENG-002`에서 exact implementation adapter와 동일 fixture parity authority를 먼저
+  구현하고, 모든 parity dimension이 증명된 별도 opt-in 경로에서만 Envelope compilation을 검토한다.
 
 ## ENG-001 Common Engine 비실행 경계
 
 - 상태: 의도적으로 제한된 migration 경계
 - 현재 보장: 세 legacy Mode와 기존 `MultiAgentCampaignRunner`의 공유 경계를 code-owned contract로
   고정하고 complete Campaign·Mode·contract를 content-addressed Plan에 결박한다.
-- 제한: Profile-to-Campaign compiler, `MissionEnvelope`, legacy/common parity evidence가 아직 없으며
-  `commonExecutionAuthorized=false`다.
-- 해소 조건: `PROF-002`, `ENG-002`에서 각각 deterministic legacy compilation, 동일 fixture
-  parity와 opt-in execution adapter를 별도 수직 슬라이스로 구현한다.
+- 제한: `MissionEnvelope`, legacy/common parity evidence가 아직 없으며
+  `commonExecutionAuthorized=false`다. PROF-002 compiler는 semantic projection만 만든다.
+- 해소 조건: `ENG-002`에서 동일 fixture parity와 opt-in execution adapter를 별도 수직 슬라이스로
+  구현한다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

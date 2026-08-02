@@ -199,6 +199,13 @@ MissionEnvelope, measurement, submission, and execution authority remains false.
 [ADR-0102](../adr/0102-separate-profile-semantics-from-campaign-compilation.md) and the
 [PROF-001 contract](../orchestration/PROF-001-campaign-profile-authority.md).
 
+PROF-002 adds deterministic direct-call compatibility compilation for the three current legacy
+Modes. It preserves the complete Campaign as input and emits only an exact PROF-001 semantic
+projection, with compiler/catalog/Profile and input/output digests in one portable audit authority.
+It applies no ROE default, never auto-selects pentest, and keeps Envelope and execution authority
+false. See [ADR-0103](../adr/0103-compile-legacy-modes-to-profile-semantics-only.md) and the
+[PROF-002 contract](../orchestration/PROF-002-legacy-mode-profile-compatibility.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

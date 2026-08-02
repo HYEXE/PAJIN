@@ -41,6 +41,13 @@ legacy compilation, `MissionEnvelope`, measurement, external submission, and exe
 remain false. See the [PROF-001 contract](docs/orchestration/PROF-001-campaign-profile-authority.md)
 and [ADR-0102](docs/adr/0102-separate-profile-semantics-from-campaign-compilation.md).
 
+PROF-002 now maps the three current legacy Modes to exact PROF-001 Profiles through a deterministic,
+non-executable compiler. It preserves the complete Campaign, binds compiler/catalog/Profile and
+input/output digests, and applies no ROE defaults or pentest selection. The API is direct-call
+opt-in; existing runtime paths remain unchanged. See the
+[PROF-002 contract](docs/orchestration/PROF-002-legacy-mode-profile-compatibility.md) and
+[ADR-0103](docs/adr/0103-compile-legacy-modes-to-profile-semantics-only.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

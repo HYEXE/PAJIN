@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `PROF-002` 기존 CampaignMode Compatibility Adapter
+- 현재 우선순위: `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
 
 ## 제품 목표
 
@@ -301,6 +301,13 @@ catalog에 등록했다. 모든 Profile은 ENG-001 contract에 결박되고
 execution 권한은 false다. exact resolver는 Profile을 Campaign에 선택하지 않는다. 다음
 `PROF-002`가 legacy Mode, compiler identity, input/output digest를 exact Profile에 결박한다.
 
+`PROF-002`는 current `pajin.dev/v1alpha1` Campaign의 `ai-redteam`, `bug-bounty`, `ctf`를 각각
+PROF-001 `ai-assessment`, `bug-hunt`, `ctf` Profile에 mapping하는 code-owned compiler를 추가했다.
+complete Campaign input digest, compiler·catalog·Profile identity와 semantic projection output
+digest가 하나의 비실행 compilation authority에 결박된다. Campaign mutation, ROE 적용, pentest
+자동 선택, MissionEnvelope와 Common Engine 실행은 false다. 다음 `ENG-002`는 이 authority를
+사용하는 opt-in adapter와 legacy/common parity를 실행 권한 없이 먼저 증명한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -351,7 +358,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
 - [x] `ENG-001` 공통 Campaign Execution Engine 계약
 - [x] `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
-- [ ] `PROF-002` 기존 CampaignMode Compatibility Adapter
+- [x] `PROF-002` 기존 CampaignMode Compatibility Adapter
 - [ ] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
 
 ## 후속 마일스톤
