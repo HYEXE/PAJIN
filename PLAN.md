@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `ENG-002B` 동일 fixture 기반 행동 parity와 opt-in 실행 gate
+- 현재 우선순위: `ENG-002B2` 동일 fixture Capability·Outcome parity와 opt-in 실행 gate
 
 ## 제품 목표
 
@@ -315,6 +315,14 @@ Policy, Worker, output path, MissionEnvelope와 Common execution은 계속 false
 동일 fixture의 legacy direct path와 별도 opt-in adapter path를 실제로 실행해 constructor input,
 ToolRequest, receipt, Outcome과 Mode별 후처리를 비교한 뒤에만 behavioral parity를 증명한다.
 
+`ENG-002B1`은 세 Mode의 legacy-direct Planner와 ENG-002A-selected Planner를 같은 complete
+Campaign과 typed constructor input으로 각각 호출했다. 매 호출마다 fresh해야 하는 step/request ID만
+ordered fixture ordinal로 정규화하고 나머지 complete `AgentPlan`을 exact 비교한다. Scope와
+ToolRequest Planner behavior는 측정·증명됐지만 Capability와 Outcome은 미측정이며 Worker,
+MissionEnvelope, Common runtime·execution은 false다. 다음 `ENG-002B2`가 동일 Tool Registry·Policy·
+Worker·output·fixture-result 좌표에서 receipt, Validator, candidate와 Mode별 triage/report/writeup을
+비교해야 전체 fixture parity와 opt-in 실행 gate를 검토할 수 있다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -368,7 +376,9 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `PROF-002` 기존 CampaignMode Compatibility Adapter
 - [ ] `ENG-002` 현재 Planner, Scheduler, Validation 경로 Adapter
   - [x] `ENG-002A` exact implementation adapter·structural-only parity authority
-  - [ ] `ENG-002B` 동일 fixture behavioral parity·opt-in execution gate
+  - [ ] `ENG-002B` 동일 fixture behavioral parity·opt-in 실행 gate
+    - [x] `ENG-002B1` 동일 constructor Planner·ToolRequest parity
+    - [ ] `ENG-002B2` Capability·receipt·Outcome·Mode 후처리 parity와 실행 gate
 
 ## 후속 마일스톤
 

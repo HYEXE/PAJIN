@@ -213,6 +213,13 @@ runtime construction, Envelope compilation, and Common execution remain false. S
 [ADR-0104](../adr/0104-register-implementation-identity-before-runtime-parity.md) and the
 [ENG-002A contract](../orchestration/ENG-002A-common-engine-implementation-adapter.md).
 
+ENG-002B1 measures the first behavioral subset: legacy-direct and Profile adapter Planners receive
+the same Campaign and typed constructor inputs, then compare the complete Plan after replacing only
+fresh step/request identities with ordered fixture ordinals. Scope and ToolRequest Planner parity
+are proven, while Capability, Worker receipt, Outcome, Envelope, Common runtime, and execution
+remain unmeasured or false. See [ADR-0105](../adr/0105-measure-planner-parity-before-runtime-parity.md)
+and the [ENG-002B1 contract](../orchestration/ENG-002B1-common-engine-planner-fixture-parity.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

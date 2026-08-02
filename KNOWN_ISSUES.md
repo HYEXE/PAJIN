@@ -74,6 +74,20 @@
   전체 runtime input·request·receipt·outcome·post-processing의 exact parity를 봉인하고, 모든 음성
   경계를 통과한 별도 gate에서만 실행 eligibility 변경을 검토한다.
 
+## ENG-002B1 Planner parity의 부분 측정 경계
+
+- 상태: Scope·ToolRequest만 측정된 의도적 부분 parity
+- 현재 보장: 세 Mode의 동일 Campaign과 typed Planner constructor input에서 legacy-direct와 Profile
+  adapter `AgentPlan`을 독립 호출하고, fresh step/request ID만 ordered fixture ordinal로 정규화한 뒤
+  나머지 complete Plan semantics를 exact 비교한다. Planner drift와 constructor·dimension·digest·
+  authority flag 치환은 fail closed한다.
+- 제한: Tool Registry, Policy, Worker, output path, Capability issuance, Tool receipt, Validator,
+  AI candidate, Bug Hunt triage/report, CTF result/writeup과 Outcome은 측정하지 않았다. content-addressed
+  record는 외부 서명이나 runtime attestation이 아니며 full fixture parity는 false다.
+- 해소 조건: `ENG-002B2`에서 양쪽 경로를 동일한 bounded runtime fixture 좌표로 실행하고 fresh Run
+  identity를 보존하면서 Capability·receipt·Outcome·Mode 후처리 parity를 봉인한다. 모든 필수
+  dimension이 증명되기 전에는 MissionEnvelope와 Common execution eligibility를 false로 유지한다.
+
 ## P0-C2B2B provider fence의 host-local 범위
 
 - 상태: 활성 분산 운영 공백

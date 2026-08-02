@@ -55,6 +55,13 @@ execution path is created. See the
 [ENG-002A contract](docs/orchestration/ENG-002A-common-engine-implementation-adapter.md) and
 [ADR-0104](docs/adr/0104-register-implementation-identity-before-runtime-parity.md).
 
+ENG-002B1 independently invokes the legacy-direct and Profile adapter Planners with the same
+Campaign and constructor inputs, normalizes only their fresh step/request IDs, and proves exact
+Planner/ToolRequest parity. Capability, Worker receipt, Outcome, Envelope, and Common execution
+remain unmeasured or false. See the
+[ENG-002B1 contract](docs/orchestration/ENG-002B1-common-engine-planner-fixture-parity.md) and
+[ADR-0105](docs/adr/0105-measure-planner-parity-before-runtime-parity.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
