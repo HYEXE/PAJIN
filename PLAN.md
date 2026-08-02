@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E3B` 실제 single-agent provider·raw trace·measurement authority
+- 현재 우선순위: `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
 
 ## 제품 목표
 
@@ -276,6 +276,15 @@ model/tool trace를 요구하는 generic contract를 추가했다. P0-D1 selecti
 false다. 다음 `P0-E3B`가 구체 Provider/model, trusted pricing, prompts/tools/runtime과 fresh Target 실행·raw
 trace·usage·cleanup·registry admission을 실제로 증명해야 한다.
 
+`P0-E3B1`은 local llama.cpp CUDA server와 exact Qwen3-4B-Instruct-2507 Q8_0 GGUF를 선택하고,
+OCI image ID·GGUF SHA-256·Provider registration·prompt·Tool catalog·sampling·no-fallback policy를 하나의
+registration에 결박했다. 기존 Policy Tool Loop는 opt-in으로 secret-free canonical model/tool JSONL trace를
+봉인하며, strict reader는 두 model call·정확히 한 번의 고정 SQLi Tool 실행·trusted receipt·usage·cleanup을
+모두 재구성한다. 실제 GPU llama.cpp conformance는 통과했지만 fresh P0-D1 lifecycle과 completed
+`BenchmarkResult`에는 아직 결박하지 않았으므로 baseline 측정 완료로 보지 않는다. 다음 `P0-E3B2`가
+동일 registration과 trace를 registry-governed fresh Target lifecycle 안에서 실행하고 전체 좌표의 sealed
+Observation과 completed Result를 만든다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -322,7 +331,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
   - [ ] `P0-E3` Single-agent baseline measurement authority
     - [x] `P0-E3A` agent·Provider·model·prompt·tool·trace 결박 비실행 measurement plan
-    - [ ] `P0-E3B` 실제 single-agent provider·raw trace·measurement authority
+    - [x] `P0-E3B1` local llama.cpp·Qwen registration·secret-free raw trace·live conformance
+    - [ ] `P0-E3B2` fresh P0-D1 lifecycle·invocation receipt·completed Result
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - `PROF-002` 기존 CampaignMode Compatibility Adapter

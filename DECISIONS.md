@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0099: Select a Local llama.cpp Single-Agent Baseline](docs/adr/0099-select-local-llama-cpp-single-agent-baseline.md)
 - [ADR-0098: Bind Single-Agent Identity Before Claiming Measurement](docs/adr/0098-bind-single-agent-identity-before-measurement.md)
 - [ADR-0097: Run a Concrete ZAP Baseline with Raw SARIF Evidence](docs/adr/0097-run-concrete-zap-baseline-with-raw-sarif.md)
 - [ADR-0096: Bind a Scanner Contract Before Claiming Measurement](docs/adr/0096-bind-scanner-contract-before-measurement.md)

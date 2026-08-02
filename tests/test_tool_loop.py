@@ -27,6 +27,11 @@ from pajin.runtime.worker import (
 from pajin.tools.base import Tool, ToolRegistry, ToolSpec
 from pajin.tools.mcp import MCPToolRegistration, RegisteredMCPTool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe
+from pajin.workflow.model_tool_trace import (
+    ModelToolTraceEvent,
+    ModelToolTraceIdentity,
+    parse_model_tool_trace,
+)
 from pajin.workflow.tool_loop import (
     PolicyToolLoopRunner,
     ToolLoopApproval,
@@ -78,9 +83,11 @@ class LoopWorker:
         *,
         repeat_call: bool = False,
         refusal: str | None = None,
+        empty_tool_content: bool = False,
     ) -> None:
         self.repeat_call = repeat_call
         self.refusal = refusal
+        self.empty_tool_content = empty_tool_content
         self.provider_requests: list[dict[str, object]] = []
         self.tool_calls = 0
 
@@ -89,6 +96,7 @@ class LoopWorker:
             "implementationVersion": "tests.loop-worker/v1",
             "repeatCall": self.repeat_call,
             "refusalConfigured": self.refusal is not None,
+            "emptyToolContent": self.empty_tool_content,
         }
 
     async def run(
@@ -125,7 +133,7 @@ class LoopWorker:
                     "provider_id": "loop-provider",
                     "response_id": f"chatcmpl-loop-{len(self.provider_requests)}",
                     "model": "loop-model",
-                    "content": None,
+                    "content": "" if self.empty_tool_content else None,
                     "refusal": None,
                     "finish_reason": "tool_calls",
                     "tool_calls": [
@@ -361,6 +369,62 @@ def _campaign(*, high_risk: bool = False):
 
 
 @pytest.mark.asyncio
+async def test_tool_loop_seals_strict_raw_trace_and_sampling_identity(tmp_path: Path) -> None:
+    worker = LoopWorker()
+    registration = _registration()
+    registry = ToolRegistry()
+    registry.register(MockAgentProbe())
+    registry.register(OpenAICompatibleChatTool(registration))
+    secrets = SecretBroker()
+    secrets.register(registration.secret_ref, "loop-provider-secret")
+    identity = ModelToolTraceIdentity(
+        agentImplementationId="tests.policy-tool-loop",
+        agentImplementationVersion="v1",
+        agentImplementationDigest="1" * 64,
+        providerRegistrationDigest="2" * 64,
+        modelRevision="fixture-model-revision",
+        promptBundleDigest="3" * 64,
+        toolCatalogDigest="4" * 64,
+        runtimeConfigurationDigest="5" * 64,
+    )
+    runner = PolicyToolLoopRunner(
+        registration=registration,
+        bindings=[_binding()],
+        tools=registry,
+        policy=PolicyEngine(),
+        worker=worker,
+        secrets=secrets,
+        output_root=tmp_path,
+        config=ToolLoopConfig(max_turns=2, temperature=0, top_p=1, model_seed=17),
+        trace_identity=identity,
+    )
+
+    outcome = await runner.run(_campaign(), prompt="Inspect the declared mock target.")
+
+    assert outcome.status is ToolLoopStatus.COMPLETED
+    assert outcome.raw_trace_path is not None
+    raw = outcome.raw_trace_path.read_bytes()
+    records = parse_model_tool_trace(raw, expected_identity=identity)
+    assert [record.event for record in records] == [
+        ModelToolTraceEvent.IDENTITY,
+        ModelToolTraceEvent.MODEL_REQUEST,
+        ModelToolTraceEvent.MODEL_RESULT,
+        ModelToolTraceEvent.PROVIDER_USAGE,
+        ModelToolTraceEvent.TOOL_REQUEST,
+        ModelToolTraceEvent.TOOL_RECEIPT,
+        ModelToolTraceEvent.TOOL_RESULT,
+        ModelToolTraceEvent.MODEL_REQUEST,
+        ModelToolTraceEvent.MODEL_RESULT,
+        ModelToolTraceEvent.PROVIDER_USAGE,
+        ModelToolTraceEvent.CLEANUP,
+    ]
+    assert [request["temperature"] for request in worker.provider_requests] == [0.0, 0.0]
+    assert [request["top_p"] for request in worker.provider_requests] == [1.0, 1.0]
+    assert [request["seed"] for request in worker.provider_requests] == [17, 17]
+    assert b"loop-provider-secret" not in raw
+
+
+@pytest.mark.asyncio
 async def test_tool_loop_cancellation_revokes_authority_and_seals_checkpoint(
     tmp_path: Path,
 ) -> None:
@@ -464,6 +528,18 @@ def test_tool_loop_reenters_gateway_and_returns_tool_result_to_provider(tmp_path
     assert run_summary["workerBackend"] == execution_context["backend"]
     assert run_summary["simulated"] is execution_context["simulated"]
     assert run_summary["evidenceScope"] == execution_context["evidenceScope"]
+
+
+def test_tool_loop_normalizes_empty_tool_call_content(tmp_path: Path) -> None:
+    worker = LoopWorker(empty_tool_content=True)
+    runner, _ = _runner(tmp_path, worker)
+
+    outcome = asyncio.run(runner.run(_campaign(), prompt="Inspect the declared mock target."))
+
+    assert outcome.status is ToolLoopStatus.COMPLETED
+    assert worker.tool_calls == 1
+    assert worker.provider_requests[1]["messages"][-2]["role"] == "assistant"
+    assert worker.provider_requests[1]["messages"][-2].get("content") is None
 
 
 def test_tool_loop_blocks_duplicate_function_call(tmp_path: Path) -> None:

@@ -83,6 +83,12 @@ class OpenAICompatibleChatTool(Tool):
                 provider_request["parallel_tool_calls"] = chat.parallel_tool_calls
         if chat.max_completion_tokens is not None:
             provider_request["max_completion_tokens"] = chat.max_completion_tokens
+        if chat.temperature is not None:
+            provider_request["temperature"] = chat.temperature
+        if chat.top_p is not None:
+            provider_request["top_p"] = chat.top_p
+        if chat.seed is not None:
+            provider_request["seed"] = chat.seed
         if chat.response_format is not None:
             provider_request["response_format"] = chat.response_format.model_dump(
                 mode="json", by_alias=True, exclude_none=True

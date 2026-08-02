@@ -223,6 +223,13 @@ agent. It requires exact agent, Provider/model, prompt, tool-catalog, runtime, n
 model/tool-trace identity; binds the exact P0-D1 selection and every coordinate; and keeps all
 concrete identity, execution, Result, comparison, and activation authority false until P0-E3B.
 
+The first P0-E3B vertical slice selects a local, digest-pinned llama.cpp CUDA server and an exact
+Qwen3-4B-Instruct-2507 Q8_0 GGUF artifact. The existing Policy Tool Loop now optionally binds
+temperature, top-p, and coordinate seed and seals a canonical secret-free raw model/tool JSONL
+trace. Its strict reader requires two model calls, one fixed minimum-impact SQLi Tool execution,
+Provider usage, and cleanup. Fresh P0-D1 lifecycle and completed Result binding remain pending, so
+this runtime checkpoint is not yet a single-agent baseline measurement.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

@@ -350,6 +350,9 @@ class ProviderChatRequest(StrictModel):
     tools: list[FunctionTool] = Field(default_factory=list, max_length=50)
     tool_choice: Literal["auto", "none", "required"] = "auto"
     max_completion_tokens: int | None = Field(default=None, ge=1, le=131_072)
+    temperature: float | None = Field(default=None, ge=0, le=2, allow_inf_nan=False)
+    top_p: float | None = Field(default=None, ge=0, le=1, allow_inf_nan=False)
+    seed: int | None = Field(default=None, ge=0, le=2**63 - 1)
     response_format: JSONSchemaResponseFormat | None = None
     parallel_tool_calls: bool | None = None
 

@@ -127,18 +127,21 @@
 - 해소 조건: P0-E3 single-agent authority와 필요한 signed catalog distribution·외부 provider trust를
   별도 구현하고, 동일 좌표에서 모든 비교 metric이 measured인 sealed Result끼리만 비교한다.
 
-## P0-E3A Single-agent plan의 비실행 범위
+## P0-E3B1 Single-agent runtime의 측정 전 범위
 
-- 상태: 구체 agent·Provider/model 선택 전 의도적인 contract-only 경계
-- 현재 보장: agent implementation, Provider registration, model revision, prompt bundle, tool catalog,
-  runtime configuration과 secret-free raw trace 요구사항을 exact P0-D1 selection·전체 좌표·no-fallback
-  policy에 결박한다.
-- 영향: 기존 ProviderAgentRuntime은 multi-role이고 PydanticAI TestModel·test Provider worker는 fixture다.
-  실제 single-agent executable/provider, model call, credential lease, prompt/tool artifact, raw trace,
-  normalized Observation과 Benchmark Result가 없다. P0-E3A를 single-agent 성능 근거로 사용할 수 없다.
-- 해소 조건: 검토된 concrete agent와 Provider/model, trusted pricing·prompt·tool/runtime configuration을
-  선택하고 fresh Target lifecycle·raw trace sealing·usage/cost verification·cleanup·registry-governed
-  admission을 제공하는 P0-E3B를 구현한다.
+- 상태: 실제 local Provider·model·Tool trace는 검증됐지만 Benchmark 측정 admission은 미구현
+- 현재 보장: digest-pinned llama.cpp CUDA image, exact Qwen GGUF, Policy Tool Loop implementation,
+  Provider registration, prompt·Tool catalog, sampling·no-fallback configuration을 결박한다. 실제 GPU
+  conformance에서 두 model call, 정확히 한 번의 fixed SQLi Tool 실행, trusted host receipt, Provider usage,
+  zero active Secret Lease cleanup과 strict final finding이 secret-free raw trace reader를 통과했다.
+- 영향: conformance는 전용 임시 Target·network에서 수행한 runtime 적합성 확인이다. fresh P0-D1 Target
+  operation, registry-governed Harness, 전체 seed·repetition 좌표의 normalized Observation과 completed
+  `BenchmarkResult`에 아직 상호 결박되지 않았다. 따라서 single-agent baseline metric, Scanner 비교,
+  Supervisor activation의 근거로 사용할 수 없다. local token 가격 USD 0은 marginal Provider 가격만
+  뜻하며 GPU 전력·감가상각 비용을 포함하지 않는다.
+- 해소 조건: exact registration을 fresh P0-D1 lifecycle 안에서 좌표마다 실행하고 Target operation·cleanup
+  receipt와 raw trace를 상호 결박한 invocation authority를 봉인한다. registry-governed source를 재개방해
+  Observation과 completed `BenchmarkResult`를 생성하는 `P0-E3B2`를 구현한다.
 
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
@@ -168,7 +171,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 212 source files 통과
+- 현재 결과: 214 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
@@ -190,8 +193,8 @@
 - 상태: 현재 가용, 세션 의존 환경 제약
 - 마지막 관찰: 2026-08-02
 - 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B SQLi, P0-D2B AI/RAG/MCP,
-  P0-D3B2 Hybrid와 P0-E2B ZAP real conformance가 통과했고 종료 뒤 관리 대상 container와 network가
-  남지 않았다.
+  P0-D3B2 Hybrid, P0-E2B ZAP와 P0-E3B1 local llama.cpp/Qwen real conformance가 통과했고 종료 뒤
+  관리 대상 container와 network가 남지 않았다.
 - 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
   opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.
 - 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 daemon 상태와 exact image ID를 다시
