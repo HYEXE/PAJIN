@@ -92,5 +92,6 @@ measurement.
 3. [P0-E1 deterministic PAJIN baseline measurement](P0-E1-deterministic-pajin-baseline-measurement.md)
 4. [P0-E2A generic Scanner baseline plan](P0-E2A-generic-scanner-baseline-plan.md)
 5. [P0-E2B OWASP ZAP Scanner baseline measurement](P0-E2B-zap-scanner-baseline-measurement.md)
-6. P0-E3 single-agent baseline measurement
+6. [P0-E3A single-agent baseline plan](P0-E3A-single-agent-baseline-plan.md), followed by a
+   provider-backed P0-E3B measurement
 7. exact CAP-006 Capability benchmark mappings and sealed Oracle/Replay observations

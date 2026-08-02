@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 4 — Thin Walking Skeleton
-- 현재 우선순위: `P0-E3` Single-agent baseline measurement authority
+- 현재 우선순위: `P0-E3B` 실제 single-agent provider·raw trace·measurement authority
 
 ## 제품 목표
 
@@ -268,6 +268,14 @@ metric만 명시적 `not-applicable`로 기록한다. comparison과 Supervisor a
 이 Scanner authority를 이름만 바꾸지 않고, code/model/tool identity와 bounded single-agent execution을
 별도 plan·provider·raw trace·measurement authority로 결박해야 한다.
 
+기존 ProviderAgentRuntime은 안전한 multi-role 경계이고 PydanticAI TestModel과 test Provider worker는 실제
+single-agent provider가 아니다. `P0-E3A`는 허상 실측을 차단하기 위해 agent implementation, Provider
+registration, exact model revision, prompt bundle, tool catalog, runtime configuration과 secret-free raw
+model/tool trace를 요구하는 generic contract를 추가했다. P0-D1 selection과 전체 좌표를 non-runnable plan에
+결박하고 no-fallback·Gateway-only access를 고정하며 identity·execution·Result·comparison·activation은 모두
+false다. 다음 `P0-E3B`가 구체 Provider/model, trusted pricing, prompts/tools/runtime과 fresh Target 실행·raw
+trace·usage·cleanup·registry admission을 실제로 증명해야 한다.
+
 ## 이전 기반 작업
 
 Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
@@ -313,6 +321,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
     - [x] `P0-E2A` Scanner identity·parser·좌표 결박 비실행 measurement plan
     - [x] `P0-E2B` 실제 Scanner provider·raw output·measurement authority
   - [ ] `P0-E3` Single-agent baseline measurement authority
+    - [x] `P0-E3A` agent·Provider·model·prompt·tool·trace 결박 비실행 measurement plan
+    - [ ] `P0-E3B` 실제 single-agent provider·raw trace·measurement authority
 - `ENG-001` 공통 Campaign Execution Engine 계약
 - `PROF-001` Pentest, Bug Hunt, CTF, AI Assessment Profile
 - `PROF-002` 기존 CampaignMode Compatibility Adapter

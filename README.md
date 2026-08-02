@@ -217,6 +217,12 @@ reopens every provider, Target, Harness, catalog, and registry source before iss
 baseline Result. Missing semantic denominators are explicit `not-applicable` metrics; comparison
 and Supervisor activation remain ineligible.
 
+P0-E3A defines the single-agent baseline contract without treating the existing multi-role
+Provider runtime, deterministic PydanticAI `TestModel`, or synthetic Provider workers as a measured
+agent. It requires exact agent, Provider/model, prompt, tool-catalog, runtime, no-fallback, and raw
+model/tool-trace identity; binds the exact P0-D1 selection and every coordinate; and keeps all
+concrete identity, execution, Result, comparison, and activation authority false until P0-E3B.
+
 The primary operator interface remains CLI + YAML. Generic public-target attack automation,
 external Bug Bounty or CTF submission, and production multi-tenant deployment are not implemented.
 

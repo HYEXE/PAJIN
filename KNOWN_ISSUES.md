@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-02
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 302 passed, 7 skipped 이후
+- 결과: 322 passed, 7 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -127,6 +127,19 @@
 - 해소 조건: P0-E3 single-agent authority와 필요한 signed catalog distribution·외부 provider trust를
   별도 구현하고, 동일 좌표에서 모든 비교 metric이 measured인 sealed Result끼리만 비교한다.
 
+## P0-E3A Single-agent plan의 비실행 범위
+
+- 상태: 구체 agent·Provider/model 선택 전 의도적인 contract-only 경계
+- 현재 보장: agent implementation, Provider registration, model revision, prompt bundle, tool catalog,
+  runtime configuration과 secret-free raw trace 요구사항을 exact P0-D1 selection·전체 좌표·no-fallback
+  policy에 결박한다.
+- 영향: 기존 ProviderAgentRuntime은 multi-role이고 PydanticAI TestModel·test Provider worker는 fixture다.
+  실제 single-agent executable/provider, model call, credential lease, prompt/tool artifact, raw trace,
+  normalized Observation과 Benchmark Result가 없다. P0-E3A를 single-agent 성능 근거로 사용할 수 없다.
+- 해소 조건: 검토된 concrete agent와 Provider/model, trusted pricing·prompt·tool/runtime configuration을
+  선택하고 fresh Target lifecycle·raw trace sealing·usage/cost verification·cleanup·registry-governed
+  admission을 제공하는 P0-E3B를 구현한다.
+
 ## P0-C2A recovery seal과 journal terminal 전이 사이 중복 감사
 
 - 상태: 활성 보수적 중복 가능성
@@ -155,7 +168,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-01
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 211 source files 통과
+- 현재 결과: 212 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
