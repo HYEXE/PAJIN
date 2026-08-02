@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0106: Seal Dual Runtime Sources Before Behavioral Parity](docs/adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md)
 - [ADR-0105: Measure Planner Parity Before Runtime Parity](docs/adr/0105-measure-planner-parity-before-runtime-parity.md)
 - [ADR-0104: Register Implementation Identity Before Runtime Parity](docs/adr/0104-register-implementation-identity-before-runtime-parity.md)
 - [ADR-0103: Compile Legacy Modes to Profile Semantics Only](docs/adr/0103-compile-legacy-modes-to-profile-semantics-only.md)

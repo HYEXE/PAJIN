@@ -220,6 +220,15 @@ are proven, while Capability, Worker receipt, Outcome, Envelope, Common runtime,
 remain unmeasured or false. See [ADR-0105](../adr/0105-measure-planner-parity-before-runtime-parity.md)
 and the [ENG-002B1 contract](../orchestration/ENG-002B1-common-engine-planner-fixture-parity.md).
 
+ENG-002B2A constructs the exact runtime coordinate for both paths and executes two independent
+completed sealed Runs. ToolSpec and Tool implementation context, Policy, Worker, Validator, AI
+candidate producer, runner, and semantic output role must match, while Run/request/evidence
+identities remain disjoint. The resulting authority is source evidence only: behavioral parity,
+Envelope compilation, and Common execution remain false until Capability, receipt, Outcome, and
+Mode post-processing are normalized and compared. See
+[ADR-0106](../adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md) and the
+[ENG-002B2A contract](../orchestration/ENG-002B2A-common-engine-dual-runtime-fixture.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

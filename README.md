@@ -62,6 +62,14 @@ remain unmeasured or false. See the
 [ENG-002B1 contract](docs/orchestration/ENG-002B1-common-engine-planner-fixture-parity.md) and
 [ADR-0105](docs/adr/0105-measure-planner-parity-before-runtime-parity.md).
 
+ENG-002B2A binds the exact Tool, Policy, Worker, Validator, candidate, runner, and semantic output
+coordinate, then creates independently fresh completed sealed Runs for the legacy-direct and Profile
+adapter arms. It preserves disjoint Run/request/evidence identity and records both sealed roots, but
+does not yet compare Capability, receipt, Outcome, or Mode post-processing behavior. Envelope and
+Common execution remain false. See the
+[ENG-002B2A contract](docs/orchestration/ENG-002B2A-common-engine-dual-runtime-fixture.md) and
+[ADR-0106](docs/adr/0106-seal-dual-runtime-sources-before-behavioral-parity.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

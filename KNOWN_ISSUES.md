@@ -74,19 +74,22 @@
   전체 runtime input·request·receipt·outcome·post-processing의 exact parity를 봉인하고, 모든 음성
   경계를 통과한 별도 gate에서만 실행 eligibility 변경을 검토한다.
 
-## ENG-002B1 Planner parity의 부분 측정 경계
+## ENG-002B2A dual-runtime source의 parity 미판정 경계
 
-- 상태: Scope·ToolRequest만 측정된 의도적 부분 parity
-- 현재 보장: 세 Mode의 동일 Campaign과 typed Planner constructor input에서 legacy-direct와 Profile
-  adapter `AgentPlan`을 독립 호출하고, fresh step/request ID만 ordered fixture ordinal로 정규화한 뒤
-  나머지 complete Plan semantics를 exact 비교한다. Planner drift와 constructor·dimension·digest·
-  authority flag 치환은 fail closed한다.
-- 제한: Tool Registry, Policy, Worker, output path, Capability issuance, Tool receipt, Validator,
-  AI candidate, Bug Hunt triage/report, CTF result/writeup과 Outcome은 측정하지 않았다. content-addressed
-  record는 외부 서명이나 runtime attestation이 아니며 full fixture parity는 false다.
-- 해소 조건: `ENG-002B2`에서 양쪽 경로를 동일한 bounded runtime fixture 좌표로 실행하고 fresh Run
-  identity를 보존하면서 Capability·receipt·Outcome·Mode 후처리 parity를 봉인한다. 모든 필수
-  dimension이 증명되기 전에는 MissionEnvelope와 Common execution eligibility를 false로 유지한다.
+- 상태: Scope·ToolRequest는 증명됐고 exact runtime 좌표의 두 sealed source Run은 생성되지만 전체
+  behavioral parity는 의도적으로 미판정이다.
+- 현재 보장: 세 Mode에서 legacy-direct와 Profile-adapter arm이 같은 Campaign, Planner semantics,
+  ToolSpec·Tool context, Policy, Worker, Validator, AI candidate와 runner 좌표를 사용한다. 각 arm은
+  completed sealed Run이어야 하고 Run·request·evidence identity는 서로 달라야 한다. 좌표 drift는
+  Worker 호출 전에, runtime Plan drift와 불완전·비봉인 결과는 authority 생성 전에 차단한다.
+- 제한: dual authority는 Capability attenuation, Policy decision, Worker receipt, Validator Outcome,
+  AI candidate, Bug Hunt report, CTF result/writeup을 아직 정규화하거나 비교하지 않는다. 두 Run의
+  성공은 parity나 실행 eligibility가 아니며 content-addressed record는 외부 서명·binary attestation이
+  아니다.
+- 해소 조건: `ENG-002B2B`가 complete B2A authority와 양쪽 sealed artifact tree를 다시 검증하고,
+  열거된 fresh identity·timestamp 외의 Capability·receipt·Outcome·후처리 의미를 exact 비교한다.
+  incomplete/different evidence에서는 MissionEnvelope와 Common execution eligibility를 false로
+  유지한다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

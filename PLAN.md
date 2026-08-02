@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 1 — Common Engine/Profile Compatibility
-- 현재 우선순위: `ENG-002B2` 동일 fixture Capability·Outcome parity와 opt-in 실행 gate
+- 현재 우선순위: `ENG-002B2B` Capability·receipt·Outcome·Mode 후처리 parity admission
 
 ## 제품 목표
 
@@ -319,9 +319,16 @@ ToolRequest, receipt, Outcome과 Mode별 후처리를 비교한 뒤에만 behavi
 Campaign과 typed constructor input으로 각각 호출했다. 매 호출마다 fresh해야 하는 step/request ID만
 ordered fixture ordinal로 정규화하고 나머지 complete `AgentPlan`을 exact 비교한다. Scope와
 ToolRequest Planner behavior는 측정·증명됐지만 Capability와 Outcome은 미측정이며 Worker,
-MissionEnvelope, Common runtime·execution은 false다. 다음 `ENG-002B2`가 동일 Tool Registry·Policy·
-Worker·output·fixture-result 좌표에서 receipt, Validator, candidate와 Mode별 triage/report/writeup을
-비교해야 전체 fixture parity와 opt-in 실행 gate를 검토할 수 있다.
+MissionEnvelope, Common runtime·execution은 false다.
+
+`ENG-002B2A`는 B1 authority를 입력으로 exact ToolSpec·Tool 구현 context, Policy, Worker,
+Validator, AI delegate·candidate producer, runner와 semantic output role을 하나의 runtime fixture
+coordinate에 결박했다. legacy-direct와 Profile-adapter arm을 서로 다른 output root에서 실행하고,
+completed sealed Run·B1과 같은 runtime Plan·fresh Run/request/evidence identity를 검증한 dual-runtime
+source authority를 만든다. 아직 Capability·receipt·Outcome·Mode 후처리를 비교하지 않으며 fixture
+parity, MissionEnvelope와 Common execution은 false다. 다음 `ENG-002B2B`가 두 sealed source를 다시
+검증하고 명시적으로 허용된 fresh identity·timestamp만 정규화해 전체 behavioral parity admission을
+판정한다.
 
 ## 이전 기반 작업
 
@@ -379,6 +386,8 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
   - [ ] `ENG-002B` 동일 fixture behavioral parity·opt-in 실행 gate
     - [x] `ENG-002B1` 동일 constructor Planner·ToolRequest parity
     - [ ] `ENG-002B2` Capability·receipt·Outcome·Mode 후처리 parity와 실행 gate
+      - [x] `ENG-002B2A` exact runtime coordinate·독립 completed sealed dual-run source authority
+      - [ ] `ENG-002B2B` Capability·receipt·Outcome·Mode 후처리 normalized parity admission
 
 ## 후속 마일스톤
 
