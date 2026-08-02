@@ -8,7 +8,7 @@
 - 상태: 활성 환경 제약
 - 마지막 재현: 2026-08-02
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 333 passed, 8 skipped 이후
+- 결과: 360 passed, 8 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
@@ -29,15 +29,26 @@
 - 해소 조건: Linux CI에서 검증하거나, 별도 작업으로 Windows ACL을 확인하는 platform-specific
   assertion과 POSIX mode assertion을 분리한다.
 
+## PROF-001 Profile semantic authority 경계
+
+- 상태: 의도적으로 제한된 registry 경계
+- 현재 보장: 네 Profile의 exact identity·semantics·restrictive controls와 ENG-001 contract를
+  content-addressed catalog에 결박하고 unknown version·unregistered substitution·authority flag
+  escalation을 차단한다.
+- 제한: Profile은 Campaign이나 source Mode를 포함하지 않으며 legacy adapter, ROE default 적용,
+  MissionEnvelope compiler, benchmark measurement, external submission, execution 권한이 모두 false다.
+- 해소 조건: `PROF-002`에서 exact legacy Mode compilation authority를 구현하고 `ENG-002`에서
+  Campaign attenuation·parity가 증명된 opt-in Envelope/execution adapter를 별도로 구현한다.
+
 ## ENG-001 Common Engine 비실행 경계
 
 - 상태: 의도적으로 제한된 migration 경계
 - 현재 보장: 세 legacy Mode와 기존 `MultiAgentCampaignRunner`의 공유 경계를 code-owned contract로
   고정하고 complete Campaign·Mode·contract를 content-addressed Plan에 결박한다.
-- 제한: `CampaignProfile`, Profile compiler, `MissionEnvelope`, legacy/common parity evidence가 아직
-  없으며 `commonExecutionAuthorized=false`다.
-- 해소 조건: `PROF-001`, `PROF-002`, `ENG-002`에서 각각 Profile authority, deterministic legacy
-  compilation, 동일 fixture parity와 opt-in execution adapter를 별도 수직 슬라이스로 구현한다.
+- 제한: Profile-to-Campaign compiler, `MissionEnvelope`, legacy/common parity evidence가 아직 없으며
+  `commonExecutionAuthorized=false`다.
+- 해소 조건: `PROF-002`, `ENG-002`에서 각각 deterministic legacy compilation, 동일 fixture
+  parity와 opt-in execution adapter를 별도 수직 슬라이스로 구현한다.
 
 ## P0-C2B2B provider fence의 host-local 범위
 

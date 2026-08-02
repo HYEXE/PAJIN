@@ -192,6 +192,13 @@ Profile and compatibility adapters remain subsequent Phase 1 work. See
 [ADR-0101](../adr/0101-register-common-engine-boundary-before-profile-activation.md) and the
 [ENG-001 contract](../orchestration/ENG-001-common-campaign-engine-contract.md).
 
+PROF-001 adds the next non-executable checkpoint: four code-owned Profile identities bind their
+operating, reporting, benchmark-expectation, and restrictive control semantics to the ENG-001
+contract. Profile resolution does not select a Profile for a Campaign; all compatibility,
+MissionEnvelope, measurement, submission, and execution authority remains false. See
+[ADR-0102](../adr/0102-separate-profile-semantics-from-campaign-compilation.md) and the
+[PROF-001 contract](../orchestration/PROF-001-campaign-profile-authority.md).
+
 CTF can be represented as a Profile/benchmark, while its existing fixed-lab validator boundary
 remains. Existing Target-signed lab attestation and the B2.8g local multipart work are not
 Architecture v2 prerequisites; they are reused where operational value is demonstrated.

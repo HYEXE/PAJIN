@@ -35,6 +35,12 @@ Common Engine execution remain explicitly false. Existing Mode commands and wire
 their current paths. See the [ENG-001 contract](docs/orchestration/ENG-001-common-campaign-engine-contract.md)
 and [ADR-0101](docs/adr/0101-register-common-engine-boundary-before-profile-activation.md).
 
+PROF-001 registers exact, non-executable `pentest`, `bug-hunt`, `ctf`, and `ai-assessment`
+Profiles. Their reporting and benchmark fields are semantic expectations, not evidence, and all
+legacy compilation, `MissionEnvelope`, measurement, external submission, and execution flags
+remain false. See the [PROF-001 contract](docs/orchestration/PROF-001-campaign-profile-authority.md)
+and [ADR-0102](docs/adr/0102-separate-profile-semantics-from-campaign-compilation.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

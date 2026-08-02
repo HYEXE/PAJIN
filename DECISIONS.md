@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0102: Separate Profile Semantics from Campaign Compilation](docs/adr/0102-separate-profile-semantics-from-campaign-compilation.md)
 - [ADR-0101: Register the Common Engine Boundary Before Profile Activation](docs/adr/0101-register-common-engine-boundary-before-profile-activation.md)
 - [ADR-0100: Bind Single-Agent Runs to Governed Target Measurements](docs/adr/0100-bind-single-agent-run-to-governed-target-measurement.md)
 - [ADR-0099: Select a Local llama.cpp Single-Agent Baseline](docs/adr/0099-select-local-llama-cpp-single-agent-baseline.md)
