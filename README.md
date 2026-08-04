@@ -174,6 +174,16 @@ escalation delivery, Scope, Capability, Permit, execution, and activation all re
 [SUP-003 contract](docs/orchestration/SUP-003-typed-non-executable-supervisor-proposal.md) and
 [ADR-0119](docs/adr/0119-compile-untrusted-supervisor-drafts.md).
 
+SUP-004A re-verifies the current SUP-002 projection when it fits the existing 65,536-character
+Provider message bound, binds the exact two-message structured-output Provider request, checks a
+Campaign-attenuated Supervisor call/token/time/cost ceiling, and seals one exact-idempotent
+process-local checkpoint schedule in a separate Run. The artifact contains
+only message/request digests and still grants no model invocation, Task, Plan, Scope, Capability,
+Permit, execution, or activation authority. Actual dual-budget Provider dispatch and receipt are
+SUP-004B work. See the
+[SUP-004A contract](docs/orchestration/SUP-004A-checkpoint-invocation-plan.md) and
+[ADR-0120](docs/adr/0120-plan-supervisor-checkpoints-before-invocation.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-004` Checkpoint Scheduler·전용 Budget
+- 현재 우선순위: `SUP-004B` 실제 Shadow Provider 호출·dual-budget receipt
 
 ## 제품 목표
 
@@ -480,6 +480,8 @@ Gate가 닫혔다.
 - [x] `SUP-002` Snapshot-only input·Target Taint
 - [x] `SUP-003` Task·Replan·Stop·Escalation Proposal
 - [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
+  - [x] `SUP-004A` exact invocation request·sealed non-invocable checkpoint plan
+  - [ ] `SUP-004B` atomic Campaign/Supervisor budget·bound Provider receipt
 - [ ] `SUP-005` Deterministic Baseline 비교
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
@@ -507,6 +509,15 @@ source Snapshot·taint·draft·rationale digest를 결박하되 target text와 r
 통지, Capability, Permit, execution, activation은 false다. 다음 우선순위는 `SUP-004` Checkpoint Scheduler와
 전용 Budget이며, 실제 model call 전에 SUP-002 invocation request wire를 versioned additive binding으로
 고정해야 한다.
+
+`SUP-004A`는 current SUP-002 input을 다시 검증하고 기존 Graph Snapshot reason에서 exact checkpoint를
+도출한다. 고정 developer message와 canonical input user JSON으로 이루어진 complete `ProviderChatRequest`,
+strict draft schema, Provider/model/configuration과 보수적 token/cost 상한을 digest로 결박한다. 전용
+call/token/time/cost 정책은 Campaign보다 항상 좁아야 하며 affordability만 확인하고 사용량은 차감하지
+않는다. 동일 checkpoint exact retry는 같은 별도 sealed Run publication을 반환하고 다른 request는
+equivocation으로 거부한다. model invocation과 Task·Plan·Scope·Capability·Permit·execution·activation은
+계속 false다. 다음 `SUP-004B`는 Campaign 전역 budget과 Supervisor 전용 budget을 원자적으로 함께
+통과시키고 stable request/Gateway/Provider receipt를 반환하는 기존 Provider 경계 확장이다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

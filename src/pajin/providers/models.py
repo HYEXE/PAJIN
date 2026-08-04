@@ -356,6 +356,27 @@ class ProviderChatRequest(StrictModel):
     response_format: JSONSchemaResponseFormat | None = None
     parallel_tool_calls: bool | None = None
 
+    @field_validator("stream", "parallel_tool_calls", mode="before")
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if value is not None and type(value) is not bool:
+            raise ValueError("provider request boolean fields must be JSON booleans")
+        return value
+
+    @field_validator("max_completion_tokens", "seed", mode="before")
+    @classmethod
+    def require_literal_integer(cls, value: object) -> object:
+        if value is not None and type(value) is not int:
+            raise ValueError("provider request integer fields must be JSON integers")
+        return value
+
+    @field_validator("temperature", "top_p", mode="before")
+    @classmethod
+    def require_literal_number(cls, value: object) -> object:
+        if value is not None and type(value) not in {int, float}:
+            raise ValueError("provider request numeric fields must be JSON numbers")
+        return value
+
     @model_validator(mode="after")
     def validate_tools(self) -> ProviderChatRequest:
         names = [tool.function.name for tool in self.tools]
@@ -381,6 +402,13 @@ class ProviderUsage(StrictModel):
     completion_tokens: int | None = Field(default=None, ge=0, le=1_000_000_000)
     total_tokens: int | None = Field(default=None, ge=0, le=1_000_000_000)
 
+    @field_validator("prompt_tokens", "completion_tokens", "total_tokens", mode="before")
+    @classmethod
+    def require_literal_integer(cls, value: object) -> object:
+        if value is not None and type(value) is not int:
+            raise ValueError("provider usage fields must be JSON integers")
+        return value
+
 
 class ProviderChatResult(StrictModel):
     provider_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,30}$")
@@ -394,6 +422,20 @@ class ProviderChatResult(StrictModel):
     streamed: bool
     chunks: int = Field(ge=1)
     target: str = Field(min_length=1, max_length=2_000)
+
+    @field_validator("streamed", mode="before")
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("provider result streamed field must be a JSON boolean")
+        return value
+
+    @field_validator("chunks", mode="before")
+    @classmethod
+    def require_literal_integer(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("provider result chunk count must be a JSON integer")
+        return value
 
     @field_validator("content", "refusal")
     @classmethod

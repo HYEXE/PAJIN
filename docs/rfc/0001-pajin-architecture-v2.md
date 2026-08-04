@@ -519,6 +519,17 @@ Capability, Permit, execution, and activation are all false. This compiler schem
 authorize a model call; the actual invocation request must be versioned and bound before SUP-004
 can invoke a Provider.
 
+SUP-004A closes the pre-invocation half of that gap without pretending a Provider ran. It rebuilds
+the current SUP-002 input when its canonical JSON fits the existing 65,536-character Provider
+message bound, resolves the exact current Graph checkpoint, constructs the fixed developer plus
+canonical Snapshot user request, and binds ordered content digests, exact request/schema digests,
+Provider/model/configuration identity, and a conservative usage bound. A dedicated
+call/token/time/cost ceiling must be narrower than the Campaign, but affordability is not usage and
+no budget is reserved. One process-local scheduler exact-idempotently seals the digest-only plan in
+a separate Run. Model invocation, receipt, Task/Plan mutation, Scope, Capability, Permit,
+execution, and activation remain false. SUP-004B must atomically enforce Campaign and Supervisor
+budgets while returning a bound request/Gateway/Provider receipt before any draft reaches SUP-003.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

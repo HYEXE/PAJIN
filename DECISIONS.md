@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0120: Plan and Seal Supervisor Checkpoints Before Provider Invocation](docs/adr/0120-plan-supervisor-checkpoints-before-invocation.md)
 - [ADR-0119: Compile Untrusted Supervisor Drafts into Content-Free Advisory Proposals](docs/adr/0119-compile-untrusted-supervisor-drafts.md)
 - [ADR-0118: Preserve Target Taint in Supervisor Snapshot Input](docs/adr/0118-preserve-target-taint-in-supervisor-snapshot-input.md)
 - [ADR-0117: Bind the Shadow Supervisor Model Before Invocation](docs/adr/0117-bind-shadow-supervisor-model-before-invocation.md)

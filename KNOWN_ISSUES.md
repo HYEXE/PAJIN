@@ -3,20 +3,34 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## SUP-001 raw Snapshot schema와 실제 invocation wire 경계
+## SUP-004A model input 크기 경계
 
-- 상태: model invocation 전 해소가 필요한 versioned binding 공백
-- 현재 보장: SUP-001은 raw `WalkingShadowInputSnapshot`과 `CollaborationSnapshot` schema를 결박하고,
-  SUP-002는 별도 `SupervisorSnapshotInput` projection wrapper를 만든다. SUP-003 compiler policy는 이
-  actual wrapper와 draft·typed output schema digest를 직접 결박해 compile-only 경계를 닫는다. 모든
-  단계의 model invocation authority는 false다.
-- 제한: SUP-001 v1alpha1의 두 raw input schema만으로는 future Provider request에 실제 어떤 projection
-  wrapper·message envelope·normalization이 전달됐는지 증명할 수 없다. SUP-003의 compiler schema binding은
-  invocation receipt나 Provider output attestation이 아니다.
-- 해소 조건: 첫 model call 전에 기존 SUP-001 wire를 조용히 변경하지 않고 v1alpha2 또는 별도 additive
-  invocation binding으로 exact `SupervisorSnapshotInput`, request/message envelope, normalization,
-  Provider request/response receipt를 결박한다. `SUP-004` scheduler가 이 authority 없이 model call을
-  허용해서는 안 된다.
+- 상태: SUP-004B actual invocation 전에 versioned input transport가 필요한 활성 계약 경계
+- 현재 보장: complete canonical `SupervisorSnapshotInput`을 하나의 user message로 결박하되 기존
+  `ProviderMessage`의 65,536-character 한도를 넘으면 schedule publication 전에 fail closed한다.
+- 제한: SUP-002가 허용하는 최대 4 MiB projection은 유효하더라도 SUP-004A의 단일 메시지 request로
+  계획할 수 없다. SUP-004A는 shared Provider wire 한도를 조용히 넓히거나 부분 입력을 전송하지 않는다.
+- 해소 조건: versioned chunked 또는 content-addressed input envelope를 도입하고 모든 chunk와 순서를 stable
+  Worker request ID, reservation, Gateway outcome, Provider result에 결박한 뒤 consumer-side에서 complete
+  input을 재구성·검증한다.
+
+## SUP-004A 계획과 실제 Provider invocation receipt 경계
+
+- 상태: SUP-004B 실제 model invocation 전에 해소해야 하는 transport·dual-budget 공백
+- 현재 보장: SUP-004A는 exact current `SupervisorSnapshotInput`, ordered two-message envelope, complete
+  `ProviderChatRequest`, strict draft schema, Provider/model/configuration, Campaign-attenuated dedicated
+  affordability와 Graph checkpoint를 content-addressed plan에 결박한다. plan은 별도 sealed Run에 기록되고
+  exact retry는 process-local single-flight로 같은 publication을 반환한다. model invocation authority는
+  false이며 Campaign/Supervisor budget은 소비되지 않는다.
+- 제한: `PolicyBoundProviderPort`는 internal random ToolRequest ID를 만들고 `ProviderChatResult`만 반환하므로
+  caller가 request/reservation/Gateway evidence를 안전하게 receipt로 결박할 수 없다. 두 개의 독립
+  `BudgetController`를 순차 호출하면 partial reservation 또는 Campaign budget 우회가 생길 수 있다. raw
+  Gateway evidence는 complete tainted request를 포함한다. process restart 뒤 duplicate plan claim과
+  crash-after-dispatch 상태도 아직 durable하지 않다.
+- 해소 조건: `SUP-004B`에서 stable request ID와 secret-free bound Provider outcome을 additive로 노출하고,
+  Campaign·Supervisor budget을 atomic composite reservation으로 처리한다. intent-before-dispatch와
+  no-automatic-redispatch terminal journal을 봉인하고 exact request/Gateway/result/usage/draft receipt를
+  consumer-side에서 재검증한 뒤에만 SUP-003 compiler로 전달한다.
 
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
@@ -336,9 +350,9 @@
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
-- 마지막 확인: 2026-08-01
+- 마지막 확인: 2026-08-04
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 214 source files 통과
+- 현재 결과: 239 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브

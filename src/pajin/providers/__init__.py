@@ -15,7 +15,11 @@ from pajin.providers.models import (
     ProviderRegistration,
 )
 from pajin.providers.openai_compatible import OpenAICompatibleChatTool
-from pajin.providers.session import PolicyBoundProviderPort
+from pajin.providers.session import (
+    PolicyBoundProviderPort,
+    ProviderModelUsageBound,
+    provider_model_usage_upper_bound,
+)
 
 __all__ = [
     "FunctionDefinition",
@@ -30,6 +34,8 @@ __all__ = [
     "ProviderChatResult",
     "ProviderFunctionCall",
     "ProviderMessage",
+    "ProviderModelUsageBound",
     "ProviderRegistration",
     "ProviderValidationPlanner",
+    "provider_model_usage_upper_bound",
 ]

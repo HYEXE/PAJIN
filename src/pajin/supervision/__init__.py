@@ -1,5 +1,24 @@
 """Shadow Supervisor contracts and authorities."""
 
+from pajin.supervision.checkpoint_scheduler import (
+    SUPERVISOR_CHECKPOINT_SCHEDULE_API_VERSION,
+    SupervisorCheckpointSchedule,
+    SupervisorCheckpointScheduleError,
+    SupervisorCheckpointSchedulePublication,
+    SupervisorCheckpointScheduler,
+    verify_supervisor_checkpoint_schedule_publication,
+)
+from pajin.supervision.invocation import (
+    SUPERVISOR_DEDICATED_BUDGET_API_VERSION,
+    SUPERVISOR_DEVELOPER_MESSAGE,
+    SUPERVISOR_INVOCATION_REQUEST_API_VERSION,
+    SupervisorDedicatedBudgetPolicy,
+    SupervisorInvocationMessageBinding,
+    SupervisorInvocationPlanError,
+    SupervisorInvocationRequestBinding,
+    SupervisorInvocationUsageBound,
+    build_supervisor_invocation_request,
+)
 from pajin.supervision.model_binding import (
     SUPERVISOR_MODEL_BINDING_API_VERSION,
     SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION,
@@ -41,14 +60,27 @@ from pajin.supervision.snapshot_input import (
 )
 
 __all__ = [
+    "SUPERVISOR_CHECKPOINT_SCHEDULE_API_VERSION",
+    "SUPERVISOR_DEDICATED_BUDGET_API_VERSION",
+    "SUPERVISOR_DEVELOPER_MESSAGE",
+    "SUPERVISOR_INVOCATION_REQUEST_API_VERSION",
     "SUPERVISOR_MODEL_BINDING_API_VERSION",
     "SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION",
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
+    "SupervisorCheckpointSchedule",
+    "SupervisorCheckpointScheduleError",
+    "SupervisorCheckpointSchedulePublication",
+    "SupervisorCheckpointScheduler",
     "SupervisorCompiledProposal",
+    "SupervisorDedicatedBudgetPolicy",
     "SupervisorEscalationProposal",
     "SupervisorInputReference",
     "SupervisorInputReferenceKind",
+    "SupervisorInvocationMessageBinding",
+    "SupervisorInvocationPlanError",
+    "SupervisorInvocationRequestBinding",
+    "SupervisorInvocationUsageBound",
     "SupervisorModelBinding",
     "SupervisorModelBindingError",
     "SupervisorModelConfiguration",
@@ -68,9 +100,11 @@ __all__ = [
     "SupervisorTaskProposal",
     "SupervisorTypedProposal",
     "bind_supervisor_model",
+    "build_supervisor_invocation_request",
     "compile_supervisor_shadow_proposal",
     "create_supervisor_snapshot_input",
     "registered_supervisor_proposal_compilation_policy",
+    "verify_supervisor_checkpoint_schedule_publication",
     "verify_supervisor_model_binding",
     "verify_supervisor_snapshot_input",
     "verify_supervisor_typed_proposal",

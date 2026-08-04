@@ -24,6 +24,77 @@ from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import RunStore
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
 
+_PROMPT_CANONICAL_BYTE_TOKEN_FACTOR = 4
+_PROMPT_BASE_FRAMING_TOKENS = 1_024
+_PROMPT_MESSAGE_FRAMING_TOKENS = 64
+_PROMPT_TOOL_FRAMING_TOKENS = 256
+_PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS = 64
+_PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS = 512
+
+
+@dataclass(frozen=True, slots=True)
+class ProviderModelUsageBound:
+    """Conservative pre-dispatch usage bound shared by governed model callers."""
+
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+
+
+def provider_model_usage_upper_bound(
+    registration: ProviderRegistration,
+    chat: ProviderChatRequest,
+) -> ProviderModelUsageBound:
+    """Return the exact conservative bound used by ``PolicyBoundProviderPort``."""
+
+    canonical_registration = ProviderRegistration.model_validate(
+        registration.model_dump(mode="python")
+    )
+    canonical_chat = ProviderChatRequest.model_validate(chat.model_dump(mode="python"))
+    max_completion_tokens = canonical_chat.max_completion_tokens
+    if max_completion_tokens is None:
+        raise BudgetExceeded(
+            "provider model calls require max_completion_tokens for budget reservation"
+        )
+    canonical_request_bytes = json.dumps(
+        {
+            "model": canonical_registration.model,
+            "request": canonical_chat.model_dump(
+                mode="json",
+                by_alias=True,
+                exclude_none=True,
+            ),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    assistant_tool_calls = sum(len(message.tool_calls) for message in canonical_chat.messages)
+    framing_tokens = (
+        _PROMPT_BASE_FRAMING_TOKENS
+        + len(canonical_chat.messages) * _PROMPT_MESSAGE_FRAMING_TOKENS
+        + len(canonical_chat.tools) * _PROMPT_TOOL_FRAMING_TOKENS
+        + assistant_tool_calls * _PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS
+        + (
+            _PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS
+            if canonical_chat.response_format is not None
+            else 0
+        )
+    )
+    prompt_tokens = (
+        len(canonical_request_bytes) * _PROMPT_CANONICAL_BYTE_TOKEN_FACTOR + framing_tokens
+    )
+    cost_usd = (
+        prompt_tokens * canonical_registration.input_cost_per_million_usd
+        + max_completion_tokens * canonical_registration.output_cost_per_million_usd
+    ) / 1_000_000
+    return ProviderModelUsageBound(
+        prompt_tokens=prompt_tokens,
+        completion_tokens=max_completion_tokens,
+        cost_usd=cost_usd,
+    )
+
 
 @dataclass(frozen=True, slots=True)
 class _ProviderCall:
@@ -44,13 +115,6 @@ class PolicyBoundProviderPort(StructuredModelPort):
     # ProviderChatRequest contains only text and JSON. Reserving four tokens for every canonical
     # UTF-8 byte intentionally covers tokenizer/serialization expansion; the separate terms cover
     # provider-side framing that is not represented by those bytes.
-    _PROMPT_CANONICAL_BYTE_TOKEN_FACTOR = 4
-    _PROMPT_BASE_FRAMING_TOKENS = 1_024
-    _PROMPT_MESSAGE_FRAMING_TOKENS = 64
-    _PROMPT_TOOL_FRAMING_TOKENS = 256
-    _PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS = 64
-    _PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS = 512
-
     def __init__(
         self,
         *,
@@ -380,50 +444,17 @@ class PolicyBoundProviderPort(StructuredModelPort):
         return "provider model call returned an invalid result"
 
     def _reserve_model_usage(self, chat: ProviderChatRequest) -> ModelUsageReservation:
-        max_completion_tokens = chat.max_completion_tokens
-        if max_completion_tokens is None:
-            raise BudgetExceeded(
-                "provider model calls require max_completion_tokens for budget reservation"
-            )
-        prompt_tokens = self._prompt_token_upper_bound(chat)
-        cost = (
-            prompt_tokens * self._registration.input_cost_per_million_usd
-            + max_completion_tokens * self._registration.output_cost_per_million_usd
-        ) / 1_000_000
+        bound = provider_model_usage_upper_bound(self._registration, chat)
         return self._budget.reserve_model_usage(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=max_completion_tokens,
-            cost_usd=cost,
+            prompt_tokens=bound.prompt_tokens,
+            completion_tokens=bound.completion_tokens,
+            cost_usd=bound.cost_usd,
         )
 
     def _prompt_token_upper_bound(self, chat: ProviderChatRequest) -> int:
         """Return a deliberately over-reserved prompt bound for the complete provider contract."""
 
-        canonical_request_bytes = json.dumps(
-            {
-                "model": self._registration.model,
-                "request": chat.model_dump(mode="json", by_alias=True, exclude_none=True),
-            },
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            allow_nan=False,
-        ).encode("utf-8")
-        assistant_tool_calls = sum(len(message.tool_calls) for message in chat.messages)
-        framing_tokens = (
-            self._PROMPT_BASE_FRAMING_TOKENS
-            + len(chat.messages) * self._PROMPT_MESSAGE_FRAMING_TOKENS
-            + len(chat.tools) * self._PROMPT_TOOL_FRAMING_TOKENS
-            + assistant_tool_calls * self._PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS
-            + (
-                self._PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS
-                if chat.response_format is not None
-                else 0
-            )
-        )
-        return (
-            len(canonical_request_bytes) * self._PROMPT_CANONICAL_BYTE_TOKEN_FACTOR + framing_tokens
-        )
+        return provider_model_usage_upper_bound(self._registration, chat).prompt_tokens
 
     def _record_completed_call(
         self,
