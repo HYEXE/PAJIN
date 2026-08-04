@@ -394,6 +394,22 @@ class Budgets(StrictModel):
         le=1_000_000_000,
     )
 
+    @field_validator(
+        "duration_seconds",
+        "max_cost_usd",
+        "max_agents",
+        "max_spawn_depth",
+        "max_tool_calls",
+        "max_model_calls",
+        "max_model_tokens",
+        mode="before",
+    )
+    @classmethod
+    def reject_boolean_numbers(cls, value: object) -> object:
+        if isinstance(value, bool):
+            raise ValueError("budget numeric fields cannot use boolean values")
+        return value
+
 
 class CampaignSpec(StrictModel):
     mode: CampaignMode

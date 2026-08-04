@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-004B` 실제 Shadow Provider 호출·dual-budget receipt
+- 현재 우선순위: `SUP-004B2` stable Provider request·secret-free bound outcome
 
 ## 제품 목표
 
@@ -482,6 +482,9 @@ Gate가 닫혔다.
 - [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
   - [x] `SUP-004A` exact invocation request·sealed non-invocable checkpoint plan
   - [ ] `SUP-004B` atomic Campaign/Supervisor budget·bound Provider receipt
+    - [x] `SUP-004B1` atomic Campaign/dedicated model-usage reservation
+    - [ ] `SUP-004B2` stable request ID·secret-free bound Provider outcome
+    - [ ] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
 - [ ] `SUP-005` Deterministic Baseline 비교
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
@@ -518,6 +521,14 @@ call/token/time/cost 정책은 Campaign보다 항상 좁아야 하며 affordabil
 equivocation으로 거부한다. model invocation과 Task·Plan·Scope·Capability·Permit·execution·activation은
 계속 false다. 다음 `SUP-004B`는 Campaign 전역 budget과 Supervisor 전용 budget을 원자적으로 함께
 통과시키고 stable request/Gateway/Provider receipt를 반환하는 기존 Provider 경계 확장이다.
+
+`SUP-004B1`은 각 `BudgetController`의 usage 상태를 내부 reentrant lock으로 보호하고 두 controller를
+항상 같은 순서로 함께 잠그는 `DualModelUsageBudget`을 추가한다. Campaign 또는 dedicated admission 중
+하나라도 실패하면 양쪽은 불변이며, Provider dispatch 성공·불확실성은 같은 보수적 상한을 양쪽에
+commit하고 증명된 non-execution만 함께 release한다. 기존 Provider constructor에는 optional additive
+경계로 연결돼 Campaign-only caller를 바꾸지 않는다. Budget authority와 persistent restore는 boolean-number
+coercion을 차단하고 composite publication failure도 양쪽 rollback한다. 다음 `SUP-004B2`는 caller-supplied
+stable request ID와 raw prompt·response·secret을 포함하지 않는 bound Provider outcome을 추가한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

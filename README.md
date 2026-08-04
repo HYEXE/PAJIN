@@ -184,6 +184,16 @@ SUP-004B work. See the
 [SUP-004A contract](docs/orchestration/SUP-004A-checkpoint-invocation-plan.md) and
 [ADR-0120](docs/adr/0120-plan-supervisor-checkpoints-before-invocation.md).
 
+SUP-004B1 adds the first actual-call prerequisite: one process-local atomic boundary reserves the
+same conservative model/Tool-call, token, and cost capacity on both the Campaign and a dedicated
+model budget while enforcing the shorter remaining duration. The Provider port can opt into this boundary without changing existing
+callers. Dedicated denial rolls the Campaign reservation back before either ledger is visible,
+successful or uncertain dispatch commits both bounds, and proven non-execution releases both.
+Stable request identity, secret-free Provider outcome, durable dispatch claim, and Supervisor
+receipt remain SUP-004B2/B3 work. See the
+[SUP-004B1 contract](docs/orchestration/SUP-004B1-atomic-dual-model-budget.md) and
+[ADR-0121](docs/adr/0121-atomically-charge-campaign-and-dedicated-model-budgets.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -749,6 +749,19 @@ def test_resume_accepts_semantically_exact_control_plane_checkpoint_copy(
     assert claim["checkpoint_path"] == str(waiting.checkpoint_path.resolve())
 
 
+def test_tool_loop_checkpoint_rejects_boolean_budget_usage(tmp_path: Path) -> None:
+    worker = LoopWorker()
+    runner, _secrets = _runner(tmp_path, worker, high_risk=True)
+    waiting = asyncio.run(
+        runner.run(_campaign(high_risk=True), prompt="Request the T3 probe.")
+    )
+    checkpoint = json.loads(waiting.checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["budget"]["elapsedSeconds"] = True
+
+    with pytest.raises(ValueError, match="cannot use boolean values"):
+        ToolLoopCheckpoint.model_validate(checkpoint)
+
+
 def test_resume_rejects_semantically_forged_copied_checkpoint_before_claim(
     tmp_path: Path,
 ) -> None:

@@ -21,7 +21,7 @@ from pajin.providers import (
     ProviderMessage,
     ProviderRegistration,
 )
-from pajin.runtime.control import BudgetController, BudgetExceeded
+from pajin.runtime.control import BudgetController, BudgetExceeded, DualModelUsageBudget
 from pajin.runtime.store import RunStore
 from pajin.tools.gateway import GatewayOutcome
 
@@ -122,6 +122,8 @@ def _port(
     max_tool_calls: int = 10,
     max_model_calls: int = 10,
     elapsed_seconds: float = 0,
+    dedicated_budget: BudgetController | None = None,
+    dual_model_usage_budget: DualModelUsageBudget | None = None,
 ) -> tuple[PolicyBoundProviderPort, BudgetController]:
     registration = _registration()
     budgets = sample_campaign.spec.budgets.model_copy(
@@ -165,6 +167,15 @@ def _port(
             budget=budget,
             gateway=gateway,  # type: ignore[arg-type]
             store=store,
+            dual_model_usage_budget=(
+                dual_model_usage_budget
+                if dual_model_usage_budget is not None
+                else (
+                    DualModelUsageBudget(budget, dedicated_budget)
+                    if dedicated_budget is not None
+                    else None
+                )
+            ),
         ),
         budget,
     )
@@ -347,6 +358,119 @@ async def test_provider_session_releases_reservation_for_proven_non_execution(
         event["event_type"] for event in events if event["event_type"].startswith("model.call")
     ]
     assert call_events == ["model.call.started", "model.call.failed"]
+
+
+@pytest.mark.asyncio
+async def test_provider_session_dual_budget_denial_leaves_both_ledgers_unchanged(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    gateway = StubProviderGateway(
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    )
+    dedicated_budgets = sample_campaign.spec.budgets.model_copy(
+        update={
+            "duration_seconds": 1,
+            "max_tool_calls": 1,
+            "max_model_calls": 1,
+            "max_model_tokens": 1,
+            "max_cost_usd": 10,
+        }
+    )
+    dedicated_budget = BudgetController(dedicated_budgets)
+    port, campaign_budget = _port(
+        tmp_path,
+        sample_campaign,
+        gateway,
+        dedicated_budget=dedicated_budget,
+    )
+
+    with pytest.raises(BudgetExceeded, match="model-token"):
+        await port.chat(role="supervisor", attempt=1, chat=_chat())
+
+    assert gateway.calls == 0
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 0
+        assert snapshot["modelCalls"] == 0
+        assert snapshot["modelTokens"] == 0
+        assert snapshot["costUsd"] == 0
+
+
+def test_provider_session_rejects_dual_budget_for_another_campaign(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    foreign_campaign_budget = BudgetController(sample_campaign.spec.budgets)
+    dedicated_budget = BudgetController(sample_campaign.spec.budgets)
+    dual = DualModelUsageBudget(foreign_campaign_budget, dedicated_budget)
+
+    with pytest.raises(ValueError, match="supplied Campaign budget"):
+        _port(
+            tmp_path,
+            sample_campaign,
+            StubProviderGateway(),
+            dual_model_usage_budget=dual,
+        )
+
+
+@pytest.mark.asyncio
+async def test_provider_session_dual_budget_commit_and_non_execution_release(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    dedicated_budgets = sample_campaign.spec.budgets.model_copy(
+        update={
+            "duration_seconds": 1,
+            "max_tool_calls": 2,
+            "max_model_calls": 2,
+            "max_model_tokens": 10_000,
+            "max_cost_usd": 10,
+        }
+    )
+    dedicated_budget = BudgetController(dedicated_budgets)
+    completed_gateway = StubProviderGateway(
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    )
+    completed_port, campaign_budget = _port(
+        tmp_path / "completed",
+        sample_campaign,
+        completed_gateway,
+        dedicated_budget=dedicated_budget,
+    )
+
+    await completed_port.chat(role="supervisor", attempt=1, chat=_chat())
+
+    campaign_after_completion = campaign_budget.snapshot()
+    dedicated_after_completion = dedicated_budget.snapshot()
+    assert campaign_after_completion["modelCalls"] == 1
+    assert dedicated_after_completion["modelCalls"] == 1
+    assert campaign_after_completion["modelTokens"] == dedicated_after_completion["modelTokens"]
+    assert campaign_after_completion["costUsd"] == pytest.approx(
+        dedicated_after_completion["costUsd"]
+    )
+
+    non_execution_gateway = StubProviderGateway(executed=False, success=False)
+    non_execution_port, same_campaign_budget = _port(
+        tmp_path / "not-executed",
+        sample_campaign,
+        non_execution_gateway,
+        dedicated_budget=dedicated_budget,
+    )
+
+    with pytest.raises(ModelCallFailure, match="did not execute"):
+        await non_execution_port.chat(role="supervisor", attempt=1, chat=_chat())
+
+    assert same_campaign_budget.snapshot()["modelCalls"] == 0
+    dedicated_after_release = dedicated_budget.snapshot()
+    for field in (
+        "toolCalls",
+        "modelCalls",
+        "modelPromptTokens",
+        "modelCompletionTokens",
+        "modelTokens",
+        "costUsd",
+    ):
+        assert dedicated_after_release[field] == dedicated_after_completion[field]
 
 
 @pytest.mark.asyncio

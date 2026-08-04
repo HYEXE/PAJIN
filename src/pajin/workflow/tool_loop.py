@@ -650,6 +650,15 @@ class ToolLoopCheckpoint(StrictModel):
     created_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
     updated_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
+    @field_validator("budget", mode="before")
+    @classmethod
+    def reject_boolean_budget_usage(cls, value: object) -> object:
+        if isinstance(value, Mapping) and any(
+            isinstance(item, bool) for item in value.values()
+        ):
+            raise ValueError("checkpoint budget usage cannot use boolean values")
+        return value
+
 
 class ToolLoopCheckpointClaim(StrictModel):
     claim_version: Literal[1] = 1
@@ -897,13 +906,13 @@ class PolicyToolLoopRunner:
         budget = BudgetController(campaign.spec.budgets)
         if state.budget:
             budget.restore_usage(
-                agent_count=int(state.budget.get("agentCount", 0)),
-                tool_calls=int(state.budget.get("toolCalls", 0)),
-                model_calls=int(state.budget.get("modelCalls", 0)),
-                model_prompt_tokens=int(state.budget.get("modelPromptTokens", 0)),
-                model_completion_tokens=int(state.budget.get("modelCompletionTokens", 0)),
-                cost_usd=float(state.budget.get("costUsd", 0)),
-                elapsed_seconds=float(state.budget.get("elapsedSeconds", 0)),
+                agent_count=state.budget.get("agentCount", 0),
+                tool_calls=state.budget.get("toolCalls", 0),
+                model_calls=state.budget.get("modelCalls", 0),
+                model_prompt_tokens=state.budget.get("modelPromptTokens", 0),
+                model_completion_tokens=state.budget.get("modelCompletionTokens", 0),
+                cost_usd=state.budget.get("costUsd", 0),
+                elapsed_seconds=state.budget.get("elapsedSeconds", 0),
             )
         execution = self._execute(
             campaign,

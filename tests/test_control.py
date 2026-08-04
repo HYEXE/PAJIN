@@ -1,5 +1,9 @@
 import os
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
+from threading import Barrier
+from uuid import UUID
 
 import pytest
 
@@ -11,6 +15,7 @@ from pajin.runtime.control import (
     BudgetExceeded,
     CancellationCleanupStatus,
     CancellationKind,
+    DualModelUsageBudget,
     ExecutionCancellationContext,
 )
 
@@ -159,6 +164,260 @@ def test_model_usage_reservation_releases_only_proven_unused_capacity() -> None:
     assert budget.snapshot()["costUsd"] == 0
     assert budget.snapshot()["toolCalls"] == 0
     assert budget.snapshot()["modelCalls"] == 0
+
+
+def test_dual_model_usage_budget_rolls_back_campaign_when_dedicated_denies() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    campaign_budget = BudgetController(campaign.spec.budgets)
+    dedicated_budgets = campaign.spec.budgets.model_copy(
+        update={"max_model_tokens": 1}
+    )
+    dedicated_budget = BudgetController(dedicated_budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+
+    with pytest.raises(BudgetExceeded, match="model-token"):
+        dual.reserve_model_usage(
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost_usd=0,
+        )
+
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 0
+        assert snapshot["modelCalls"] == 0
+        assert snapshot["modelTokens"] == 0
+        assert snapshot["costUsd"] == 0
+
+
+def test_dual_model_usage_budget_requires_distinct_controllers() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    budget = BudgetController(campaign.spec.budgets)
+
+    with pytest.raises(ValueError, match="two distinct controllers"):
+        DualModelUsageBudget(budget, budget)
+
+
+def test_dual_model_usage_budget_rolls_back_both_when_composite_publish_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    campaign_budget = BudgetController(campaign.spec.budgets)
+    dedicated_budget = BudgetController(campaign.spec.budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+    real_uuid4 = control_module.uuid4
+    uuid_calls = 0
+
+    def fail_composite_identity() -> UUID:
+        nonlocal uuid_calls
+        uuid_calls += 1
+        if uuid_calls == 3:
+            raise RuntimeError("injected composite identity failure")
+        return real_uuid4()
+
+    monkeypatch.setattr(control_module, "uuid4", fail_composite_identity)
+
+    with pytest.raises(RuntimeError, match="composite identity failure"):
+        dual.reserve_model_usage(
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost_usd=0,
+        )
+
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 0
+        assert snapshot["modelCalls"] == 0
+        assert snapshot["modelTokens"] == 0
+        assert snapshot["costUsd"] == 0
+
+
+def test_dual_model_usage_budget_commits_and_releases_both_ledgers() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    budgets = campaign.spec.budgets.model_copy(update={"max_cost_usd": 1})
+    campaign_budget = BudgetController(budgets)
+    dedicated_budget = BudgetController(budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+
+    committed = dual.reserve_model_usage(
+        prompt_tokens=2,
+        completion_tokens=1,
+        cost_usd=0.25,
+    )
+    dual.commit_model_usage_reservation(committed)
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 1
+        assert snapshot["modelCalls"] == 1
+        assert snapshot["modelTokens"] == 3
+        assert snapshot["costUsd"] == pytest.approx(0.25)
+
+    released = dual.reserve_model_usage(
+        prompt_tokens=1,
+        completion_tokens=1,
+        cost_usd=0.1,
+    )
+    dual.release_model_usage_reservation(released)
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 1
+        assert snapshot["modelCalls"] == 1
+        assert snapshot["modelTokens"] == 3
+        assert snapshot["costUsd"] == pytest.approx(0.25)
+
+
+def test_dual_model_usage_budget_rejects_forged_and_replayed_reservations() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    budgets = campaign.spec.budgets.model_copy(update={"max_cost_usd": 1})
+    campaign_budget = BudgetController(budgets)
+    dedicated_budget = BudgetController(budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+    reservation = dual.reserve_model_usage(
+        prompt_tokens=2,
+        completion_tokens=1,
+        cost_usd=0.25,
+    )
+
+    with pytest.raises(ValueError, match="not active"):
+        dual.commit_model_usage_reservation(replace(reservation))
+
+    dual.commit_model_usage_reservation(reservation)
+
+    with pytest.raises(ValueError, match="not active"):
+        dual.commit_model_usage_reservation(reservation)
+    for snapshot in (campaign_budget.snapshot(), dedicated_budget.snapshot()):
+        assert snapshot["toolCalls"] == 1
+        assert snapshot["modelCalls"] == 1
+        assert snapshot["modelTokens"] == 3
+        assert snapshot["costUsd"] == pytest.approx(0.25)
+
+
+def test_dual_model_usage_budget_serializes_direct_campaign_competitor() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    one_call_budgets = campaign.spec.budgets.model_copy(
+        update={
+            "max_tool_calls": 1,
+            "max_model_calls": 1,
+            "max_model_tokens": 2,
+            "max_cost_usd": 1,
+        }
+    )
+    campaign_budget = BudgetController(one_call_budgets)
+    dedicated_budget = BudgetController(one_call_budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+    barrier = Barrier(2)
+
+    def reserve_direct() -> str:
+        barrier.wait()
+        campaign_budget.reserve_model_usage(
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost_usd=0.1,
+        )
+        return "direct"
+
+    def reserve_dual() -> str:
+        barrier.wait()
+        dual.reserve_model_usage(
+            prompt_tokens=1,
+            completion_tokens=1,
+            cost_usd=0.1,
+        )
+        return "dual"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        futures = (executor.submit(reserve_direct), executor.submit(reserve_dual))
+        results: list[str] = []
+        failures: list[BaseException] = []
+        for future in futures:
+            try:
+                results.append(future.result())
+            except BaseException as exc:
+                failures.append(exc)
+
+    assert len(results) == 1
+    assert len(failures) == 1
+    assert isinstance(failures[0], BudgetExceeded)
+    campaign_snapshot = campaign_budget.snapshot()
+    dedicated_snapshot = dedicated_budget.snapshot()
+    assert campaign_snapshot["toolCalls"] == 1
+    assert campaign_snapshot["modelCalls"] == 1
+    assert campaign_snapshot["modelTokens"] == 2
+    expected_dedicated_calls = 1 if results == ["dual"] else 0
+    assert dedicated_snapshot["toolCalls"] == expected_dedicated_calls
+    assert dedicated_snapshot["modelCalls"] == expected_dedicated_calls
+
+
+@pytest.mark.parametrize(
+    ("prompt_tokens", "completion_tokens", "cost_usd"),
+    (
+        (True, 1, 0),
+        (1, False, 0),
+        (1, 1, True),
+    ),
+)
+def test_dual_model_usage_budget_rejects_boolean_number_coercion(
+    prompt_tokens: object,
+    completion_tokens: object,
+    cost_usd: object,
+) -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    campaign_budget = BudgetController(campaign.spec.budgets)
+    dedicated_budget = BudgetController(campaign.spec.budgets)
+    dual = DualModelUsageBudget(campaign_budget, dedicated_budget)
+
+    with pytest.raises(ValueError):
+        dual.reserve_model_usage(
+            prompt_tokens=prompt_tokens,  # type: ignore[arg-type]
+            completion_tokens=completion_tokens,  # type: ignore[arg-type]
+            cost_usd=cost_usd,  # type: ignore[arg-type]
+        )
+
+    assert campaign_budget.snapshot()["modelCalls"] == 0
+    assert dedicated_budget.snapshot()["modelCalls"] == 0
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "agent_count",
+        "tool_calls",
+        "model_calls",
+        "model_prompt_tokens",
+        "model_completion_tokens",
+        "cost_usd",
+        "elapsed_seconds",
+    ),
+)
+def test_budget_restore_rejects_boolean_number_coercion(field: str) -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    budget = BudgetController(campaign.spec.budgets)
+    usage: dict[str, object] = {
+        "agent_count": 0,
+        "tool_calls": 0,
+        "model_calls": 0,
+        "model_prompt_tokens": 0,
+        "model_completion_tokens": 0,
+        "cost_usd": 0,
+        "elapsed_seconds": 0,
+    }
+    usage[field] = True
+
+    with pytest.raises(ValueError, match=r"JSON integer|finite JSON number"):
+        budget.restore_usage(**usage)
+
+    assert budget.snapshot()["modelCalls"] == 0
+
+
+def test_budget_controller_revalidates_and_detaches_its_budget_authority() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    forged = campaign.spec.budgets.model_copy(update={"duration_seconds": True})
+
+    with pytest.raises(ValueError, match="cannot use boolean values"):
+        BudgetController(forged)
+
+    supplied = campaign.spec.budgets.model_copy(deep=True)
+    budget = BudgetController(supplied)
+    original_duration = budget.snapshot()["durationSeconds"]
+    supplied.duration_seconds = 1
+
+    assert budget.snapshot()["durationSeconds"] == original_duration
 
 
 @pytest.mark.parametrize("cost", [float("nan"), float("inf"), float("-inf")])

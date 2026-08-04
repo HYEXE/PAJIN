@@ -530,6 +530,14 @@ a separate Run. Model invocation, receipt, Task/Plan mutation, Scope, Capability
 execution, and activation remain false. SUP-004B must atomically enforce Campaign and Supervisor
 budgets while returning a bound request/Gateway/Provider receipt before any draft reaches SUP-003.
 
+SUP-004B1 supplies the atomic process-local budget half of that runtime boundary. Each Campaign
+usage ledger owns a reentrant lock, and the dual model budget acquires the Campaign and dedicated
+locks in stable order before checking or changing either. Provider dispatch success or uncertainty
+commits the same conservative call/token/cost bound to both; only proven non-execution releases
+both. Existing Campaign-only Provider sessions are unchanged. Stable Provider request identity,
+secret-free bound outcome, durable at-most-once claim, and the sealed Supervisor draft receipt are
+separate SUP-004B2/B3 boundaries.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

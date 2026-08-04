@@ -14,23 +14,20 @@
   Worker request ID, reservation, Gateway outcome, Provider result에 결박한 뒤 consumer-side에서 complete
   input을 재구성·검증한다.
 
-## SUP-004A 계획과 실제 Provider invocation receipt 경계
+## SUP-004B1 atomic budget과 실제 Provider invocation receipt 경계
 
-- 상태: SUP-004B 실제 model invocation 전에 해소해야 하는 transport·dual-budget 공백
-- 현재 보장: SUP-004A는 exact current `SupervisorSnapshotInput`, ordered two-message envelope, complete
-  `ProviderChatRequest`, strict draft schema, Provider/model/configuration, Campaign-attenuated dedicated
-  affordability와 Graph checkpoint를 content-addressed plan에 결박한다. plan은 별도 sealed Run에 기록되고
-  exact retry는 process-local single-flight로 같은 publication을 반환한다. model invocation authority는
-  false이며 Campaign/Supervisor budget은 소비되지 않는다.
+- 상태: SUP-004B2/B3 실제 model invocation 전에 해소해야 하는 transport·durable claim 공백
+- 현재 보장: SUP-004B1은 공유 Campaign controller와 distinct dedicated controller의 동일 보수적
+  model/Tool-call, token, cost capacity를 내부 stable-order locks 아래 원자적으로 reserve·commit·release하고
+  두 duration ceiling 중 짧은 remaining time을 적용한다. existing Provider path에 optional로 연결되며
+  dedicated denial은 Campaign charge를 남기지 않고 proven non-execution만 양쪽을 release한다.
 - 제한: `PolicyBoundProviderPort`는 internal random ToolRequest ID를 만들고 `ProviderChatResult`만 반환하므로
-  caller가 request/reservation/Gateway evidence를 안전하게 receipt로 결박할 수 없다. 두 개의 독립
-  `BudgetController`를 순차 호출하면 partial reservation 또는 Campaign budget 우회가 생길 수 있다. raw
-  Gateway evidence는 complete tainted request를 포함한다. process restart 뒤 duplicate plan claim과
-  crash-after-dispatch 상태도 아직 durable하지 않다.
-- 해소 조건: `SUP-004B`에서 stable request ID와 secret-free bound Provider outcome을 additive로 노출하고,
-  Campaign·Supervisor budget을 atomic composite reservation으로 처리한다. intent-before-dispatch와
-  no-automatic-redispatch terminal journal을 봉인하고 exact request/Gateway/result/usage/draft receipt를
-  consumer-side에서 재검증한 뒤에만 SUP-003 compiler로 전달한다.
+  caller가 request/reservation/Gateway evidence를 안전하게 receipt로 결박할 수 없다. raw Gateway evidence는
+  complete tainted request를 포함한다. process restart 뒤 duplicate plan claim과 crash-after-dispatch 상태도
+  아직 durable하지 않다. budget 원자성도 같은 process에서 공유하는 controller에 한정된다.
+- 해소 조건: `SUP-004B2`에서 stable request ID와 secret-free bound Provider outcome을 additive로 노출하고,
+  `SUP-004B3`에서 intent-before-dispatch/no-automatic-redispatch SQLite journal과 exact sealed request/Gateway/
+  result/usage/draft receipt를 consumer-side에서 재검증한 뒤에만 SUP-003 compiler로 전달한다.
 
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
@@ -124,15 +121,18 @@
 - 해소 조건: Harness에 검증 clock을 명시적으로 주입하거나 테스트가 현재 시각에 의존하지 않는
   유효 기간을 사용하도록 별도 변경하고, 만료 음성 테스트는 고정 clock으로 유지한다.
 
-## Windows POSIX 디렉터리 mode 검사
+## Windows POSIX 파일·디렉터리 mode 검사
 
 - 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-02
+- 마지막 재현: 2026-08-04
 - 명령:
   `.\.venv\Scripts\python.exe -m pytest -q tests\test_workflow_integrity_regressions.py::test_confirmation_projection_keeps_private_permissions_and_escapes_markdown`
+- 추가 명령:
+  `.\.venv\Scripts\python.exe -m pytest -q tests\test_tool_loop.py::test_high_risk_tool_waits_for_exact_approval_and_resumes_in_new_run`
 - 결과: PAJIN이 `0700`으로 생성한 validation·lock 디렉터리를 Windows `stat()`이 `0777`로
-  보고해 `assert 511 == 448`에서 실패한다.
-- 영향: POSIX private-directory mode assertion을 Windows에서 증명할 수 없다. 같은 실행의
+  보고해 `assert 511 == 448`에서 실패한다. Tool Loop private claim 파일도 `fchmod(0600)` 뒤
+  Windows `stat()`이 `0666`으로 보고해 `assert 438 == 384`에서 실패한다.
+- 영향: POSIX private file/directory mode assertion을 Windows에서 증명할 수 없다. 같은 실행의
   기능·escaping 검증에 도달하기 전에 플랫폼 mode 표현 차이로 중단되며 ENG-001 회귀 증거는 아니다.
 - 해소 조건: Linux CI에서 검증하거나, 별도 작업으로 Windows ACL을 확인하는 platform-specific
   assertion과 POSIX mode assertion을 분리한다.

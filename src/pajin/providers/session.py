@@ -19,7 +19,13 @@ from pajin.providers.models import (
     ProviderMessage,
     ProviderRegistration,
 )
-from pajin.runtime.control import BudgetController, BudgetExceeded, ModelUsageReservation
+from pajin.runtime.control import (
+    BudgetController,
+    BudgetExceeded,
+    DualModelUsageBudget,
+    DualModelUsageReservation,
+    ModelUsageReservation,
+)
 from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import RunStore
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
@@ -106,7 +112,7 @@ class _ProviderCall:
     remaining_calls_before: int
     schema_name: str | None
     function_tools: tuple[str, ...]
-    reservation: ModelUsageReservation
+    reservation: ModelUsageReservation | DualModelUsageReservation
 
 
 class PolicyBoundProviderPort(StructuredModelPort):
@@ -125,6 +131,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         budget: BudgetController,
         gateway: ToolGateway,
         store: RunStore,
+        dual_model_usage_budget: DualModelUsageBudget | None = None,
     ) -> None:
         try:
             registration_snapshot = ProviderRegistration.model_validate(
@@ -145,6 +152,14 @@ class PolicyBoundProviderPort(StructuredModelPort):
         self._grant = authoritative.model_copy(deep=True)
         self._ledger = ledger
         self._budget = budget
+        if (
+            dual_model_usage_budget is not None
+            and not dual_model_usage_budget.binds_campaign_budget(budget)
+        ):
+            raise ValueError(
+                "provider dual model budget must charge the supplied Campaign budget"
+            )
+        self._dual_model_usage_budget = dual_model_usage_budget
         self._gateway = gateway
         self._store = store
 
@@ -187,7 +202,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         self._record_call_started(call)
         self._consume_capability(call)
         try:
-            async with asyncio.timeout(self._budget.remaining_seconds):
+            async with asyncio.timeout(self._model_usage_remaining_seconds()):
                 outcome = await self._gateway.execute(
                     self._campaign,
                     self._grant,
@@ -234,8 +249,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         canonical_attempt = self._canonical_attempt(attempt)
         schema = chat_snapshot.response_format
         function_tools = tuple(tool.function.name for tool in chat_snapshot.tools)
-        self._budget.check_tool_call()
-        self._budget.check_model_call()
+        self._check_model_usage_calls()
         record = self._current_capability_record()
         used_calls = self._grant.max_calls - record.remaining_calls
         request = self._provider_request(chat_snapshot)
@@ -304,7 +318,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
                 },
             )
         except Exception:
-            self._budget.release_model_usage_reservation(call.reservation)
+            self._release_model_usage_reservation(call.reservation)
             raise
 
     def _consume_capability(self, call: _ProviderCall) -> None:
@@ -314,7 +328,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
             if remaining != call.remaining_calls_before - 1:
                 raise CapabilityError("provider capability was not consumed exactly once")
         except Exception as exc:
-            self._budget.release_model_usage_reservation(call.reservation)
+            self._release_model_usage_reservation(call.reservation)
             self._record_failure_preserving(
                 call,
                 error="provider capability could not be consumed before dispatch",
@@ -337,11 +351,11 @@ class PolicyBoundProviderPort(StructuredModelPort):
             self._commit_failed_call(call, error=contract_error, evidence=outcome.result.evidence)
             raise ModelCallFailure(contract_error)
         if not outcome.executed:
-            self._budget.release_model_usage_reservation(call.reservation)
+            self._release_model_usage_reservation(call.reservation)
             error = "provider gateway did not execute the request"
             self._record_failed_call(call, error=error, evidence=outcome.result.evidence)
             raise ModelCallFailure(error)
-        self._budget.commit_model_usage_reservation(call.reservation)
+        self._commit_model_usage_reservation(call.reservation)
         if not outcome.result.success:
             error = "provider model call failed"
             self._record_failed_call(call, error=error, evidence=outcome.result.evidence)
@@ -443,13 +457,61 @@ class PolicyBoundProviderPort(StructuredModelPort):
             return detail
         return "provider model call returned an invalid result"
 
-    def _reserve_model_usage(self, chat: ProviderChatRequest) -> ModelUsageReservation:
+    def _reserve_model_usage(
+        self,
+        chat: ProviderChatRequest,
+    ) -> ModelUsageReservation | DualModelUsageReservation:
         bound = provider_model_usage_upper_bound(self._registration, chat)
+        if self._dual_model_usage_budget is not None:
+            return self._dual_model_usage_budget.reserve_model_usage(
+                prompt_tokens=bound.prompt_tokens,
+                completion_tokens=bound.completion_tokens,
+                cost_usd=bound.cost_usd,
+            )
         return self._budget.reserve_model_usage(
             prompt_tokens=bound.prompt_tokens,
             completion_tokens=bound.completion_tokens,
             cost_usd=bound.cost_usd,
         )
+
+    def _model_usage_remaining_seconds(self) -> float:
+        if self._dual_model_usage_budget is not None:
+            return self._dual_model_usage_budget.remaining_seconds
+        return self._budget.remaining_seconds
+
+    def _check_model_usage_calls(self) -> None:
+        if self._dual_model_usage_budget is not None:
+            self._dual_model_usage_budget.check_tool_call()
+            self._dual_model_usage_budget.check_model_call()
+            return
+        self._budget.check_tool_call()
+        self._budget.check_model_call()
+
+    def _commit_model_usage_reservation(
+        self,
+        reservation: ModelUsageReservation | DualModelUsageReservation,
+    ) -> None:
+        if isinstance(reservation, DualModelUsageReservation):
+            if self._dual_model_usage_budget is None:
+                raise ValueError("provider dual model reservation has no budget authority")
+            self._dual_model_usage_budget.commit_model_usage_reservation(reservation)
+            return
+        if self._dual_model_usage_budget is not None:
+            raise ValueError("provider Campaign-only reservation bypasses its dual budget")
+        self._budget.commit_model_usage_reservation(reservation)
+
+    def _release_model_usage_reservation(
+        self,
+        reservation: ModelUsageReservation | DualModelUsageReservation,
+    ) -> None:
+        if isinstance(reservation, DualModelUsageReservation):
+            if self._dual_model_usage_budget is None:
+                raise ValueError("provider dual model reservation has no budget authority")
+            self._dual_model_usage_budget.release_model_usage_reservation(reservation)
+            return
+        if self._dual_model_usage_budget is not None:
+            raise ValueError("provider Campaign-only reservation bypasses its dual budget")
+        self._budget.release_model_usage_reservation(reservation)
 
     def _prompt_token_upper_bound(self, chat: ProviderChatRequest) -> int:
         """Return a deliberately over-reserved prompt bound for the complete provider contract."""
@@ -496,7 +558,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         error: str | None,
         evidence: list[str] | None = None,
     ) -> None:
-        self._budget.commit_model_usage_reservation(call.reservation)
+        self._commit_model_usage_reservation(call.reservation)
         self._record_failed_call(call, error=error, evidence=evidence)
 
     def _commit_failure_preserving_audit(
@@ -506,7 +568,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         error: str,
         original: BaseException,
     ) -> None:
-        self._budget.commit_model_usage_reservation(call.reservation)
+        self._commit_model_usage_reservation(call.reservation)
         try:
             self._record_failed_call(call, error=error)
         except Exception as audit_error:

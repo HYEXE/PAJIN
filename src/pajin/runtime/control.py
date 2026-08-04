@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from math import isfinite
 from pathlib import Path
+from threading import RLock
 from time import monotonic
 from uuid import uuid4
 
@@ -29,6 +30,18 @@ class BudgetExceeded(RuntimeError):
 @dataclass(frozen=True)
 class ModelUsageReservation:
     """One conservative in-flight model call, Tool call, token, and cost reservation."""
+
+    reservation_id: str
+    prompt_tokens: int
+    completion_tokens: int
+    cost_usd: float
+    tool_calls: int
+    model_calls: int
+
+
+@dataclass(frozen=True)
+class DualModelUsageReservation:
+    """One exact reservation charged to Campaign and dedicated model budgets."""
 
     reservation_id: str
     prompt_tokens: int
@@ -317,6 +330,7 @@ class BudgetController:
     model_completion_tokens: int = field(init=False, default=0)
     cost_usd: float = field(init=False, default=0.0)
     _elapsed_offset_seconds: float = field(init=False, default=0.0)
+    _usage_lock: RLock = field(init=False, repr=False, compare=False)
     _model_usage_reservations: dict[str, ModelUsageReservation] = field(
         init=False,
         default_factory=dict,
@@ -324,6 +338,10 @@ class BudgetController:
     )
 
     def __post_init__(self) -> None:
+        self.budgets = Budgets.model_validate(
+            self.budgets.model_dump(mode="python", by_alias=True)
+        )
+        self._usage_lock = RLock()
         self._started = monotonic()
         self.agent_count = 0
         self.tool_calls = 0
@@ -336,45 +354,55 @@ class BudgetController:
 
     @property
     def elapsed_seconds(self) -> float:
-        return self._elapsed_offset_seconds + monotonic() - self._started
+        with self._usage_lock:
+            return self._elapsed_offset_seconds + monotonic() - self._started
 
     @property
     def remaining_seconds(self) -> float:
-        return max(0.0, self.budgets.duration_seconds - self.elapsed_seconds)
+        with self._usage_lock:
+            return max(0.0, self.budgets.duration_seconds - self.elapsed_seconds)
 
     def reserve_agent(self, *, depth: int) -> None:
-        self.check_duration()
-        if depth > self.budgets.max_spawn_depth:
-            raise BudgetExceeded("maximum agent spawn depth exceeded")
-        if self.agent_count >= self.budgets.max_agents:
-            raise BudgetExceeded("maximum agent count exceeded")
-        self.agent_count += 1
+        with self._usage_lock:
+            self.check_duration()
+            if depth > self.budgets.max_spawn_depth:
+                raise BudgetExceeded("maximum agent spawn depth exceeded")
+            if self.agent_count >= self.budgets.max_agents:
+                raise BudgetExceeded("maximum agent count exceeded")
+            self.agent_count += 1
 
     def check_tool_call(self) -> None:
-        self.check_duration()
-        if self.tool_calls >= self.budgets.max_tool_calls:
-            raise BudgetExceeded("maximum tool-call budget exceeded")
+        with self._usage_lock:
+            self.check_duration()
+            if self.tool_calls >= self.budgets.max_tool_calls:
+                raise BudgetExceeded("maximum tool-call budget exceeded")
 
     def record_tool_call(self) -> None:
-        if self.tool_calls >= self.budgets.max_tool_calls:
-            raise BudgetExceeded("maximum tool-call budget exceeded")
-        self.tool_calls += 1
+        with self._usage_lock:
+            if self.tool_calls >= self.budgets.max_tool_calls:
+                raise BudgetExceeded("maximum tool-call budget exceeded")
+            self.tool_calls += 1
 
     def record_cost(self, amount_usd: float) -> None:
-        if not isfinite(amount_usd) or amount_usd < 0:
-            raise ValueError("cost must be finite and non-negative")
-        if self.cost_usd + amount_usd > self.budgets.max_cost_usd:
-            raise BudgetExceeded("maximum campaign cost exceeded")
-        self.cost_usd += amount_usd
+        with self._usage_lock:
+            if type(amount_usd) not in {int, float}:
+                raise ValueError("cost must be a finite JSON number")
+            if not isfinite(amount_usd) or amount_usd < 0:
+                raise ValueError("cost must be finite and non-negative")
+            if self.cost_usd + amount_usd > self.budgets.max_cost_usd:
+                raise BudgetExceeded("maximum campaign cost exceeded")
+            self.cost_usd += amount_usd
 
     def check_model_call(self) -> None:
-        self.check_duration()
-        if self.model_calls >= self.budgets.max_model_calls:
-            raise BudgetExceeded("maximum model-call budget exceeded")
+        with self._usage_lock:
+            self.check_duration()
+            if self.model_calls >= self.budgets.max_model_calls:
+                raise BudgetExceeded("maximum model-call budget exceeded")
 
     def record_model_call(self) -> None:
-        self.check_model_call()
-        self.model_calls += 1
+        with self._usage_lock:
+            self.check_model_call()
+            self.model_calls += 1
 
     def record_model_usage(
         self,
@@ -383,14 +411,15 @@ class BudgetController:
         completion_tokens: int,
         cost_usd: float,
     ) -> None:
-        self._check_model_usage_capacity(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=cost_usd,
-        )
-        self.model_prompt_tokens += prompt_tokens
-        self.model_completion_tokens += completion_tokens
-        self.cost_usd += cost_usd
+        with self._usage_lock:
+            self._check_model_usage_capacity(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+            )
+            self.model_prompt_tokens += prompt_tokens
+            self.model_completion_tokens += completion_tokens
+            self.cost_usd += cost_usd
 
     def _check_model_usage_capacity(
         self,
@@ -399,16 +428,21 @@ class BudgetController:
         completion_tokens: int,
         cost_usd: float,
     ) -> None:
-        if prompt_tokens < 0 or completion_tokens < 0:
-            raise ValueError("model token usage cannot be negative")
-        total = prompt_tokens + completion_tokens
-        used = self.model_prompt_tokens + self.model_completion_tokens
-        if used + total > self.budgets.max_model_tokens:
-            raise BudgetExceeded("maximum model-token budget exceeded")
-        if not isfinite(cost_usd) or cost_usd < 0:
-            raise ValueError("cost must be finite and non-negative")
-        if self.cost_usd + cost_usd > self.budgets.max_cost_usd:
-            raise BudgetExceeded("maximum campaign cost exceeded")
+        with self._usage_lock:
+            if type(prompt_tokens) is not int or type(completion_tokens) is not int:
+                raise ValueError("model token usage must use JSON integers")
+            if prompt_tokens < 0 or completion_tokens < 0:
+                raise ValueError("model token usage cannot be negative")
+            total = prompt_tokens + completion_tokens
+            used = self.model_prompt_tokens + self.model_completion_tokens
+            if used + total > self.budgets.max_model_tokens:
+                raise BudgetExceeded("maximum model-token budget exceeded")
+            if type(cost_usd) not in {int, float}:
+                raise ValueError("model cost usage must be a finite JSON number")
+            if not isfinite(cost_usd) or cost_usd < 0:
+                raise ValueError("cost must be finite and non-negative")
+            if self.cost_usd + cost_usd > self.budgets.max_cost_usd:
+                raise BudgetExceeded("maximum campaign cost exceeded")
 
     def reserve_model_usage(
         self,
@@ -419,28 +453,29 @@ class BudgetController:
     ) -> ModelUsageReservation:
         """Atomically charge one model/Tool call and its bound before dispatch."""
 
-        self.check_tool_call()
-        self.check_model_call()
-        self._check_model_usage_capacity(
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=cost_usd,
-        )
-        reservation = ModelUsageReservation(
-            reservation_id=f"model-reservation_{uuid4().hex}",
-            prompt_tokens=prompt_tokens,
-            completion_tokens=completion_tokens,
-            cost_usd=cost_usd,
-            tool_calls=1,
-            model_calls=1,
-        )
-        self.tool_calls += reservation.tool_calls
-        self.model_calls += reservation.model_calls
-        self.model_prompt_tokens += prompt_tokens
-        self.model_completion_tokens += completion_tokens
-        self.cost_usd += cost_usd
-        self._model_usage_reservations[reservation.reservation_id] = reservation
-        return reservation
+        with self._usage_lock:
+            self.check_tool_call()
+            self.check_model_call()
+            self._check_model_usage_capacity(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+            )
+            reservation = ModelUsageReservation(
+                reservation_id=f"model-reservation_{uuid4().hex}",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+                tool_calls=1,
+                model_calls=1,
+            )
+            self.tool_calls += reservation.tool_calls
+            self.model_calls += reservation.model_calls
+            self.model_prompt_tokens += prompt_tokens
+            self.model_completion_tokens += completion_tokens
+            self.cost_usd += cost_usd
+            self._model_usage_reservations[reservation.reservation_id] = reservation
+            return reservation
 
     def settle_model_usage(
         self,
@@ -452,115 +487,305 @@ class BudgetController:
     ) -> None:
         """Replace one active conservative reservation with trusted actual usage."""
 
-        self._require_model_usage_reservation(reservation)
-        if prompt_tokens < 0 or completion_tokens < 0:
-            raise ValueError("model token usage cannot be negative")
-        if not isfinite(cost_usd) or cost_usd < 0:
-            raise ValueError("cost must be finite and non-negative")
-        if (
-            prompt_tokens > reservation.prompt_tokens
-            or completion_tokens > reservation.completion_tokens
-            or cost_usd > reservation.cost_usd
-        ):
-            self.commit_model_usage_reservation(reservation)
-            raise BudgetExceeded("model usage exceeded its conservative reservation")
+        with self._usage_lock:
+            self._require_model_usage_reservation(reservation)
+            if type(prompt_tokens) is not int or type(completion_tokens) is not int:
+                raise ValueError("model token usage must use JSON integers")
+            if prompt_tokens < 0 or completion_tokens < 0:
+                raise ValueError("model token usage cannot be negative")
+            if type(cost_usd) not in {int, float}:
+                raise ValueError("model cost usage must be a finite JSON number")
+            if not isfinite(cost_usd) or cost_usd < 0:
+                raise ValueError("cost must be finite and non-negative")
+            if (
+                prompt_tokens > reservation.prompt_tokens
+                or completion_tokens > reservation.completion_tokens
+                or cost_usd > reservation.cost_usd
+            ):
+                self.commit_model_usage_reservation(reservation)
+                raise BudgetExceeded("model usage exceeded its conservative reservation")
 
-        del self._model_usage_reservations[reservation.reservation_id]
-        self.model_prompt_tokens -= reservation.prompt_tokens - prompt_tokens
-        self.model_completion_tokens -= reservation.completion_tokens - completion_tokens
-        self.cost_usd = max(0.0, self.cost_usd - (reservation.cost_usd - cost_usd))
+            del self._model_usage_reservations[reservation.reservation_id]
+            self.model_prompt_tokens -= reservation.prompt_tokens - prompt_tokens
+            self.model_completion_tokens -= reservation.completion_tokens - completion_tokens
+            self.cost_usd = max(0.0, self.cost_usd - (reservation.cost_usd - cost_usd))
 
     def commit_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
         """Consume an active reservation at its bound when actual usage is unknowable."""
 
-        self._require_model_usage_reservation(reservation)
-        del self._model_usage_reservations[reservation.reservation_id]
+        with self._usage_lock:
+            self._require_model_usage_reservation(reservation)
+            del self._model_usage_reservations[reservation.reservation_id]
 
     def release_model_usage_reservation(self, reservation: ModelUsageReservation) -> None:
         """Release a reservation only when the model request provably was not dispatched."""
 
-        self._require_model_usage_reservation(reservation)
-        del self._model_usage_reservations[reservation.reservation_id]
-        self.tool_calls -= reservation.tool_calls
-        self.model_calls -= reservation.model_calls
-        self.model_prompt_tokens -= reservation.prompt_tokens
-        self.model_completion_tokens -= reservation.completion_tokens
-        self.cost_usd = max(0.0, self.cost_usd - reservation.cost_usd)
+        with self._usage_lock:
+            self._require_model_usage_reservation(reservation)
+            del self._model_usage_reservations[reservation.reservation_id]
+            self.tool_calls -= reservation.tool_calls
+            self.model_calls -= reservation.model_calls
+            self.model_prompt_tokens -= reservation.prompt_tokens
+            self.model_completion_tokens -= reservation.completion_tokens
+            self.cost_usd = max(0.0, self.cost_usd - reservation.cost_usd)
 
     def _require_model_usage_reservation(
         self,
         reservation: ModelUsageReservation,
     ) -> None:
-        active = self._model_usage_reservations.get(reservation.reservation_id)
-        if active is not reservation:
-            raise ValueError("model usage reservation is not active on this budget")
+        with self._usage_lock:
+            active = self._model_usage_reservations.get(reservation.reservation_id)
+            if active is not reservation:
+                raise ValueError("model usage reservation is not active on this budget")
 
     def restore_usage(
         self,
         *,
-        agent_count: int,
-        tool_calls: int,
-        model_calls: int,
-        model_prompt_tokens: int,
-        model_completion_tokens: int,
-        cost_usd: float,
-        elapsed_seconds: float,
+        agent_count: object,
+        tool_calls: object,
+        model_calls: object,
+        model_prompt_tokens: object,
+        model_completion_tokens: object,
+        cost_usd: object,
+        elapsed_seconds: object,
     ) -> None:
-        if self._model_usage_reservations or any(
-            value != 0
-            for value in (
-                self.tool_calls,
-                self.agent_count,
-                self.model_calls,
-                self.model_prompt_tokens,
-                self.model_completion_tokens,
-                self.cost_usd,
-                self._elapsed_offset_seconds,
-            )
-        ):
-            raise ValueError("budget usage can be restored only before execution")
-        if not 0 <= agent_count <= self.budgets.max_agents:
-            raise BudgetExceeded("restored agent usage exceeds campaign budget")
-        if not 0 <= tool_calls <= self.budgets.max_tool_calls:
-            raise BudgetExceeded("restored tool-call usage exceeds campaign budget")
-        if not 0 <= model_calls <= self.budgets.max_model_calls:
-            raise BudgetExceeded("restored model-call usage exceeds campaign budget")
-        total_tokens = model_prompt_tokens + model_completion_tokens
-        if model_prompt_tokens < 0 or model_completion_tokens < 0:
-            raise ValueError("restored model token usage cannot be negative")
-        if total_tokens > self.budgets.max_model_tokens:
-            raise BudgetExceeded("restored model-token usage exceeds campaign budget")
-        if not isfinite(cost_usd) or not 0 <= cost_usd <= self.budgets.max_cost_usd:
-            raise BudgetExceeded("restored cost exceeds campaign budget")
-        if not 0 <= elapsed_seconds < self.budgets.duration_seconds:
-            raise BudgetExceeded("restored duration exceeds campaign budget")
-        self.agent_count = agent_count
-        self.tool_calls = tool_calls
-        self.model_calls = model_calls
-        self.model_prompt_tokens = model_prompt_tokens
-        self.model_completion_tokens = model_completion_tokens
-        self.cost_usd = cost_usd
-        self._elapsed_offset_seconds = elapsed_seconds
-        self._started = monotonic()
+        with self._usage_lock:
+            if self._model_usage_reservations or any(
+                value != 0
+                for value in (
+                    self.tool_calls,
+                    self.agent_count,
+                    self.model_calls,
+                    self.model_prompt_tokens,
+                    self.model_completion_tokens,
+                    self.cost_usd,
+                    self._elapsed_offset_seconds,
+                )
+            ):
+                raise ValueError("budget usage can be restored only before execution")
+            integer_usage = {
+                "agent count": agent_count,
+                "tool-call count": tool_calls,
+                "model-call count": model_calls,
+                "model prompt tokens": model_prompt_tokens,
+                "model completion tokens": model_completion_tokens,
+            }
+            for label, value in integer_usage.items():
+                if type(value) is not int:
+                    raise ValueError(f"restored {label} must use a JSON integer")
+            if type(cost_usd) not in {int, float}:
+                raise ValueError("restored cost must be a finite JSON number")
+            if type(elapsed_seconds) not in {int, float}:
+                raise ValueError("restored duration must be a finite JSON number")
+            assert isinstance(agent_count, int)
+            assert isinstance(tool_calls, int)
+            assert isinstance(model_calls, int)
+            assert isinstance(model_prompt_tokens, int)
+            assert isinstance(model_completion_tokens, int)
+            assert isinstance(cost_usd, (int, float))
+            assert isinstance(elapsed_seconds, (int, float))
+            if not isfinite(cost_usd):
+                raise ValueError("restored cost must be a finite JSON number")
+            if not isfinite(elapsed_seconds):
+                raise ValueError("restored duration must be a finite JSON number")
+            if not 0 <= agent_count <= self.budgets.max_agents:
+                raise BudgetExceeded("restored agent usage exceeds campaign budget")
+            if not 0 <= tool_calls <= self.budgets.max_tool_calls:
+                raise BudgetExceeded("restored tool-call usage exceeds campaign budget")
+            if not 0 <= model_calls <= self.budgets.max_model_calls:
+                raise BudgetExceeded("restored model-call usage exceeds campaign budget")
+            total_tokens = model_prompt_tokens + model_completion_tokens
+            if model_prompt_tokens < 0 or model_completion_tokens < 0:
+                raise ValueError("restored model token usage cannot be negative")
+            if total_tokens > self.budgets.max_model_tokens:
+                raise BudgetExceeded("restored model-token usage exceeds campaign budget")
+            if not isfinite(cost_usd) or not 0 <= cost_usd <= self.budgets.max_cost_usd:
+                raise BudgetExceeded("restored cost exceeds campaign budget")
+            if not 0 <= elapsed_seconds < self.budgets.duration_seconds:
+                raise BudgetExceeded("restored duration exceeds campaign budget")
+            self.agent_count = agent_count
+            self.tool_calls = tool_calls
+            self.model_calls = model_calls
+            self.model_prompt_tokens = model_prompt_tokens
+            self.model_completion_tokens = model_completion_tokens
+            self.cost_usd = cost_usd
+            self._elapsed_offset_seconds = elapsed_seconds
+            self._started = monotonic()
 
     def check_duration(self) -> None:
-        if self.remaining_seconds <= 0:
-            raise BudgetExceeded("maximum campaign duration exceeded")
+        with self._usage_lock:
+            if self.remaining_seconds <= 0:
+                raise BudgetExceeded("maximum campaign duration exceeded")
 
     def snapshot(self) -> dict[str, object]:
-        return {
-            "agentCount": self.agent_count,
-            "maxAgents": self.budgets.max_agents,
-            "toolCalls": self.tool_calls,
-            "maxToolCalls": self.budgets.max_tool_calls,
-            "modelCalls": self.model_calls,
-            "maxModelCalls": self.budgets.max_model_calls,
-            "modelPromptTokens": self.model_prompt_tokens,
-            "modelCompletionTokens": self.model_completion_tokens,
-            "modelTokens": self.model_prompt_tokens + self.model_completion_tokens,
-            "maxModelTokens": self.budgets.max_model_tokens,
-            "costUsd": self.cost_usd,
-            "maxCostUsd": self.budgets.max_cost_usd,
-            "elapsedSeconds": round(self.elapsed_seconds, 6),
-            "durationSeconds": self.budgets.duration_seconds,
-        }
+        with self._usage_lock:
+            return {
+                "agentCount": self.agent_count,
+                "maxAgents": self.budgets.max_agents,
+                "toolCalls": self.tool_calls,
+                "maxToolCalls": self.budgets.max_tool_calls,
+                "modelCalls": self.model_calls,
+                "maxModelCalls": self.budgets.max_model_calls,
+                "modelPromptTokens": self.model_prompt_tokens,
+                "modelCompletionTokens": self.model_completion_tokens,
+                "modelTokens": self.model_prompt_tokens + self.model_completion_tokens,
+                "maxModelTokens": self.budgets.max_model_tokens,
+                "costUsd": self.cost_usd,
+                "maxCostUsd": self.budgets.max_cost_usd,
+                "elapsedSeconds": round(self.elapsed_seconds, 6),
+                "durationSeconds": self.budgets.duration_seconds,
+            }
+
+
+class DualModelUsageBudget:
+    """Atomically reserve the same model usage on Campaign and dedicated budgets."""
+
+    def __init__(
+        self,
+        campaign_budget: BudgetController,
+        dedicated_budget: BudgetController,
+    ) -> None:
+        if campaign_budget is dedicated_budget:
+            raise ValueError("dual model budget requires two distinct controllers")
+        self._campaign_budget = campaign_budget
+        self._dedicated_budget = dedicated_budget
+        self._ordered_budgets = tuple(
+            sorted((campaign_budget, dedicated_budget), key=id)
+        )
+        self._reservations: dict[
+            str,
+            tuple[
+                DualModelUsageReservation,
+                ModelUsageReservation,
+                ModelUsageReservation,
+            ],
+        ] = {}
+
+    @property
+    def remaining_seconds(self) -> float:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            return min(
+                self._campaign_budget.remaining_seconds,
+                self._dedicated_budget.remaining_seconds,
+            )
+
+    def binds_campaign_budget(self, budget: BudgetController) -> bool:
+        """Return whether this dual boundary charges the supplied Campaign ledger."""
+
+        return self._campaign_budget is budget
+
+    def check_tool_call(self) -> None:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            self._campaign_budget.check_tool_call()
+            self._dedicated_budget.check_tool_call()
+
+    def check_model_call(self) -> None:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            self._campaign_budget.check_model_call()
+            self._dedicated_budget.check_model_call()
+
+    def reserve_model_usage(
+        self,
+        *,
+        prompt_tokens: int,
+        completion_tokens: int,
+        cost_usd: float,
+    ) -> DualModelUsageReservation:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            campaign_reservation = self._campaign_budget.reserve_model_usage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                cost_usd=cost_usd,
+            )
+            dedicated_reservation: ModelUsageReservation | None = None
+            reservation: DualModelUsageReservation | None = None
+            try:
+                dedicated_reservation = self._dedicated_budget.reserve_model_usage(
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    cost_usd=cost_usd,
+                )
+                reservation = DualModelUsageReservation(
+                    reservation_id=f"dual-model-reservation_{uuid4().hex}",
+                    prompt_tokens=campaign_reservation.prompt_tokens,
+                    completion_tokens=campaign_reservation.completion_tokens,
+                    cost_usd=campaign_reservation.cost_usd,
+                    tool_calls=campaign_reservation.tool_calls,
+                    model_calls=campaign_reservation.model_calls,
+                )
+                self._reservations[reservation.reservation_id] = (
+                    reservation,
+                    campaign_reservation,
+                    dedicated_reservation,
+                )
+            except BaseException:
+                if reservation is not None:
+                    self._reservations.pop(reservation.reservation_id, None)
+                if dedicated_reservation is not None:
+                    self._dedicated_budget.release_model_usage_reservation(
+                        dedicated_reservation
+                    )
+                self._campaign_budget.release_model_usage_reservation(
+                    campaign_reservation
+                )
+                raise
+            return reservation
+
+    def commit_model_usage_reservation(
+        self,
+        reservation: DualModelUsageReservation,
+    ) -> None:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            campaign_reservation, dedicated_reservation = self._require_reservation(
+                reservation
+            )
+            self._campaign_budget._require_model_usage_reservation(
+                campaign_reservation
+            )
+            self._dedicated_budget._require_model_usage_reservation(
+                dedicated_reservation
+            )
+            self._campaign_budget.commit_model_usage_reservation(
+                campaign_reservation
+            )
+            self._dedicated_budget.commit_model_usage_reservation(
+                dedicated_reservation
+            )
+            del self._reservations[reservation.reservation_id]
+
+    def release_model_usage_reservation(
+        self,
+        reservation: DualModelUsageReservation,
+    ) -> None:
+        first, second = self._ordered_budgets
+        with first._usage_lock, second._usage_lock:
+            campaign_reservation, dedicated_reservation = self._require_reservation(
+                reservation
+            )
+            self._campaign_budget._require_model_usage_reservation(
+                campaign_reservation
+            )
+            self._dedicated_budget._require_model_usage_reservation(
+                dedicated_reservation
+            )
+            self._campaign_budget.release_model_usage_reservation(
+                campaign_reservation
+            )
+            self._dedicated_budget.release_model_usage_reservation(
+                dedicated_reservation
+            )
+            del self._reservations[reservation.reservation_id]
+
+    def _require_reservation(
+        self,
+        reservation: DualModelUsageReservation,
+    ) -> tuple[ModelUsageReservation, ModelUsageReservation]:
+        active = self._reservations.get(reservation.reservation_id)
+        if active is None or active[0] is not reservation:
+            raise ValueError("dual model usage reservation is not active")
+        return active[1], active[2]

@@ -3,6 +3,7 @@ from pydantic import ValidationError
 
 from pajin.domain.models import (
     AgentPlan,
+    Budgets,
     CampaignManifest,
     CampaignMode,
     PlannedStep,
@@ -29,6 +30,23 @@ def test_manifest_rejects_unknown_fields(sample_campaign: CampaignManifest) -> N
         assert "unexpectedPrivilege" in str(exc)
     else:
         raise AssertionError("unknown security-sensitive field was accepted")
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "durationSeconds",
+        "maxCostUsd",
+        "maxAgents",
+        "maxSpawnDepth",
+        "maxToolCalls",
+        "maxModelCalls",
+        "maxModelTokens",
+    ),
+)
+def test_campaign_budgets_reject_boolean_number_coercion(field: str) -> None:
+    with pytest.raises(ValidationError, match="cannot use boolean values"):
+        Budgets.model_validate({field: True})
 
 
 def test_agent_plan_rejects_duplicate_tool_request_ids() -> None:
