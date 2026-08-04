@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-002` Snapshot-only input·Target Taint
+- 현재 우선순위: `SUP-003` Task·Replan·Stop·Escalation Proposal
 
 ## 제품 목표
 
@@ -477,7 +477,7 @@ Gate가 닫혔다.
 ### Phase 6 — Supervisor Shadow Mode
 
 - [x] `SUP-001` SupervisorModelBinding
-- [ ] `SUP-002` Snapshot-only input·Target Taint
+- [x] `SUP-002` Snapshot-only input·Target Taint
 - [ ] `SUP-003` Task·Replan·Stop·Escalation Proposal
 - [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
 - [ ] `SUP-005` Deterministic Baseline 비교
@@ -492,6 +492,12 @@ WALK-006/Phase 5 Snapshot 및 untrusted output draft schema digest를 하나의 
 고정한다. prompt content와 secret reference는 wire에 없으며 model invocation, Capability, Permit,
 execution, activation eligibility는 모두 false다. 다음 우선순위는 `SUP-002` Snapshot-only input·Target
 Taint다.
+
+`SUP-002`는 exact SUP-001 runtime binding과 current MEM-003 Snapshot을 재검증하고 admitted Fact
+statement를 origin·node/value/text digest와 함께 model-visible record로 투영한다. agent-derived와
+target-derived는 모두 `target-tainted-untrusted`로 유지하며 shared Artifact는 bytes 없이 tainted ref로만
+남긴다. omission·downgrade·cross-Campaign·stale Snapshot·schema substitution을 차단하고 model invocation과
+실행 권위는 계속 false다. 다음 우선순위는 `SUP-003` typed non-executable proposal compiler다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

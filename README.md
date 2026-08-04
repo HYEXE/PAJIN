@@ -159,6 +159,13 @@ Capability, Permit, execution, and activation authority to false. See the
 [SUP-001 contract](docs/orchestration/SUP-001-supervisor-model-binding.md) and
 [ADR-0117](docs/adr/0117-bind-shadow-supervisor-model-before-invocation.md).
 
+SUP-002 re-verifies that binding and one current MEM-003 Snapshot, then projects every admitted
+Fact statement with exact provenance and conservative target taint. Agent- and target-derived text
+remains untrusted, shared Artifacts remain content-free tainted references, and omission, downgrade,
+stale Snapshot, schema, or cross-runtime substitution fails closed without a model call. See the
+[SUP-002 contract](docs/orchestration/SUP-002-snapshot-only-target-taint-input.md) and
+[ADR-0118](docs/adr/0118-preserve-target-taint-in-supervisor-snapshot-input.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

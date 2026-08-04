@@ -14,18 +14,38 @@ from pajin.supervision.model_binding import (
     bind_supervisor_model,
     verify_supervisor_model_binding,
 )
+from pajin.supervision.snapshot_input import (
+    SUPERVISOR_SNAPSHOT_INPUT_API_VERSION,
+    SupervisorInputReference,
+    SupervisorInputReferenceKind,
+    SupervisorModelVisibleText,
+    SupervisorSnapshotInput,
+    SupervisorSnapshotInputError,
+    SupervisorTargetTaint,
+    create_supervisor_snapshot_input,
+    verify_supervisor_snapshot_input,
+)
 
 __all__ = [
     "SUPERVISOR_MODEL_BINDING_API_VERSION",
     "SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION",
+    "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
+    "SupervisorInputReference",
+    "SupervisorInputReferenceKind",
     "SupervisorModelBinding",
     "SupervisorModelBindingError",
     "SupervisorModelConfiguration",
     "SupervisorModelSchemaBinding",
     "SupervisorModelSchemaKind",
+    "SupervisorModelVisibleText",
     "SupervisorProviderModelIdentity",
     "SupervisorShadowProposalDraft",
     "SupervisorShadowProposalKind",
+    "SupervisorSnapshotInput",
+    "SupervisorSnapshotInputError",
+    "SupervisorTargetTaint",
     "bind_supervisor_model",
+    "create_supervisor_snapshot_input",
     "verify_supervisor_model_binding",
+    "verify_supervisor_snapshot_input",
 ]

@@ -502,6 +502,13 @@ verification, contains no prompt or Tool request, and fixes model invocation, Ca
 execution, and activation eligibility to false. Actual Snapshot taint and typed proposal authority
 remain SUP-002 and SUP-003 work.
 
+SUP-002 materializes the first such input from one exact current MEM-003 Snapshot. It reopens the
+Graph only through the existing Snapshot store, projects every admitted Fact statement with exact
+origin and digest provenance, conservatively retains agent- and target-derived text as target
+tainted, and keeps Artifact bytes behind their reader as content-free tainted references. Complete
+membership, current head, SUP-001 schema, and runtime identity are exact; no prompt, model call,
+draft, proposal, Capability, Permit, execution, or activation is created.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes
