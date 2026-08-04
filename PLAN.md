@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `MEM-002` SharedArtifactRef
+- 현재 우선순위: `MEM-003` CollaborationSnapshot
 
 ## 제품 목표
 
@@ -425,7 +425,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 ### Phase 5 — 구조화된 협업과 Handoff
 
 - [x] `MEM-001` CampaignFact Proposal·Record
-- [ ] `MEM-002` SharedArtifactRef
+- [x] `MEM-002` SharedArtifactRef
 - [ ] `MEM-003` CollaborationSnapshot
 - [ ] `HANDOFF-001` Supervisor-mediated AgentHandoff
 - [ ] `HANDOFF-002` terminal result handoff
@@ -441,7 +441,12 @@ GRAPH-002 Admission Event·CampaignFact를 그대로 사용한다. additive adap
 다시 파싱하고 하나의 bounded sealed-Run snapshot에서 exact Campaign·Run·현재 root·evidence SHA-256을
 검증한 뒤에만 기존 Admission Authority로 전달한다. producer와 전체 request·Grant·Capability lineage는
 기존 registry/verifier의 독립 gate로 남고 Fact node에는 명령·prompt·Scope·실행 권한 필드가 없다.
-다음 `MEM-002`는 이미 봉인된 artifact를 내용 복제 없이 참조하는 bounded `SharedArtifactRef`다.
+`MEM-002`는 기존 `GraphEvidence` identity와 기존 RunStore seal record를 Campaign·source
+Run·현재 root·normalized path·SHA-256·media type·size에 결박하는 bounded `SharedArtifactRef`를
+추가했다. reference는 artifact bytes나 filesystem path를 반환하지 않고 Graph admission,
+prompt relay, receiver 권한, Scope·Capability·execution authority를 주장하지 않는다. 다음
+`MEM-003`은 exact Graph Snapshot에서 admitted Fact와 이 reference의 unique membership만
+구성하는 최소 `CollaborationSnapshot`이다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

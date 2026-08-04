@@ -102,6 +102,13 @@ record and carry no prompt, command, Scope, or execution authority. See the
 [MEM-001 contract](docs/graph/MEM-001-sealed-campaign-fact-admission.md) and
 [ADR-0110](docs/adr/0110-reuse-canonical-graph-for-campaign-facts.md).
 
+MEM-002 adds an opt-in, metadata-only `SharedArtifactRef` that links one existing Graph Evidence
+identity to one exact current sealed Run artifact. It binds Campaign, source Run/root, normalized
+path, hash, media type, and size while returning no content and granting no receiver, prompt,
+Scope, Capability, or execution authority. See the
+[MEM-002 contract](docs/graph/MEM-002-bounded-shared-artifact-reference.md) and
+[ADR-0111](docs/adr/0111-reference-shared-artifacts-through-existing-authorities.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

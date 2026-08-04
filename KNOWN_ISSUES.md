@@ -3,16 +3,32 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## MEM-001 sealed CampaignFact admission 경계
+## MEM-001/002 협업 source·reference 경계
 
-- 상태: 의도적으로 제한된 source adapter 경계
+- 상태: 의도적으로 제한된 source adapter와 metadata-only reference 경계
 - 현재 보장: 기존 CampaignFact Proposal을 다시 파싱하고 exact sealed Campaign·Run·현재 root와
-  bounded evidence digest를 검증한 뒤에만 기존 Graph Admission Authority로 전달한다.
+  bounded evidence digest를 검증한 뒤에만 기존 Graph Admission Authority로 전달한다. MEM-002는
+  기존 GraphEvidence identity와 exact current sealed artifact metadata만 content-addressed reference로
+  연결하며 bytes나 filesystem path를 반환하지 않는다.
 - 제한: filesystem seal은 producer·Agent·Task·request·Grant·Capability의 의미적 권위를 증명하지
   않는다. 이 전체 lineage는 caller가 구성한 기존 `GraphLineageVerifier`와 producer registry가 별도로
-  공급해야 한다. Fact statement는 실행되지 않지만 최소·taint-aware receiver는 아직 없다.
-- 해소 조건: MEM-002에서 sealed artifact reference를 추가하고 MEM-003에서 receiver-bound 최소
-  CollaborationSnapshot을 구현하되 기존 Graph/Event Log를 새 저장소로 복제하지 않는다.
+  공급해야 한다. SharedArtifactRef 자체도 Graph admission이나 receiver read authority를 증명하지
+  않는다. Fact statement와 artifact content를 위한 최소·taint-aware receiver는 아직 없다.
+- 해소 조건: MEM-003에서 exact Graph Snapshot-bound 최소 CollaborationSnapshot을 구현하고,
+  HANDOFF-004에서 Capability·TTL·byte limit·receiver에 결박된 reader를 추가하되 기존 Graph/Event
+  Log와 RunStore를 새 저장소로 복제하지 않는다.
+
+## Windows 비이식 파일명 정규화
+
+- 상태: 활성 환경 제약
+- 마지막 재현: 2026-08-04
+- 명령: MEM-002 인접 회귀에 `tests\test_integrity.py` 전체를 포함한 pytest 실행
+- 결과: Windows가 `evidence/result:.json`, 후행 점, 후행 공백 경로를 생성 시 정규화해
+  `test_seal_rejects_externally_created_non_portable_artifact_paths`의 세 case가 예상 파일명을
+  실제 디렉터리에서 관찰하지 못했다.
+- 영향: 비이식 경로를 사전에 거부하는 코드 경계의 Linux 동작을 이 Windows 파일시스템에서
+  같은 fixture로 증명할 수 없다. MEM-002의 normalized path validator와 새 집중 테스트는 통과했다.
+- 해소 조건: Linux CI에서 해당 parameterized test를 실행한다.
 
 ## Windows 심볼릭 링크 테스트 권한
 

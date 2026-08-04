@@ -180,6 +180,13 @@ adapter verifies its exact sealed Campaign, Run, current root, and evidence dige
 Capability lineage remain separate Graph gates, and Fact text grants no command, prompt relay,
 Scope, or execution authority.
 
+MEM-002 realizes the artifact-reference part as a non-authoritative projection over existing
+`GraphEvidence` and `RunStore` seal records. The content-addressed reference binds one Campaign,
+Evidence node, source Run/current root, normalized path, SHA-256, media type, and bounded size.
+Verification returns no bytes or filesystem path and does not imply Graph admission, receiver
+authority, prompt relay, Scope, Capability, or execution authority. Snapshot membership remains
+MEM-003 work and receiver-bound content access remains HANDOFF-004 work.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not
