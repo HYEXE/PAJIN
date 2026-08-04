@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `HANDOFF-001` Supervisor-mediated AgentHandoff
+- 현재 우선순위: `HANDOFF-002` terminal result handoff
 
 ## 제품 목표
 
@@ -427,7 +427,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `MEM-001` CampaignFact Proposal·Record
 - [x] `MEM-002` SharedArtifactRef
 - [x] `MEM-003` CollaborationSnapshot
-- [ ] `HANDOFF-001` Supervisor-mediated AgentHandoff
+- [x] `HANDOFF-001` Supervisor-mediated AgentHandoff
 - [ ] `HANDOFF-002` terminal result handoff
 - [ ] `HANDOFF-003` bounded UrgentObservation Fast Gate
 - [ ] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
@@ -451,6 +451,10 @@ prompt relay, receiver 권한, Scope·Capability·execution authority를 주장�
 대응하는 MEM-002 reference만 deterministic하게 결박한다. Fact·artifact content, receiver,
 prompt relay, Scope·Capability·execution authority는 포함하지 않는다. 다음 `HANDOFF-001`은
 Supervisor가 sender·receiver·purpose와 이 exact Snapshot을 중재하는 비실행 handoff 계약이다.
+기존 AgentNode·TaskNode 전체 digest와 completed source → dependent waiting destination 관계를
+검증하고 양쪽 parentAgentId가 단일 process-local Supervisor와 같을 때 Proposal당 한 Record만
+admission한다. 자유문 command·prompt·content와 read·Scope·Capability·Permit·execution 권위는 없다.
+다음 `HANDOFF-002`는 이 admitted handoff에 terminal result를 결박한다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

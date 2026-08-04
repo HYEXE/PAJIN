@@ -116,6 +116,12 @@ receiver, read, prompt, Scope, Capability, or execution authority. See the
 [MEM-003 contract](docs/graph/MEM-003-current-graph-collaboration-snapshot.md) and
 [ADR-0112](docs/adr/0112-derive-collaboration-snapshots-from-current-graph.md).
 
+HANDOFF-001 adds a process-local Supervisor-mediated, non-executable transition between existing
+Agent/Task identities and one exact current Collaboration Snapshot. It accepts no free-form
+command or content and grants no read, prompt, Scope, Capability, Permit, or execution authority.
+See the [HANDOFF-001 contract](docs/orchestration/HANDOFF-001-supervisor-mediated-agent-handoff.md)
+and [ADR-0113](docs/adr/0113-mediate-handoffs-with-existing-agent-task-lineage.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -194,6 +194,11 @@ collaboration wire contains references rather than Fact or Artifact content, is 
 advancing Graph head, and grants no sender, receiver, read, prompt, Scope, Capability, or execution
 authority.
 
+HANDOFF-001 adds the first receiver context without message passing. A process-local Supervisor
+admits one enum-purpose transition from an existing completed Agent/Task to a distinct dependent
+waiting Agent/Task, bound to the exact current MEM-003 identity. It carries no content or command
+and grants no read, Scope, Capability, Permit, or execution authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

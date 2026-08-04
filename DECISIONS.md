@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0113: Mediate Handoffs with Existing Agent and Task Lineage](docs/adr/0113-mediate-handoffs-with-existing-agent-task-lineage.md)
 - [ADR-0112: Derive Collaboration Snapshots from the Current Graph](docs/adr/0112-derive-collaboration-snapshots-from-current-graph.md)
 - [ADR-0111: Reference Shared Artifacts Through Existing Authorities](docs/adr/0111-reference-shared-artifacts-through-existing-authorities.md)
 - [ADR-0110: Reuse the Canonical Graph for Campaign Facts](docs/adr/0110-reuse-canonical-graph-for-campaign-facts.md)
