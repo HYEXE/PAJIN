@@ -187,6 +187,13 @@ Verification returns no bytes or filesystem path and does not imply Graph admiss
 authority, prompt relay, Scope, Capability, or execution authority. Snapshot membership remains
 MEM-003 work and receiver-bound content access remains HANDOFF-004 work.
 
+MEM-003 realizes the minimal team-state projection without another ledger. It resolves one exact
+current GRAPH-003 Snapshot, derives every admitted Campaign Fact reference, and admits only
+MEM-002 Artifact references whose complete Evidence nodes are members of that projection. The
+collaboration wire contains references rather than Fact or Artifact content, is invalidated by an
+advancing Graph head, and grants no sender, receiver, read, prompt, Scope, Capability, or execution
+authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

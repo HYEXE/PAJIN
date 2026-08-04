@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `MEM-003` CollaborationSnapshot
+- 현재 우선순위: `HANDOFF-001` Supervisor-mediated AgentHandoff
 
 ## 제품 목표
 
@@ -426,7 +426,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 
 - [x] `MEM-001` CampaignFact Proposal·Record
 - [x] `MEM-002` SharedArtifactRef
-- [ ] `MEM-003` CollaborationSnapshot
+- [x] `MEM-003` CollaborationSnapshot
 - [ ] `HANDOFF-001` Supervisor-mediated AgentHandoff
 - [ ] `HANDOFF-002` terminal result handoff
 - [ ] `HANDOFF-003` bounded UrgentObservation Fast Gate
@@ -444,9 +444,13 @@ GRAPH-002 Admission Event·CampaignFact를 그대로 사용한다. additive adap
 `MEM-002`는 기존 `GraphEvidence` identity와 기존 RunStore seal record를 Campaign·source
 Run·현재 root·normalized path·SHA-256·media type·size에 결박하는 bounded `SharedArtifactRef`를
 추가했다. reference는 artifact bytes나 filesystem path를 반환하지 않고 Graph admission,
-prompt relay, receiver 권한, Scope·Capability·execution authority를 주장하지 않는다. 다음
+prompt relay, receiver 권한, Scope·Capability·execution authority를 주장하지 않는다.
 `MEM-003`은 exact Graph Snapshot에서 admitted Fact와 이 reference의 unique membership만
-구성하는 최소 `CollaborationSnapshot`이다.
+구성하는 최소 `CollaborationSnapshot`이다. 기존 Graph Snapshot store의 current head를 resolve
+전후와 artifact 검증 뒤에 재확인하고 admitted CampaignFact 전체와 exact admitted GraphEvidence에
+대응하는 MEM-002 reference만 deterministic하게 결박한다. Fact·artifact content, receiver,
+prompt relay, Scope·Capability·execution authority는 포함하지 않는다. 다음 `HANDOFF-001`은
+Supervisor가 sender·receiver·purpose와 이 exact Snapshot을 중재하는 비실행 handoff 계약이다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

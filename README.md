@@ -109,6 +109,13 @@ Scope, Capability, or execution authority. See the
 [MEM-002 contract](docs/graph/MEM-002-bounded-shared-artifact-reference.md) and
 [ADR-0111](docs/adr/0111-reference-shared-artifacts-through-existing-authorities.md).
 
+MEM-003 derives a compact `CollaborationSnapshot` from one exact current stored Graph Snapshot.
+It includes all admitted Campaign Fact references and only MEM-002 Artifact references whose full
+Evidence nodes are members of the same projection. It embeds no Graph content and grants no
+receiver, read, prompt, Scope, Capability, or execution authority. See the
+[MEM-003 contract](docs/graph/MEM-003-current-graph-collaboration-snapshot.md) and
+[ADR-0112](docs/adr/0112-derive-collaboration-snapshots-from-current-graph.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

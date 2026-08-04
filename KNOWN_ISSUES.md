@@ -3,20 +3,34 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## MEM-001/002 협업 source·reference 경계
+## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
-- 상태: 의도적으로 제한된 source adapter와 metadata-only reference 경계
+- 상태: 의도적으로 제한된 source adapter, metadata-only reference와 receiver-neutral Snapshot 경계
 - 현재 보장: 기존 CampaignFact Proposal을 다시 파싱하고 exact sealed Campaign·Run·현재 root와
   bounded evidence digest를 검증한 뒤에만 기존 Graph Admission Authority로 전달한다. MEM-002는
   기존 GraphEvidence identity와 exact current sealed artifact metadata만 content-addressed reference로
-  연결하며 bytes나 filesystem path를 반환하지 않는다.
+  연결하며 bytes나 filesystem path를 반환하지 않는다. MEM-003은 exact current Graph Snapshot에서
+  admitted Fact 전체와 exact admitted Evidence에 대응하는 reference membership만 파생한다.
 - 제한: filesystem seal은 producer·Agent·Task·request·Grant·Capability의 의미적 권위를 증명하지
   않는다. 이 전체 lineage는 caller가 구성한 기존 `GraphLineageVerifier`와 producer registry가 별도로
   공급해야 한다. SharedArtifactRef 자체도 Graph admission이나 receiver read authority를 증명하지
+  않는다. CollaborationSnapshot도 sender·receiver·purpose나 content read authority를 증명하지
   않는다. Fact statement와 artifact content를 위한 최소·taint-aware receiver는 아직 없다.
-- 해소 조건: MEM-003에서 exact Graph Snapshot-bound 최소 CollaborationSnapshot을 구현하고,
-  HANDOFF-004에서 Capability·TTL·byte limit·receiver에 결박된 reader를 추가하되 기존 Graph/Event
-  Log와 RunStore를 새 저장소로 복제하지 않는다.
+- 해소 조건: HANDOFF-001에서 Supervisor-mediated sender·receiver binding을 추가하고 HANDOFF-004에서
+  Capability·TTL·byte limit·receiver에 결박된 reader를 추가하되 기존 Graph/Event Log와 RunStore를
+  새 저장소로 복제하지 않는다.
+
+## MEM-003 cross-store current-view atomicity
+
+- 상태: 의도적으로 제한된 cooperative in-process 경계
+- 현재 보장: Graph Snapshot head를 exact resolve 전후와 각 bounded Run artifact 검증 뒤에 재확인해
+  컴파일 중 협력적 Graph 변경을 fail closed한다. 이후 검증에서는 다시 current head와 모든 source를
+  재구성한다.
+- 제한: Graph Snapshot store와 여러 RunStore 사이에 하나의 분산 transaction이나 cross-host fence는
+  없다. 마지막 head 확인 직후 새 Graph Snapshot이 publish될 수 있으며, 기존 CollaborationSnapshot은
+  다음 검증 시 stale로 거부된다.
+- 해소 조건: 저장소 경계가 cross-process 또는 cross-host로 확장될 때 signed checkpoint/fence나
+  transaction coordinator를 별도 ADR과 contract로 정의한다.
 
 ## Windows 비이식 파일명 정규화
 
