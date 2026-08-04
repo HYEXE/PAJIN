@@ -61,5 +61,6 @@ values are invalid.
 All HANDOFF-001, Agent, Task, Graph, Snapshot, Artifact, and execution formats remain unchanged.
 Removing this module and its exports requires no data migration. The authority and admitted result
 map are process-local and non-durable. There is no distributed transaction across Graph and Run
-stores, no content reader, no Task scheduler, and no result dispatch. HANDOFF-003 owns the bounded
-UrgentObservation Fast Gate; HANDOFF-004 owns receiver-bound content access.
+stores, no content reader, no Task scheduler, and no result dispatch. HANDOFF-003 binds a bounded
+urgent Observation to an admitted-not-applied stop-and-escalate decision; HANDOFF-004 owns
+receiver-bound content access.

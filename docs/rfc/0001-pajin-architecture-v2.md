@@ -206,6 +206,13 @@ Artifact member, and derives success, failure, or cancellation from the existing
 lifecycle pair. Lifecycle success is not Finding confirmation, and the record grants no read,
 prompt, Scope, Capability, Permit, or execution authority.
 
+HANDOFF-003 adds a non-executing urgent decision over that exact terminal-result Snapshot. A
+code-owned policy accepts one trusted-core or operator Observation only when the current Graph
+proves its Action production, exact result-Evidence support edge, and sealed Artifact value digest.
+The sole disposition is `stop-and-escalate`, bounded to one Observation, one decision, and one local
+budget unit per handoff. It is admitted but not automatically applied and grants no replanning,
+Scope, Capability, Permit, or execution authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

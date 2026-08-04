@@ -294,6 +294,26 @@ class TerminalResultHandoffAuthority:
                 "terminal result Handoff could not be verified"
             ) from exc
 
+    def resolve(self, result: TerminalResultHandoff) -> TerminalResultHandoff:
+        """Resolve one admitted result without claiming its Snapshot remains current."""
+
+        try:
+            canonical = TerminalResultHandoff.model_validate(
+                result.model_dump(mode="json", by_alias=True)
+            )
+            stored = self._by_handoff.get(canonical.handoff_id)
+            if (
+                canonical.authority_id != self._authority_id
+                or canonical.authority_digest != self._authority_digest
+                or stored != canonical
+            ):
+                raise ValueError("terminal result was not admitted by this authority")
+            return canonical
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise TerminalResultHandoffError(
+                "terminal result Handoff could not be resolved"
+            ) from exc
+
 
 def _require_terminal_lineage(
     handoff: SupervisorMediatedAgentHandoff,

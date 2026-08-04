@@ -130,6 +130,14 @@ authority. See the
 [HANDOFF-002 contract](docs/orchestration/HANDOFF-002-terminal-result-handoff.md) and
 [ADR-0114](docs/adr/0114-bind-terminal-results-through-existing-handoff-and-artifact-authorities.md).
 
+HANDOFF-003 resolves a safe reference to one trusted-core or operator urgent Observation from the
+same current Snapshot and binds its exact Action, result Evidence, and sealed Artifact digest to a
+single bounded `stop-and-escalate` decision. The record is admitted but not automatically applied;
+it contains no prompt or content and grants no replanning, Scope, Capability, Permit, or execution
+authority. See the
+[HANDOFF-003 contract](docs/orchestration/HANDOFF-003-bounded-urgent-observation-fast-gate.md) and
+[ADR-0115](docs/adr/0115-admit-urgent-observations-as-bounded-stop-decisions.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

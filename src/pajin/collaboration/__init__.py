@@ -38,6 +38,15 @@ from pajin.collaboration.terminal_result import (
     TerminalResultHandoffError,
     TerminalResultStatus,
 )
+from pajin.collaboration.urgent_observation import (
+    URGENT_OBSERVATION_FAST_GATE_API_VERSION,
+    UrgentObservationDisposition,
+    UrgentObservationFastGateAuthority,
+    UrgentObservationFastGateDecision,
+    UrgentObservationFastGateError,
+    UrgentObservationFastGatePolicy,
+    UrgentObservationType,
+)
 
 __all__ = [
     "AGENT_HANDOFF_API_VERSION",
@@ -47,6 +56,7 @@ __all__ = [
     "MAX_SHARED_ARTIFACT_BYTES",
     "SHARED_ARTIFACT_REF_API_VERSION",
     "TERMINAL_RESULT_HANDOFF_API_VERSION",
+    "URGENT_OBSERVATION_FAST_GATE_API_VERSION",
     "AgentHandoffAuthority",
     "AgentHandoffError",
     "AgentHandoffProposal",
@@ -63,6 +73,12 @@ __all__ = [
     "TerminalResultHandoffAuthority",
     "TerminalResultHandoffError",
     "TerminalResultStatus",
+    "UrgentObservationDisposition",
+    "UrgentObservationFastGateAuthority",
+    "UrgentObservationFastGateDecision",
+    "UrgentObservationFastGateError",
+    "UrgentObservationFastGatePolicy",
+    "UrgentObservationType",
     "create_agent_handoff_proposal",
     "create_collaboration_snapshot",
     "create_shared_artifact_ref",

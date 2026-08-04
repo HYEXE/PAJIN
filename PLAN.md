@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `HANDOFF-003` bounded UrgentObservation Fast Gate
+- 현재 우선순위: `HANDOFF-004` capability-scoped reader
 
 ## 제품 목표
 
@@ -429,7 +429,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `MEM-003` CollaborationSnapshot
 - [x] `HANDOFF-001` Supervisor-mediated AgentHandoff
 - [x] `HANDOFF-002` terminal result handoff
-- [ ] `HANDOFF-003` bounded UrgentObservation Fast Gate
+- [x] `HANDOFF-003` bounded UrgentObservation Fast Gate
 - [ ] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
 - [ ] memory poisoning, prompt relay, confused deputy, cross-Campaign 테스트
 
@@ -458,8 +458,12 @@ admission한다. 자유문 command·prompt·content와 read·Scope·Capability·
 연속 후속 head인 current MEM-003 Snapshot과 그 안의 exact MEM-002 sealed Artifact reference에
 destination Agent·Task terminal lifecycle을 결박한다. 성공·실패·취소는 기존 lifecycle 상태에서만
 파생하며 result content, prompt relay, Scope·Capability·Permit·execution authority는 포함하지 않는다.
-다음 `HANDOFF-003`은 이 결과와 기존 Observation authority를 재사용하는 bounded UrgentObservation
-Fast Gate다.
+`HANDOFF-003`은 이 결과와 같은 current Snapshot의 existing GraphObservation ref를 resolve하고 exact
+Action `produces`·result Evidence `supported-by`·sealed Artifact value digest를 검증한다. code-owned
+긴급 type, operator|trusted-core origin, confidence 1.0만 handoff당 1 Observation·1 decision·1 local
+budget unit의 `stop-and-escalate`로 admission한다. decision은 `admitted-not-applied`이며 content,
+replan, Scope·Capability·Permit·execution authority가 없다. 다음 `HANDOFF-004`는 이 lineage에
+receiver·Capability·TTL·byte limit를 결박한 content reader다.
 
 ### Phase 6 — Supervisor Shadow Mode
 
