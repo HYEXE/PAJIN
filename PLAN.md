@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `SUP-001` SupervisorModelBinding
+- 현재 단계: Phase 6 — Supervisor Shadow Mode
+- 현재 우선순위: `SUP-002` Snapshot-only input·Target Taint
 
 ## 제품 목표
 
@@ -472,11 +472,11 @@ Phase 5 전체 memory poisoning·prompt relay·confused deputy·cross-Campaign a
 검증했다. admitted prompt-shaped Fact와 Artifact content가 Snapshot·Handoff·decision·receipt에서
 명령으로 승격되지 않고, 서로 독립적으로 정상인 cross-Run·cross-Campaign Snapshot/source와 다른
 CapabilityLedger Grant를 조합해도 consume·content delivery 전에 fail closed함을 증명한다. Phase 5 Exit
-Gate가 닫혔으며 다음 우선순위는 Phase 6 `SUP-001` SupervisorModelBinding이다.
+Gate가 닫혔다.
 
 ### Phase 6 — Supervisor Shadow Mode
 
-- [ ] `SUP-001` SupervisorModelBinding
+- [x] `SUP-001` SupervisorModelBinding
 - [ ] `SUP-002` Snapshot-only input·Target Taint
 - [ ] `SUP-003` Task·Replan·Stop·Escalation Proposal
 - [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
@@ -485,6 +485,13 @@ Gate가 닫혔으며 다음 우선순위는 Phase 6 `SUP-001` SupervisorModelBin
 
 활성화하려면 Confirmed Finding Yield 또는 Chain Completion이 개선되고, Policy Violation은
 증가하지 않으며, 비용·지연·Variance·Human Overturn 기준을 충족해야 한다.
+
+`SUP-001`은 기존 Provider session을 호출하지 않고 Campaign Profile/Common Engine, Supervisor role,
+WALK-006 policy, exact Provider registration digest, immutable model revision, bounded configuration과
+WALK-006/Phase 5 Snapshot 및 untrusted output draft schema digest를 하나의 content-addressed binding으로
+고정한다. prompt content와 secret reference는 wire에 없으며 model invocation, Capability, Permit,
+execution, activation eligibility는 모두 false다. 다음 우선순위는 `SUP-002` Snapshot-only input·Target
+Taint다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

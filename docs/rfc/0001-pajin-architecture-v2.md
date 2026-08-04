@@ -493,6 +493,15 @@ BENCH-003 baseline-versus-Shadow comparison remains separate. BENCH-003A first b
 WALK-006 publication to a baseline-only BENCH-001 Manifest and records only a structural terminal
 Decision delta. It preserves the ordered twelve-metric contract but supplies no values or deltas,
 and fixes canonical BenchmarkComparison and Supervisor activation eligibility to false.
+
+SUP-001 begins Phase 6 without invoking a model. It binds the exact Campaign Profile/Common Engine
+contract, Supervisor role, WALK-006 policy, secret-free Provider/model identity with immutable
+revision, bounded structured-output configuration, and code-owned Walking/Collaboration input plus
+untrusted proposal output schema digests. The binding requires exact consumer-side runtime
+verification, contains no prompt or Tool request, and fixes model invocation, Capability, Permit,
+execution, and activation eligibility to false. Actual Snapshot taint and typed proposal authority
+remain SUP-002 and SUP-003 work.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

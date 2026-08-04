@@ -151,6 +151,14 @@ Fact and Artifact content never becomes a command in Snapshot, Handoff, decision
 and valid but foreign Run, Campaign, Snapshot, source, and Capability-ledger parts fail closed before
 Grant consumption or content delivery.
 
+SUP-001 adds a content-addressed, non-invocable Shadow Supervisor model binding over the exact
+Campaign Profile/Common Engine contract, WALK-006 policy, Provider registration, immutable model
+revision, bounded configuration, and code-owned Walking/Collaboration input plus untrusted proposal
+output schemas. It embeds no secret reference or prompt content, performs no model call, and fixes
+Capability, Permit, execution, and activation authority to false. See the
+[SUP-001 contract](docs/orchestration/SUP-001-supervisor-model-binding.md) and
+[ADR-0117](docs/adr/0117-bind-shadow-supervisor-model-before-invocation.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
