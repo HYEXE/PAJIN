@@ -287,7 +287,11 @@ def test_worker_job_rejects_image_argument_injection() -> None:
         WorkerJob(image="pajin-worker:dev --privileged", command=["mock-agent-probe"])
 
 
-@pytest.mark.parametrize("stdin", ["한" * 400_000, "invalid-surrogate-\ud800"])
+@pytest.mark.parametrize(
+    "stdin",
+    ["한" * 400_000, "invalid-surrogate-\ud800"],
+    ids=["utf8-byte-overflow", "invalid-surrogate"],
+)
 def test_worker_job_bounds_stdin_by_utf8_bytes(stdin: str) -> None:
     with pytest.raises(ValidationError):
         WorkerJob(
@@ -577,6 +581,38 @@ def test_docker_backend_rejects_unsafe_runtime_resource_configuration(
             allowed_images={"pajin-worker:dev"},
             docker_executable="docker\x00alternate",
         )
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("exit_code", False),
+        ("exit_code", 0.0),
+        ("stdout_truncated", 0),
+        ("stdout_truncated", "false"),
+        ("stderr_truncated", 1),
+        ("stderr_truncated", "true"),
+    ],
+)
+def test_worker_result_rejects_coerced_scalar_security_fields(
+    field: str,
+    value: object,
+) -> None:
+    now = datetime.now(UTC)
+    payload: dict[str, object] = {
+        "execution_id": "exec_safe",
+        "backend": "docker",
+        "status": WorkerStatus.SUCCEEDED,
+        "exit_code": 0,
+        "stdout_truncated": False,
+        "stderr_truncated": False,
+        "started_at": now,
+        "finished_at": now,
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        WorkerResult.model_validate(payload)
 
 
 def test_docker_backend_binds_and_routes_action_specific_external_network(
@@ -1057,6 +1093,7 @@ def test_docker_cli_drains_stdout_and_stderr_concurrently_before_waiting(
         (b"", b"x" * (64 * 1024 + 1), "stderr"),
         (b"x" * (64 * 1024 + 1), b"x" * (64 * 1024 + 1), "stdout and stderr"),
     ],
+    ids=["stdout-overflow", "stderr-overflow", "both-overflow"],
 )
 def test_docker_cli_output_limit_fails_closed_after_draining_both_streams(
     monkeypatch: pytest.MonkeyPatch,

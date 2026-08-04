@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0122: Bind Stable Provider Requests to Secret-Free Outcomes](docs/adr/0122-bind-stable-provider-requests-to-secret-free-outcomes.md)
 - [ADR-0121: Atomically Charge Campaign and Dedicated Model Budgets](docs/adr/0121-atomically-charge-campaign-and-dedicated-model-budgets.md)
 - [ADR-0120: Plan and Seal Supervisor Checkpoints Before Provider Invocation](docs/adr/0120-plan-supervisor-checkpoints-before-invocation.md)
 - [ADR-0119: Compile Untrusted Supervisor Drafts into Content-Free Advisory Proposals](docs/adr/0119-compile-untrusted-supervisor-drafts.md)

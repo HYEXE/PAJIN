@@ -2,6 +2,7 @@ import asyncio
 import json
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -10,20 +11,27 @@ from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest, 
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyDecision
 from pajin.providers import (
+    BoundProviderChatCall,
     FunctionDefinition,
     FunctionTool,
     JSONSchemaDefinition,
     JSONSchemaResponseFormat,
     PolicyBoundProviderPort,
     ProviderAssistantToolCall,
+    ProviderBoundChatOutcome,
+    ProviderBoundOutcomeError,
+    ProviderChargedUsage,
     ProviderChatRequest,
     ProviderFunctionCall,
     ProviderMessage,
     ProviderRegistration,
+    ProviderReportedUsage,
+    verify_provider_bound_chat_outcome,
 )
 from pajin.runtime.control import BudgetController, BudgetExceeded, DualModelUsageBudget
 from pajin.runtime.store import RunStore
-from pajin.tools.gateway import GatewayOutcome
+from pajin.runtime.worker import WorkerResult, WorkerStatus
+from pajin.tools.gateway import GatewayOutcome, canonical_tool_request_digest
 
 
 class StubProviderGateway:
@@ -35,15 +43,20 @@ class StubProviderGateway:
         success: bool = True,
         block: bool = False,
         data_updates: dict[str, object] | None = None,
+        bound_sources: bool = False,
+        worker_transcript: str = "",
     ) -> None:
         self.usage = usage
         self.executed = executed
         self.success = success
         self.block = block
         self.data_updates = data_updates or {}
+        self.bound_sources = bound_sources
+        self.worker_transcript = worker_transcript
         self.calls = 0
         self.cancelled = False
         self.requests: list[ToolRequest] = []
+        self.outcomes: list[GatewayOutcome] = []
 
     async def execute(
         self,
@@ -77,7 +90,22 @@ class StubProviderGateway:
             "target": request.target,
         }
         data.update(self.data_updates)
-        return GatewayOutcome(
+        worker_result = (
+            WorkerResult(
+                execution_id=f"exec_bound_{self.calls}",
+                backend="provider-bound-test",
+                status=WorkerStatus.SUCCEEDED,
+                exit_code=0,
+                stdout=self.worker_transcript,
+                stderr=self.worker_transcript,
+                network_log=self.worker_transcript,
+                started_at=now,
+                finished_at=now,
+            )
+            if self.bound_sources
+            else None
+        )
+        outcome = GatewayOutcome(
             decision=PolicyDecision(allowed=True, reason="test fixture", policy="test"),
             result=ToolResult(
                 request_id=request.request_id,
@@ -87,9 +115,17 @@ class StubProviderGateway:
                 finished_at=now,
                 data=data if self.success else {},
                 error=None if self.success else "provider dispatch failed",
+                evidence=(
+                    [f"evidence/{request.request_id}.json"]
+                    if self.bound_sources
+                    else []
+                ),
             ),
+            worker_result=worker_result,
             executed=self.executed,
         )
+        self.outcomes.append(outcome.model_copy(deep=True))
+        return outcome
 
 
 def _registration() -> ProviderRegistration:
@@ -99,6 +135,7 @@ def _registration() -> ProviderRegistration:
             "endpoint": "https://provider.example/v1/chat/completions",
             "model": "session-model",
             "secret_ref": "provider/session/api-key",
+            "allowed_function_tools": ["echo"],
             "input_cost_per_million_usd": 1_000,
             "output_cost_per_million_usd": 2_000,
         }
@@ -110,6 +147,18 @@ def _chat(*, max_completion_tokens: int | None = 10) -> ProviderChatRequest:
         messages=[ProviderMessage(role="user", content="hello")],
         max_completion_tokens=max_completion_tokens,
     )
+
+
+def _nested_keys(value: object) -> set[str]:
+    if isinstance(value, dict):
+        return set(value) | {
+            nested
+            for item in value.values()
+            for nested in _nested_keys(item)
+        }
+    if isinstance(value, list):
+        return {nested for item in value for nested in _nested_keys(item)}
+    return set()
 
 
 def _port(
@@ -278,6 +327,8 @@ async def test_provider_session_commits_bound_and_records_reported_usage_as_untr
     assert completed["payload"]["chargedPromptTokens"] == reserved_prompt_tokens
     assert completed["payload"]["chargedCompletionTokens"] == 10
     assert completed["payload"]["chargedCostUsd"] == pytest.approx(reserved_cost)
+    assert "boundOutcomeId" not in completed["payload"]
+    assert "boundOutcomeDigest" not in completed["payload"]
 
 
 @pytest.mark.asyncio
@@ -471,6 +522,554 @@ async def test_provider_session_dual_budget_commit_and_non_execution_release(
         "costUsd",
     ):
         assert dedicated_after_release[field] == dedicated_after_completion[field]
+
+
+@pytest.mark.asyncio
+async def test_provider_bound_chat_uses_stable_id_and_returns_secret_free_outcome(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    prompt_marker = "BOUND-PROMPT-MUST-NOT-PERSIST"
+    result_marker = "BOUND-RESULT-MUST-NOT-PERSIST"
+    refusal_marker = "BOUND-REFUSAL-MUST-NOT-PERSIST"
+    tool_argument_marker = "BOUND-TOOL-ARGUMENT-MUST-NOT-PERSIST"
+    worker_marker = "BOUND-WORKER-MUST-NOT-PERSIST"
+    request_id = "provider_bound_" + "a" * 64
+    chat = ProviderChatRequest(
+        messages=[ProviderMessage(role="user", content=prompt_marker)],
+        tools=[
+            FunctionTool(
+                function=FunctionDefinition(
+                    name="echo",
+                    parameters={
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                        "required": ["value"],
+                        "additionalProperties": False,
+                    },
+                )
+            )
+        ],
+        max_completion_tokens=10,
+    )
+    gateway = StubProviderGateway(
+        usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        data_updates={
+            "content": result_marker,
+            "refusal": refusal_marker,
+            "tool_calls": [
+                {
+                    "call_id": "call_bound",
+                    "name": "echo",
+                    "arguments_json": json.dumps({"value": tool_argument_marker}),
+                    "arguments": {"value": tool_argument_marker},
+                    "arguments_valid": True,
+                }
+            ],
+        },
+        bound_sources=True,
+        worker_transcript=worker_marker,
+    )
+    dedicated = BudgetController(
+        sample_campaign.spec.budgets.model_copy(
+            update={
+                "duration_seconds": 1,
+                "max_tool_calls": 2,
+                "max_model_calls": 2,
+                "max_model_tokens": 10_000,
+                "max_cost_usd": 10,
+            }
+        )
+    )
+    port, campaign_budget = _port(
+        tmp_path,
+        sample_campaign,
+        gateway,
+        dedicated_budget=dedicated,
+    )
+
+    completed = await port.chat_bound(
+        role="supervisor",
+        attempt=1,
+        chat=chat,
+        request_id=request_id,
+    )
+
+    assert isinstance(completed, BoundProviderChatCall)
+    assert isinstance(completed.outcome, ProviderBoundChatOutcome)
+    assert completed.result.content == result_marker
+    assert gateway.requests[0].request_id == request_id
+    outcome = completed.outcome
+    assert outcome.request_id == request_id
+    assert outcome.agent_id == gateway.requests[0].agent_id
+    assert outcome.tool_id == gateway.requests[0].tool_id
+    assert outcome.evidence_references == (f"evidence/{request_id}.json",)
+    assert outcome.reported_usage.total_tokens == 5
+    assert outcome.charged_usage.budget_scope == "campaign-and-dedicated"
+    assert outcome.charged_usage.prompt_tokens > outcome.reported_usage.prompt_tokens
+    assert outcome.decision_allowed
+    assert outcome.executed
+    assert outcome.result_identity_valid
+    assert outcome.raw_request_embedded is False
+    assert outcome.raw_result_embedded is False
+    assert outcome.raw_worker_transcript_embedded is False
+    serialized = outcome.model_dump_json(by_alias=True)
+    for marker in (
+        prompt_marker,
+        result_marker,
+        refusal_marker,
+        tool_argument_marker,
+        worker_marker,
+        "provider/session/api-key",
+        "https://provider.example/v1/chat/completions",
+    ):
+        assert marker not in serialized
+    forbidden_keys = {
+        "messages",
+        "content",
+        "refusal",
+        "arguments",
+        "stdout",
+        "stderr",
+        "networkLog",
+        "secretRef",
+        "rawResult",
+    }
+    assert _nested_keys(json.loads(serialized)).isdisjoint(forbidden_keys)
+    assert campaign_budget.snapshot()["modelCalls"] == 1
+    assert dedicated.snapshot()["modelCalls"] == 1
+    completed_event = json.loads(
+        port._store.events_path.read_text(encoding="utf-8").splitlines()[-1]
+    )
+    assert completed_event["payload"]["boundOutcomeId"] == outcome.outcome_id
+    assert completed_event["payload"]["boundOutcomeDigest"] == outcome.outcome_digest
+
+    wire = outcome.model_dump(mode="json", by_alias=True)
+    for field in (
+        "executed",
+        "decisionAllowed",
+        "toolResultSuccess",
+        "resultIdentityValid",
+        "rawRequestEmbedded",
+        "automaticRedispatchAuthorized",
+    ):
+        forged_wire = dict(wire)
+        forged_wire[field] = int(bool(wire[field]))
+        with pytest.raises(ValueError, match="JSON booleans"):
+            ProviderBoundChatOutcome.model_validate(forged_wire)
+    forged_wire = dict(wire)
+    forged_wire["rawProviderResponse"] = result_marker
+    with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+        ProviderBoundChatOutcome.model_validate(forged_wire)
+
+
+@pytest.mark.asyncio
+async def test_provider_bound_outcome_verifier_rejects_forgery_and_source_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    chat = _chat()
+    gateway = StubProviderGateway(
+        usage={"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        bound_sources=True,
+    )
+    port, _budget = _port(tmp_path, sample_campaign, gateway)
+    completed = await port.chat_bound(
+        role="supervisor",
+        attempt=1,
+        chat=chat,
+        request_id="provider_bound_" + "b" * 64,
+    )
+    request = gateway.requests[0]
+    raw_gateway = gateway.outcomes[0]
+
+    verified = verify_provider_bound_chat_outcome(
+        completed.outcome,
+        registration=port._registration,
+        grant=port._grant,
+        chat=chat,
+        request=request,
+        result=completed.result,
+        gateway_outcome=raw_gateway,
+        charged_usage=completed.outcome.charged_usage,
+        expected_budget_scope="campaign",
+    )
+    assert verified == completed.outcome
+
+    forged = completed.outcome.model_copy(update={"tool_request_digest": "0" * 64})
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            forged,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=completed.outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    substituted_registration = port._registration.model_copy(
+        update={"secret_ref": "provider/session/substituted-key"}
+    )
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            completed.outcome,
+            registration=substituted_registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=completed.outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    substituted_result = completed.result.model_copy(update={"content": "substituted"})
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            completed.outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=substituted_result,
+            gateway_outcome=raw_gateway,
+            charged_usage=completed.outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    forged_arguments = dict(request.arguments)
+    forged_arguments["max_completion_tokens"] = 10.0
+    forged_request = request.model_copy(update={"arguments": forged_arguments})
+    assert forged_request.arguments == request.arguments
+    assert canonical_tool_request_digest(forged_request) != canonical_tool_request_digest(request)
+    forged_request_wire = completed.outcome.model_dump(mode="json", by_alias=True)
+    forged_request_wire["outcomeId"] = ""
+    forged_request_wire["outcomeDigest"] = ""
+    forged_request_wire["toolRequestDigest"] = canonical_tool_request_digest(forged_request)
+    forged_request_outcome = ProviderBoundChatOutcome.model_validate(forged_request_wire)
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            forged_request_outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=forged_request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=completed.outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    charged = completed.outcome.charged_usage
+    smaller_charge = charged.model_copy(
+        update={
+            "prompt_tokens": charged.prompt_tokens - 1,
+            "total_tokens": charged.total_tokens - 1,
+        }
+    )
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            completed.outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=smaller_charge,
+            expected_budget_scope="campaign",
+        )
+
+    undercharged_wire = completed.outcome.model_dump(mode="json", by_alias=True)
+    undercharged_wire["outcomeId"] = ""
+    undercharged_wire["outcomeDigest"] = ""
+    undercharged_wire["chargedUsage"] = smaller_charge.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    undercharged_outcome = ProviderBoundChatOutcome.model_validate(undercharged_wire)
+    with pytest.raises(
+        ProviderBoundOutcomeError,
+        match="conservative request bound",
+    ):
+        verify_provider_bound_chat_outcome(
+            undercharged_outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=undercharged_outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    forged_scope_wire = completed.outcome.model_dump(mode="json", by_alias=True)
+    forged_scope_wire["outcomeId"] = ""
+    forged_scope_wire["outcomeDigest"] = ""
+    forged_scope_usage = dict(forged_scope_wire["chargedUsage"])
+    forged_scope_usage["budgetScope"] = "campaign-and-dedicated"
+    forged_scope_wire["chargedUsage"] = forged_scope_usage
+    forged_scope_outcome = ProviderBoundChatOutcome.model_validate(forged_scope_wire)
+    with pytest.raises(ProviderBoundOutcomeError, match="expected budget scope"):
+        verify_provider_bound_chat_outcome(
+            forged_scope_outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=raw_gateway,
+            charged_usage=forged_scope_outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+    multiple_evidence = raw_gateway.model_copy(
+        update={
+            "result": raw_gateway.result.model_copy(
+                update={
+                    "evidence": [
+                        f"evidence/{request.request_id}.json",
+                        "evidence/foreign.json",
+                    ]
+                }
+            )
+        }
+    )
+    with pytest.raises(ProviderBoundOutcomeError):
+        verify_provider_bound_chat_outcome(
+            completed.outcome,
+            registration=port._registration,
+            grant=port._grant,
+            chat=chat,
+            request=request,
+            result=completed.result,
+            gateway_outcome=multiple_evidence,
+            charged_usage=completed.outcome.charged_usage,
+            expected_budget_scope="campaign",
+        )
+
+
+@pytest.mark.parametrize(
+    ("request_id", "evidence_reference"),
+    [
+        ("../escape", "evidence/../escape.json"),
+        ("CON", "evidence/CON.json"),
+    ],
+)
+def test_provider_bound_outcome_rejects_nonportable_request_evidence_coordinate(
+    request_id: str,
+    evidence_reference: str,
+) -> None:
+    payload: dict[str, object] = {
+        "requestId": request_id,
+        "agentId": "agent:test",
+        "toolId": "provider.test.chat",
+        "providerId": "test-provider",
+        "model": "test-model",
+        "providerRuntimeDigest": "0" * 64,
+        "capabilityGrantDigest": "0" * 64,
+        "chatRequestDigest": "0" * 64,
+        "toolRequestDigest": "0" * 64,
+        "policyDecisionDigest": "0" * 64,
+        "toolResultDigest": "0" * 64,
+        "workerResultDigest": "0" * 64,
+        "gatewayOutcomeDigest": "0" * 64,
+        "providerResultDigest": "0" * 64,
+        "responseIdDigest": "0" * 64,
+        "responseIdBytes": 1,
+        "targetDigest": "0" * 64,
+        "contentBytes": 0,
+        "refusalBytes": 0,
+        "finishReasonBytes": 0,
+        "toolCallsDigest": "0" * 64,
+        "evidenceReferenceDigests": ["0" * 64],
+        "evidenceReferences": [evidence_reference],
+        "toolCallCount": 0,
+        "reportedUsage": {
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "totalTokens": 0,
+            "costUsd": 0,
+        },
+        "chargedUsage": {
+            "promptTokens": 0,
+            "completionTokens": 0,
+            "totalTokens": 0,
+            "costUsd": 0,
+            "budgetScope": "campaign",
+        },
+        "streamed": False,
+        "chunks": 1,
+        "workerStatus": "succeeded",
+        "workerExecutionIdDigest": "0" * 64,
+        "workerBackendDigest": "0" * 64,
+        "workerExitCode": 0,
+        "networkLogTrusted": False,
+    }
+
+    with pytest.raises(ValueError, match=r"requestId|evidence reference"):
+        ProviderBoundChatOutcome.model_validate(payload)
+
+
+def test_provider_bound_usage_canonicalizes_signed_zero_cost() -> None:
+    charged = ProviderChargedUsage(
+        promptTokens=0,
+        completionTokens=0,
+        totalTokens=0,
+        costUsd=-0.0,
+        budgetScope="campaign",
+    )
+    reported = ProviderReportedUsage(
+        promptTokens=0,
+        completionTokens=0,
+        totalTokens=0,
+        costUsd=-0.0,
+    )
+
+    assert charged.cost_usd.hex() == "0x0.0p+0"
+    assert reported.cost_usd.hex() == "0x0.0p+0"
+    assert "-0.0" not in charged.model_dump_json(by_alias=True)
+    assert "-0.0" not in reported.model_dump_json(by_alias=True)
+
+
+@pytest.mark.asyncio
+async def test_provider_bound_chat_fails_closed_without_worker_evidence_and_keeps_charge(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    gateway = StubProviderGateway(
+        usage={"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+    )
+    dedicated = BudgetController(
+        sample_campaign.spec.budgets.model_copy(
+            update={
+                "duration_seconds": 1,
+                "max_tool_calls": 2,
+                "max_model_calls": 2,
+                "max_model_tokens": 10_000,
+                "max_cost_usd": 10,
+            }
+        )
+    )
+    port, campaign_budget = _port(
+        tmp_path,
+        sample_campaign,
+        gateway,
+        dedicated_budget=dedicated,
+    )
+
+    with pytest.raises(ModelCallFailure, match="bound outcome construction failed"):
+        await port.chat_bound(
+            role="supervisor",
+            attempt=1,
+            chat=_chat(),
+            request_id="provider_bound_" + "c" * 64,
+        )
+
+    assert campaign_budget.snapshot()["modelCalls"] == 1
+    assert dedicated.snapshot()["modelCalls"] == 1
+    events = [
+        json.loads(line)["event_type"]
+        for line in port._store.events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == ["model.call.started", "model.call.failed"]
+
+
+@pytest.mark.parametrize("request_id", ["../invalid", "CON", "aux.txt", "COM1"])
+@pytest.mark.asyncio
+async def test_provider_bound_chat_rejects_invalid_stable_id_before_reservation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    request_id: str,
+) -> None:
+    gateway = StubProviderGateway()
+    port, budget = _port(tmp_path, sample_campaign, gateway)
+
+    with pytest.raises(ValueError, match="request ID is invalid"):
+        await port.chat_bound(
+            role="supervisor",
+            attempt=1,
+            chat=_chat(),
+            request_id=request_id,
+        )
+
+    assert gateway.calls == 0
+    assert budget.snapshot()["modelCalls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_bound_chat_rejects_casefold_colliding_artifact_coordinate(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    gateway = StubProviderGateway()
+    port, budget = _port(tmp_path, sample_campaign, gateway)
+    port._store.write_json_create_only("requests/Provider_Collision.json", {"occupied": True})
+
+    with pytest.raises(ValueError, match="request ID is invalid"):
+        await port.chat_bound(
+            role="supervisor",
+            attempt=1,
+            chat=_chat(),
+            request_id="provider_collision",
+        )
+
+    assert gateway.calls == 0
+    assert budget.snapshot()["modelCalls"] == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_bound_chat_rejects_coerced_gateway_flag_and_keeps_charge(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    class CoercedOutcomeGateway(StubProviderGateway):
+        async def execute(
+            self,
+            campaign: CampaignManifest,
+            grant: CapabilityGrant,
+            request: ToolRequest,
+            *,
+            used_calls: int,
+        ) -> GatewayOutcome:
+            outcome = await super().execute(
+                campaign,
+                grant,
+                request,
+                used_calls=used_calls,
+            )
+            material = outcome.model_dump(mode="python")
+            material["executed"] = 1
+
+            class RawGatewayOutcome:
+                def model_dump(self, *, mode: str) -> dict[str, object]:
+                    del mode
+                    return material
+
+            return cast(GatewayOutcome, RawGatewayOutcome())
+
+    gateway = CoercedOutcomeGateway(bound_sources=True)
+    port, budget = _port(tmp_path, sample_campaign, gateway)
+
+    with pytest.raises(ModelCallFailure, match="invalid outcome"):
+        await port.chat_bound(
+            role="supervisor",
+            attempt=1,
+            chat=_chat(),
+            request_id="provider_bound_" + "d" * 64,
+        )
+
+    assert gateway.calls == 1
+    assert budget.snapshot()["modelCalls"] == 1
+    events = [
+        json.loads(line)["event_type"]
+        for line in port._store.events_path.read_text(encoding="utf-8").splitlines()
+    ]
+    assert events == ["model.call.started", "model.call.failed"]
 
 
 @pytest.mark.asyncio

@@ -217,6 +217,20 @@ class WorkerResult(BaseModel):
     started_at: datetime
     finished_at: datetime
 
+    @field_validator("exit_code", mode="before")
+    @classmethod
+    def require_literal_exit_code(cls, value: object) -> object:
+        if value is not None and type(value) is not int:
+            raise ValueError("Worker exit code must use a JSON integer or null")
+        return value
+
+    @field_validator("stdout_truncated", "stderr_truncated", mode="before")
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("Worker truncation flags must use JSON booleans")
+        return value
+
     @model_validator(mode="after")
     def validate_execution_lifecycle(self) -> WorkerResult:
         try:

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-004B2` stable Provider request·secret-free bound outcome
+- 현재 우선순위: `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
 
 ## 제품 목표
 
@@ -483,7 +483,7 @@ Gate가 닫혔다.
   - [x] `SUP-004A` exact invocation request·sealed non-invocable checkpoint plan
   - [ ] `SUP-004B` atomic Campaign/Supervisor budget·bound Provider receipt
     - [x] `SUP-004B1` atomic Campaign/dedicated model-usage reservation
-    - [ ] `SUP-004B2` stable request ID·secret-free bound Provider outcome
+    - [x] `SUP-004B2` stable request ID·secret-free bound Provider outcome
     - [ ] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
 - [ ] `SUP-005` Deterministic Baseline 비교
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
@@ -529,6 +529,15 @@ commit하고 증명된 non-execution만 함께 release한다. 기존 Provider co
 경계로 연결돼 Campaign-only caller를 바꾸지 않는다. Budget authority와 persistent restore는 boolean-number
 coercion을 차단하고 composite publication failure도 양쪽 rollback한다. 다음 `SUP-004B2`는 caller-supplied
 stable request ID와 raw prompt·response·secret을 포함하지 않는 bound Provider outcome을 추가한다.
+
+`SUP-004B2`는 기존 `chat()`·`complete()`를 유지하고 caller-owned stable ID를 실제 Gateway
+`ToolRequest`에 그대로 주입하는 `chat_bound()`를 추가한다. public canonical request digest 하나를 Gateway
+reservation·Capability activation·Provider outcome이 공유하며, 성공 outcome은 request/chat/Policy/ToolResult/
+WorkerResult/Gateway/ProviderResult/evidence와 provider-reported usage·B1 conservative charge를 exact digest로
+결박한다. serializable outcome에는 raw prompt·response·Tool arguments·endpoint·secret reference·Worker
+transcript가 없고 모든 실행 권위가 false다. Gateway 중복 차단은 여전히 Run-local이므로 다음
+`SUP-004B3`는 intent-before-dispatch durable claim, crash-after-dispatch 분류, exact schedule/request/outcome/draft
+sealed receipt와 consumer-side 재검증을 연결한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

@@ -14,20 +14,37 @@
   Worker request ID, reservation, Gateway outcome, Provider result에 결박한 뒤 consumer-side에서 complete
   input을 재구성·검증한다.
 
-## SUP-004B1 atomic budget과 실제 Provider invocation receipt 경계
+## SUP-004B2 bound outcome과 durable Supervisor invocation receipt 경계
 
-- 상태: SUP-004B2/B3 실제 model invocation 전에 해소해야 하는 transport·durable claim 공백
-- 현재 보장: SUP-004B1은 공유 Campaign controller와 distinct dedicated controller의 동일 보수적
-  model/Tool-call, token, cost capacity를 내부 stable-order locks 아래 원자적으로 reserve·commit·release하고
-  두 duration ceiling 중 짧은 remaining time을 적용한다. existing Provider path에 optional로 연결되며
-  dedicated denial은 Campaign charge를 남기지 않고 proven non-execution만 양쪽을 release한다.
-- 제한: `PolicyBoundProviderPort`는 internal random ToolRequest ID를 만들고 `ProviderChatResult`만 반환하므로
-  caller가 request/reservation/Gateway evidence를 안전하게 receipt로 결박할 수 없다. raw Gateway evidence는
-  complete tainted request를 포함한다. process restart 뒤 duplicate plan claim과 crash-after-dispatch 상태도
-  아직 durable하지 않다. budget 원자성도 같은 process에서 공유하는 controller에 한정된다.
-- 해소 조건: `SUP-004B2`에서 stable request ID와 secret-free bound Provider outcome을 additive로 노출하고,
-  `SUP-004B3`에서 intent-before-dispatch/no-automatic-redispatch SQLite journal과 exact sealed request/Gateway/
-  result/usage/draft receipt를 consumer-side에서 재검증한 뒤에만 SUP-003 compiler로 전달한다.
+- 상태: SUP-004B3 실제 Supervisor model invocation 전에 해소해야 하는 durable claim·sealed receipt 공백
+- 현재 보장: SUP-004B2의 additive `chat_bound()`는 caller-owned stable ID를 actual Gateway ToolRequest에
+  그대로 주입하고, exact request/chat/Policy/Tool/Worker/Gateway/Provider sources, evidence reference,
+  provider-reported usage와 B1 conservative charge를 content-addressed secret-free outcome에 결박한다. raw
+  prompt·response·Tool arguments·endpoint·secret reference·Worker transcript는 outcome에 없다.
+- 제한: Gateway request reservation과 중복 차단은 한 Run에 한정되어 process restart나 new Run의 중복
+  dispatch를 차단하지 않는다. outcome은 반환될 뿐 아직 sealed artifact가 아니며 evidence path 뒤 raw
+  artifact bytes의 hash/seal을 증명하지 않는다. raw Gateway evidence는 여전히 complete tainted request를
+  포함하고, crash-after-dispatch와 outcome 미수신은 durable하게 분류되지 않는다. budget 원자성도 같은
+  process에서 공유하는 controller에 한정된다. generic bound call은 Campaign-only scope도 허용하며 verifier는
+  conservative token/cost bound를 재계산하지만 실제 live budget ledger의 charge 상태는 증명하지 않는다.
+- 해소 조건: `SUP-004B3`에서 intent-before-dispatch/no-automatic-redispatch SQLite journal과 exact sealed
+  schedule/request/Gateway/outcome/usage/draft receipt를 consumer-side에서 재검증한 뒤에만 SUP-003 compiler로
+  전달한다.
+
+## Capability authority 선행 import 뒤 Supervisor schema digest 순서 의존
+
+- 상태: 2026-08-04 B2 인접 회귀에서 재현한 미해결 import-order 검증 문제
+- 재현: `tests\test_capability_authorities.py`와
+  `tests\test_supervisor_checkpoint_scheduler.py`를 같은 pytest process에서 이 순서로 실행하면 Capability
+  7개는 통과한 뒤 SUP-004A 13개가 `Supervisor Model Binding Digest differs`로 실패한다.
+- 분리 결과: 두 파일은 각각 별도 process에서 통과하며, Capability authority 파일을 제외한 B2 인접
+  Provider·Gateway·Worker·Capability rollout·SUP-004A 회귀 270개도 통과한다.
+- 영향: 서로 독립적으로 유효한 schema digest가 module import 순서에 따라 달라질 수 있어 전체 회귀 묶음
+  순서에 영향을 준다. B2 stable request/outcome 동작 실패로 분류하지 않지만 Supervisor binding의
+  결정론적 schema registry 보장은 별도 수정이 필요하다.
+- 임시 검증: 원인 수정 전 두 파일을 별도 pytest process에서 실행한다.
+- 해소 조건: registered Supervisor schema digest 생성을 module import 순서와 무관한 code-owned canonical
+  schema authority로 고정하고, 두 실행 순서 모두 같은 digest와 통과 결과를 내는 회귀를 추가한다.
 
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 

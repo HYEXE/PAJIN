@@ -13,7 +13,7 @@ from pathlib import PurePosixPath
 from threading import Lock
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest, ToolResult
 from pajin.policy.engine import PolicyDecision, PolicyEngine
@@ -49,6 +49,54 @@ _MAX_TOOL_REQUEST_JSON_BYTES = 10_000_000
 _REQUEST_RESERVATION_API_VERSION = "pajin.dev/tool-request-reservation/v1"
 
 
+class ToolRequestCanonicalizationError(ValueError):
+    """Raised when a Tool request cannot be represented by the Gateway contract."""
+
+
+def canonical_tool_request_digest(request: ToolRequest) -> str:
+    """Return the exact SHA-256 persisted by Tool Gateway request reservations."""
+
+    _canonical, digest = _canonical_tool_request_with_digest(request)
+    return digest
+
+
+def _canonical_tool_request_with_digest(
+    request: ToolRequest,
+) -> tuple[ToolRequest, str]:
+    try:
+        canonical = ToolRequest.model_validate(
+            request.model_dump(
+                mode="python",
+                include=set(ToolRequest.model_fields),
+            )
+        )
+        payload = canonical.model_dump(mode="python")
+        validate_strict_json(payload, label="Tool request")
+        encoded = json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    except (
+        AttributeError,
+        OverflowError,
+        RecursionError,
+        TypeError,
+        UnicodeError,
+        ValueError,
+    ) as exc:
+        raise ToolRequestCanonicalizationError(
+            "Tool request is not strict canonical JSON"
+        ) from exc
+    if len(encoded) > _MAX_TOOL_REQUEST_JSON_BYTES:
+        raise ToolRequestCanonicalizationError(
+            "Tool request exceeds the bounded canonical JSON size"
+        )
+    return canonical.model_copy(deep=True), sha256(encoded).hexdigest()
+
+
 class GatewayOutcome(BaseModel):
     model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
 
@@ -58,6 +106,18 @@ class GatewayOutcome(BaseModel):
     network_log_trusted: bool = False
     result_identity_valid: bool = True
     executed: bool = False
+
+    @field_validator(
+        "network_log_trusted",
+        "result_identity_valid",
+        "executed",
+        mode="before",
+    )
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("Gateway outcome flags must use JSON booleans")
+        return value
 
 
 @dataclass(frozen=True)
@@ -333,35 +393,9 @@ class ToolGateway:
         request: ToolRequest,
     ) -> tuple[ToolRequest, str] | GatewayOutcome:
         try:
-            request = ToolRequest.model_validate(
-                request.model_dump(
-                    mode="python",
-                    include=set(ToolRequest.model_fields),
-                )
-            )
-            payload = request.model_dump(mode="python")
-            validate_strict_json(payload, label="Tool request")
-            encoded = json.dumps(
-                payload,
-                allow_nan=False,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        except (
-            AttributeError,
-            OverflowError,
-            RecursionError,
-            TypeError,
-            UnicodeError,
-            ValueError,
-        ) as exc:
+            return _canonical_tool_request_with_digest(request)
+        except ToolRequestCanonicalizationError as exc:
             return self._reject_invalid_request(exc)
-        if len(encoded) > _MAX_TOOL_REQUEST_JSON_BYTES:
-            return self._reject_invalid_request(
-                ValueError("Tool request exceeds the bounded canonical JSON size")
-            )
-        return request.model_copy(deep=True), sha256(encoded).hexdigest()
 
     def _reserve_request(
         self,

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, field_validator
 
 from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest
 from pajin.policy.scope import InvalidScopeURL, scope_matches
@@ -17,6 +17,13 @@ class PolicyDecision(BaseModel):
     allowed: bool
     reason: str
     policy: str
+
+    @field_validator("allowed", mode="before")
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("Policy decision allowed must use a JSON boolean")
+        return value
 
 
 class PolicyEngine:

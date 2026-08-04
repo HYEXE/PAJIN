@@ -5,6 +5,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from pajin.domain.models import (
     CampaignManifest,
@@ -31,9 +32,81 @@ from pajin.runtime.worker import (
 from pajin.tools import execution_receipts
 from pajin.tools.ai import AIChatProbeInput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry, ToolSpec
-from pajin.tools.gateway import GatewayOutcome, RequestRateLimitLedger, ToolGateway
+from pajin.tools.gateway import (
+    GatewayOutcome,
+    RequestRateLimitLedger,
+    ToolGateway,
+    canonical_tool_request_digest,
+)
 from pajin.tools.http import HTTPGetTool
 from pajin.tools.mock import MockAgentProbe
+
+
+@pytest.mark.parametrize(
+    ("model", "field", "value"),
+    [
+        (PolicyDecision, "allowed", 1),
+        (PolicyDecision, "allowed", "false"),
+        (ToolResult, "success", 1),
+        (ToolResult, "success", "true"),
+    ],
+)
+def test_gateway_authority_models_reject_coerced_boolean_fields(
+    model: type[PolicyDecision] | type[ToolResult],
+    field: str,
+    value: object,
+) -> None:
+    now = datetime.now(UTC)
+    payload: dict[str, object]
+    if model is PolicyDecision:
+        payload = {"allowed": True, "reason": "test", "policy": "test"}
+    else:
+        payload = {
+            "request_id": "request_safe",
+            "tool_id": "tool.safe",
+            "success": True,
+            "started_at": now,
+            "finished_at": now,
+        }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        model.model_validate(payload)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("network_log_trusted", 0),
+        ("network_log_trusted", "false"),
+        ("result_identity_valid", 1),
+        ("result_identity_valid", "true"),
+        ("executed", 0),
+        ("executed", "false"),
+    ],
+)
+def test_gateway_outcome_rejects_coerced_boolean_fields(
+    field: str,
+    value: object,
+) -> None:
+    now = datetime.now(UTC)
+    payload: dict[str, object] = {
+        "decision": PolicyDecision(allowed=True, reason="test", policy="test"),
+        "result": ToolResult(
+            request_id="request_safe",
+            tool_id="tool.safe",
+            success=True,
+            started_at=now,
+            finished_at=now,
+        ),
+        "network_log_trusted": False,
+        "result_identity_valid": True,
+        "executed": True,
+    }
+    payload[field] = value
+
+    with pytest.raises(ValidationError):
+        GatewayOutcome.model_validate(payload)
 
 
 class NeverWorker:
@@ -549,6 +622,9 @@ def test_gateway_revalidates_copied_request_before_deriving_evidence_path(
         store=store,
     )
 
+    with pytest.raises(ValueError, match="strict canonical JSON"):
+        canonical_tool_request_digest(request)
+
     outcome = asyncio.run(
         gateway.execute(
             sample_campaign,
@@ -641,6 +717,8 @@ def test_duplicate_request_is_rejected_before_second_worker_and_evidence_overwri
     original_evidence = evidence_path.read_bytes()
     reservation_path = store.path / f"requests/{request.request_id}.json"
     original_reservation = reservation_path.read_bytes()
+    reservation = json.loads(original_reservation)
+    assert reservation["requestSha256"] == canonical_tool_request_digest(request)
     second = asyncio.run(
         gateway.execute(
             sample_campaign,

@@ -58,7 +58,7 @@ from pajin.graph.authority import (
 )
 from pajin.graph.consistency import GraphDecision
 from pajin.runtime.error_safety import audit_safe_exception_type
-from pajin.tools.gateway import GatewayOutcome
+from pajin.tools.gateway import GatewayOutcome, canonical_tool_request_digest
 
 EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION: Literal[
     "pajin.dev/existing-mode-capability-activation-set/v1alpha1"
@@ -753,20 +753,12 @@ def activate_existing_mode_capabilities(
 def capability_tool_request_digest(request: ToolRequest) -> str:
     """Return the exact canonical digest also persisted by Tool Gateway."""
 
-    canonical = _canonical_tool_request(request)
     try:
-        encoded = json.dumps(
-            canonical.model_dump(mode="python"),
-            allow_nan=False,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    except (OverflowError, TypeError, UnicodeError, ValueError) as exc:
+        return canonical_tool_request_digest(request)
+    except ValueError as exc:
         raise ExistingModeCapabilityActivationError(
             "Capability Tool request is not strict canonical JSON"
         ) from exc
-    return sha256(encoded).hexdigest()
 
 
 def capability_grant_digest(grant: CapabilityGrant) -> str:

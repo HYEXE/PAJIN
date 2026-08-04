@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -19,6 +18,19 @@ from pajin.providers.models import (
     ProviderMessage,
     ProviderRegistration,
 )
+from pajin.providers.receipts import (
+    BoundProviderChatCall,
+    ProviderBoundChatOutcome,
+    ProviderBoundOutcomeError,
+    ProviderChargedUsage,
+    bind_provider_chat_outcome,
+)
+from pajin.providers.usage import (
+    ProviderModelUsageBound as ProviderModelUsageBound,
+)
+from pajin.providers.usage import (
+    provider_model_usage_upper_bound as provider_model_usage_upper_bound,
+)
 from pajin.runtime.control import (
     BudgetController,
     BudgetExceeded,
@@ -29,77 +41,6 @@ from pajin.runtime.control import (
 from pajin.runtime.error_safety import audit_safe_exception_type
 from pajin.runtime.store import RunStore
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
-
-_PROMPT_CANONICAL_BYTE_TOKEN_FACTOR = 4
-_PROMPT_BASE_FRAMING_TOKENS = 1_024
-_PROMPT_MESSAGE_FRAMING_TOKENS = 64
-_PROMPT_TOOL_FRAMING_TOKENS = 256
-_PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS = 64
-_PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS = 512
-
-
-@dataclass(frozen=True, slots=True)
-class ProviderModelUsageBound:
-    """Conservative pre-dispatch usage bound shared by governed model callers."""
-
-    prompt_tokens: int
-    completion_tokens: int
-    cost_usd: float
-
-
-def provider_model_usage_upper_bound(
-    registration: ProviderRegistration,
-    chat: ProviderChatRequest,
-) -> ProviderModelUsageBound:
-    """Return the exact conservative bound used by ``PolicyBoundProviderPort``."""
-
-    canonical_registration = ProviderRegistration.model_validate(
-        registration.model_dump(mode="python")
-    )
-    canonical_chat = ProviderChatRequest.model_validate(chat.model_dump(mode="python"))
-    max_completion_tokens = canonical_chat.max_completion_tokens
-    if max_completion_tokens is None:
-        raise BudgetExceeded(
-            "provider model calls require max_completion_tokens for budget reservation"
-        )
-    canonical_request_bytes = json.dumps(
-        {
-            "model": canonical_registration.model,
-            "request": canonical_chat.model_dump(
-                mode="json",
-                by_alias=True,
-                exclude_none=True,
-            ),
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
-        allow_nan=False,
-    ).encode("utf-8")
-    assistant_tool_calls = sum(len(message.tool_calls) for message in canonical_chat.messages)
-    framing_tokens = (
-        _PROMPT_BASE_FRAMING_TOKENS
-        + len(canonical_chat.messages) * _PROMPT_MESSAGE_FRAMING_TOKENS
-        + len(canonical_chat.tools) * _PROMPT_TOOL_FRAMING_TOKENS
-        + assistant_tool_calls * _PROMPT_ASSISTANT_TOOL_CALL_FRAMING_TOKENS
-        + (
-            _PROMPT_RESPONSE_FORMAT_FRAMING_TOKENS
-            if canonical_chat.response_format is not None
-            else 0
-        )
-    )
-    prompt_tokens = (
-        len(canonical_request_bytes) * _PROMPT_CANONICAL_BYTE_TOKEN_FACTOR + framing_tokens
-    )
-    cost_usd = (
-        prompt_tokens * canonical_registration.input_cost_per_million_usd
-        + max_completion_tokens * canonical_registration.output_cost_per_million_usd
-    ) / 1_000_000
-    return ProviderModelUsageBound(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=max_completion_tokens,
-        cost_usd=cost_usd,
-    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -113,6 +54,21 @@ class _ProviderCall:
     schema_name: str | None
     function_tools: tuple[str, ...]
     reservation: ModelUsageReservation | DualModelUsageReservation
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedProviderResult:
+    result: ProviderChatResult
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+    reported_cost: float
+
+
+@dataclass(frozen=True, slots=True)
+class _CompletedProviderCall:
+    result: ProviderChatResult
+    outcome: ProviderBoundChatOutcome | None
 
 
 class PolicyBoundProviderPort(StructuredModelPort):
@@ -198,7 +154,56 @@ class PolicyBoundProviderPort(StructuredModelPort):
     ) -> ProviderChatResult:
         """Dispatch one canonical chat request through the complete policy boundary."""
 
-        call = self._prepare_call(role=role, attempt=attempt, chat=chat)
+        completed = await self._execute_chat(
+            role=role,
+            attempt=attempt,
+            chat=chat,
+            request_id=None,
+            bind_outcome=False,
+        )
+        return completed.result
+
+    async def chat_bound(
+        self,
+        *,
+        role: str,
+        attempt: int,
+        chat: ProviderChatRequest,
+        request_id: str,
+    ) -> BoundProviderChatCall:
+        """Dispatch with one caller-owned Tool request ID and return a bound outcome."""
+
+        if not isinstance(request_id, str):
+            raise ValueError("bound Provider request ID must be a string")
+        completed = await self._execute_chat(
+            role=role,
+            attempt=attempt,
+            chat=chat,
+            request_id=request_id,
+            bind_outcome=True,
+        )
+        if completed.outcome is None:
+            raise ModelCallFailure("provider bound outcome was not constructed")
+        return BoundProviderChatCall(
+            result=completed.result.model_copy(deep=True),
+            outcome=completed.outcome,
+        )
+
+    async def _execute_chat(
+        self,
+        *,
+        role: str,
+        attempt: int,
+        chat: ProviderChatRequest,
+        request_id: str | None,
+        bind_outcome: bool,
+    ) -> _CompletedProviderCall:
+        call = self._prepare_call(
+            role=role,
+            attempt=attempt,
+            chat=chat,
+            request_id=request_id,
+        )
         self._record_call_started(call)
         self._consume_capability(call)
         try:
@@ -231,7 +236,11 @@ class PolicyBoundProviderPort(StructuredModelPort):
                 original=exc,
             )
             raise
-        return self._finalize_gateway_outcome(call, outcome)
+        return self._finalize_gateway_outcome(
+            call,
+            outcome,
+            bind_outcome=bind_outcome,
+        )
 
     def _prepare_call(
         self,
@@ -239,6 +248,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         role: str,
         attempt: int,
         chat: ProviderChatRequest,
+        request_id: str | None,
     ) -> _ProviderCall:
         try:
             chat_snapshot = ProviderChatRequest.model_validate(chat.model_dump(mode="python"))
@@ -252,7 +262,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         self._check_model_usage_calls()
         record = self._current_capability_record()
         used_calls = self._grant.max_calls - record.remaining_calls
-        request = self._provider_request(chat_snapshot)
+        request = self._provider_request(chat_snapshot, request_id=request_id)
         reservation = self._reserve_model_usage(chat_snapshot)
         return _ProviderCall(
             role=audited_role,
@@ -291,14 +301,37 @@ class PolicyBoundProviderPort(StructuredModelPort):
             raise CapabilityError("model capability has no remaining authorized call")
         return record
 
-    def _provider_request(self, chat: ProviderChatRequest) -> ToolRequest:
-        return ToolRequest(
-            agent_id=self._grant.subject,
-            tool_id=f"provider.{self._registration.provider_id}.chat",
-            target=str(self._registration.endpoint),
-            method="POST",
-            arguments=chat.model_dump(mode="json", by_alias=True),
-        )
+    def _provider_request(
+        self,
+        chat: ProviderChatRequest,
+        *,
+        request_id: str | None,
+    ) -> ToolRequest:
+        material: dict[str, object] = {
+            "agent_id": self._grant.subject,
+            "tool_id": f"provider.{self._registration.provider_id}.chat",
+            "target": str(self._registration.endpoint),
+            "method": "POST",
+            "arguments": chat.model_dump(mode="json", by_alias=True),
+        }
+        if request_id is not None:
+            material["request_id"] = request_id
+        try:
+            request = ToolRequest.model_validate(material)
+            if request_id is not None:
+                self._validate_bound_request_artifact_coordinate(request.request_id)
+            return request
+        except ValueError as exc:
+            if request_id is not None:
+                raise ValueError("bound Provider request ID is invalid") from exc
+            raise
+
+    def _validate_bound_request_artifact_coordinate(self, request_id: str) -> None:
+        try:
+            self._store.artifact_exists(f"requests/{request_id}.json")
+            self._store.artifact_exists(f"evidence/{request_id}.json")
+        except ValueError as exc:
+            raise ValueError("bound Provider request ID is invalid") from exc
 
     def _record_call_started(self, call: _ProviderCall) -> None:
         try:
@@ -340,7 +373,9 @@ class PolicyBoundProviderPort(StructuredModelPort):
         self,
         call: _ProviderCall,
         untrusted_outcome: GatewayOutcome,
-    ) -> ProviderChatResult:
+        *,
+        bind_outcome: bool,
+    ) -> _CompletedProviderCall:
         try:
             outcome = GatewayOutcome.model_validate(untrusted_outcome.model_dump(mode="python"))
         except Exception as exc:
@@ -360,7 +395,41 @@ class PolicyBoundProviderPort(StructuredModelPort):
             error = "provider model call failed"
             self._record_failed_call(call, error=error, evidence=outcome.result.evidence)
             raise ModelCallFailure(error)
-        return self._validated_provider_result(call, outcome)
+        validated = self._validated_provider_result(call, outcome)
+        bound_outcome: ProviderBoundChatOutcome | None = None
+        if bind_outcome:
+            try:
+                bound_outcome = bind_provider_chat_outcome(
+                    registration=self._registration,
+                    grant=self._grant,
+                    chat=call.chat,
+                    request=call.request,
+                    result=validated.result,
+                    gateway_outcome=outcome,
+                    charged_usage=self._charged_usage(call.reservation),
+                )
+            except ProviderBoundOutcomeError as exc:
+                failure = "provider bound outcome construction failed"
+                self._record_failed_call(
+                    call,
+                    error=failure,
+                    evidence=outcome.result.evidence,
+                )
+                raise ModelCallFailure(failure) from exc
+        self._record_completed_call(
+            call,
+            validated.result,
+            outcome,
+            prompt_tokens=validated.prompt_tokens,
+            completion_tokens=validated.completion_tokens,
+            total_tokens=validated.total_tokens,
+            reported_cost=validated.reported_cost,
+            bound_outcome=bound_outcome,
+        )
+        return _CompletedProviderCall(
+            result=validated.result,
+            outcome=bound_outcome,
+        )
 
     @staticmethod
     def _gateway_outcome_contract_error(
@@ -382,7 +451,7 @@ class PolicyBoundProviderPort(StructuredModelPort):
         self,
         call: _ProviderCall,
         outcome: GatewayOutcome,
-    ) -> ProviderChatResult:
+    ) -> _ValidatedProviderResult:
         try:
             result = ProviderChatResult.model_validate(outcome.result.data)
             self._validate_provider_result_binding(call, result)
@@ -399,16 +468,13 @@ class PolicyBoundProviderPort(StructuredModelPort):
             prompt_tokens * self._registration.input_cost_per_million_usd
             + completion_tokens * self._registration.output_cost_per_million_usd
         ) / 1_000_000
-        self._record_completed_call(
-            call,
-            result,
-            outcome,
+        return _ValidatedProviderResult(
+            result=result,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
             reported_cost=reported_cost,
         )
-        return result
 
     def _validate_provider_result_binding(
         self,
@@ -513,6 +579,28 @@ class PolicyBoundProviderPort(StructuredModelPort):
             raise ValueError("provider Campaign-only reservation bypasses its dual budget")
         self._budget.release_model_usage_reservation(reservation)
 
+    @staticmethod
+    def _charged_usage(
+        reservation: ModelUsageReservation | DualModelUsageReservation,
+    ) -> ProviderChargedUsage:
+        if reservation.tool_calls != 1 or reservation.model_calls != 1:
+            raise ProviderBoundOutcomeError(
+                "provider reservation call counts differ from the bound outcome"
+            )
+        return ProviderChargedUsage(
+            promptTokens=reservation.prompt_tokens,
+            completionTokens=reservation.completion_tokens,
+            totalTokens=reservation.prompt_tokens + reservation.completion_tokens,
+            costUsd=reservation.cost_usd,
+            toolCalls=1,
+            modelCalls=1,
+            budgetScope=(
+                "campaign-and-dedicated"
+                if isinstance(reservation, DualModelUsageReservation)
+                else "campaign"
+            ),
+        )
+
     def _prompt_token_upper_bound(self, chat: ProviderChatRequest) -> int:
         """Return a deliberately over-reserved prompt bound for the complete provider contract."""
 
@@ -528,27 +616,32 @@ class PolicyBoundProviderPort(StructuredModelPort):
         completion_tokens: int,
         total_tokens: int,
         reported_cost: float,
+        bound_outcome: ProviderBoundChatOutcome | None,
     ) -> None:
+        payload: dict[str, object] = {
+            "role": call.role,
+            "attempt": call.attempt,
+            "agentId": self._grant.subject,
+            "providerId": self._registration.provider_id,
+            "model": self._registration.model,
+            "reportedModel": result.model,
+            "responseId": result.response_id,
+            "promptTokens": prompt_tokens,
+            "completionTokens": completion_tokens,
+            "totalTokens": total_tokens,
+            "costUsd": reported_cost,
+            "usageTrust": "provider-reported-untrusted",
+            "chargedPromptTokens": call.reservation.prompt_tokens,
+            "chargedCompletionTokens": call.reservation.completion_tokens,
+            "chargedCostUsd": call.reservation.cost_usd,
+            "evidence": self._bounded_evidence(outcome.result.evidence),
+        }
+        if bound_outcome is not None:
+            payload["boundOutcomeId"] = bound_outcome.outcome_id
+            payload["boundOutcomeDigest"] = bound_outcome.outcome_digest
         self._store.append_event(
             "model.call.completed",
-            {
-                "role": call.role,
-                "attempt": call.attempt,
-                "agentId": self._grant.subject,
-                "providerId": self._registration.provider_id,
-                "model": self._registration.model,
-                "reportedModel": result.model,
-                "responseId": result.response_id,
-                "promptTokens": prompt_tokens,
-                "completionTokens": completion_tokens,
-                "totalTokens": total_tokens,
-                "costUsd": reported_cost,
-                "usageTrust": "provider-reported-untrusted",
-                "chargedPromptTokens": call.reservation.prompt_tokens,
-                "chargedCompletionTokens": call.reservation.completion_tokens,
-                "chargedCostUsd": call.reservation.cost_usd,
-                "evidence": self._bounded_evidence(outcome.result.evidence),
-            },
+            payload,
         )
 
     def _commit_failed_call(

@@ -571,6 +571,13 @@ class ToolResult(StrictModel):
     error: str | None = None
     evidence: list[str] = Field(default_factory=list)
 
+    @field_validator("success", mode="before")
+    @classmethod
+    def require_literal_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("Tool result success must use a JSON boolean")
+        return value
+
 
 class PlannedStep(StrictModel):
     step_id: str = Field(default_factory=lambda: f"step_{uuid4().hex}")

@@ -538,6 +538,19 @@ both. Existing Campaign-only Provider sessions are unchanged. Stable Provider re
 secret-free bound outcome, durable at-most-once claim, and the sealed Supervisor draft receipt are
 separate SUP-004B2/B3 boundaries.
 
+SUP-004B2 supplies the stable request and successful outcome half. An additive Provider API puts
+one caller-owned portable ID into the actual Gateway `ToolRequest` and returns the ephemeral raw
+Provider result separately from a content-addressed secret-free projection. One shared canonical
+request digest and domain-separated component digests bind the exact registration, grant, chat,
+Tool request, Policy decision, Tool and successful Worker results, Gateway outcome, Provider
+result, evidence reference, reported usage, and conservative Campaign or dual charge. Prompt,
+response, Tool arguments, endpoint, secret reference, and Worker transcripts are not projection
+fields; the pre-existing sensitive Gateway evidence artifact is unchanged. Existing Provider calls
+are unchanged, and all Task/Plan/Scope/Capability/Permit/execution authority remains false. The
+Gateway reservation is still Run-local; SUP-004B3 must claim the
+intent durably and seal the exact Supervisor request/outcome/draft receipt before SUP-003 sees a
+model-backed draft.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

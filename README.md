@@ -194,6 +194,17 @@ receipt remain SUP-004B2/B3 work. See the
 [SUP-004B1 contract](docs/orchestration/SUP-004B1-atomic-dual-model-budget.md) and
 [ADR-0121](docs/adr/0121-atomically-charge-campaign-and-dedicated-model-budgets.md).
 
+SUP-004B2 adds a caller-owned stable Tool request ID and a successful-call-only, content-addressed
+Provider outcome. The ID reaches the actual Gateway request unchanged, while the serializable
+outcome binds the exact request, Policy, Tool, Worker, Provider result, evidence reference,
+reported usage, and conservative charged bound through digests without copying prompt, response,
+secret reference, endpoint, or Worker transcript. Existing `chat()` and `complete()` callers are
+unchanged. This secret-free claim applies only to the new outcome; existing Gateway evidence
+remains sensitive and unchanged. The Gateway duplicate boundary remains Run-local; durable claim,
+sealed Supervisor receipt, and draft admission remain SUP-004B3 work. See the
+[SUP-004B2 contract](docs/orchestration/SUP-004B2-stable-provider-bound-outcome.md) and
+[ADR-0122](docs/adr/0122-bind-stable-provider-requests-to-secret-free-outcomes.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

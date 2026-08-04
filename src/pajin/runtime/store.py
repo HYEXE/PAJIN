@@ -118,6 +118,12 @@ def _validated_relative_artifact_path(value: str) -> str:
     return path.as_posix()
 
 
+def validate_run_artifact_path(value: str) -> str:
+    """Return one normalized portable Run artifact path or fail closed."""
+
+    return _validated_relative_artifact_path(value)
+
+
 def _ensure_private_directory(path: Path, *, exist_ok: bool = True) -> None:
     if path.is_symlink():
         raise ValueError("RunStore directories cannot be symbolic links")
