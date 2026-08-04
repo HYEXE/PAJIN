@@ -41,7 +41,8 @@ publication event; no execution event is permitted.
 
 Source mutation, foreign Campaign or authority substitution, lifecycle drift, policy substitution,
 Capability requests, execution enablement, Task or Stop replacement, forged digests, and output
-mutation fail closed.
+mutation fail closed. Boolean authority fields also require exact JSON booleans; numeric `0` and
+`1` encodings are rejected instead of being coerced.
 
 ## Compatibility and rollback
 

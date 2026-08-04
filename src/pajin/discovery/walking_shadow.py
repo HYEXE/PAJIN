@@ -7,7 +7,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import ConfigDict, Field, ValidationError, model_validator
+from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from pajin.discovery.canonicalization import canonical_json_bytes, discovery_digest
 from pajin.discovery.walking import _campaign_digest
@@ -183,6 +183,16 @@ class WalkingShadowStopDecision(StrictModel):
     escalation_required: Literal[True] = Field(default=True, alias="escalationRequired")
     execution_allowed: Literal[False] = Field(default=False, alias="executionAllowed")
 
+    @field_validator("escalation_required", mode="before")
+    @classmethod
+    def require_literal_true(cls, value: object) -> object:
+        return _require_literal_bool(value, expected=True)
+
+    @field_validator("execution_allowed", mode="before")
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        return _require_literal_bool(value, expected=False)
+
     @model_validator(mode="after")
     def bind_decision(self) -> Self:
         material = self.model_dump(
@@ -223,6 +233,16 @@ class WalkingShadowSupervisorAuthority(StrictModel):
         default="recorded-not-applied",
         alias="decisionState",
     )
+
+    @field_validator("shadow_mode", mode="before")
+    @classmethod
+    def require_literal_true(cls, value: object) -> object:
+        return _require_literal_bool(value, expected=True)
+
+    @field_validator("baseline_mutated", mode="before")
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        return _require_literal_bool(value, expected=False)
 
     @model_validator(mode="after")
     def bind_authority(self) -> Self:
@@ -493,3 +513,9 @@ def _stop_decision(
         selectedTaskProposalId=task.proposal_id,
         selectedTaskProposalDigest=task.proposal_digest,
     )
+
+
+def _require_literal_bool(value: object, *, expected: bool) -> bool:
+    if type(value) is not bool or value is not expected:
+        raise ValueError("Walking Shadow Supervisor boolean must be literal and exact")
+    return expected

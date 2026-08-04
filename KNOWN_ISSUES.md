@@ -3,6 +3,21 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## SUP-001 raw Snapshot schema와 실제 invocation wire 경계
+
+- 상태: model invocation 전 해소가 필요한 versioned binding 공백
+- 현재 보장: SUP-001은 raw `WalkingShadowInputSnapshot`과 `CollaborationSnapshot` schema를 결박하고,
+  SUP-002는 별도 `SupervisorSnapshotInput` projection wrapper를 만든다. SUP-003 compiler policy는 이
+  actual wrapper와 draft·typed output schema digest를 직접 결박해 compile-only 경계를 닫는다. 모든
+  단계의 model invocation authority는 false다.
+- 제한: SUP-001 v1alpha1의 두 raw input schema만으로는 future Provider request에 실제 어떤 projection
+  wrapper·message envelope·normalization이 전달됐는지 증명할 수 없다. SUP-003의 compiler schema binding은
+  invocation receipt나 Provider output attestation이 아니다.
+- 해소 조건: 첫 model call 전에 기존 SUP-001 wire를 조용히 변경하지 않고 v1alpha2 또는 별도 additive
+  invocation binding으로 exact `SupervisorSnapshotInput`, request/message envelope, normalization,
+  Provider request/response receipt를 결박한다. `SUP-004` scheduler가 이 authority 없이 model call을
+  허용해서는 안 된다.
+
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
 - 상태: 의도적으로 제한된 source adapter, metadata-only reference와 receiver-neutral Snapshot 경계

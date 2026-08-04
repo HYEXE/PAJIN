@@ -499,8 +499,8 @@ contract, Supervisor role, WALK-006 policy, secret-free Provider/model identity 
 revision, bounded structured-output configuration, and code-owned Walking/Collaboration input plus
 untrusted proposal output schema digests. The binding requires exact consumer-side runtime
 verification, contains no prompt or Tool request, and fixes model invocation, Capability, Permit,
-execution, and activation eligibility to false. Actual Snapshot taint and typed proposal authority
-remain SUP-002 and SUP-003 work.
+execution, and activation eligibility to false. SUP-002 and SUP-003 now add the actual Snapshot
+taint projection and typed proposal compiler without changing those false authority markers.
 
 SUP-002 materializes the first such input from one exact current MEM-003 Snapshot. It reopens the
 Graph only through the existing Snapshot store, projects every admitted Fact statement with exact
@@ -508,6 +508,16 @@ origin and digest provenance, conservatively retains agent- and target-derived t
 tainted, and keeps Artifact bytes behind their reader as content-free tainted references. Complete
 membership, current head, SUP-001 schema, and runtime identity are exact; no prompt, model call,
 draft, proposal, Capability, Permit, execution, or activation is created.
+
+SUP-003 re-verifies that complete current input and accepts only an exact source-Snapshot-bound
+SUP-001 draft. A separate code-owned compiler policy pins the actual `SupervisorSnapshotInput`
+wrapper schema, the draft schema, the typed output schema, and the exact ordered four-kind
+allowlist. The output contains only code-owned Task, Replan, Stop, or escalation advisory literals;
+Snapshot text and model rationale remain digest-only sources. Provider response, model output,
+scheduling, Plan or TaskGraph mutation, Scope expansion, Stop application, notification,
+Capability, Permit, execution, and activation are all false. This compiler schema binding does not
+authorize a model call; the actual invocation request must be versioned and bound before SUP-004
+can invoke a Provider.
 
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all

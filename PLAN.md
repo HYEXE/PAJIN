@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-003` Task·Replan·Stop·Escalation Proposal
+- 현재 우선순위: `SUP-004` Checkpoint Scheduler·전용 Budget
 
 ## 제품 목표
 
@@ -478,7 +478,7 @@ Gate가 닫혔다.
 
 - [x] `SUP-001` SupervisorModelBinding
 - [x] `SUP-002` Snapshot-only input·Target Taint
-- [ ] `SUP-003` Task·Replan·Stop·Escalation Proposal
+- [x] `SUP-003` Task·Replan·Stop·Escalation Proposal
 - [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
 - [ ] `SUP-005` Deterministic Baseline 비교
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
@@ -497,7 +497,16 @@ Taint다.
 statement를 origin·node/value/text digest와 함께 model-visible record로 투영한다. agent-derived와
 target-derived는 모두 `target-tainted-untrusted`로 유지하며 shared Artifact는 bytes 없이 tainted ref로만
 남긴다. omission·downgrade·cross-Campaign·stale Snapshot·schema substitution을 차단하고 model invocation과
-실행 권위는 계속 false다. 다음 우선순위는 `SUP-003` typed non-executable proposal compiler다.
+실행 권위는 계속 false다.
+
+`SUP-003`은 이 actual projection wrapper와 SUP-001 draft·새 typed output schema를 code-owned compiler
+policy에 결박한다. current Collaboration state에서는 typed semantic state를 Fact text에서 추론하지 않고
+roadmap의 `task|replan|stop|escalate` 네 advisory kind만 정확한 allowlist로 허용한다. full input·binding·
+source Snapshot·taint·draft·rationale digest를 결박하되 target text와 rationale 원문은 output에 복사하지
+않는다. 각 payload는 code-owned literal뿐이며 scheduling, Plan·TaskGraph mutation, Scope 확대, Stop 적용,
+통지, Capability, Permit, execution, activation은 false다. 다음 우선순위는 `SUP-004` Checkpoint Scheduler와
+전용 Budget이며, 실제 model call 전에 SUP-002 invocation request wire를 versioned additive binding으로
+고정해야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

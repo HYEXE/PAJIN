@@ -166,6 +166,14 @@ stale Snapshot, schema, or cross-runtime substitution fails closed without a mod
 [SUP-002 contract](docs/orchestration/SUP-002-snapshot-only-target-taint-input.md) and
 [ADR-0118](docs/adr/0118-preserve-target-taint-in-supervisor-snapshot-input.md).
 
+SUP-003 re-verifies that complete current projection and compiles an untrusted draft into one of
+four code-owned, content-free advisory payloads. The actual SUP-002 wrapper, draft, and output
+schemas plus binding, Snapshot, taint, and draft digests are exact. Model rationale remains a
+digest-only non-authoritative source; Task scheduling, Replan mutation, Stop application,
+escalation delivery, Scope, Capability, Permit, execution, and activation all remain false. See the
+[SUP-003 contract](docs/orchestration/SUP-003-typed-non-executable-supervisor-proposal.md) and
+[ADR-0119](docs/adr/0119-compile-untrusted-supervisor-drafts.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

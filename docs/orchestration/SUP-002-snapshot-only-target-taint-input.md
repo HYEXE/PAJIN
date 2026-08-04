@@ -16,6 +16,11 @@ SUP-001 draft, compile a SUP-003 proposal, or grant Capability, Permit, executio
 The WALK-006 input schema remains registered by SUP-001 but is not materialized by this first
 SUP-002 Collaboration projection.
 
+`SupervisorSnapshotInput` is a projection wrapper over the raw Collaboration Snapshot schema bound
+by SUP-001. SUP-003 pins this wrapper's actual schema for deterministic compilation. A future model
+invocation must bind its request wire separately; this projection alone is not invocation
+authority.
+
 ## Projection
 
 The compiler resolves the current Graph Snapshot behind MEM-003 and requires the Graph head to

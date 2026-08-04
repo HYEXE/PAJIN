@@ -79,6 +79,7 @@ from pajin.discovery import (
     WalkingObservationReplanError,
     WalkingObservationReplanRunner,
     WalkingShadowStopDecision,
+    WalkingShadowSupervisorAuthority,
     WalkingShadowSupervisorError,
     WalkingShadowSupervisorRunner,
     WalkingShadowTaskProposal,
@@ -1621,6 +1622,23 @@ def test_walking_shadow_supervisor_rejects_capability_execution_and_source_mutat
     raw_stop["executionAllowed"] = True
     with pytest.raises(ValidationError):
         WalkingShadowStopDecision.model_validate(raw_stop)
+
+    for field, replacement in (
+        ("escalationRequired", 1),
+        ("executionAllowed", 0),
+    ):
+        coerced_stop = outcome.authority.stop_decision.model_dump(
+            mode="json", by_alias=True
+        )
+        coerced_stop[field] = replacement
+        with pytest.raises(ValidationError):
+            WalkingShadowStopDecision.model_validate(coerced_stop)
+
+    for field, replacement in (("shadowMode", 1), ("baselineMutated", 0)):
+        coerced_authority = outcome.authority.model_dump(mode="json", by_alias=True)
+        coerced_authority[field] = replacement
+        with pytest.raises(ValidationError):
+            WalkingShadowSupervisorAuthority.model_validate(coerced_authority)
 
     (source.run_path / source.authority_path).write_text("{}", encoding="utf-8")
     with pytest.raises(WalkingShadowSupervisorError):

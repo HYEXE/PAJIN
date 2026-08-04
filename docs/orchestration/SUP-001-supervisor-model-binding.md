@@ -46,6 +46,11 @@ Consumers must call `verify_supervisor_model_binding()` with the expected Campai
 registration, immutable model revision, and configuration. A standalone, internally consistent
 binding for another runtime is not interchangeable with the expected binding.
 
+The two input schema bindings describe the raw WALK-006 and Collaboration Snapshot authorities.
+SUP-002's later `SupervisorSnapshotInput` projection wrapper is a distinct wire. SUP-003 binds that
+actual wrapper schema at its compiler boundary, and a future Provider call must add a versioned
+invocation binding rather than silently changing this v1alpha1 schema list.
+
 ## Negative boundaries
 
 Validation or verification fails closed for:
