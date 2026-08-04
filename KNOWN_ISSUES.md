@@ -3,18 +3,46 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## MEM-001 sealed CampaignFact admission 경계
+
+- 상태: 의도적으로 제한된 source adapter 경계
+- 현재 보장: 기존 CampaignFact Proposal을 다시 파싱하고 exact sealed Campaign·Run·현재 root와
+  bounded evidence digest를 검증한 뒤에만 기존 Graph Admission Authority로 전달한다.
+- 제한: filesystem seal은 producer·Agent·Task·request·Grant·Capability의 의미적 권위를 증명하지
+  않는다. 이 전체 lineage는 caller가 구성한 기존 `GraphLineageVerifier`와 producer registry가 별도로
+  공급해야 한다. Fact statement는 실행되지 않지만 최소·taint-aware receiver는 아직 없다.
+- 해소 조건: MEM-002에서 sealed artifact reference를 추가하고 MEM-003에서 receiver-bound 최소
+  CollaborationSnapshot을 구현하되 기존 Graph/Event Log를 새 저장소로 복제하지 않는다.
+
 ## Windows 심볼릭 링크 테스트 권한
 
 - 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-02
-- 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 360 passed, 8 skipped 이후
+- 마지막 재현: 2026-08-04
+- 명령:
+  `.\.venv\Scripts\python.exe -m pytest -x -q --ignore=tests\test_benchmark_single_agent_measurement.py --ignore=tests\test_benchmark_zap_scanner.py`
+- 결과: 349 passed, 6 skipped 이후
   `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
   생성하는 과정에서 `WinError 1314`로 중단됐다.
 - 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
   이는 PAJIN 코드 회귀의 증거가 아니다.
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
+
+## Benchmark Harness 고정 fixture 만료
+
+- 상태: 활성 테스트 시간 의존성
+- 마지막 재현: 2026-08-04
+- 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
+- 결과: 190 passed, 3 skipped 이후
+  `test_single_agent_measurement_seals_completed_result_and_exact_trace`가
+  `Benchmark registry distribution is not currently valid`로 중단됐다. 해당 파일을 제외하면
+  `test_zap_baseline_seals_realistic_sarif_and_zero_recall_result`도 같은 원인으로 중단된다.
+- 원인: 두 테스트가 `NOW = 2026-08-02`와 `expires_at=NOW + 1 day`로 bundle을 만들지만 Harness는
+  주입된 fixture 시각이 아니라 실제 `datetime.now(UTC)`로 activation을 검사한다.
+- 영향: 2026-08-03 이후 전체 pytest가 기존 Windows symlink 제약에 도달하기 전에 중단된다.
+  MEM-001 코드 경로와 무관한 기존 fixture/harness clock 경계다.
+- 해소 조건: Harness에 검증 clock을 명시적으로 주입하거나 테스트가 현재 시각에 의존하지 않는
+  유효 기간을 사용하도록 별도 변경하고, 만료 음성 테스트는 고정 clock으로 유지한다.
 
 ## Windows POSIX 디렉터리 mode 검사
 

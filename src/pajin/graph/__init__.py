@@ -82,6 +82,10 @@ from pajin.graph.backup_retention import (
     sqlite_graph_retained_backup_manifest_path,
     verify_retained_sqlite_graph_backup,
 )
+from pajin.graph.campaign_fact import (
+    SealedCampaignFactAdmissionError,
+    SealedRunCampaignFactAdapter,
+)
 from pajin.graph.consistency import (
     GRAPH_CONSISTENCY_VIEW_API_VERSION,
     GRAPH_DECISION_API_VERSION,
@@ -296,6 +300,8 @@ __all__ = [
     "SQLiteGraphStoreError",
     "SQLiteGraphVerifiedBackupInventory",
     "SQLiteGraphVerifiedRetainedBackup",
+    "SealedCampaignFactAdmissionError",
+    "SealedRunCampaignFactAdapter",
     "SurfaceProposal",
     "TrustedGraphLineageRegistry",
     "action_permit_attempt_id",

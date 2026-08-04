@@ -94,6 +94,14 @@ unchanged. See the
 [ENG-002C2 contract](docs/orchestration/ENG-002C2-explicit-common-execution-gate.md) and
 [ADR-0109](docs/adr/0109-activate-common-execution-with-a-separate-compiler.md).
 
+MEM-001 reuses the existing Canonical Graph rather than adding a collaboration ledger or Fact
+record type. A bounded adapter verifies the exact sealed Campaign, Run, current root, and evidence
+digests before submitting the unchanged `CampaignFactProposal` to the existing producer, lineage,
+single-writer, retry, and equivocation gates. The admitted Graph event and CampaignFact are the
+record and carry no prompt, command, Scope, or execution authority. See the
+[MEM-001 contract](docs/graph/MEM-001-sealed-campaign-fact-admission.md) and
+[ADR-0110](docs/adr/0110-reuse-canonical-graph-for-campaign-facts.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -173,6 +173,13 @@ Structured collaboration memory is not a separate free-form Collaboration Store.
 B2.9 facts/snapshot/handoff therefore become Graph/Event-Log projections, never a second authority
 ledger.
 
+MEM-001 realizes the first part without adding a record type: an existing
+`CampaignFactProposal` reaches the existing Graph Admission Authority only after an additive
+adapter verifies its exact sealed Campaign, Run, current root, and evidence digests. The resulting
+`GraphAdmissionEvent` and admitted `CampaignFact` are the record. Producer and full request/
+Capability lineage remain separate Graph gates, and Fact text grants no command, prompt relay,
+Scope, or execution authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

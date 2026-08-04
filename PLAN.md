@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `MEM-001` CampaignFact Proposal·Record
+- 현재 우선순위: `MEM-002` SharedArtifactRef
 
 ## 제품 목표
 
@@ -424,7 +424,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 
 ### Phase 5 — 구조화된 협업과 Handoff
 
-- [ ] `MEM-001` CampaignFact Proposal·Record
+- [x] `MEM-001` CampaignFact Proposal·Record
 - [ ] `MEM-002` SharedArtifactRef
 - [ ] `MEM-003` CollaborationSnapshot
 - [ ] `HANDOFF-001` Supervisor-mediated AgentHandoff
@@ -435,6 +435,13 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 
 Exit Gate: Agent A의 admitted Fact가 Agent B의 최소 Snapshot에 결박되고 Agent 간 직접 명령은
 불가능해야 한다.
+
+`MEM-001`은 새 Fact 원장이나 `CampaignFactRecord`를 만들지 않고 기존 GRAPH-001 Proposal과
+GRAPH-002 Admission Event·CampaignFact를 그대로 사용한다. additive adapter는 기존 Proposal을
+다시 파싱하고 하나의 bounded sealed-Run snapshot에서 exact Campaign·Run·현재 root·evidence SHA-256을
+검증한 뒤에만 기존 Admission Authority로 전달한다. producer와 전체 request·Grant·Capability lineage는
+기존 registry/verifier의 독립 gate로 남고 Fact node에는 명령·prompt·Scope·실행 권한 필드가 없다.
+다음 `MEM-002`는 이미 봉인된 artifact를 내용 복제 없이 참조하는 bounded `SharedArtifactRef`다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

@@ -1,10 +1,10 @@
 # PAJIN 개발 인수인계
 
-- 기록일: 2026-08-02
+- 기록일: 2026-08-04
 - 브랜치: `main`
-- 작업 시작 기준: `13e24d2245b1f6a3847ba600b348bc6ca911b177`
-- 현재 구현 체크포인트: `ENG-002C2` explicit opt-in Common execution gate 검증 완료
-- 다음 구현: `MEM-001` CampaignFact Proposal·Record
+- 작업 시작 기준: `c9317359991b6da8f539c2fe124a99a4f371aa92`
+- 현재 구현 체크포인트: `MEM-001` sealed CampaignFact admission 검증·사전 리뷰 완료
+- 다음 구현: `MEM-002` SharedArtifactRef
 
 ## 재개 전 확인
 
@@ -21,69 +21,64 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-ENG-002C2는 C1 비실행 compiler를 실행 compiler로 오인하지 않고 별도 C2 compiler와 activation
-authority를 만든다. C2 Envelope는 compiler identity 외 모든 권한 필드가 C1 Envelope와 정확히 같다.
+MEM-001은 기존 `CampaignFactProposal`, `GraphAdmissionAuthority`, `GraphAdmissionEvent`,
+`GraphCampaignFact`를 중복하지 않는 sealed source adapter를 추가했다.
 
-- gate authority 생성 시 C1 activation set의 모든 signed release를 current verified CAP-005 activation에서
-  다시 resolve한다. reader는 C1·activation set·source/new Envelope를 재구성한다.
-- action intent는 C1/C2 authority, binding, release, Capability, measured request digest, execution request,
-  parameter·target digest와 micro-USD reservation을 결박한다.
-- B2B fixture request ID는 C1 Run·binding digest로 fresh deterministic ID를 파생한다. agent·Tool·target·
-  method·arguments는 measured request와 exact equality다.
-- exact intent digest와 latest Graph Snapshot을 가진 `action-proposal` Decision만 허용한다. Campaign,
-  audit Run, actor, Grant subject·Tool·target·risk·call·time도 Permit 전에 검증한다.
-- 기존 `GraphActionPermitAuthority`의 durable latest-Snapshot·budget·rate·single-use claim과
-  `ExistingModeCapabilityGatewayDispatcher`의 release revalidation·claimed/terminal audit를 그대로 쓴다.
-- gate instance는 한 C2 authority와 한 Permit writer에 고정된다. exact retry는 같은 Proposal/Permit을
-  반환하고 `dispatched=false`이며 Worker는 한 번만 호출된다.
-- legacy Mode 기본 경로, CLI/API, package eager export는 바뀌지 않는다.
+- Proposal을 authority 진입 전에 canonical wire로 다시 파싱한다.
+- 최대 64개, 각 1 MiB의 evidence와 1 MiB `campaign.json`만 하나의 verified Run snapshot으로 읽는다.
+- exact Run ID, Campaign manifest와 단일 `campaign.started`, 현재 root, 모든 evidence SHA-256을 검증한다.
+- producer와 전체 Agent·Task·request·Grant·Capability·Permit lineage는 기존 registry/verifier가 별도로
+  판정하며 adapter가 caller lineage를 trusted로 등록하지 않는다.
+- exact retry와 same-ID equivocation은 기존 GRAPH-002 Event Log 의미를 유지한다.
+- admitted Fact node는 `validationState=admitted`를 authority만 부여하며 command, prompt, Scope,
+  ToolRequest, Grant, Permit, execution flag가 없다.
 
 핵심 구현 위치:
 
-- `src/pajin/workflow/engine_execution_gate.py`
-- `tests/test_engine_execution_gate.py`
-- `docs/orchestration/ENG-002C2-explicit-common-execution-gate.md`
-- `docs/adr/0109-activate-common-execution-with-a-separate-compiler.md`
+- `src/pajin/graph/campaign_fact.py`
+- `tests/test_graph_campaign_fact.py`
+- `docs/graph/MEM-001-sealed-campaign-fact-admission.md`
+- `docs/adr/0110-reuse-canonical-graph-for-campaign-facts.md`
 
 ## 마지막 검증
 
-- ENG-002C2·C1·B2B·B2A·B1·Profile·Common·GRAPH-006·CAP-005 집중 회귀: 180 passed
+- MEM-001·GRAPH-001/002/003 집중 회귀: 44 passed
 - Ruff 전체 통과
-- Linux 대상 strict mypy: 225 source files 통과
-- 전체 `pytest -x -q`: 360 passed, 8 skipped 후 기존 Windows symlink 생성 권한
+- Linux 대상 strict mypy: 226 source files 통과
+- 전체 `pytest -x -q`: 190 passed, 3 skipped 후 기존 Benchmark Harness 고정 fixture 만료로 중단
+- 만료된 두 fixture 파일 제외 전체 pytest: 349 passed, 6 skipped 후 기존 Windows symlink 생성 권한
   `WinError 1314`에서 중단
 - `git diff --check` 통과
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_engine_execution_gate.py tests\test_engine_mission_envelope.py tests\test_engine_behavioral_parity.py tests\test_engine_runtime_parity.py tests\test_engine_planner_parity.py tests\test_engine_adapter.py tests\test_profile_compatibility.py tests\test_campaign_profile.py tests\test_common_engine_contract.py tests\test_graph_action_permit.py tests\test_existing_capability_rollout.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_graph_campaign_fact.py tests\test_graph_models.py tests\test_graph_admission.py tests\test_graph_projection.py
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
+.\.venv\Scripts\python.exe -m pytest -x -q --ignore=tests\test_benchmark_single_agent_measurement.py --ignore=tests\test_benchmark_zap_scanner.py
 git diff --check
 ```
 
 ## 다음 조치
 
-`MEM-001`의 가장 작은 CampaignFact Proposal·Record 수직 슬라이스를 구현한다.
+`MEM-002`의 가장 작은 `SharedArtifactRef` 수직 슬라이스를 설계한다.
 
-1. 기존 Graph Event·Snapshot·Observation·Finding·Claim과 협업·handoff 관련 계약을 대조해 Fact와
-   중복되는 authority를 먼저 구분한다.
-2. Agent가 제안하는 비권위 `CampaignFactProposal`과 admission 뒤의 immutable `CampaignFactRecord`를
-   Campaign·source Run/root·producer·evidence digest에 결박한다.
-3. 직접 Agent 명령, prompt relay, execution Capability, Scope 확대를 금지하고 receiver가 최소 Snapshot만
-   읽을 수 있는 후속 MEM-002/003 경계를 미리 침범하지 않는다.
-4. forged evidence, cross-Campaign/Run substitution, stale source, duplicate/equivocal Fact와 authority flag
-   forgery를 fail closed하는 additive reader·집중 테스트를 만든다.
+1. 기존 Graph Evidence, RunStore sealed artifact, portable Artifact transport와 Snapshot reference를 대조해
+   중복되는 blob·manifest·reader 권위를 만들지 않는다.
+2. Campaign·source Run/root·relative path·SHA-256·media type·size를 결박한 bounded reference만 허용한다.
+3. reference 생성이 artifact 내용을 복제하거나 prompt를 relay하거나 receiver 권한·Scope·Capability를
+   확대하지 않도록 한다.
+4. path traversal, symlink, digest/size/media-type 변조, cross-Campaign/Run replay, stale root와 oversized
+   artifact를 fail closed하는 최소 reader와 테스트를 만든다.
 
 ## 알려진 경계
 
-- C2는 current activation, Graph store, RunStore, Gateway와 Grant를 caller가 명시적으로 공급하는
-  direct-call opt-in 경계다. organization-wide registry fetch나 default wiring이 아니다.
-- micro-USD reservation은 intent/Decision에 결박된 caller 선언이며 provider billing 측정값이 아니다.
-- 첫 실제 C2 dispatch 회귀는 CTF Profile 경로다. gate는 Mode 분기가 없고 C1 all-three-mode binding을
-  소비하지만 AI/Bug Hunt Common dispatch의 별도 end-to-end 증명은 아직 없다.
-- Permit claim 뒤 Gateway 실패·불확실 결과는 기존 안전 우선 계약대로 consumed terminal이며 자동
-  redispatch하지 않는다.
-- 전체 pytest 중단은 코드 회귀가 아니라 현재 Windows 계정의 symlink 생성 권한 제약이다.
+- MEM-001은 sealed source 경계만 검증한다. producer와 full lineage는 기존 Graph registry/verifier가
+  독립적으로 trusted source를 공급해야 하며 adapter가 이를 대신하지 않는다.
+- Fact statement는 `origin`을 보존하는 비실행 데이터다. prompt 안전한 최소 receiver는 MEM-003 이후
+  별도 Snapshot/reader 계약으로 구현해야 한다.
+- semantic corroboration·contestation·invalidation과 Human correction authority는 후속 범위다.
+- 전체 pytest는 기존 Benchmark Harness 고정 fixture 만료와 Windows symlink 권한 제약으로 완주하지
+  못했다. 두 실패의 재현 조건과 해소 기준은 `KNOWN_ISSUES.md`에 기록했다.
 - 자세한 조건은 `KNOWN_ISSUES.md`에 있다. 현재 roadmap과 handoff 권위는 각각 `PLAN.md`와 이
   문서이며 기존 Notion은 역사 자료로만 유지한다.

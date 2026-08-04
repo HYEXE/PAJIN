@@ -106,7 +106,7 @@ This spike does not implement:
 - cross-process leader election, database transaction/CAS, or crash recovery;
 - durable Graph Projection/Snapshot storage or snapshot-bound decisions;
 - semantic duplicate folding, contradiction state transitions, or stale-decision handling;
-- live adapters from sealed Run, Scope, Capability Registry, or legacy A5 artifacts; or
+- live adapters from Scope, Capability Registry, or legacy A5 artifacts; or
 - Supervisor scheduling and B2.9 fact/snapshot/handoff projections.
 
 RunStore already demonstrates private append, locking, hash chaining, and sealed integrity, but it
@@ -123,3 +123,8 @@ complete admission/rejection Event Log.
 contradiction semantics, concurrent admission/projection, recoverable projection lag, and
 stale-decision preflight. GRAPH-005 applies those contracts to durable host-local transactions and
 reopen recovery. Multi-host leadership and atomic ActionPermit dispatch remain open.
+
+[MEM-001](MEM-001-sealed-campaign-fact-admission.md) now supplies the narrow live sealed-Run
+adapter for existing CampaignFact Proposals. It verifies Campaign, Run, latest root, and evidence
+before this authority runs, while producer and complete lineage verification remain independent
+GRAPH-002 gates.
