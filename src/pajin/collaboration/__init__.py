@@ -18,6 +18,8 @@ from pajin.collaboration.handoff import (
     HandoffTaskRef,
     SupervisorMediatedAgentHandoff,
     create_agent_handoff_proposal,
+    handoff_agent_ref,
+    handoff_task_ref,
 )
 from pajin.collaboration.snapshots import (
     COLLABORATION_SNAPSHOT_API_VERSION,
@@ -29,6 +31,13 @@ from pajin.collaboration.snapshots import (
     create_collaboration_snapshot,
     verify_collaboration_snapshot,
 )
+from pajin.collaboration.terminal_result import (
+    TERMINAL_RESULT_HANDOFF_API_VERSION,
+    TerminalResultHandoff,
+    TerminalResultHandoffAuthority,
+    TerminalResultHandoffError,
+    TerminalResultStatus,
+)
 
 __all__ = [
     "AGENT_HANDOFF_API_VERSION",
@@ -37,6 +46,7 @@ __all__ = [
     "MAX_COLLABORATION_FACTS",
     "MAX_SHARED_ARTIFACT_BYTES",
     "SHARED_ARTIFACT_REF_API_VERSION",
+    "TERMINAL_RESULT_HANDOFF_API_VERSION",
     "AgentHandoffAuthority",
     "AgentHandoffError",
     "AgentHandoffProposal",
@@ -49,9 +59,15 @@ __all__ = [
     "SharedArtifactRefError",
     "SharedArtifactSource",
     "SupervisorMediatedAgentHandoff",
+    "TerminalResultHandoff",
+    "TerminalResultHandoffAuthority",
+    "TerminalResultHandoffError",
+    "TerminalResultStatus",
     "create_agent_handoff_proposal",
     "create_collaboration_snapshot",
     "create_shared_artifact_ref",
+    "handoff_agent_ref",
+    "handoff_task_ref",
     "verify_collaboration_snapshot",
     "verify_shared_artifact_ref",
 ]

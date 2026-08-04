@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `HANDOFF-002` terminal result handoff
+- 현재 우선순위: `HANDOFF-003` bounded UrgentObservation Fast Gate
 
 ## 제품 목표
 
@@ -428,7 +428,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `MEM-002` SharedArtifactRef
 - [x] `MEM-003` CollaborationSnapshot
 - [x] `HANDOFF-001` Supervisor-mediated AgentHandoff
-- [ ] `HANDOFF-002` terminal result handoff
+- [x] `HANDOFF-002` terminal result handoff
 - [ ] `HANDOFF-003` bounded UrgentObservation Fast Gate
 - [ ] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
 - [ ] memory poisoning, prompt relay, confused deputy, cross-Campaign 테스트
@@ -454,7 +454,12 @@ Supervisor가 sender·receiver·purpose와 이 exact Snapshot을 중재하는 �
 기존 AgentNode·TaskNode 전체 digest와 completed source → dependent waiting destination 관계를
 검증하고 양쪽 parentAgentId가 단일 process-local Supervisor와 같을 때 Proposal당 한 Record만
 admission한다. 자유문 command·prompt·content와 read·Scope·Capability·Permit·execution 권위는 없다.
-다음 `HANDOFF-002`는 이 admitted handoff에 terminal result를 결박한다.
+`HANDOFF-002`는 HANDOFF-001 당시의 Snapshot을 역사적 기준점으로 resolve하고, 같은 Graph store의
+연속 후속 head인 current MEM-003 Snapshot과 그 안의 exact MEM-002 sealed Artifact reference에
+destination Agent·Task terminal lifecycle을 결박한다. 성공·실패·취소는 기존 lifecycle 상태에서만
+파생하며 result content, prompt relay, Scope·Capability·Permit·execution authority는 포함하지 않는다.
+다음 `HANDOFF-003`은 이 결과와 기존 Observation authority를 재사용하는 bounded UrgentObservation
+Fast Gate다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

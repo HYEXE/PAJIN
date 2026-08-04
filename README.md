@@ -122,6 +122,14 @@ command or content and grants no read, prompt, Scope, Capability, Permit, or exe
 See the [HANDOFF-001 contract](docs/orchestration/HANDOFF-001-supervisor-mediated-agent-handoff.md)
 and [ADR-0113](docs/adr/0113-mediate-handoffs-with-existing-agent-task-lineage.md).
 
+HANDOFF-002 binds one terminal destination Agent/Task lifecycle result to that admitted handoff, a
+later current Collaboration Snapshot in the same contiguous Graph chain, and one exact sealed
+Shared Artifact reference. The result is metadata-only, derives success, failure, or cancellation
+from existing lifecycle state, and grants no content, prompt, Scope, Capability, Permit, or execution
+authority. See the
+[HANDOFF-002 contract](docs/orchestration/HANDOFF-002-terminal-result-handoff.md) and
+[ADR-0114](docs/adr/0114-bind-terminal-results-through-existing-handoff-and-artifact-authorities.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

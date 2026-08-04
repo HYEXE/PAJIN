@@ -199,6 +199,13 @@ admits one enum-purpose transition from an existing completed Agent/Task to a di
 waiting Agent/Task, bound to the exact current MEM-003 identity. It carries no content or command
 and grants no read, Scope, Capability, Permit, or execution authority.
 
+HANDOFF-002 records the bounded terminal outcome of that destination without creating a result
+content store. It resolves the historical HANDOFF-001 admission, proves a later current MEM-003
+Snapshot belongs to the same contiguous Graph Snapshot chain, reverifies one exact MEM-002 sealed
+Artifact member, and derives success, failure, or cancellation from the existing terminal Agent/Task
+lifecycle pair. Lifecycle success is not Finding confirmation, and the record grants no read,
+prompt, Scope, Capability, Permit, or execution authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

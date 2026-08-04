@@ -330,6 +330,27 @@ class AgentHandoffAuthority:
         ) as exc:
             raise AgentHandoffError("Agent Handoff could not be verified") from exc
 
+    def resolve(
+        self,
+        record: SupervisorMediatedAgentHandoff,
+    ) -> SupervisorMediatedAgentHandoff:
+        """Resolve one historical admission without claiming its Snapshot is still current."""
+
+        try:
+            canonical = SupervisorMediatedAgentHandoff.model_validate(
+                record.model_dump(mode="json", by_alias=True)
+            )
+            stored = self._records.get(canonical.handoff_id)
+            if (
+                canonical.supervisor_id != self._supervisor_id
+                or canonical.supervisor_digest != self._supervisor_digest
+                or stored != canonical
+            ):
+                raise ValueError("Agent Handoff was not admitted by this Supervisor")
+            return canonical
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise AgentHandoffError("Agent Handoff could not be resolved") from exc
+
 
 def create_agent_handoff_proposal(
     *, campaign_id: str, collaboration_snapshot: CollaborationSnapshot,
@@ -359,13 +380,16 @@ def create_agent_handoff_proposal(
         campaignId=campaign_id,
         collaborationSnapshotId=collaboration_snapshot.collaboration_snapshot_id,
         collaborationSnapshotDigest=collaboration_snapshot.collaboration_snapshot_digest,
-        sender=_agent_ref(sender), receiver=_agent_ref(receiver),
-        sourceTask=_task_ref(source_task), destinationTask=_task_ref(destination_task),
-        purpose=purpose, proposedAt=proposed_at,
+        sender=handoff_agent_ref(sender),
+        receiver=handoff_agent_ref(receiver),
+        sourceTask=handoff_task_ref(source_task),
+        destinationTask=handoff_task_ref(destination_task),
+        purpose=purpose,
+        proposedAt=proposed_at,
     )
 
 
-def _agent_ref(agent: AgentNode) -> HandoffAgentRef:
+def handoff_agent_ref(agent: AgentNode) -> HandoffAgentRef:
     material = agent.model_dump(mode="json")
     return HandoffAgentRef(
         agentId=agent.agent_id, role=agent.role,
@@ -377,7 +401,7 @@ def _agent_ref(agent: AgentNode) -> HandoffAgentRef:
     )
 
 
-def _task_ref(task: TaskNode) -> HandoffTaskRef:
+def handoff_task_ref(task: TaskNode) -> HandoffTaskRef:
     return HandoffTaskRef(
         taskId=task.task_id,
         taskDigest=graph_digest(

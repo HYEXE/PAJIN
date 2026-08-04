@@ -32,14 +32,19 @@
 - 해소 조건: 저장소 경계가 cross-process 또는 cross-host로 확장될 때 signed checkpoint/fence나
   transaction coordinator를 별도 ADR과 contract로 정의한다.
 
-## HANDOFF-001 process-local Supervisor authority
+## HANDOFF-001/002 process-local Handoff authorities
 
 - 상태: 의도적으로 제한된 비영속 authority 경계
 - 현재 보장: 단일 authority instance가 exact current CollaborationSnapshot과 기존 Agent/Task lineage,
   양쪽 parent Supervisor를 검증하고 Proposal당 하나의 non-executable record만 admission한다.
-- 제한: Supervisor identity와 admitted record는 서명되거나 process restart 뒤 영속되지 않는다.
+  terminal result authority는 이 역사적 admission, 같은 Graph store의 연속 후속 current Snapshot,
+  destination Agent/Task terminal 상태와 exact sealed result Artifact를 결박하고 handoff당 한 semantic
+  result만 admission한다.
+- 제한: Supervisor와 result authority identity 및 admitted records는 서명되거나 process restart 뒤
+  영속되지 않는다. Graph와 Run store 사이에 분산 transaction은 없고 result content reader도 없다.
 - 해소 조건: 외부/다중 process handoff가 필요할 때 signed Supervisor registry와 append-only record
-  store/fence를 별도 계약으로 구현한다.
+  store/fence를 별도 계약으로 구현한다. content access는 HANDOFF-004의 receiver-bound reader를
+  통과해야 한다.
 
 ## Windows 비이식 파일명 정규화
 

@@ -46,5 +46,6 @@ expansion, Capability, Permit, and execution authority false with strict JSON bo
 All existing Agent, Task, Graph, Snapshot, and execution formats remain unchanged. Removing the
 module and exports needs no migration. This slice does not schedule the destination Task, deliver
 content, prove a durable or signed Supervisor identity, or persist records across processes.
-HANDOFF-002 will bind a terminal result to this admitted handoff; HANDOFF-004 owns receiver-bound
-content access.
+HANDOFF-002 binds terminal result metadata to this admitted handoff through a later current
+Collaboration Snapshot and exact sealed Artifact reference; HANDOFF-004 owns receiver-bound content
+access.
