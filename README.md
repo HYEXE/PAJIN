@@ -146,6 +146,11 @@ and grants no prompt, Scope, Capability, Permit, or execution authority. See the
 [HANDOFF-004 contract](docs/orchestration/HANDOFF-004-capability-scoped-artifact-reader.md) and
 [ADR-0116](docs/adr/0116-read-shared-artifacts-through-single-use-receiver-grants.md).
 
+The Phase 5 adversarial regression composes these authorities end to end: prompt-shaped admitted
+Fact and Artifact content never becomes a command in Snapshot, Handoff, decision, or receipt wires,
+and valid but foreign Run, Campaign, Snapshot, source, and Capability-ledger parts fail closed before
+Grant consumption or content delivery.
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

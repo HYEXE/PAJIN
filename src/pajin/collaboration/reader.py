@@ -268,6 +268,12 @@ class ReceiverBoundArtifactReader:
             or fullmatch(r"^[a-f0-9]{64}$", authority_digest) is None
         ):
             raise ValueError("receiver Artifact reader authority identity is invalid")
+        if not isinstance(capability_ledger, CapabilityLedger) or not isinstance(
+            urgent_observation_authority, UrgentObservationFastGateAuthority
+        ):
+            raise ValueError("receiver Artifact reader dependencies are invalid")
+        if not callable(clock):
+            raise ValueError("receiver Artifact reader clock is invalid")
         self._authority_id = authority_id
         self._authority_digest = authority_digest
         self._capability_ledger = capability_ledger

@@ -76,3 +76,14 @@ remain unchanged. Removing this module and exports requires no data migration. L
 attempts, receipts, and HANDOFF-003 decision state are process-local and non-durable. The caller is
 a trusted in-process delivery adapter; remote receiver authentication and cross-host fencing require
 a later contract.
+
+## Phase 5 adversarial regression
+
+The Phase 5 exit test starts HANDOFF-001 from a MEM-003 Snapshot containing an admitted
+prompt-shaped Campaign Fact, advances the same Graph chain to the HANDOFF-002 result Observation and
+Artifact, and continues through HANDOFF-003/004. Snapshot, Handoff, decision, and receipt wires keep
+only safe references and never copy the Fact statement or treat Artifact bytes as a prompt.
+
+Additional integration cases combine independently valid material from another Run, another
+Campaign, and another Capability ledger. Every combination fails before Capability consumption or
+content delivery. Omitting the required urgent-decision authority fails reader construction.

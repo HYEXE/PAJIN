@@ -220,6 +220,12 @@ loader. The current Snapshot and urgent-stop state are checked before and after 
 is limited to 60 seconds and 64 KiB; the receipt contains no bytes or path and grants no prompt,
 Scope, Capability, Permit, or execution authority.
 
+The Phase 5 exit regression composes MEM-001 through HANDOFF-004 with an admitted prompt-shaped Fact
+and prompt-shaped Artifact payload. Wires retain references and false authority markers rather than
+commands. Independently valid cross-Run, cross-Campaign, Snapshot/source, and Capability-ledger
+substitutions fail before Grant consumption or byte delivery; the required urgent authority cannot
+be omitted from reader construction.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

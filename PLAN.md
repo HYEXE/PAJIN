@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: Phase 5 adversarial collaboration regression
+- 현재 우선순위: `SUP-001` SupervisorModelBinding
 
 ## 제품 목표
 
@@ -431,7 +431,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `HANDOFF-002` terminal result handoff
 - [x] `HANDOFF-003` bounded UrgentObservation Fast Gate
 - [x] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
-- [ ] memory poisoning, prompt relay, confused deputy, cross-Campaign 테스트
+- [x] memory poisoning, prompt relay, confused deputy, cross-Campaign 테스트
 
 Exit Gate: Agent A의 admitted Fact가 Agent B의 최소 Snapshot에 결박되고 Agent 간 직접 명령은
 불가능해야 한다.
@@ -468,7 +468,11 @@ Campaign, `collaboration.artifact.read`, Shared Artifact ID에 결박하고 Gran
 sealed Run loader로만 bytes를 반환한다. terminal completion부터 60초, 65,536 cumulative bytes, 1회
 attempt/read로 제한하며 HANDOFF-003 stop decision과 Graph head를 반환 전후에 재확인한다. receipt에는
 content/path가 없고 prompt·Scope·Capability·Permit·execution authority를 부여하지 않는다. 다음 단계는
-Phase 5 전체 memory poisoning·prompt relay·confused deputy·cross-Campaign adversarial regression이다.
+Phase 5 전체 memory poisoning·prompt relay·confused deputy·cross-Campaign adversarial regression으로
+검증했다. admitted prompt-shaped Fact와 Artifact content가 Snapshot·Handoff·decision·receipt에서
+명령으로 승격되지 않고, 서로 독립적으로 정상인 cross-Run·cross-Campaign Snapshot/source와 다른
+CapabilityLedger Grant를 조합해도 consume·content delivery 전에 fail closed함을 증명한다. Phase 5 Exit
+Gate가 닫혔으며 다음 우선순위는 Phase 6 `SUP-001` SupervisorModelBinding이다.
 
 ### Phase 6 — Supervisor Shadow Mode
 
