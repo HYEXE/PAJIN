@@ -32,7 +32,7 @@
 - 해소 조건: 저장소 경계가 cross-process 또는 cross-host로 확장될 때 signed checkpoint/fence나
   transaction coordinator를 별도 ADR과 contract로 정의한다.
 
-## HANDOFF-001/002/003 process-local Handoff authorities
+## HANDOFF-001/002/003/004 process-local Handoff authorities
 
 - 상태: 의도적으로 제한된 비영속 authority 경계
 - 현재 보장: 단일 authority instance가 exact current CollaborationSnapshot과 기존 Agent/Task lineage,
@@ -41,13 +41,17 @@
   destination Agent/Task terminal 상태와 exact sealed result Artifact를 결박하고 handoff당 한 semantic
   result만 admission한다. urgent fast gate는 같은 result Snapshot의 trusted-core|operator Observation과
   Action·Evidence lineage를 검증하고 handoff당 한 `stop-and-escalate` decision만 admission한다.
+  reader는 existing delegated single-use Grant를 consume하고 exact receiver·Artifact·Snapshot을 60초·
+  65,536 bytes·1회로 제한하며 urgent stop과 Graph head를 반환 전후에 확인한다.
 - 제한: Supervisor와 result authority identity 및 admitted records는 서명되거나 process restart 뒤
   영속되지 않는다. fast-gate 1 unit은 local bound이며 runtime Budget reservation이 아니다. decision은
   `admitted-not-applied`이므로 기존 Permit을 revoke하거나 실행을 실제 중단하거나 사람에게 통지하지
-  않는다. Graph와 Run store 사이에 분산 transaction은 없고 result content reader도 없다.
+  않는다. Graph와 Run store 사이에 분산 transaction은 없다. reader의 receiver 인증, attempt·receipt,
+  CapabilityLedger와 urgent decision 확인은 같은 process의 trusted delivery adapter에 한정된다.
 - 해소 조건: 외부/다중 process handoff가 필요할 때 signed Supervisor registry와 append-only record
   store/fence를 별도 계약으로 구현한다. 첫 downstream enforcement point는 urgent stop decision을
-  명시적으로 소비해야 하며 content access는 HANDOFF-004의 receiver-bound reader를 통과해야 한다.
+  명시적으로 소비해야 한다. remote content delivery가 필요하면 signed receiver authentication과
+  durable single-use receipt/fence를 별도 계약으로 구현한다.
 
 ## Windows 비이식 파일명 정규화
 

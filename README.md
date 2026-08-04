@@ -138,6 +138,14 @@ authority. See the
 [HANDOFF-003 contract](docs/orchestration/HANDOFF-003-bounded-urgent-observation-fast-gate.md) and
 [ADR-0115](docs/adr/0115-admit-urgent-observations-as-bounded-stop-decisions.md).
 
+HANDOFF-004 adds an in-process, single-use content reader over the existing sealed Run loader and
+Capability ledger. A delegated `maxCalls=1` Grant must name the exact terminal receiver, Campaign,
+read tool, and Shared Artifact; delivery is limited to 60 seconds and 64 KiB and is denied by an
+admitted HANDOFF-003 stop decision. The receipt contains metadata, not content or a filesystem path,
+and grants no prompt, Scope, Capability, Permit, or execution authority. See the
+[HANDOFF-004 contract](docs/orchestration/HANDOFF-004-capability-scoped-artifact-reader.md) and
+[ADR-0116](docs/adr/0116-read-shared-artifacts-through-single-use-receiver-grants.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

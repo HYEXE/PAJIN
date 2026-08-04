@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 5 — 구조화된 협업과 Handoff
-- 현재 우선순위: `HANDOFF-004` capability-scoped reader
+- 현재 우선순위: Phase 5 adversarial collaboration regression
 
 ## 제품 목표
 
@@ -430,7 +430,7 @@ Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하�
 - [x] `HANDOFF-001` Supervisor-mediated AgentHandoff
 - [x] `HANDOFF-002` terminal result handoff
 - [x] `HANDOFF-003` bounded UrgentObservation Fast Gate
-- [ ] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
+- [x] `HANDOFF-004` capability-scoped reader, TTL, byte limit, receiver binding
 - [ ] memory poisoning, prompt relay, confused deputy, cross-Campaign 테스트
 
 Exit Gate: Agent A의 admitted Fact가 Agent B의 최소 Snapshot에 결박되고 Agent 간 직접 명령은
@@ -462,8 +462,13 @@ destination Agent·Task terminal lifecycle을 결박한다. 성공·실패·취�
 Action `produces`·result Evidence `supported-by`·sealed Artifact value digest를 검증한다. code-owned
 긴급 type, operator|trusted-core origin, confidence 1.0만 handoff당 1 Observation·1 decision·1 local
 budget unit의 `stop-and-escalate`로 admission한다. decision은 `admitted-not-applied`이며 content,
-replan, Scope·Capability·Permit·execution authority가 없다. 다음 `HANDOFF-004`는 이 lineage에
-receiver·Capability·TTL·byte limit를 결박한 content reader다.
+replan, Scope·Capability·Permit·execution authority가 없다.
+`HANDOFF-004`는 existing CapabilityLedger의 delegated `maxCalls=1` Grant를 exact terminal receiver,
+Campaign, `collaboration.artifact.read`, Shared Artifact ID에 결박하고 Grant lineage를 consume한 뒤 기존
+sealed Run loader로만 bytes를 반환한다. terminal completion부터 60초, 65,536 cumulative bytes, 1회
+attempt/read로 제한하며 HANDOFF-003 stop decision과 Graph head를 반환 전후에 재확인한다. receipt에는
+content/path가 없고 prompt·Scope·Capability·Permit·execution authority를 부여하지 않는다. 다음 단계는
+Phase 5 전체 memory poisoning·prompt relay·confused deputy·cross-Campaign adversarial regression이다.
 
 ### Phase 6 — Supervisor Shadow Mode
 

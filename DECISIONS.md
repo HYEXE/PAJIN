@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0116: Read Shared Artifacts Through Single-Use Receiver Grants](docs/adr/0116-read-shared-artifacts-through-single-use-receiver-grants.md)
 - [ADR-0115: Admit Urgent Observations as Bounded Stop Decisions](docs/adr/0115-admit-urgent-observations-as-bounded-stop-decisions.md)
 - [ADR-0114: Bind Terminal Results Through Existing Handoff and Artifact Authorities](docs/adr/0114-bind-terminal-results-through-existing-handoff-and-artifact-authorities.md)
 - [ADR-0113: Mediate Handoffs with Existing Agent and Task Lineage](docs/adr/0113-mediate-handoffs-with-existing-agent-task-lineage.md)

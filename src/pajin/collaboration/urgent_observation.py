@@ -6,6 +6,7 @@ from collections.abc import Iterable
 from datetime import UTC, datetime
 from enum import StrEnum
 from re import fullmatch
+from threading import RLock
 from typing import Literal, Self
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -301,6 +302,7 @@ class UrgentObservationFastGateAuthority:
         self._authority_digest = authority_digest
         self._policy = UrgentObservationFastGatePolicy()
         self._by_handoff: dict[str, UrgentObservationFastGateDecision] = {}
+        self._lock = RLock()
 
     def admit(
         self,
@@ -370,13 +372,14 @@ class UrgentObservationFastGateAuthority:
                 resultArtifactDigest=result.result_artifact.shared_artifact_digest,
                 decidedAt=decided_at,
             )
-            existing = self._by_handoff.get(result.handoff_id)
-            if existing is not None:
-                if _decision_semantics(existing) != _decision_semantics(decision):
-                    raise ValueError("urgent Observation decision has equivocated")
-                return existing
-            self._by_handoff[result.handoff_id] = decision
-            return decision
+            with self._lock:
+                existing = self._by_handoff.get(result.handoff_id)
+                if existing is not None:
+                    if _decision_semantics(existing) != _decision_semantics(decision):
+                        raise ValueError("urgent Observation decision has equivocated")
+                    return existing
+                self._by_handoff[result.handoff_id] = decision
+                return decision
         except (
             AttributeError,
             CollaborationSnapshotError,
@@ -407,7 +410,8 @@ class UrgentObservationFastGateAuthority:
             canonical = UrgentObservationFastGateDecision.model_validate(
                 decision.model_dump(mode="json", by_alias=True)
             )
-            stored = self._by_handoff.get(canonical.handoff_id)
+            with self._lock:
+                stored = self._by_handoff.get(canonical.handoff_id)
             if (
                 canonical.authority_id != self._authority_id
                 or canonical.authority_digest != self._authority_digest
@@ -430,6 +434,17 @@ class UrgentObservationFastGateAuthority:
             raise UrgentObservationFastGateError(
                 "urgent Observation decision could not be verified"
             ) from exc
+
+    def decision_for(self, handoff_id: str) -> UrgentObservationFastGateDecision | None:
+        """Return the admitted stop decision for one handoff, if present."""
+
+        with self._lock:
+            decision = self._by_handoff.get(handoff_id)
+            if decision is None:
+                return None
+            return UrgentObservationFastGateDecision.model_validate(
+                decision.model_dump(mode="json", by_alias=True)
+            )
 
 
 def _require_urgent_observation(

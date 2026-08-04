@@ -69,5 +69,5 @@ All Graph, Observation, Snapshot, HANDOFF-001/002, Artifact, replanning, and exe
 unchanged. Removing this module and exports requires no migration. The authority, one-decision map,
 and budget counter are process-local and non-durable. The slice does not reserve a runtime Budget,
 revoke an existing Permit, apply the stop decision, notify a human, or read Artifact content.
-HANDOFF-004 owns receiver-bound content access and the first downstream consumer must explicitly
-enforce admitted stop decisions.
+HANDOFF-004 provides receiver-bound content access and explicitly denies reads when this authority
+contains an admitted stop decision. A later runtime consumer must still apply the stop to execution.

@@ -213,6 +213,13 @@ The sole disposition is `stop-and-escalate`, bounded to one Observation, one dec
 budget unit per handoff. It is admitted but not automatically applied and grants no replanning,
 Scope, Capability, Permit, or execution authority.
 
+HANDOFF-004 permits one bounded in-process content delivery without introducing a content store.
+It requires an existing delegated `maxCalls=1` Capability Grant for the exact terminal receiver,
+Campaign, read tool, and Shared Artifact, then consumes that Grant lineage and uses the sealed Run
+loader. The current Snapshot and urgent-stop state are checked before and after the read. Delivery
+is limited to 60 seconds and 64 KiB; the receipt contains no bytes or path and grants no prompt,
+Scope, Capability, Permit, or execution authority.
+
 ## 8. Compatibility and migration
 
 1. Existing `CampaignMode`, manifests, CLI commands, API routes, and Artifact schemas are not

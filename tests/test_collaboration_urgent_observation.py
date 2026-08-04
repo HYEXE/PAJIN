@@ -8,9 +8,14 @@ import pytest
 from pydantic import ValidationError
 
 from pajin.collaboration import (
+    COLLABORATION_ARTIFACT_READ_TOOL,
+    MAX_RECEIVER_BOUND_ARTIFACT_READ_BYTES,
     AgentHandoffAuthority,
     AgentHandoffPurpose,
     CollaborationSnapshot,
+    ReceiverBoundArtifactReader,
+    ReceiverBoundArtifactReadError,
+    ReceiverBoundArtifactReadReceipt,
     SharedArtifactSource,
     TerminalResultHandoff,
     TerminalResultHandoffAuthority,
@@ -22,7 +27,7 @@ from pajin.collaboration import (
     create_collaboration_snapshot,
     create_shared_artifact_ref,
 )
-from pajin.domain.models import CampaignManifest
+from pajin.domain.models import CampaignManifest, CapabilityGrant
 from pajin.domain.orchestration import (
     AgentNode,
     AgentRole,
@@ -48,6 +53,7 @@ from pajin.graph import (
     graph_node_ref,
     graph_snapshot_ref,
 )
+from pajin.policy.capability import CapabilityLedger
 from pajin.runtime.store import RunStore, load_verified_run_snapshot
 
 NOW = datetime(2026, 8, 4, 15, 0, tzinfo=UTC)
@@ -494,3 +500,276 @@ def test_fast_gate_rejects_a_terminal_result_snapshot_after_graph_advances(
             observation=graph_node_ref(observations[0]),
             decided_at=NOW + timedelta(seconds=7),
         )
+
+
+def _reader(
+    campaign: CampaignManifest,
+    terminal_result: TerminalResultHandoff,
+    binding: SharedArtifactSource,
+    urgent_authority: UrgentObservationFastGateAuthority,
+    *,
+    subject: str | None = None,
+    target: str | None = None,
+    expires_at: datetime | None = None,
+    read_at: datetime = NOW + timedelta(seconds=6),
+) -> tuple[ReceiverBoundArtifactReader, CapabilityLedger, CapabilityGrant]:
+    ledger = CapabilityLedger(max_depth=1)
+    root = ledger.issue_root(
+        campaign,
+        subject="agent:supervisor:handoff",
+        tools={COLLABORATION_ARTIFACT_READ_TOOL},
+        targets={target or binding.reference.shared_artifact_id},
+    )
+    grant = ledger.delegate(
+        root.grant_id,
+        subject=subject or terminal_result.receiver.agent_id,
+        tools={COLLABORATION_ARTIFACT_READ_TOOL},
+        targets={target or binding.reference.shared_artifact_id},
+        max_risk_tier=root.max_risk_tier,
+        max_calls=1,
+        expires_at=expires_at,
+    )
+    reader = ReceiverBoundArtifactReader(
+        authority_id="pajin.collaboration.receiver-artifact-reader",
+        authority_digest=DIGEST_A,
+        capability_ledger=ledger,
+        urgent_observation_authority=urgent_authority,
+        clock=lambda: read_at,
+    )
+    return reader, ledger, grant
+
+
+def test_receiver_reader_returns_exact_bytes_once_with_metadata_only_receipt(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    terminal_authority, result, current, store, binding, _ = _scenario(
+        tmp_path, sample_campaign
+    )
+    urgent_authority = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    reader, ledger, grant = _reader(
+        sample_campaign, result, binding, urgent_authority
+    )
+    inputs = {
+        "terminal_result_authority": terminal_authority,
+        "terminal_result": result,
+        "collaboration_snapshot": current,
+        "graph_snapshot_store": store,
+        "shared_artifact_source": binding,
+        "capability_grant": grant,
+    }
+    outcome = reader.read(**inputs)
+
+    assert outcome.content == RESULT_BYTES
+    assert outcome.receipt.bytes_read == len(RESULT_BYTES)
+    assert outcome.receipt.cumulative_bytes == len(RESULT_BYTES)
+    assert outcome.receipt.read_count == 1
+    assert ledger.record(grant.grant_id).remaining_calls == grant.max_calls - 1
+    assert (
+        reader.receipt_for(
+            handoff_id=result.handoff_id,
+            artifact_id=binding.reference.shared_artifact_id,
+            receiver_id=result.receiver.agent_id,
+        )
+        == outcome.receipt
+    )
+    raw = outcome.receipt.model_dump(mode="json", by_alias=True)
+    assert RESULT_BYTES.decode().strip() not in str(raw)
+    assert {"content", "relativePath", "filesystemPath", "prompt"}.isdisjoint(raw)
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        reader.read(**inputs)
+    fresh_reader = ReceiverBoundArtifactReader(
+        authority_id="pajin.collaboration.receiver-artifact-reader",
+        authority_digest=DIGEST_A,
+        capability_ledger=ledger,
+        urgent_observation_authority=urgent_authority,
+        clock=lambda: NOW + timedelta(seconds=7),
+    )
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        fresh_reader.read(**inputs)
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["foreign-subject", "foreign-target", "revoked", "expired", "ttl-expired"],
+)
+def test_receiver_reader_rejects_foreign_revoked_or_expired_capability_without_consuming(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    mode: str,
+) -> None:
+    terminal_authority, result, current, store, binding, _ = _scenario(
+        tmp_path, sample_campaign
+    )
+    urgent_authority = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    reader, ledger, grant = _reader(
+        sample_campaign,
+        result,
+        binding,
+        urgent_authority,
+        subject="agent:foreign" if mode == "foreign-subject" else None,
+        target="shared-artifact_" + "f" * 64 if mode == "foreign-target" else None,
+        expires_at=NOW + timedelta(seconds=5) if mode == "expired" else None,
+        read_at=NOW
+        + timedelta(
+            seconds=66 if mode == "ttl-expired" else 6,
+        ),
+    )
+    if mode == "revoked":
+        ledger.revoke(grant.grant_id, "operator revoked receiver content access")
+    before = ledger.record(grant.grant_id).remaining_calls
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        reader.read(
+            terminal_result_authority=terminal_authority,
+            terminal_result=result,
+            collaboration_snapshot=current,
+            graph_snapshot_store=store,
+            shared_artifact_source=binding,
+            capability_grant=grant,
+        )
+    assert ledger.record(grant.grant_id).remaining_calls == before
+
+
+def test_receiver_reader_denies_admitted_urgent_stop_and_mutated_artifact(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    terminal_authority, result, current, store, binding, observations = _scenario(
+        tmp_path, sample_campaign
+    )
+    urgent_authority = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    urgent_authority.admit(
+        terminal_result_authority=terminal_authority,
+        terminal_result=result,
+        collaboration_snapshot=current,
+        graph_snapshot_store=store,
+        shared_artifact_sources=(binding,),
+        observation=graph_node_ref(observations[0]),
+        decided_at=NOW + timedelta(seconds=6),
+    )
+    reader, ledger, grant = _reader(
+        sample_campaign,
+        result,
+        binding,
+        urgent_authority,
+        read_at=NOW + timedelta(seconds=7),
+    )
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        reader.read(
+            terminal_result_authority=terminal_authority,
+            terminal_result=result,
+            collaboration_snapshot=current,
+            graph_snapshot_store=store,
+            shared_artifact_source=binding,
+            capability_grant=grant,
+        )
+    assert ledger.record(grant.grant_id).remaining_calls == grant.max_calls
+
+    clean_terminal, clean_result, clean_current, clean_store, clean_binding, _ = _scenario(
+        tmp_path / "mutated", sample_campaign
+    )
+    clean_urgent = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    clean_reader, clean_ledger, clean_grant = _reader(
+        sample_campaign,
+        clean_result,
+        clean_binding,
+        clean_urgent,
+        read_at=NOW + timedelta(seconds=6),
+    )
+    (clean_binding.source_run_path / clean_binding.reference.relative_path).write_bytes(
+        b"mutated"
+    )
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        clean_reader.read(
+            terminal_result_authority=clean_terminal,
+            terminal_result=clean_result,
+            collaboration_snapshot=clean_current,
+            graph_snapshot_store=clean_store,
+            shared_artifact_source=clean_binding,
+            capability_grant=clean_grant,
+        )
+    assert clean_ledger.record(clean_grant.grant_id).remaining_calls == clean_grant.max_calls
+
+
+def test_receiver_reader_rejects_stale_terminal_snapshot_before_consuming(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    terminal_authority, result, current, store, binding, _ = _scenario(
+        tmp_path, sample_campaign, stale_after_result=True
+    )
+    urgent_authority = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    reader, ledger, grant = _reader(
+        sample_campaign, result, binding, urgent_authority
+    )
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        reader.read(
+            terminal_result_authority=terminal_authority,
+            terminal_result=result,
+            collaboration_snapshot=current,
+            graph_snapshot_store=store,
+            shared_artifact_source=binding,
+            capability_grant=grant,
+        )
+    assert ledger.record(grant.grant_id).remaining_calls == grant.max_calls
+
+
+def test_receiver_read_receipt_rejects_bound_and_authority_forgery(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    terminal_authority, result, current, store, binding, _ = _scenario(
+        tmp_path, sample_campaign
+    )
+    urgent_authority = UrgentObservationFastGateAuthority(
+        authority_id="pajin.collaboration.urgent-observation-fast-gate-authority",
+        authority_digest=DIGEST_A,
+    )
+    reader, _, grant = _reader(sample_campaign, result, binding, urgent_authority)
+    receipt = reader.read(
+        terminal_result_authority=terminal_authority,
+        terminal_result=result,
+        collaboration_snapshot=current,
+        graph_snapshot_store=store,
+        shared_artifact_source=binding,
+        capability_grant=grant,
+    ).receipt
+    assert reader.resolve(receipt) == receipt
+    foreign_reader = ReceiverBoundArtifactReader(
+        authority_id="pajin.collaboration.foreign-receiver-artifact-reader",
+        authority_digest=DIGEST_B,
+        capability_ledger=CapabilityLedger(max_depth=0),
+        urgent_observation_authority=urgent_authority,
+        clock=lambda: NOW + timedelta(seconds=6),
+    )
+    with pytest.raises(ReceiverBoundArtifactReadError):
+        foreign_reader.resolve(receipt)
+
+    for field, invalid in (
+        ("maxBytes", MAX_RECEIVER_BOUND_ARTIFACT_READ_BYTES + 1),
+        ("readCount", True),
+        ("cumulativeBytes", receipt.cumulative_bytes + 1),
+        ("contentEmbedded", 0),
+        ("promptInterpretationAuthorized", "false"),
+        ("capabilityGranted", True),
+        ("executionAuthorized", True),
+    ):
+        raw = receipt.model_dump(mode="json", by_alias=True)
+        raw[field] = invalid
+        with pytest.raises(ValidationError):
+            ReceiverBoundArtifactReadReceipt.model_validate(raw)
