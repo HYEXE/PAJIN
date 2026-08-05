@@ -30,6 +30,35 @@
   ledger와 독립 journal checkpoint/backup을 추가한다. 민감 evidence의 원격 보관은 별도 encryption과 access
   control 정책을 적용한다.
 
+## SUP-005A policy benchmark와 model proposal 사이의 측정 귀속 경계
+
+- 상태: 명시적으로 드러낸 활성 측정 공백
+- 현재 보장: terminal SUP-004B3 invocation과 content-free proposal, sealed BENCH-003B2 authority를 각각
+  기존 reader로 재검증하고 exact Run/root/artifact·WALK-006 policy·Comparison lineage를 하나의
+  content-addressed authority에 결박한다. 12개 metric 이름은 보존하지만 값·delta를 복제하거나 다시
+  계산하지 않으며 model attribution·coordinate binding·threshold·execution·activation은 false다.
+- 제한: B3 schedule/receipt에는 Benchmark Manifest, arm, seed, repetition 또는
+  `BenchmarkTargetCoordinate`가 없다. 기존 BENCH-003B2 candidate는 WALK-006 정적 policy이고 raw fixture의
+  model call도 0이므로 그 numeric delta를 실제 B3 Provider/model proposal 효과로 귀속할 수 없다.
+  `policy-rejection-or-violation-count`와 `human-intervention-or-overturn-rate`도 각 구성 의미를 분리하지
+  않는다. exact retry는 같은 authority identity를 만들지만 별도 sealed publication Run을 만들 수 있다.
+- 해소 조건: SUP-005B에서 actual model binding·Provider·configuration·compiler·request/budget을 포함한
+  candidate implementation과 기존 `BenchmarkTargetCoordinate`를 호출 전에 결박하고, 모든
+  seed/repetition의 exact B3 receipt/proposal을 외부 판정된 B1 observation에 연결한 뒤 기존 canonical
+  Comparison을 재사용한다. threshold와 activation은 별도 versioned policy 전까지 false로 유지한다.
+
+## SUP-005A 테스트 fixture 결합
+
+- 상태: 활성 테스트 유지보수 제약
+- 마지막 재현: 2026-08-05
+- 현재 보장: SUP-005A 집중 테스트와 BENCH-003B2 인접 회귀는 함께 수집·실행되며, 유효하게 재봉인한
+  foreign artifact·event·payload·Run record·중복 JSON key 공격을 포함해 직접 동작을 검증한다.
+- 제한: `tests/test_supervisor_deterministic_baseline_comparison.py`가 Supervisor invocation과 Walking
+  benchmark source를 만들기 위해 두 기존 대형 테스트 모듈의 비공개 helper를 import한다. 현재 제품 코드나
+  실행 결과에는 영향을 주지 않지만, 선행 테스트 내부 리팩터링이 SUP-005A fixture를 무관하게 깨뜨릴 수 있다.
+- 해소 조건: 같은 source를 사용하는 다음 benchmark 수직 슬라이스에서 최소 typed builder를
+  `tests/support/`의 명시적 공용 fixture로 추출하고 세 테스트 모듈이 이를 공유하도록 정리한다.
+
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
 - 상태: 의도적으로 제한된 source adapter, metadata-only reference와 receiver-neutral Snapshot 경계
@@ -109,7 +138,7 @@
 ## Benchmark Harness 고정 fixture 만료
 
 - 상태: 활성 테스트 시간 의존성
-- 마지막 재현: 2026-08-04
+- 마지막 재현: 2026-08-05
 - 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
 - 결과: 190 passed, 3 skipped 이후
   `test_single_agent_measurement_seals_completed_result_and_exact_trace`가

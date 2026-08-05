@@ -216,6 +216,15 @@ Scope, Capability, Permit, execution, and activation authority remain false. See
 [SUP-004B3 contract](docs/orchestration/SUP-004B3-durable-supervisor-invocation-receipt.md) and
 [ADR-0123](docs/adr/0123-durably-claim-and-seal-supervisor-invocations.md).
 
+SUP-005A links that terminal B3 invocation and content-free SUP-003 proposal to one sealed
+BENCH-003B2 policy comparison without claiming that the benchmark measured the model call. It
+reuses both predecessor readers, binds exact Run roots and artifact hashes, preserves the twelve
+metric names without copying values, and fixes model attribution, benchmark-coordinate binding,
+threshold evaluation, execution, and activation to false. A model-backed numeric comparison still
+requires pre-invocation arm/seed/repetition binding and B3-backed observations. See the
+[SUP-005A contract](docs/orchestration/SUP-005A-source-bound-deterministic-baseline-lineage.md) and
+[ADR-0124](docs/adr/0124-bind-supervisor-proposals-to-benchmark-lineage-without-attribution.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

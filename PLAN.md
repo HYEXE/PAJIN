@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-005` Deterministic Baseline 비교
+- 현재 우선순위: `SUP-005B` 호출 전 Benchmark 좌표·측정 결박
 
 ## 제품 목표
 
@@ -486,6 +486,8 @@ Gate가 닫혔다.
     - [x] `SUP-004B2` stable request ID·secret-free bound Provider outcome
     - [x] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
 - [ ] `SUP-005` Deterministic Baseline 비교
+  - [x] `SUP-005A` B3·BENCH-003B2 source-bound non-attribution lineage
+  - [ ] `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
 활성화하려면 Confirmed Finding Yield 또는 Chain Completion이 개선되고, Policy Violation은
@@ -547,6 +549,15 @@ schedule, terminal journal, 양쪽 seal·artifact·event와 raw Provider/Gateway
 재검증한 뒤에만 draft를 SUP-003에 직접 전달한다. Task·Plan·Scope·Capability·Permit·execution·activation은
 계속 false다. 다음 `SUP-005`는 동일 benchmark 좌표에서 결정론적 baseline과 이 sealed Shadow proposal을
 비교하되 기존 BENCH-003 measurement authority와 activation false 경계를 재사용해야 한다.
+
+`SUP-005A`는 terminal B3 journal·two-seal receipt·현재 SUP-003 proposal과 sealed BENCH-003B2를 각각
+기존 consumer/reader로 다시 검증하고 exact Run/root/artifact·policy·comparison lineage만 새 content-addressed
+authority에 결박한다. B2 candidate는 WALK-006 정적 policy이고 B3에는 Manifest·arm·seed·repetition 좌표가
+없으므로 기존 numeric delta를 model proposal 효과로 귀속하지 않는다. metric 값과 raw draft도 복제하지 않고
+`structural-source-bound-not-model-measured`, model attribution·coordinate binding·threshold·execution·activation
+false를 고정한다. 다음 `SUP-005B`는 실제 호출 전에 기존 `BenchmarkTargetCoordinate`와 B3 candidate
+implementation을 고정하고 모든 candidate 좌표의 receipt/proposal을 externally adjudicated B1 observation에
+결박한 뒤에만 기존 Comparison을 재사용해야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

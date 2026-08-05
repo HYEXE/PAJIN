@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-05
 - 브랜치: `main`
-- 이전 체크포인트: `801770909b16848a401cf810835569f1faa9e40b` (`SUP-004B2`)
-- 현재 구현 체크포인트: `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
-- 다음 구현: `SUP-005` Deterministic Baseline 비교
+- 기준 체크포인트: `188b90346adda9465bcb719f1c3bc504e66acd6c` (`SUP-004B3`)
+- 현재 구현 체크포인트: `SUP-005A` B3·BENCH-003B2 source-bound non-attribution lineage
+- 다음 구현: `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
 
 ## 재개 전 확인
 
@@ -21,96 +21,90 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-`SUP-004B3`는 exact `SUP-004A` checkpoint에 대해 Provider 호출 의도를 dispatch 전에 영속
-결박하고, 불확실한 호출을 자동 재시도하지 않으며, 완전한 두 단계 seal을 재검증한 뒤에만
-untrusted draft를 기존 `SUP-003` 제안 컴파일러에 전달한다.
+`SUP-005A`는 실제 terminal `SUP-004B3` invocation과 기존 `BENCH-003B2` policy benchmark를
+하나의 content-addressed lineage authority에 결박하되, 기존 numeric comparison을 model proposal의
+효과로 귀속하지 않는다.
 
-- `SupervisorInvocationJournal`은 deterministic stable request ID와 preplanned Provider Run을
-  canonical SQLite journal에 claim한다. 상태는 `intent-recorded`,
-  `dispatch-started-outcome-unknown`, `terminal-success`이며 불변 trigger와 append-only hash
-  chain으로 전이를 보호한다.
-- `SupervisorCheckpointInvoker`는 current schedule과 request를 다시 검증하고 journal에 started를
-  기록한 뒤에만 Run과 Provider 호출을 만든다. started인데 완전한 receipt가 없으면 자동
-  redispatch하지 않고 수동 검토 상태를 유지한다.
-- 첫 seal은 request reservation, Gateway evidence와 실행 event prefix를 결박하고, 두 번째 seal은
-  full `SUP-004B2` outcome, strict untrusted draft와 receipt event를 결박한다.
-- consumer는 exact journal row, 양쪽 seal과 artifact, 전체 10개 event sequence, Gateway·Worker·Provider
-  source, dual budget scope를 코드 소유 expected value로 재구성한다. 검증된 draft만 `SUP-003`에
-  직접 전달하며 Task·Plan·Scope·Capability·Permit·execution·activation은 계속 false다.
-- Worker execution ID, reconstructed `WorkerJob`, `WorkerResult`, ToolResult-from-stdout, Secret Lease
-  issue·revoke와 concrete runtime authority class까지 exact 검증한다.
-- `WeeklyTestingWindow.days`와 Rules of Engagement의 set-backed JSON 필드는 정렬해 Python hash seed와
-  무관한 nested authority digest를 유지한다.
-- 기존 public import와 Provider wire는 깨지 않았으며 새 B3 API는
-  `pajin.supervision.invocation_journal`과 `pajin.supervision.invocation_runtime`의 직접 module API다.
+- `SupervisorDeterministicBaselineLineageRunner`는 `consume_supervisor_invocation()`으로 journal,
+  schedule, two-seal receipt, Snapshot, model·Provider binding과 content-free SUP-003 proposal을 다시
+  검증한다.
+- 기존 BENCH-003B2 reader를 통해 sealed policy comparison을 다시 열고 exact WALK-006 policy,
+  Run/root/artifact, embedded BENCH-003A/B1, Result와 Comparison lineage를 결박한다.
+- SUP-001/Profile Campaign digest와 WALK-006 Campaign digest는 서로 다른 domain이므로 같다고 주장하지
+  않는다. 하나의 exact `CampaignManifest`를 양쪽 reader에 전달하고 detached manifest digest와 두
+  domain-specific digest를 별도로 보존한다.
+- 열두 canonical metric 이름만 보존하고 값·delta를 복제하거나 다시 계산하지 않는다. 현재 B2 fixture의
+  candidate model call은 0이며 B3에는 Manifest·arm·seed·repetition 좌표가 없으므로 상태는
+  `structural-source-bound-not-model-measured`다.
+- model attribution, pre-invocation coordinate binding, model-backed eligibility, threshold, baseline
+  mutation, Task·Plan·Scope·Capability·Permit·execution·activation은 모두 false다.
+- BENCH-003B2와 SUP-005A reader는 exact 1 seal, 3 artifact, 3 ordered event와 전체 payload,
+  strict unambiguous `run.json`을 재구성한다. foreign artifact/event/payload/state와 duplicate JSON key를
+  포함해 유효하게 재봉인한 envelope도 fail closed한다.
+- 새 API는 additive direct-module API이며 기존 public import, Benchmark Result/Comparison, Supervisor,
+  Walking, Provider와 RunStore wire를 변경하지 않는다.
 
 핵심 위치:
 
-- `src/pajin/supervision/invocation_journal.py`
-- `src/pajin/supervision/invocation_runtime.py`
-- `src/pajin/runtime/control.py`
-- `src/pajin/domain/models.py`
-- `tests/test_supervisor_invocation_journal.py`
-- `tests/test_supervisor_checkpoint_scheduler.py`
-- `tests/test_manifest.py`
-- `docs/orchestration/SUP-004B3-durable-supervisor-invocation-receipt.md`
-- `docs/adr/0123-durably-claim-and-seal-supervisor-invocations.md`
+- `src/pajin/supervision/baseline_comparison.py`
+- `src/pajin/benchmark/shadow_measurement.py`
+- `tests/test_supervisor_deterministic_baseline_comparison.py`
+- `docs/orchestration/SUP-005A-source-bound-deterministic-baseline-lineage.md`
+- `docs/benchmark/BENCH-003B2-walking-shadow-policy-binding.md`
+- `docs/adr/0124-bind-supervisor-proposals-to-benchmark-lineage-without-attribution.md`
 
 ## 현재 검증
 
-- 고정 hash seed journal·manifest·Supervisor scheduler: 68 passed
-- Capability authorities·기존 capability rollout·scheduler·Provider·Provider agents 동일 process 회귀: 110 passed
-- B3 journal·scheduler와 proposal/snapshot/model/provider/Gateway/Worker 통합 회귀: 294 passed
+- SUP-005A 집중 회귀: 6 passed
+- BENCH-003B1/B2·SUP-003·SUP-004A/B3·공통 benchmark 인접 회귀: 76 passed
 - 전체 Ruff 통과
-- Linux 대상 strict mypy: 243 source files 통과
+- Linux 대상 strict mypy: 244 source files 통과
 - 전체 `pytest -x -q`: 기존 Benchmark registry fixture 만료로 190 passed, 3 skipped 뒤 중단
 - `git diff --check` 통과
-- 독립 공격 검토 최종 결과: 잔존 P0-P3 finding 없음
+- 독립 품질 검토: P0-P2 없음, 테스트 private-helper 결합 P3는 `KNOWN_ISSUES.md`에 기록
+- 독립 신뢰경계 검토: resealed envelope P2 두 건과 duplicate-key P2를 수정한 뒤 잔존 P0-P3 없음
 
 ```powershell
-$env:PYTHONHASHSEED='13'
-.\.venv\Scripts\python.exe -m pytest -q tests\test_manifest.py tests\test_supervisor_checkpoint_scheduler.py
-Remove-Item Env:PYTHONHASHSEED
-.\.venv\Scripts\python.exe -m pytest -q tests\test_capability_authorities.py tests\test_existing_capability_rollout.py tests\test_supervisor_checkpoint_scheduler.py tests\test_provider.py tests\test_provider_agents.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_supervisor_invocation_journal.py tests\test_supervisor_checkpoint_scheduler.py tests\test_supervisor_proposal_compiler.py tests\test_supervisor_snapshot_input.py tests\test_model_binding.py tests\test_provider_session.py tests\test_gateway.py tests\test_worker.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_supervisor_deterministic_baseline_comparison.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_supervisor_deterministic_baseline_comparison.py tests\test_walking_benchmark_measurement.py tests\test_supervisor_proposal_compiler.py tests\test_supervisor_checkpoint_scheduler.py tests\test_benchmark_contract.py tests\test_walking_mcp_authorization.py::test_walking_shadow_measured_benchmark_binds_exact_policy_and_sources tests\test_walking_mcp_authorization.py::test_walking_shadow_measured_benchmark_rejects_foreign_policy_and_mutation
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
 git diff --check
 ```
 
-## 사전 허상·버그 검토 결과
+## 독립 검토에서 수정한 문제
 
-독립 저널 검토와 receipt 공격 검토에서 다음 문제를 발견해 커밋 전에 수정했다.
+- BENCH-003B2 source reader가 integrity-valid foreign artifact, 권위 event, 위조된 campaign payload와
+  `run.json`을 받아들일 수 있어 exact sealed envelope 검증을 추가했다.
+- SUP-005A output reader가 시작·완료 event payload와 `run.json` 전체를 검증하지 않아 같은 exact
+  envelope 검증을 추가했다.
+- 두 reader의 일반 `json.loads()`가 duplicate key를 last-value-wins로 해석해 foreign state를 예상값으로
+  덮을 수 있어 기존 `parse_strict_json_bytes()`로 교체하고 양쪽 유효 재봉인 공격 회귀를 추가했다.
+- 신규 테스트가 두 대형 선행 테스트의 비공개 fixture helper에 결합된 유지보수 P3는 현재 제품 동작과
+  무관하므로 이번 Trust Boundary에서 대규모 fixture 재배치를 하지 않고 해소 조건을 기록했다.
 
-- caller가 제공한 추상 runtime을 concrete 권위로 오인할 수 있어 ledger·budget·policy·registry의 exact
-  class gate를 어떤 dereference보다 먼저 수행한다.
-- Worker execution metadata가 seal과 event 사이에서 갈라질 수 있어 code-owned `WorkerJob`과
-  `WorkerResult`·dispatch/completed event를 exact equality로 묶었다.
-- caller가 `ToolResult`를 Worker stdout과 독립적으로 만들 수 있어 sealed stdout에서 Provider tool의
-  `interpret()`로 결과를 다시 도출한다.
-- Secret Lease issue·revoke payload와 순서, full event sequence에 대한 누락·추가·치환 검증을 추가했다.
-- Campaign의 set-backed JSON 순서가 process hash seed에 따라 바뀌어 nested Supervisor binding이 달라질
-  수 있음을 확인하고 serializer 정렬과 비결정성 회귀 테스트를 추가했다.
-- final seal 또는 journal finalize가 실패한 경우에도 complete exact two-seal receipt가 있을 때만
-  recovery하며, forged·foreign·부분 receipt는 unknown/manual review로 유지한다.
+## 다음 작업의 첫 단계
 
-## 다음 조치
+`SUP-005B`를 구현하기 전에 기존 `BenchmarkTargetCoordinate`, `BenchmarkManifest`,
+`WalkingBenchmarkRunObservation`, P0-C registry-governed Harness와 SUP-004A/B3의 request 생성 순서를
+다시 대조한다. post-hoc receipt-to-coordinate mapping을 금지하고 다음 최소 권위를 설계한다.
 
-`SUP-005`의 가장 작은 수직 슬라이스를 설계한다. 먼저 `BENCH-003A/B`, `WALK-006`, 현재 Benchmark
-Harness와 `SUP-004B3` sealed proposal의 authority를 대조한다. 동일한 benchmark 좌표와 sealed source에서
-결정론적 baseline 결과와 Shadow Supervisor proposal을 비교하되 기존 measurement/adjudication authority를
-중복 구현하지 않는다. 비교 결과는 비실행·비활성화 상태로 유지하고, Confirmed Finding Yield, Chain
-Completion, Policy Violation, 비용, 지연, variance와 Human Overturn 기준을 exact sealed input에 결박한다.
+1. actual model binding·Provider·configuration·SUP-003 compiler·SUP-004 request/budget을 하나의
+   versioned candidate implementation digest에 결박한다.
+2. 기존 `BenchmarkTargetCoordinate`를 stable request와 dispatch 전에 고정한다.
+3. 모든 candidate seed/repetition 좌표가 exact B3 journal·receipt·proposal에 대응하도록 한다.
+4. Finding·Chain·Replay·Policy·Human 의미는 proposal에서 추론하지 않고 기존 외부 measurement/
+   adjudication authority가 봉인한 B1-compatible Observation만 받는다.
+5. complete two-arm coordinate set만 기존 Result·Comparison 계산에 전달하며 threshold와 activation은
+   계속 false로 유지한다.
 
 ## 알려진 경계
 
-- B3 journal은 하나의 host-local canonical SQLite 파일에 한정된다. alternate/copy database나 cross-host
-  dispatcher에 대한 distributed exactly-once는 보장하지 않는다.
-- `SUP-004B1` budget ledger는 process-local이다. receipt가 증명하는 호출 당시 charge projection과 restart
-  뒤 현재 in-memory 잔액은 같은 권위가 아니다.
-- started인데 complete receipt가 없으면 자동 재시도하지 않고 수동 검토가 필요하다. Graph current-view
-  검증과 journal 전이는 하나의 분산 transaction이 아니다.
-- 첫 seal의 Gateway evidence는 complete tainted request를 포함하는 민감 artifact다.
-- `SUP-004A`는 canonical input이 기존 `ProviderMessage` 65,536-character 한도를 넘으면 fail closed한다.
+- SUP-005A는 shared policy lineage만 증명하며 B3 model proposal의 benchmark 효과를 측정하지 않는다.
+- B3 schedule/receipt에는 아직 Benchmark Manifest, arm, seed, repetition과 Target Coordinate가 없다.
+- B2 fixture의 candidate model call은 0이며 운영 measurement attestation이 아니다.
+- exact retry는 같은 authority identity를 만들지만 별도 sealed publication Run을 만들 수 있다.
+- B3 journal은 host-local SQLite, budget ledger는 process-local이고 distributed exactly-once를 보장하지
+  않는다.
 - 전체 pytest는 기존 Benchmark registry fixture 만료 뒤 Windows symlink 권한 제약도 남아 있다.

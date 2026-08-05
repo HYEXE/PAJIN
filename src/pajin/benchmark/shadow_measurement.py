@@ -24,6 +24,7 @@ from pajin.benchmark.shadow import (
     load_walking_shadow_benchmark_comparison_authority,
 )
 from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_artifacts
 
 WALKING_SHADOW_MEASURED_BENCHMARK_API_VERSION: Literal[
@@ -32,6 +33,7 @@ WALKING_SHADOW_MEASURED_BENCHMARK_API_VERSION: Literal[
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _MAX_AUTHORITY_BYTES = 64 * 1024 * 1024
+_MAX_RUN_BYTES = 256 * 1024
 _STRUCTURAL_ARTIFACT = "walking-shadow-benchmark-comparison-authority.json"
 _MEASURED_ARTIFACT = "walking-benchmark-measured-comparison-authority.json"
 _AUTHORITY_ARTIFACT = "walking-shadow-measured-benchmark-authority.json"
@@ -300,6 +302,7 @@ def load_walking_shadow_measured_benchmark_authority(
             requests={
                 "campaign.json": 256 * 1024,
                 outcome.artifact_path: _MAX_AUTHORITY_BYTES,
+                "run.json": _MAX_RUN_BYTES,
             },
             expected_run_id=outcome.run_id,
         )
@@ -309,21 +312,54 @@ def load_walking_shadow_measured_benchmark_authority(
         authority = WalkingShadowMeasuredBenchmarkAuthority.model_validate_json(
             snapshot.artifact_bytes(outcome.artifact_path)
         )
+        run_record = parse_strict_json_bytes(
+            snapshot.artifact_bytes("run.json"),
+            label="BENCH-003B2 Run record",
+            max_bytes=_MAX_RUN_BYTES,
+        )
+        final_artifacts = {artifact.path for artifact in snapshot.seals[-1].artifacts}
     except (OSError, RunIntegrityError, ValidationError, ValueError) as exc:
         raise WalkingShadowMeasuredBenchmarkError(
             "BENCH-003B2 Shadow measured authority is not sealed and valid"
         ) from exc
-    if sealed_campaign != campaign or authority != outcome.authority:
+    expected_run_record = {
+        "runId": outcome.run_id,
+        "status": "completed",
+        "stage": "walking-shadow-measured-benchmark-sealed",
+        "authorityId": authority.authority_id,
+        "measurementState": authority.measurement_state,
+    }
+    expected_event_types = (
+        "campaign.started",
+        "benchmark.walking-shadow-measured.created",
+        "campaign.completed",
+    )
+    if (
+        sealed_campaign != campaign
+        or authority != outcome.authority
+        or snapshot.verification.seal_count != 1
+        or snapshot.verification.artifact_count != 3
+        or final_artifacts
+        != {"campaign.json", outcome.artifact_path, "run.json"}
+        or tuple(event.event_type for event in snapshot.events) != expected_event_types
+        or snapshot.events[0].payload
+        != {
+            "campaign": campaign.metadata.name,
+            "mode": campaign.spec.mode.value,
+            "purpose": "walking-shadow-measured-benchmark",
+        }
+        or snapshot.events[2].payload
+        != {
+            "purpose": "walking-shadow-measured-benchmark",
+            "artifact": outcome.artifact_path,
+        }
+        or run_record != expected_run_record
+    ):
         raise WalkingShadowMeasuredBenchmarkError(
-            "BENCH-003B2 output differs from sealed authority"
+            "BENCH-003B2 output differs from its exact sealed envelope"
         )
-    created = [
-        event
-        for event in snapshot.events
-        if event.event_type == "benchmark.walking-shadow-measured.created"
-    ]
     expected = _publication_event_payload(outcome.artifact_path, authority)
-    if len(created) != 1 or created[0].payload != expected:
+    if snapshot.events[1].payload != expected:
         raise WalkingShadowMeasuredBenchmarkError("BENCH-003B2 publication event differs")
     return authority.model_copy(deep=True)
 

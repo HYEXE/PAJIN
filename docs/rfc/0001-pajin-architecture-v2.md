@@ -563,6 +563,15 @@ SUP-003. This is a single-host journal and process-local budget boundary, not di
 exactly-once execution or durable ledger reconstruction, and all mutation, execution, redispatch,
 and activation authority remains false.
 
+SUP-005A adds the first source-bound bridge from that actual B3 proposal to BENCH-003B2 while
+explicitly refusing causal metric attribution. Both predecessors are reopened through their
+existing readers, their exact Run/root/artifact and shared WALK-006 policy lineage are bound, and
+only the content-free SUP-003 proposal is copied. BENCH-003 metric values remain in their original
+authority. Because B3 still has no Manifest arm, seed, repetition, or `BenchmarkTargetCoordinate`,
+the new state is `structural-source-bound-not-model-measured`; model-backed comparison, threshold
+evaluation, execution, and activation remain false. SUP-005B must bind those coordinates before
+dispatch and admit B3-backed observations before reusing the canonical numeric Comparison.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

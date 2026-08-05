@@ -25,6 +25,12 @@ The measured Manifest must be an exact two-arm extension of the structural basel
 The authority embeds both complete source authorities and binds each source Run ID, root digest,
 fixed artifact path, and artifact SHA-256. It preserves the B1 Comparison and Result values exactly.
 
+The B2 reader requires exactly one seal, the exact three-artifact set (`campaign.json`, the fixed
+authority path, and `run.json`), and the exact ordered three-event publication sequence. It parses
+`run.json` as strict unambiguous JSON and reconstructs the complete start, created, completion, and
+Run-record payloads. Extra artifacts or events, changed payloads, foreign Run state, and duplicate
+JSON keys fail closed even when the forged envelope is otherwise integrity-sealed.
+
 ## Eligibility and trust boundary
 
 The resulting state is `measured-shadow-policy-bound` and benchmark comparison eligibility is true.
@@ -36,7 +42,8 @@ remains the semantic truth root; B2 proves configuration lineage, not the produc
 
 A foreign policy digest, ID, or version; changed Manifest envelope or baseline arm; a non-adaptive
 candidate; Campaign substitution; mutated A/B1 source; forged source provenance; modified metric,
-Result, Comparison, policy field, output authority, or publication event fails closed.
+Result, Comparison, policy field, output authority, publication event, artifact set, event payload,
+or Run record fails closed.
 
 ## Compatibility and next step
 
