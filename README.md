@@ -257,6 +257,23 @@ activation false. See the
 [SUP-006 contract](docs/orchestration/SUP-006-adversarial-prompt-injection-regression.md) and
 [ADR-0127](docs/adr/0127-enforce-the-advertised-supervisor-draft-wire.md).
 
+PERMIT-001 through PERMIT-004A now form an additive direct-call general-attack authority chain.
+Code-owned ORCH action semantics are compiled through the exact CAP-002 Materializer and Action
+Compiler, intersected with current signed activation, Campaign, Envelope, Decision, budget, and the
+existing GRAPH-006 atomic consumed Permit, then assessed only from a matching completed sealed
+Gateway lifecycle. A deployment input authority resolves the Run, pre-claim Graph audit anchor,
+and exact Grant; caller-selected self-sealed Runs are not accepted. The outcome gate reconstructs
+the exact evidence, cross-checks the sealed `worker.dispatched` job and secret-lease metadata, and
+re-runs the current Result Normalizer before invoking the Success Oracle. It binds Executor
+identity without preparing another Worker job and accepts only `none`/`read-only`,
+cleanup-not-required actions. Exported assessments remain output projections until the gate's
+exact-rebuild verifier succeeds. Network egress requires both
+Definition permission and host-trusted proxy observation. Write and cleanup-required actions remain
+closed until a separate one-shot cleanup Permit and aggregate GRAPH budget authority exist, and no
+default Supervisor execution path is activated. See the
+[PERMIT-004A contract](docs/orchestration/PERMIT-004A-authenticated-action-outcome-gate.md) and
+[ADR-0131](docs/adr/0131-authenticate-sealed-action-results-before-oracle.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

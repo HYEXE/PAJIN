@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
+- 현재 우선순위: `PERMIT-004B` bounded one-shot Cleanup Permit
 
 ## 제품 목표
 
@@ -607,9 +607,21 @@ ActionProposal·SQLite atomic Permit authority·first-consumption dispatcher만 
 재검증한다. gate 하나는 exact Envelope와 activation set에 고정되고 exact retry는 consumer를 다시 호출하지
 않으며 stale Graph와 cross-Envelope replay는 기존 final transaction에서 거부된다. 새 wire·store·default
 workflow·Gateway·Worker·Oracle·cleanup 실행은 없다.
-다음 `PERMIT-004`는 embedded PERMIT-001 side-effect·data-flow·cleanup 의미를 current CAP-002
-Success Oracle·Cleanup Handler와 별도 cleanup authority에 결박하되 이미 소비된 ActionPermit을 실행 결과
-권위로 오인하거나 자동 redispatch하지 않아야 한다.
+`PERMIT-004A`는 deployment input authority가 해석한 Run·pre-claim Graph audit anchor·exact Grant를
+current stored Permit, complete sealed CAP-005 claimed→completed lifecycle, exact Gateway outcome digest와
+evidence bytes, `worker.dispatched` job·secret lease, Worker execution, artifact provenance에 교차 결박한
+뒤에만 current CAP-002 Result Normalizer·Success Oracle·Cleanup Handler를 호출한다. caller-selected
+self-sealed Run은 입력이 될 수 없고 assessment는 complete source를 exact-rebuild하는 verifier 통과 전까지
+output projection일 뿐이다. Executor Adapter는 identity만 결박하고 두 번째 WorkerJob을 만들지 않는다. `none/read-only`와
+`cleanupRequired=false`만 허용하며 network-none은 egress 부재, egress-proxy는 Definition permission과
+host-trusted observation을 요구한다. side-effect absence와 semantic information flow는 attested로 승격하지
+않는다. missing·retry·uncertain·forged·cross-action·mutated evidence는 Oracle 전에 fail closed한다.
+
+다음 `PERMIT-004B`는 `reversible-write` 하나의 최소 positive path에서 typed cleanup request와 별도
+domain-separated bounded one-shot cleanup Permit을 기존 Campaign Graph durability domain에 연결해야 한다.
+원 ActionPermit은 lineage일 뿐 cleanup 실행 권위가 아니며 action+cleanup reservation을 같은 일반 Tool-call,
+request-unit, cost, rolling-rate 예산에 원자적으로 합산해야 한다. `irreversible-write`와 uncertain result는 계속
+거부한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
@@ -617,6 +629,8 @@ Success Oracle·Cleanup Handler와 별도 cleanup authority에 결박하되 이�
 - [x] `PERMIT-002` Deterministic Action Compiler
 - [x] `PERMIT-003` Exact Single-use ActionPermit
 - [ ] `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
+  - [x] `PERMIT-004A` authenticated no-write Action Outcome Gate
+  - [ ] `PERMIT-004B` bounded one-shot Cleanup Permit와 aggregate Campaign budget
 - [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
 - [ ] `SUP-007` opt-in T0/T1 실행
 - [ ] T2는 사전 승인 Envelope를 요구하고 T3+는 기본 거부

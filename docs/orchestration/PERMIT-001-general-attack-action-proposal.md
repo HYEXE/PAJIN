@@ -111,8 +111,11 @@ that intent, requires current signed activation and external run/Decision/fixed-
 authority, derives request units and the existing reservation from the current activated
 Definition, and reuses the existing GRAPH-006 atomic single-use Permit without another store or
 dispatcher.
-PERMIT-004 remains responsible for post-dispatch Oracle, side-effect, data-flow, and cleanup
-authority.
+PERMIT-004A now authenticates a completed sealed no-write result before current Result Normalizer,
+Success Oracle, data-flow observation, and Cleanup Handler use. It requires a deployment-resolved
+Run anchor and exact Grant and cross-checks the evidence job with the sealed dispatch audit; a raw
+assessment is not predecessor authority. Write and cleanup-required actions
+remain blocked until PERMIT-004B adds a separate bounded one-shot cleanup authority.
 
 ## Related documents
 
@@ -121,6 +124,7 @@ authority.
 - [ORCH-001 contract](ORCH-001-surface-snapshot-plan-task-binding.md)
 - [PERMIT-002 contract](PERMIT-002-deterministic-action-compiler.md)
 - [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
+- [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [SUP-003 contract](SUP-003-typed-non-executable-supervisor-proposal.md)
 - [SUP-006 contract](SUP-006-adversarial-prompt-injection-regression.md)
 - [CAP-001 contract](../capability/CAP-001-versioned-capability-definition.md)

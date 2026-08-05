@@ -646,7 +646,24 @@ dispatcher. A Campaign-aware final claim clock checks authorization and testing-
 the same time used by SQLite. Only an async callback is accepted before claim. One gate pins one
 Envelope and activation set; exact retry never calls the consumer twice, while stale Graph and
 cross-Envelope request replay fail in the existing transaction. No default workflow, Gateway,
-Worker, Oracle, cleanup, or execution path is added; PERMIT-004 and SUP-007 retain those boundaries.
+Worker, Oracle, cleanup, or execution path is added at this checkpoint.
+
+PERMIT-004A adds a separate post-dispatch, direct-call no-write boundary. It exact-rebuilds the
+PERMIT-001/002/003 lineage, requires the current GRAPH store's exact consumed Permit, reuses CAP-005
+sealed dispatch reconciliation, and uses a deployment input authority rather than a caller-selected
+Run path to resolve the pre-claim Graph Run anchor and exact Grant. It loads the exact Gateway
+evidence artifact itself and cross-checks the complete `worker.dispatched` job and secret-lease
+metadata. Only one completed Permit-bound lifecycle whose outcome digest, Grant digest, Worker
+execution, request, pre-evidence Tool result, artifact hash/provenance, and current activation all
+agree can reach the current CAP-002 Result Normalizer and Success Oracle. Exported assessments are
+output projections until the gate exact-rebuilds every predecessor. The current Cleanup Handler
+must return `None`. Executor Adapter identity is bound without preparing a second Worker job. Network-none
+execution must have no observed egress; egress-proxy execution requires both Definition permission
+and host-trusted proxy observation, while semantic information-flow attestation remains false.
+The current `none`/`read-only`, cleanup-not-required inventory is supported; write and
+cleanup-required actions remain fail closed until PERMIT-004B supplies a separate one-shot cleanup
+Permit and aggregate GRAPH budget authority. SUP-007 still owns default Grant/Gateway/Worker
+composition.
 
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all

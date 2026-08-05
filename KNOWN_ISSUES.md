@@ -428,6 +428,24 @@
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
   모듈을 허용한다. mypy 실행을 위해 정책을 비활성화하지 않는다.
 
+## PERMIT-004 write·cleanup 실행 권위 공백
+
+- 상태: 의도적으로 fail closed된 활성 제품 경계
+- 현재 보장: PERMIT-004A는 deployment input authority가 해석한 Run·pre-claim anchor·exact Grant를
+  current stored ActionPermit, completed sealed CAP-005 audit, exact Gateway outcome/evidence,
+  `worker.dispatched` job·secret lease, Worker execution과 current CAP-002 Result
+  Normalizer·Success Oracle·Cleanup Handler에 교차 결박한다. caller-selected self-sealed Run은 입력이
+  아니며 assessment는 exact-rebuild verifier 통과 전까지 output projection이다. `none/read-only`,
+  `cleanupRequired=false`만 허용하며 Cleanup Handler는 `None`을 반환해야 한다.
+- 영향: `reversible-write`, `irreversible-write`, `cleanupRequired=true`, untrusted network observation,
+  missing·uncertain outcome은 자동 성공·cleanup·redispatch로 승격되지 않고 거부된다. 현재 일반 공격용 typed
+  cleanup request, cleanup Capability, 별도 one-shot Cleanup Permit, dispatcher와 aggregate budget transaction은
+  없다.
+- 해소 조건: PERMIT-004B에서 원 ActionPermit·authenticated outcome·Oracle·Handler plan에 결박된 별도 cleanup
+  request/Permit을 기존 Campaign Graph durability domain에 구현하고 action+cleanup 사용량을 같은 Tool-call,
+  request-unit, cost, rolling-rate 예산에 원자적으로 합산한다. `irreversible-write` 정책은 별도 결정 전까지
+  계속 거부한다.
+
 ## Git OpenSSL CA 경로
 
 - 상태: 활성 로컬 전송 제약

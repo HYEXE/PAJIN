@@ -129,13 +129,19 @@ existing reservation from the current activated Definition, and only then constr
 GRAPH-006 `ActionProposal`. It uses the existing atomic single-use Permit store and dispatcher
 rather than another Permit or request-consumption implementation.
 
-PERMIT-004 remains responsible for Success Oracle, side-effect, data-flow, cleanup handler, cleanup
-plan, and cleanup Permit enforcement.
+PERMIT-004A now authenticates completed sealed no-write results before invoking the current Result
+Normalizer, Success Oracle, and Cleanup Handler. It accepts the Run anchor and exact Grant only
+through a deployment input authority, binds the evidence job to `worker.dispatched`, and treats its
+assessment as an output projection until exact-reverified. It binds a conservative data-flow
+observation and rejects write or cleanup-required actions. PERMIT-004B remains responsible for a
+separate typed cleanup request, bounded one-shot cleanup Permit, and aggregate Campaign budget
+enforcement.
 
 ## Related documents
 
 - [PERMIT-001 contract](PERMIT-001-general-attack-action-proposal.md)
 - [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
+- [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [CAP-001 contract](../capability/CAP-001-versioned-capability-definition.md)
 - [CAP-002 contract](../capability/CAP-002-metadata-code-backed-authority-interfaces.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)

@@ -7,6 +7,16 @@ from pajin.supervision.action_compiler import (
     compile_general_attack_action_intent,
     verify_general_attack_compiled_intent,
 )
+from pajin.supervision.action_outcome import (
+    GENERAL_ATTACK_ACTION_OUTCOME_ASSESSMENT_API_VERSION,
+    GeneralAttackActionOutcomeAssessment,
+    GeneralAttackActionOutcomeError,
+    GeneralAttackActionOutcomeGate,
+    GeneralAttackActionOutcomeInputAuthority,
+    GeneralAttackActionOutcomeInputs,
+    GeneralAttackDataFlowObservation,
+    GeneralAttackSealedEvidenceRef,
+)
 from pajin.supervision.action_permit import (
     GeneralAttackActionPermitError,
     GeneralAttackActionPermitGate,
@@ -118,6 +128,7 @@ from pajin.supervision.snapshot_input import (
 )
 
 __all__ = [
+    "GENERAL_ATTACK_ACTION_OUTCOME_ASSESSMENT_API_VERSION",
     "GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION",
     "GENERAL_ATTACK_COMPILED_INTENT_API_VERSION",
     "SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION",
@@ -134,6 +145,11 @@ __all__ = [
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
     "GeneralAttackActionCompilerError",
+    "GeneralAttackActionOutcomeAssessment",
+    "GeneralAttackActionOutcomeError",
+    "GeneralAttackActionOutcomeGate",
+    "GeneralAttackActionOutcomeInputAuthority",
+    "GeneralAttackActionOutcomeInputs",
     "GeneralAttackActionPermitError",
     "GeneralAttackActionPermitGate",
     "GeneralAttackActionPermitInputAuthority",
@@ -143,7 +159,9 @@ __all__ = [
     "GeneralAttackActionProposalError",
     "GeneralAttackCleanupRequirement",
     "GeneralAttackCompiledIntent",
+    "GeneralAttackDataFlowObservation",
     "GeneralAttackExpectedEvidence",
+    "GeneralAttackSealedEvidenceRef",
     "GeneralAttackTargetRef",
     "SupervisorBenchmarkBaselineSource",
     "SupervisorBenchmarkCampaignPlan",
