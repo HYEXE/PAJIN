@@ -40,7 +40,8 @@ links the stages without treating the earlier string as executable authority.
 
 `MCPToolAuthorizationHypothesisAuthority` is content-addressed over:
 
-- the complete canonical Campaign digest;
+- the existing WALK-domain canonical `campaignDigest` plus additive complete Campaign Manifest
+  `sourceCampaignDigest` shared exactly by both strengthened Snapshot dependencies;
 - the full WALK-002 Hypothesis plus its sealed Run and artifact lineage;
 - the complete MCP `SurfaceSnapshotAuthority`;
 - MCP target, server and Tool Surface IDs, and complete locators;
@@ -60,6 +61,7 @@ Compilation fails closed before publishing authority when:
 
 - either dependency Run or artifact is missing, modified, substituted, or no longer sealed;
 - the Campaign, Recon Plan, adapter reference, required Surface kinds, or Snapshot differs;
+- either strengthened Snapshot's complete Campaign Manifest digest differs from its WALK parent;
 - the registered server/tool pair is absent, duplicated, or differs from the discovered locator;
 - the discovered input-schema digest differs from the Capability parameter schema;
 - the Capability reference, ToolSpec version/digest, Surface type, threat class, or H-17 required
@@ -73,10 +75,12 @@ never copied into the Hypothesis.
 
 ## Compatibility and rollback
 
-The planner, models, compiler, Runner, artifact, and exports are additive. DISC-003D's legacy
-argument-free planner, registered MCP invocation, WALK-002, A4/A5, ORCH-001/002, and existing wire
-shapes remain unchanged. Rollback stops selecting the WALK-003 path; already sealed artifacts remain
-readable and grant no execution authority.
+The planner, models, compiler, Runner, artifact, and exports are additive. `sourceCampaignDigest`
+is absent from historical records and therefore preserves their retained digest chain; new records
+require exact equality with the strengthened ORCH Snapshot. DISC-003D's argument-free planner,
+registered MCP invocation, WALK-002, A4/A5, and ORCH-001/002 remain compatible. Rollback stops
+selecting the WALK-003 path but must retain the additive reader or treat strengthened records as
+non-executable historical artifacts; no record grants execution authority.
 
 WALK-004 may consume admitted observations and replan only after separately establishing runtime
 Capability and Permit authority. It must preserve both Snapshot dependencies and may not reinterpret

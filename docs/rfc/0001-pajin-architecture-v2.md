@@ -601,6 +601,19 @@ receipt and becomes digest-only in the typed proposal and final measurement line
 remains outcome-unknown and non-retriable; cross-Plan publication replay fails closed. No threshold,
 activation, Permit, or execution authority is introduced.
 
+PERMIT-001 introduces a separate `GeneralAttackActionProposal` before deterministic action
+compilation. It does not widen the existing GRAPH-006 `ActionProposal`, which remains the
+Permit-adjacent request binding. The new predecessor exact-matches the current Campaign, ORCH-001
+Surface Snapshot carrying the complete Campaign digest, Plan, Task, Hypothesis, Target, and one
+registry-resolved CAP-001 definition.
+Action identity, risk, expected evidence, side-effect, and cleanup metadata come from that static
+definition; target, method, and arguments come from the exact code-owned Plan. SUP-003 output is not
+accepted as lineage without its complete external-verification sources. The Target reference keeps
+only the endpoint digest, while exact ORCH arguments remain inert data. No request identity,
+`ToolRequest`, activated Capability, Grant, Permit, compiler call, dispatch, or execution authority
+is created. PERMIT-002 must perform the first deterministic request compilation, and PERMIT-003
+must reuse GRAPH-006 atomic single-use Permit consumption.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

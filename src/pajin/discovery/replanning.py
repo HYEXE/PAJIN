@@ -25,7 +25,7 @@ from pajin.discovery.hypothesis import (
     SurfaceSnapshotAuthority,
 )
 from pajin.discovery.recon import ReconWaveOutcome
-from pajin.domain.models import CampaignManifest, StrictModel, ToolResult
+from pajin.domain.models import CampaignManifest, StrictModel, ToolResult, campaign_manifest_digest
 from pajin.runtime.control import (
     BudgetController,
     BudgetExceeded,
@@ -367,7 +367,11 @@ class DeterministicMultiWaveAuthority(StrictModel):
 
     @model_validator(mode="after")
     def validate_authority(self) -> DeterministicMultiWaveAuthority:
-        if self.surface_snapshot.campaign != self.campaign_authority.metadata.name:
+        if self.surface_snapshot.campaign != self.campaign_authority.metadata.name or (
+            self.surface_snapshot.campaign_digest is not None
+            and self.surface_snapshot.campaign_digest
+            != campaign_manifest_digest(self.campaign_authority)
+        ):
             raise ValueError("Multi-wave Surface Snapshot belongs to another Campaign")
         compiler_order = [item.compiler_id for item in self.compiler_states]
         if compiler_order != sorted(compiler_order) or len(compiler_order) != len(
@@ -393,9 +397,7 @@ class DeterministicMultiWaveAuthority(StrictModel):
             raise ValueError("Multi-wave Compiler State expands or replaces the Surface Snapshot")
         known_rule_ids = {rule_id for state in self.compiler_states for rule_id in state.rule_ids}
         if not known_rule_ids <= set(observation_order):
-            raise ValueError(
-                "every Multi-wave Compiler rule requires Observation authority"
-            )
+            raise ValueError("every Multi-wave Compiler rule requires Observation authority")
         for transition in self.transitions:
             next_state = states_by_compiler.get(transition.next_compiler_id)
             if (

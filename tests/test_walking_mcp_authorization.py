@@ -57,8 +57,11 @@ from pajin.discovery import (
     MCPToolAuthorizationHypothesisRunner,
     MCPToolAuthorizationReconPlanner,
     MCPToolSurfaceLocator,
+    RAGInjectionHypothesisAuthority,
     RAGInjectionHypothesisRunner,
+    SealedRAGHypothesisDependency,
     SingleReconWaveRunner,
+    SurfaceSnapshotAuthority,
     TrustedSurfaceProducer,
     WalkingCandidateAdmissionError,
     WalkingCandidateAdmissionRunner,
@@ -781,6 +784,144 @@ def test_mcp_authorization_authority_rejects_digest_forgery(
         MCPToolAuthorizationHypothesisAuthority.model_validate(payload)
 
 
+def test_field_absent_legacy_snapshot_reads_through_walking_candidate_chain(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    rag = _rag_outcome(tmp_path, campaign, monkeypatch)
+    mcp = _mcp_recon(tmp_path, campaign)
+    compiler = _compiler(mcp)
+    current = compiler.compile(campaign, rag, mcp)[0]
+
+    rag_snapshot_wire = current.rag_dependency.hypothesis.surface_snapshot.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    rag_snapshot_wire.update({"snapshotId": "", "snapshotDigest": ""})
+    rag_snapshot_wire.pop("campaignDigest")
+    legacy_rag_snapshot = SurfaceSnapshotAuthority.model_validate(rag_snapshot_wire)
+    rag_wire = current.rag_dependency.hypothesis.model_dump(mode="json", by_alias=True)
+    rag_wire.update(
+        {
+            "hypothesisId": "",
+            "hypothesisDigest": "",
+            "surfaceSnapshot": legacy_rag_snapshot.model_dump(mode="json", by_alias=True),
+        }
+    )
+    rag_wire.pop("sourceCampaignDigest")
+    legacy_rag = RAGInjectionHypothesisAuthority.model_validate(rag_wire)
+    dependency_wire = current.rag_dependency.model_dump(mode="json", by_alias=True)
+    dependency_wire["hypothesis"] = legacy_rag.model_dump(mode="json", by_alias=True)
+    legacy_dependency = SealedRAGHypothesisDependency.model_validate(dependency_wire)
+
+    mcp_snapshot_wire = current.mcp_surface_snapshot.model_dump(mode="json", by_alias=True)
+    mcp_snapshot_wire.update({"snapshotId": "", "snapshotDigest": ""})
+    mcp_snapshot_wire.pop("campaignDigest")
+    legacy_mcp_snapshot = SurfaceSnapshotAuthority.model_validate(mcp_snapshot_wire)
+    hypothesis_wire = current.model_dump(mode="json", by_alias=True)
+    hypothesis_wire.update(
+        {
+            "hypothesisId": "",
+            "hypothesisDigest": "",
+            "ragDependency": legacy_dependency.model_dump(mode="json", by_alias=True),
+            "mcpSurfaceSnapshot": legacy_mcp_snapshot.model_dump(mode="json", by_alias=True),
+        }
+    )
+    hypothesis_wire.pop("sourceCampaignDigest")
+    legacy_hypothesis = MCPToolAuthorizationHypothesisAuthority.model_validate(hypothesis_wire)
+    legacy_wire = legacy_hypothesis.model_dump(mode="json", by_alias=True)
+    assert "campaignDigest" not in legacy_wire["mcpSurfaceSnapshot"]
+    assert "campaignDigest" not in legacy_wire["ragDependency"]["hypothesis"]["surfaceSnapshot"]
+    assert MCPToolAuthorizationHypothesisAuthority.model_validate(legacy_wire) == legacy_hypothesis
+
+    monkeypatch.setattr(
+        compiler,
+        "compile",
+        lambda _campaign, _rag, _mcp: (legacy_hypothesis,),
+    )
+    source = MCPToolAuthorizationHypothesisRunner(
+        compiler=compiler,
+        output_root=tmp_path,
+    ).run(campaign, rag, mcp)
+    replan_compiler = _replan_compiler(source)
+    evidence = replan_compiler.evidence(campaign, source)
+    baseline = replan_compiler.baseline_state_digest(campaign, source)
+    replan = WalkingObservationReplanRunner(
+        compiler=replan_compiler,
+        output_root=tmp_path,
+    ).run(
+        campaign,
+        source,
+        evidence,
+        expected_previous_state_digest=baseline,
+    )
+    execution = _walking_execution_evidence(tmp_path, campaign, replan)
+    candidate = WalkingCandidateAdmissionRunner(output_root=tmp_path).run(
+        campaign,
+        replan,
+        execution,
+    )
+
+    assert load_walking_observation_replan_authority(campaign, replan) == replan.authority
+    assert load_walking_candidate_admission_authority(campaign, candidate) == candidate.authority
+
+
+def test_walking_authorities_reject_same_name_foreign_v2_snapshot_digest(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    rag = _rag_outcome(tmp_path, campaign, monkeypatch)
+    mcp = _mcp_recon(tmp_path, campaign)
+    current = _compiler(mcp).compile(campaign, rag, mcp)[0]
+
+    rag_snapshot_wire = current.rag_dependency.hypothesis.surface_snapshot.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    rag_snapshot_wire.update(
+        {
+            "snapshotId": "",
+            "snapshotDigest": "",
+            "campaignDigest": "0" * 64,
+        }
+    )
+    foreign_rag_snapshot = SurfaceSnapshotAuthority.model_validate(rag_snapshot_wire)
+    rag_wire = current.rag_dependency.hypothesis.model_dump(mode="json", by_alias=True)
+    rag_wire.update(
+        {
+            "hypothesisId": "",
+            "hypothesisDigest": "",
+            "surfaceSnapshot": foreign_rag_snapshot.model_dump(mode="json", by_alias=True),
+        }
+    )
+    with pytest.raises(ValidationError, match="another Snapshot Campaign"):
+        RAGInjectionHypothesisAuthority.model_validate(rag_wire)
+
+    mcp_snapshot_wire = current.mcp_surface_snapshot.model_dump(mode="json", by_alias=True)
+    mcp_snapshot_wire.update(
+        {
+            "snapshotId": "",
+            "snapshotDigest": "",
+            "campaignDigest": "0" * 64,
+        }
+    )
+    foreign_mcp_snapshot = SurfaceSnapshotAuthority.model_validate(mcp_snapshot_wire)
+    mcp_wire = current.model_dump(mode="json", by_alias=True)
+    mcp_wire.update(
+        {
+            "hypothesisId": "",
+            "hypothesisDigest": "",
+            "mcpSurfaceSnapshot": foreign_mcp_snapshot.model_dump(mode="json", by_alias=True),
+        }
+    )
+    with pytest.raises(ValidationError, match="another Campaign"):
+        MCPToolAuthorizationHypothesisAuthority.model_validate(mcp_wire)
+
+
 def test_walking_observation_replan_admits_state_and_selects_new_plan(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -1427,9 +1568,7 @@ def test_walking_mcp_confirmation_rejects_source_substitution_and_report_mutatio
     )
 
     with pytest.raises(WalkingMCPConfirmationError):
-        WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
-            campaign, forged
-        )
+        WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(campaign, forged)
 
     outcome = WalkingMCPConfirmationRunner(output_root=tmp_path / "confirmation").run(
         campaign, replay
@@ -1627,9 +1766,7 @@ def test_walking_shadow_supervisor_rejects_capability_execution_and_source_mutat
         ("escalationRequired", 1),
         ("executionAllowed", 0),
     ):
-        coerced_stop = outcome.authority.stop_decision.model_dump(
-            mode="json", by_alias=True
-        )
+        coerced_stop = outcome.authority.stop_decision.model_dump(mode="json", by_alias=True)
         coerced_stop[field] = replacement
         with pytest.raises(ValidationError):
             WalkingShadowStopDecision.model_validate(coerced_stop)
@@ -1728,10 +1865,7 @@ def test_walking_shadow_benchmark_compares_structure_without_metric_values(
         "campaign.completed",
     ]
     assert verify_run_integrity(outcome.run_path).valid
-    assert (
-        load_walking_shadow_benchmark_comparison_authority(campaign, outcome)
-        == authority
-    )
+    assert load_walking_shadow_benchmark_comparison_authority(campaign, outcome) == authority
 
 
 def test_walking_shadow_benchmark_rejects_candidate_arm_metrics_and_source_mutation(
@@ -1865,12 +1999,10 @@ def _walking_shadow_measured_sources(
     monkeypatch: pytest.MonkeyPatch,
 ):
     _, shadow = _walking_shadow_supervisor_outcome(tmp_path, campaign, monkeypatch)
-    structural_manifest = _walking_shadow_benchmark_manifest(
-        shadow.authority.campaign_digest
+    structural_manifest = _walking_shadow_benchmark_manifest(shadow.authority.campaign_digest)
+    structural = WalkingShadowBenchmarkComparisonRunner(output_root=tmp_path / "structural").run(
+        campaign, structural_manifest, shadow
     )
-    structural = WalkingShadowBenchmarkComparisonRunner(
-        output_root=tmp_path / "structural"
-    ).run(campaign, structural_manifest, shadow)
     measured_manifest = _walking_shadow_measured_manifest(structural.authority)
     recorder = WalkingBenchmarkRunObservationRecorder(output_root=tmp_path / "observations")
     observations = tuple(
@@ -1880,9 +2012,9 @@ def _walking_shadow_measured_sources(
         )
         for arm_index in range(2)
     )
-    measured = WalkingBenchmarkMeasuredComparisonRunner(
-        output_root=tmp_path / "measured"
-    ).run(measured_manifest, observations)
+    measured = WalkingBenchmarkMeasuredComparisonRunner(output_root=tmp_path / "measured").run(
+        measured_manifest, observations
+    )
     return structural, measured
 
 

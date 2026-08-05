@@ -40,7 +40,7 @@ from pajin.discovery.walking import (
     _campaign_digest,
     _safe_text,
 )
-from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.domain.models import CampaignManifest, StrictModel, campaign_manifest_digest
 from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_artifacts
 from pajin.tools.base import ToolRegistry
 from pajin.tools.mcp import RegisteredMCPTool
@@ -194,6 +194,12 @@ class MCPToolAuthorizationHypothesisAuthority(StrictModel):
     compiler_id: str = Field(alias="compilerId", pattern=_IDENTIFIER_PATTERN)
     campaign: str = Field(min_length=3, max_length=80, pattern=r"^[a-z0-9][a-z0-9-]*$")
     campaign_digest: str = Field(alias="campaignDigest", pattern=_SHA256_PATTERN)
+    source_campaign_digest: str | None = Field(
+        default=None,
+        alias="sourceCampaignDigest",
+        pattern=_SHA256_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
     rag_dependency: SealedRAGHypothesisDependency = Field(alias="ragDependency")
     mcp_surface_snapshot: SurfaceSnapshotAuthority = Field(alias="mcpSurfaceSnapshot")
     rule_id: str = Field(alias="ruleId", pattern=_IDENTIFIER_PATTERN)
@@ -243,7 +249,9 @@ class MCPToolAuthorizationHypothesisAuthority(StrictModel):
         if (
             rag.campaign != self.campaign
             or rag.campaign_digest != self.campaign_digest
+            or rag.source_campaign_digest != self.source_campaign_digest
             or self.mcp_surface_snapshot.campaign != self.campaign
+            or self.mcp_surface_snapshot.campaign_digest != self.source_campaign_digest
         ):
             raise ValueError("MCP Tool authorization dependencies belong to another Campaign")
         if self.server_surface_id == self.tool_surface_id:
@@ -506,6 +514,7 @@ class DeterministicMCPToolAuthorizationHypothesisCompiler:
                 compilerId=self.compiler_id,
                 campaign=authoritative_campaign.metadata.name,
                 campaignDigest=campaign_digest,
+                sourceCampaignDigest=campaign_manifest_digest(authoritative_campaign),
                 ragDependency=SealedRAGHypothesisDependency(
                     runId=rag_outcome.run_id,
                     rootDigest=rag.root_digest,

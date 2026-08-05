@@ -17,13 +17,14 @@ from pydantic import Field, JsonValue, field_validator, model_validator
 from pajin.discovery.canonicalization import canonical_json_bytes, discovery_digest
 from pajin.discovery.models import AttackSurfaceSet, ToolInterfaceSurfaceLocator
 from pajin.discovery.projection import SurfaceProjectionPublication
-from pajin.discovery.recon import ReconWaveOutcome
+from pajin.discovery.recon import ReconWaveOutcome, ReconWavePlan
 from pajin.domain.models import (
     CampaignManifest,
     StrictModel,
     ToolRequest,
     ToolResult,
     ToolRiskTier,
+    campaign_manifest_digest,
 )
 from pajin.policy.capability import CapabilityError, CapabilityLedger
 from pajin.policy.engine import PolicyEngine
@@ -33,7 +34,6 @@ from pajin.runtime.store import (
     RunIntegrityError,
     RunStore,
     load_verified_run_artifacts,
-    verify_run_integrity,
 )
 from pajin.runtime.worker import WorkerBackend
 from pajin.tools.base import ToolRegistry
@@ -460,6 +460,12 @@ class SurfaceSnapshotAuthority(StrictModel):
         max_length=80,
         pattern=r"^[a-z0-9][a-z0-9-]*$",
     )
+    campaign_digest: str | None = Field(
+        default=None,
+        alias="campaignDigest",
+        pattern=_SHA256_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
     projection_run_id: str = Field(
         alias="projectionRunId",
         min_length=1,
@@ -499,20 +505,23 @@ class SurfaceSnapshotAuthority(StrictModel):
 
     @model_validator(mode="after")
     def validate_identity(self) -> SurfaceSnapshotAuthority:
-        expected_digest = discovery_digest(
-            "pajin.orchestration.surface-snapshot-authority/v1",
-            {
-                "revision": self.revision,
-                "campaign": self.campaign,
-                "projectionRunId": self.projection_run_id,
-                "projectionRootDigest": self.projection_root_digest,
-                "sourceRunId": self.source_run_id,
-                "sourceRootDigest": self.source_root_digest,
-                "artifactPath": self.artifact_path,
-                "artifactSha256": self.artifact_sha256,
-                "surfaceSetId": self.surface_set_id,
-            },
-        )
+        material = {
+            "revision": self.revision,
+            "campaign": self.campaign,
+            "projectionRunId": self.projection_run_id,
+            "projectionRootDigest": self.projection_root_digest,
+            "sourceRunId": self.source_run_id,
+            "sourceRootDigest": self.source_root_digest,
+            "artifactPath": self.artifact_path,
+            "artifactSha256": self.artifact_sha256,
+            "surfaceSetId": self.surface_set_id,
+        }
+        if self.campaign_digest is None:
+            digest_domain = "pajin.orchestration.surface-snapshot-authority/v1"
+        else:
+            digest_domain = "pajin.orchestration.surface-snapshot-authority/v2"
+            material["campaignDigest"] = self.campaign_digest
+        expected_digest = discovery_digest(digest_domain, material)
         expected_id = f"surface-snapshot_{expected_digest}"
         if not self.snapshot_digest:
             self.snapshot_digest = expected_digest
@@ -830,7 +839,7 @@ def load_recon_surface_authority(
     authoritative_campaign = CampaignManifest.model_validate(
         campaign.model_dump(mode="python", by_alias=True)
     )
-    surface_set = _load_recon_surface_authority(recon)
+    surface_set = _load_recon_surface_authority(authoritative_campaign, recon)
     if surface_set.campaign != authoritative_campaign.metadata.name:
         raise HypothesisWaveError("Surface projection belongs to another Campaign")
     snapshot = _surface_snapshot_authority(
@@ -841,22 +850,43 @@ def load_recon_surface_authority(
     return surface_set.model_copy(deep=True), snapshot.model_copy(deep=True)
 
 
-def _load_recon_surface_authority(recon: ReconWaveOutcome) -> AttackSurfaceSet:
+def _load_recon_surface_authority(
+    campaign: CampaignManifest,
+    recon: ReconWaveOutcome,
+) -> AttackSurfaceSet:
     if not isinstance(recon, ReconWaveOutcome):
         raise HypothesisWaveError("Hypothesis Compiler requires a Recon Wave outcome")
     publication = recon.publication
     if not isinstance(publication, SurfaceProjectionPublication):
         raise HypothesisWaveError("Recon outcome has no Surface projection authority")
     try:
-        source = verify_run_integrity(recon.source_run_path)
-    except Exception as exc:
+        source_snapshot = load_verified_run_artifacts(
+            recon.source_run_path,
+            requests={
+                "campaign.json": _MAX_SURFACE_SET_BYTES,
+                "recon-plan.json": _MAX_SURFACE_SET_BYTES,
+            },
+            expected_run_id=recon.source_run_id,
+        )
+        sealed_campaign = CampaignManifest.model_validate_json(
+            source_snapshot.artifact_bytes("campaign.json")
+        )
+        sealed_plan = ReconWavePlan.model_validate_json(
+            source_snapshot.artifact_bytes("recon-plan.json")
+        )
+    except (OSError, RunIntegrityError, ValueError) as exc:
         raise HypothesisWaveError("Recon source Run is not integrity-valid") from exc
+    source = source_snapshot.verification
     if (
         source.run_id != publication.source_run_id
         or source.root_digest != publication.source_root_digest
         or source.run_id != recon.source_run_id
     ):
         raise HypothesisWaveError("Recon source Run differs from projection authority")
+    if sealed_campaign != campaign:
+        raise HypothesisWaveError("Campaign differs from sealed Recon source authority")
+    if sealed_plan != recon.plan:
+        raise HypothesisWaveError("Recon Plan differs from sealed source authority")
     try:
         snapshot = load_verified_run_artifacts(
             recon.projection_run_path,
@@ -910,6 +940,7 @@ def _surface_snapshot_authority(
         raise HypothesisWaveError("Surface Snapshot belongs to another Campaign authority")
     return SurfaceSnapshotAuthority(
         campaign=campaign.metadata.name,
+        campaignDigest=campaign_manifest_digest(campaign),
         projectionRunId=publication.projection_run_id,
         projectionRootDigest=publication.projection_root_digest,
         sourceRunId=publication.source_run_id,
@@ -953,7 +984,7 @@ def _require_current_surface_bound_plan(
     plan: HypothesisWavePlan,
     surface_bound_plan: SurfaceBoundPlan,
 ) -> None:
-    surface_set = _load_recon_surface_authority(recon)
+    surface_set = _load_recon_surface_authority(campaign, recon)
     current_snapshot = _surface_snapshot_authority(campaign, recon, surface_set)
     if (
         hypothesis_set.campaign != current_snapshot.campaign

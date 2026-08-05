@@ -1,5 +1,15 @@
 """Shadow Supervisor contracts and authorities."""
 
+from pajin.supervision.action_proposal import (
+    GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION,
+    GeneralAttackActionProposal,
+    GeneralAttackActionProposalError,
+    GeneralAttackCleanupRequirement,
+    GeneralAttackExpectedEvidence,
+    GeneralAttackTargetRef,
+    build_general_attack_action_proposal,
+    verify_general_attack_action_proposal,
+)
 from pajin.supervision.benchmark_campaign import (
     SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION,
     SupervisorBenchmarkBaselineSource,
@@ -94,6 +104,7 @@ from pajin.supervision.snapshot_input import (
 )
 
 __all__ = [
+    "GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION",
     "SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION",
     "SUPERVISOR_BENCHMARK_CANDIDATE_EXECUTION_EVIDENCE_API_VERSION",
     "SUPERVISOR_BENCHMARK_MEASURED_COMPARISON_API_VERSION",
@@ -107,6 +118,11 @@ __all__ = [
     "SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION",
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
+    "GeneralAttackActionProposal",
+    "GeneralAttackActionProposalError",
+    "GeneralAttackCleanupRequirement",
+    "GeneralAttackExpectedEvidence",
+    "GeneralAttackTargetRef",
     "SupervisorBenchmarkBaselineSource",
     "SupervisorBenchmarkCampaignPlan",
     "SupervisorBenchmarkCampaignPlanError",
@@ -156,6 +172,7 @@ __all__ = [
     "SupervisorTaskProposal",
     "SupervisorTypedProposal",
     "bind_supervisor_model",
+    "build_general_attack_action_proposal",
     "build_supervisor_benchmark_candidate_execution_evidence",
     "build_supervisor_invocation_request",
     "compile_supervisor_shadow_proposal",
@@ -165,6 +182,7 @@ __all__ = [
     "load_supervisor_benchmark_measured_comparison_authority",
     "parse_supervisor_shadow_proposal_draft",
     "registered_supervisor_proposal_compilation_policy",
+    "verify_general_attack_action_proposal",
     "verify_supervisor_benchmark_candidate_invocation",
     "verify_supervisor_checkpoint_schedule_publication",
     "verify_supervisor_model_binding",

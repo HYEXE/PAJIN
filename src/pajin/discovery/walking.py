@@ -21,7 +21,12 @@ from pajin.discovery.models import (
     HTTPRAGSurfaceLocator,
 )
 from pajin.discovery.recon import HTTPRAGInjectionReconPlanner, ReconWaveOutcome, ReconWavePlan
-from pajin.domain.models import CampaignManifest, StrictModel, ToolRiskTier
+from pajin.domain.models import (
+    CampaignManifest,
+    StrictModel,
+    ToolRiskTier,
+    campaign_manifest_digest,
+)
 from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_artifacts
 
 WALKING_HYPOTHESIS_API_VERSION: Literal["pajin.dev/walking-rag-injection-hypothesis/v1alpha1"] = (
@@ -178,6 +183,12 @@ class RAGInjectionHypothesisAuthority(StrictModel):
         pattern=r"^[a-z0-9][a-z0-9-]*$",
     )
     campaign_digest: str = Field(alias="campaignDigest", pattern=_SHA256_PATTERN)
+    source_campaign_digest: str | None = Field(
+        default=None,
+        alias="sourceCampaignDigest",
+        pattern=_SHA256_PATTERN,
+        exclude_if=lambda value: value is None,
+    )
     surface_snapshot: SurfaceSnapshotAuthority = Field(alias="surfaceSnapshot")
     rule_id: str = Field(
         alias="ruleId",
@@ -258,7 +269,10 @@ class RAGInjectionHypothesisAuthority(StrictModel):
 
     @model_validator(mode="after")
     def validate_authority(self) -> RAGInjectionHypothesisAuthority:
-        if self.surface_snapshot.campaign != self.campaign:
+        if (
+            self.surface_snapshot.campaign != self.campaign
+            or self.surface_snapshot.campaign_digest != self.source_campaign_digest
+        ):
             raise ValueError("RAG-injection hypothesis belongs to another Snapshot Campaign")
         if self.rag_locator.boundary != "corpus-ingest":
             raise ValueError("RAG-injection hypothesis requires a corpus-ingest boundary")
@@ -423,6 +437,7 @@ class DeterministicRAGInjectionHypothesisCompiler:
                     compilerId=self.compiler_id,
                     campaign=authoritative_campaign.metadata.name,
                     campaignDigest=campaign_digest,
+                    sourceCampaignDigest=campaign_manifest_digest(authoritative_campaign),
                     surfaceSnapshot=snapshot.model_copy(deep=True),
                     ruleId=rule.rule_id,
                     ruleDigest=rule.rule_digest,

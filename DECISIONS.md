@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0128: Bind General Attack Semantics Before Action Compilation](docs/adr/0128-bind-general-attack-semantics-before-action-compilation.md)
 - [ADR-0127: Enforce the Advertised Supervisor Draft Wire](docs/adr/0127-enforce-the-advertised-supervisor-draft-wire.md)
 - [ADR-0126: Bind B3 Completions into Externally Attested Target Execution](docs/adr/0126-bind-b3-completions-into-externally-attested-target-execution.md)
 - [ADR-0125: Bind Benchmark Coordinates into Supervisor Provider Requests](docs/adr/0125-bind-benchmark-coordinates-into-supervisor-provider-requests.md)

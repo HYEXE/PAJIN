@@ -13,6 +13,7 @@ from pajin.discovery import (
     BoundedReplanningPolicy,
     BoundedReplanningRunner,
     CompiledHypothesisWave,
+    DeterministicCompilerState,
     DeterministicHypothesisCompiler,
     DeterministicMultiWaveAuthority,
     DynamicHypothesisWaveRunner,
@@ -26,6 +27,9 @@ from pajin.discovery import (
     RegisteredReplanTransition,
     ReplanDecision,
     SingleReconWaveRunner,
+    SurfaceBoundPlan,
+    SurfaceBoundTask,
+    SurfaceSnapshotAuthority,
     TrustedSurfaceProducer,
 )
 from pajin.domain.models import CampaignManifest
@@ -649,8 +653,71 @@ def test_multi_wave_authority_rejects_retained_digest_scope_expansion(
     assert isinstance(allow, list)
     allow.append("https://scope-expansion.invalid/*")
 
-    with pytest.raises(ValueError, match="Authority Digest"):
+    with pytest.raises(ValueError, match="another Campaign"):
         DeterministicMultiWaveAuthority.model_validate(payload)
+
+
+def test_multi_wave_authority_reads_field_absent_legacy_snapshot_wire(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a5_campaign(sample_campaign)
+    recon_runner, initial_runner, replanning, _ = _three_wave_stack(
+        tmp_path,
+        campaign,
+    )
+    recon = asyncio.run(recon_runner.run(campaign))
+    initial = asyncio.run(initial_runner.run(campaign, recon))
+    outcome = asyncio.run(replanning.run(campaign, recon, initial))
+    assert outcome.authority is not None
+    current = outcome.authority
+
+    snapshot_wire = current.surface_snapshot.model_dump(mode="json", by_alias=True)
+    snapshot_wire.update({"snapshotId": "", "snapshotDigest": ""})
+    snapshot_wire.pop("campaignDigest")
+    legacy_snapshot = SurfaceSnapshotAuthority.model_validate(snapshot_wire)
+    legacy_states: list[DeterministicCompilerState] = []
+    for state in current.compiler_states:
+        legacy_tasks: list[SurfaceBoundTask] = []
+        for task in state.surface_bound_plan.tasks:
+            task_wire = task.model_dump(mode="json", by_alias=True)
+            task_wire.update(
+                {
+                    "taskDigest": "",
+                    "surfaceSnapshotId": legacy_snapshot.snapshot_id,
+                    "surfaceSnapshotDigest": legacy_snapshot.snapshot_digest,
+                }
+            )
+            legacy_tasks.append(SurfaceBoundTask.model_validate(task_wire))
+        legacy_plan = SurfaceBoundPlan(
+            surfaceSnapshot=legacy_snapshot,
+            hypothesisSetId=state.hypothesis_set_id,
+            wavePlanId=state.wave_plan_id,
+            tasks=legacy_tasks,
+        )
+        legacy_states.append(
+            DeterministicCompilerState(
+                compilerId=state.compiler_id,
+                ruleIds=state.rule_ids,
+                hypothesisSetId=state.hypothesis_set_id,
+                wavePlanId=state.wave_plan_id,
+                surfaceBoundPlan=legacy_plan,
+            )
+        )
+    legacy = DeterministicMultiWaveAuthority(
+        campaignAuthority=current.campaign_authority,
+        surfaceSnapshot=legacy_snapshot,
+        policy=current.policy,
+        compilerStates=legacy_states,
+        observationRules=current.observation_rules,
+        transitions=current.transitions,
+    )
+    legacy_wire = legacy.model_dump(mode="json", by_alias=True)
+    for state_wire in legacy_wire["compilerStates"]:
+        assert "campaignDigest" not in state_wire["surfaceBoundPlan"]["surfaceSnapshot"]
+    assert "campaignDigest" not in legacy_wire["surfaceSnapshot"]
+
+    assert DeterministicMultiWaveAuthority.model_validate(legacy_wire) == legacy
 
 
 def test_observation_classification_is_exact_and_graph_supports_new_surface_edge(

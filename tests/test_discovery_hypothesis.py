@@ -20,7 +20,7 @@ from pajin.discovery import (
     SurfaceBoundPlan,
     TrustedSurfaceProducer,
 )
-from pajin.domain.models import CampaignManifest
+from pajin.domain.models import CampaignManifest, campaign_manifest_digest
 from pajin.policy.capability import CapabilityError
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.control import BudgetController
@@ -192,6 +192,7 @@ def test_hypothesis_compiler_is_deterministic_and_surface_bound(
     snapshot = first.surface_bound_plan.surface_snapshot
     task = first.surface_bound_plan.tasks[0]
     assert snapshot.revision == 1
+    assert snapshot.campaign_digest == campaign_manifest_digest(campaign)
     assert snapshot.surface_set_id == recon.surface_set.surface_set_id
     assert snapshot.projection_run_id == recon.publication.projection_run_id
     assert snapshot.projection_root_digest == recon.publication.projection_root_digest
@@ -202,6 +203,25 @@ def test_hypothesis_compiler_is_deterministic_and_surface_bound(
     assert task.hypothesis_set_id == first.hypothesis_set.hypothesis_set_id
     assert task.wave_plan_id == first.plan.wave_plan_id
     assert task.step == first.plan.steps[0]
+
+
+def test_hypothesis_compiler_rejects_same_name_foreign_campaign_relabel(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _a4_campaign(sample_campaign)
+    recon_runner, _, tools, recon_tool = _a4_stack(tmp_path, campaign)
+    recon = asyncio.run(recon_runner.run(campaign))
+    raw_foreign = campaign.model_dump(mode="json", by_alias=True)
+    raw_foreign["metadata"]["description"] = "Same name, different Campaign authority."
+    foreign_campaign = CampaignManifest.model_validate(raw_foreign)
+    compiler = DeterministicHypothesisCompiler(
+        tools=tools,
+        rules=[_rule(recon_tool)],
+    )
+
+    with pytest.raises(HypothesisWaveError, match="sealed Recon source authority"):
+        compiler.compile(foreign_campaign, recon)
 
 
 def test_surface_bound_plan_rejects_snapshot_task_and_plan_digest_tampering(

@@ -33,7 +33,9 @@ cannot imply RAG authority.
 
 `RAGInjectionHypothesisAuthority` is content-addressed and binds:
 
-- the complete canonical Campaign digest;
+- the existing WALK-domain canonical `campaignDigest`;
+- additive `sourceCampaignDigest`, equal to the strengthened ORCH Snapshot's complete canonical
+  Campaign Manifest digest when present;
 - the ORCH-001 `SurfaceSnapshotAuthority`, including projection/source roots, sealed artifact
   SHA-256, revision, and exact Surface Set ID;
 - compiler ID and the complete code-registered H-17 rule digest;
@@ -78,6 +80,7 @@ Compilation or Recon fails closed when:
 - a corpus-ingest Surface has zero or multiple co-located upload dependencies;
 - the caller substitutes a Campaign, Recon Plan, source Run, projection, Snapshot, Surface, rule,
   or digest;
+- a strengthened Snapshot's complete Campaign Manifest digest differs from its WALK parent;
 - a sealed artifact or publication event differs from its integrity authority; or
 - any bounded canonical model validation fails.
 
@@ -86,10 +89,12 @@ for documents, knowledge, or RAG does not create a RAG Surface without the expli
 
 ## Compatibility, rollback, and next slice
 
-WALK-002 adds a new model and Runner and makes the existing Recon Snapshot loader public; it does
-not change the v1alpha1 `AttackHypothesis`, `HypothesisWavePlan`, ORCH-001 Plan/Task, or legacy Recon
-wire shapes. Rollback stops selecting the WALK-002 planner/compiler while already sealed source,
-projection, and Hypothesis Runs remain immutable and readable.
+WALK-002 adds a new model and Runner and makes the existing Recon Snapshot loader public. The
+additive `sourceCampaignDigest` is omitted for field-absent historical authorities, preserving
+their wire and retained parent digests; new strengthened Snapshot parents require exact equality.
+The v1alpha1 `AttackHypothesis`, `HypothesisWavePlan`, ORCH-001 Plan/Task, and legacy Recon wire
+shapes remain compatible. Rollback stops selecting the WALK-002 planner/compiler but must retain
+the additive reader or treat strengthened records as non-executable historical artifacts.
 
 This slice closes only File Upload Surface to RAG Injection Hypothesis. WALK-003 must add the MCP
 Tool Authorization Hypothesis and exact dependency without treating the semantic required Tool ID

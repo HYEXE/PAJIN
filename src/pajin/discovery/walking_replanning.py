@@ -18,7 +18,7 @@ from pajin.discovery.walking_mcp import (
     MCPToolAuthorizationHypothesisAuthority,
     MCPToolAuthorizationHypothesisOutcome,
 )
-from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.domain.models import CampaignManifest, StrictModel, campaign_manifest_digest
 from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_artifacts
 
 WALKING_OBSERVATION_REPLAN_API_VERSION: Literal["pajin.dev/walking-observation-replan/v1alpha1"] = (
@@ -421,6 +421,10 @@ class WalkingObservationReplanAuthority(StrictModel):
             self.campaign_digest != _campaign_digest(campaign)
             or campaign.metadata.name != hypothesis.campaign
             or self.campaign_digest != hypothesis.campaign_digest
+            or (
+                hypothesis.source_campaign_digest is not None
+                and hypothesis.source_campaign_digest != campaign_manifest_digest(campaign)
+            )
         ):
             raise ValueError("Walking Replan Campaign authority differs")
         if self.rule.source_hypothesis_rule_id != hypothesis.rule_id:
