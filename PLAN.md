@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `PERMIT-002` Deterministic Action Compiler
+- 현재 우선순위: `PERMIT-003` Exact Single-use ActionPermit
 
 ## 제품 목표
 
@@ -585,14 +585,21 @@ CAP-001 definition에서만 일반 공격 의미를 도출하는 `GeneralAttackA
 target digest, arguments, evidence, cleanup과 risk를 content-addressed 의미로 결박하지만 ToolRequest,
 Capability Grant, Permit과 execution은 계속 false다. 새 ORCH Snapshot은 sealed Recon의 Campaign·Plan을 exact
 재검증한 complete Campaign digest를 포함하고, legacy name-only Snapshot은 reader 호환만 유지하며 PERMIT-001
-입력에서는 거부한다. 다음 `PERMIT-002`는 모든 source authority를 다시 열어 code-backed compiler가 이
-비실행 의미를 exact request/GRAPH authority로 결정론적으로 변환하되 target·arguments·risk·evidence·cleanup과
-Scope를 확대하지 못하게 해야 한다.
+입력에서는 거부한다. `PERMIT-002`는 모든 source authority를 다시 열고 complete CAP-002 authority set에서
+exact Materializer와 Action Compiler만 호출해 fresh deterministic `ToolRequest`를 결박한다. materialized
+arguments와 compiled request는 JSON scalar type까지 canonical byte equality를 요구하고 호출 뒤 complete
+authority set을 연속 두 번 관찰하며 역할별 stable-context 수집 중 identity도 고정한다.
+마지막 context-free declared-identity sweep으로 지연 scalar drift를 거부하며, 등록 adapter의
+stable-context provider는 side-effect-free인 code-owned TCB라는 전제를 유지한다.
+release·activation·Grant·Envelope·
+Graph Decision·reservation·GRAPH proposal·Permit·execution은 absent/false다. 다음 `PERMIT-003`은 이 intent를
+현재 release/activation, 기존 run-level MissionEnvelope, 외부 current Graph Decision과 trusted reservation에
+교차 결박한 뒤 기존 GRAPH-006 atomic single-use Permit 경로만 사용해야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
 - [x] `PERMIT-001` 일반 공격 ActionProposal
-- [ ] `PERMIT-002` Deterministic Action Compiler
+- [x] `PERMIT-002` Deterministic Action Compiler
 - [ ] `PERMIT-003` Exact Single-use ActionPermit
 - [ ] `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
 - [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인

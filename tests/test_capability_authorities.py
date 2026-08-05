@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from hashlib import sha256
 
@@ -79,8 +79,14 @@ class _AuthorityBase:
         self.context_version = "test.authority/v1"
         self.context_extra: object | None = None
         self.mutate_during_call = False
+        self.mutate_during_context = False
+        self.on_context: Callable[[], None] | None = None
 
     def _stable_context(self) -> Mapping[str, object]:
+        if self.mutate_during_context:
+            self.authority_version = "2.0.0"
+        if self.on_context is not None:
+            self.on_context()
         context: dict[str, object] = {
             "implementationVersion": self.context_version,
             "role": self.ROLE.value,
@@ -116,6 +122,7 @@ class _Compiler(_AuthorityBase):
     def __init__(self, definition: CapabilityDefinition) -> None:
         super().__init__(definition)
         self.expand_target = False
+        self.arguments_override: Mapping[str, JsonValue] | None = None
 
     def stable_execution_context(self) -> Mapping[str, object]:
         return self._stable_context()
@@ -128,7 +135,11 @@ class _Compiler(_AuthorityBase):
         self._maybe_mutate()
         return request.model_copy(
             update={
-                "arguments": dict(materialized_arguments),
+                "arguments": dict(
+                    self.arguments_override
+                    if self.arguments_override is not None
+                    else materialized_arguments
+                ),
                 "target": "https://expanded.invalid" if self.expand_target else request.target,
             }
         )
@@ -376,6 +387,16 @@ def test_binding_rejects_wrong_interface_secret_context_and_non_json_context() -
     with pytest.raises(CapabilityAuthorityError, match="stable context is invalid"):
         capability_authority_binding(non_json)
 
+    self_mutating = _Materializer(definition)
+    self_mutating.mutate_during_context = True
+    with pytest.raises(CapabilityAuthorityError, match="stable context is invalid"):
+        capability_authority_binding(self_mutating)
+
+    deleting_identity = _Materializer(definition)
+    deleting_identity.on_context = lambda: delattr(deleting_identity, "authority_version")
+    with pytest.raises(CapabilityAuthorityError, match="stable context is invalid"):
+        capability_authority_binding(deleting_identity)
+
 
 def test_registry_detects_post_registration_and_in_call_identity_drift() -> None:
     definition = _definition()
@@ -399,6 +420,41 @@ def test_registry_detects_post_registration_and_in_call_identity_drift() -> None
     materializer.mutate_during_call = True
     with pytest.raises(CapabilityAuthorityError, match="identity changed"):
         handle.materialize({"path": "/health"})
+
+
+def test_registry_rejects_reverse_order_cross_role_identity_drift() -> None:
+    definition = _definition()
+    authorities = _authorities(definition)
+    compiler = next(item for item in authorities if isinstance(item, _Compiler))
+    oracle = next(item for item in authorities if isinstance(item, _Oracle))
+    registry = _registry(definition, authorities)
+    reference = registry.capabilities()[0].reference()
+    oracle.on_context = lambda: setattr(compiler, "authority_version", "2.0.0")
+
+    with pytest.raises(CapabilityAuthorityError, match="identity changed"):
+        registry.resolve(reference)
+
+
+def test_registry_rejects_delayed_last_observation_identity_drift() -> None:
+    definition = _definition()
+    authorities = _authorities(definition)
+    compiler = next(item for item in authorities if isinstance(item, _Compiler))
+    oracle = next(item for item in authorities if isinstance(item, _Oracle))
+    registry = _registry(definition, authorities)
+    reference = registry.capabilities()[0].reference()
+    observations = 0
+
+    def mutate_after_second_observation() -> None:
+        nonlocal observations
+        observations += 1
+        if observations == 2:
+            compiler.authority_version = "2.0.0"
+
+    oracle.on_context = mutate_after_second_observation
+
+    with pytest.raises(CapabilityAuthorityError, match="identity changed"):
+        registry.resolve(reference)
+    assert observations == 2
 
 
 def test_compiler_and_executor_cannot_expand_declared_authority() -> None:
@@ -429,6 +485,36 @@ def test_compiler_and_executor_cannot_expand_declared_authority() -> None:
             reference,
             CapabilityAuthorityRole.EXECUTOR_ADAPTER,
         ).prepare(_request())
+
+
+@pytest.mark.parametrize(
+    ("source_value", "compiled_value"),
+    (
+        (True, 1),
+        (False, 0),
+        (1, 1.0),
+    ),
+)
+def test_compiler_rejects_json_scalar_type_substitution(
+    source_value: JsonValue,
+    compiled_value: JsonValue,
+) -> None:
+    definition = _definition()
+    authorities = _authorities(definition)
+    compiler = next(item for item in authorities if isinstance(item, _Compiler))
+    registry = _registry(definition, authorities)
+    reference = registry.capabilities()[0].reference()
+    source_arguments: dict[str, JsonValue] = {"nested": {"value": source_value}}
+    compiler.arguments_override = {"nested": {"value": compiled_value}}
+
+    with pytest.raises(CapabilityAuthorityError, match="expanded or changed"):
+        registry.authority(
+            reference,
+            CapabilityAuthorityRole.ACTION_COMPILER,
+        ).compile(
+            _request().model_copy(update={"arguments": source_arguments}),
+            source_arguments,
+        )
 
 
 def test_authority_set_and_exact_reference_reject_tampering() -> None:

@@ -1,5 +1,12 @@
 """Shadow Supervisor contracts and authorities."""
 
+from pajin.supervision.action_compiler import (
+    GENERAL_ATTACK_COMPILED_INTENT_API_VERSION,
+    GeneralAttackActionCompilerError,
+    GeneralAttackCompiledIntent,
+    compile_general_attack_action_intent,
+    verify_general_attack_compiled_intent,
+)
 from pajin.supervision.action_proposal import (
     GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION,
     GeneralAttackActionProposal,
@@ -105,6 +112,7 @@ from pajin.supervision.snapshot_input import (
 
 __all__ = [
     "GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION",
+    "GENERAL_ATTACK_COMPILED_INTENT_API_VERSION",
     "SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION",
     "SUPERVISOR_BENCHMARK_CANDIDATE_EXECUTION_EVIDENCE_API_VERSION",
     "SUPERVISOR_BENCHMARK_MEASURED_COMPARISON_API_VERSION",
@@ -118,9 +126,11 @@ __all__ = [
     "SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION",
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
+    "GeneralAttackActionCompilerError",
     "GeneralAttackActionProposal",
     "GeneralAttackActionProposalError",
     "GeneralAttackCleanupRequirement",
+    "GeneralAttackCompiledIntent",
     "GeneralAttackExpectedEvidence",
     "GeneralAttackTargetRef",
     "SupervisorBenchmarkBaselineSource",
@@ -175,6 +185,7 @@ __all__ = [
     "build_general_attack_action_proposal",
     "build_supervisor_benchmark_candidate_execution_evidence",
     "build_supervisor_invocation_request",
+    "compile_general_attack_action_intent",
     "compile_supervisor_shadow_proposal",
     "create_supervisor_snapshot_input",
     "invoke_supervisor_benchmark_candidate",
@@ -183,6 +194,7 @@ __all__ = [
     "parse_supervisor_shadow_proposal_draft",
     "registered_supervisor_proposal_compilation_policy",
     "verify_general_attack_action_proposal",
+    "verify_general_attack_compiled_intent",
     "verify_supervisor_benchmark_candidate_invocation",
     "verify_supervisor_checkpoint_schedule_publication",
     "verify_supervisor_model_binding",

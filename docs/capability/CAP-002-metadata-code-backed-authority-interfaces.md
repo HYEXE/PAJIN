@@ -58,9 +58,15 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 
 `RegisteredCapabilityAuthority` wraps each adapter rather than exposing it directly.
 
+Registered adapters are code-owned trusted computing-base components. Their
+`stable_execution_context()` implementation must be deterministic and side-effect-free; the
+registry detects observed drift but does not sandbox Byzantine Python code that can mutate peer
+objects while being inspected.
+
 - Materializer input and output are bounded canonical JSON objects.
-- The compiler cannot change request ID, Agent, target, or method, cannot add values outside the
-  materialized arguments, and must select the exact CAP-001 Tool ID.
+- The compiler cannot change request ID, Agent, target, or method, must preserve the materialized
+  arguments as exact canonical JSON bytes including scalar types, and must select the exact
+  CAP-001 Tool ID.
 - The executor cannot enable network access for a network-disabled Capability.
 - The normalizer cannot change request or Tool identity.
 - The Oracle returns only `succeeded`, `failed`, or `inconclusive`.
@@ -74,7 +80,8 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 - missing/duplicate roles and unregistered definitions
 - wrong role interface, secret-like context, and non-JSON context
 - adapter identity drift after registration and during a call
-- compiler target expansion and network-disabled egress
+- adapter self-mutation while stable context is captured and ordered cross-role identity drift
+- compiler target expansion, JSON boolean/integer/float substitution, and network-disabled egress
 - authority-set digest and exact-reference tampering
 - confused-deputy invocation through the wrong role wrapper
 
@@ -82,13 +89,18 @@ fallback, partial set, runtime mutation, or automatic module discovery.
 
 - Existing `Tool`, `ToolRegistry`, `CapabilityGrant`, Tool Gateway, and Replay runtime APIs remain
   unchanged.
+- Wire and public APIs remain unchanged. Compiler acceptance is intentionally stricter: Python-equal
+  but JSON-type-distinct arguments such as `true`, `1`, and `1.0` are rejected, and complete-set
+  resolution now requires two consecutive stored-manifest-equivalent observations followed by a
+  stable-context-free declared-identity sweep.
 - No persistent schema or Artifact reader migration is introduced.
 - A CAP-001 definition without a CAP-002 authority set is not considered code-backed executable.
 - Existing Tool and Replay implementations are not auto-registered. CAP-005 supplies a closed,
   explicit compatibility bundle for the seven currently bounded KISA, Bug Bounty, and CTF
   components.
-- Rollback means not constructing a CAP-002 registry and continuing to use the CAP-001
-  metadata-only Registry. Existing runtime paths are unaffected.
+- Rollback of a CAP-002 deployment means not constructing its registry and continuing to use the
+  CAP-001 metadata-only Registry. The canonical-byte and two-observation identity checks are generic
+  CAP-002 correctness hardening and should not be removed when rolling back a later consumer.
 
 ## Related and follow-up boundaries
 

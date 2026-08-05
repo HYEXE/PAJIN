@@ -105,16 +105,17 @@ non-executable proposals and cannot be consumed by GRAPH-006.
 ## Remaining boundary
 
 PERMIT-001 does not invoke a Capability materializer or action compiler and does not create a
-`ToolRequest`. PERMIT-002 must resolve the exact code-backed action compiler, re-open all source
-authorities, and compile a request without expanding target, arguments, risk, evidence, cleanup,
-Scope, or Campaign authority. PERMIT-003 must then reuse the existing GRAPH-006 atomic single-use
-Permit rather than introducing another Permit store or dispatcher.
+`ToolRequest`. PERMIT-002 consumes it only after exact source rebuild and compiles a non-expanding
+request through the exact code-backed Materializer and Action Compiler. PERMIT-003 must then reuse
+the existing GRAPH-006 atomic single-use Permit rather than introducing another Permit store or
+dispatcher.
 
 ## Related documents
 
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)
 - [ADR-0047: MissionEnvelope and ActionPermit Algebra](../adr/0047-mission-envelope-and-action-permit-algebra.md)
 - [ORCH-001 contract](ORCH-001-surface-snapshot-plan-task-binding.md)
+- [PERMIT-002 contract](PERMIT-002-deterministic-action-compiler.md)
 - [SUP-003 contract](SUP-003-typed-non-executable-supervisor-proposal.md)
 - [SUP-006 contract](SUP-006-adversarial-prompt-injection-regression.md)
 - [CAP-001 contract](../capability/CAP-001-versioned-capability-definition.md)

@@ -89,7 +89,7 @@ class CapabilityAuthorityAdapter(Protocol):
     def capability_reference(self) -> CapabilityDefinitionRef: ...
 
     def stable_execution_context(self) -> Mapping[str, object]:
-        """Return explicit, non-secret configuration that changes behavior."""
+        """Return explicit, non-secret configuration without mutating authority state."""
 
 
 @runtime_checkable
@@ -285,6 +285,25 @@ class RegisteredCapabilityAuthority:
         if capability != self._definition.reference() or binding != self._binding:
             raise CapabilityAuthorityError("registered Capability authority identity changed")
 
+    def validate_declared_identity(self) -> None:
+        """Recheck declared identity without executing adapter stable-context code."""
+
+        try:
+            role, authority_id, authority_version, capability = _declared_authority_identity(
+                self._adapter
+            )
+        except (AttributeError, CapabilityAuthorityError, TypeError, ValueError) as exc:
+            raise CapabilityAuthorityError(
+                "registered Capability authority identity changed"
+            ) from exc
+        if (
+            role != self._binding.role
+            or authority_id != self._binding.authority_id
+            or authority_version != self._binding.authority_version
+            or capability != self._definition.reference()
+        ):
+            raise CapabilityAuthorityError("registered Capability authority identity changed")
+
     def materialize(
         self,
         parameters: Mapping[str, JsonValue],
@@ -331,7 +350,14 @@ class RegisteredCapabilityAuthority:
             or compiled.target != trusted_request.target
             or compiled.method != trusted_request.method
             or compiled.tool_id != self._definition.tool.tool_id
-            or compiled.arguments != trusted_arguments
+            or canonical_capability_json(
+                compiled.arguments,
+                label="Capability compiled arguments",
+            )
+            != canonical_capability_json(
+                trusted_arguments,
+                label="Capability trusted materialized arguments",
+            )
         ):
             raise CapabilityAuthorityError(
                 "Capability compiler expanded or changed exact request authority"
@@ -551,6 +577,8 @@ class CapabilityAuthorityRegistry:
 
         self._handles = handles
         self._manifests = manifests
+        for manifest in self._manifests.values():
+            self._validate_manifest_handles(manifest)
 
     def resolve(self, reference: CodeBackedCapabilityRef) -> CodeBackedCapability:
         """Resolve only an exact definition and authority-set identity."""
@@ -597,14 +625,25 @@ class CapabilityAuthorityRegistry:
         return tuple(manifests)
 
     def _validate_manifest_handles(self, manifest: CodeBackedCapability) -> None:
+        # Consecutive observations catch drift that persists across context reads.
+        # A final context-free sweep catches scalar drift introduced by the last read.
+        for _ in range(2):
+            for binding in manifest.authorities:
+                key = (*_capability_key(manifest.capability), binding.role)
+                handle = self._handles.get(key)
+                if handle is None or handle.binding != binding:
+                    raise CapabilityAuthorityError(
+                        "Capability authority set differs from registered code"
+                    )
+                handle.validate_adapter_identity()
         for binding in manifest.authorities:
             key = (*_capability_key(manifest.capability), binding.role)
             handle = self._handles.get(key)
-            if handle is None or handle.binding != binding:
+            if handle is None:
                 raise CapabilityAuthorityError(
                     "Capability authority set differs from registered code"
                 )
-            handle.validate_adapter_identity()
+            handle.validate_declared_identity()
 
 
 def capability_authority_binding(
@@ -618,23 +657,25 @@ def capability_authority_binding(
 def _authority_identity(
     adapter: CapabilityAuthorityAdapter,
 ) -> tuple[CapabilityDefinitionRef, CapabilityAuthorityBinding]:
-    try:
-        role = CapabilityAuthorityRole(adapter.authority_role)
-        authority_id = adapter.authority_id
-        authority_version = adapter.authority_version
-        capability = CapabilityDefinitionRef.model_validate(
-            adapter.capability_reference.model_dump(mode="json", by_alias=True)
-        )
-    except (AttributeError, TypeError, ValidationError, ValueError) as exc:
-        raise CapabilityAuthorityError(
-            "Capability authority does not expose a canonical identity"
-        ) from exc
+    role, authority_id, authority_version, capability = _declared_authority_identity(adapter)
     _require_role_interface(adapter, role)
     try:
         stable = stable_execution_context(
             adapter,
             component=f"Capability authority {authority_id}@{authority_version}",
         )
+        current_role, current_authority_id, current_authority_version, current_capability = (
+            _declared_authority_identity(adapter)
+        )
+        if (
+            current_role != role
+            or current_authority_id != authority_id
+            or current_authority_version != authority_version
+            or current_capability != capability
+        ):
+            raise CapabilityAuthorityError(
+                "Capability authority identity changed while capturing stable context"
+            )
         implementation_type = cast(str, stable["type"])
         context = stable["context"]
         _reject_sensitive_context(context, path="context")
@@ -675,6 +716,24 @@ def _authority_identity(
             "Capability authority stable context is invalid"
         ) from exc
     return capability, binding
+
+
+def _declared_authority_identity(
+    adapter: CapabilityAuthorityAdapter,
+) -> tuple[CapabilityAuthorityRole, str, str, CapabilityDefinitionRef]:
+    try:
+        return (
+            CapabilityAuthorityRole(adapter.authority_role),
+            adapter.authority_id,
+            adapter.authority_version,
+            CapabilityDefinitionRef.model_validate(
+                adapter.capability_reference.model_dump(mode="json", by_alias=True)
+            ),
+        )
+    except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+        raise CapabilityAuthorityError(
+            "Capability authority does not expose a canonical identity"
+        ) from exc
 
 
 def _require_role_interface(

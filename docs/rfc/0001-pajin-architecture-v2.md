@@ -614,6 +614,21 @@ only the endpoint digest, while exact ORCH arguments remain inert data. No reque
 is created. PERMIT-002 must perform the first deterministic request compilation, and PERMIT-003
 must reuse GRAPH-006 atomic single-use Permit consumption.
 
+PERMIT-002 exact-rebuilds that predecessor and resolves one caller-supplied complete CAP-002
+authority-set reference. It invokes only the registered Materializer and Action Compiler, derives
+a fresh request identity from the source proposal and selected authority digests, and requires both
+the materialized arguments and the compiled request to equal code-owned source semantics as
+canonical JSON bytes. It re-resolves the complete seven-role set after both calls, rejecting JSON
+scalar-type substitution and cross-role identity drift before publishing output. CAP-002 resolution
+uses two consecutive full observations, rejects identity mutation during stable-context capture,
+and ends with a context-free declared-identity sweep. Registered context providers remain
+side-effect-free code-owned trusted computing-base components, not sandboxed untrusted code.
+The additive `GeneralAttackCompiledIntent` binds the complete predecessor, authority-set and role
+bindings, canonical `ToolRequest`, Gateway request digest, normalized-parameter digest, and Target
+digest. It remains `compiled-not-permitted`: release, activation, Grant, Envelope, Graph Decision,
+reservation, GRAPH proposal, Permit, dispatch, and execution are absent and false. PERMIT-003 must
+intersect the current intent with those later authorities before using GRAPH-006.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes
