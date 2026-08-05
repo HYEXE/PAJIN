@@ -111,10 +111,11 @@ Comparison wires remain unchanged. The two SUP-005B2 records and one digest-only
 additive. Rollback stops admitting new SUP-005B2 authorities; existing B3, Harness, Target, and
 BENCH-003B1 Runs remain independently readable and non-activating.
 
-## Remaining boundary
+## Completed successor boundary
 
 This is a host-local, externally signed benchmark authority for the configured Target and
 measurement registry. It does not prove distributed exactly-once execution, production model
-quality, proposal causal effect, or activation thresholds. SUP-006 must add adversarial prompt
-injection regressions while preserving the same taint, Scope, non-execution, and activation-false
-boundaries.
+quality, proposal causal effect, or activation thresholds. SUP-006 now applies an adversarial
+prompt-injection corpus across this path while preserving the same taint, Scope, non-execution, and
+activation-false boundaries. See the
+[SUP-006 contract](SUP-006-adversarial-prompt-injection-regression.md).

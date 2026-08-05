@@ -63,8 +63,10 @@ from pajin.supervision.invocation_journal import (
 )
 from pajin.supervision.model_binding import (
     SupervisorModelBinding,
+    SupervisorModelBindingError,
     SupervisorModelConfiguration,
     SupervisorShadowProposalDraft,
+    parse_supervisor_shadow_proposal_draft,
 )
 from pajin.supervision.proposal_compiler import (
     SupervisorProposalCompilerError,
@@ -89,7 +91,6 @@ _RECEIPT_PATH = "supervision/supervisor-invocation-receipt.json"
 _MAX_REQUEST_RESERVATION_BYTES = 16_384
 _MAX_GATEWAY_EVIDENCE_BYTES = 32 * 1024 * 1024
 _MAX_RECEIPT_BYTES = 8 * 1024 * 1024
-_MAX_DRAFT_BYTES = 1_000_000
 
 
 class SupervisorInvocationRuntimeError(RuntimeError):
@@ -797,19 +798,21 @@ def _parse_supervisor_draft(
         ):
             raise ValueError("Supervisor Provider result is not one strict draft")
         content = canonical.content.encode("utf-8", errors="strict")
-        raw = parse_strict_json_bytes(
-            content,
-            label="Supervisor Provider draft",
-            max_bytes=_MAX_DRAFT_BYTES,
-        )
-        draft = SupervisorShadowProposalDraft.model_validate(raw)
+        draft = parse_supervisor_shadow_proposal_draft(content)
         if (
             draft.snapshot_id != schedule.source_snapshot_id
             or draft.snapshot_digest != schedule.source_snapshot_digest
         ):
             raise ValueError("Supervisor draft refers to another source Snapshot")
         return draft
-    except (AttributeError, TypeError, UnicodeError, ValidationError, ValueError) as exc:
+    except (
+        AttributeError,
+        SupervisorModelBindingError,
+        TypeError,
+        UnicodeError,
+        ValidationError,
+        ValueError,
+    ) as exc:
         raise SupervisorInvocationRuntimeError(
             "Supervisor Provider response is not an admissible draft"
         ) from exc

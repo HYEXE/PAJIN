@@ -505,6 +505,7 @@ class SupervisorBenchmarkMeasuredComparisonRunner:
             )
             sources = _load_measurement_sources(
                 authoritative_campaign,
+                plan_outcome,
                 plan,
                 baseline_source,
                 schedule_sources,
@@ -618,6 +619,7 @@ def load_supervisor_benchmark_measured_comparison_authority(
         )
         sources = _load_measurement_sources(
             authoritative_campaign,
+            plan_outcome,
             plan,
             baseline_source,
             schedule_sources,
@@ -725,6 +727,7 @@ def load_supervisor_benchmark_measured_comparison_authority(
 
 def _load_measurement_sources(
     campaign: CampaignManifest,
+    plan_outcome: SupervisorBenchmarkCampaignPlanOutcome,
     plan: SupervisorBenchmarkCampaignPlan,
     baseline_source: WalkingShadowMeasuredBenchmarkOutcome,
     schedule_sources: tuple[SupervisorBenchmarkScheduleSource, ...],
@@ -752,6 +755,10 @@ def _load_measurement_sources(
 
     verified_candidates: dict[str, SupervisorBenchmarkCandidateInvocation] = {}
     for candidate in candidate_invocations:
+        if candidate.plan_outcome != plan_outcome:
+            raise SupervisorBenchmarkMeasurementError(
+                "SUP-005B2 candidate invocation crossed Plan publication authority"
+            )
         verified = verify_supervisor_benchmark_candidate_invocation(
             campaign,
             candidate,

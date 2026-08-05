@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -684,9 +685,18 @@ def test_provider_result_rejects_boolean_number_coercion(
 
 
 class SupervisorDraftWorker:
-    def __init__(self, *, snapshot_id: str, snapshot_digest: str) -> None:
+    def __init__(
+        self,
+        *,
+        snapshot_id: str,
+        snapshot_digest: str,
+        draft_transform: Callable[[dict[str, object]], dict[str, object]] | None = None,
+        draft_wire_transform: Callable[[str], str] | None = None,
+    ) -> None:
         self._snapshot_id = snapshot_id
         self._snapshot_digest = snapshot_digest
+        self._draft_transform = draft_transform
+        self._draft_wire_transform = draft_wire_transform
         self.calls = 0
 
     def stable_execution_context(self) -> dict[str, object]:
@@ -715,6 +725,11 @@ class SupervisorDraftWorker:
             "permitGranted": False,
             "executionAuthorized": False,
         }
+        if self._draft_transform is not None:
+            draft = self._draft_transform(draft)
+        draft_wire = json.dumps(draft, separators=(",", ":"))
+        if self._draft_wire_transform is not None:
+            draft_wire = self._draft_wire_transform(draft_wire)
         now = datetime.now(UTC)
         return WorkerResult(
             execution_id=job.execution_id,
@@ -726,7 +741,7 @@ class SupervisorDraftWorker:
                     "provider_id": payload["providerId"],
                     "response_id": f"supervisor-response-{self.calls}",
                     "model": request["model"],
-                    "content": json.dumps(draft, separators=(",", ":")),
+                    "content": draft_wire,
                     "refusal": None,
                     "finish_reason": "stop",
                     "tool_calls": [],
@@ -758,6 +773,8 @@ def _invocation_environment(
     graph_store: InMemoryGraphSnapshotStore,
     *,
     policy_engine: PolicyEngine | None = None,
+    draft_transform: Callable[[dict[str, object]], dict[str, object]] | None = None,
+    draft_wire_transform: Callable[[str], str] | None = None,
 ):
     ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
     tool_id = f"provider.{provider.provider_id}.chat"
@@ -786,6 +803,8 @@ def _invocation_environment(
     worker = SupervisorDraftWorker(
         snapshot_id=snapshot_input.source_snapshot_id,
         snapshot_digest=snapshot_input.source_snapshot_digest,
+        draft_transform=draft_transform,
+        draft_wire_transform=draft_wire_transform,
     )
     journal = SupervisorInvocationJournal(tmp_path / "supervisor-invocations.sqlite3")
     authorities = SupervisorInvocationAuthorities(

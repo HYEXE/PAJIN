@@ -43,21 +43,36 @@
   내용의 causal improvement를 뜻하지 않는다. B3 charged cost는 conservative upper bound, Observation cost는
   externally adjudicated coordinate-total이라 동일값이나 합계로 추론할 수 없다. threshold와 activation은
   계속 false다.
-- 해소 조건: production 활성화가 필요하면 SUP-006 adversarial regression과 별도 threshold authority를
-  통과하고, 분산 실행에는 외부 fencing·durable budget·registry checkpoint를 추가한다. proposal 적용은
-  Phase 7 Permit·Approval 경계 밖에서 허용하지 않는다.
+- 해소 조건: production 활성화가 필요하면 SUP-006 adversarial regression 이후에도 별도 threshold,
+  Permit·Approval authority를 통과해야 한다. 분산 실행에는 외부 fencing·durable budget·registry
+  checkpoint를 추가한다. proposal 적용은 Phase 7 Permit·Approval 경계 밖에서 허용하지 않는다.
 
-## SUP-005A/B1/B2 테스트 fixture 결합과 단일 좌표 집중 검증
+## SUP-006 adversarial corpus와 fake Provider 검증 경계
+
+- 상태: 의도적으로 제한된 authority-containment 회귀
+- 마지막 재현: 2026-08-05
+- 현재 보장: system/developer 역할 위장, taint downgrade, Scope·Plan·TaskGraph mutation, ToolRequest,
+  Capability, Permit, execution, threshold, activation과 draft schema escape를 SUP-002~SUP-005B2 경로에서
+  검증한다. schema-valid 악성 rationale도 typed proposal과 final measurement lineage에서 digest-only이고,
+  invalid output은 outcome-unknown·manual review·no-redispatch로 고정된다.
+- 제한: deterministic fake Provider와 fake external measurement adapter를 사용하며 실제 production 모델이
+  공격을 무시한다고 증명하지 않는다. corpus는 대표 공격 클래스의 authority containment를 고정하지만
+  모든 언어·인코딩·Provider별 prompt injection 표현을 열거하지 않는다.
+- 해소 조건: 새 Provider/model revision 또는 input/output schema가 추가될 때 corpus를 확장하고 real-provider
+  opt-in conformance를 별도 환경에서 실행한다. 모델 품질과 activation 판단은 별도 threshold authority가
+  소유해야 한다.
+
+## SUP-005A/B1/B2/SUP-006 테스트 fixture 결합과 단일 좌표 집중 검증
 
 - 상태: 활성 테스트 유지보수 제약
 - 마지막 재현: 2026-08-05
-- 현재 보장: SUP-005A/B1/B2 집중 테스트와 BENCH-003·P0-C·SUP-004B3 인접 회귀를 함께 실행한다. B1은 complete
+- 현재 보장: SUP-005A/B1/B2/SUP-006 집중 테스트와 BENCH-003·P0-C·SUP-004B3 인접 회귀를 함께 실행한다. B1은 complete
   tuple equality, 누락·추가·재정렬, context equivocation, post-hoc legacy request, cross-Plan, foreign
   invoker·schedule·source와 권위 boolean을 직접 거부한다.
-- 제한: 세 신규 테스트가 Supervisor invocation과 Walking benchmark source 생성을 위해 기존 대형 테스트
-  모듈의 비공개 helper를 import한다. B2는 실제 외부 Ed25519 attestation·registry Harness·B3 호출을 통과하지만
-  seed 1개·repetition 1개다. 다중 좌표 canonical ordering, schedule 전단사와 stable request uniqueness는 모델
-  invariant로 구현됐지만 별도 다중 좌표 실행 테스트가 아직 없다.
+- 제한: 네 신규 테스트가 Supervisor invocation과 Walking benchmark source 생성을 위해 기존 대형 테스트
+  모듈의 비공개 helper를 import한다. B2/SUP-006은 실제 외부 Ed25519 attestation·registry Harness·B3 호출을
+  통과하지만 seed 1개·repetition 1개다. 다중 좌표 canonical ordering, schedule 전단사와 stable request
+  uniqueness는 모델 invariant로 구현됐지만 별도 다중 좌표 실행 테스트가 아직 없다.
 - 해소 조건: 최소 typed builder를 `tests/support/`에 추출하고 다중 seed/repetition에서 schedule·Harness 입력
   재정렬, 누락·중복, cross-coordinate receipt/relation 거부를 직접 검증한다.
 

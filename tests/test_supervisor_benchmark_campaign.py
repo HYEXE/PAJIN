@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
 from dataclasses import replace
 from pathlib import Path
 
@@ -44,9 +45,12 @@ def _sources(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    statement: str = TARGET_PROMPT,
+    draft_transform: Callable[[dict[str, object]], dict[str, object]] | None = None,
 ):
     campaign = _supervisor_campaign(_walking_campaign(sample_campaign))
-    graph_store, _, _, collaboration = _graph(campaign)
+    graph_store, _, _, collaboration = _graph(campaign, statement=statement)
     runtime = _runtime(campaign, graph_store, collaboration)
     snapshot_input, binding, provider, configuration = runtime
     policy = _policy()
@@ -70,6 +74,7 @@ def _sources(
         configuration,
         collaboration,
         graph_store,
+        draft_transform=draft_transform,
     )
     structural, measured = _walking_shadow_measured_sources(
         tmp_path / "walking",

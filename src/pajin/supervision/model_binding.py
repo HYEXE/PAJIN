@@ -18,6 +18,7 @@ from pajin.discovery.walking_shadow import (
 from pajin.domain.models import CampaignManifest, StrictModel
 from pajin.domain.orchestration import AgentRole
 from pajin.providers.models import ProviderRegistration
+from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.workflow.common_engine import registered_common_campaign_engine_contract
 from pajin.workflow.profile_compatibility import (
     LegacyCampaignProfileCompilationAuthority,
@@ -39,6 +40,7 @@ _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _MAX_SCHEMA_BYTES = 1024 * 1024
 _MAX_COMPONENT_BYTES = 256 * 1024
 _MAX_BINDING_BYTES = 4 * 1024 * 1024
+_MAX_DRAFT_BYTES = 1_000_000
 
 
 class SupervisorModelBindingError(RuntimeError):
@@ -87,6 +89,44 @@ class SupervisorShadowProposalDraft(StrictModel):
     @classmethod
     def require_literal_false(cls, value: object) -> object:
         return _require_literal_bool(value, expected=False)
+
+
+_SUPERVISOR_SHADOW_PROPOSAL_DRAFT_WIRE_KEYS = frozenset(
+    {
+        "apiVersion",
+        "kind",
+        "snapshotId",
+        "snapshotDigest",
+        "proposalKind",
+        "rationale",
+        "proposalState",
+        "capabilityGranted",
+        "permitGranted",
+        "executionAuthorized",
+    }
+)
+
+
+def parse_supervisor_shadow_proposal_draft(
+    content: bytes,
+) -> SupervisorShadowProposalDraft:
+    """Strict-decode the exact alias-spelled JSON wire advertised to the Provider."""
+
+    try:
+        raw = parse_strict_json_bytes(
+            content,
+            label="Supervisor Provider draft",
+            max_bytes=_MAX_DRAFT_BYTES,
+        )
+        if type(raw) is not dict:
+            raise TypeError("Supervisor draft wire must be a JSON object")
+        if not set(raw).issubset(_SUPERVISOR_SHADOW_PROPOSAL_DRAFT_WIRE_KEYS):
+            raise ValueError("Supervisor draft wire uses a non-advertised field spelling")
+        return SupervisorShadowProposalDraft.model_validate(raw)
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise SupervisorModelBindingError(
+            "Supervisor draft wire differs from its advertised JSON Schema"
+        ) from exc
 
 
 class SupervisorModelSchemaKind(StrEnum):

@@ -591,6 +591,16 @@ unchanged BENCH-003B1 runner alone aggregates the externally adjudicated Observa
 two Results and canonical Comparison. The additive Supervisor authority records only source
 lineage; proposal causality, threshold eligibility, execution, and activation remain false.
 
+SUP-006 treats prompt injection as an authority-containment regression rather than a claim that a
+model will ignore hostile text. The same role-injection, taint-downgrade, Scope, ToolRequest,
+Capability, Permit, execution, threshold, and activation corpus crosses the target-tainted Snapshot,
+fixed no-Tool Provider request, B3 receipt, content-free typed proposal, sealed benchmark Plan, and
+externally measured Comparison. Raw Provider output must use only the camelCase aliases advertised
+by its strict JSON Schema. Schema-valid hostile rationale is retained only in its untrusted draft
+receipt and becomes digest-only in the typed proposal and final measurement lineage. Invalid output
+remains outcome-unknown and non-retriable; cross-Plan publication replay fails closed. No threshold,
+activation, Permit, or execution authority is introduced.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

@@ -246,6 +246,17 @@ causality, threshold evaluation, execution, and activation remain false. See the
 [SUP-005B2 contract](docs/orchestration/SUP-005B2-registry-governed-model-backed-comparison.md) and
 [ADR-0126](docs/adr/0126-bind-b3-completions-into-externally-attested-target-execution.md).
 
+SUP-006 closes the Shadow adversarial regression milestone without adding another runtime
+authority. Prompt-shaped target Facts cover role injection, taint downgrade, Scope and graph
+mutation, ToolRequest, Capability, Permit, execution, threshold, and activation attempts. The
+Provider draft admission path now accepts only the camelCase aliases advertised in its strict JSON
+Schema; snake_case spellings and all structural escapes fail closed. A schema-valid malicious
+rationale can still produce only the existing digest-bound inert advisory, and numeric measurement
+continues to use external Target/Harness evidence with causality, threshold, execution, and
+activation false. See the
+[SUP-006 contract](docs/orchestration/SUP-006-adversarial-prompt-injection-regression.md) and
+[ADR-0127](docs/adr/0127-enforce-the-advertised-supervisor-draft-wire.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

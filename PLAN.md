@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-006` Adversarial Prompt Injection Regression
+- 현재 단계: Phase 7 — 제한된 Supervisor 활성화
+- 현재 우선순위: `PERMIT-001` 일반 공격 ActionProposal
 
 ## 제품 목표
 
@@ -490,7 +490,7 @@ Gate가 닫혔다.
   - [x] `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
     - [x] `SUP-005B1` complete coordinate Plan·typed B3 request context
     - [x] `SUP-005B2` registry-governed Observation·canonical numeric Comparison
-- [ ] `SUP-006` Adversarial Prompt Injection Regression
+- [x] `SUP-006` Adversarial Prompt Injection Regression
 
 활성화하려면 Confirmed Finding Yield 또는 Chain Completion이 개선되고, Policy Violation은
 증가하지 않으며, 비용·지연·Variance·Human Overturn 기준을 충족해야 한다.
@@ -573,8 +573,15 @@ receipt/outcome·proposal과 원시 Target evidence를 typed relation digest로 
 receipt의 provider evidence로 사용해 외부 measurement attestation이 관계를 전이적으로 서명하게 한다. 모든
 좌표가 동일한 registry activation 아래 fresh Harness reader를 통과하고 baseline 0회·candidate 1회의 model
 call 및 실행 시간 창을 만족한 뒤에만 기존 BENCH-003B1이 Result와 Comparison을 만든다. metric을 복제하거나
-proposal에서 추론하지 않으며 causal attribution·threshold·execution·activation은 false다. 다음 `SUP-006`은
-이 model-backed Shadow 경계에 adversarial prompt injection regression을 추가한다.
+proposal에서 추론하지 않으며 causal attribution·threshold·execution·activation은 false다.
+`SUP-006`은 system/developer 역할 위장, taint downgrade, Scope·Plan·TaskGraph mutation, ToolRequest,
+Capability, Permit, execution, threshold와 activation 요청을 동일한 tainted Snapshot→B3→typed proposal→
+external measurement 경로에 통과시킨다. raw Provider draft는 광고한 camelCase alias wire만 허용하고,
+schema-valid 악성 rationale도 digest-only advisory를 벗어나지 않는다. malformed output은 한 번의 보수적
+charge 뒤 outcome-unknown·manual review로 고정되며, 다른 sealed Plan publication의 정상 B3 replay도 B2에서
+거부한다. metric source는 계속 external Target/Harness뿐이고 모든 실행·threshold·activation 권위는 false다.
+다음 `PERMIT-001`은 이 Shadow output을 직접 실행하지 않고 일반 공격 ActionProposal의 비실행 schema와
+authority 경계를 먼저 고정해야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

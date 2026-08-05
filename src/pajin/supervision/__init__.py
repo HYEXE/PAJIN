@@ -64,6 +64,7 @@ from pajin.supervision.model_binding import (
     SupervisorShadowProposalDraft,
     SupervisorShadowProposalKind,
     bind_supervisor_model,
+    parse_supervisor_shadow_proposal_draft,
     verify_supervisor_model_binding,
 )
 from pajin.supervision.proposal_compiler import (
@@ -162,6 +163,7 @@ __all__ = [
     "invoke_supervisor_benchmark_candidate",
     "load_supervisor_benchmark_campaign_plan",
     "load_supervisor_benchmark_measured_comparison_authority",
+    "parse_supervisor_shadow_proposal_draft",
     "registered_supervisor_proposal_compilation_policy",
     "verify_supervisor_benchmark_candidate_invocation",
     "verify_supervisor_checkpoint_schedule_publication",
