@@ -97,11 +97,12 @@ Creation, invocation, and re-consumption fail closed for:
 - boolean coercion or any attempt to claim comparison, causal proposal effect, threshold,
   execution, or activation authority.
 
-## Remaining boundary
+## Completed successor boundary
 
 SUP-005B1 proves request lineage, not benchmark effectiveness. The model-visible Snapshot is still
 untrusted, and no Finding, Chain, Replay, Policy, Human, time, call-count, or cost value is inferred
-from a proposal or rationale. SUP-005B2 must use the existing registry-governed Target/Harness and
-external measurement attestation to produce every raw observation, prove one exact B3 completion
-per candidate coordinate, remeasure both arms, and only then call the existing BENCH-003B1 Result
-and Comparison authority. Threshold evaluation and activation remain false.
+from a proposal or rationale. SUP-005B2 now uses the existing registry-governed Target/Harness and
+external measurement attestation to bind one exact in-window B3 completion per candidate
+coordinate, remeasure both arms, and then call the existing BENCH-003B1 Result and Comparison
+authority. Threshold evaluation and activation remain false. See the
+[SUP-005B2 contract](SUP-005B2-registry-governed-model-backed-comparison.md).

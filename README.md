@@ -235,6 +235,17 @@ activation remain false until externally adjudicated observations exist. See the
 [SUP-005B1 contract](docs/orchestration/SUP-005B1-sealed-benchmark-campaign-request-context.md) and
 [ADR-0125](docs/adr/0125-bind-benchmark-coordinates-into-supervisor-provider-requests.md).
 
+SUP-005B2 completes the measured Shadow slice. A candidate B3 completion created inside the Target
+execution window is combined with the adapter's raw provider-evidence digest, and that typed
+relation digest is signed through the existing Target execution receipt and external measurement
+attestation. Every coordinate must then pass the existing registry-governed Harness reader before
+the unchanged BENCH-003B1 runner receives the complete two-arm Observation set. The final
+Supervisor authority stores only Plan, Harness, Target, attestation, Observation, B3, and existing
+Comparison lineage. It does not copy metrics or infer them from proposal content; proposal
+causality, threshold evaluation, execution, and activation remain false. See the
+[SUP-005B2 contract](docs/orchestration/SUP-005B2-registry-governed-model-backed-comparison.md) and
+[ADR-0126](docs/adr/0126-bind-b3-completions-into-externally-attested-target-execution.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

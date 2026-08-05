@@ -6,6 +6,7 @@
 ## 현재 작업과 관련된 결정
 
 - [ADR-0125: Bind Benchmark Coordinates into Supervisor Provider Requests](docs/adr/0125-bind-benchmark-coordinates-into-supervisor-provider-requests.md)
+- [ADR-0126: Bind B3 Completions into Externally Attested Target Execution](docs/adr/0126-bind-b3-completions-into-externally-attested-target-execution.md)
 - [ADR-0124: Bind Supervisor Proposals to Benchmark Lineage Without Attribution](docs/adr/0124-bind-supervisor-proposals-to-benchmark-lineage-without-attribution.md)
 - [ADR-0123: Durably Claim and Seal Supervisor Invocations](docs/adr/0123-durably-claim-and-seal-supervisor-invocations.md)
 - [ADR-0122: Bind Stable Provider Requests to Secret-Free Outcomes](docs/adr/0122-bind-stable-provider-requests-to-secret-free-outcomes.md)

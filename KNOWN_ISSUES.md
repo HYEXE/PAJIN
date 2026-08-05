@@ -30,35 +30,36 @@
   ledger와 독립 journal checkpoint/backup을 추가한다. 민감 evidence의 원격 보관은 별도 encryption과 access
   control 정책을 적용한다.
 
-## SUP-005B1 model-backed request와 numeric Observation 사이의 측정 귀속 경계
+## SUP-005B2 host-local Shadow 측정과 proposal 비적용 경계
 
-- 상태: 명시적으로 드러낸 활성 측정 공백
-- 현재 보장: actual model binding·Provider/model/configuration·compiler·request schema·dedicated budget을
-  static candidate implementation으로 고정하고, 새 two-arm Manifest의 전체 좌표와 좌표별 schedule을 sealed
-  Plan에 결박한다. exact Plan·coordinate context는 intent/receipt `v1alpha2`와 실제 Gateway ToolRequest stable
-  ID에 들어가며 기존 B3 consumer와 Plan/source reader를 다시 통과한 결과만 candidate invocation이다.
-- 제한: 이 경계는 model-visible Snapshot이 실제 Target coordinate의 Finding·Chain 결과를 의미한다고
-  증명하지 않는다. typed context는 generic B3에서 caller assertion일 뿐이며 benchmark verifier를 통과해야
-  candidate authority가 된다. 기존 BENCH-003B2 numeric Result는 baseline-only protocol에서 나온 정적 policy
-  fixture이므로 새 model-backed Manifest 결과로 재사용할 수 없다. proposal·rationale에서 Finding, Replay,
-  Policy, Human, time, call count나 cost를 추론할 수도 없다.
-- 해소 조건: SUP-005B2에서 registry-governed Target/Harness와 외부 measurement attestation으로 양 arm의
-  모든 seed/repetition Observation을 새 Manifest 아래 생성한다. candidate Observation은 exact typed context,
-  B3 journal·receipt·proposal과 Target execution/cleanup evidence에 결박하고, complete set만 기존
-  BENCH-003B1 Result·Comparison 계산에 전달한다. threshold와 activation은 계속 false로 유지한다.
+- 상태: 의도적으로 제한된 첫 model-backed Shadow 수치 비교
+- 현재 보장: Target execution 구간 안의 exact B3 completion과 원시 Target evidence를 typed relation digest로
+  묶고, 기존 execution receipt와 외부 measurement attestation이 관계를 서명한다. 모든 좌표는 동일한 signed
+  registry activation, fresh Harness·Target·Observation, baseline model call 0회와 candidate 1회를 증명한 뒤
+  기존 BENCH-003B1 Result·Comparison 계산에만 전달된다. caller aggregate와 generic Observation recorder는
+  이 경계의 입력이 아니다.
+- 제한: 외부 measurement signer와 host-local registry activation을 신뢰하며 distributed exactly-once를
+  증명하지 않는다. proposal은 Shadow sidecar로 Target 동작에 적용되지 않으므로 numeric delta가 proposal
+  내용의 causal improvement를 뜻하지 않는다. B3 charged cost는 conservative upper bound, Observation cost는
+  externally adjudicated coordinate-total이라 동일값이나 합계로 추론할 수 없다. threshold와 activation은
+  계속 false다.
+- 해소 조건: production 활성화가 필요하면 SUP-006 adversarial regression과 별도 threshold authority를
+  통과하고, 분산 실행에는 외부 fencing·durable budget·registry checkpoint를 추가한다. proposal 적용은
+  Phase 7 Permit·Approval 경계 밖에서 허용하지 않는다.
 
-## SUP-005A/B1 테스트 fixture 결합과 단일 좌표 집중 검증
+## SUP-005A/B1/B2 테스트 fixture 결합과 단일 좌표 집중 검증
 
 - 상태: 활성 테스트 유지보수 제약
 - 마지막 재현: 2026-08-05
-- 현재 보장: SUP-005A/B1 집중 테스트와 BENCH-003·SUP-004B3 인접 회귀를 함께 실행한다. B1은 complete
+- 현재 보장: SUP-005A/B1/B2 집중 테스트와 BENCH-003·P0-C·SUP-004B3 인접 회귀를 함께 실행한다. B1은 complete
   tuple equality, 누락·추가·재정렬, context equivocation, post-hoc legacy request, cross-Plan, foreign
   invoker·schedule·source와 권위 boolean을 직접 거부한다.
-- 제한: 두 신규 테스트가 Supervisor invocation과 Walking benchmark source 생성을 위해 기존 대형 테스트
-  모듈의 비공개 helper를 import한다. B1의 실제 fixture는 seed 1개·repetition 1개여서 다중 좌표 canonical
-  ordering과 schedule 전단사는 모델 invariant로 구현됐지만 별도 다중 좌표 실행 테스트가 아직 없다.
-- 해소 조건: SUP-005B2 Observation/Harness fixture를 만들 때 최소 typed builder를 `tests/support/`에 추출하고
-  다중 seed/repetition에서 schedule 재정렬·누락·중복·cross-coordinate receipt 거부를 직접 검증한다.
+- 제한: 세 신규 테스트가 Supervisor invocation과 Walking benchmark source 생성을 위해 기존 대형 테스트
+  모듈의 비공개 helper를 import한다. B2는 실제 외부 Ed25519 attestation·registry Harness·B3 호출을 통과하지만
+  seed 1개·repetition 1개다. 다중 좌표 canonical ordering, schedule 전단사와 stable request uniqueness는 모델
+  invariant로 구현됐지만 별도 다중 좌표 실행 테스트가 아직 없다.
+- 해소 조건: 최소 typed builder를 `tests/support/`에 추출하고 다중 seed/repetition에서 schedule·Harness 입력
+  재정렬, 누락·중복, cross-coordinate receipt/relation 거부를 직접 검증한다.
 
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 

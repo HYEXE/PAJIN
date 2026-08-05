@@ -582,6 +582,15 @@ two-seal receipt, and SUP-003 proposal. Legacy context-free B3 remains `v1alpha1
 or causal effect is admitted; SUP-005B2 still requires externally adjudicated registry-governed
 observations for both arms before the existing BENCH-003B1 Comparison can be reused.
 
+SUP-005B2 closes the measured-source half. The Target adapter invokes the exact context-bound B3
+candidate inside its signed execution interval and commits a typed relation over the Plan,
+coordinate, journal, Provider receipt/outcome, proposal, and raw Target evidence into the execution
+receipt's provider-evidence digest. Existing measurement attestation, registry admission, and
+Harness authorities bind that relation transitively. After every Plan coordinate re-verifies, the
+unchanged BENCH-003B1 runner alone aggregates the externally adjudicated Observations and seals the
+two Results and canonical Comparison. The additive Supervisor authority records only source
+lineage; proposal causality, threshold eligibility, execution, and activation remain false.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

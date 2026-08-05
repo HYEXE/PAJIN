@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-005B2` registry-governed Observation·수치 비교 결박
+- 현재 우선순위: `SUP-006` Adversarial Prompt Injection Regression
 
 ## 제품 목표
 
@@ -485,11 +485,11 @@ Gate가 닫혔다.
     - [x] `SUP-004B1` atomic Campaign/dedicated model-usage reservation
     - [x] `SUP-004B2` stable request ID·secret-free bound Provider outcome
     - [x] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
-- [ ] `SUP-005` Deterministic Baseline 비교
+- [x] `SUP-005` Deterministic Baseline 비교
   - [x] `SUP-005A` B3·BENCH-003B2 source-bound non-attribution lineage
-  - [ ] `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
+  - [x] `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
     - [x] `SUP-005B1` complete coordinate Plan·typed B3 request context
-    - [ ] `SUP-005B2` registry-governed Observation·canonical numeric Comparison
+    - [x] `SUP-005B2` registry-governed Observation·canonical numeric Comparison
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
 활성화하려면 Confirmed Finding Yield 또는 Chain Completion이 개선되고, Policy Violation은
@@ -568,8 +568,13 @@ context로 B3 intent/receipt `v1alpha2`와 실제 Gateway `ToolRequest.request_i
 기존 B3는 `v1alpha1` wire와 stable ID를 그대로 유지한다. exact invoker와 기존 B3 consumer 및 Plan/source
 reader를 다시 통과한 결과만 candidate invocation으로 인정한다. Plan 자체는 dispatch 시점을 증명하지
 않으며 numeric Result 재사용, proposal 효과 귀속, comparison, threshold, execution, activation은 false다.
-다음 `SUP-005B2`는 기존 registry-governed Target/Harness와 외부 measurement attestation으로 모든 좌표의
-Observation을 만들고 양 arm을 새 Manifest 아래 재측정한 뒤 기존 BENCH-003B1 Comparison만 재사용한다.
+`SUP-005B2`는 Target execution 구간 안에서 exact B3 candidate를 호출하고 Plan·coordinate·journal·Provider
+receipt/outcome·proposal과 원시 Target evidence를 typed relation digest로 결박한다. 이 digest를 기존 execution
+receipt의 provider evidence로 사용해 외부 measurement attestation이 관계를 전이적으로 서명하게 한다. 모든
+좌표가 동일한 registry activation 아래 fresh Harness reader를 통과하고 baseline 0회·candidate 1회의 model
+call 및 실행 시간 창을 만족한 뒤에만 기존 BENCH-003B1이 Result와 Comparison을 만든다. metric을 복제하거나
+proposal에서 추론하지 않으며 causal attribution·threshold·execution·activation은 false다. 다음 `SUP-006`은
+이 model-backed Shadow 경계에 adversarial prompt injection regression을 추가한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
