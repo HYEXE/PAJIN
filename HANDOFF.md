@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-05
 - 브랜치: `main`
-- 작업 시작 원격 체크포인트: `ae877f69c693fbdeb79e6eb441ca8c46e9dd2cb4` (`PERMIT-004A`)
-- 현재 구현 체크포인트: `PERMIT-004B1` Pre-reserved One-shot CleanupPermit Authority
-- 다음 구현: `PERMIT-004B2` Authenticated Reversible-write Cleanup Dispatch
+- 작업 시작 원격 체크포인트: `e91e25ae105603807301bd7bddf5b5f2beeae0ff` (`PERMIT-004B1`)
+- 현재 구현 체크포인트: `PERMIT-004B2` Authenticated Reversible-write Cleanup Dispatch
+- 다음 구현: `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
 
 ## 재개 전 확인
 
@@ -21,64 +21,67 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-`PERMIT-004B1`은 reversible write 실행 전에 cleanup capacity를 durable하게 확보하고, 그 hold를 별도
-CleanupPermit으로 정확히 한 번만 소비하는 GRAPH authority substrate다. 기존 PERMIT-004A no-write gate와
-ActionProposal·ActionPermit v1alpha2 wire는 바꾸지 않는다.
+`PERMIT-004`가 완료됐다. A 경로는 기존 no-write assessment를 유지하고, B 경로는 reversible write 전에
+cleanup capacity를 확보한 뒤 authenticated source에서 distinct cleanup Capability를 정확히 한 번 실행하고
+실제 target state 복구를 독립 확인한다. 기존 ActionProposal·ActionPermit·PERMIT-004A assessment·Gateway·Worker
+wire와 동작은 깨지 않는다.
 
-- `ActionCleanupReservationRequest`가 source ActionProposal, distinct cleanup Capability, 동일 Target,
-  Cleanup Handler·Executor identity, budget와 claim deadline을 content-addressed input으로 결박한다.
-- `GraphReversibleActionPermitAuthority`와 dispatcher는 기존 ActionPermit claim과 cleanup hold를 같은
-  `BEGIN IMMEDIATE` transaction에서 커밋한 뒤에만 write callback을 호출한다. claim 전후에는 필수
-  `ReversibleActionPermitInputAuthority`가 current signed reversible Definition과 code-owned cleanup mapping을
-  검증하며 permissive 기본 구현은 없다. 한쪽만 존재하는 retry, callback failure와 outcome uncertainty는
-  재실행하지 않는다.
-- `CleanupRequest`는 source ActionPermit·dispatch, pre-action hold, outcome/Run/audit coordinates,
-  Graph Decision/Snapshot, Handler·Executor·plan, distinct cleanup Capability, fresh ToolRequest와 budget을
-  결박하지만 그 outcome·plan이 sealed source에서 왔다는 의미 권위는 아직 PERMIT-004B2 입력 TCB다.
-- `GraphCleanupPermitAuthority`는 같은 Campaign-pinned compiler writer를 재사용하고 stored ActionPermit,
-  hold, latest Snapshot과 request를 exact 검증한 뒤 domain-separated consumed CleanupPermit을 발급한다.
-  필수 `CleanupPermitInputAuthority`가 claim 전후 sealed source와 current plan을 검증해야 하며 B1에는 production
-  구현이 없다. 원 ActionPermit은 lineage일 뿐 cleanup 실행 권위로 재사용하지 않는다.
-- 예산은 일반 ActionPermit + cleanup hold를 Tool-call, request-unit, fixed-point cost, rolling request-unit에
-  합산한다. CleanupPermit은 hold를 재차감하지 않는다. 미소비 hold는 rolling window가 지나도 capacity를
-  유지하며 자동 release하지 않는다.
-- SQLite schema v3는 `graph_action_cleanup_reservations`, `graph_cleanup_permits`를 fingerprinted append-only
-  table로 추가한다. exact v1/v2 store를 v3로 migration하되 cleanup row를 만들지 않는다.
-- backup manifest v1alpha2는 cleanup reservation/Permit count와 head digest를 결박한다. legacy
-  v1alpha1/schema-v2 backup은 원본을 먼저 검증하고 private destination만 v3로 migration한다. retained
-  statement와 detached manifest도 새 producer는 v1alpha2를 쓰며, strict v1alpha1 reader는 기존 low-level
-  manifest와 signature/AEAD domain만 허용한다.
-- current CAP-005 production inventory는 여전히 `none/read-only`, `cleanupRequired=false`뿐이다. 신규
-  reversible-write positive path는 저장소 authority를 검증하는 격리 fixture이며 production 활성화가 아니다.
+- PERMIT-004A의 private authentication core는 managed Run·pre-claim anchor·exact Grant, stored ActionPermit,
+  sealed completed dispatch, Gateway·Worker·evidence와 current CAP-002 role을 exact-rebuild하되 Oracle과 Handler를
+  호출하지 않는다. 기존 public no-write `assess()`가 semantic role을 호출한 뒤 authority를 재검증한다.
+- `GeneralAttackActionPermitGate`는 `reversible-write + cleanupRequired=true`와 명시적
+  `GeneralAttackReversibleCleanupAuthority`가 있을 때만 write callback을 허용한다. code-owned mapping의
+  distinct current cleanup release, Handler·Executor와 trusted cost/deadline을 B1 ActionPermit+hold transaction에
+  결박한다. irreversible write와 hold 없는 write는 Worker 전에 닫힌다.
+- `CleanupCapabilityMappingRegistry`는 별도 store 없이 adapter implementation·stable context, source
+  Capability, distinct current cleanup activation/release와 method를 content-addressed mapping으로 고정한다.
+- current source Cleanup Handler는 authenticated execution 뒤 source Success Oracle 판정과 무관하게 정확히
+  한 번의 bounded `restore-target` plan을 반환해야 한다. plan은 expected-state SHA-256, mapping, source Handler,
+  cleanup Executor와 complete prepared action에 결박된다. claim 전후 Handler를 다시 호출해 동일 typed plan을
+  exact-match하므로 same-identity plan equivocation도 Worker 전에 닫힌다.
+- source outcome identity는 mutable latest Run root가 아니라 source evidence를 처음 포함한 immutable seal root를
+  사용한다. 따라서 같은 Run에 cleanup audit를 append/seal한 뒤에도 source를 exact re-authenticate할 수 있다.
+- fresh cleanup Grant는 source Grant와 ID·digest가 다르고 exact agent·Tool·Target, one call, no delegation,
+  source terminal 이후 issuance, Permit·Envelope 이내 expiry를 요구한다. original ActionPermit은 lineage일 뿐
+  cleanup 권위로 재사용하지 않는다. prospective Permit window보다 긴 Grant는 Permit claim 전에 거부한다.
+- Tool Gateway, audit store와 restored-state verifier는 gate 생성 시 deployment-owned authority로 고정한다.
+  audit store의 resolved path·Run ID는 authenticated managed Run과 같아야 하며, final proof는 caller path가 아닌
+  그 managed Run만 읽고 실제 Graph store의 consumed CleanupPermit과 exact-match한다.
+- `ExistingModeCleanupCapabilityGatewayDispatcher`는 B1 CleanupPermit만 소비하고 unchanged Tool Gateway·Worker를
+  호출한다. separate claimed/terminal audit와 reconciliation은 completed, failed, cancelled, expired,
+  consumed-without-claim, claimed-outcome-unknown을 구분하며 exact retry나 unknown outcome은 다시 실행하지 않는다.
+- restored assessment는 sealed completed cleanup, current release·roles, exact Gateway·Worker·evidence,
+  Normalizer·Success Oracle과 no-recursive-cleanup을 검증한 뒤 code-identified verifier가 actual target-state
+  digest를 다시 관찰해야 성립한다. Gateway success만으로는 restored가 아니다.
+- current CAP-005 production inventory는 여전히 no-write다. positive path는 격리된 synthetic state
+  write→restore fixture이며 default Supervisor 실행을 활성화하지 않는다.
 
 핵심 위치:
 
-- `src/pajin/graph/cleanup.py`
-- `src/pajin/graph/sqlite_store.py`
-- `src/pajin/graph/__init__.py`
-- `src/pajin/graph/backup_retention.py`
-- `tests/test_graph_action_permit.py`
-- `docs/orchestration/PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md`
-- `docs/adr/0132-pre-reserve-cleanup-capacity-before-reversible-write.md`
+- `src/pajin/supervision/action_outcome.py`
+- `src/pajin/supervision/action_permit.py`
+- `src/pajin/supervision/action_cleanup.py`
+- `src/pajin/supervision/cleanup_mapping.py`
+- `src/pajin/capabilities/cleanup_dispatch.py`
+- `tests/test_general_attack_action_cleanup.py`
+- `tests/test_general_attack_cleanup_mapping.py`
+- `tests/test_cleanup_capability_dispatch.py`
+- `docs/orchestration/PERMIT-004B2-authenticated-reversible-cleanup-dispatch.md`
+- `docs/adr/0133-authenticate-and-verify-reversible-cleanup.md`
 
 ## 현재 검증
 
-- PERMIT-004B1 집중 authority·migration·backup: 30 passed
-- Graph store·backup·PERMIT 인접 묶음: 51 passed, 2 skipped
-- general-attack·CAP·GRAPH 회귀 묶음: 165 passed
-- ORCH·PERMIT·CAP·Replay·Supervisor·Graph 확장 묶음: 331 passed, 2 skipped
+- PERMIT-004B2·A·B1·Cleanup Gateway·Graph 집중 묶음: 104 passed
+- isolated reversible write→cleanup→actual restored-state 수직·음성 경로: 9 passed
 - Ruff 전체: 통과
-- Linux 대상 strict mypy: 251 source files 통과
-- 전체 pytest: 190 passed, 3 skipped, 1 failed 뒤 중단. 실패는 만료된 Benchmark registry fixture의
+- Linux 대상 strict mypy: 254 source files 통과
+- 전체 pytest: 190 passed, 3 skipped 뒤 기존 Benchmark registry fixture 만료에서 중단.
   `Benchmark registry distribution is not currently valid`이며 이번 변경의 코드 회귀와 구분한다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_graph_action_permit.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_graph_action_permit.py tests\test_graph_sqlite_store.py tests\test_graph_backup_repository.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_general_attack_action_proposal.py tests\test_general_attack_action_permit.py tests\test_general_attack_action_outcome.py tests\test_capability_authorities.py tests\test_existing_capability_adapters.py tests\test_existing_capability_rollout.py tests\test_graph_action_permit.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_discovery_hypothesis.py tests\test_discovery_replanning.py tests\test_general_attack_action_proposal.py tests\test_general_attack_action_permit.py tests\test_general_attack_action_outcome.py tests\test_capability_authorities.py tests\test_capability_definition.py tests\test_existing_capability_adapters.py tests\test_existing_capability_rollout.py tests\test_graph_action_permit.py tests\test_replay_models.py tests\test_replay_compiler.py tests\test_supervisor_proposal_compiler.py tests\test_supervisor_adversarial_prompt_injection.py
-.\.venv\Scripts\python.exe -m ruff check .
-.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
+.\.venv\Scripts\python.exe -m pytest -q tests\test_general_attack_action_outcome.py tests\test_general_attack_action_permit.py tests\test_general_attack_cleanup_mapping.py tests\test_cleanup_capability_dispatch.py tests\test_general_attack_action_cleanup.py tests\test_graph_action_permit.py
+.\.venv\Scripts\ruff.exe check src tests containers
+.\.venv\Scripts\mypy.exe --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
 git diff --check
 ```
@@ -88,49 +91,33 @@ git diff --check
 
 ## 커밋 전 독립 검토
 
-초기 및 수정 후 병렬 계약·SQLite 품질·trust 검토에서 다음 문제를 반영했다.
-
-- 결과 뒤 CleanupPermit만 예산에 합산하면 Action과 cleanup 사이 다른 Action이 budget을 소진해 compensation이
-  굶을 수 있으므로, write callback 전에 ActionPermit + cleanup capacity를 같은 transaction에서 hold한다.
-- 기존 ActionProposal·ActionPermit wire와 action-only Protocol을 수정하지 않고 parallel reversible/cleanup
-  authority contract를 추가한다.
-- 별도 cleanup writer·database를 만들지 않고 기존 `graph_action_permit_writers` identity와 SQLite writer
-  token을 재사용한다.
-- schema fingerprint 변경을 숨기지 않고 v3 migration과 v1alpha2 backup wire를 명시하며, populated v2
-  ActionPermit과 legacy backup restore 호환을 검증한다.
-- current production inventory에 reversible-write가 없는 사실을 유지하고 positive path를 격리된 authority
-  fixture로 한정한다.
-- self-authenticated CleanupRequest나 일반 Action을 reversible authority로 승격하지 못하도록 두 public claim에
-  외부 input-authority Protocol을 필수화하고 claim 전후 검증한다.
-- retained v1alpha1 outer wire에 v1alpha2 low-level manifest를 넣지 않고 outer/crypto domain까지 버전 분리한다.
-- backup/restore가 canonical forged hold·Permit의 Run, Envelope, Target, Handler·Executor, deadline 등 공유 권위를
-  빠짐없이 교차 검증한다.
-
-최종 trust 재검토는 P0-P2가 없었고, 계약·품질 재검토의 P2는 문구·검증 숫자·Permit deadline 검증으로
-해소했다. delivery 전 실제 diff와 최종 테스트 결과를 다시 우선한다.
+초기 구현은 sealed-result authentication core, code-owned cleanup mapping, cleanup Gateway lifecycle을 서로
+독립된 병렬 작업으로 분리했다. 통합 뒤 trust·correctness·contract 관점의 읽기 전용 재검토에서 current
+Handler plan pre/post-claim 재구성 누락, caller-selected cleanup Run path, stored CleanupPermit 미검증,
+assessment-time verifier substitution, per-call alternate audit store, prospective Permit보다 긴 Grant의 뒤늦은
+거부를 발견했다. Handler plan exact rebuild, constructor-bound deployment runtime/verifier, managed Run path,
+stored Permit equality와 pre-claim Grant window 검사 및 각각의 음성 테스트로 해소했다. 수정 후 최종 trust
+재검토에서 남은 P0-P3가 없었다.
 
 ## 다음 작업의 첫 단계
 
-`PERMIT-004B2`는 generic GRAPH request를 실제 authenticated general-attack cleanup 경로에 연결해야 한다.
+`APPROVAL-001`을 구현하기 전에 현재 Approval·Permit·async/batch 관련 코드, 테스트, 계약과 `PLAN.md` 완료
+조건을 다시 읽어 중복 authority를 피한다. 첫 수직 슬라이스는 다음 순서로 설계한다.
 
-1. PERMIT-004A의 Run·anchor·Grant·terminal lifecycle·evidence·WorkerJob 인증을 no-write와 write 경로가
-   중복 없이 재사용할 private core로 분리하되 기존 public assessment wire와 동작을 유지한다.
-2. `reversible-write + cleanupRequired=true` completed execution을 인증하고 semantic Oracle 결과와 무관하게
-   current Cleanup Handler의 exactly-one bounded plan을 typed request로 해석한다.
-3. code-owned source→distinct cleanup Capability mapping, current activation/release, Handler·Executor identity,
-   exact Target·ToolRequest·price가 pre-action hold와 같음을 증명한다.
-4. fresh cleanup Grant와 existing Gateway lifecycle로 CleanupPermit-bound request를 한 번만 dispatch한다.
-5. cleanup terminal evidence와 actual restored target state를 별도 verifier로 확인한다. irreversible write,
-   incomplete·uncertain source, plan/Permit forgery, stale activation, cross-action substitution과 unknown cleanup
-   result는 Worker 전에 또는 restored 판정 전에 fail closed한다.
+1. T2 실행이 현재 어느 경계에서 거부되는지, 기존 operator authorization·MissionEnvelope·Capability
+   `approvalRequired`가 무엇을 보장하는지 inventory한다.
+2. caller boolean이나 model output이 아니라 deployment/operator authority가 발급한 content-addressed
+   `ApprovalEnvelope`를 exact Campaign·Run·Capability·Target·request/plan·risk·budget·expiry에 결박한다.
+3. single, batch, async claim이 같은 approval을 중복 소비하거나 서로 다른 request를 substitution하지 못하도록
+   최소 durable authority와 idempotency 경계를 결정한다.
+4. 승인 위조, stale/cross-Campaign/cross-request replay, scope·batch 확대, 부분 claim·unknown outcome을 Worker
+   전에 fail closed하는 음성 테스트를 먼저 고정한다.
 
 ## 알려진 경계
 
-- verified general-attack Envelope producer, Decision provenance registry, generic pricing provider와
-  `GeneralAttackActionOutcomeInputAuthority` production composition은 아직 deployment-supplied TCB다.
-- PERMIT-004B1은 GRAPH reservation/Permit만 제공한다. generic CleanupRequest의 outcome·Handler plan provenance,
-  cleanup Gateway dispatch, restored-state proof, Finding, replay, default Supervisor execution 권위는 없다. 두
-  필수 input-authority의 production 구현도 PERMIT-004B2 전까지 없다.
-- 전체 pytest의 registry fixture 만료는 이번 변경의 코드 회귀가 아니다. 그 뒤의 기존 Windows symlink
-  권한 제약은 이번 실행에서 도달하지 않았다.
+- Envelope·Decision provenance, pricing, managed Run/Grant, cleanup Grant, mapping과 restored-state verifier의
+  production composition은 deployment-supplied TCB다.
+- current production inventory에는 reversible-write release가 없고 SUP-007 default execution도 비활성이다.
+- schema v3 direct downgrade, expired·abandoned hold 자동 release와 failed·unknown cleanup 자동 retry는 없다.
+- 전체 pytest의 Benchmark registry fixture 만료와 그 뒤 Windows symlink 권한 제약은 코드 회귀와 구분한다.
 - Docker daemon은 이번 체크포인트에서 확인하지 않았고 real-container 검증은 수행하지 않았다.

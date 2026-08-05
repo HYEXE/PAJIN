@@ -296,6 +296,26 @@ def _assess(
     )
 
 
+def _authenticate_result(
+    authenticated: _AuthenticatedOutcome,
+    *,
+    gate: GeneralAttackActionOutcomeGate | None = None,
+):
+    context = authenticated.context
+    return (gate or _outcome_gate(authenticated))._authenticate_result(
+        authenticated.permit_result,
+        context.source_proposal,
+        context.campaign,
+        context.hypotheses,
+        context.plan,
+        context.task.task_digest,
+        context.definition.reference(),
+        context.definitions,
+        context.code_backed,
+        context.authorities,
+    )
+
+
 @pytest.mark.asyncio
 async def test_outcome_gate_binds_sealed_result_oracle_data_flow_and_cleanup(
     tmp_path: Path,
@@ -326,6 +346,72 @@ async def test_outcome_gate_binds_sealed_result_oracle_data_flow_and_cleanup(
     assert assessment.run_audit_anchor_seal_root_digest
     assert assessment.capability_grant_digest == capability_grant_digest(
         authenticated.grant
+    )
+
+
+@pytest.mark.asyncio
+async def test_outcome_gate_extracts_sealed_core_before_semantic_roles(
+    tmp_path: Path,
+    permit_context_fixture: _PermitContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authenticated = await _authenticated_outcome(tmp_path, permit_context_fixture)
+
+    def forbidden_semantic_role(self, request, result):
+        del self, request, result
+        raise AssertionError("sealed-result authentication invoked a semantic role")
+
+    monkeypatch.setattr(
+        RegisteredCapabilityAuthority,
+        "evaluate",
+        forbidden_semantic_role,
+    )
+    monkeypatch.setattr(
+        RegisteredCapabilityAuthority,
+        "plan_cleanup",
+        forbidden_semantic_role,
+    )
+
+    sealed = _authenticate_result(authenticated)
+
+    assert sealed.canonical_intent == authenticated.permit_result.intent
+    assert sealed.prepared == authenticated.permit_result.prepared
+    assert sealed.graph_proposal == authenticated.permit_result.proposal
+    assert sealed.permit == authenticated.permit_result.dispatch.permit
+    assert sealed.definition == authenticated.context.definition
+    assert sealed.release == sealed.prepared.release
+    assert sealed.code_backed_capability == authenticated.context.code_backed
+    assert sealed.run_path == authenticated.store.path.resolve(strict=True)
+    assert sealed.run_anchor == authenticated.run_anchor
+    assert sealed.run_anchor_event_hash
+    assert sealed.run_anchor_seal_root_digest
+    assert sealed.verified_run_root_digest
+    assert sealed.reconciliation.terminal_event == sealed.terminal
+    assert sealed.gateway_outcome == authenticated.permit_result.dispatch.result
+    assert sealed.gateway_outcome_digest
+    assert sealed.grant == authenticated.grant
+    assert sealed.grant_digest == capability_grant_digest(authenticated.grant)
+    assert sealed.worker_result == sealed.gateway_outcome.worker_result
+    assert sealed.worker_execution_id == sealed.worker_result.execution_id
+    assert not sealed.normalized_result.evidence
+    assert sealed.evidence.path == f"evidence/{sealed.permit.request_id}.json"
+    assert sealed.data_flow.state == "network-disabled-no-egress-observed"
+    assert sealed.active_authorities.resolve(sealed.code_backed_capability) == (
+        authenticated.context.authorities.resolve(sealed.code_backed_capability)
+    )
+    assert tuple(
+        handle.role
+        for handle in (
+            sealed.cleanup_handler,
+            sealed.executor_adapter,
+            sealed.result_normalizer,
+            sealed.success_oracle,
+        )
+    ) == (
+        "cleanup-handler",
+        "executor-adapter",
+        "result-normalizer",
+        "success-oracle",
     )
 
 
@@ -631,6 +717,54 @@ async def test_outcome_gate_rejects_cleanup_plan_without_cleanup_authority(
         _assess(authenticated)
 
     assert "returned a cleanup plan" in str(failure.value.__cause__)
+
+
+@pytest.mark.asyncio
+async def test_outcome_gate_revalidates_roles_after_oracle_and_cleanup_handler(
+    tmp_path: Path,
+    permit_context_fixture: _PermitContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    authenticated = await _authenticated_outcome(tmp_path, permit_context_fixture)
+    original_authority = type(authenticated.context.authorities).authority
+    original_evaluate = RegisteredCapabilityAuthority.evaluate
+    original_plan_cleanup = RegisteredCapabilityAuthority.plan_cleanup
+    oracle_called = False
+    handler_called = False
+
+    def track_oracle(self, request, result):
+        nonlocal oracle_called
+        oracle_called = True
+        return original_evaluate(self, request, result)
+
+    def track_cleanup(self, request, result):
+        nonlocal handler_called
+        handler_called = True
+        return original_plan_cleanup(self, request, result)
+
+    def reject_post_semantic_resolution(self, reference, role):
+        if oracle_called and handler_called:
+            raise RuntimeError("outcome role cannot be revalidated")
+        return original_authority(self, reference, role)
+
+    monkeypatch.setattr(RegisteredCapabilityAuthority, "evaluate", track_oracle)
+    monkeypatch.setattr(
+        RegisteredCapabilityAuthority,
+        "plan_cleanup",
+        track_cleanup,
+    )
+    monkeypatch.setattr(
+        type(authenticated.context.authorities),
+        "authority",
+        reject_post_semantic_resolution,
+    )
+
+    with pytest.raises(GeneralAttackActionOutcomeError) as failure:
+        _assess(authenticated)
+
+    assert oracle_called
+    assert handler_called
+    assert "cannot be revalidated" in str(failure.value.__cause__)
 
 
 @pytest.mark.asyncio

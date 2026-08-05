@@ -3,24 +3,25 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## PERMIT-004B1 generic CleanupRequest 입력 권위와 schema v3 rollback 경계
+## PERMIT-004B2 production cleanup composition과 hold recovery 경계
 
-- 상태: 의도적으로 분리된 GRAPH cleanup authority substrate
-- 현재 보장: reversible Action callback 전에 ordinary ActionPermit과 distinct cleanup Capability capacity를
-  같은 SQLite transaction에서 커밋하고, ActionPermit + cleanup hold를 같은 Envelope call/unit/cost/rolling
-  budget에 합산한다. exact stored Action·hold·latest Snapshot·request를 다시 검증한 별도 CleanupPermit만
-  cleanup callback을 한 번 호출할 수 있다. reversible claim과 cleanup claim은 각각 필수 외부 input authority를
-  claim 전후 호출하며 permissive 기본 구현이 없다. v1/v2 store와 legacy v2 backup은 source 검증 뒤 v3
-  destination으로 migration하며 cleanup authority를 backfill하지 않는다.
-- 제한: generic `CleanupRequest`의 outcome·Run/audit 좌표와 Handler plan digest가 실제 sealed write result와
-  current CAP-002 Handler에서 왔는지는 이 GRAPH slice가 독립적으로 인증하지 않으며, 두 input authority의
-  production 구현은 아직 없다. current production inventory에는 reversible-write Capability가 없으며 positive
-  path는 격리된 authority fixture다. schema v3를 만든 뒤 v2 code로 direct downgrade할 수 없고,
-  expired·abandoned cleanup hold도 자동 release하지 않는다.
-- 해소 조건: PERMIT-004B2에서 PERMIT-004A result authentication core, current Handler·Executor와 distinct
-  cleanup Capability mapping, pre-action hold, fresh Grant/Gateway dispatch, cleanup terminal evidence와 actual
-  restored state를 exact-rebuild한다. operational release/recovery가 필요하면 별도 authority와 v3-aware
-  export/restore 절차를 정의한다.
+- 상태: authenticated cleanup 경로는 구현됐지만 기본 제품 활성화는 의도적으로 닫힘
+- 현재 보장: PERMIT-004A sealed-result authentication core가 managed Run·anchor·Grant·terminal
+  lifecycle·Gateway·Worker·evidence와 current CAP-002 role을 Oracle·Handler 호출 전에 exact-rebuild한다.
+  `reversible-write + cleanupRequired=true` source만 pre-action ActionPermit+cleanup hold를 원자적으로 확보한
+  뒤 실행할 수 있다. code-owned mapping, distinct current cleanup release, current Handler의 단일 typed plan,
+  cleanup Executor, fresh ToolRequest·Grant와 hold를 교차 결박하고, 별도 CleanupPermit·audit·reconciliation으로
+  기존 Gateway·Worker를 정확히 한 번 호출한다. source identity는 immutable source-evidence seal root를 사용하며,
+  deployment-owned Gateway·managed Run·verifier를 gate에 고정하고 stored CleanupPermit과 exact-match한다. sealed
+  cleanup success 뒤에도 독립 verifier가 actual target-state digest를 관찰해야 restored로 판정한다.
+- 제한: current CAP-005 production inventory에는 reversible-write Capability가 없으며 positive path는 격리된
+  synthetic state fixture다. Envelope·Decision provenance, fixed-point pricing, managed Run/Grant, code-owned
+  mapping, cleanup Grant와 restored-state verifier의 deployment composition은 명시적 TCB로 남는다. SUP-007이
+  default opt-in 실행을 소유하며 B2는 이를 활성화하지 않는다. schema v3 생성 뒤 v2 code로 direct downgrade할
+  수 없고 expired·abandoned hold를 자동 release하지 않으며, failed·unknown cleanup도 자동 retry하지 않는다.
+- 해소 조건: 실제 reversible-write Capability를 활성화할 때 deployment authority 등록·운영 절차와 Target별
+  restored-state verifier를 계약화한다. hold release나 unknown-outcome recovery가 필요하면 restored state를
+  추정하지 않는 별도 v3-aware recovery authority, 감사 기록과 export/restore 절차를 정의한다.
 
 ## PERMIT-003 외부 Envelope·Decision·비용 권위 경계
 
@@ -446,24 +447,6 @@
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
   모듈을 허용한다. mypy 실행을 위해 정책을 비활성화하지 않는다.
-
-## PERMIT-004 write·cleanup 실행 권위 공백
-
-- 상태: 의도적으로 fail closed된 활성 제품 경계
-- 현재 보장: PERMIT-004A는 deployment input authority가 해석한 Run·pre-claim anchor·exact Grant를
-  current stored ActionPermit, completed sealed CAP-005 audit, exact Gateway outcome/evidence,
-  `worker.dispatched` job·secret lease, Worker execution과 current CAP-002 Result
-  Normalizer·Success Oracle·Cleanup Handler에 교차 결박한다. caller-selected self-sealed Run은 입력이
-  아니며 assessment는 exact-rebuild verifier 통과 전까지 output projection이다. `none/read-only`,
-  `cleanupRequired=false`만 허용하며 Cleanup Handler는 `None`을 반환해야 한다.
-- 영향: `reversible-write`, `irreversible-write`, `cleanupRequired=true`, untrusted network observation,
-  missing·uncertain outcome은 자동 성공·cleanup·redispatch로 승격되지 않고 거부된다. 현재 일반 공격용 typed
-  cleanup request, cleanup Capability, 별도 one-shot Cleanup Permit, dispatcher와 aggregate budget transaction은
-  없다.
-- 해소 조건: PERMIT-004B에서 원 ActionPermit·authenticated outcome·Oracle·Handler plan에 결박된 별도 cleanup
-  request/Permit을 기존 Campaign Graph durability domain에 구현하고 action+cleanup 사용량을 같은 Tool-call,
-  request-unit, cost, rolling-rate 예산에 원자적으로 합산한다. `irreversible-write` 정책은 별도 결정 전까지
-  계속 거부한다.
 
 ## Git OpenSSL CA 경로
 

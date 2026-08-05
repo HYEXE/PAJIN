@@ -157,11 +157,11 @@ action dispatchable again.
 
 ## Remaining boundary
 
-PERMIT-004B1 now supplies the separate typed cleanup request, pre-action cleanup budget hold, and
+PERMIT-004B1 supplies the separate typed cleanup request, pre-action cleanup budget hold, and
 bounded one-shot CleanupPermit in the existing GRAPH authority. This no-write gate deliberately
-remains unchanged. PERMIT-004B2 must reuse its sealed result-authentication core for a
-`reversible-write + cleanupRequired=true` path, exact-rebuild the current Handler plan, prove an
-exact pre-action hold, dispatch a distinct cleanup Capability, and authenticate restored state.
+remains unchanged. PERMIT-004B2 reuses its sealed result-authentication core for a
+`reversible-write + cleanupRequired=true` path, exact-rebuilds the current Handler plan, proves an
+exact pre-action hold, dispatches a distinct cleanup Capability, and authenticates restored state.
 SUP-007 must later compose the existing PERMIT-003 callback, Grant, RunStore, Gateway, Worker, and
 post-dispatch gates without adding another execution authority. The production outcome input
 authority and its canonical managed Run mapping remain SUP-007 composition responsibilities and

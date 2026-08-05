@@ -257,7 +257,7 @@ activation false. See the
 [SUP-006 contract](docs/orchestration/SUP-006-adversarial-prompt-injection-regression.md) and
 [ADR-0127](docs/adr/0127-enforce-the-advertised-supervisor-draft-wire.md).
 
-PERMIT-001 through PERMIT-004A now form an additive direct-call general-attack authority chain.
+PERMIT-001 through PERMIT-004B2 now form an additive direct-call general-attack authority chain.
 Code-owned ORCH action semantics are compiled through the exact CAP-002 Materializer and Action
 Compiler, intersected with current signed activation, Campaign, Envelope, Decision, budget, and the
 existing GRAPH-006 atomic consumed Permit, then assessed only from a matching completed sealed
@@ -266,22 +266,29 @@ and exact Grant; caller-selected self-sealed Runs are not accepted. The outcome 
 the exact evidence, cross-checks the sealed `worker.dispatched` job and secret-lease metadata, and
 re-runs the current Result Normalizer before invoking the Success Oracle. It binds Executor
 identity without preparing another Worker job and accepts only `none`/`read-only`,
-cleanup-not-required actions. Exported assessments remain output projections until the gate's
+cleanup-not-required actions on the A path. Exported assessments remain output projections until the gate's
 exact-rebuild verifier succeeds. Network egress requires both
-Definition permission and host-trusted proxy observation. PERMIT-004B1 separately supplies the
-GRAPH substrate for a future reversible-write path: it commits the ordinary ActionPermit and
+Definition permission and host-trusted proxy observation. PERMIT-004B1 supplies the GRAPH substrate
+for a reversible-write path: it commits the ordinary ActionPermit and
 cleanup capacity atomically, then exposes a domain-separated one-shot CleanupPermit under the same
 writer and aggregate Envelope budget. Both B1 claim authorities require explicitly injected input
 authorities and have no permissive default. B1 advances the Graph Store and retained-backup wire to
 explicit v1alpha2/schema v3 production while preserving strict v1alpha1 and v2 reads, without
-changing ActionPermit wire identity. The current production inventory remains no-write; write and
-cleanup-required execution stays closed until PERMIT-004B2 supplies sealed source/current-role
-input authorities, dispatches the distinct cleanup Capability, and verifies restored state. No
-default Supervisor execution path is activated. See the
+changing ActionPermit wire identity. PERMIT-004B2 now supplies the production input-authority
+composition at the general-attack boundary: it reuses the sealed source authentication core,
+requires a code-owned mapping to a distinct current cleanup release, compiles one typed Handler
+restore plan, uses a fresh least-authority Grant and the existing Gateway/Worker, seals a separate
+cleanup lifecycle, and requires independent observation of the actual restored state. Source
+identity binds the immutable source-evidence seal root so later cleanup audit cannot invalidate it.
+Exact retry never calls the Worker twice, and failed or uncertain cleanup never grants automatic
+redispatch. The current production inventory remains no-write and no default Supervisor execution
+path is activated. See the
 [PERMIT-004A contract](docs/orchestration/PERMIT-004A-authenticated-action-outcome-gate.md),
 [PERMIT-004B1 contract](docs/orchestration/PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md),
-[ADR-0131](docs/adr/0131-authenticate-sealed-action-results-before-oracle.md), and
-[ADR-0132](docs/adr/0132-pre-reserve-cleanup-capacity-before-reversible-write.md).
+[PERMIT-004B2 contract](docs/orchestration/PERMIT-004B2-authenticated-reversible-cleanup-dispatch.md),
+[ADR-0131](docs/adr/0131-authenticate-sealed-action-results-before-oracle.md),
+[ADR-0132](docs/adr/0132-pre-reserve-cleanup-capacity-before-reversible-write.md), and
+[ADR-0133](docs/adr/0133-authenticate-and-verify-reversible-cleanup.md).
 
 ## B2.8g resumable multipart portable Artifact transport
 

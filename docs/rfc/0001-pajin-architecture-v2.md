@@ -667,10 +667,17 @@ domain-separated CleanupPermit can consume that hold exactly once under the same
 and aggregate Envelope budget. Schema v3 fingerprints both cleanup ledgers and preserves verified
 v1/v2 migration plus strict legacy backup restore; new retained outer wires advance to v1alpha2
 instead of changing the v1alpha1 payload shape. Both B1 claim authorities require injected input
-authorities with no default. The generic CleanupRequest contains only declared outcome and
-Handler-plan coordinates until PERMIT-004B2 supplies their sealed/current-role exact-rebuild,
-dispatches a distinct cleanup Capability, and authenticates restored state. SUP-007 still owns default
-Grant/Gateway/Worker composition.
+authorities with no default. PERMIT-004B2 supplies their general-attack composition by reusing the
+PERMIT-004A sealed source authentication core without invoking its Oracle or Handler, resolving one
+code-owned mapping to a distinct current cleanup release, and exact-matching the current Handler's
+typed restore plan, cleanup Executor, fresh request and Grant, and pre-action hold. A separate
+cleanup audit/reconciliation lifecycle dispatches the CleanupPermit through the unchanged Gateway
+and Worker exactly once. Its source identity binds the immutable source-evidence seal root rather
+than the mutable latest Run root. A completed cleanup Oracle result is still insufficient: a
+code-identified independent verifier must observe the expected current target-state digest. Failed,
+unknown, stale, substituted, irreversible, recursive, or success-only cleanup remains fail closed.
+SUP-007 still owns default Grant/Gateway/Worker composition, and the current production inventory
+remains no-write.
 
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all

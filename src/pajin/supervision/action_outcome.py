@@ -32,6 +32,7 @@ from pajin.capabilities.authorities import (
     CapabilityAuthorityRole,
     CapabilityOracleDecision,
     CodeBackedCapabilityRef,
+    RegisteredCapabilityAuthority,
 )
 from pajin.capabilities.lifecycle import CapabilityReleaseRef
 from pajin.capabilities.models import (
@@ -43,6 +44,7 @@ from pajin.capabilities.models import (
 )
 from pajin.capabilities.reconciliation import (
     CAPABILITY_GRAPH_RUN_AUDIT_ANCHOR_EVENT_TYPE,
+    CapabilityDispatchReconciliationObservation,
     CapabilityDispatchReconciliationStatus,
     CapabilityGraphRunAuditAnchor,
     reconcile_capability_dispatch,
@@ -67,6 +69,7 @@ from pajin.runtime.store import (
 )
 from pajin.runtime.worker import EgressPolicy, NetworkMode, WorkerLimits, WorkerResult
 from pajin.supervision.action_compiler import (
+    GeneralAttackCompiledIntent,
     verify_general_attack_compiled_intent,
 )
 from pajin.supervision.action_permit import GeneralAttackActionPermitResult
@@ -102,6 +105,40 @@ class GeneralAttackActionOutcomeInputs:
     run_path: Path
     run_anchor: CapabilityGraphRunAuditAnchor
     grant: CapabilityGrant
+
+
+@dataclass(frozen=True, slots=True)
+class _AuthenticatedGeneralAttackActionResult:
+    """Private sealed execution identity shared by later outcome policy gates."""
+
+    canonical_intent: GeneralAttackCompiledIntent
+    prepared: PreparedCapabilityAction
+    graph_proposal: ActionProposal
+    permit: ActionPermit
+    definition: CapabilityDefinition
+    release: CapabilityReleaseRef
+    code_backed_capability: CodeBackedCapabilityRef
+    run_path: Path
+    run_anchor: CapabilityGraphRunAuditAnchor
+    run_anchor_event_hash: str
+    run_anchor_seal_root_digest: str
+    verified_run_root_digest: str
+    reconciliation: CapabilityDispatchReconciliationObservation
+    terminal: CapabilityDispatchAuditEvent
+    gateway_outcome: GatewayOutcome
+    gateway_outcome_digest: str
+    grant: CapabilityGrant
+    grant_digest: str
+    worker_result: WorkerResult
+    worker_execution_id: str
+    normalized_result: ToolResult
+    evidence: GeneralAttackSealedEvidenceRef
+    data_flow: GeneralAttackDataFlowObservation
+    active_authorities: CapabilityAuthorityRegistry
+    cleanup_handler: RegisteredCapabilityAuthority
+    executor_adapter: RegisteredCapabilityAuthority
+    result_normalizer: RegisteredCapabilityAuthority
+    success_oracle: RegisteredCapabilityAuthority
 
 
 class GeneralAttackActionOutcomeInputAuthority(Protocol):
@@ -448,19 +485,8 @@ class GeneralAttackActionOutcomeGate:
         """Rebuild exact authority and admit only a sealed, completed Gateway result."""
 
         try:
-            dispatch = result.dispatch
-            if type(dispatch.dispatched) is not bool or not dispatch.dispatched:
-                raise ValueError("general attack result did not start a first dispatch")
-            if dispatch.result is None:
-                raise ValueError("general attack result is missing its Gateway outcome")
-            permit = ActionPermit.model_validate(
-                dispatch.permit.model_dump(mode="json", by_alias=True)
-            )
-            outcome = GatewayOutcome.model_validate(
-                dispatch.result.model_dump(mode="json")
-            )
-            canonical_intent = verify_general_attack_compiled_intent(
-                result.intent,
+            authenticated = self._authenticate_result(
+                result,
                 source_proposal,
                 campaign,
                 hypothesis_set,
@@ -471,164 +497,274 @@ class GeneralAttackActionOutcomeGate:
                 code_backed_capability,
                 authorities,
             )
-            prepared, definition, release = self._rebuild_current_preparation(
-                canonical_intent,
-                definitions,
-            )
-            graph_proposal = ActionProposal.model_validate(
-                result.proposal.model_dump(mode="json", by_alias=True)
-            )
-            self._require_exact_consumed_action(
-                result,
-                canonical_intent,
-                prepared,
-                graph_proposal,
-                permit,
-            )
-            inputs = self._resolve_inputs(permit, prepared, campaign, definition)
-            evidence_path = f"evidence/{permit.request_id}.json"
-            snapshot = load_verified_run_artifacts(
-                inputs.run_path,
-                requests={evidence_path: _MAX_GATEWAY_EVIDENCE_BYTES},
-                expected_run_id=permit.run_id,
-            )
-            anchor_event_hash, anchor_seal_root_digest = self._require_run_anchor(
-                snapshot,
-                inputs.run_anchor,
-                permit,
-                prepared,
-                campaign,
-            )
-            reconciliation = reconcile_capability_dispatch(snapshot, permit)
-            terminal = reconciliation.terminal_event
-            if (
-                reconciliation.record.status
-                is not CapabilityDispatchReconciliationStatus.COMPLETED
-                or terminal is None
-                or terminal.stage is not CapabilityDispatchStage.COMPLETED
-            ):
-                raise ValueError(
-                    "general attack result is missing a sealed completed dispatch"
-                )
-            outcome_digest = capability_gateway_outcome_digest(outcome)
-            grant_digest = capability_grant_digest(inputs.grant)
-            worker_result = self._require_terminal_outcome(
-                terminal,
-                outcome,
-                outcome_digest,
-                prepared,
-                release,
-                grant_digest,
-                evidence_path,
-            )
-            evidence_ref, evidence_result, evidence_job, leases = (
-                self._verify_sealed_gateway_evidence(
-                    snapshot,
-                    evidence_path,
-                    prepared,
-                    outcome,
-                    worker_result,
-                )
-            )
-            dispatched_job = self._require_worker_dispatch(
-                snapshot,
-                evidence_job,
-                leases,
-                prepared,
-                worker_result,
-            )
-            active_authorities = self._activation.rollout.bundle.authorities
-            if active_authorities.resolve(code_backed_capability) != authorities.resolve(
-                code_backed_capability
-            ):
-                raise ValueError("current outcome authority set differs from PERMIT-002")
-            handles = {
-                role: active_authorities.authority(code_backed_capability, role)
-                for role in _OUTCOME_ROLES
-            }
-            normalized = handles[CapabilityAuthorityRole.RESULT_NORMALIZER].normalize(
-                prepared.request,
-                worker_result,
-            )
-            if normalized.evidence or normalized != evidence_result:
-                raise ValueError(
-                    "current Result Normalizer differs from sealed Gateway evidence"
-                )
-            expected_outcome_result = normalized.model_copy(
-                update={"evidence": [evidence_path]},
-                deep=True,
-            )
-            if outcome.result != expected_outcome_result:
-                raise ValueError(
-                    "Gateway outcome differs from the exact normalized sealed result"
-                )
-            data_flow = self._data_flow_observation(
-                definition,
-                dispatched_job,
-                outcome,
-                worker_result,
-            )
-            if definition.side_effect_class not in _SUPPORTED_SIDE_EFFECTS:
+            if authenticated.definition.side_effect_class not in _SUPPORTED_SIDE_EFFECTS:
                 raise ValueError(
                     "write side effects require a separate one-shot cleanup authority"
                 )
-            if definition.cleanup_required:
+            if authenticated.definition.cleanup_required:
                 raise ValueError(
                     "cleanup-required action has no separate one-shot cleanup authority"
                 )
-            oracle_decision = handles[CapabilityAuthorityRole.SUCCESS_ORACLE].evaluate(
-                prepared.request,
-                normalized,
+            oracle_decision = authenticated.success_oracle.evaluate(
+                authenticated.prepared.request,
+                authenticated.normalized_result,
             )
-            cleanup_plan = handles[CapabilityAuthorityRole.CLEANUP_HANDLER].plan_cleanup(
-                prepared.request,
-                normalized,
+            cleanup_plan = authenticated.cleanup_handler.plan_cleanup(
+                authenticated.prepared.request,
+                authenticated.normalized_result,
             )
             if cleanup_plan is not None:
                 raise ValueError("cleanup-not-required Handler returned a cleanup plan")
-            current_release = self._activation.resolve_for_dispatch(prepared.capability)
-            if (
-                current_release.release != release
-                or current_release.capability.reference() != code_backed_capability
-                or active_authorities.resolve(code_backed_capability)
-                != authorities.resolve(code_backed_capability)
-            ):
-                raise ValueError("current outcome authority changed during evaluation")
-            bindings = tuple(handles[role].binding for role in _OUTCOME_ROLES)
+            self._revalidate_authenticated_roles(authenticated, authorities)
+            bindings = tuple(
+                handle.binding
+                for handle in (
+                    authenticated.cleanup_handler,
+                    authenticated.executor_adapter,
+                    authenticated.result_normalizer,
+                    authenticated.success_oracle,
+                )
+            )
             return GeneralAttackActionOutcomeAssessment(
-                campaignId=permit.campaign_id,
-                runId=permit.run_id,
-                sourceIntentDigest=canonical_intent.intent_digest,
-                sourceGeneralProposalDigest=canonical_intent.source_proposal.proposal_digest,
-                graphProposalId=graph_proposal.proposal_id,
-                graphProposalDigest=graph_proposal.proposal_digest,
-                permitId=permit.permit_id,
-                permitDigest=permit.permit_digest,
-                dispatchId=permit.dispatch_id,
-                runAuditAnchor=inputs.run_anchor,
-                runAuditAnchorEventHash=anchor_event_hash,
-                runAuditAnchorSealRootDigest=anchor_seal_root_digest,
-                verifiedRunRootDigest=snapshot.verification.root_digest,
-                reconciliationId=reconciliation.record.reconciliation_id,
-                reconciliationDigest=reconciliation.record.reconciliation_digest,
-                terminalEventDigest=terminal.event_digest,
-                gatewayOutcomeDigest=outcome_digest,
-                capabilityGrantDigest=grant_digest,
-                workerExecutionId=worker_result.execution_id,
-                capability=code_backed_capability,
-                activationSetDigest=prepared.activation_set_digest,
-                release=release,
+                campaignId=authenticated.permit.campaign_id,
+                runId=authenticated.permit.run_id,
+                sourceIntentDigest=authenticated.canonical_intent.intent_digest,
+                sourceGeneralProposalDigest=(
+                    authenticated.canonical_intent.source_proposal.proposal_digest
+                ),
+                graphProposalId=authenticated.graph_proposal.proposal_id,
+                graphProposalDigest=authenticated.graph_proposal.proposal_digest,
+                permitId=authenticated.permit.permit_id,
+                permitDigest=authenticated.permit.permit_digest,
+                dispatchId=authenticated.permit.dispatch_id,
+                runAuditAnchor=authenticated.run_anchor,
+                runAuditAnchorEventHash=authenticated.run_anchor_event_hash,
+                runAuditAnchorSealRootDigest=(
+                    authenticated.run_anchor_seal_root_digest
+                ),
+                verifiedRunRootDigest=authenticated.verified_run_root_digest,
+                reconciliationId=(
+                    authenticated.reconciliation.record.reconciliation_id
+                ),
+                reconciliationDigest=(
+                    authenticated.reconciliation.record.reconciliation_digest
+                ),
+                terminalEventDigest=authenticated.terminal.event_digest,
+                gatewayOutcomeDigest=authenticated.gateway_outcome_digest,
+                capabilityGrantDigest=authenticated.grant_digest,
+                workerExecutionId=authenticated.worker_execution_id,
+                capability=authenticated.code_backed_capability,
+                activationSetDigest=authenticated.prepared.activation_set_digest,
+                release=authenticated.release,
                 outcomeAuthorities=bindings,
-                expectedEvidenceTypes=definition.evidence_types,
-                evidence=evidence_ref,
+                expectedEvidenceTypes=authenticated.definition.evidence_types,
+                evidence=authenticated.evidence,
                 oracleDecision=oracle_decision,
-                sideEffectClass=definition.side_effect_class,
-                dataFlow=data_flow,
+                sideEffectClass=authenticated.definition.side_effect_class,
+                dataFlow=authenticated.data_flow,
             )
         except Exception as exc:
             raise GeneralAttackActionOutcomeError(
                 "General attack outcome authority failed closed"
             ) from exc
+
+    def _authenticate_result(
+        self,
+        result: GeneralAttackActionPermitResult[GatewayOutcome],
+        source_proposal: GeneralAttackActionProposal,
+        campaign: CampaignManifest,
+        hypothesis_set: AttackHypothesisSet,
+        plan: SurfaceBoundPlan,
+        task_digest: str,
+        action_definition: CapabilityDefinitionRef,
+        definitions: CapabilityDefinitionRegistry,
+        code_backed_capability: CodeBackedCapabilityRef,
+        authorities: CapabilityAuthorityRegistry,
+    ) -> _AuthenticatedGeneralAttackActionResult:
+        """Authenticate sealed execution evidence without applying outcome policy."""
+
+        dispatch = result.dispatch
+        if type(dispatch.dispatched) is not bool or not dispatch.dispatched:
+            raise ValueError("general attack result did not start a first dispatch")
+        if dispatch.result is None:
+            raise ValueError("general attack result is missing its Gateway outcome")
+        permit = ActionPermit.model_validate(
+            dispatch.permit.model_dump(mode="json", by_alias=True)
+        )
+        outcome = GatewayOutcome.model_validate(dispatch.result.model_dump(mode="json"))
+        canonical_intent = verify_general_attack_compiled_intent(
+            result.intent,
+            source_proposal,
+            campaign,
+            hypothesis_set,
+            plan,
+            task_digest,
+            action_definition,
+            definitions,
+            code_backed_capability,
+            authorities,
+        )
+        prepared, definition, release = self._rebuild_current_preparation(
+            canonical_intent,
+            definitions,
+        )
+        graph_proposal = ActionProposal.model_validate(
+            result.proposal.model_dump(mode="json", by_alias=True)
+        )
+        self._require_exact_consumed_action(
+            result,
+            canonical_intent,
+            prepared,
+            graph_proposal,
+            permit,
+        )
+        inputs = self._resolve_inputs(permit, prepared, campaign, definition)
+        evidence_path = f"evidence/{permit.request_id}.json"
+        snapshot = load_verified_run_artifacts(
+            inputs.run_path,
+            requests={evidence_path: _MAX_GATEWAY_EVIDENCE_BYTES},
+            expected_run_id=permit.run_id,
+        )
+        anchor_event_hash, anchor_seal_root_digest = self._require_run_anchor(
+            snapshot,
+            inputs.run_anchor,
+            permit,
+            prepared,
+            campaign,
+        )
+        reconciliation = reconcile_capability_dispatch(snapshot, permit)
+        terminal = reconciliation.terminal_event
+        if (
+            reconciliation.record.status
+            is not CapabilityDispatchReconciliationStatus.COMPLETED
+            or terminal is None
+            or terminal.stage is not CapabilityDispatchStage.COMPLETED
+        ):
+            raise ValueError("general attack result is missing a sealed completed dispatch")
+        outcome_digest = capability_gateway_outcome_digest(outcome)
+        grant_digest = capability_grant_digest(inputs.grant)
+        worker_result = self._require_terminal_outcome(
+            terminal,
+            outcome,
+            outcome_digest,
+            prepared,
+            release,
+            grant_digest,
+            evidence_path,
+        )
+        evidence_ref, evidence_result, evidence_job, leases = (
+            self._verify_sealed_gateway_evidence(
+                snapshot,
+                evidence_path,
+                prepared,
+                outcome,
+                worker_result,
+            )
+        )
+        dispatched_job = self._require_worker_dispatch(
+            snapshot,
+            evidence_job,
+            leases,
+            prepared,
+            worker_result,
+        )
+        active_authorities = self._activation.rollout.bundle.authorities
+        if active_authorities.resolve(code_backed_capability) != authorities.resolve(
+            code_backed_capability
+        ):
+            raise ValueError("current outcome authority set differs from PERMIT-002")
+        handles = {
+            role: active_authorities.authority(code_backed_capability, role)
+            for role in _OUTCOME_ROLES
+        }
+        normalized = handles[CapabilityAuthorityRole.RESULT_NORMALIZER].normalize(
+            prepared.request,
+            worker_result,
+        )
+        if normalized.evidence or normalized != evidence_result:
+            raise ValueError("current Result Normalizer differs from sealed Gateway evidence")
+        expected_outcome_result = normalized.model_copy(
+            update={"evidence": [evidence_path]},
+            deep=True,
+        )
+        if outcome.result != expected_outcome_result:
+            raise ValueError("Gateway outcome differs from the exact normalized sealed result")
+        data_flow = self._data_flow_observation(
+            definition,
+            dispatched_job,
+            outcome,
+            worker_result,
+        )
+        return _AuthenticatedGeneralAttackActionResult(
+            canonical_intent=canonical_intent,
+            prepared=prepared,
+            graph_proposal=graph_proposal,
+            permit=permit,
+            definition=definition,
+            release=release,
+            code_backed_capability=code_backed_capability,
+            run_path=inputs.run_path,
+            run_anchor=inputs.run_anchor,
+            run_anchor_event_hash=anchor_event_hash,
+            run_anchor_seal_root_digest=anchor_seal_root_digest,
+            verified_run_root_digest=snapshot.verification.root_digest,
+            reconciliation=reconciliation,
+            terminal=terminal,
+            gateway_outcome=outcome,
+            gateway_outcome_digest=outcome_digest,
+            grant=inputs.grant,
+            grant_digest=grant_digest,
+            worker_result=worker_result,
+            worker_execution_id=worker_result.execution_id,
+            normalized_result=normalized,
+            evidence=evidence_ref,
+            data_flow=data_flow,
+            active_authorities=active_authorities,
+            cleanup_handler=handles[CapabilityAuthorityRole.CLEANUP_HANDLER],
+            executor_adapter=handles[CapabilityAuthorityRole.EXECUTOR_ADAPTER],
+            result_normalizer=handles[CapabilityAuthorityRole.RESULT_NORMALIZER],
+            success_oracle=handles[CapabilityAuthorityRole.SUCCESS_ORACLE],
+        )
+
+    def _revalidate_authenticated_roles(
+        self,
+        authenticated: _AuthenticatedGeneralAttackActionResult,
+        authorities: CapabilityAuthorityRegistry,
+    ) -> None:
+        current_release = self._activation.resolve_for_dispatch(
+            authenticated.prepared.capability
+        )
+        current_authorities = self._activation.rollout.bundle.authorities
+        current_manifest = current_authorities.resolve(
+            authenticated.code_backed_capability
+        )
+        if (
+            self._activation.activation_set.activation_set_digest
+            != authenticated.prepared.activation_set_digest
+            or current_release.release != authenticated.release
+            or current_release.capability.reference()
+            != authenticated.code_backed_capability
+            or current_manifest
+            != authenticated.active_authorities.resolve(
+                authenticated.code_backed_capability
+            )
+            or current_manifest
+            != authorities.resolve(authenticated.code_backed_capability)
+        ):
+            raise ValueError("current outcome authority changed during evaluation")
+        authenticated_handles = {
+            CapabilityAuthorityRole.CLEANUP_HANDLER: authenticated.cleanup_handler,
+            CapabilityAuthorityRole.EXECUTOR_ADAPTER: authenticated.executor_adapter,
+            CapabilityAuthorityRole.RESULT_NORMALIZER: authenticated.result_normalizer,
+            CapabilityAuthorityRole.SUCCESS_ORACLE: authenticated.success_oracle,
+        }
+        for role in _OUTCOME_ROLES:
+            current = current_authorities.authority(
+                authenticated.code_backed_capability,
+                role,
+            )
+            if current.binding != authenticated_handles[role].binding:
+                raise ValueError("current outcome authority changed during evaluation")
 
     def _resolve_inputs(
         self,

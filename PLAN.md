@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `PERMIT-004B2` authenticated reversible-write cleanup dispatch
+- 현재 우선순위: `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
 
 ## 제품 목표
 
@@ -625,21 +625,26 @@ backup destination migration을 지원하고 cleanup authority를 backfill하지
 필수 external input-authority Protocol을 claim 전후 호출하며 permissive 기본 구현은 없다. 새 retained producer는
 outer wire와 crypto domain을 v1alpha2로 올리고 strict v1alpha1 reader는 기존 payload shape만 읽는다.
 
-다음 `PERMIT-004B2`는 PERMIT-004A의 sealed result authentication을 `reversible-write +
-cleanupRequired=true`에 재사용하고, current Handler plan·distinct cleanup Capability·pre-action hold를 exact
-결박해 실제 cleanup Gateway dispatch와 restored-state evidence까지 검증해야 한다. `irreversible-write`,
-incomplete·uncertain outcome과 검증되지 않은 plan·completion은 계속 거부한다.
+`PERMIT-004B2`는 PERMIT-004A sealed-result authentication core를 Oracle·Handler 호출과 분리해 no-write
+동작을 유지하면서 `reversible-write + cleanupRequired=true` source에도 재사용한다. code-owned mapping은
+source를 distinct current cleanup Capability release에 결박하고, current Handler의 단일 typed restore plan,
+cleanup Executor, fresh ToolRequest·Grant, pre-action hold를 exact-match한다. 별도 cleanup audit/reconciliation과
+기존 Gateway·Worker로 CleanupPermit을 한 번만 dispatch하며, immutable source-evidence seal root를 사용해 같은
+Run에 cleanup event가 추가돼도 source identity를 유지한다. sealed cleanup success 뒤에도 code-identified
+verifier가 실제 target state digest를 독립 관찰해야 restored assessment가 성립한다. `irreversible-write`,
+incomplete·uncertain source, stale/cross-action substitution, forged plan/Permit, unknown cleanup과 Gateway
+success-only restoration은 계속 거부한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
 - [x] `PERMIT-001` 일반 공격 ActionProposal
 - [x] `PERMIT-002` Deterministic Action Compiler
 - [x] `PERMIT-003` Exact Single-use ActionPermit
-- [ ] `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
+- [x] `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
   - [x] `PERMIT-004A` authenticated no-write Action Outcome Gate
-  - [ ] `PERMIT-004B` bounded one-shot Cleanup Permit와 aggregate Campaign budget
+  - [x] `PERMIT-004B` bounded one-shot Cleanup Permit와 aggregate Campaign budget
     - [x] `PERMIT-004B1` pre-reserved cleanup budget와 GRAPH one-shot CleanupPermit
-    - [ ] `PERMIT-004B2` authenticated write outcome·Handler plan·cleanup dispatch·restored state
+    - [x] `PERMIT-004B2` authenticated write outcome·Handler plan·cleanup dispatch·restored state
 - [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
 - [ ] `SUP-007` opt-in T0/T1 실행
 - [ ] T2는 사전 승인 Envelope를 요구하고 T3+는 기본 거부

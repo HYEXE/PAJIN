@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_FLOOR, Decimal
 from inspect import iscoroutinefunction
-from typing import Protocol
+from typing import Protocol, cast
 
 from pydantic import ValidationError
 
@@ -28,6 +28,8 @@ from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import CampaignManifest, campaign_manifest_digest
 from pajin.graph import (
     ActionBudgetReservation,
+    ActionCleanupReservation,
+    ActionCleanupReservationRequest,
     ActionDispatchResult,
     ActionPermit,
     ActionProposal,
@@ -36,7 +38,11 @@ from pajin.graph import (
     GraphActionPermitStore,
     GraphDecision,
     GraphDecisionKind,
+    GraphReversibleActionPermitAuthority,
+    GraphReversibleActionPermitDispatcher,
+    GraphReversibleActionPermitStore,
     MissionEnvelope,
+    ReversibleActionPermitInputAuthority,
 )
 from pajin.supervision.action_compiler import (
     GeneralAttackActionCompilerError,
@@ -85,6 +91,31 @@ class GeneralAttackActionPermitInputAuthority(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class GeneralAttackReversibleCleanupClaim:
+    """Exact pre-action cleanup hold and its mandatory B1 verifier."""
+
+    request: ActionCleanupReservationRequest
+    input_authority: ReversibleActionPermitInputAuthority
+
+
+class GeneralAttackReversibleCleanupAuthority(Protocol):
+    """Bind one verified reversible action to its exact cleanup capacity hold."""
+
+    def bind_for_action(
+        self,
+        *,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        proposal: ActionProposal,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        envelope: MissionEnvelope,
+        decision: GraphDecision,
+        evaluated_at: datetime,
+    ) -> GeneralAttackReversibleCleanupClaim: ...
+
+
+@dataclass(frozen=True, slots=True)
 class GeneralAttackActionPermitResult[DispatchResultT]:
     """Non-authoritative observation of one exact GRAPH Permit dispatch claim."""
 
@@ -92,6 +123,7 @@ class GeneralAttackActionPermitResult[DispatchResultT]:
     prepared: PreparedCapabilityAction
     proposal: ActionProposal
     dispatch: ActionDispatchResult[DispatchResultT]
+    cleanup_reservation: ActionCleanupReservation | None = None
 
 
 class GeneralAttackActionPermitGate:
@@ -103,6 +135,7 @@ class GeneralAttackActionPermitGate:
         activation: ExistingModeCapabilityActivation,
         permit_store: GraphActionPermitStore,
         inputs: GeneralAttackActionPermitInputAuthority,
+        reversible_cleanup: GeneralAttackReversibleCleanupAuthority | None = None,
         clock: Callable[[], datetime] | None = None,
         permit_ttl: timedelta = timedelta(seconds=30),
     ) -> None:
@@ -113,6 +146,11 @@ class GeneralAttackActionPermitGate:
         self._activation = activation
         self._permit_store = permit_store
         self._inputs = inputs
+        if reversible_cleanup is not None and not callable(
+            getattr(reversible_cleanup, "bind_for_action", None)
+        ):
+            raise TypeError("General attack reversible cleanup authority must bind an exact hold")
+        self._reversible_cleanup = reversible_cleanup
         self._clock = clock or (lambda: datetime.now(UTC))
         self._permit_ttl = permit_ttl
         self._bound_envelope_digest: str | None = None
@@ -201,23 +239,148 @@ class GeneralAttackActionPermitGate:
             reservation=reservation,
             createdAt=inputs.decision.created_at,
         )
-        dispatcher = self._bound_dispatcher(inputs.envelope, canonical_campaign)
 
         async def consume(permit: ActionPermit) -> DispatchResultT:
             return await dispatch(permit, prepared, action_proposal)
 
-        dispatch_result = await dispatcher.dispatch_once(
-            inputs.envelope,
-            action_proposal,
-            inputs.decision,
-            consume,
-        )
+        cleanup_reservation: ActionCleanupReservation | None = None
+        if definition.side_effect_class.value.endswith("write"):
+            if (
+                definition.side_effect_class.value != "reversible-write"
+                or not definition.cleanup_required
+                or self._reversible_cleanup is None
+            ):
+                raise GeneralAttackActionPermitError(
+                    "write action lacks a reversible cleanup hold authority"
+                )
+            claim = self._bind_reversible_cleanup(
+                canonical_intent,
+                prepared,
+                action_proposal,
+                canonical_campaign,
+                definition,
+                inputs,
+                evaluated_at,
+            )
+            reversible_dispatcher = self._reversible_dispatcher(
+                inputs.envelope,
+                canonical_campaign,
+                claim.input_authority,
+            )
+            reversible = await reversible_dispatcher.dispatch_once(
+                inputs.envelope,
+                action_proposal,
+                inputs.decision,
+                claim.request,
+                consume,
+            )
+            action = reversible.authorization.action
+            cleanup_reservation = reversible.authorization.cleanup_reservation
+            dispatch_result = ActionDispatchResult(
+                permit=action.permit,
+                dispatched=reversible.dispatched,
+                result=reversible.result,
+            )
+        else:
+            action_dispatcher = self._bound_dispatcher(
+                inputs.envelope,
+                canonical_campaign,
+            )
+            dispatch_result = await action_dispatcher.dispatch_once(
+                inputs.envelope,
+                action_proposal,
+                inputs.decision,
+                consume,
+            )
         return GeneralAttackActionPermitResult(
             intent=canonical_intent,
             prepared=prepared,
             proposal=action_proposal,
             dispatch=dispatch_result,
+            cleanup_reservation=cleanup_reservation,
         )
+
+    def _bind_reversible_cleanup(
+        self,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        proposal: ActionProposal,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        inputs: GeneralAttackActionPermitInputs,
+        evaluated_at: datetime,
+    ) -> GeneralAttackReversibleCleanupClaim:
+        authority = self._reversible_cleanup
+        if authority is None:
+            raise GeneralAttackActionPermitError(
+                "write action lacks a reversible cleanup hold authority"
+            )
+        try:
+            bound = authority.bind_for_action(
+                intent=GeneralAttackCompiledIntent.model_validate(
+                    intent.model_dump(mode="json", by_alias=True)
+                ),
+                prepared=PreparedCapabilityAction.model_validate(
+                    prepared.model_dump(mode="json", by_alias=True)
+                ),
+                proposal=ActionProposal.model_validate(
+                    proposal.model_dump(mode="json", by_alias=True)
+                ),
+                campaign=CampaignManifest.model_validate(
+                    campaign.model_dump(mode="json", by_alias=True)
+                ),
+                definition=CapabilityDefinition.model_validate(
+                    definition.model_dump(mode="json", by_alias=True)
+                ),
+                envelope=MissionEnvelope.model_validate(
+                    inputs.envelope.model_dump(mode="json", by_alias=True)
+                ),
+                decision=GraphDecision.model_validate(
+                    inputs.decision.model_dump(mode="json", by_alias=True)
+                ),
+                evaluated_at=evaluated_at,
+            )
+            if type(bound) is not GeneralAttackReversibleCleanupClaim:
+                raise TypeError("cleanup authority returned another claim type")
+            request = ActionCleanupReservationRequest.model_validate(
+                bound.request.model_dump(mode="json", by_alias=True)
+            )
+            if not callable(getattr(bound.input_authority, "verify_reversible_action", None)):
+                raise TypeError("cleanup claim lacks its mandatory B1 verifier")
+            return GeneralAttackReversibleCleanupClaim(
+                request=request,
+                input_authority=bound.input_authority,
+            )
+        except GeneralAttackActionPermitError:
+            raise
+        except Exception as exc:
+            raise GeneralAttackActionPermitError(
+                "reversible cleanup hold binding failed closed"
+            ) from exc
+
+    def _reversible_dispatcher(
+        self,
+        envelope: MissionEnvelope,
+        campaign: CampaignManifest,
+        input_authority: ReversibleActionPermitInputAuthority,
+    ) -> GraphReversibleActionPermitDispatcher:
+        store = self._permit_store
+        if not callable(getattr(store, "authorize_reversible_for_dispatch", None)):
+            raise GeneralAttackActionPermitError(
+                "GRAPH Permit store lacks atomic reversible cleanup holds"
+            )
+        authority = GraphReversibleActionPermitAuthority(
+            campaign_id=envelope.campaign_id,
+            compiler_id=envelope.compiler_id,
+            compiler_version=envelope.compiler_version,
+            compiler_digest=envelope.compiler_digest,
+            capabilities=self._activation.action_registry(),
+            permit_store=cast(GraphReversibleActionPermitStore, store),
+            input_authority=input_authority,
+            clock=lambda: self._claim_evaluated_at(campaign, envelope),
+            permit_ttl=self._permit_ttl,
+        )
+        return GraphReversibleActionPermitDispatcher(authority)
 
     def _current_activation_binding(
         self,

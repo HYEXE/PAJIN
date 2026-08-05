@@ -19,9 +19,9 @@ and fixed-point cost reservation before the write callback can run. A later exte
 
 The current CAP-005 inventory still contains no production `reversible-write` Capability. The
 positive path is therefore an isolated authority fixture, not a claim that a production cleanup
-workflow is active. PERMIT-004B2 must connect PERMIT-004A-equivalent sealed write-result
+workflow is active. PERMIT-004B2 connects PERMIT-004A-equivalent sealed write-result
 authentication, the current Cleanup Handler plan, a distinct cleanup Capability, and Gateway
-dispatch to these GRAPH contracts.
+dispatch to these GRAPH contracts without changing B1 wire or durability semantics.
 
 ## Pre-dispatch cleanup capacity
 
@@ -66,10 +66,10 @@ It also requires a caller-supplied `CleanupPermitInputAuthority` before and afte
 there is no default implementation. That authority must exact-rebuild sealed source evidence and
 the current Handler, Executor, Capability, Tool request, target, price, and hold bindings. B1 does
 not provide that production adapter and cannot independently prove that caller-supplied outcome
-coordinates or the Handler plan came from sealed PERMIT-004A-equivalent evidence. Those fields
-remain explicit input-authority TCB until PERMIT-004B2 supplies the managed-Run and current-role
-adapter. A self-consistent `CleanupRequest` must not be treated as authenticated write-result
-authority by itself.
+coordinates or the Handler plan came from sealed PERMIT-004A-equivalent evidence. PERMIT-004B2
+supplies the managed-Run and current-role adapter at the higher composition boundary; a
+self-consistent `CleanupRequest` must still not be treated as authenticated write-result authority
+by itself.
 
 ## One-shot CleanupPermit
 
@@ -171,18 +171,19 @@ uncertainty, append-only and schema fingerprint tampering, v1-to-v3 and populate
 migration, v3 backup/restore, canonical cross-ledger substitution rejection during backup and
 restore, and strict legacy v2 plus retained-v1alpha1 restore with destination-only migration.
 
-## Remaining boundary
+## Higher-level composition
 
-PERMIT-004B2 must reuse the PERMIT-004A sealed result authentication core for
-`reversible-write + cleanupRequired=true`, exact-rebuild a single current Handler plan, compile a
-distinct cleanup Capability request, prove that the pre-action hold exactly covers it, dispatch it
-through the existing Grant/Gateway lifecycle, and authenticate cleanup outcome and restored target
-state. `irreversible-write`, incomplete or uncertain source outcomes, stale role activation, and
-unverified cleanup completion remain closed.
+PERMIT-004B2 now reuses the PERMIT-004A sealed result authentication core for
+`reversible-write + cleanupRequired=true`, exact-rebuilds a single current Handler plan, compiles a
+distinct cleanup Capability request, proves that the pre-action hold exactly covers it, dispatches
+it through the existing Grant/Gateway lifecycle, and authenticates cleanup outcome and restored
+target state. `irreversible-write`, incomplete or uncertain source outcomes, stale role activation,
+and unverified cleanup completion remain closed.
 
 ## Related documents
 
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
+- [PERMIT-004B2 contract](PERMIT-004B2-authenticated-reversible-cleanup-dispatch.md)
 - [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [GRAPH-005 contract](../graph/GRAPH-005-durable-sqlite-graph-store.md)
