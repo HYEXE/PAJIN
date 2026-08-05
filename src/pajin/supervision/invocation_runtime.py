@@ -54,6 +54,9 @@ from pajin.supervision.invocation import (
     build_supervisor_invocation_request,
 )
 from pajin.supervision.invocation_journal import (
+    SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION,
+    SUPERVISOR_INVOCATION_INTENT_API_VERSION,
+    SupervisorBenchmarkRequestContext,
     SupervisorInvocationJournal,
     SupervisorInvocationJournalEntry,
     SupervisorInvocationJournalError,
@@ -77,6 +80,9 @@ from pajin.tools.gateway import GatewayOutcome, RequestRateLimitLedger, ToolGate
 SUPERVISOR_INVOCATION_RECEIPT_API_VERSION: Literal[
     "pajin.dev/supervisor-invocation-receipt/v1alpha1"
 ] = "pajin.dev/supervisor-invocation-receipt/v1alpha1"
+SUPERVISOR_CONTEXT_BOUND_INVOCATION_RECEIPT_API_VERSION: Literal[
+    "pajin.dev/supervisor-invocation-receipt/v1alpha2"
+] = "pajin.dev/supervisor-invocation-receipt/v1alpha2"
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _RECEIPT_PATH = "supervision/supervisor-invocation-receipt.json"
@@ -128,7 +134,10 @@ class SupervisorInvocationReceipt(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/supervisor-invocation-receipt/v1alpha1"] = Field(
+    api_version: Literal[
+        "pajin.dev/supervisor-invocation-receipt/v1alpha1",
+        "pajin.dev/supervisor-invocation-receipt/v1alpha2",
+    ] = Field(
         default=SUPERVISOR_INVOCATION_RECEIPT_API_VERSION,
         alias="apiVersion",
     )
@@ -137,6 +146,11 @@ class SupervisorInvocationReceipt(StrictModel):
     receipt_digest: str = Field(default="", alias="receiptDigest", max_length=64)
     invocation_intent_id: str = Field(alias="invocationIntentId", min_length=1, max_length=110)
     invocation_intent_digest: _Sha256 = Field(alias="invocationIntentDigest")
+    request_context: SupervisorBenchmarkRequestContext | None = Field(
+        default=None,
+        alias="requestContext",
+        exclude_if=lambda value: value is None,
+    )
     dispatch_event_digest: _Sha256 = Field(alias="dispatchEventDigest")
     schedule_id: str = Field(alias="scheduleId", min_length=1, max_length=110)
     schedule_digest: _Sha256 = Field(alias="scheduleDigest")
@@ -245,8 +259,14 @@ class SupervisorInvocationReceipt(StrictModel):
 
     @model_validator(mode="after")
     def bind_receipt(self) -> Self:
+        expected_api_version = (
+            SUPERVISOR_CONTEXT_BOUND_INVOCATION_RECEIPT_API_VERSION
+            if self.request_context is not None
+            else SUPERVISOR_INVOCATION_RECEIPT_API_VERSION
+        )
         if (
-            self.provider_outcome_digest != self.provider_outcome.outcome_digest
+            self.api_version != expected_api_version
+            or self.provider_outcome_digest != self.provider_outcome.outcome_digest
             or self.provider_outcome.request_id != self.stable_request_id
             or self.provider_outcome.charged_usage.budget_scope != "campaign-and-dedicated"
             or self.draft.snapshot_id != self.source_snapshot_id
@@ -310,10 +330,18 @@ class SupervisorCheckpointInvoker:
         self._journal = journal
         self._provider_runtime = provider_runtime
 
+    @property
+    def journal(self) -> SupervisorInvocationJournal:
+        """Return the exact durable journal consumed by this invoker."""
+
+        return self._journal
+
     async def invoke(
         self,
         schedule_publication: SupervisorCheckpointSchedulePublication,
         authorities: SupervisorInvocationAuthorities,
+        *,
+        request_context: SupervisorBenchmarkRequestContext | None = None,
     ) -> SupervisorInvocationCompletion:
         """Dispatch at most once per journal and return only a verified SUP-003 proposal."""
 
@@ -322,7 +350,10 @@ class SupervisorCheckpointInvoker:
                 schedule_publication,
                 authorities,
             )
-            entry = self._journal.claim(schedule_publication)
+            entry = self._journal.claim(
+                schedule_publication,
+                request_context=request_context,
+            )
             if entry.state == "terminal-success":
                 publication = self._terminal_publication(entry, authorities.campaign)
             elif entry.state == "dispatch-started-outcome-unknown":
@@ -711,8 +742,14 @@ def _build_receipt(
     request_artifact = _only_artifact(evidence_seal, request_path)
     evidence_artifact = _only_artifact(evidence_seal, evidence_path)
     return SupervisorInvocationReceipt(
+        apiVersion=(
+            SUPERVISOR_CONTEXT_BOUND_INVOCATION_RECEIPT_API_VERSION
+            if entry.intent.request_context is not None
+            else SUPERVISOR_INVOCATION_RECEIPT_API_VERSION
+        ),
         invocationIntentId=entry.intent.intent_id,
         invocationIntentDigest=entry.intent.intent_digest,
+        requestContext=entry.intent.request_context,
         dispatchEventDigest=entry.last_event_digest,
         scheduleId=schedule.schedule_id,
         scheduleDigest=schedule.schedule_digest,
@@ -838,6 +875,11 @@ def _verify_invocation_run(
         entry.state != expected_journal_state
         or receipt.invocation_intent_id != entry.intent.intent_id
         or receipt.invocation_intent_digest != entry.intent.intent_digest
+        or receipt.request_context != entry.intent.request_context
+        or (entry.intent.api_version == SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION)
+        != (receipt.request_context is not None)
+        or (entry.intent.api_version == SUPERVISOR_INVOCATION_INTENT_API_VERSION)
+        != (receipt.request_context is None)
         or receipt.dispatch_event_digest != entry.dispatch_event_digest
         or receipt.stable_request_id != entry.intent.stable_request_id
         or receipt.provider_run_id != entry.intent.provider_run_id

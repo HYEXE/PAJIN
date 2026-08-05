@@ -44,7 +44,9 @@ def _safe_text(value: str, *, label: str) -> str:
     return value
 
 
-def _campaign_digest(campaign: CampaignManifest) -> str:
+def walking_campaign_digest(campaign: CampaignManifest) -> str:
+    """Return the canonical WALK campaign-authority digest."""
+
     payload = campaign.model_dump(mode="json", by_alias=True)
     rules = payload["spec"]["rulesOfEngagement"]
     for field_name in ("allowedMethods", "allowedToolCategories", "prohibit", "stopOn"):
@@ -52,6 +54,10 @@ def _campaign_digest(campaign: CampaignManifest) -> str:
     for window in rules["testingWindows"]:
         window["days"] = sorted(window["days"])
     return discovery_digest("pajin.walking.campaign-authority/v1", payload)
+
+
+def _campaign_digest(campaign: CampaignManifest) -> str:
+    return walking_campaign_digest(campaign)
 
 
 class RegisteredRAGInjectionHypothesisRule(StrictModel):

@@ -23,9 +23,11 @@ from pajin.supervision.invocation import (
     _response_schema_digest,
 )
 from pajin.supervision.invocation_journal import (
+    SupervisorBenchmarkRequestContext,
     SupervisorInvocationJournal,
     SupervisorInvocationJournalError,
     SupervisorInvocationJournalState,
+    supervisor_stable_request_id,
 )
 from pajin.tools.ai import ChatRole
 
@@ -131,6 +133,27 @@ def _journal(tmp_path: Path) -> SupervisorInvocationJournal:
     )
 
 
+def _request_context(publication: SupervisorCheckpointSchedulePublication):
+    return SupervisorBenchmarkRequestContext(
+        planApiVersion="pajin.dev/supervisor-benchmark-campaign-plan/v1alpha1",
+        planKind="SupervisorBenchmarkCampaignPlan",
+        planId=f"supervisor-benchmark-plan:{SHA_D}",
+        planDigest=SHA_D,
+        planRunId="run_20260805T010201Z_dddddddd",
+        planRootDigest=SHA_A,
+        planArtifactPath="supervision/supervisor-benchmark-campaign-plan.json",
+        planArtifactSha256=SHA_B,
+        manifestDigest=SHA_C,
+        coordinateSetDigest=SHA_D,
+        coordinateId=f"benchmark-coordinate:{SHA_A}",
+        coordinateDigest=SHA_A,
+        scheduleId=publication.schedule.schedule_id,
+        scheduleDigest=publication.schedule.schedule_digest,
+        scheduleRunId=publication.run_id,
+        scheduleRootDigest=publication.root_digest,
+    )
+
+
 def test_claim_is_exact_idempotent_and_survives_reopen(tmp_path: Path) -> None:
     publication = _publication(tmp_path)
     journal = _journal(tmp_path)
@@ -155,6 +178,41 @@ def test_claim_is_exact_idempotent_and_survives_reopen(tmp_path: Path) -> None:
     assert first.redispatch_allowed is False
     assert first.dispatch_event_digest is None
     assert first.last_event_digest == first.event_digests[0]
+    assert first.intent.api_version == "pajin.dev/supervisor-invocation-intent/v1alpha1"
+    assert "requestContext" not in first.intent.model_dump(mode="json", by_alias=True)
+
+
+def test_claim_context_binds_stable_request_and_rejects_context_equivocation(
+    tmp_path: Path,
+) -> None:
+    publication = _publication(tmp_path)
+    journal = _journal(tmp_path)
+    context = _request_context(publication)
+
+    entry = journal.claim(publication, request_context=context)
+
+    assert entry.intent.stable_request_id == supervisor_stable_request_id(
+        publication,
+        request_context=context,
+    )
+    assert entry.intent.stable_request_id != supervisor_stable_request_id(publication)
+    assert entry.intent.request_context == context
+    assert entry.intent.api_version == "pajin.dev/supervisor-invocation-intent/v1alpha2"
+    assert entry.intent.model_dump(mode="json", by_alias=True)["requestContext"] == (
+        context.model_dump(mode="json", by_alias=True)
+    )
+    assert journal.claim(publication, request_context=context) == entry
+    with pytest.raises(SupervisorInvocationJournalError, match="equivocation"):
+        journal.claim(publication)
+    foreign_raw = context.model_dump(mode="json", by_alias=True)
+    foreign_raw["contextId"] = ""
+    foreign_raw["contextDigest"] = ""
+    foreign_raw["planDigest"] = "f" * 64
+    foreign = SupervisorBenchmarkRequestContext.model_validate(foreign_raw)
+    with pytest.raises(SupervisorInvocationJournalError, match="equivocation"):
+        journal.claim(publication, request_context=foreign)
+    with pytest.raises(SupervisorInvocationJournalError):
+        journal.claim(publication, request_context="e" * 64)  # type: ignore[arg-type]
 
 
 def test_same_checkpoint_publication_equivocation_is_rejected(tmp_path: Path) -> None:

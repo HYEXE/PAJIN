@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-005B` 호출 전 Benchmark 좌표·측정 결박
+- 현재 우선순위: `SUP-005B2` registry-governed Observation·수치 비교 결박
 
 ## 제품 목표
 
@@ -488,6 +488,8 @@ Gate가 닫혔다.
 - [ ] `SUP-005` Deterministic Baseline 비교
   - [x] `SUP-005A` B3·BENCH-003B2 source-bound non-attribution lineage
   - [ ] `SUP-005B` 호출 전 Benchmark 좌표·B3-backed observation 결박
+    - [x] `SUP-005B1` complete coordinate Plan·typed B3 request context
+    - [ ] `SUP-005B2` registry-governed Observation·canonical numeric Comparison
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
 활성화하려면 Confirmed Finding Yield 또는 Chain Completion이 개선되고, Policy Violation은
@@ -558,6 +560,16 @@ authority에 결박한다. B2 candidate는 WALK-006 정적 policy이고 B3에는
 false를 고정한다. 다음 `SUP-005B`는 실제 호출 전에 기존 `BenchmarkTargetCoordinate`와 B3 candidate
 implementation을 고정하고 모든 candidate 좌표의 receipt/proposal을 externally adjudicated B1 observation에
 결박한 뒤에만 기존 Comparison을 재사용해야 한다.
+
+`SUP-005B1`은 BENCH-003B2의 baseline-only 구조에서 model call ceiling이 1인 새 two-arm Manifest를
+도출하고, static candidate implementation과 전체 arm·seed·repetition 좌표, 좌표별 exact SUP-004A
+schedule을 sealed non-dispatch Plan에 결박한다. Plan·coordinate·schedule publication 전체는 typed request
+context로 B3 intent/receipt `v1alpha2`와 실제 Gateway `ToolRequest.request_id`에 들어간다. context 없는
+기존 B3는 `v1alpha1` wire와 stable ID를 그대로 유지한다. exact invoker와 기존 B3 consumer 및 Plan/source
+reader를 다시 통과한 결과만 candidate invocation으로 인정한다. Plan 자체는 dispatch 시점을 증명하지
+않으며 numeric Result 재사용, proposal 효과 귀속, comparison, threshold, execution, activation은 false다.
+다음 `SUP-005B2`는 기존 registry-governed Target/Harness와 외부 measurement attestation으로 모든 좌표의
+Observation을 만들고 양 arm을 새 Manifest 아래 재측정한 뒤 기존 BENCH-003B1 Comparison만 재사용한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

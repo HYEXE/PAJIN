@@ -26,6 +26,12 @@ from pajin.supervision.checkpoint_scheduler import (
 SUPERVISOR_INVOCATION_INTENT_API_VERSION: Literal[
     "pajin.dev/supervisor-invocation-intent/v1alpha1"
 ] = "pajin.dev/supervisor-invocation-intent/v1alpha1"
+SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION: Literal[
+    "pajin.dev/supervisor-invocation-intent/v1alpha2"
+] = "pajin.dev/supervisor-invocation-intent/v1alpha2"
+SUPERVISOR_BENCHMARK_REQUEST_CONTEXT_API_VERSION: Literal[
+    "pajin.dev/supervisor-benchmark-request-context/v1alpha1"
+] = "pajin.dev/supervisor-benchmark-request-context/v1alpha1"
 SUPERVISOR_INVOCATION_JOURNAL_ENTRY_API_VERSION: Literal[
     "pajin.dev/supervisor-invocation-journal-entry/v1alpha1"
 ] = "pajin.dev/supervisor-invocation-journal-entry/v1alpha1"
@@ -52,12 +58,85 @@ class SupervisorInvocationJournalState(StrEnum):
     TERMINAL_SUCCESS = "terminal-success"
 
 
+class SupervisorBenchmarkRequestContext(StrictModel):
+    """Typed Plan/coordinate assertion recorded in one stable Provider request."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/supervisor-benchmark-request-context/v1alpha1"] = Field(
+        default=SUPERVISOR_BENCHMARK_REQUEST_CONTEXT_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SupervisorBenchmarkRequestContext"] = "SupervisorBenchmarkRequestContext"
+    context_id: str = Field(default="", alias="contextId", max_length=110)
+    context_digest: str = Field(default="", alias="contextDigest", max_length=64)
+    plan_api_version: Literal["pajin.dev/supervisor-benchmark-campaign-plan/v1alpha1"] = Field(
+        alias="planApiVersion"
+    )
+    plan_kind: Literal["SupervisorBenchmarkCampaignPlan"] = Field(alias="planKind")
+    plan_id: str = Field(alias="planId", min_length=1, max_length=110)
+    plan_digest: _Sha256 = Field(alias="planDigest")
+    plan_run_id: str = Field(alias="planRunId", pattern=_RUN_ID_PATTERN)
+    plan_root_digest: _Sha256 = Field(alias="planRootDigest")
+    plan_artifact_path: Literal["supervision/supervisor-benchmark-campaign-plan.json"] = Field(
+        alias="planArtifactPath"
+    )
+    plan_artifact_sha256: _Sha256 = Field(alias="planArtifactSha256")
+    manifest_digest: _Sha256 = Field(alias="manifestDigest")
+    coordinate_set_digest: _Sha256 = Field(alias="coordinateSetDigest")
+    coordinate_id: str = Field(alias="coordinateId", min_length=1, max_length=110)
+    coordinate_digest: _Sha256 = Field(alias="coordinateDigest")
+    schedule_id: str = Field(alias="scheduleId", min_length=1, max_length=110)
+    schedule_digest: _Sha256 = Field(alias="scheduleDigest")
+    schedule_run_id: str = Field(alias="scheduleRunId", pattern=_RUN_ID_PATTERN)
+    schedule_root_digest: _Sha256 = Field(alias="scheduleRootDigest")
+    context_state: Literal["typed-plan-coordinate-request-context"] = Field(
+        default="typed-plan-coordinate-request-context",
+        alias="contextState",
+    )
+    execution_authorized: Literal[False] = Field(
+        default=False,
+        alias="executionAuthorized",
+    )
+    activation_eligible: Literal[False] = Field(
+        default=False,
+        alias="activationEligible",
+    )
+
+    @field_validator("execution_authorized", "activation_eligible", mode="before")
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        if type(value) is not bool or value is not False:
+            raise ValueError("Supervisor benchmark request authority markers must be false")
+        return value
+
+    @model_validator(mode="after")
+    def bind_context(self) -> Self:
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"context_id", "context_digest"},
+        )
+        digest = _digest("pajin.supervision.benchmark-request-context/v1", material)
+        context_id = f"supervisor-benchmark-context:{digest}"
+        if self.context_digest and self.context_digest != digest:
+            raise ValueError("Supervisor Benchmark Request Context Digest differs")
+        if self.context_id and self.context_id != context_id:
+            raise ValueError("Supervisor Benchmark Request Context ID differs")
+        object.__setattr__(self, "context_digest", digest)
+        object.__setattr__(self, "context_id", context_id)
+        return self
+
+
 class SupervisorInvocationIntent(StrictModel):
     """Content-addressed immutable binding for one sealed checkpoint invocation."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/supervisor-invocation-intent/v1alpha1"] = Field(
+    api_version: Literal[
+        "pajin.dev/supervisor-invocation-intent/v1alpha1",
+        "pajin.dev/supervisor-invocation-intent/v1alpha2",
+    ] = Field(
         default=SUPERVISOR_INVOCATION_INTENT_API_VERSION,
         alias="apiVersion",
     )
@@ -71,6 +150,11 @@ class SupervisorInvocationIntent(StrictModel):
     request_id: str = Field(
         alias="requestId",
         pattern=r"^supervisor_[a-f0-9]{64}$",
+    )
+    request_context: SupervisorBenchmarkRequestContext | None = Field(
+        default=None,
+        alias="requestContext",
+        exclude_if=lambda value: value is None,
     )
     campaign_digest: _Sha256 = Field(alias="campaignDigest")
     checkpoint_key: _Sha256 = Field(alias="checkpointKey")
@@ -163,6 +247,22 @@ class SupervisorInvocationIntent(StrictModel):
             raise ValueError("Supervisor schedule artifact path differs")
         if validate_run_artifact_path(self.receipt_path) != self.receipt_path:
             raise ValueError("Supervisor receipt artifact path differs")
+        expected_api_version = (
+            SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION
+            if self.request_context is not None
+            else SUPERVISOR_INVOCATION_INTENT_API_VERSION
+        )
+        if self.api_version != expected_api_version:
+            raise ValueError("Supervisor invocation intent version differs from request context")
+        if self.request_context is not None and (
+            self.request_context.schedule_id != self.schedule_id
+            or self.request_context.schedule_digest != self.schedule_digest
+            or self.request_context.schedule_run_id != self.schedule_run_id
+            or self.request_context.schedule_root_digest != self.schedule_root_digest
+        ):
+            raise ValueError("Supervisor benchmark request context differs from schedule intent")
+        if self.request_id != _stable_request_id_from_intent(self):
+            raise ValueError("Supervisor stable request ID differs from its complete intent")
         material = self.model_dump(
             mode="json",
             by_alias=True,
@@ -557,11 +657,14 @@ class SupervisorInvocationJournal:
     def claim(
         self,
         publication: SupervisorCheckpointSchedulePublication,
+        *,
+        request_context: SupervisorBenchmarkRequestContext | None = None,
     ) -> SupervisorInvocationJournalEntry:
         """Record one exact checkpoint intent or return its exact durable retry."""
 
         try:
             schedule, binding = _publication_binding(publication)
+            context = _canonical_request_context(request_context)
             with _write_transaction(self.path) as connection:
                 _validate_schema(connection)
                 existing = connection.execute(
@@ -570,16 +673,31 @@ class SupervisorInvocationJournal:
                 ).fetchone()
                 if existing is not None:
                     entry = _entry_from_row(connection, cast(sqlite3.Row, existing))
-                    _require_exact_publication(entry.intent, schedule, binding)
+                    _require_exact_publication(
+                        entry.intent,
+                        schedule,
+                        binding,
+                        request_context=context,
+                    )
                     return entry
 
                 recorded_at = self._now()
                 planned_run_id = self._run_id_factory()
                 if not isinstance(planned_run_id, str):
                     raise ValueError("planned Supervisor Run ID must be a string")
-                request_id = _stable_request_id(schedule, binding)
+                request_id = _stable_request_id(
+                    schedule,
+                    binding,
+                    request_context=context,
+                )
                 intent = SupervisorInvocationIntent(
+                    apiVersion=(
+                        SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION
+                        if context is not None
+                        else SUPERVISOR_INVOCATION_INTENT_API_VERSION
+                    ),
                     requestId=request_id,
+                    requestContext=context,
                     campaignDigest=schedule.campaign_digest,
                     checkpointKey=schedule.checkpoint_key,
                     scheduleId=schedule.schedule_id,
@@ -941,35 +1059,99 @@ def _publication_binding(
 def _stable_request_id(
     schedule: SupervisorCheckpointSchedule,
     publication: _PublicationBinding,
+    *,
+    request_context: SupervisorBenchmarkRequestContext | None = None,
 ) -> str:
+    material = {
+        "campaignDigest": schedule.campaign_digest,
+        "checkpointKey": schedule.checkpoint_key,
+        "scheduleId": schedule.schedule_id,
+        "scheduleDigest": schedule.schedule_digest,
+        "scheduleRunId": publication.schedule_run_id,
+        "scheduleRootDigest": publication.schedule_root_digest,
+        "scheduleArtifactPath": publication.schedule_artifact_path,
+        "scheduleArtifactSha256": publication.schedule_artifact_sha256,
+        "plannedCallIndex": schedule.planned_call_index,
+        "requestBindingId": schedule.request_binding.request_binding_id,
+        "requestBindingDigest": schedule.request_binding_digest,
+        "dedicatedBudgetPolicyId": schedule.dedicated_budget_policy.policy_id,
+        "dedicatedBudgetPolicyDigest": schedule.dedicated_budget_policy_digest,
+    }
+    domain = "pajin.supervision.stable-provider-request/v1"
+    if request_context is not None:
+        material["requestContextDigest"] = request_context.context_digest
+        domain = "pajin.supervision.stable-provider-request/v2"
     digest = _digest(
-        "pajin.supervision.stable-provider-request/v1",
-        {
-            "campaignDigest": schedule.campaign_digest,
-            "checkpointKey": schedule.checkpoint_key,
-            "scheduleId": schedule.schedule_id,
-            "scheduleDigest": schedule.schedule_digest,
-            "scheduleRunId": publication.schedule_run_id,
-            "scheduleRootDigest": publication.schedule_root_digest,
-            "scheduleArtifactPath": publication.schedule_artifact_path,
-            "scheduleArtifactSha256": publication.schedule_artifact_sha256,
-            "plannedCallIndex": schedule.planned_call_index,
-            "requestBindingId": schedule.request_binding.request_binding_id,
-            "requestBindingDigest": schedule.request_binding_digest,
-            "dedicatedBudgetPolicyId": schedule.dedicated_budget_policy.policy_id,
-            "dedicatedBudgetPolicyDigest": schedule.dedicated_budget_policy_digest,
-        },
+        domain,
+        material,
     )
     return f"supervisor_{digest}"
+
+
+def supervisor_stable_request_id(
+    publication: SupervisorCheckpointSchedulePublication,
+    *,
+    request_context: SupervisorBenchmarkRequestContext | None = None,
+) -> str:
+    """Rebuild the exact stable Provider request ID without claiming an intent."""
+
+    schedule, binding = _publication_binding(publication)
+    return _stable_request_id(
+        schedule,
+        binding,
+        request_context=_canonical_request_context(request_context),
+    )
+
+
+def _canonical_request_context(
+    value: SupervisorBenchmarkRequestContext | None,
+) -> SupervisorBenchmarkRequestContext | None:
+    if value is None:
+        return None
+    if type(value) is not SupervisorBenchmarkRequestContext:
+        raise TypeError("Supervisor request context must use the registered benchmark type")
+    return SupervisorBenchmarkRequestContext.model_validate(
+        value.model_dump(mode="json", by_alias=True)
+    )
+
+
+def _stable_request_id_from_intent(intent: SupervisorInvocationIntent) -> str:
+    material = {
+        "campaignDigest": intent.campaign_digest,
+        "checkpointKey": intent.checkpoint_key,
+        "scheduleId": intent.schedule_id,
+        "scheduleDigest": intent.schedule_digest,
+        "scheduleRunId": intent.schedule_run_id,
+        "scheduleRootDigest": intent.schedule_root_digest,
+        "scheduleArtifactPath": intent.schedule_artifact_path,
+        "scheduleArtifactSha256": intent.schedule_artifact_sha256,
+        "plannedCallIndex": intent.planned_call_index,
+        "requestBindingId": intent.request_binding_id,
+        "requestBindingDigest": intent.request_binding_digest,
+        "dedicatedBudgetPolicyId": intent.dedicated_budget_policy_id,
+        "dedicatedBudgetPolicyDigest": intent.dedicated_budget_policy_digest,
+    }
+    domain = "pajin.supervision.stable-provider-request/v1"
+    if intent.request_context is not None:
+        material["requestContextDigest"] = intent.request_context.context_digest
+        domain = "pajin.supervision.stable-provider-request/v2"
+    return f"supervisor_{_digest(domain, material)}"
 
 
 def _require_exact_publication(
     intent: SupervisorInvocationIntent,
     schedule: SupervisorCheckpointSchedule,
     publication: _PublicationBinding,
+    *,
+    request_context: SupervisorBenchmarkRequestContext | None = None,
 ) -> None:
     if (
-        intent.request_id != _stable_request_id(schedule, publication)
+        intent.request_id
+        != _stable_request_id(
+            schedule,
+            publication,
+            request_context=request_context,
+        )
         or intent.campaign_digest != schedule.campaign_digest
         or intent.checkpoint_key != schedule.checkpoint_key
         or intent.schedule_id != schedule.schedule_id

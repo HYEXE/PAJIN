@@ -2,8 +2,10 @@
 
 - Status: Implemented
 - Intent authority: `pajin.dev/supervisor-invocation-intent/v1alpha1`
+- Context-bound intent: `pajin.dev/supervisor-invocation-intent/v1alpha2`
 - Journal projection: `pajin.dev/supervisor-invocation-journal-entry/v1alpha1`
 - Receipt authority: `pajin.dev/supervisor-invocation-receipt/v1alpha1`
+- Context-bound receipt: `pajin.dev/supervisor-invocation-receipt/v1alpha2`
 - Runtime boundary: `SupervisorCheckpointInvoker.invoke()`
 - Decision: [ADR-0123](../adr/0123-durably-claim-and-seal-supervisor-invocations.md)
 
@@ -49,6 +51,13 @@ single-link local database path, rejects unsafe sidecars and schema drift, and u
 with full synchronous durability. These controls provide one canonical host-local journal boundary,
 not distributed consensus or cross-host exactly-once execution.
 
+SUP-005B1 adds an optional typed benchmark request assertion. When absent, intent serialization and
+the stable-request v1 preimage remain exactly `v1alpha1`. When present, the journal stores the full
+typed assertion in a `v1alpha2` intent and includes its digest in the stable-request v2 preimage.
+The receipt repeats the same object under `v1alpha2`. This generic recording makes the caller's
+namespace inspectable but does not attest that the referenced benchmark Plan is sealed; only the
+SUP-005B candidate verifier reloads the Plan and predecessor sources and grants that meaning.
+
 ## Invocation and two-seal Run
 
 Before the first dispatch, the invoker rebuilds the exact Provider request from the current
@@ -74,6 +83,8 @@ The receipt is content-addressed and binds:
 - first-seal artifact root, event head, reservation, and Gateway evidence bytes;
 - the complete secret-free SUP-004B2 outcome and its dual charged usage; and
 - the complete strict JSON draft in `untrusted-draft-sealed-not-admitted` state.
+
+For a context-bound call it additionally binds the complete typed benchmark request assertion.
 
 The receipt copies no Provider secret reference or endpoint. Its draft is intentionally untrusted
 model output and may contain target-tainted content. The pre-existing Gateway evidence remains a
@@ -126,6 +137,11 @@ controllers, SUP-004B2 outcomes, Gateway evidence, and SUP-003 compilation remai
 existing artifact or database is migrated. Campaign set-backed fields now serialize as sorted JSON
 arrays so embedded Supervisor authorities remain deterministic across Python hash seeds; the parsed
 Campaign API remains set-valued.
+
+Context-free callers continue to emit `v1alpha1` with no serialized `requestContext` field and the
+same request identity. Context-bound calls opt into explicit `v1alpha2`; the canonical intent is
+already stored in the existing journal column, so the SQLite schema and existing rows do not
+change.
 
 Rollback stops creating B3 journal databases and invocation Runs and removes the additive runtime
 API. Existing B3 journals and sealed Runs should be retained as audit evidence; they do not grant

@@ -97,8 +97,9 @@ non-executable audit evidence.
 
 ## Next boundary
 
-SUP-005B must create an exact candidate implementation and `BenchmarkTargetCoordinate` binding
-before model dispatch, link every candidate seed/repetition to its B3 schedule, journal, receipt,
-and proposal, and produce B1-compatible externally adjudicated observations. Only a complete
-two-arm coordinate set may reuse the existing canonical `BenchmarkComparison`; activation remains
-false.
+SUP-005B1 now creates the static candidate implementation, complete two-arm coordinate Plan, and
+typed Plan/coordinate context included in the actual B3 stable ToolRequest identity. It still
+produces no numeric observation. SUP-005B2 must link every candidate seed/repetition to its exact
+B3 journal, receipt, proposal, registry-governed Target lifecycle, and externally adjudicated
+B1-compatible Observation. Only a complete newly measured two-arm set may reuse the existing
+canonical `BenchmarkComparison`; activation remains false.

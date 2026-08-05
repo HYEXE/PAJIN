@@ -225,6 +225,16 @@ requires pre-invocation arm/seed/repetition binding and B3-backed observations. 
 [SUP-005A contract](docs/orchestration/SUP-005A-source-bound-deterministic-baseline-lineage.md) and
 [ADR-0124](docs/adr/0124-bind-supervisor-proposals-to-benchmark-lineage-without-attribution.md).
 
+SUP-005B1 derives a fresh two-arm Manifest, binds the static model-backed candidate implementation,
+the complete arm/seed/repetition set, and one exact SUP-004A schedule per candidate coordinate in a
+sealed non-dispatch Plan. Before B3 dispatch, a typed context over that sealed Plan and coordinate
+is stored in explicit `v1alpha2` intent and receipt wires and changes the actual Gateway ToolRequest
+identity. Context-free B3 remains `v1alpha1`. The candidate wrapper then reuses the existing B3
+consumer and reloads every Plan/source; numeric results, causal effect, threshold, execution, and
+activation remain false until externally adjudicated observations exist. See the
+[SUP-005B1 contract](docs/orchestration/SUP-005B1-sealed-benchmark-campaign-request-context.md) and
+[ADR-0125](docs/adr/0125-bind-benchmark-coordinates-into-supervisor-provider-requests.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -125,6 +125,7 @@ from pajin.discovery.walking import (
     RAGInjectionHypothesisRunner,
     RegisteredRAGInjectionHypothesisRule,
     default_rag_injection_hypothesis_rule,
+    walking_campaign_digest,
 )
 from pajin.discovery.walking_closure import (
     WALKING_MCP_CONFIRMATION_API_VERSION,
@@ -403,6 +404,7 @@ __all__ = [
     "publish_surface_projection",
     "surface_observation",
     "tool_interface_surface_locator",
+    "walking_campaign_digest",
     "walking_candidate_from_execution",
     "walking_independent_approval_receipt",
     "walking_mcp_replay_approval_receipt",

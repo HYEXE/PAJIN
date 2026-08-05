@@ -1,5 +1,20 @@
 """Shadow Supervisor contracts and authorities."""
 
+from pajin.supervision.benchmark_campaign import (
+    SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION,
+    SupervisorBenchmarkBaselineSource,
+    SupervisorBenchmarkCampaignPlan,
+    SupervisorBenchmarkCampaignPlanError,
+    SupervisorBenchmarkCampaignPlanner,
+    SupervisorBenchmarkCampaignPlanOutcome,
+    SupervisorBenchmarkCandidateImplementation,
+    SupervisorBenchmarkCandidateInvocation,
+    SupervisorBenchmarkCoordinateScheduleBinding,
+    SupervisorBenchmarkScheduleSource,
+    invoke_supervisor_benchmark_candidate,
+    load_supervisor_benchmark_campaign_plan,
+    verify_supervisor_benchmark_candidate_invocation,
+)
 from pajin.supervision.checkpoint_scheduler import (
     SUPERVISOR_CHECKPOINT_SCHEDULE_API_VERSION,
     SupervisorCheckpointSchedule,
@@ -18,6 +33,11 @@ from pajin.supervision.invocation import (
     SupervisorInvocationRequestBinding,
     SupervisorInvocationUsageBound,
     build_supervisor_invocation_request,
+)
+from pajin.supervision.invocation_journal import (
+    SUPERVISOR_BENCHMARK_REQUEST_CONTEXT_API_VERSION,
+    SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION,
+    SupervisorBenchmarkRequestContext,
 )
 from pajin.supervision.model_binding import (
     SUPERVISOR_MODEL_BINDING_API_VERSION,
@@ -60,7 +80,10 @@ from pajin.supervision.snapshot_input import (
 )
 
 __all__ = [
+    "SUPERVISOR_BENCHMARK_CAMPAIGN_PLAN_API_VERSION",
+    "SUPERVISOR_BENCHMARK_REQUEST_CONTEXT_API_VERSION",
     "SUPERVISOR_CHECKPOINT_SCHEDULE_API_VERSION",
+    "SUPERVISOR_CONTEXT_BOUND_INVOCATION_INTENT_API_VERSION",
     "SUPERVISOR_DEDICATED_BUDGET_API_VERSION",
     "SUPERVISOR_DEVELOPER_MESSAGE",
     "SUPERVISOR_INVOCATION_REQUEST_API_VERSION",
@@ -68,6 +91,16 @@ __all__ = [
     "SUPERVISOR_SHADOW_PROPOSAL_DRAFT_API_VERSION",
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
+    "SupervisorBenchmarkBaselineSource",
+    "SupervisorBenchmarkCampaignPlan",
+    "SupervisorBenchmarkCampaignPlanError",
+    "SupervisorBenchmarkCampaignPlanOutcome",
+    "SupervisorBenchmarkCampaignPlanner",
+    "SupervisorBenchmarkCandidateImplementation",
+    "SupervisorBenchmarkCandidateInvocation",
+    "SupervisorBenchmarkCoordinateScheduleBinding",
+    "SupervisorBenchmarkRequestContext",
+    "SupervisorBenchmarkScheduleSource",
     "SupervisorCheckpointSchedule",
     "SupervisorCheckpointScheduleError",
     "SupervisorCheckpointSchedulePublication",
@@ -103,7 +136,10 @@ __all__ = [
     "build_supervisor_invocation_request",
     "compile_supervisor_shadow_proposal",
     "create_supervisor_snapshot_input",
+    "invoke_supervisor_benchmark_candidate",
+    "load_supervisor_benchmark_campaign_plan",
     "registered_supervisor_proposal_compilation_policy",
+    "verify_supervisor_benchmark_candidate_invocation",
     "verify_supervisor_checkpoint_schedule_publication",
     "verify_supervisor_model_binding",
     "verify_supervisor_snapshot_input",

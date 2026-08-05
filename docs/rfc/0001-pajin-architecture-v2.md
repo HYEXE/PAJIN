@@ -572,6 +572,16 @@ the new state is `structural-source-bound-not-model-measured`; model-backed comp
 evaluation, execution, and activation remain false. SUP-005B must bind those coordinates before
 dispatch and admit B3-backed observations before reusing the canonical numeric Comparison.
 
+SUP-005B1 closes the request-lineage half of that boundary. It derives a fresh two-arm Manifest
+from the exact structural baseline, binds the static model-backed implementation, complete
+arm/seed/repetition set, and one sealed SUP-004A schedule per candidate coordinate in a
+non-dispatch Plan. A typed Plan/coordinate assertion is stored in explicit B3 intent/receipt
+`v1alpha2` wires and contributes to the stable ID used by the actual Gateway ToolRequest. The
+benchmark candidate verifier independently reloads the Plan, predecessor sources, journal,
+two-seal receipt, and SUP-003 proposal. Legacy context-free B3 remains `v1alpha1`. No numeric value
+or causal effect is admitted; SUP-005B2 still requires externally adjudicated registry-governed
+observations for both arms before the existing BENCH-003B1 Comparison can be reused.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes
