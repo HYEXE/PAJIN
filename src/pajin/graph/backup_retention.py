@@ -37,6 +37,7 @@ from pajin.graph.sqlite_store import (
     _prepare_private_parent,
     _publish_exclusive,
     _require_absent_leaf,
+    _SQLiteGraphBackupManifestV1,
     _write_private_temporary,
     sqlite_graph_backup_manifest_path,
 )
@@ -46,14 +47,26 @@ from pajin.runtime.safe_files import (
 )
 
 GRAPH_STORE_RETAINED_BACKUP_API_VERSION: Literal[
-    "pajin.dev/sqlite-graph-retained-backup/v1alpha1"
-] = "pajin.dev/sqlite-graph-retained-backup/v1alpha1"
+    "pajin.dev/sqlite-graph-retained-backup/v1alpha2"
+] = "pajin.dev/sqlite-graph-retained-backup/v1alpha2"
 GRAPH_STORE_RETAINED_BACKUP_MANIFEST_API_VERSION: Literal[
-    "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"
-] = "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"
+    "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha2"
+] = "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha2"
 
-_SIGNATURE_DOMAIN = b"pajin.graph.sqlite-retained-backup-signature/v1\0"
-_ENCRYPTION_AAD_DOMAIN = b"pajin.graph.sqlite-retained-backup-aad/v1\0"
+_LEGACY_RETAINED_BACKUP_API_VERSION: Literal[
+    "pajin.dev/sqlite-graph-retained-backup/v1alpha1"
+] = (
+    "pajin.dev/sqlite-graph-retained-backup/v1alpha1"
+)
+_LEGACY_RETAINED_BACKUP_MANIFEST_API_VERSION: Literal[
+    "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"
+] = (
+    "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"
+)
+_SIGNATURE_DOMAIN_V1 = b"pajin.graph.sqlite-retained-backup-signature/v1\0"
+_SIGNATURE_DOMAIN_V2 = b"pajin.graph.sqlite-retained-backup-signature/v2\0"
+_ENCRYPTION_AAD_DOMAIN_V1 = b"pajin.graph.sqlite-retained-backup-aad/v1\0"
+_ENCRYPTION_AAD_DOMAIN_V2 = b"pajin.graph.sqlite-retained-backup-aad/v2\0"
 _MAX_RETAINED_BACKUP_BYTES = _MAX_GRAPH_BACKUP_BYTES + 16
 _MAX_RETAINED_BACKUP_MANIFEST_BYTES = 256 * 1024
 _Identifier = Annotated[
@@ -106,12 +119,58 @@ class SQLiteGraphBackupVerificationKey(StrictModel):
         return self
 
 
-class SQLiteGraphRetainedBackupStatement(StrictModel):
-    """Signed identity of one encrypted, transport-neutral Graph backup object."""
+class _SQLiteGraphRetainedBackupStatementV1(StrictModel):
+    """Exact historical v1alpha1 retained statement over a schema-v2 backup."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/sqlite-graph-retained-backup/v1alpha1"] = Field(
+    api_version: Literal[
+        "pajin.dev/sqlite-graph-retained-backup/v1alpha1"
+    ] = Field(
+        default=_LEGACY_RETAINED_BACKUP_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SQLiteGraphRetainedBackup"] = "SQLiteGraphRetainedBackup"
+    retained_backup_id: str = Field(default="", alias="retainedBackupId", max_length=105)
+    backup_manifest: _SQLiteGraphBackupManifestV1 = Field(alias="backupManifest")
+    encryption_algorithm: Literal["AES-256-GCM"] = Field(
+        default="AES-256-GCM",
+        alias="encryptionAlgorithm",
+    )
+    encryption_key_id: _Identifier = Field(alias="encryptionKeyId")
+    nonce_base64url: str = Field(
+        alias="nonceBase64url",
+        pattern=r"^[A-Za-z0-9_-]{16}$",
+    )
+    ciphertext_sha256: _Sha256 = Field(alias="ciphertextSha256")
+    ciphertext_bytes: int = Field(
+        alias="ciphertextBytes",
+        ge=17,
+        le=_MAX_RETAINED_BACKUP_BYTES,
+    )
+
+    @field_validator("nonce_base64url")
+    @classmethod
+    def require_canonical_nonce(cls, value: str) -> str:
+        _base64url_decode(
+            value,
+            expected_length=12,
+            label="SQLite Graph backup encryption nonce",
+        )
+        return value
+
+    @model_validator(mode="after")
+    def bind_retained_backup_identity(self) -> Self:
+        _bind_retained_backup_identity(self)
+        return self
+
+
+class SQLiteGraphRetainedBackupStatement(StrictModel):
+    """Signed v1alpha2 identity of one encrypted schema-v3 Graph backup."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/sqlite-graph-retained-backup/v1alpha2"] = Field(
         default=GRAPH_STORE_RETAINED_BACKUP_API_VERSION,
         alias="apiVersion",
     )
@@ -146,33 +205,78 @@ class SQLiteGraphRetainedBackupStatement(StrictModel):
 
     @model_validator(mode="after")
     def bind_retained_backup_identity(self) -> Self:
-        if self.ciphertext_bytes != self.backup_manifest.database_bytes + 16:
-            raise ValueError("SQLite Graph retained backup ciphertext length is inconsistent")
-        material = self.model_dump(
-            mode="json",
-            by_alias=True,
-            exclude={"retained_backup_id"},
+        _bind_retained_backup_identity(self)
+        return self
+
+
+def _bind_retained_backup_identity[
+    RetainedStatementT: (
+        _SQLiteGraphRetainedBackupStatementV1,
+        SQLiteGraphRetainedBackupStatement,
+    )
+](statement: RetainedStatementT) -> RetainedStatementT:
+    if statement.ciphertext_bytes != statement.backup_manifest.database_bytes + 16:
+        raise ValueError("SQLite Graph retained backup ciphertext length is inconsistent")
+    material = statement.model_dump(
+        mode="json",
+        by_alias=True,
+        exclude={"retained_backup_id"},
+    )
+    digest = sha256(
+        canonical_graph_json(
+            material,
+            label="SQLiteGraphRetainedBackupStatement",
+            max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
         )
-        digest = sha256(
-            canonical_graph_json(
-                material,
-                label="SQLiteGraphRetainedBackupStatement",
-                max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
-            )
-        ).hexdigest()
-        retained_backup_id = f"graph-store-retained-backup_{digest}"
-        if self.retained_backup_id and self.retained_backup_id != retained_backup_id:
-            raise ValueError("SQLite Graph retained backup ID differs from canonical material")
-        object.__setattr__(self, "retained_backup_id", retained_backup_id)
+    ).hexdigest()
+    retained_backup_id = f"graph-store-retained-backup_{digest}"
+    if statement.retained_backup_id and statement.retained_backup_id != retained_backup_id:
+        raise ValueError("SQLite Graph retained backup ID differs from canonical material")
+    object.__setattr__(statement, "retained_backup_id", retained_backup_id)
+    return statement
+
+
+class _SQLiteGraphRetainedBackupManifestV1(StrictModel):
+    """Exact historical v1alpha1 detached signature bundle."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal[
+        "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"
+    ] = Field(
+        default=_LEGACY_RETAINED_BACKUP_MANIFEST_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SQLiteGraphRetainedBackupManifest"] = (
+        "SQLiteGraphRetainedBackupManifest"
+    )
+    statement: _SQLiteGraphRetainedBackupStatementV1
+    signing_key_id: _Identifier = Field(alias="signingKeyId")
+    signing_algorithm: Literal["Ed25519"] = Field(
+        default="Ed25519",
+        alias="signingAlgorithm",
+    )
+    signature_base64url: str = Field(
+        alias="signatureBase64url",
+        pattern=r"^[A-Za-z0-9_-]{86}$",
+    )
+
+    @model_validator(mode="after")
+    def require_canonical_signature(self) -> Self:
+        _base64url_decode(
+            self.signature_base64url,
+            expected_length=64,
+            label="SQLite Graph backup signature",
+        )
         return self
 
 
 class SQLiteGraphRetainedBackupManifest(StrictModel):
-    """Canonical detached signature bundle for one encrypted backup object."""
+    """Canonical v1alpha2 detached signature bundle for one encrypted backup."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha1"] = Field(
+    api_version: Literal["pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha2"] = Field(
         default=GRAPH_STORE_RETAINED_BACKUP_MANIFEST_API_VERSION,
         alias="apiVersion",
     )
@@ -248,7 +352,7 @@ class SQLiteGraphBackupSigner:
             statement=statement,
             signingKeyId=self.key.key_id,
             signatureBase64url=_base64url_encode(
-                self.private_key.sign(_SIGNATURE_DOMAIN + canonical)
+                self.private_key.sign(_SIGNATURE_DOMAIN_V2 + canonical)
             ),
         )
 
@@ -257,7 +361,7 @@ class SQLiteGraphBackupSigner:
 class SQLiteGraphVerifiedRetainedBackup:
     """A signature-verified encrypted object and its exact canonical manifest bytes."""
 
-    manifest: SQLiteGraphRetainedBackupManifest
+    manifest: SQLiteGraphRetainedBackupManifest | _SQLiteGraphRetainedBackupManifestV1
     ciphertext: bytes = field(repr=False)
     manifest_bytes: bytes = field(repr=False)
 
@@ -308,15 +412,26 @@ def verify_retained_sqlite_graph_backup(
             require_single_link=True,
         )
         try:
-            manifest = SQLiteGraphRetainedBackupManifest.model_validate(
-                parse_strict_json_bytes(
-                    manifest_raw,
-                    label="SQLite Graph retained backup manifest",
-                    max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
-                    max_depth=24,
-                    max_nodes=128,
-                )
+            parsed = parse_strict_json_bytes(
+                manifest_raw,
+                label="SQLite Graph retained backup manifest",
+                max_bytes=_MAX_RETAINED_BACKUP_MANIFEST_BYTES,
+                max_depth=24,
+                max_nodes=128,
             )
+            if not isinstance(parsed, dict):
+                raise ValueError("retained backup manifest must be an object")
+            api_version = parsed.get("apiVersion")
+            manifest: (
+                SQLiteGraphRetainedBackupManifest
+                | _SQLiteGraphRetainedBackupManifestV1
+            )
+            if api_version == GRAPH_STORE_RETAINED_BACKUP_MANIFEST_API_VERSION:
+                manifest = SQLiteGraphRetainedBackupManifest.model_validate(parsed)
+            elif api_version == _LEGACY_RETAINED_BACKUP_MANIFEST_API_VERSION:
+                manifest = _SQLiteGraphRetainedBackupManifestV1.model_validate(parsed)
+            else:
+                raise ValueError("retained backup manifest apiVersion is unsupported")
         except (ValidationError, ValueError) as exc:
             raise SQLiteGraphStoreError("SQLite Graph retained backup manifest is invalid") from exc
         if manifest_raw != _retained_backup_manifest_bytes(manifest):
@@ -559,7 +674,7 @@ def restore_retained_sqlite_graph_backup(
 
 
 def _verify_retained_backup_signature(
-    manifest: SQLiteGraphRetainedBackupManifest,
+    manifest: SQLiteGraphRetainedBackupManifest | _SQLiteGraphRetainedBackupManifestV1,
     trusted_signing_keys: Iterable[SQLiteGraphBackupVerificationKey],
 ) -> None:
     try:
@@ -580,6 +695,11 @@ def _verify_retained_backup_signature(
     if key is None:
         raise SQLiteGraphStoreError("SQLite Graph retained backup signing key is not trusted")
     try:
+        signature_domain = (
+            _SIGNATURE_DOMAIN_V2
+            if isinstance(manifest, SQLiteGraphRetainedBackupManifest)
+            else _SIGNATURE_DOMAIN_V1
+        )
         Ed25519PublicKey.from_public_bytes(
             _base64url_decode(
                 key.public_key_base64url,
@@ -592,7 +712,7 @@ def _verify_retained_backup_signature(
                 expected_length=64,
                 label="SQLite Graph backup signature",
             ),
-            _SIGNATURE_DOMAIN + _retained_backup_statement_bytes(manifest.statement),
+            signature_domain + _retained_backup_statement_bytes(manifest.statement),
         )
     except InvalidSignature as exc:
         raise SQLiteGraphStoreError(
@@ -601,14 +721,20 @@ def _verify_retained_backup_signature(
 
 
 def _retained_backup_aad(
-    backup_manifest: SQLiteGraphBackupManifest,
+    backup_manifest: SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV1,
     *,
     encryption_key_id: str,
     nonce_base64url: str,
 ) -> bytes:
-    return _ENCRYPTION_AAD_DOMAIN + canonical_graph_json(
+    if isinstance(backup_manifest, SQLiteGraphBackupManifest):
+        aad_domain = _ENCRYPTION_AAD_DOMAIN_V2
+        retained_api_version: str = GRAPH_STORE_RETAINED_BACKUP_API_VERSION
+    else:
+        aad_domain = _ENCRYPTION_AAD_DOMAIN_V1
+        retained_api_version = _LEGACY_RETAINED_BACKUP_API_VERSION
+    return aad_domain + canonical_graph_json(
         {
-            "apiVersion": GRAPH_STORE_RETAINED_BACKUP_API_VERSION,
+            "apiVersion": retained_api_version,
             "backupId": backup_manifest.backup_id,
             "campaignId": backup_manifest.campaign_id,
             "encryptionAlgorithm": "AES-256-GCM",
@@ -621,7 +747,8 @@ def _retained_backup_aad(
 
 
 def _retained_backup_statement_bytes(
-    statement: SQLiteGraphRetainedBackupStatement,
+    statement: SQLiteGraphRetainedBackupStatement
+    | _SQLiteGraphRetainedBackupStatementV1,
 ) -> bytes:
     return canonical_graph_json(
         statement.model_dump(mode="json", by_alias=True),
@@ -631,7 +758,7 @@ def _retained_backup_statement_bytes(
 
 
 def _retained_backup_manifest_bytes(
-    manifest: SQLiteGraphRetainedBackupManifest,
+    manifest: SQLiteGraphRetainedBackupManifest | _SQLiteGraphRetainedBackupManifestV1,
 ) -> bytes:
     return (
         canonical_graph_json(

@@ -26,6 +26,7 @@ from pajin.graph.admission import (
     GraphEventLogError,
 )
 from pajin.graph.authority import (
+    ActionBudgetReservation,
     ActionPermit,
     ActionPermitAuthorization,
     ActionPermitBudgetExceeded,
@@ -38,6 +39,23 @@ from pajin.graph.authority import (
     action_permit_attempt_id,
     build_action_permit,
     validate_action_authority,
+)
+from pajin.graph.cleanup import (
+    ActionCleanupReservation,
+    ActionCleanupReservationRequest,
+    CleanupPermit,
+    CleanupPermitAuthorization,
+    CleanupPermitBudgetExceeded,
+    CleanupPermitConflict,
+    CleanupPermitError,
+    CleanupPermitStaleDecision,
+    CleanupRequest,
+    ReversibleActionPermitAuthorization,
+    build_action_cleanup_reservation,
+    build_cleanup_permit,
+    cleanup_permit_attempt_id,
+    validate_action_cleanup_reservation_authority,
+    validate_cleanup_authority,
 )
 from pajin.graph.consistency import GraphDecision
 from pajin.graph.models import (
@@ -69,7 +87,8 @@ if TYPE_CHECKING:
         SQLiteGraphRetainedBackupManifest,
     )
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
+_ACTION_PERMIT_SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
 _APPLICATION_ID = 0x50414752  # ASCII "PAGR"
 _BUSY_TIMEOUT_MS = 30_000
@@ -77,6 +96,9 @@ _MAX_GRAPH_BYTES = 64 * 1024 * 1024
 _MAX_GRAPH_BACKUP_BYTES = 256 * 1024 * 1024
 _MAX_GRAPH_BACKUP_MANIFEST_BYTES = 64 * 1024
 GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
+    "pajin.dev/sqlite-graph-backup-manifest/v1alpha2"
+] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha2"
+_LEGACY_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
     "pajin.dev/sqlite-graph-backup-manifest/v1alpha1"
 ] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha1"
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
@@ -203,6 +225,89 @@ _ACTION_PERMITS_TABLE_SQL = """
 _ACTION_PERMITS_ENVELOPE_INDEX_SQL = (
     "CREATE INDEX graph_action_permits_envelope_idx ON graph_action_permits(envelope_id, ordinal)"
 )
+_ACTION_CLEANUP_RESERVATIONS_TABLE_SQL = """
+    CREATE TABLE graph_action_cleanup_reservations (
+        ordinal INTEGER PRIMARY KEY NOT NULL CHECK (ordinal >= 1),
+        cleanup_reservation_id TEXT NOT NULL UNIQUE,
+        cleanup_reservation_digest TEXT NOT NULL UNIQUE
+            CHECK (length(cleanup_reservation_digest) = 64),
+        reservation_request_id TEXT NOT NULL UNIQUE,
+        reservation_request_digest TEXT NOT NULL
+            CHECK (length(reservation_request_digest) = 64),
+        source_action_permit_id TEXT NOT NULL UNIQUE
+            REFERENCES graph_action_permits(permit_id),
+        source_action_permit_digest TEXT NOT NULL
+            CHECK (length(source_action_permit_digest) = 64),
+        source_action_dispatch_id TEXT NOT NULL UNIQUE,
+        envelope_id TEXT NOT NULL,
+        envelope_digest TEXT NOT NULL CHECK (length(envelope_digest) = 64),
+        cleanup_capability_digest TEXT NOT NULL
+            CHECK (length(cleanup_capability_digest) = 64),
+        target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+        cleanup_handler_digest TEXT NOT NULL CHECK (length(cleanup_handler_digest) = 64),
+        cleanup_executor_digest TEXT NOT NULL CHECK (length(cleanup_executor_digest) = 64),
+        tool_calls INTEGER NOT NULL CHECK (tool_calls = 1),
+        request_units INTEGER NOT NULL CHECK (request_units >= 1),
+        cost_microusd INTEGER NOT NULL CHECK (cost_microusd >= 0),
+        reserved_at TEXT NOT NULL,
+        claim_expires_at TEXT NOT NULL,
+        reservation_json BLOB NOT NULL
+    ) STRICT
+    """
+_ACTION_CLEANUP_RESERVATIONS_ENVELOPE_INDEX_SQL = (
+    "CREATE INDEX graph_action_cleanup_reservations_envelope_idx "
+    "ON graph_action_cleanup_reservations(envelope_id, ordinal)"
+)
+_CLEANUP_PERMITS_TABLE_SQL = """
+    CREATE TABLE graph_cleanup_permits (
+        ordinal INTEGER PRIMARY KEY NOT NULL CHECK (ordinal >= 1),
+        cleanup_permit_id TEXT NOT NULL UNIQUE,
+        cleanup_permit_digest TEXT NOT NULL UNIQUE
+            CHECK (length(cleanup_permit_digest) = 64),
+        cleanup_dispatch_id TEXT NOT NULL UNIQUE,
+        cleanup_reservation_id TEXT NOT NULL UNIQUE
+            REFERENCES graph_action_cleanup_reservations(cleanup_reservation_id),
+        cleanup_reservation_digest TEXT NOT NULL
+            CHECK (length(cleanup_reservation_digest) = 64),
+        source_action_permit_id TEXT NOT NULL UNIQUE
+            REFERENCES graph_action_permits(permit_id),
+        source_action_permit_digest TEXT NOT NULL
+            CHECK (length(source_action_permit_digest) = 64),
+        envelope_id TEXT NOT NULL,
+        envelope_digest TEXT NOT NULL CHECK (length(envelope_digest) = 64),
+        cleanup_request_id TEXT NOT NULL UNIQUE,
+        cleanup_request_digest TEXT NOT NULL CHECK (length(cleanup_request_digest) = 64),
+        decision_id TEXT NOT NULL,
+        decision_digest TEXT NOT NULL CHECK (length(decision_digest) = 64),
+        snapshot_id TEXT NOT NULL REFERENCES graph_snapshots(snapshot_id),
+        snapshot_digest TEXT NOT NULL CHECK (length(snapshot_digest) = 64),
+        revision INTEGER NOT NULL REFERENCES graph_projections(revision),
+        event_log_head_digest TEXT CHECK (
+            event_log_head_digest IS NULL OR length(event_log_head_digest) = 64
+        ),
+        projection_digest TEXT NOT NULL CHECK (length(projection_digest) = 64),
+        request_id TEXT NOT NULL UNIQUE,
+        request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+        cleanup_capability_digest TEXT NOT NULL
+            CHECK (length(cleanup_capability_digest) = 64),
+        target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+        cleanup_handler_digest TEXT NOT NULL CHECK (length(cleanup_handler_digest) = 64),
+        cleanup_executor_digest TEXT NOT NULL CHECK (length(cleanup_executor_digest) = 64),
+        cleanup_plan_digest TEXT NOT NULL CHECK (length(cleanup_plan_digest) = 64),
+        issued_at TEXT NOT NULL,
+        consumed_at TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        permit_json BLOB NOT NULL,
+        CHECK (
+            (revision = 0 AND event_log_head_digest IS NULL)
+            OR (revision > 0 AND event_log_head_digest IS NOT NULL)
+        )
+    ) STRICT
+    """
+_CLEANUP_PERMITS_ENVELOPE_INDEX_SQL = (
+    "CREATE INDEX graph_cleanup_permits_envelope_idx "
+    "ON graph_cleanup_permits(envelope_id, ordinal)"
+)
 
 
 def _immutable_triggers(table: str, identity_column: str) -> dict[tuple[str, str], str]:
@@ -263,8 +368,8 @@ for _table, _identity in (
 ):
     _LEGACY_SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
 
-_SCHEMA_OBJECT_SQL = dict(_LEGACY_SCHEMA_OBJECT_SQL)
-_SCHEMA_OBJECT_SQL.update(
+_ACTION_PERMIT_SCHEMA_OBJECT_SQL = dict(_LEGACY_SCHEMA_OBJECT_SQL)
+_ACTION_PERMIT_SCHEMA_OBJECT_SQL.update(
     {
         ("table", "graph_action_permit_writers"): _ACTION_PERMIT_WRITERS_TABLE_SQL,
         ("table", "graph_action_permits"): _ACTION_PERMITS_TABLE_SQL,
@@ -278,11 +383,40 @@ for _table, _identity in (
     ("graph_action_permit_writers", "singleton"),
     ("graph_action_permits", "ordinal"),
 ):
-    _SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
+    _ACTION_PERMIT_SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
 
-_TABLES = _LEGACY_TABLES | {
+_ACTION_PERMIT_TABLES = _LEGACY_TABLES | {
     "graph_action_permit_writers",
     "graph_action_permits",
+}
+
+_SCHEMA_OBJECT_SQL = dict(_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
+_SCHEMA_OBJECT_SQL.update(
+    {
+        (
+            "table",
+            "graph_action_cleanup_reservations",
+        ): _ACTION_CLEANUP_RESERVATIONS_TABLE_SQL,
+        (
+            "index",
+            "graph_action_cleanup_reservations_envelope_idx",
+        ): _ACTION_CLEANUP_RESERVATIONS_ENVELOPE_INDEX_SQL,
+        ("table", "graph_cleanup_permits"): _CLEANUP_PERMITS_TABLE_SQL,
+        (
+            "index",
+            "graph_cleanup_permits_envelope_idx",
+        ): _CLEANUP_PERMITS_ENVELOPE_INDEX_SQL,
+    }
+)
+for _table, _identity in (
+    ("graph_action_cleanup_reservations", "ordinal"),
+    ("graph_cleanup_permits", "ordinal"),
+):
+    _SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
+
+_TABLES = _ACTION_PERMIT_TABLES | {
+    "graph_action_cleanup_reservations",
+    "graph_cleanup_permits",
 }
 
 
@@ -304,6 +438,7 @@ def _schema_digest(objects: dict[tuple[str, str], str]) -> str:
 
 
 _LEGACY_SCHEMA_DIGEST = _schema_digest(_LEGACY_SCHEMA_OBJECT_SQL)
+_ACTION_PERMIT_SCHEMA_DIGEST = _schema_digest(_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
 _SCHEMA_DIGEST = _schema_digest(_SCHEMA_OBJECT_SQL)
 
 
@@ -311,13 +446,13 @@ class SQLiteGraphStoreError(RuntimeError):
     """Raised when the durable Graph Store cannot establish a trusted boundary."""
 
 
-class SQLiteGraphBackupManifest(StrictModel):
-    """Content-addressed identity and logical-state summary for one Graph backup."""
+class _SQLiteGraphBackupManifestV1(StrictModel):
+    """Legacy v2 database manifest retained solely for verified restore."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
     api_version: Literal["pajin.dev/sqlite-graph-backup-manifest/v1alpha1"] = Field(
-        default=GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
+        default=_LEGACY_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
         alias="apiVersion",
     )
     kind: Literal["SQLiteGraphBackupManifest"] = "SQLiteGraphBackupManifest"
@@ -329,7 +464,10 @@ class SQLiteGraphBackupManifest(StrictModel):
         pattern=r"^[a-z0-9][a-z0-9-]*$",
     )
     schema_version: Literal[2] = Field(default=2, alias="schemaVersion")
-    schema_digest: _Sha256 = Field(default=_SCHEMA_DIGEST, alias="schemaDigest")
+    schema_digest: _Sha256 = Field(
+        default=_ACTION_PERMIT_SCHEMA_DIGEST,
+        alias="schemaDigest",
+    )
     created_at: datetime = Field(alias="createdAt")
     database_sha256: _Sha256 = Field(alias="databaseSha256")
     database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_GRAPH_BACKUP_BYTES)
@@ -351,6 +489,8 @@ class SQLiteGraphBackupManifest(StrictModel):
 
     @model_validator(mode="after")
     def bind_backup_identity(self) -> Self:
+        if self.schema_digest != _ACTION_PERMIT_SCHEMA_DIGEST:
+            raise ValueError("legacy SQLite Graph backup schema digest differs")
         if (self.event_count == 0) is not (self.event_log_head_digest is None):
             raise ValueError("SQLite Graph backup Event count and head are inconsistent")
         if self.projection_revision > self.event_count:
@@ -380,6 +520,93 @@ class SQLiteGraphBackupManifest(StrictModel):
         return self
 
 
+class SQLiteGraphBackupManifest(StrictModel):
+    """Content-addressed identity and logical-state summary for one Graph backup."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/sqlite-graph-backup-manifest/v1alpha2"] = Field(
+        default=GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SQLiteGraphBackupManifest"] = "SQLiteGraphBackupManifest"
+    backup_id: str = Field(default="", alias="backupId", max_length=96)
+    campaign_id: str = Field(
+        alias="campaignId",
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    schema_version: Literal[3] = Field(default=3, alias="schemaVersion")
+    schema_digest: _Sha256 = Field(default=_SCHEMA_DIGEST, alias="schemaDigest")
+    created_at: datetime = Field(alias="createdAt")
+    database_sha256: _Sha256 = Field(alias="databaseSha256")
+    database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_GRAPH_BACKUP_BYTES)
+    event_count: int = Field(alias="eventCount", ge=0)
+    event_log_head_digest: _Sha256 | None = Field(alias="eventLogHeadDigest")
+    projection_revision: int = Field(alias="projectionRevision", ge=0)
+    projection_digest: _Sha256 = Field(alias="projectionDigest")
+    snapshot_count: int = Field(alias="snapshotCount", ge=0)
+    snapshot_head_digest: _Sha256 | None = Field(alias="snapshotHeadDigest")
+    action_permit_count: int = Field(alias="actionPermitCount", ge=0)
+    action_permit_head_digest: _Sha256 | None = Field(alias="actionPermitHeadDigest")
+    cleanup_reservation_count: int = Field(alias="cleanupReservationCount", ge=0)
+    cleanup_reservation_head_digest: _Sha256 | None = Field(
+        alias="cleanupReservationHeadDigest"
+    )
+    cleanup_permit_count: int = Field(alias="cleanupPermitCount", ge=0)
+    cleanup_permit_head_digest: _Sha256 | None = Field(alias="cleanupPermitHeadDigest")
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("SQLite Graph backup creation time must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def bind_backup_identity(self) -> Self:
+        if (self.event_count == 0) is not (self.event_log_head_digest is None):
+            raise ValueError("SQLite Graph backup Event count and head are inconsistent")
+        if self.projection_revision > self.event_count:
+            raise ValueError("SQLite Graph backup Projection is ahead of its Event Log")
+        if (self.snapshot_count == 0) is not (self.snapshot_head_digest is None):
+            raise ValueError("SQLite Graph backup Snapshot count and head are inconsistent")
+        if (self.action_permit_count == 0) is not (
+            self.action_permit_head_digest is None
+        ):
+            raise ValueError("SQLite Graph backup Permit count and head are inconsistent")
+        if (self.cleanup_reservation_count == 0) is not (
+            self.cleanup_reservation_head_digest is None
+        ):
+            raise ValueError(
+                "SQLite Graph backup cleanup reservation count and head are inconsistent"
+            )
+        if (self.cleanup_permit_count == 0) is not (
+            self.cleanup_permit_head_digest is None
+        ):
+            raise ValueError(
+                "SQLite Graph backup CleanupPermit count and head are inconsistent"
+            )
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"backup_id"},
+        )
+        digest = sha256(
+            canonical_graph_json(
+                material,
+                label="SQLiteGraphBackupManifest",
+                max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+            )
+        ).hexdigest()
+        backup_id = f"graph-store-backup_{digest}"
+        if self.backup_id and self.backup_id != backup_id:
+            raise ValueError("SQLite Graph backup ID differs from canonical material")
+        object.__setattr__(self, "backup_id", backup_id)
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class _VerifiedGraphStoreState:
     event_count: int
@@ -390,6 +617,10 @@ class _VerifiedGraphStoreState:
     snapshot_head_digest: str | None
     action_permit_count: int
     action_permit_head_digest: str | None
+    cleanup_reservation_count: int
+    cleanup_reservation_head_digest: str | None
+    cleanup_permit_count: int
+    cleanup_permit_head_digest: str | None
 
 
 class SQLiteGraphStore:
@@ -1020,6 +1251,12 @@ class SQLiteGraphActionPermitStore:
             raise ActionPermitError("ActionPermit compiler identity is invalid")
         with self._lock:
             if self._writer is not None:
+                if self._writer_identity == (
+                    compiler_id,
+                    compiler_version,
+                    compiler_digest,
+                ):
+                    return self._writer
                 raise ActionPermitError("ActionPermit compiler writer is already claimed")
             identity = (compiler_id, compiler_version, compiler_digest)
             try:
@@ -1089,11 +1326,17 @@ class SQLiteGraphActionPermitStore:
                         )
                     collision = connection.execute(
                         """
-                        SELECT permit_id FROM graph_action_permits
+                        SELECT 1 FROM graph_action_permits
                         WHERE proposal_id = ? OR request_id = ?
+                        UNION ALL
+                        SELECT 1 FROM graph_cleanup_permits WHERE request_id = ?
                         LIMIT 1
                         """,
-                        (proposal.proposal_id, proposal.request_id),
+                        (
+                            proposal.proposal_id,
+                            proposal.request_id,
+                            proposal.request_id,
+                        ),
                     ).fetchone()
                     if collision is not None:
                         raise ActionPermitConflict(
@@ -1112,11 +1355,12 @@ class SQLiteGraphActionPermitStore:
                         proposal=proposal,
                         decision=decision,
                     )
-                    _require_action_budget(
+                    _require_aggregate_action_budget(
                         connection,
                         envelope=envelope,
-                        proposal=proposal,
+                        new_reservations=(proposal.reservation,),
                         evaluated_at=evaluated_at,
+                        error_type=ActionPermitBudgetExceeded,
                     )
                     permit = build_action_permit(
                         envelope,
@@ -1129,53 +1373,7 @@ class SQLiteGraphActionPermitStore:
                         raise ActionPermitError(
                             "ActionPermit deterministic attempt identity differs"
                         )
-                    ordinal_row = connection.execute(
-                        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal "
-                        "FROM graph_action_permits"
-                    ).fetchone()
-                    assert ordinal_row is not None
-                    connection.execute(
-                        """
-                        INSERT INTO graph_action_permits (
-                            ordinal, permit_id, permit_digest, dispatch_id,
-                            envelope_id, envelope_digest, proposal_id,
-                            proposal_digest, decision_id, decision_digest,
-                            snapshot_id, snapshot_digest, revision,
-                            event_log_head_digest, projection_digest,
-                            request_id, request_digest, request_units,
-                            cost_microusd, issued_at, consumed_at, expires_at,
-                            permit_json
-                        ) VALUES (
-                            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                            ?, ?, ?, ?, ?, ?, ?
-                        )
-                        """,
-                        (
-                            cast(int, ordinal_row["next_ordinal"]),
-                            permit.permit_id,
-                            permit.permit_digest,
-                            permit.dispatch_id,
-                            permit.envelope_id,
-                            permit.envelope_digest,
-                            permit.proposal_id,
-                            permit.proposal_digest,
-                            permit.decision_id,
-                            permit.decision_digest,
-                            permit.snapshot.snapshot_id,
-                            permit.snapshot.snapshot_digest,
-                            permit.snapshot.revision,
-                            permit.snapshot.event_log_head_digest,
-                            permit.snapshot.projection_digest,
-                            permit.request_id,
-                            permit.request_digest,
-                            permit.reservation.request_units,
-                            permit.reservation.cost_microusd,
-                            permit.issued_at.isoformat(),
-                            permit.consumed_at.isoformat(),
-                            permit.expires_at.isoformat(),
-                            sqlite3.Binary(_action_permit_bytes(permit)),
-                        ),
-                    )
+                    _insert_action_permit(connection, permit)
                     return ActionPermitAuthorization(
                         permit=permit,
                         newlyConsumed=True,
@@ -1186,6 +1384,332 @@ class SQLiteGraphActionPermitStore:
                 ) from exc
             except sqlite3.Error as exc:
                 raise ActionPermitError("ActionPermit authority transaction failed") from exc
+
+    def authorize_reversible_for_dispatch(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        action_capability: RegisteredActionCapability,
+        cleanup_request: ActionCleanupReservationRequest,
+        cleanup_capability: RegisteredActionCapability,
+        *,
+        writer: object,
+        evaluated_at: datetime,
+        permit_ttl: timedelta,
+    ) -> ReversibleActionPermitAuthorization:
+        """Atomically consume one ActionPermit and reserve its cleanup budget."""
+
+        with self._lock:
+            if writer is not self._writer or self._writer_identity is None:
+                raise CleanupPermitError("reversible Action compiler write authority is invalid")
+            envelope = _canonical_mission_envelope(envelope)
+            proposal = _canonical_action_proposal(proposal)
+            decision = _canonical_graph_decision(decision)
+            action_capability = _canonical_registered_capability(action_capability)
+            cleanup_request = _canonical_cleanup_reservation_request(cleanup_request)
+            cleanup_capability = _canonical_registered_capability(cleanup_capability)
+            if (
+                envelope.campaign_id != self._campaign_id
+                or proposal.campaign_id != self._campaign_id
+                or decision.campaign_id != self._campaign_id
+                or cleanup_request.campaign_id != self._campaign_id
+            ):
+                raise CleanupPermitError(
+                    "reversible Action input belongs to another Campaign"
+                )
+            if self._writer_identity != (
+                envelope.compiler_id,
+                envelope.compiler_version,
+                envelope.compiler_digest,
+            ):
+                raise CleanupPermitError("reversible Action compiler differs from durable writer")
+            attempt_id = action_permit_attempt_id(envelope, proposal, decision)
+            try:
+                with _write_transaction(self.path) as connection:
+                    if _action_permit_writer_identity(connection) != self._writer_identity:
+                        raise CleanupPermitError(
+                            "reversible Action compiler differs from durable writer"
+                        )
+                    existing_action_row = connection.execute(
+                        "SELECT * FROM graph_action_permits WHERE permit_id = ?",
+                        (attempt_id,),
+                    ).fetchone()
+                    existing_reservation_row = connection.execute(
+                        """
+                        SELECT * FROM graph_action_cleanup_reservations
+                        WHERE source_action_permit_id = ?
+                        """,
+                        (attempt_id,),
+                    ).fetchone()
+                    if (existing_action_row is None) is not (
+                        existing_reservation_row is None
+                    ):
+                        raise CleanupPermitError(
+                            "reversible Action authority is partially committed"
+                        )
+                    if existing_action_row is not None:
+                        assert existing_reservation_row is not None
+                        action = _action_permit_from_row(
+                            existing_action_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        reservation = _cleanup_reservation_from_row(
+                            existing_reservation_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        _require_exact_action_permit_retry(
+                            action,
+                            envelope=envelope,
+                            proposal=proposal,
+                            decision=decision,
+                            capability=action_capability,
+                        )
+                        _require_exact_cleanup_reservation_retry(
+                            reservation,
+                            envelope=envelope,
+                            action_permit=action,
+                            request=cleanup_request,
+                            cleanup_capability=cleanup_capability,
+                        )
+                        return ReversibleActionPermitAuthorization(
+                            action=ActionPermitAuthorization(
+                                permit=action,
+                                newlyConsumed=False,
+                            ),
+                            cleanupReservation=reservation,
+                        )
+                    collision = connection.execute(
+                        """
+                        SELECT 1
+                        FROM graph_action_permits
+                        WHERE proposal_id = ? OR request_id = ?
+                        UNION ALL
+                        SELECT 1
+                        FROM graph_cleanup_permits
+                        WHERE request_id = ?
+                        LIMIT 1
+                        """,
+                        (
+                            proposal.proposal_id,
+                            proposal.request_id,
+                            proposal.request_id,
+                        ),
+                    ).fetchone()
+                    reservation_collision = connection.execute(
+                        """
+                        SELECT 1 FROM graph_action_cleanup_reservations
+                        WHERE reservation_request_id = ?
+                        LIMIT 1
+                        """,
+                        (cleanup_request.reservation_request_id,),
+                    ).fetchone()
+                    if collision is not None or reservation_collision is not None:
+                        raise CleanupPermitConflict(
+                            "reversible Action or cleanup reservation identity is consumed"
+                        )
+                    validate_action_cleanup_reservation_authority(
+                        envelope,
+                        proposal,
+                        decision,
+                        action_capability,
+                        cleanup_request,
+                        cleanup_capability,
+                        evaluated_at=evaluated_at,
+                    )
+                    _require_latest_action_snapshot(
+                        connection,
+                        campaign_id=self._campaign_id,
+                        proposal=proposal,
+                        decision=decision,
+                    )
+                    _require_aggregate_action_budget(
+                        connection,
+                        envelope=envelope,
+                        new_reservations=(
+                            proposal.reservation,
+                            cleanup_request.reservation,
+                        ),
+                        evaluated_at=evaluated_at,
+                        error_type=CleanupPermitBudgetExceeded,
+                    )
+                    action = build_action_permit(
+                        envelope,
+                        proposal,
+                        decision,
+                        evaluated_at=evaluated_at,
+                        permit_ttl=permit_ttl,
+                    )
+                    if action.permit_id != attempt_id:
+                        raise CleanupPermitError(
+                            "reversible ActionPermit deterministic identity differs"
+                        )
+                    reservation = build_action_cleanup_reservation(
+                        envelope,
+                        action,
+                        cleanup_request,
+                        evaluated_at=evaluated_at,
+                    )
+                    _insert_action_permit(connection, action)
+                    _insert_cleanup_reservation(connection, reservation)
+                    return ReversibleActionPermitAuthorization(
+                        action=ActionPermitAuthorization(
+                            permit=action,
+                            newlyConsumed=True,
+                        ),
+                        cleanupReservation=reservation,
+                    )
+            except sqlite3.IntegrityError as exc:
+                raise CleanupPermitConflict(
+                    "reversible Action durable compare-and-set conflicted"
+                ) from exc
+            except sqlite3.Error as exc:
+                raise CleanupPermitError(
+                    "reversible Action authority transaction failed"
+                ) from exc
+
+    def authorize_cleanup_for_dispatch(
+        self,
+        envelope: MissionEnvelope,
+        request: CleanupRequest,
+        decision: GraphDecision,
+        capability: RegisteredActionCapability,
+        *,
+        writer: object,
+        evaluated_at: datetime,
+        permit_ttl: timedelta,
+    ) -> CleanupPermitAuthorization:
+        """Consume one pre-reserved CleanupPermit without charging budget twice."""
+
+        with self._lock:
+            if writer is not self._writer or self._writer_identity is None:
+                raise CleanupPermitError("CleanupPermit compiler write authority is invalid")
+            envelope = _canonical_mission_envelope(envelope)
+            request = _canonical_cleanup_request(request)
+            decision = _canonical_graph_decision(decision)
+            capability = _canonical_registered_capability(capability)
+            if (
+                envelope.campaign_id != self._campaign_id
+                or request.campaign_id != self._campaign_id
+                or decision.campaign_id != self._campaign_id
+            ):
+                raise CleanupPermitError("CleanupPermit input belongs to another Campaign")
+            if self._writer_identity != (
+                envelope.compiler_id,
+                envelope.compiler_version,
+                envelope.compiler_digest,
+            ):
+                raise CleanupPermitError("CleanupPermit compiler differs from durable writer")
+            attempt_id = cleanup_permit_attempt_id(envelope, request, decision)
+            try:
+                with _write_transaction(self.path) as connection:
+                    if _action_permit_writer_identity(connection) != self._writer_identity:
+                        raise CleanupPermitError(
+                            "CleanupPermit compiler differs from durable writer"
+                        )
+                    existing_row = connection.execute(
+                        "SELECT * FROM graph_cleanup_permits WHERE cleanup_permit_id = ?",
+                        (attempt_id,),
+                    ).fetchone()
+                    if existing_row is not None:
+                        existing = _cleanup_permit_from_row(
+                            existing_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        _require_exact_cleanup_permit_retry(
+                            existing,
+                            envelope=envelope,
+                            request=request,
+                            decision=decision,
+                            capability=capability,
+                        )
+                        return CleanupPermitAuthorization(
+                            permit=existing,
+                            newlyConsumed=False,
+                        )
+                    collision = connection.execute(
+                        """
+                        SELECT 1 FROM graph_cleanup_permits
+                        WHERE cleanup_reservation_id = ?
+                           OR source_action_permit_id = ?
+                           OR cleanup_request_id = ?
+                           OR request_id = ?
+                        UNION ALL
+                        SELECT 1 FROM graph_action_permits WHERE request_id = ?
+                        LIMIT 1
+                        """,
+                        (
+                            request.cleanup_reservation_id,
+                            request.source_action_permit_id,
+                            request.cleanup_request_id,
+                            request.request_id,
+                            request.request_id,
+                        ),
+                    ).fetchone()
+                    if collision is not None:
+                        raise CleanupPermitConflict(
+                            "cleanup reservation, source Action, or request is consumed"
+                        )
+                    reservation_row = connection.execute(
+                        """
+                        SELECT * FROM graph_action_cleanup_reservations
+                        WHERE cleanup_reservation_id = ?
+                        """,
+                        (request.cleanup_reservation_id,),
+                    ).fetchone()
+                    action_row = connection.execute(
+                        "SELECT * FROM graph_action_permits WHERE permit_id = ?",
+                        (request.source_action_permit_id,),
+                    ).fetchone()
+                    if reservation_row is None or action_row is None:
+                        raise CleanupPermitError(
+                            "CleanupRequest has no durable source Action or reservation"
+                        )
+                    reservation = _cleanup_reservation_from_row(
+                        reservation_row,
+                        campaign_id=self._campaign_id,
+                    )
+                    source_action = _action_permit_from_row(
+                        action_row,
+                        campaign_id=self._campaign_id,
+                    )
+                    validate_cleanup_authority(
+                        envelope,
+                        request,
+                        decision,
+                        capability,
+                        source_action,
+                        reservation,
+                        evaluated_at=evaluated_at,
+                    )
+                    _require_latest_cleanup_snapshot(
+                        connection,
+                        campaign_id=self._campaign_id,
+                        request=request,
+                        decision=decision,
+                    )
+                    permit = build_cleanup_permit(
+                        envelope,
+                        request,
+                        reservation,
+                        evaluated_at=evaluated_at,
+                        permit_ttl=permit_ttl,
+                    )
+                    if permit.cleanup_permit_id != attempt_id:
+                        raise CleanupPermitError(
+                            "CleanupPermit deterministic attempt identity differs"
+                        )
+                    _insert_cleanup_permit(connection, permit)
+                    return CleanupPermitAuthorization(
+                        permit=permit,
+                        newlyConsumed=True,
+                    )
+            except sqlite3.IntegrityError as exc:
+                raise CleanupPermitConflict(
+                    "CleanupPermit durable compare-and-set conflicted"
+                ) from exc
+            except sqlite3.Error as exc:
+                raise CleanupPermitError("CleanupPermit authority transaction failed") from exc
 
     def permit(self, permit_id: str) -> ActionPermit | None:
         if fullmatch(r"^action-permit_[a-f0-9]{64}$", permit_id) is None:
@@ -1215,6 +1739,72 @@ class SQLiteGraphActionPermitStore:
                 )
         except sqlite3.Error as exc:
             raise ActionPermitError("ActionPermit ledger read failed") from exc
+
+    def cleanup_reservation(
+        self,
+        reservation_id: str,
+    ) -> ActionCleanupReservation | None:
+        if fullmatch(r"^action-cleanup-reservation_[a-f0-9]{64}$", reservation_id) is None:
+            raise CleanupPermitError("cleanup reservation ID is invalid")
+        try:
+            with _readonly_connection(self.path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM graph_action_cleanup_reservations
+                    WHERE cleanup_reservation_id = ?
+                    """,
+                    (reservation_id,),
+                ).fetchone()
+                return (
+                    _cleanup_reservation_from_row(row, campaign_id=self._campaign_id)
+                    if row is not None
+                    else None
+                )
+        except sqlite3.Error as exc:
+            raise CleanupPermitError("cleanup reservation lookup failed") from exc
+
+    def cleanup_reservations(self) -> tuple[ActionCleanupReservation, ...]:
+        try:
+            with _readonly_connection(self.path) as connection:
+                rows = connection.execute(
+                    "SELECT * FROM graph_action_cleanup_reservations ORDER BY ordinal"
+                ).fetchall()
+                return tuple(
+                    _cleanup_reservation_from_row(row, campaign_id=self._campaign_id)
+                    for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise CleanupPermitError("cleanup reservation ledger read failed") from exc
+
+    def cleanup_permit(self, permit_id: str) -> CleanupPermit | None:
+        if fullmatch(r"^cleanup-permit_[a-f0-9]{64}$", permit_id) is None:
+            raise CleanupPermitError("CleanupPermit ID is invalid")
+        try:
+            with _readonly_connection(self.path) as connection:
+                row = connection.execute(
+                    "SELECT * FROM graph_cleanup_permits WHERE cleanup_permit_id = ?",
+                    (permit_id,),
+                ).fetchone()
+                return (
+                    _cleanup_permit_from_row(row, campaign_id=self._campaign_id)
+                    if row is not None
+                    else None
+                )
+        except sqlite3.Error as exc:
+            raise CleanupPermitError("CleanupPermit lookup failed") from exc
+
+    def cleanup_permits(self) -> tuple[CleanupPermit, ...]:
+        try:
+            with _readonly_connection(self.path) as connection:
+                rows = connection.execute(
+                    "SELECT * FROM graph_cleanup_permits ORDER BY ordinal"
+                ).fetchall()
+                return tuple(
+                    _cleanup_permit_from_row(row, campaign_id=self._campaign_id)
+                    for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise CleanupPermitError("CleanupPermit ledger read failed") from exc
 
 
 def sqlite_graph_backup_manifest_path(backup: Path) -> Path:
@@ -1263,6 +1853,10 @@ def _create_backup(
             snapshotHeadDigest=state.snapshot_head_digest,
             actionPermitCount=state.action_permit_count,
             actionPermitHeadDigest=state.action_permit_head_digest,
+            cleanupReservationCount=state.cleanup_reservation_count,
+            cleanupReservationHeadDigest=state.cleanup_reservation_head_digest,
+            cleanupPermitCount=state.cleanup_permit_count,
+            cleanupPermitHeadDigest=state.cleanup_permit_head_digest,
         )
         temporary_manifest = _write_private_temporary(
             manifest_path,
@@ -1299,6 +1893,29 @@ def _create_backup(
                 temporary_manifest.unlink()
 
 
+def _parse_backup_manifest(
+    raw: bytes,
+) -> SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV1:
+    try:
+        material = parse_strict_json_bytes(
+            raw,
+            label="SQLite Graph backup manifest",
+            max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+            max_depth=16,
+            max_nodes=96,
+        )
+        if not isinstance(material, dict):
+            raise ValueError("SQLite Graph backup manifest must be an object")
+        api_version = material.get("apiVersion")
+        if api_version == GRAPH_STORE_BACKUP_MANIFEST_API_VERSION:
+            return SQLiteGraphBackupManifest.model_validate(material)
+        if api_version == _LEGACY_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION:
+            return _SQLiteGraphBackupManifestV1.model_validate(material)
+        raise ValueError("SQLite Graph backup manifest version is unsupported")
+    except (ValidationError, ValueError) as exc:
+        raise SQLiteGraphStoreError("SQLite Graph backup manifest is invalid") from exc
+
+
 def _restore_backup(
     backup: Path,
     *,
@@ -1320,18 +1937,7 @@ def _restore_backup(
             label="SQLite Graph backup manifest",
             require_single_link=True,
         )
-        try:
-            manifest = SQLiteGraphBackupManifest.model_validate(
-                parse_strict_json_bytes(
-                    manifest_raw,
-                    label="SQLite Graph backup manifest",
-                    max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
-                    max_depth=16,
-                    max_nodes=64,
-                )
-            )
-        except (ValidationError, ValueError) as exc:
-            raise SQLiteGraphStoreError("SQLite Graph backup manifest is invalid") from exc
+        manifest = _parse_backup_manifest(manifest_raw)
         if manifest_raw != _backup_manifest_bytes(manifest):
             raise SQLiteGraphStoreError("SQLite Graph backup manifest is not canonical bytes")
         if manifest.campaign_id != campaign_id:
@@ -1348,8 +1954,27 @@ def _restore_backup(
         ):
             raise SQLiteGraphStoreError("SQLite Graph backup database digest differs")
         _write_existing_private_file(temporary, database)
-        state = _verified_graph_store_state(temporary, campaign_id=campaign_id)
-        _require_manifest_state(manifest, state)
+        if isinstance(manifest, _SQLiteGraphBackupManifestV1):
+            legacy_state = _verified_v2_graph_store_state(
+                temporary,
+                campaign_id=campaign_id,
+            )
+            _require_legacy_manifest_state(manifest, legacy_state)
+            _initialize(temporary, campaign_id)
+            migrated_state = _verified_graph_store_state(
+                temporary,
+                campaign_id=campaign_id,
+            )
+            if (
+                migrated_state.cleanup_reservation_count != 0
+                or migrated_state.cleanup_permit_count != 0
+            ):
+                raise SQLiteGraphStoreError(
+                    "legacy SQLite Graph restore fabricated cleanup authority"
+                )
+        else:
+            state = _verified_graph_store_state(temporary, campaign_id=campaign_id)
+            _require_manifest_state(manifest, state)
         _publish_exclusive(
             temporary,
             destination_path,
@@ -1411,6 +2036,18 @@ def _verified_graph_store_state(
             campaign_id=campaign_id,
             snapshots=snapshots,
         )
+        reservations = _verified_cleanup_reservations(
+            connection,
+            campaign_id=campaign_id,
+            action_permits=permits,
+        )
+        cleanup_permits = _verified_cleanup_permits(
+            connection,
+            campaign_id=campaign_id,
+            snapshots=snapshots,
+            action_permits=permits,
+            reservations=reservations,
+        )
         current_projection = projections[max(projections)]
         return _VerifiedGraphStoreState(
             event_count=len(events),
@@ -1421,6 +2058,64 @@ def _verified_graph_store_state(
             snapshot_head_digest=snapshot_head,
             action_permit_count=len(permits),
             action_permit_head_digest=permits[-1].permit_digest if permits else None,
+            cleanup_reservation_count=len(reservations),
+            cleanup_reservation_head_digest=(
+                reservations[-1].cleanup_reservation_digest if reservations else None
+            ),
+            cleanup_permit_count=len(cleanup_permits),
+            cleanup_permit_head_digest=(
+                cleanup_permits[-1].cleanup_permit_digest if cleanup_permits else None
+            ),
+        )
+
+
+def _verified_v2_graph_store_state(
+    path: Path,
+    *,
+    campaign_id: str,
+) -> _VerifiedGraphStoreState:
+    """Verify an exact legacy v2 store without mutating its backup source."""
+
+    with _readonly_connection(path) as connection:
+        _validate_schema_contract(
+            connection,
+            campaign_id=campaign_id,
+            tables=_ACTION_PERMIT_TABLES,
+            objects=_ACTION_PERMIT_SCHEMA_OBJECT_SQL,
+            version=_ACTION_PERMIT_SCHEMA_VERSION,
+            digest=_ACTION_PERMIT_SCHEMA_DIGEST,
+        )
+        events = _events_from_connection(connection, campaign_id=campaign_id)
+        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+        projections = _verified_projections(
+            connection,
+            campaign_id=campaign_id,
+            events=events,
+        )
+        snapshots, snapshot_head = _verified_snapshots(
+            connection,
+            campaign_id=campaign_id,
+            projections=projections,
+        )
+        permits = _verified_action_permits(
+            connection,
+            campaign_id=campaign_id,
+            snapshots=snapshots,
+        )
+        current_projection = projections[max(projections)]
+        return _VerifiedGraphStoreState(
+            event_count=len(events),
+            event_log_head_digest=events[-1].event_digest if events else None,
+            projection_revision=current_projection.revision,
+            projection_digest=current_projection.projection_digest,
+            snapshot_count=len(snapshots),
+            snapshot_head_digest=snapshot_head,
+            action_permit_count=len(permits),
+            action_permit_head_digest=permits[-1].permit_digest if permits else None,
+            cleanup_reservation_count=0,
+            cleanup_reservation_head_digest=None,
+            cleanup_permit_count=0,
+            cleanup_permit_head_digest=None,
         )
 
 
@@ -1544,6 +2239,134 @@ def _verified_action_permits(
     return permits
 
 
+def _verified_cleanup_reservations(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    action_permits: list[ActionPermit],
+) -> list[ActionCleanupReservation]:
+    rows = connection.execute(
+        "SELECT * FROM graph_action_cleanup_reservations ORDER BY ordinal"
+    ).fetchall()
+    actions = {permit.permit_id: permit for permit in action_permits}
+    compiler_identity = _action_permit_writer_identity(connection)
+    reservations: list[ActionCleanupReservation] = []
+    for ordinal, row in enumerate(rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup cleanup reservation ordinals are not contiguous"
+            )
+        reservation = _cleanup_reservation_from_row(row, campaign_id=campaign_id)
+        action = actions.get(reservation.source_action_permit_id)
+        if (
+            action is None
+            or action.campaign_id != reservation.campaign_id
+            or action.run_id != reservation.run_id
+            or action.compiler_id != reservation.compiler_id
+            or action.compiler_version != reservation.compiler_version
+            or action.compiler_digest != reservation.compiler_digest
+            or action.envelope_id != reservation.envelope_id
+            or action.envelope_digest != reservation.envelope_digest
+            or action.permit_digest != reservation.source_action_permit_digest
+            or action.dispatch_id != reservation.source_action_dispatch_id
+            or action.target_digest != reservation.target_digest
+            or action.consumed_at != reservation.reserved_at
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup cleanup reservation differs from its ActionPermit"
+            )
+        if compiler_identity != (
+            reservation.compiler_id,
+            reservation.compiler_version,
+            reservation.compiler_digest,
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup cleanup reservation differs from its compiler writer"
+            )
+        reservations.append(reservation)
+    return reservations
+
+
+def _verified_cleanup_permits(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    snapshots: dict[str, GraphSnapshot],
+    action_permits: list[ActionPermit],
+    reservations: list[ActionCleanupReservation],
+) -> list[CleanupPermit]:
+    rows = connection.execute(
+        "SELECT * FROM graph_cleanup_permits ORDER BY ordinal"
+    ).fetchall()
+    actions = {permit.permit_id: permit for permit in action_permits}
+    holds = {
+        reservation.cleanup_reservation_id: reservation
+        for reservation in reservations
+    }
+    compiler_identity = _action_permit_writer_identity(connection)
+    permits: list[CleanupPermit] = []
+    for ordinal, row in enumerate(rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup CleanupPermit ordinals are not contiguous"
+            )
+        permit = _cleanup_permit_from_row(row, campaign_id=campaign_id)
+        snapshot = snapshots.get(permit.snapshot.snapshot_id)
+        action = actions.get(permit.source_action_permit_id)
+        hold = holds.get(permit.cleanup_reservation_id)
+        if snapshot is None or permit.snapshot != graph_snapshot_ref(snapshot):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup CleanupPermit differs from its Snapshot"
+            )
+        if (
+            action is None
+            or action.campaign_id != permit.campaign_id
+            or action.run_id != permit.run_id
+            or action.compiler_id != permit.compiler_id
+            or action.compiler_version != permit.compiler_version
+            or action.compiler_digest != permit.compiler_digest
+            or action.envelope_id != permit.envelope_id
+            or action.envelope_digest != permit.envelope_digest
+            or action.permit_digest != permit.source_action_permit_digest
+            or action.dispatch_id != permit.source_action_dispatch_id
+            or action.target_digest != permit.target_digest
+            or hold is None
+            or hold.campaign_id != permit.campaign_id
+            or hold.run_id != permit.run_id
+            or hold.compiler_id != permit.compiler_id
+            or hold.compiler_version != permit.compiler_version
+            or hold.compiler_digest != permit.compiler_digest
+            or hold.envelope_id != permit.envelope_id
+            or hold.envelope_digest != permit.envelope_digest
+            or hold.cleanup_reservation_digest != permit.cleanup_reservation_digest
+            or hold.source_action_permit_id != permit.source_action_permit_id
+            or hold.source_action_permit_digest != permit.source_action_permit_digest
+            or hold.source_action_dispatch_id != permit.source_action_dispatch_id
+            or hold.cleanup_capability != permit.capability
+            or hold.target_digest != permit.target_digest
+            or hold.cleanup_handler_digest != permit.cleanup_handler_digest
+            or hold.cleanup_executor_digest != permit.cleanup_executor_digest
+            or hold.reservation != permit.reservation
+            or hold.reserved_at != action.consumed_at
+            or permit.issued_at != permit.consumed_at
+            or not hold.reserved_at <= permit.consumed_at < hold.claim_expires_at
+            or permit.expires_at > hold.claim_expires_at
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup CleanupPermit differs from its source authority"
+            )
+        if compiler_identity != (
+            permit.compiler_id,
+            permit.compiler_version,
+            permit.compiler_digest,
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup CleanupPermit differs from its compiler writer"
+            )
+        permits.append(permit)
+    return permits
+
+
 def _require_manifest_state(
     manifest: SQLiteGraphBackupManifest,
     state: _VerifiedGraphStoreState,
@@ -1559,11 +2382,39 @@ def _require_manifest_state(
         or manifest.snapshot_head_digest != state.snapshot_head_digest
         or manifest.action_permit_count != state.action_permit_count
         or manifest.action_permit_head_digest != state.action_permit_head_digest
+        or manifest.cleanup_reservation_count != state.cleanup_reservation_count
+        or manifest.cleanup_reservation_head_digest
+        != state.cleanup_reservation_head_digest
+        or manifest.cleanup_permit_count != state.cleanup_permit_count
+        or manifest.cleanup_permit_head_digest != state.cleanup_permit_head_digest
     ):
         raise SQLiteGraphStoreError("SQLite Graph backup manifest differs from restored state")
 
 
-def _backup_manifest_bytes(manifest: SQLiteGraphBackupManifest) -> bytes:
+def _require_legacy_manifest_state(
+    manifest: _SQLiteGraphBackupManifestV1,
+    state: _VerifiedGraphStoreState,
+) -> None:
+    if (
+        manifest.schema_version != _ACTION_PERMIT_SCHEMA_VERSION
+        or manifest.schema_digest != _ACTION_PERMIT_SCHEMA_DIGEST
+        or manifest.event_count != state.event_count
+        or manifest.event_log_head_digest != state.event_log_head_digest
+        or manifest.projection_revision != state.projection_revision
+        or manifest.projection_digest != state.projection_digest
+        or manifest.snapshot_count != state.snapshot_count
+        or manifest.snapshot_head_digest != state.snapshot_head_digest
+        or manifest.action_permit_count != state.action_permit_count
+        or manifest.action_permit_head_digest != state.action_permit_head_digest
+    ):
+        raise SQLiteGraphStoreError(
+            "legacy SQLite Graph backup manifest differs from restored state"
+        )
+
+
+def _backup_manifest_bytes(
+    manifest: SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV1,
+) -> bytes:
     return (
         canonical_graph_json(
             manifest.model_dump(mode="json", by_alias=True),
@@ -1847,6 +2698,16 @@ def _initialize(path: Path, campaign_id: str) -> None:
                     digest=_LEGACY_SCHEMA_DIGEST,
                 )
                 _migrate_legacy_schema(connection)
+            elif tables == _ACTION_PERMIT_TABLES:
+                _validate_schema_contract(
+                    connection,
+                    campaign_id=campaign_id,
+                    tables=_ACTION_PERMIT_TABLES,
+                    objects=_ACTION_PERMIT_SCHEMA_OBJECT_SQL,
+                    version=_ACTION_PERMIT_SCHEMA_VERSION,
+                    digest=_ACTION_PERMIT_SCHEMA_DIGEST,
+                )
+                _migrate_action_permit_schema(connection)
             _validate_schema(connection, campaign_id=campaign_id)
             connection.execute("COMMIT")
         except BaseException:
@@ -2006,9 +2867,25 @@ def _validate_schema_contract(
 
 
 def _migrate_legacy_schema(connection: sqlite3.Connection) -> None:
-    """Upgrade the exact append-only v1 store to the v2 Permit authority schema."""
+    """Upgrade the exact append-only v1 store to the v3 cleanup authority schema."""
 
-    new_keys = _SCHEMA_OBJECT_SQL.keys() - _LEGACY_SCHEMA_OBJECT_SQL.keys()
+    _migrate_schema(connection, previous_objects=_LEGACY_SCHEMA_OBJECT_SQL)
+
+
+def _migrate_action_permit_schema(connection: sqlite3.Connection) -> None:
+    """Upgrade the exact v2 ActionPermit store to the v3 cleanup authority schema."""
+
+    _migrate_schema(connection, previous_objects=_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
+
+
+def _migrate_schema(
+    connection: sqlite3.Connection,
+    *,
+    previous_objects: dict[tuple[str, str], str],
+) -> None:
+    """Add only current authority objects and rotate immutable metadata exactly."""
+
+    new_keys = _SCHEMA_OBJECT_SQL.keys() - previous_objects.keys()
     for key, statement in _SCHEMA_OBJECT_SQL.items():
         if key in new_keys:
             connection.execute(statement)
@@ -2189,14 +3066,65 @@ def _require_latest_action_snapshot(
         raise ActionPermitStaleDecision("Graph changed before the ActionPermit dispatch claim")
 
 
-def _require_action_budget(
+def _require_latest_cleanup_snapshot(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    request: CleanupRequest,
+    decision: GraphDecision,
+) -> None:
+    row = connection.execute(
+        "SELECT * FROM graph_snapshots WHERE snapshot_id = ?",
+        (decision.snapshot.snapshot_id,),
+    ).fetchone()
+    if row is None:
+        raise CleanupPermitError("CleanupPermit Graph Snapshot was not found")
+    snapshot = _snapshot_from_row(row, campaign_id=campaign_id)
+    if (
+        snapshot.snapshot_id != decision.snapshot.snapshot_id
+        or snapshot.snapshot_digest != decision.snapshot.snapshot_digest
+        or snapshot.campaign_id != decision.snapshot.campaign_id
+        or snapshot.graph_schema_version != decision.snapshot.graph_schema_version
+        or snapshot.revision != decision.snapshot.revision
+        or snapshot.event_log_head_digest != decision.snapshot.event_log_head_digest
+        or snapshot.projection_digest != decision.snapshot.projection_digest
+        or request.snapshot != decision.snapshot
+    ):
+        raise CleanupPermitError("CleanupPermit Graph Snapshot binding differs")
+    if decision.created_at < snapshot.created_at or request.created_at < decision.created_at:
+        raise CleanupPermitError("cleanup authority timeline predates its Graph Snapshot")
+    current = _current_projection(connection, campaign_id=campaign_id)
+    events = _events_from_connection(connection, campaign_id=campaign_id)
+    latest = GraphProjector.project(campaign_id=campaign_id, events=events)
+    if current.projection_digest != latest.projection_digest:
+        raise CleanupPermitStaleDecision(
+            "Graph projection recovery is required before CleanupPermit dispatch"
+        )
+    observed = (
+        snapshot.revision,
+        snapshot.event_log_head_digest,
+        snapshot.projection_id,
+        snapshot.projection_digest,
+    )
+    expected = (
+        latest.revision,
+        latest.event_log_head_digest,
+        latest.projection_id,
+        latest.projection_digest,
+    )
+    if observed != expected:
+        raise CleanupPermitStaleDecision("Graph changed before the CleanupPermit claim")
+
+
+def _require_aggregate_action_budget(
     connection: sqlite3.Connection,
     *,
     envelope: MissionEnvelope,
-    proposal: ActionProposal,
+    new_reservations: tuple[ActionBudgetReservation, ...],
     evaluated_at: datetime,
+    error_type: type[RuntimeError],
 ) -> None:
-    rows = connection.execute(
+    action_rows = connection.execute(
         """
         SELECT * FROM graph_action_permits
         WHERE envelope_id = ?
@@ -2204,29 +3132,78 @@ def _require_action_budget(
         """,
         (envelope.envelope_id,),
     ).fetchall()
-    permits = tuple(_action_permit_from_row(row, campaign_id=envelope.campaign_id) for row in rows)
-    if any(permit.envelope_digest != envelope.envelope_digest for permit in permits):
-        raise ActionPermitConflict("MissionEnvelope identity has equivocated")
-    used_calls = len(permits)
-    used_units = sum(permit.reservation.request_units for permit in permits)
-    used_cost = sum(permit.reservation.cost_microusd for permit in permits)
-    reservation = proposal.reservation
+    hold_rows = connection.execute(
+        """
+        SELECT * FROM graph_action_cleanup_reservations
+        WHERE envelope_id = ?
+        ORDER BY ordinal
+        """,
+        (envelope.envelope_id,),
+    ).fetchall()
+    cleanup_rows = connection.execute(
+        """
+        SELECT * FROM graph_cleanup_permits
+        WHERE envelope_id = ?
+        ORDER BY ordinal
+        """,
+        (envelope.envelope_id,),
+    ).fetchall()
+    actions = tuple(
+        _action_permit_from_row(row, campaign_id=envelope.campaign_id)
+        for row in action_rows
+    )
+    holds = tuple(
+        _cleanup_reservation_from_row(row, campaign_id=envelope.campaign_id)
+        for row in hold_rows
+    )
+    cleanups = tuple(
+        _cleanup_permit_from_row(row, campaign_id=envelope.campaign_id)
+        for row in cleanup_rows
+    )
     if (
-        used_calls + reservation.tool_calls > envelope.budget.tool_call_limit
-        or used_units + reservation.request_units > envelope.budget.request_unit_limit
-        or used_cost + reservation.cost_microusd > envelope.budget.cost_limit_microusd
+        any(item.envelope_digest != envelope.envelope_digest for item in actions)
+        or any(item.envelope_digest != envelope.envelope_digest for item in holds)
+        or any(item.envelope_digest != envelope.envelope_digest for item in cleanups)
     ):
-        raise ActionPermitBudgetExceeded("MissionEnvelope durable ActionPermit budget is exhausted")
+        raise ActionPermitConflict("MissionEnvelope identity has equivocated")
+    used_calls = len(actions) + len(holds)
+    used_units = sum(item.reservation.request_units for item in actions) + sum(
+        item.reservation.request_units for item in holds
+    )
+    used_cost = sum(item.reservation.cost_microusd for item in actions) + sum(
+        item.reservation.cost_microusd for item in holds
+    )
+    new_calls = sum(item.tool_calls for item in new_reservations)
+    new_units = sum(item.request_units for item in new_reservations)
+    new_cost = sum(item.cost_microusd for item in new_reservations)
+    if (
+        used_calls + new_calls > envelope.budget.tool_call_limit
+        or used_units + new_units > envelope.budget.request_unit_limit
+        or used_cost + new_cost > envelope.budget.cost_limit_microusd
+    ):
+        raise error_type("MissionEnvelope durable Action plus cleanup budget is exhausted")
     window_seconds = envelope.budget.rolling_window_seconds
     window_limit = envelope.budget.rolling_request_unit_limit
     if window_seconds is None or window_limit is None:
         return
     window_start = evaluated_at - timedelta(seconds=window_seconds)
+    cleanup_by_reservation = {
+        permit.cleanup_reservation_id: permit for permit in cleanups
+    }
     window_units = sum(
-        permit.reservation.request_units for permit in permits if permit.consumed_at > window_start
+        permit.reservation.request_units
+        for permit in actions
+        if permit.consumed_at > window_start
+    ) + sum(
+        hold.reservation.request_units
+        for hold in holds
+        if (
+            hold.cleanup_reservation_id not in cleanup_by_reservation
+            or cleanup_by_reservation[hold.cleanup_reservation_id].consumed_at > window_start
+        )
     )
-    if window_units + reservation.request_units > window_limit:
-        raise ActionPermitBudgetExceeded("MissionEnvelope rolling ActionPermit rate is exhausted")
+    if window_units + new_units > window_limit:
+        raise error_type("MissionEnvelope rolling Action plus cleanup rate is exhausted")
 
 
 def _require_exact_action_permit_retry(
@@ -2258,6 +3235,233 @@ def _require_exact_action_permit_retry(
         or permit.reservation != proposal.reservation
     ):
         raise ActionPermitConflict("ActionPermit exact retry differs from stored authority")
+
+
+def _require_exact_cleanup_reservation_retry(
+    reservation: ActionCleanupReservation,
+    *,
+    envelope: MissionEnvelope,
+    action_permit: ActionPermit,
+    request: ActionCleanupReservationRequest,
+    cleanup_capability: RegisteredActionCapability,
+) -> None:
+    expected = build_action_cleanup_reservation(
+        envelope,
+        action_permit,
+        request,
+        evaluated_at=action_permit.consumed_at,
+    )
+    if (
+        reservation != expected
+        or reservation.cleanup_capability != cleanup_capability.reference()
+    ):
+        raise CleanupPermitConflict(
+            "cleanup reservation exact retry differs from stored authority"
+        )
+
+
+def _require_exact_cleanup_permit_retry(
+    permit: CleanupPermit,
+    *,
+    envelope: MissionEnvelope,
+    request: CleanupRequest,
+    decision: GraphDecision,
+    capability: RegisteredActionCapability,
+) -> None:
+    if (
+        permit.campaign_id != envelope.campaign_id
+        or permit.run_id != envelope.run_id
+        or permit.compiler_id != envelope.compiler_id
+        or permit.compiler_version != envelope.compiler_version
+        or permit.compiler_digest != envelope.compiler_digest
+        or permit.envelope_id != envelope.envelope_id
+        or permit.envelope_digest != envelope.envelope_digest
+        or permit.cleanup_reservation_id != request.cleanup_reservation_id
+        or permit.cleanup_reservation_digest != request.cleanup_reservation_digest
+        or permit.cleanup_request_id != request.cleanup_request_id
+        or permit.cleanup_request_digest != request.cleanup_request_digest
+        or permit.source_action_permit_id != request.source_action_permit_id
+        or permit.source_action_permit_digest != request.source_action_permit_digest
+        or permit.source_action_dispatch_id != request.source_action_dispatch_id
+        or permit.source_outcome_id != request.source_outcome_id
+        or permit.source_outcome_digest != request.source_outcome_digest
+        or permit.source_run_root_digest != request.source_run_root_digest
+        or permit.source_terminal_event_digest != request.source_terminal_event_digest
+        or permit.source_gateway_outcome_digest != request.source_gateway_outcome_digest
+        or permit.decision_id != decision.decision_id
+        or permit.decision_digest != decision.decision_digest
+        or permit.snapshot != decision.snapshot
+        or permit.cleanup_handler_digest != request.cleanup_handler_digest
+        or permit.cleanup_executor_digest != request.cleanup_executor_digest
+        or permit.cleanup_plan_digest != request.cleanup_plan_digest
+        or permit.capability != capability.reference()
+        or permit.target_digest != request.target_digest
+        or permit.request_id != request.request_id
+        or permit.request_digest != request.request_digest
+        or permit.normalized_parameters_digest != request.normalized_parameters_digest
+        or permit.reservation != request.reservation
+    ):
+        raise CleanupPermitConflict("CleanupPermit exact retry differs from stored authority")
+
+
+def _insert_action_permit(connection: sqlite3.Connection, permit: ActionPermit) -> None:
+    ordinal_row = connection.execute(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal FROM graph_action_permits"
+    ).fetchone()
+    assert ordinal_row is not None
+    connection.execute(
+        """
+        INSERT INTO graph_action_permits (
+            ordinal, permit_id, permit_digest, dispatch_id,
+            envelope_id, envelope_digest, proposal_id,
+            proposal_digest, decision_id, decision_digest,
+            snapshot_id, snapshot_digest, revision,
+            event_log_head_digest, projection_digest,
+            request_id, request_digest, request_units,
+            cost_microusd, issued_at, consumed_at, expires_at,
+            permit_json
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            cast(int, ordinal_row["next_ordinal"]),
+            permit.permit_id,
+            permit.permit_digest,
+            permit.dispatch_id,
+            permit.envelope_id,
+            permit.envelope_digest,
+            permit.proposal_id,
+            permit.proposal_digest,
+            permit.decision_id,
+            permit.decision_digest,
+            permit.snapshot.snapshot_id,
+            permit.snapshot.snapshot_digest,
+            permit.snapshot.revision,
+            permit.snapshot.event_log_head_digest,
+            permit.snapshot.projection_digest,
+            permit.request_id,
+            permit.request_digest,
+            permit.reservation.request_units,
+            permit.reservation.cost_microusd,
+            permit.issued_at.isoformat(),
+            permit.consumed_at.isoformat(),
+            permit.expires_at.isoformat(),
+            sqlite3.Binary(_action_permit_bytes(permit)),
+        ),
+    )
+
+
+def _insert_cleanup_reservation(
+    connection: sqlite3.Connection,
+    reservation: ActionCleanupReservation,
+) -> None:
+    ordinal_row = connection.execute(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal "
+        "FROM graph_action_cleanup_reservations"
+    ).fetchone()
+    assert ordinal_row is not None
+    connection.execute(
+        """
+        INSERT INTO graph_action_cleanup_reservations (
+            ordinal, cleanup_reservation_id, cleanup_reservation_digest,
+            reservation_request_id, reservation_request_digest,
+            source_action_permit_id, source_action_permit_digest,
+            source_action_dispatch_id, envelope_id, envelope_digest,
+            cleanup_capability_digest, target_digest,
+            cleanup_handler_digest, cleanup_executor_digest,
+            tool_calls, request_units, cost_microusd, reserved_at, claim_expires_at,
+            reservation_json
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            cast(int, ordinal_row["next_ordinal"]),
+            reservation.cleanup_reservation_id,
+            reservation.cleanup_reservation_digest,
+            reservation.reservation_request_id,
+            reservation.reservation_request_digest,
+            reservation.source_action_permit_id,
+            reservation.source_action_permit_digest,
+            reservation.source_action_dispatch_id,
+            reservation.envelope_id,
+            reservation.envelope_digest,
+            reservation.cleanup_capability.capability_digest,
+            reservation.target_digest,
+            reservation.cleanup_handler_digest,
+            reservation.cleanup_executor_digest,
+            reservation.reservation.tool_calls,
+            reservation.reservation.request_units,
+            reservation.reservation.cost_microusd,
+            reservation.reserved_at.isoformat(),
+            reservation.claim_expires_at.isoformat(),
+            sqlite3.Binary(_cleanup_reservation_bytes(reservation)),
+        ),
+    )
+
+
+def _insert_cleanup_permit(
+    connection: sqlite3.Connection,
+    permit: CleanupPermit,
+) -> None:
+    ordinal_row = connection.execute(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal FROM graph_cleanup_permits"
+    ).fetchone()
+    assert ordinal_row is not None
+    connection.execute(
+        """
+        INSERT INTO graph_cleanup_permits (
+            ordinal, cleanup_permit_id, cleanup_permit_digest,
+            cleanup_dispatch_id, cleanup_reservation_id,
+            cleanup_reservation_digest, source_action_permit_id,
+            source_action_permit_digest, envelope_id, envelope_digest,
+            cleanup_request_id, cleanup_request_digest,
+            decision_id, decision_digest, snapshot_id, snapshot_digest,
+            revision, event_log_head_digest, projection_digest,
+            request_id, request_digest, cleanup_capability_digest,
+            target_digest, cleanup_handler_digest, cleanup_executor_digest,
+            cleanup_plan_digest, issued_at, consumed_at, expires_at,
+            permit_json
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            cast(int, ordinal_row["next_ordinal"]),
+            permit.cleanup_permit_id,
+            permit.cleanup_permit_digest,
+            permit.cleanup_dispatch_id,
+            permit.cleanup_reservation_id,
+            permit.cleanup_reservation_digest,
+            permit.source_action_permit_id,
+            permit.source_action_permit_digest,
+            permit.envelope_id,
+            permit.envelope_digest,
+            permit.cleanup_request_id,
+            permit.cleanup_request_digest,
+            permit.decision_id,
+            permit.decision_digest,
+            permit.snapshot.snapshot_id,
+            permit.snapshot.snapshot_digest,
+            permit.snapshot.revision,
+            permit.snapshot.event_log_head_digest,
+            permit.snapshot.projection_digest,
+            permit.request_id,
+            permit.request_digest,
+            permit.capability.capability_digest,
+            permit.target_digest,
+            permit.cleanup_handler_digest,
+            permit.cleanup_executor_digest,
+            permit.cleanup_plan_digest,
+            permit.issued_at.isoformat(),
+            permit.consumed_at.isoformat(),
+            permit.expires_at.isoformat(),
+            sqlite3.Binary(_cleanup_permit_bytes(permit)),
+        ),
+    )
 
 
 def _event_bytes(event: GraphAdmissionEvent) -> bytes:
@@ -2296,6 +3500,22 @@ def _action_permit_bytes(permit: ActionPermit) -> bytes:
     return canonical_graph_json(
         permit.model_dump(mode="json", by_alias=True),
         label="ActionPermit",
+        max_bytes=_MAX_GRAPH_BYTES,
+    )
+
+
+def _cleanup_reservation_bytes(reservation: ActionCleanupReservation) -> bytes:
+    return canonical_graph_json(
+        reservation.model_dump(mode="json", by_alias=True),
+        label="ActionCleanupReservation",
+        max_bytes=_MAX_GRAPH_BYTES,
+    )
+
+
+def _cleanup_permit_bytes(permit: CleanupPermit) -> bytes:
+    return canonical_graph_json(
+        permit.model_dump(mode="json", by_alias=True),
+        label="CleanupPermit",
         max_bytes=_MAX_GRAPH_BYTES,
     )
 
@@ -2452,6 +3672,24 @@ def _canonical_registered_capability(
         raise ActionPermitError("Registered Action Capability is not canonical") from exc
 
 
+def _canonical_cleanup_reservation_request(
+    request: ActionCleanupReservationRequest,
+) -> ActionCleanupReservationRequest:
+    try:
+        return ActionCleanupReservationRequest.model_validate(
+            request.model_dump(mode="json", by_alias=True)
+        )
+    except ValidationError as exc:
+        raise CleanupPermitError("cleanup reservation request is not canonical") from exc
+
+
+def _canonical_cleanup_request(request: CleanupRequest) -> CleanupRequest:
+    try:
+        return CleanupRequest.model_validate(request.model_dump(mode="json", by_alias=True))
+    except ValidationError as exc:
+        raise CleanupPermitError("CleanupRequest is not canonical") from exc
+
+
 def _action_permit_from_row(
     row: sqlite3.Row,
     *,
@@ -2489,6 +3727,93 @@ def _action_permit_from_row(
         or permit.expires_at.isoformat() != row["expires_at"]
     ):
         raise ActionPermitError("stored ActionPermit index differs from payload")
+    return permit
+
+
+def _cleanup_reservation_from_row(
+    row: sqlite3.Row,
+    *,
+    campaign_id: str,
+) -> ActionCleanupReservation:
+    raw = _required_bytes(row, "reservation_json")
+    try:
+        reservation = ActionCleanupReservation.model_validate(
+            _decode_json(raw, label="ActionCleanupReservation")
+        )
+    except ValidationError as exc:
+        raise CleanupPermitError("stored cleanup reservation is invalid") from exc
+    if raw != _cleanup_reservation_bytes(reservation):
+        raise CleanupPermitError("stored cleanup reservation is not canonical bytes")
+    if (
+        reservation.campaign_id != campaign_id
+        or reservation.cleanup_reservation_id != row["cleanup_reservation_id"]
+        or reservation.cleanup_reservation_digest != row["cleanup_reservation_digest"]
+        or reservation.reservation_request_id != row["reservation_request_id"]
+        or reservation.reservation_request_digest != row["reservation_request_digest"]
+        or reservation.source_action_permit_id != row["source_action_permit_id"]
+        or reservation.source_action_permit_digest != row["source_action_permit_digest"]
+        or reservation.source_action_dispatch_id != row["source_action_dispatch_id"]
+        or reservation.envelope_id != row["envelope_id"]
+        or reservation.envelope_digest != row["envelope_digest"]
+        or reservation.cleanup_capability.capability_digest
+        != row["cleanup_capability_digest"]
+        or reservation.target_digest != row["target_digest"]
+        or reservation.cleanup_handler_digest != row["cleanup_handler_digest"]
+        or reservation.cleanup_executor_digest != row["cleanup_executor_digest"]
+        or reservation.reservation.tool_calls != row["tool_calls"]
+        or reservation.reservation.request_units != row["request_units"]
+        or reservation.reservation.cost_microusd != row["cost_microusd"]
+        or reservation.reserved_at.isoformat() != row["reserved_at"]
+        or reservation.claim_expires_at.isoformat() != row["claim_expires_at"]
+    ):
+        raise CleanupPermitError("stored cleanup reservation index differs from payload")
+    return reservation
+
+
+def _cleanup_permit_from_row(
+    row: sqlite3.Row,
+    *,
+    campaign_id: str,
+) -> CleanupPermit:
+    raw = _required_bytes(row, "permit_json")
+    try:
+        permit = CleanupPermit.model_validate(_decode_json(raw, label="CleanupPermit"))
+    except ValidationError as exc:
+        raise CleanupPermitError("stored CleanupPermit is invalid") from exc
+    if raw != _cleanup_permit_bytes(permit):
+        raise CleanupPermitError("stored CleanupPermit is not canonical bytes")
+    if (
+        permit.campaign_id != campaign_id
+        or permit.cleanup_permit_id != row["cleanup_permit_id"]
+        or permit.cleanup_permit_digest != row["cleanup_permit_digest"]
+        or permit.cleanup_dispatch_id != row["cleanup_dispatch_id"]
+        or permit.cleanup_reservation_id != row["cleanup_reservation_id"]
+        or permit.cleanup_reservation_digest != row["cleanup_reservation_digest"]
+        or permit.source_action_permit_id != row["source_action_permit_id"]
+        or permit.source_action_permit_digest != row["source_action_permit_digest"]
+        or permit.envelope_id != row["envelope_id"]
+        or permit.envelope_digest != row["envelope_digest"]
+        or permit.cleanup_request_id != row["cleanup_request_id"]
+        or permit.cleanup_request_digest != row["cleanup_request_digest"]
+        or permit.decision_id != row["decision_id"]
+        or permit.decision_digest != row["decision_digest"]
+        or permit.snapshot.snapshot_id != row["snapshot_id"]
+        or permit.snapshot.snapshot_digest != row["snapshot_digest"]
+        or permit.snapshot.revision != row["revision"]
+        or permit.snapshot.event_log_head_digest != row["event_log_head_digest"]
+        or permit.snapshot.projection_digest != row["projection_digest"]
+        or permit.request_id != row["request_id"]
+        or permit.request_digest != row["request_digest"]
+        or permit.capability.capability_digest != row["cleanup_capability_digest"]
+        or permit.target_digest != row["target_digest"]
+        or permit.cleanup_handler_digest != row["cleanup_handler_digest"]
+        or permit.cleanup_executor_digest != row["cleanup_executor_digest"]
+        or permit.cleanup_plan_digest != row["cleanup_plan_digest"]
+        or permit.issued_at.isoformat() != row["issued_at"]
+        or permit.consumed_at.isoformat() != row["consumed_at"]
+        or permit.expires_at.isoformat() != row["expires_at"]
+    ):
+        raise CleanupPermitError("stored CleanupPermit index differs from payload")
     return permit
 
 

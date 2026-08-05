@@ -157,12 +157,15 @@ action dispatchable again.
 
 ## Remaining boundary
 
-PERMIT-004B must introduce the separate typed cleanup request and bounded one-shot cleanup Permit
-with aggregate ordinary-plus-cleanup Campaign budget accounting before any write-capable
-Capability can pass this gate. SUP-007 must later compose the existing PERMIT-003 callback, Grant,
-RunStore, Gateway, Worker, and this post-dispatch gate without adding another execution authority.
-The production outcome input authority and its canonical managed Run mapping remain SUP-007
-composition responsibilities and part of the deployment TCB.
+PERMIT-004B1 now supplies the separate typed cleanup request, pre-action cleanup budget hold, and
+bounded one-shot CleanupPermit in the existing GRAPH authority. This no-write gate deliberately
+remains unchanged. PERMIT-004B2 must reuse its sealed result-authentication core for a
+`reversible-write + cleanupRequired=true` path, exact-rebuild the current Handler plan, prove an
+exact pre-action hold, dispatch a distinct cleanup Capability, and authenticate restored state.
+SUP-007 must later compose the existing PERMIT-003 callback, Grant, RunStore, Gateway, Worker, and
+post-dispatch gates without adding another execution authority. The production outcome input
+authority and its canonical managed Run mapping remain SUP-007 composition responsibilities and
+part of the deployment TCB.
 
 ## Related documents
 
@@ -170,4 +173,5 @@ composition responsibilities and part of the deployment TCB.
 - [CAP-002 contract](../capability/CAP-002-metadata-code-backed-authority-interfaces.md)
 - [CAP-005 contract](../capability/CAP-005-existing-mode-tool-replay-adapters.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
+- [PERMIT-004B1 contract](PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

@@ -113,14 +113,23 @@ SQLite integrity and then revalidates:
 - the complete Event hash chain and admitted-node index;
 - every stored Projection against its exact Event prefix;
 - the Snapshot predecessor chain and embedded published Projection; and
-- every consumed ActionPermit against its Snapshot and pinned compiler writer.
+- every consumed ActionPermit against its Snapshot and pinned compiler writer;
+- every cleanup reservation against its exact source ActionPermit and pinned compiler writer; and
+- every consumed CleanupPermit against its reservation, source ActionPermit, Snapshot, and writer.
 
 The database is bounded to 256 MiB. A canonical
-`pajin.dev/sqlite-graph-backup-manifest/v1alpha1` sidecar binds its SHA-256, byte length, Campaign,
-schema, Event head, current Projection, Snapshot head, and Permit head. Both files use private
+`pajin.dev/sqlite-graph-backup-manifest/v1alpha2` sidecar binds its SHA-256, byte length, Campaign,
+schema, Event head, current Projection, Snapshot head, ActionPermit head, cleanup-reservation head,
+and CleanupPermit head. Both files use private
 temporary files, file `fsync`, exclusive hard-link publication that cannot replace an existing
 leaf, and parent-directory `fsync` on POSIX. A crash can leave at most one half of the pair; restore
 requires both and therefore treats such output as incomplete.
+
+Schema v3 adds the fingerprinted append-only cleanup reservation and CleanupPermit tables from
+PERMIT-004B1. Exact schema v1 and v2 databases migrate transactionally to v3 without fabricating
+cleanup rows. Restore retains a strict v1alpha1/schema-v2 manifest reader: it verifies the legacy
+database and logical state first, migrates only the private destination copy, verifies that cleanup
+authority remains empty, and then publishes. The backup source is never migrated in place.
 
 `SQLiteGraphStore.restore_backup()` strictly parses and content-address verifies the manifest,
 checks the exact database digest, repeats the complete logical-state verification, compares that
@@ -136,6 +145,12 @@ then signs a domain-separated canonical statement with an externally supplied Ed
 statement binds the complete plaintext backup manifest, encryption-key ID, nonce, ciphertext
 digest, and ciphertext length. The published pair contains ciphertext and a signed manifest;
 neither the 32-byte encryption key nor the Ed25519 private key is serialized.
+
+Schema-v3 producers use explicit `pajin.dev/sqlite-graph-retained-backup/v1alpha2` statement and
+`pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha2` detached-manifest wires, v2 signature
+and AEAD domains, and only the v1alpha2 low-level manifest. Verification also retains an exact
+historical v1alpha1 outer reader that accepts only the original schema-v2 low-level manifest and v1
+cryptographic domains. A v1alpha1 outer wire is never reinterpreted with a v1alpha2 embedded shape.
 
 `restore_retained_backup()` requires the expected external encryption key and ID plus an
 out-of-band trusted Ed25519 public-key set. Signature verification precedes ciphertext read and

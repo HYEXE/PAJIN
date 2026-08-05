@@ -38,7 +38,7 @@ compiler identity, canonical permit and dispatch IDs, and a short authority wind
 the Envelope. Its ID excludes clock values, so an exact response-loss retry resolves the stored row
 but returns `newlyConsumed=false` and cannot redispatch.
 
-## SQLite schema v2
+## SQLite schema v2 and cleanup extension v3
 
 GRAPH-005 schema v1 gains two append-only tables:
 
@@ -53,6 +53,17 @@ material.
 
 Migration first verifies the exact v1 schema and fingerprint. It preserves every Event, Projection,
 and Snapshot and never fabricates Permit authority.
+
+PERMIT-004B1 advances the same database to schema v3 without changing the ActionProposal or
+ActionPermit wires. It adds append-only `graph_action_cleanup_reservations` and
+`graph_cleanup_permits` tables but reuses the existing Campaign-pinned compiler writer. A separate
+reversible-action transaction commits the ordinary ActionPermit and cleanup capacity together;
+ordinary Action claims now include all cleanup holds in the same Envelope budget. CleanupPermit
+claim consumes that held capacity exactly once and does not charge it again. Exact v1 and populated
+v2 stores migrate to v3 only after fingerprint validation and receive no fabricated cleanup rows.
+The two additive public claim authorities require external reversible-definition and sealed-cleanup
+input authorities, respectively; the GRAPH layer supplies no permissive default or production
+source authenticator.
 
 ## Final authority transaction
 
@@ -136,6 +147,10 @@ reconciliation, and execute the retry Worker zero times.
 
 The concentrated Capability/Graph regression suite on Windows is `163 passed, 2 skipped`;
 the skips are the existing POSIX symlink/hard-link semantics checks.
+
+The additive PERMIT-004B1 suite also covers atomic Action-plus-hold rollback, call/unit/cost/rolling
+budget aggregation, cross-instance one-winner races, one-shot cleanup uncertainty, cleanup-ledger
+tampering, v1/v2-to-v3 migration, v3 backup/restore, and legacy v2 backup destination migration.
 
 ## Remaining boundaries
 

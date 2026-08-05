@@ -3,6 +3,25 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## PERMIT-004B1 generic CleanupRequest 입력 권위와 schema v3 rollback 경계
+
+- 상태: 의도적으로 분리된 GRAPH cleanup authority substrate
+- 현재 보장: reversible Action callback 전에 ordinary ActionPermit과 distinct cleanup Capability capacity를
+  같은 SQLite transaction에서 커밋하고, ActionPermit + cleanup hold를 같은 Envelope call/unit/cost/rolling
+  budget에 합산한다. exact stored Action·hold·latest Snapshot·request를 다시 검증한 별도 CleanupPermit만
+  cleanup callback을 한 번 호출할 수 있다. reversible claim과 cleanup claim은 각각 필수 외부 input authority를
+  claim 전후 호출하며 permissive 기본 구현이 없다. v1/v2 store와 legacy v2 backup은 source 검증 뒤 v3
+  destination으로 migration하며 cleanup authority를 backfill하지 않는다.
+- 제한: generic `CleanupRequest`의 outcome·Run/audit 좌표와 Handler plan digest가 실제 sealed write result와
+  current CAP-002 Handler에서 왔는지는 이 GRAPH slice가 독립적으로 인증하지 않으며, 두 input authority의
+  production 구현은 아직 없다. current production inventory에는 reversible-write Capability가 없으며 positive
+  path는 격리된 authority fixture다. schema v3를 만든 뒤 v2 code로 direct downgrade할 수 없고,
+  expired·abandoned cleanup hold도 자동 release하지 않는다.
+- 해소 조건: PERMIT-004B2에서 PERMIT-004A result authentication core, current Handler·Executor와 distinct
+  cleanup Capability mapping, pre-action hold, fresh Grant/Gateway dispatch, cleanup terminal evidence와 actual
+  restored state를 exact-rebuild한다. operational release/recovery가 필요하면 별도 authority와 v3-aware
+  export/restore 절차를 정의한다.
+
 ## PERMIT-003 외부 Envelope·Decision·비용 권위 경계
 
 - 상태: 의도적으로 분리된 direct-call Permit bridge

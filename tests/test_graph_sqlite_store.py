@@ -372,6 +372,12 @@ def test_signed_encrypted_retained_backup_restores_from_detached_process(
         created_at=NOW + timedelta(seconds=5),
     )
 
+    assert manifest.api_version == (
+        "pajin.dev/sqlite-graph-retained-backup-manifest/v1alpha2"
+    )
+    assert manifest.statement.api_version == (
+        "pajin.dev/sqlite-graph-retained-backup/v1alpha2"
+    )
     ciphertext = retained.read_bytes()
     assert retained.is_file()
     assert sqlite_graph_retained_backup_manifest_path(retained).is_file()

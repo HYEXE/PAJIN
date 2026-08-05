@@ -660,10 +660,17 @@ output projections until the gate exact-rebuilds every predecessor. The current 
 must return `None`. Executor Adapter identity is bound without preparing a second Worker job. Network-none
 execution must have no observed egress; egress-proxy execution requires both Definition permission
 and host-trusted proxy observation, while semantic information-flow attestation remains false.
-The current `none`/`read-only`, cleanup-not-required inventory is supported; write and
-cleanup-required actions remain fail closed until PERMIT-004B supplies a separate one-shot cleanup
-Permit and aggregate GRAPH budget authority. SUP-007 still owns default Grant/Gateway/Worker
-composition.
+The current `none`/`read-only`, cleanup-not-required inventory is supported. PERMIT-004B1 adds the
+GRAPH substrate for a reversible write without changing that inventory: a separate reversible
+claim atomically commits the ordinary ActionPermit plus one cleanup budget hold, and a
+domain-separated CleanupPermit can consume that hold exactly once under the same writer, Snapshot,
+and aggregate Envelope budget. Schema v3 fingerprints both cleanup ledgers and preserves verified
+v1/v2 migration plus strict legacy backup restore; new retained outer wires advance to v1alpha2
+instead of changing the v1alpha1 payload shape. Both B1 claim authorities require injected input
+authorities with no default. The generic CleanupRequest contains only declared outcome and
+Handler-plan coordinates until PERMIT-004B2 supplies their sealed/current-role exact-rebuild,
+dispatches a distinct cleanup Capability, and authenticates restored state. SUP-007 still owns default
+Grant/Gateway/Worker composition.
 
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
