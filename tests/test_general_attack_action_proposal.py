@@ -102,6 +102,8 @@ def _surface_sources(
     method: str = "POST",
     arguments: Mapping[str, JsonValue] | None = None,
     bind_campaign_digest: bool = True,
+    tool_id: str = TOOL_ID,
+    risk_tier: str | int = "T1",
 ):
     hypothesis = AttackHypothesis(
         compiler_id="pajin.discovery.registered-hypothesis-compiler.v1",
@@ -113,9 +115,9 @@ def _surface_sources(
         threat_class="A02",
         statement="A tainted document may influence an MCP tool call.",
         expected_observable="A registered tool result is captured as sealed evidence.",
-        required_tool_id=TOOL_ID,
+        required_tool_id=tool_id,
         required_tool_version="1.0.0",
-        risk_tier="T1",
+        risk_tier=risk_tier,
         estimated_cost_usd=0,
         success_condition="The bounded probe returns the registered synthetic marker.",
     )
@@ -132,7 +134,7 @@ def _surface_sources(
     request = ToolRequest(
         request_id="planned-action-request",
         agent_id=f"hypothesis-specialist:{hypothesis.hypothesis_id[-32:]}",
-        tool_id=TOOL_ID,
+        tool_id=tool_id,
         target="https://staging.example.invalid/api/chat",
         method=method,
         arguments=(HOSTILE_ARGUMENTS if arguments is None else dict(arguments)),
@@ -191,6 +193,8 @@ def _proposal(
         projection_digest=projection_digest,
         method=method,
         arguments=arguments,
+        tool_id=selected.tool.tool_id,
+        risk_tier=selected.risk_tier,
     )
     proposal = build_general_attack_action_proposal(
         campaign,

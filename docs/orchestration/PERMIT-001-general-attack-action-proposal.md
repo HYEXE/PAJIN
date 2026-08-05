@@ -102,13 +102,17 @@ compatible ORCH Snapshot reader for already sealed strengthened records. Otherwi
 must remain non-executable historical artifacts. Serialized PERMIT-001 records remain historical
 non-executable proposals and cannot be consumed by GRAPH-006.
 
-## Remaining boundary
+## Downstream boundary
 
 PERMIT-001 does not invoke a Capability materializer or action compiler and does not create a
 `ToolRequest`. PERMIT-002 consumes it only after exact source rebuild and compiles a non-expanding
-request through the exact code-backed Materializer and Action Compiler. PERMIT-003 must then reuse
-the existing GRAPH-006 atomic single-use Permit rather than introducing another Permit store or
+request through the exact code-backed Materializer and Action Compiler. PERMIT-003 exact-rebuilds
+that intent, requires current signed activation and external run/Decision/fixed-point cost
+authority, derives request units and the existing reservation from the current activated
+Definition, and reuses the existing GRAPH-006 atomic single-use Permit without another store or
 dispatcher.
+PERMIT-004 remains responsible for post-dispatch Oracle, side-effect, data-flow, and cleanup
+authority.
 
 ## Related documents
 
@@ -116,6 +120,7 @@ dispatcher.
 - [ADR-0047: MissionEnvelope and ActionPermit Algebra](../adr/0047-mission-envelope-and-action-permit-algebra.md)
 - [ORCH-001 contract](ORCH-001-surface-snapshot-plan-task-binding.md)
 - [PERMIT-002 contract](PERMIT-002-deterministic-action-compiler.md)
+- [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
 - [SUP-003 contract](SUP-003-typed-non-executable-supervisor-proposal.md)
 - [SUP-006 contract](SUP-006-adversarial-prompt-injection-regression.md)
 - [CAP-001 contract](../capability/CAP-001-versioned-capability-definition.md)

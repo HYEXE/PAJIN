@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `PERMIT-003` Exact Single-use ActionPermit
+- 현재 우선순위: `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
 
 ## 제품 목표
 
@@ -592,15 +592,30 @@ authority set을 연속 두 번 관찰하며 역할별 stable-context 수집 중
 마지막 context-free declared-identity sweep으로 지연 scalar drift를 거부하며, 등록 adapter의
 stable-context provider는 side-effect-free인 code-owned TCB라는 전제를 유지한다.
 release·activation·Grant·Envelope·
-Graph Decision·reservation·GRAPH proposal·Permit·execution은 absent/false다. 다음 `PERMIT-003`은 이 intent를
-현재 release/activation, 기존 run-level MissionEnvelope, 외부 current Graph Decision과 trusted reservation에
-교차 결박한 뒤 기존 GRAPH-006 atomic single-use Permit 경로만 사용해야 한다.
+Graph Decision·reservation·GRAPH proposal·Permit·execution은 absent/false다. `PERMIT-003`은 이 intent를
+complete source에서 exact-rebuild하고 current signed CAP-005 activation에서 같은 code-backed Capability를
+resolve한 뒤 CAP-002 preparation을 다시 실행한다. 일반 공격용 Envelope producer·Decision provenance
+registry·generic price authority가 아직 없으므로 외부 `GeneralAttackActionPermitInputAuthority`가 기존
+run-level MissionEnvelope, Decision actor/provenance와 trusted strict-integer fixed-point cost를 공급해야 한다.
+provider에는 canonical deep-detached predecessor만 전달해 gate-owned intent·prepared action·Campaign·
+Definition을 변조할 수 없게 한다. gate는 current Campaign authorization/testing window와 Envelope
+duration·autonomy·risk·Tool-call·cost·rate ceiling을 감쇠하고, request-unit은 activated Definition에서 직접
+파생한다. 외부 호출 뒤 activation을 다시 resolve한 다음 exact Capability·Target, Decision kind/payload와
+Envelope budget을 검증하고 기존 GRAPH-006
+ActionProposal·SQLite atomic Permit authority·first-consumption dispatcher만 사용한다. async callback만 claim
+전에 허용하며 Campaign-aware final claim clock이 SQLite와 같은 시각으로 authorization/testing window를
+재검증한다. gate 하나는 exact Envelope와 activation set에 고정되고 exact retry는 consumer를 다시 호출하지
+않으며 stale Graph와 cross-Envelope replay는 기존 final transaction에서 거부된다. 새 wire·store·default
+workflow·Gateway·Worker·Oracle·cleanup 실행은 없다.
+다음 `PERMIT-004`는 embedded PERMIT-001 side-effect·data-flow·cleanup 의미를 current CAP-002
+Success Oracle·Cleanup Handler와 별도 cleanup authority에 결박하되 이미 소비된 ActionPermit을 실행 결과
+권위로 오인하거나 자동 redispatch하지 않아야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
 - [x] `PERMIT-001` 일반 공격 ActionProposal
 - [x] `PERMIT-002` Deterministic Action Compiler
-- [ ] `PERMIT-003` Exact Single-use ActionPermit
+- [x] `PERMIT-003` Exact Single-use ActionPermit
 - [ ] `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
 - [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
 - [ ] `SUP-007` opt-in T0/T1 실행

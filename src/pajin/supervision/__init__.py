@@ -7,6 +7,13 @@ from pajin.supervision.action_compiler import (
     compile_general_attack_action_intent,
     verify_general_attack_compiled_intent,
 )
+from pajin.supervision.action_permit import (
+    GeneralAttackActionPermitError,
+    GeneralAttackActionPermitGate,
+    GeneralAttackActionPermitInputAuthority,
+    GeneralAttackActionPermitInputs,
+    GeneralAttackActionPermitResult,
+)
 from pajin.supervision.action_proposal import (
     GENERAL_ATTACK_ACTION_PROPOSAL_API_VERSION,
     GeneralAttackActionProposal,
@@ -127,6 +134,11 @@ __all__ = [
     "SUPERVISOR_SNAPSHOT_INPUT_API_VERSION",
     "SUPERVISOR_TYPED_PROPOSAL_API_VERSION",
     "GeneralAttackActionCompilerError",
+    "GeneralAttackActionPermitError",
+    "GeneralAttackActionPermitGate",
+    "GeneralAttackActionPermitInputAuthority",
+    "GeneralAttackActionPermitInputs",
+    "GeneralAttackActionPermitResult",
     "GeneralAttackActionProposal",
     "GeneralAttackActionProposalError",
     "GeneralAttackCleanupRequirement",

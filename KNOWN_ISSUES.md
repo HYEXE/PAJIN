@@ -3,6 +3,29 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## PERMIT-003 외부 Envelope·Decision·비용 권위 경계
+
+- 상태: 의도적으로 분리된 direct-call Permit bridge
+- 현재 보장: complete PERMIT-001/002·ORCH·CAP-001/002 source를 exact-rebuild하고 current signed CAP-005
+  activation에서 request를 다시 prepare한다. 외부 authority가 공급한 기존 run-level MissionEnvelope,
+  current Graph Decision과 strict-integer cost도 current Campaign authorization/testing window, Envelope
+  duration·autonomy·risk·Tool-call·cost·rate ceiling에 감쇠한다. request-unit은 activated Definition에서 직접
+  파생하고 외부 호출 뒤 signed activation을 재검증한 다음 exact Capability·Target·Decision payload·Envelope
+  budget에 교차 검증해 기존 GRAPH-006 SQLite atomic Permit과 first-consumption dispatcher만 사용한다.
+  provider에는 canonical deep-detached predecessor copy만 전달해 gate-owned request·Campaign 변조를 막는다.
+  exact retry는 consumer를 한 번만 호출하고 stale Graph는 final transaction에서 거부된다. Campaign-aware
+  final claim clock은 provider 지연 중 authorization 또는 testing window가 닫힌 경우도 SQLite consumption
+  전에 거부한다. synchronous callback과 외부 authority 운영 실패는 Permit claim 전에 typed fail-closed
+  오류로 거부된다.
+- 제한: 일반 공격용 verified Envelope producer, Graph Decision actor/provenance registry와 generic trusted
+  micro-USD pricing service가 아직 없다. 따라서 `GeneralAttackActionPermitInputAuthority`는 deployment가
+  공급하는 code-owned 또는 외부-backed TCB이며 그 구현의 잘못된 인증을 gate가 암호학적으로 보정한다고
+  주장하지 않는다. default workflow, Gateway, Worker, Grant·Run audit, Success Oracle과 cleanup은 연결되지
+  않았다. Permit callback 실패는 consumed terminal이고 자동 redispatch하지 않는다.
+- 해소 조건: PERMIT-004에서 side-effect·data-flow·Oracle·cleanup authority를 결박하고, SUP-007에서 current
+  Grant·Run audit·Gateway·Worker와 조직이 승인한 Envelope·Decision·pricing provider를 명시적 T0/T1 opt-in
+  composition으로 연결한다.
+
 ## SUP-004A model input 크기 경계
 
 - 상태: SUP-004B actual invocation 전에 versioned input transport가 필요한 활성 계약 경계

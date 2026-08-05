@@ -120,13 +120,14 @@ Rollback removes the new compiler module and consumers while retaining the gener
 correctness hardening. Serialized PERMIT-002 records remain non-executable historical intent and
 cannot be reinterpreted as GRAPH proposals or Permits.
 
-## Remaining boundary
+## Downstream boundary
 
-PERMIT-003 must exact-rebuild the current compiled intent, verify an appropriate current
-Capability release and activation, receive an existing run-level MissionEnvelope and external
-current Graph Decision, derive an exact request-unit and trusted cost reservation, and only then
-construct the existing GRAPH-006 `ActionProposal`. It must use the existing atomic single-use
-Permit store and dispatcher rather than add another Permit or request-consumption implementation.
+PERMIT-003 exact-rebuilds the current compiled intent, verifies a current signed Capability release
+and activation, receives an existing run-level MissionEnvelope, external current Graph Decision,
+and trusted fixed-point cost through an explicit input authority, derives request units and the
+existing reservation from the current activated Definition, and only then constructs the existing
+GRAPH-006 `ActionProposal`. It uses the existing atomic single-use Permit store and dispatcher
+rather than another Permit or request-consumption implementation.
 
 PERMIT-004 remains responsible for Success Oracle, side-effect, data-flow, cleanup handler, cleanup
 plan, and cleanup Permit enforcement.
@@ -134,6 +135,7 @@ plan, and cleanup Permit enforcement.
 ## Related documents
 
 - [PERMIT-001 contract](PERMIT-001-general-attack-action-proposal.md)
+- [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
 - [CAP-001 contract](../capability/CAP-001-versioned-capability-definition.md)
 - [CAP-002 contract](../capability/CAP-002-metadata-code-backed-authority-interfaces.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)

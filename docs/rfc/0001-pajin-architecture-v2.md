@@ -629,6 +629,25 @@ digest. It remains `compiled-not-permitted`: release, activation, Grant, Envelop
 reservation, GRAPH proposal, Permit, dispatch, and execution are absent and false. PERMIT-003 must
 intersect the current intent with those later authorities before using GRAPH-006.
 
+PERMIT-003 performs that intersection as a direct-call bridge without defining another execution
+wire. It exact-rebuilds PERMIT-002, matches one current signed CAP-005 activation by complete
+code-backed identity, and re-runs the existing CAP-002 preparation path. Because no generic
+general-attack Envelope producer, Decision provenance registry, or pricing service exists yet, an
+injected external input authority must authenticate one pre-existing run-level MissionEnvelope,
+the current action-proposal Decision and actor, and a trusted strict-integer fixed-point cost. The
+provider receives canonical deep-detached predecessor copies so it cannot mutate the gate-owned
+intent, prepared action, Campaign, or Definition. The bridge independently requires current
+Campaign authorization/testing window and attenuates Envelope duration, autonomy, risk, Tool-call,
+cost, and rolling-rate ceilings. It derives request units from the activated Definition,
+revalidates activation after the external call, and requires the exact Capability, Target,
+Decision payload, and Envelope budget. It derives only the existing
+GRAPH-006 ActionProposal and uses the existing SQLite atomic Permit authority and first-consumption
+dispatcher. A Campaign-aware final claim clock checks authorization and testing-window currency at
+the same time used by SQLite. Only an async callback is accepted before claim. One gate pins one
+Envelope and activation set; exact retry never calls the consumer twice, while stale Graph and
+cross-Envelope request replay fail in the existing transaction. No default workflow, Gateway,
+Worker, Oracle, cleanup, or execution path is added; PERMIT-004 and SUP-007 retain those boundaries.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

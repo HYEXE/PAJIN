@@ -2,9 +2,9 @@
 
 - 기록일: 2026-08-05
 - 브랜치: `main`
-- 직전 원격 체크포인트: `c85cac5ad83140d87e1440ede2656c435d183963` (`PERMIT-001`)
-- 현재 구현 체크포인트: `PERMIT-002` Deterministic Action Compiler
-- 다음 구현: `PERMIT-003` Exact Single-use ActionPermit
+- 직전 원격 체크포인트: `d693ad5f68cef66dac4172f1060c752fcdd0dd6a` (`PERMIT-002`)
+- 현재 구현 체크포인트: `PERMIT-003` Exact Single-use ActionPermit
+- 다음 구현: `PERMIT-004` Side-effect·Data-flow·Cleanup Gate
 
 ## 재개 전 확인
 
@@ -21,61 +21,65 @@ git status --porcelain=v2 --branch
 
 ## 현재 구현 상태
 
-`PERMIT-002`는 PERMIT-001의 비실행 의미를 exact CAP-002 code-backed compiler에 통과시켜
-`GeneralAttackCompiledIntent`로 결박한다.
+`PERMIT-003`은 current PERMIT-002 intent와 실제 실행 ceiling을 교차 결박해 기존 GRAPH-006
+atomic single-use Permit 경로로 넘기는 direct-call bridge다.
 
-- PERMIT-001 external verifier로 current Campaign·Snapshot·Plan·Task·Hypothesis·Target·Scope·Definition을
-  완전히 다시 연 뒤에만 compiler를 선택한다.
-- caller가 지정한 exact `CodeBackedCapabilityRef`를 complete 7-role `CapabilityAuthorityRegistry`에서 resolve하고
-  registered Materializer와 Action Compiler wrapper만 각각 한 번 호출한 뒤 complete set을 다시 resolve한다.
-  Registry는 연속 두 complete observation, stable-context 수집 전후의 역할 identity 고정과 마지막
-  context-free declared-identity sweep을 요구한다.
-- request ID는 source proposal digest, authority-set ref, Materializer/Compiler authority digest에서 fresh하게
-  파생한다. 과거 ORCH Specialist request ID를 재사용하지 않는다.
-- target·Tool은 current Campaign/Definition에서 다시 열고 method·arguments는 source proposal에서만 온다.
-  materialized arguments와 compiled request는 JSON scalar type까지 canonical byte equality를 요구한다.
-- 기존 Gateway request digest와 CAP-002 normalized-parameter digest를 재사용하고, complete source proposal·
-  authority-set·selected binding·request와 함께 intent digest에 결박한다.
-- release·activation·Graph Capability·Grant·MissionEnvelope·Graph Decision·reservation·GRAPH ActionProposal·
-  Permit·dispatch·execution은 생성하지 않고 관련 authority flag는 literal false다.
-- cross-source/compiler substitution, self-consistent ToolRequest forgery, materializer default/argument expansion,
-  bool/int/float argument type substitution, 정·역방향 cross-role 및 self-identity drift, compiler target expansion,
-  post-compilation authority 주입은 fail closed한다.
+- complete PERMIT-001·ORCH·CAP-001/002 source를 다시 열어 `GeneralAttackCompiledIntent`를 exact-rebuild한다.
+- current CAP-005 activation에서 complete `CodeBackedCapabilityRef`가 같은 binding을 정확히 하나 찾고,
+  signed release를 dispatch 전후에 resolve하며 CAP-002 `prepare_action()`을 다시 실행한다.
+- source Definition Registry와 activated rollout Definition을 독립 resolve해 exact equality를 요구한다.
+- prepared activation-set·release·GRAPH Capability·request·request/parameter digest와 canonical request bytes가
+  compiled intent와 다르면 fail closed한다.
+- 일반 공격용 verified Envelope producer, Decision provenance registry, generic pricing service가 아직 없으므로
+  외부 `GeneralAttackActionPermitInputAuthority`가 기존 run-level MissionEnvelope, authenticated Graph
+  Decision actor/provenance와 trusted strict-integer fixed-point cost를 공급한다. 이 in-process interface는
+  새 persisted authority wire가 아니며 default 구현도 등록하지 않는다.
+- provider에는 intent·prepared action·Campaign·Definition의 canonical deep-detached copy만 전달한다. provider가
+  그 복사본을 변조해도 gate-owned request·Campaign·callback material은 바뀌지 않으며 forged Envelope는
+  current source digest 교차 검증에서 거부된다.
+- gate는 외부 결과를 canonicalize하고 current Campaign authorization/testing window와 Envelope
+  duration·autonomy·risk·Tool-call·cost·rate ceiling을 감쇠한다. request-unit은 activated Definition에서 직접
+  파생하고 Decision kind/payload/Snapshot Campaign, exact Capability·Target과 budget을 다시 검증한다.
+- 외부 authority 호출 뒤 exact signed activation을 다시 resolve한다. provider 운영 예외와 synchronous
+  callback은 Permit claim 전에 typed fail-closed 오류로 거부한다.
+- 기존 `pajin.dev/action-proposal/v1alpha2`, `GraphActionPermitAuthority`, SQLite Permit store와
+  `GraphActionPermitDispatcher`만 사용한다. Campaign-aware final claim clock은 SQLite와 같은 시각으로
+  authorization/testing window를 다시 검사한다. 새 Envelope·Proposal·Permit·store·ledger·dispatcher가 없다.
+- gate 하나는 exact Envelope digest와 activation-set digest에 고정된다. exact retry는 같은 consumed Permit을
+  반환하고 consumer를 다시 호출하지 않는다. stale/unreconciled Graph는 기존 final transaction에서 거부된다.
+- first-consumption callback은 exact current `PreparedCapabilityAction`, derived `ActionProposal`, consumed Permit을
+  함께 받는다. default workflow, Gateway, Worker, Grant·Run audit, Success Oracle·cleanup은 아직 연결하지 않는다.
 
 핵심 위치:
 
+- `src/pajin/supervision/action_permit.py`
 - `src/pajin/supervision/action_compiler.py`
-- `src/pajin/supervision/action_proposal.py`
-- `src/pajin/capabilities/authorities.py`
 - `src/pajin/capabilities/activation.py`
+- `src/pajin/graph/authority.py`
+- `src/pajin/graph/sqlite_store.py`
+- `tests/test_general_attack_action_permit.py`
 - `tests/test_general_attack_action_proposal.py`
-- `docs/orchestration/PERMIT-002-deterministic-action-compiler.md`
-- `docs/orchestration/PERMIT-001-general-attack-action-proposal.md`
-- `docs/adr/0129-bind-cap002-compilation-before-graph-authority.md`
+- `docs/orchestration/PERMIT-003-exact-single-use-action-permit.md`
+- `docs/adr/0130-reuse-graph-permit-at-the-general-attack-boundary.md`
 
 ## 현재 검증
 
-- General Attack Compiler·CAP-002 authority 집중 회귀: 58 passed
-- ORCH·Replanning·PERMIT 집중 회귀: 75 passed
-- General Attack·CAP-001/002·Definition·existing adapter 인접 회귀: 73 passed
-- Capability rollout·GRAPH-006·Engine Gate·Replay·Supervisor 통합 회귀: 153 passed
+- PERMIT-003 신규 성공·음성 경계: 23 passed
+- PERMIT-001/002/003·CAP-005·GRAPH-006·Common Engine 인접 회귀: 113 passed
+- ORCH·PERMIT·CAP-001/002·Replay·Supervisor 확장 회귀: 234 passed
 - Ruff 전체: 통과
-- Linux 대상 strict mypy: 248 source files 통과
-- 신규 compiler·export·변경 테스트 Python 4개 Ruff formatter check: 통과
-- `src/pajin/capabilities/authorities.py` formatter: HEAD에도 존재하는 기존 Ruff baseline 불일치를
-  재포맷하지 않고 관련 hunk만 유지, Ruff lint 통과
-- `git diff --check`: 통과
+- Linux 대상 strict mypy: 249 source files 통과
 - 전체 pytest: 190 passed, 3 skipped 뒤 기존 registry distribution bundle 만료로 중단
   (`test_benchmark_single_agent_measurement.py`; 현재 시각 2026-08-05가 fixture 만료 시각을 지남)
-- 독립 품질·trust·계약 리뷰: JSON scalar equality·ordered/late identity drift·typed error 경계를 수정한 뒤
-  세 관점 모두 잔존 P0-P2 없음
+- 기존 GRAPH-006 concurrency·crash·exact retry 테스트를 변경 없이 재사용했고 신규 stale-Graph bridge 회귀도
+  통과했다.
+- 독립 계약·품질·trust 검토에서 provider 지연 중 testing-window 종료와 live-reference 변조를 보완한 뒤
+  세 관점 모두 잔존 P0-P2 없음으로 재확인했다.
 
 ```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_discovery_hypothesis.py tests\test_discovery_replanning.py tests\test_general_attack_action_proposal.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_general_attack_action_proposal.py tests\test_capability_authorities.py tests\test_existing_capability_adapters.py tests\test_capability_definition.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_existing_capability_rollout.py tests\test_graph_action_permit.py tests\test_engine_execution_gate.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_replay_models.py tests\test_replay_compiler.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_supervisor_proposal_compiler.py tests\test_supervisor_adversarial_prompt_injection.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_general_attack_action_permit.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_general_attack_action_proposal.py tests\test_general_attack_action_permit.py tests\test_existing_capability_rollout.py tests\test_graph_action_permit.py tests\test_engine_execution_gate.py
+.\.venv\Scripts\python.exe -m pytest -q tests\test_discovery_hypothesis.py tests\test_discovery_replanning.py tests\test_general_attack_action_proposal.py tests\test_general_attack_action_permit.py tests\test_capability_authorities.py tests\test_capability_definition.py tests\test_existing_capability_adapters.py tests\test_replay_models.py tests\test_replay_compiler.py tests\test_supervisor_proposal_compiler.py tests\test_supervisor_adversarial_prompt_injection.py
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src
 .\.venv\Scripts\python.exe -m pytest -x -q
@@ -87,37 +91,44 @@ git diff --check
 
 ## 핵심 신뢰 경계
 
-- `GeneralAttackCompiledIntent`의 `ToolRequest`는 typed request material이지 Grant나 Permit이 아니다.
-- `CodeBackedCapabilityRef`는 complete code identity이지만 signed release, activation 또는 GRAPH registration이 아니다.
-- exact equality 규칙은 Materializer가 default를 추가하거나 bool/int/float 타입을 치환하는 것도 expansion으로
-  거부한다. normalization 정책은 별도 versioned contract 없이는 완화하지 않는다.
-- CAP-002 adapter와 side-effect-free `stable_execution_context()`는 code-owned TCB다. observed drift는
-  거부하지만 같은 process의 Byzantine Python adapter를 sandbox한다고 주장하지 않는다.
-- request identity는 source+compiler authority에 결박되지만 Gateway, Worker 또는 Permit consumer는 이 module에서
-  호출되지 않는다.
-- expected evidence·risk·side-effect·cleanup은 embedded PERMIT-001 의미로 보존할 뿐 Oracle, Replay, Cleanup,
-  Executor role을 호출하지 않는다.
+- `GeneralAttackActionPermitInputAuthority` implementation은 existing Envelope provenance, Decision actor와
+  micro-USD cost의 composition trust root다. gate는 그 결과의 교집합과 exact propagation을 검증하지만 잘못된
+  provider 자체를 signature 없이 교정한다고 주장하지 않는다.
+- canonical MissionEnvelope·GraphDecision·ActionBudgetReservation의 self-digest는 producer provenance가 아니다.
+  raw 모델이나 caller integer를 직접 신뢰 입력으로 승격하지 않는다.
+- request-unit은 current activated CAP-001 Definition에서만 gate가 직접 파생한다. cost는 외부
+  trusted/conservative policy가 strict integer로 공급하고 Campaign과 Envelope ceiling이 다시 제한한다.
+- GraphDecision은 `action-proposal` kind와 exact intent payload를 요구하고 proposer는 authenticated actor에서만
+  복사한다. latest Snapshot은 preflight가 아니라 기존 SQLite final transaction에서 검증한다.
+- ActionPermit은 issuance 때 consumed다. 미리 발급·보관하지 않으며 callback failure나 uncertain outcome을
+  자동 redispatch하지 않는다.
+- callback에 prepared request를 직접 전달해 downstream이 stale caller closure에서 request material을 다시
+  만들지 않게 한다. 그러나 Gateway Grant·Run audit 검증과 actual Worker dispatch는 SUP-007 책임이다.
+- expected evidence·risk·side-effect·cleanup은 embedded PERMIT-001 의미로 유지하지만 Success Oracle, Replay,
+  Cleanup Handler, Executor role은 PERMIT-004 전까지 호출하지 않는다.
 
 ## 다음 작업의 첫 단계
 
-`PERMIT-003`은 compiled intent와 실제 실행 ceiling을 교차 결박해 기존 GRAPH-006 atomic Permit 경로로
-넘기는 최소 bridge를 구현해야 한다.
+`PERMIT-004`는 consumed action과 후속 결과 처리 사이의 side-effect·data-flow·cleanup authority를 최소
+수직 슬라이스로 결박해야 한다.
 
-1. CAP-004/005 release·activation, 기존 run-level MissionEnvelope, external Graph Decision/Snapshot, trusted
-   request-unit·cost authority와 GRAPH-006 소비 경계를 먼저 재인벤토리한다.
-2. current PERMIT-002 intent를 complete source+CAP-002 registry로 다시 compile해 exact equality를 요구한다.
-3. action마다 새 Envelope를 만들지 않고 기존 run-level ceiling을 사용하며 external Decision kind/payload/
-   actor와 latest Snapshot을 exact 검증한다.
-4. current activation에서 exact GRAPH Capability를 resolve하고 definition request-unit cost와 trusted cost로만
-   reservation을 만든 뒤 기존 `pajin.graph.ActionProposal`을 파생한다.
-5. 새 Permit store/dispatcher 없이 기존 SQLite atomic single-use authority와 first-consumption dispatcher만 쓴다.
+1. CAP-002 Success Oracle·Side-effect Class·Cleanup Handler·Executor Adapter, existing `ToolResult`/Gateway
+   Outcome, cleanup plan/Permit과 관련된 현재 contract·ADR·테스트를 재인벤토리한다.
+2. PERMIT-003 callback failure가 consumed terminal이라는 GRAPH-006 계약을 보존하고, 결과가 없거나 uncertain인
+   경우 성공·cleanup 완료를 추론하지 않는다.
+3. embedded PERMIT-001 evidence·side-effect·cleanup metadata와 current activated Definition을 exact-rebuild한 뒤
+   실제 result/evidence authority의 교집합에서만 Success Oracle을 호출한다.
+4. cleanup required action에는 별도 exact cleanup request/authority와 bounded one-shot Permit을 요구하되 기존
+   ActionPermit을 cleanup 실행 권위로 재사용하거나 일반 실행 budget을 우회하지 않는다.
+5. default Supervisor activation과 T0/T1 Gateway wiring은 계속 SUP-007에 남기고, 가장 작은 direct-call
+   outcome/cleanup gate와 fail-closed 음성 경계를 먼저 구현한다.
 
 ## 알려진 경계
 
-- PERMIT-002는 signed release, activation, Graph Capability, MissionEnvelope, Graph Decision, reservation,
-  GRAPH ActionProposal, Grant, Permit 또는 execution runtime에 아직 연결되지 않았다.
-- exact-equality materialization을 만족하지 않는 existing adapter는 별도 narrowing/normalization 계약 전에는
-  일반 공격 compiled intent로 승격되지 않는다.
+- verified general-attack Envelope producer, Decision provenance registry와 generic pricing provider는 아직
+  deployment-supplied TCB다. 구체적 product composition은 SUP-007 전까지 없다.
+- Grant·matching RunStore·Gateway·Worker가 연결되지 않았으므로 PERMIT-003 테스트 callback은 product execution
+  증거가 아니라 single-consumption authority 회귀다.
 - Success Oracle과 cleanup handler/plan/Permit은 PERMIT-004 전까지 metadata-only다.
 - 전체 pytest에는 기존 Benchmark registry fixture 만료와 이후 Windows symlink 권한 제약이 남아 있다.
 - Docker daemon 상태는 이번 체크포인트에서 확인하지 않았고 real-container 검증은 수행하지 않았다.

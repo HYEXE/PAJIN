@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0130: Reuse GRAPH Permit at the General Attack Boundary](docs/adr/0130-reuse-graph-permit-at-the-general-attack-boundary.md)
 - [ADR-0129: Bind CAP-002 Compilation Before GRAPH Authority](docs/adr/0129-bind-cap002-compilation-before-graph-authority.md)
 - [ADR-0128: Bind General Attack Semantics Before Action Compilation](docs/adr/0128-bind-general-attack-semantics-before-action-compilation.md)
 - [ADR-0127: Enforce the Advertised Supervisor Draft Wire](docs/adr/0127-enforce-the-advertised-supervisor-draft-wire.md)
