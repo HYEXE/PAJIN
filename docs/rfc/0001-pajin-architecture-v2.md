@@ -551,6 +551,18 @@ Gateway reservation is still Run-local; SUP-004B3 must claim the
 intent durably and seal the exact Supervisor request/outcome/draft receipt before SUP-003 sees a
 model-backed draft.
 
+SUP-004B3 closes that durable admission boundary with one strict host-local SQLite journal and one
+dedicated two-seal Provider Run. The journal binds the exact current checkpoint to a deterministic
+stable request ID and preplanned Run, records dispatch-started before any Provider-side operation,
+and never returns automatic redispatch authority. Recovery can finalize only an already complete
+sealed receipt. The first seal freezes the Gateway reservation, sensitive evidence, and runtime
+event prefix; the second adds the complete B2 outcome, strict untrusted draft, receipt, and audit
+event. The public consumer re-verifies the current schedule, terminal journal, both seals, all raw
+Provider/Gateway sources, and Campaign-and-dedicated charge before passing the draft directly to
+SUP-003. This is a single-host journal and process-local budget boundary, not distributed
+exactly-once execution or durable ledger reconstruction, and all mutation, execution, redispatch,
+and activation authority remains false.
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

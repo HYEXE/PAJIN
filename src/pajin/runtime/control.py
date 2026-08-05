@@ -675,6 +675,11 @@ class DualModelUsageBudget:
 
         return self._campaign_budget is budget
 
+    def binds_dedicated_budget(self, budget: BudgetController) -> bool:
+        """Return whether this dual boundary charges the supplied dedicated ledger."""
+
+        return self._dedicated_budget is budget
+
     def check_tool_call(self) -> None:
         first, second = self._ordered_budgets
         with first._usage_lock, second._usage_lock:

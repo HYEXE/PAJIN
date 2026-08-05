@@ -20,6 +20,7 @@ from pydantic import (
     ConfigDict,
     Field,
     JsonValue,
+    field_serializer,
     field_validator,
     model_validator,
 )
@@ -291,6 +292,10 @@ class WeeklyTestingWindow(StrictModel):
     def require_bounded_days(cls, value: object) -> object:
         return _require_bounded_collection(value, label="testing window days", max_items=7)
 
+    @field_serializer("days", when_used="json")
+    def serialize_days(self, value: set[Weekday]) -> list[str]:
+        return sorted(day.value for day in value)
+
     @model_validator(mode="after")
     def validate_window(self) -> WeeklyTestingWindow:
         if self.start_time == self.end_time and self.start_time != time(0, 0):
@@ -379,6 +384,16 @@ class RulesOfEngagement(StrictModel):
             max_items=_MAX_CAMPAIGN_POLICY_LABELS,
         )
 
+    @field_serializer(
+        "allowed_methods",
+        "allowed_tool_categories",
+        "prohibit",
+        "stop_on",
+        when_used="json",
+    )
+    def serialize_policy_sets(self, value: set[str]) -> list[str]:
+        return sorted(value)
+
 
 class Budgets(StrictModel):
     duration_seconds: int = Field(default=600, alias="durationSeconds", ge=1, le=86_400)
@@ -464,9 +479,7 @@ class CampaignManifest(StrictModel):
 def campaign_manifest_digest(campaign: CampaignManifest) -> str:
     """Fingerprint one detached, canonical Campaign authority snapshot."""
 
-    canonical = CampaignManifest.model_validate_json(
-        campaign.model_dump_json(by_alias=True)
-    )
+    canonical = CampaignManifest.model_validate_json(campaign.model_dump_json(by_alias=True))
     payload = canonical.model_dump(mode="json", by_alias=True)
     rules = payload["spec"]["rulesOfEngagement"]
     for field_name in (

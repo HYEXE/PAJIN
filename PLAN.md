@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 6 — Supervisor Shadow Mode
-- 현재 우선순위: `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
+- 현재 우선순위: `SUP-005` Deterministic Baseline 비교
 
 ## 제품 목표
 
@@ -479,12 +479,12 @@ Gate가 닫혔다.
 - [x] `SUP-001` SupervisorModelBinding
 - [x] `SUP-002` Snapshot-only input·Target Taint
 - [x] `SUP-003` Task·Replan·Stop·Escalation Proposal
-- [ ] `SUP-004` Checkpoint Scheduler·전용 Budget
+- [x] `SUP-004` Checkpoint Scheduler·전용 Budget
   - [x] `SUP-004A` exact invocation request·sealed non-invocable checkpoint plan
-  - [ ] `SUP-004B` atomic Campaign/Supervisor budget·bound Provider receipt
+  - [x] `SUP-004B` atomic Campaign/Supervisor budget·bound Provider receipt
     - [x] `SUP-004B1` atomic Campaign/dedicated model-usage reservation
     - [x] `SUP-004B2` stable request ID·secret-free bound Provider outcome
-    - [ ] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
+    - [x] `SUP-004B3` durable Supervisor invocation journal·sealed draft receipt
 - [ ] `SUP-005` Deterministic Baseline 비교
 - [ ] `SUP-006` Adversarial Prompt Injection Regression
 
@@ -538,6 +538,15 @@ WorkerResult/Gateway/ProviderResult/evidence와 provider-reported usage·B1 cons
 transcript가 없고 모든 실행 권위가 false다. Gateway 중복 차단은 여전히 Run-local이므로 다음
 `SUP-004B3`는 intent-before-dispatch durable claim, crash-after-dispatch 분류, exact schedule/request/outcome/draft
 sealed receipt와 consumer-side 재검증을 연결한다.
+
+`SUP-004B3`는 exact SUP-004A checkpoint마다 deterministic stable request ID와 preplanned Provider Run을
+host-local SQLite journal에 먼저 결박한다. dispatch 전에 `dispatch-started-outcome-unknown`을 영속화하고,
+완전한 two-seal receipt가 없으면 재시도하지 않는다. 첫 seal은 request reservation·Gateway evidence·이벤트
+prefix를, 두 번째 seal은 full B2 outcome·strict untrusted draft·receipt event를 결박한다. consumer는 current
+schedule, terminal journal, 양쪽 seal·artifact·event와 raw Provider/Gateway source, dual budget scope를 모두
+재검증한 뒤에만 draft를 SUP-003에 직접 전달한다. Task·Plan·Scope·Capability·Permit·execution·activation은
+계속 false다. 다음 `SUP-005`는 동일 benchmark 좌표에서 결정론적 baseline과 이 sealed Shadow proposal을
+비교하되 기존 BENCH-003 measurement authority와 activation false 경계를 재사용해야 한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

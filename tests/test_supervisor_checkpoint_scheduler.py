@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -21,8 +23,18 @@ from pajin.graph import (
     InMemoryGraphSnapshotStore,
     graph_snapshot_ref,
 )
-from pajin.providers import ProviderChatRequest, ProviderChatResult, ProviderRegistration
-from pajin.runtime.store import RunStore
+from pajin.policy.capability import CapabilityLedger
+from pajin.policy.engine import PolicyEngine
+from pajin.providers import (
+    OpenAICompatibleChatTool,
+    ProviderChatRequest,
+    ProviderChatResult,
+    ProviderRegistration,
+)
+from pajin.runtime.control import BudgetController, DualModelUsageBudget
+from pajin.runtime.secrets import SecretBroker, SecretMaterial
+from pajin.runtime.store import RunStore, load_verified_run_artifacts
+from pajin.runtime.worker import WorkerJob, WorkerResult, WorkerStatus
 from pajin.supervision import (
     SUPERVISOR_DEVELOPER_MESSAGE,
     SupervisorCheckpointSchedule,
@@ -37,6 +49,15 @@ from pajin.supervision import (
     create_supervisor_snapshot_input,
     verify_supervisor_checkpoint_schedule_publication,
 )
+from pajin.supervision.invocation_journal import SupervisorInvocationJournal
+from pajin.supervision.invocation_runtime import (
+    SupervisorCheckpointInvoker,
+    SupervisorInvocationAuthorities,
+    SupervisorInvocationRuntimeError,
+    SupervisorProviderRuntime,
+    consume_supervisor_invocation,
+)
+from pajin.tools.base import ToolRegistry
 
 NOW = datetime(2026, 8, 4, 23, 30, tzinfo=UTC)
 DIGEST_A = "a" * 64
@@ -660,3 +681,664 @@ def test_provider_result_rejects_boolean_number_coercion(
 
     with pytest.raises(ValidationError):
         ProviderChatResult.model_validate(raw)
+
+
+class SupervisorDraftWorker:
+    def __init__(self, *, snapshot_id: str, snapshot_digest: str) -> None:
+        self._snapshot_id = snapshot_id
+        self._snapshot_digest = snapshot_digest
+        self.calls = 0
+
+    def stable_execution_context(self) -> dict[str, object]:
+        return {"fixture": "supervisor-draft-worker/v1"}
+
+    async def run(
+        self,
+        job: WorkerJob,
+        *,
+        secrets: list[SecretMaterial] | None = None,
+    ) -> WorkerResult:
+        assert job.command == ["openai-chat-completion"]
+        assert secrets and secrets[0].value == "supervisor-provider-secret"
+        payload = json.loads(job.stdin)
+        request = payload["request"]
+        self.calls += 1
+        draft = {
+            "apiVersion": "pajin.dev/supervisor-shadow-proposal-draft/v1alpha1",
+            "kind": "SupervisorShadowProposalDraft",
+            "snapshotId": self._snapshot_id,
+            "snapshotDigest": self._snapshot_digest,
+            "proposalKind": "replan",
+            "rationale": "Review the deterministic graph transition without changing scope.",
+            "proposalState": "untrusted-model-output-not-authorized",
+            "capabilityGranted": False,
+            "permitGranted": False,
+            "executionAuthorized": False,
+        }
+        now = datetime.now(UTC)
+        return WorkerResult(
+            execution_id=job.execution_id,
+            backend="supervisor-draft-test",
+            status=WorkerStatus.SUCCEEDED,
+            exit_code=0,
+            stdout=json.dumps(
+                {
+                    "provider_id": payload["providerId"],
+                    "response_id": f"supervisor-response-{self.calls}",
+                    "model": request["model"],
+                    "content": json.dumps(draft, separators=(",", ":")),
+                    "refusal": None,
+                    "finish_reason": "stop",
+                    "tool_calls": [],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 10,
+                        "total_tokens": 20,
+                    },
+                    "streamed": False,
+                    "chunks": 1,
+                    "target": payload["target"],
+                },
+                separators=(",", ":"),
+            ),
+            started_at=now,
+            finished_at=now,
+        )
+
+
+def _invocation_environment(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    provider: ProviderRegistration,
+    policy: SupervisorDedicatedBudgetPolicy,
+    snapshot_input,
+    binding,
+    configuration,
+    collaboration,
+    graph_store: InMemoryGraphSnapshotStore,
+    *,
+    policy_engine: PolicyEngine | None = None,
+):
+    ledger = CapabilityLedger(max_depth=campaign.spec.budgets.max_spawn_depth)
+    tool_id = f"provider.{provider.provider_id}.chat"
+    grant = ledger.issue_root(
+        campaign,
+        subject="supervisor-shadow",
+        tools={tool_id},
+        targets={str(provider.endpoint)},
+    )
+    campaign_budget = BudgetController(campaign.spec.budgets)
+    dedicated_budgets = campaign.spec.budgets.model_copy(
+        update={
+            "max_tool_calls": policy.max_model_calls,
+            "max_model_calls": policy.max_model_calls,
+            "max_model_tokens": policy.max_model_tokens,
+            "duration_seconds": policy.max_duration_seconds,
+            "max_cost_usd": policy.max_cost_usd,
+        }
+    )
+    dedicated_budget = BudgetController(dedicated_budgets)
+    dual_budget = DualModelUsageBudget(campaign_budget, dedicated_budget)
+    tools = ToolRegistry()
+    tools.register(OpenAICompatibleChatTool(provider))
+    secrets = SecretBroker()
+    secrets.register(provider.secret_ref, "supervisor-provider-secret")
+    worker = SupervisorDraftWorker(
+        snapshot_id=snapshot_input.source_snapshot_id,
+        snapshot_digest=snapshot_input.source_snapshot_digest,
+    )
+    journal = SupervisorInvocationJournal(tmp_path / "supervisor-invocations.sqlite3")
+    authorities = SupervisorInvocationAuthorities(
+        snapshot_input=snapshot_input,
+        binding=binding,
+        campaign=campaign,
+        provider_registration=provider,
+        provider_grant=grant,
+        model_revision="shadow-model-revision-2026-08-04",
+        configuration=configuration,
+        budget_policy=policy,
+        collaboration_snapshot=collaboration,
+        graph_snapshot_store=graph_store,
+    )
+    invoker = SupervisorCheckpointInvoker(
+        output_root=tmp_path / "provider-runs",
+        journal=journal,
+        provider_runtime=SupervisorProviderRuntime(
+            grant=grant,
+            ledger=ledger,
+            campaign_budget=campaign_budget,
+            dedicated_budget=dedicated_budget,
+            dual_model_usage_budget=dual_budget,
+            policy=policy_engine or PolicyEngine(),
+            tools=tools,
+            worker=worker,
+            secrets=secrets,
+        ),
+    )
+    return invoker, journal, authorities, worker, campaign_budget, dedicated_budget
+
+
+def test_supervisor_invocation_is_durable_two_seal_and_compiles_once(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, campaign_budget, dedicated_budget = (
+        _invocation_environment(
+            tmp_path,
+            campaign,
+            provider,
+            policy,
+            snapshot_input,
+            binding,
+            configuration,
+            collaboration,
+            graph_store,
+        )
+    )
+
+    first = asyncio.run(invoker.invoke(scheduled, authorities))
+    second = asyncio.run(invoker.invoke(scheduled, authorities))
+    entry = journal.inspect(first.publication.journal_entry.intent.intent_id)
+    sealed = load_verified_run_artifacts(
+        first.publication.run_path,
+        requests={},
+        expected_run_id=first.publication.receipt.provider_run_id,
+    )
+
+    assert worker.calls == 1
+    assert first == second
+    assert entry.state == "terminal-success"
+    assert sealed.verification.seal_count == 2
+    assert first.publication.receipt.budget_scope == "campaign-and-dedicated"
+    assert first.proposal.proposal.replan_mode == "deterministic-review-only"
+    assert first.proposal.execution_authorized is False
+    assert campaign_budget.snapshot()["modelCalls"] == 1
+    assert dedicated_budget.snapshot()["modelCalls"] == 1
+    serialized = first.publication.receipt.model_dump_json(by_alias=True)
+    assert provider.secret_ref not in serialized
+    assert TARGET_PROMPT not in serialized
+
+
+def test_supervisor_started_without_receipt_never_redispatches(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    claimed = journal.claim(scheduled)
+    started = journal.begin_dispatch(claimed)
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    assert worker.calls == 0
+    assert journal.inspect(started.intent.intent_id).state == ("dispatch-started-outcome-unknown")
+
+
+def test_supervisor_final_seal_recovers_journal_without_redispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, _journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    original_finalize = SupervisorInvocationJournal.finalize_success
+
+    def interrupt_finalize(self, *args, **kwargs):
+        del self, args, kwargs
+        raise SupervisorInvocationRuntimeError("simulated crash before journal terminal")
+
+    monkeypatch.setattr(
+        SupervisorInvocationJournal,
+        "finalize_success",
+        interrupt_finalize,
+    )
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    assert worker.calls == 1
+
+    monkeypatch.setattr(
+        SupervisorInvocationJournal,
+        "finalize_success",
+        original_finalize,
+    )
+    recovered = asyncio.run(invoker.invoke(scheduled, authorities))
+
+    assert worker.calls == 1
+    assert recovered.publication.journal_entry.state == "terminal-success"
+    assert recovered.proposal.execution_authorized is False
+
+
+def test_supervisor_invalid_draft_stays_unknown_and_never_redispatches(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    worker._snapshot_id = "foreign-snapshot"
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 1
+    assert entry.state == "dispatch-started-outcome-unknown"
+    assert entry.manual_review_required is True
+
+
+def test_supervisor_consumer_rejects_terminal_root_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    completion = asyncio.run(invoker.invoke(scheduled, authorities))
+    forged = replace(completion.publication, final_root_digest="f" * 64)
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        consume_supervisor_invocation(
+            forged,
+            journal=journal,
+            schedule_publication=scheduled,
+            authorities=authorities,
+        )
+
+    assert worker.calls == 1
+
+
+def test_supervisor_rejects_foreign_sealed_worker_execution_identity(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    from pajin.tools import gateway as gateway_module
+
+    original_safe_job_metadata = gateway_module.safe_job_metadata
+
+    def foreign_execution_metadata(*args, **kwargs):
+        metadata = original_safe_job_metadata(*args, **kwargs)
+        return {**metadata, "executionId": "exec_foreign"}
+
+    monkeypatch.setattr(
+        gateway_module,
+        "safe_job_metadata",
+        foreign_execution_metadata,
+    )
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 1
+    assert entry.state == "dispatch-started-outcome-unknown"
+    assert entry.manual_review_required is True
+
+
+def test_supervisor_rejects_foreign_policy_before_worker_dispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    class ForeignPolicy(PolicyEngine):
+        pass
+
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+        policy_engine=ForeignPolicy(),
+    )
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 0
+    assert entry.state == "intent-recorded"
+
+
+def test_supervisor_rejects_tool_result_not_derived_from_worker_stdout(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    original_interpret = OpenAICompatibleChatTool.interpret
+    interpretations = 0
+
+    def forged_first_interpret(self, request, result):
+        nonlocal interpretations
+        interpretations += 1
+        interpreted = original_interpret(self, request, result)
+        if interpretations != 1 or not interpreted.success:
+            return interpreted
+        provider_result = ProviderChatResult.model_validate(interpreted.data)
+        draft = json.loads(provider_result.content or "{}")
+        draft["rationale"] = "Foreign ToolResult not present in the Worker transcript."
+        forged_result = provider_result.model_copy(
+            update={"content": json.dumps(draft, separators=(",", ":"))},
+            deep=True,
+        )
+        return interpreted.model_copy(
+            update={"data": forged_result.model_dump(mode="json")},
+            deep=True,
+        )
+
+    monkeypatch.setattr(
+        OpenAICompatibleChatTool,
+        "interpret",
+        forged_first_interpret,
+    )
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 1
+    assert entry.state == "dispatch-started-outcome-unknown"
+    assert entry.manual_review_required is True
+
+
+@pytest.mark.parametrize(
+    ("event_type", "field", "foreign_value"),
+    [
+        ("secret.lease.issued", "leaseId", "lease_foreign"),
+        ("secret.lease.revoked", "reason", "foreign revocation reason"),
+    ],
+)
+def test_supervisor_rejects_foreign_secret_lease_audit_event(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    event_type: str,
+    field: str,
+    foreign_value: str,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    original_append_event = RunStore.append_event
+
+    def append_foreign_lease_event(self, emitted_type, payload=None):
+        if emitted_type == event_type:
+            payload = {**(payload or {}), field: foreign_value}
+        return original_append_event(self, emitted_type, payload)
+
+    monkeypatch.setattr(RunStore, "append_event", append_foreign_lease_event)
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 1
+    assert entry.state == "dispatch-started-outcome-unknown"
+    assert entry.manual_review_required is True
+
+
+def test_supervisor_rejects_extra_sealed_lifecycle_event(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    graph_store, _, _, collaboration = _graph(campaign)
+    runtime = _runtime(campaign, graph_store, collaboration)
+    snapshot_input, binding, provider, configuration = runtime
+    policy = _policy()
+    scheduled = _schedule(
+        SupervisorCheckpointScheduler(
+            output_root=tmp_path / "schedules",
+            budget_policy=policy,
+        ),
+        runtime,
+        campaign,
+        collaboration,
+        graph_store,
+    )
+    invoker, journal, authorities, worker, _, _ = _invocation_environment(
+        tmp_path,
+        campaign,
+        provider,
+        policy,
+        snapshot_input,
+        binding,
+        configuration,
+        collaboration,
+        graph_store,
+    )
+    original_append_event = RunStore.append_event
+
+    def append_extra_authority_event(self, event_type, payload=None):
+        event = original_append_event(self, event_type, payload)
+        if event_type == "worker.completed":
+            original_append_event(
+                self,
+                "capability.granted",
+                {"authority": "foreign", "requestId": payload["requestId"]},
+            )
+        return event
+
+    monkeypatch.setattr(RunStore, "append_event", append_extra_authority_event)
+
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+    with pytest.raises(SupervisorInvocationRuntimeError):
+        asyncio.run(invoker.invoke(scheduled, authorities))
+
+    entry = journal.claim(scheduled)
+    assert worker.calls == 1
+    assert entry.state == "dispatch-started-outcome-unknown"
+    assert entry.manual_review_required is True

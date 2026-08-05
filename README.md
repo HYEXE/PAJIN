@@ -205,6 +205,17 @@ sealed Supervisor receipt, and draft admission remain SUP-004B3 work. See the
 [SUP-004B2 contract](docs/orchestration/SUP-004B2-stable-provider-bound-outcome.md) and
 [ADR-0122](docs/adr/0122-bind-stable-provider-requests-to-secret-free-outcomes.md).
 
+SUP-004B3 completes the first actual Shadow Supervisor call. A strict host-local SQLite journal
+binds the exact SUP-004A checkpoint to a deterministic stable request ID and preplanned Provider
+Run, commits `dispatch-started-outcome-unknown` before dispatch, and never authorizes automatic
+redispatch. The Run is sealed once around the request reservation and sensitive Gateway evidence,
+then again after a content-addressed receipt binds the complete B2 outcome and untrusted draft.
+Only a terminal journal entry plus both exact seals, artifacts, events, rebuilt Provider sources,
+current schedule, and dual budget scope can feed that draft directly into SUP-003. Task, Plan,
+Scope, Capability, Permit, execution, and activation authority remain false. See the
+[SUP-004B3 contract](docs/orchestration/SUP-004B3-durable-supervisor-invocation-receipt.md) and
+[ADR-0123](docs/adr/0123-durably-claim-and-seal-supervisor-invocations.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -20,6 +20,46 @@ def test_sample_manifest_is_valid(sample_campaign: CampaignManifest) -> None:
     assert sample_campaign.spec.threat_classes == ["A01", "A02", "A04"]
 
 
+def test_campaign_set_fields_have_deterministic_json_order(
+    sample_campaign: CampaignManifest,
+) -> None:
+    payload = sample_campaign.model_dump(mode="python", by_alias=True)
+    rules = payload["spec"]["rulesOfEngagement"]
+    rules["allowedMethods"] = {"POST", "GET", "HEAD"}
+    rules["allowedToolCategories"] = {"model-provider", "chat-completions"}
+    rules["prohibit"] = {"real-user-data-access", "denial-of-service"}
+    rules["stopOn"] = {"out-of-scope-attempt", "sensitive-data-exposure"}
+    rules["testingWindows"] = [
+        {
+            "days": {"wednesday", "monday", "friday"},
+            "startTime": "09:00:00",
+            "endTime": "17:00:00",
+            "timezone": "UTC",
+        }
+    ]
+
+    serialized = CampaignManifest.model_validate(payload).model_dump(
+        mode="json",
+        by_alias=True,
+    )["spec"]["rulesOfEngagement"]
+
+    assert serialized["allowedMethods"] == ["GET", "HEAD", "POST"]
+    assert serialized["allowedToolCategories"] == [
+        "chat-completions",
+        "model-provider",
+    ]
+    assert serialized["prohibit"] == ["denial-of-service", "real-user-data-access"]
+    assert serialized["stopOn"] == [
+        "out-of-scope-attempt",
+        "sensitive-data-exposure",
+    ]
+    assert serialized["testingWindows"][0]["days"] == [
+        "friday",
+        "monday",
+        "wednesday",
+    ]
+
+
 def test_manifest_rejects_unknown_fields(sample_campaign: CampaignManifest) -> None:
     payload = sample_campaign.model_dump(mode="json", by_alias=True)
     payload["spec"]["unexpectedPrivilege"] = True

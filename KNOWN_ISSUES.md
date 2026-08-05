@@ -14,37 +14,21 @@
   Worker request ID, reservation, Gateway outcome, Provider result에 결박한 뒤 consumer-side에서 complete
   input을 재구성·검증한다.
 
-## SUP-004B2 bound outcome과 durable Supervisor invocation receipt 경계
+## SUP-004B3 host-local journal과 process-local budget 경계
 
-- 상태: SUP-004B3 실제 Supervisor model invocation 전에 해소해야 하는 durable claim·sealed receipt 공백
-- 현재 보장: SUP-004B2의 additive `chat_bound()`는 caller-owned stable ID를 actual Gateway ToolRequest에
-  그대로 주입하고, exact request/chat/Policy/Tool/Worker/Gateway/Provider sources, evidence reference,
-  provider-reported usage와 B1 conservative charge를 content-addressed secret-free outcome에 결박한다. raw
-  prompt·response·Tool arguments·endpoint·secret reference·Worker transcript는 outcome에 없다.
-- 제한: Gateway request reservation과 중복 차단은 한 Run에 한정되어 process restart나 new Run의 중복
-  dispatch를 차단하지 않는다. outcome은 반환될 뿐 아직 sealed artifact가 아니며 evidence path 뒤 raw
-  artifact bytes의 hash/seal을 증명하지 않는다. raw Gateway evidence는 여전히 complete tainted request를
-  포함하고, crash-after-dispatch와 outcome 미수신은 durable하게 분류되지 않는다. budget 원자성도 같은
-  process에서 공유하는 controller에 한정된다. generic bound call은 Campaign-only scope도 허용하며 verifier는
-  conservative token/cost bound를 재계산하지만 실제 live budget ledger의 charge 상태는 증명하지 않는다.
-- 해소 조건: `SUP-004B3`에서 intent-before-dispatch/no-automatic-redispatch SQLite journal과 exact sealed
-  schedule/request/Gateway/outcome/usage/draft receipt를 consumer-side에서 재검증한 뒤에만 SUP-003 compiler로
-  전달한다.
-
-## Capability authority 선행 import 뒤 Supervisor schema digest 순서 의존
-
-- 상태: 2026-08-04 B2 인접 회귀에서 재현한 미해결 import-order 검증 문제
-- 재현: `tests\test_capability_authorities.py`와
-  `tests\test_supervisor_checkpoint_scheduler.py`를 같은 pytest process에서 이 순서로 실행하면 Capability
-  7개는 통과한 뒤 SUP-004A 13개가 `Supervisor Model Binding Digest differs`로 실패한다.
-- 분리 결과: 두 파일은 각각 별도 process에서 통과하며, Capability authority 파일을 제외한 B2 인접
-  Provider·Gateway·Worker·Capability rollout·SUP-004A 회귀 270개도 통과한다.
-- 영향: 서로 독립적으로 유효한 schema digest가 module import 순서에 따라 달라질 수 있어 전체 회귀 묶음
-  순서에 영향을 준다. B2 stable request/outcome 동작 실패로 분류하지 않지만 Supervisor binding의
-  결정론적 schema registry 보장은 별도 수정이 필요하다.
-- 임시 검증: 원인 수정 전 두 파일을 별도 pytest process에서 실행한다.
-- 해소 조건: registered Supervisor schema digest 생성을 module import 순서와 무관한 code-owned canonical
-  schema authority로 고정하고, 두 실행 순서 모두 같은 digest와 통과 결과를 내는 회귀를 추가한다.
+- 상태: 의도적으로 제한된 첫 durable Supervisor invocation 경계
+- 현재 보장: 하나의 canonical SQLite journal이 exact SUP-004A checkpoint, deterministic stable request ID와
+  preplanned Provider Run을 dispatch 전에 claim한다. started 상태는 자동 재호출 권위를 반환하지 않으며,
+  complete two-seal Run이 있을 때만 terminal로 복구한다. consumer는 journal·seal·artifact·event와 Gateway
+  evidence, B2 outcome, strict draft, dual budget scope를 재구성한 뒤에만 SUP-003 compiler를 호출한다.
+- 제한: alternate journal 파일, database 복제·교체, cross-host dispatcher와 distributed exactly-once는
+  보장하지 않는다. SUP-004B1 ledger는 process-local이므로 restart 뒤 receipt가 증명하는 것은 호출 당시의
+  conservative charge projection이지 현재 in-memory 잔액이 아니다. final receipt 없는 started 상태는
+  수동 검토가 필요하고, Graph current-view 검증과 journal 전이는 별도 transaction이다. 봉인된 Gateway
+  evidence도 complete tainted request를 포함하는 민감 artifact다.
+- 해소 조건: 다중 host 운영이 필요할 때 하나의 외부 consensus/fencing authority, durable distributed budget
+  ledger와 독립 journal checkpoint/backup을 추가한다. 민감 evidence의 원격 보관은 별도 encryption과 access
+  control 정책을 적용한다.
 
 ## MEM-001/002/003 협업 source·reference·Snapshot 경계
 
@@ -367,9 +351,9 @@
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
-- 마지막 확인: 2026-08-04
+- 마지막 확인: 2026-08-05
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 239 source files 통과
+- 현재 결과: 243 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
