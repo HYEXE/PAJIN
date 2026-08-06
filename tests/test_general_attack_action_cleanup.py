@@ -39,11 +39,15 @@ from pajin.domain.models import (
     campaign_manifest_digest,
 )
 from pajin.graph import (
+    ActionApprovalEnvelope,
+    ActionApprovalIssuerAuthorityBinding,
+    ActionApprovalReleaseRef,
     ActionBudgetLimit,
     ActionPermit,
     GraphDecision,
     GraphDecisionKind,
     MissionEnvelope,
+    action_permit_attempt_id,
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.store import RunStore
@@ -62,6 +66,7 @@ from pajin.supervision import (
     GeneralAttackActionPermitError,
     GeneralAttackActionPermitGate,
     GeneralAttackActionPermitInputs,
+    GeneralAttackApprovalClaim,
     GeneralAttackCleanupReservationInputs,
     GeneralAttackReversibleCleanupBinder,
     compile_general_attack_action_intent,
@@ -347,6 +352,69 @@ class _ReservationInputs:
         )
 
 
+class _ApprovalInputAuthority:
+    def verify_action_approval(self, envelope, proposal, decision, approval) -> None:
+        if (
+            approval.mission_envelope != envelope
+            or approval.proposal != proposal
+            or approval.graph_decision != decision
+        ):
+            raise ValueError("fixture approval lineage differs")
+
+
+class _ApprovalAuthority:
+    def __init__(self, issuer: ActionApprovalIssuerAuthorityBinding) -> None:
+        self.issuer = issuer
+
+    def bind_for_action(
+        self,
+        *,
+        intent,
+        prepared,
+        proposal,
+        campaign,
+        definition,
+        envelope,
+        decision,
+        evaluated_at,
+    ) -> GeneralAttackApprovalClaim:
+        approval = ActionApprovalEnvelope(
+            issuer=self.issuer,
+            requestedBy="principal:general-attack-planner",
+            approvedBy="principal:range-operator",
+            campaignId=campaign.metadata.name,
+            campaignDigest=campaign_manifest_digest(campaign),
+            runId=envelope.run_id,
+            missionEnvelope=envelope,
+            sourceIntentDigest=intent.intent_digest,
+            activationSetDigest=prepared.activation_set_digest,
+            release=ActionApprovalReleaseRef(
+                releaseId=prepared.release.release_id,
+                releaseDigest=prepared.release.release_digest,
+                capabilityId=prepared.capability.capability_id,
+                capabilityVersion=prepared.capability.capability_version,
+                capabilityDigest=prepared.capability.definition_digest,
+            ),
+            graphDecision=decision,
+            proposal=proposal,
+            expectedActionPermitId=action_permit_attempt_id(
+                envelope,
+                proposal,
+                decision,
+            ),
+            sideEffectClass=definition.side_effect_class.value,
+            cleanupRequired=definition.cleanup_required,
+            reservation=proposal.reservation,
+            approvedAt=evaluated_at,
+            notBefore=evaluated_at,
+            expiresAt=min(
+                envelope.expires_at,
+                evaluated_at + timedelta(minutes=2),
+            ),
+        )
+        return GeneralAttackApprovalClaim(envelope=approval)
+
+
 class _UnexpectedCleanupAuthority:
     def __init__(self) -> None:
         self.calls = 0
@@ -484,6 +552,7 @@ def _context(
     *,
     source_cleanup_required: bool = True,
     source_approval_required: bool = False,
+    source_risk_tier: ToolRiskTier = ToolRiskTier.T1,
     source_side_effect: CapabilitySideEffectClass = (
         CapabilitySideEffectClass.REVERSIBLE_WRITE
     ),
@@ -498,6 +567,7 @@ def _context(
         cleanup_required=source_cleanup_required,
         approval_required=source_approval_required,
         side_effect_class=source_side_effect,
+        risk_tier=source_risk_tier,
     )
     cleanup_definition = _definition(
         capability_id=CLEANUP_CAPABILITY,
@@ -630,7 +700,10 @@ def _context(
             cleanup_binding.action_capability.reference(),
         ),
         allowedTargetDigests=(intent.target_digest,),
-        maxRiskTier="T1",
+        maxRiskTier=max(
+            source_binding.action_capability.risk_tier,
+            cleanup_binding.action_capability.risk_tier,
+        ),
         budget=ActionBudgetLimit(
             toolCallLimit=2,
             requestUnitLimit=2,
@@ -720,6 +793,21 @@ async def _execute_source(context: _Context):
         mappings=mappings,
         inputs=_ReservationInputs(context.envelope.expires_at),
     )
+    approval = None
+    approval_input = None
+    approval_issuer = None
+    if (
+        context.source_binding.action_capability.risk_tier >= ToolRiskTier.T2
+        or context.source_definition.approval_required
+    ):
+        approval_issuer = ActionApprovalIssuerAuthorityBinding(
+            authorityId="deployment:general-attack-cleanup-operator",
+            authorityVersion="1.0.0",
+            implementationType="tests.cleanup.StaticApprovalAuthority",
+            contextDigest=campaign_manifest_digest(context.campaign),
+        )
+        approval = _ApprovalAuthority(approval_issuer)
+        approval_input = _ApprovalInputAuthority()
     permit_gate = GeneralAttackActionPermitGate(
         activation=context.activation,
         permit_store=context.graph.permit_store,
@@ -730,6 +818,9 @@ async def _execute_source(context: _Context):
                 cost_microusd=0,
             )
         ),
+        approval=approval,
+        approval_input_authority=approval_input,
+        approval_issuer=approval_issuer,
         reversible_cleanup=binder,
         clock=lambda: SOURCE_NOW,
     )
@@ -926,7 +1017,7 @@ async def test_reversible_write_without_hold_authority_is_rejected_before_worker
 
 
 @pytest.mark.asyncio
-async def test_approval_required_write_fails_before_cleanup_hold_and_worker(
+async def test_approval_required_write_without_approval_fails_before_cleanup_hold(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
 ) -> None:
@@ -953,7 +1044,7 @@ async def test_approval_required_write_fails_before_cleanup_hold_and_worker(
     async def consume(*_args):
         raise AssertionError("unapproved write reached its Worker consumer")
 
-    with pytest.raises(GeneralAttackActionPermitError, match="dual approval"):
+    with pytest.raises(GeneralAttackActionPermitError, match=r"requires.*approval"):
         await gate.dispatch_once(
             context.intent,
             context.source_proposal,
@@ -1143,6 +1234,65 @@ async def test_cleanup_dispatch_rejects_alternate_same_run_audit_store_before_cl
     assert context.graph.permit_store.cleanup_permits() == ()
     assert context.worker.calls == ["write-state"]
     assert (tmp_path / "target-state.bin").read_bytes() == CHANGED
+
+
+@pytest.mark.asyncio
+async def test_t2_approved_reversible_write_holds_cleanup_before_worker(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    context = _context(
+        tmp_path,
+        sample_campaign,
+        source_risk_tier=ToolRiskTier.T2,
+    )
+
+    source_result, mappings, gateway = await _execute_source(context)
+
+    assert source_result.dispatch.dispatched is True
+    assert source_result.approval_receipt is not None
+    assert source_result.cleanup_reservation is not None
+    assert source_result.approval_receipt.action_permit == source_result.dispatch.permit
+    assert (
+        source_result.cleanup_reservation.source_action_permit_id
+        == source_result.dispatch.permit.permit_id
+    )
+    assert context.graph.permit_store.action_approvals() == (
+        source_result.approval_receipt.approval,
+    )
+    assert context.graph.permit_store.approval_consumptions() == (
+        source_result.approval_receipt,
+    )
+    assert context.graph.permit_store.cleanup_reservations() == (
+        source_result.cleanup_reservation,
+    )
+    assert context.worker.calls == ["write-state"]
+
+    cleanup_gate, cleanup_decision = _cleanup_authority(
+        context,
+        source_result,
+        mappings,
+        gateway,
+    )
+    context.runtime_clock.value = CLEANUP_NOW
+    cleanup_result = await cleanup_gate.dispatch_once(
+        source_result,
+        context.source_proposal,
+        context.campaign,
+        context.hypotheses,
+        context.plan,
+        context.task.task_digest,
+        context.source_definition.reference(),
+        context.definitions,
+        context.source_binding.capability,
+        context.authorities,
+        context.envelope,
+        cleanup_decision,
+    )
+
+    assert cleanup_result.dispatched is True
+    assert context.worker.calls == ["write-state", "restore-state"]
+    assert context.state_path.read_bytes() == BASELINE
 
 
 @pytest.mark.asyncio

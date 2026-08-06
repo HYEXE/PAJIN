@@ -950,6 +950,34 @@ def validate_action_cleanup_reservation_authority(
 ) -> None:
     """Validate a reversible Action and its pre-dispatch cleanup hold."""
 
+    validate_reversible_action_policy(action_capability, action_policy)
+    if action_capability.risk_tier >= ToolRiskTier.T2:
+        raise CleanupPermitError(
+            "T2 or higher reversible Action requires dual approval and cleanup authority"
+        )
+    validate_action_cleanup_reservation_binding(
+        envelope,
+        proposal,
+        decision,
+        action_capability,
+        request,
+        cleanup_capability,
+        evaluated_at=evaluated_at,
+    )
+
+
+def validate_action_cleanup_reservation_binding(
+    envelope: MissionEnvelope,
+    proposal: ActionProposal,
+    decision: GraphDecision,
+    action_capability: RegisteredActionCapability,
+    request: ActionCleanupReservationRequest,
+    cleanup_capability: RegisteredActionCapability,
+    *,
+    evaluated_at: datetime,
+) -> None:
+    """Validate exact Action and cleanup-hold lineage without selecting an approval path."""
+
     validate_action_authority(
         envelope,
         proposal,
@@ -957,11 +985,6 @@ def validate_action_cleanup_reservation_authority(
         action_capability,
         evaluated_at=evaluated_at,
     )
-    validate_reversible_action_policy(action_capability, action_policy)
-    if action_capability.risk_tier >= ToolRiskTier.T2:
-        raise CleanupPermitError(
-            "T2 or higher reversible Action requires dual approval and cleanup authority"
-        )
     if (
         request.campaign_id != envelope.campaign_id
         or request.run_id != envelope.run_id

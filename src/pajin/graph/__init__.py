@@ -38,6 +38,16 @@ from pajin.graph.approval import (
     build_action_approval_consumption_receipt,
     validate_action_approval_authority,
 )
+from pajin.graph.approved_cleanup import (
+    ApprovedReversibleActionDispatchResult,
+    ApprovedReversibleActionError,
+    ApprovedReversibleActionPermitAuthorization,
+    GraphApprovedReversibleActionPermitAuthority,
+    GraphApprovedReversibleActionPermitDispatcher,
+    GraphApprovedReversibleActionPermitStore,
+    validate_approved_reversible_action_authority,
+    validate_approved_reversible_action_binding,
+)
 from pajin.graph.authority import (
     ACTION_PERMIT_API_VERSION,
     ACTION_PROPOSAL_API_VERSION,
@@ -274,6 +284,9 @@ __all__ = [
     "ActionProposal",
     "ApprovalBoundActionDispatchResult",
     "ApprovedActionDispatchResult",
+    "ApprovedReversibleActionDispatchResult",
+    "ApprovedReversibleActionError",
+    "ApprovedReversibleActionPermitAuthorization",
     "CampaignFactPayload",
     "CampaignFactProposal",
     "CampaignFactValidationState",
@@ -301,6 +314,9 @@ __all__ = [
     "GraphApprovedActionPermitAuthority",
     "GraphApprovedActionPermitDispatcher",
     "GraphApprovedActionPermitStore",
+    "GraphApprovedReversibleActionPermitAuthority",
+    "GraphApprovedReversibleActionPermitDispatcher",
+    "GraphApprovedReversibleActionPermitStore",
     "GraphAuthorityKind",
     "GraphCampaignFact",
     "GraphCleanupPermitAuthority",
@@ -414,6 +430,8 @@ __all__ = [
     "sqlite_graph_retained_backup_manifest_bytes",
     "sqlite_graph_retained_backup_manifest_path",
     "validate_action_approval_authority",
+    "validate_approved_reversible_action_authority",
+    "validate_approved_reversible_action_binding",
     "verify_retained_sqlite_graph_backup",
     "verify_sqlite_graph_backup_inventory_chain",
 ]

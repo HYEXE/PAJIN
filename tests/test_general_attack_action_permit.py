@@ -661,7 +661,7 @@ def test_single_action_approval_policy_boundaries(
     assert approved_gate._requires_action_approval(*t2) is True
     with pytest.raises(GeneralAttackActionPermitError, match="cannot require a cleanup"):
         approved_gate._requires_action_approval(*t2_cleanup)
-    with pytest.raises(GeneralAttackActionPermitError, match="dual approval"):
+    with pytest.raises(GeneralAttackActionPermitError, match="cleanup-hold authority"):
         approved_gate._requires_action_approval(*t2_write)
     with pytest.raises(GeneralAttackActionPermitError, match="T3 or higher"):
         approved_gate._requires_action_approval(*t3)

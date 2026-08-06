@@ -68,9 +68,9 @@ never invokes the Worker again. A callback failure or unknown outcome does not r
 - Common Engine and legacy `deterministic-local` have no approval-aware composition and therefore
   reject T2 before Permit or Worker dispatch. The Web Console default remains a bounded T0
   `mock-sleep` request.
-- Approval-required writes and every T2 write remain closed until APPROVAL-001B combines approval
-  with the existing reversible cleanup hold. T3+, batch, and async remain closed until separately
-  versioned authorities exist.
+- APPROVAL-001B separately combines approval with the existing reversible cleanup hold for one
+  bounded General Attack reversible write. This no-write authority still rejects that scope.
+  T3+, batch, and async remain closed until separately versioned authorities exist.
 
 ## Persistence and trust boundary
 
@@ -94,7 +94,8 @@ cross-process verifier pinning or protect a database reopened by attacker-select
   release, activation, reservation, or Permit substitution;
 - policy inventory drift, side-effect or cleanup drift, risk/scope/budget expansion;
 - missing approval where required or extra approval outside policy;
-- T2 write, T3+, `mode=batch`, `maxActions` other than the JSON integer `1`, or async claim;
+- T2 write on this no-write path, T3+, `mode=batch`, `maxActions` other than the JSON integer `1`,
+  or async claim;
 - generic or wrong-path writer use; and
 - duplicate identity with different bytes, partial durable claim, or automatic redispatch after an
   uncertain outcome.
@@ -124,8 +125,7 @@ binding, Common Engine rejection, and Worker non-redispatch.
 
 ## Follow-up
 
-- APPROVAL-001B: atomically combine an approval with the existing reversible-action cleanup hold
-  for bounded T2 writes.
+- APPROVAL-001B is delivered as the separate atomic approval plus reversible cleanup-hold path.
 - APPROVAL-001C: define separately versioned bounded batch and asynchronous approval consumption,
   partial-claim handling, and unknown-outcome reconciliation.
 - A future deployment-security slice may durably bind policy/verifier inventory across process or

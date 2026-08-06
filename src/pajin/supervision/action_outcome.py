@@ -1094,6 +1094,9 @@ class GeneralAttackActionOutcomeGate:
             != prepared.capability.capability_version
             or receipt.approval.release.capability_digest
             != prepared.capability.definition_digest
+            or receipt.approval.side_effect_class
+            != definition.side_effect_class.value
+            or receipt.approval.cleanup_required != definition.cleanup_required
         ):
             raise ValueError("approval consumption differs from the sealed action")
         return receipt

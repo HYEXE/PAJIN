@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0135: Atomically Bind Approval and Cleanup Hold](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md)
 - [ADR-0134: Consume One Operator Approval with One ActionPermit](docs/adr/0134-consume-single-approval-with-action-permit.md)
 - [ADR-0133: Authenticate and Verify Reversible Cleanup](docs/adr/0133-authenticate-and-verify-reversible-cleanup.md)
 - [ADR-0132: Pre-reserve Cleanup Capacity Before Reversible Write Dispatch](docs/adr/0132-pre-reserve-cleanup-capacity-before-reversible-write.md)

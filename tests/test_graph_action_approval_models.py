@@ -417,9 +417,9 @@ def test_single_action_approval_and_receipt_are_content_addressed() -> None:
         ("approvedBy", "principal:planner", "cannot approve"),
         ("sourceIntentDigest", DIGEST_A, "source intent"),
         ("expectedActionPermitId", f"action-permit_{DIGEST_F}", "expected ActionPermit"),
-        ("sideEffectClass", "reversible-write", "literal_error"),
-        ("cleanupRequired", True, "JSON boolean false"),
-        ("cleanupRequired", 0, "JSON boolean false"),
+        ("sideEffectClass", "reversible-write", "must be paired"),
+        ("cleanupRequired", True, "must be paired"),
+        ("cleanupRequired", 0, "JSON boolean"),
         ("notBefore", NOW + timedelta(seconds=2), "window is invalid"),
     ],
 )
@@ -436,6 +436,20 @@ def test_approval_rejects_scope_and_identity_forgery(
 
     with pytest.raises(ValidationError, match=match):
         ActionApprovalEnvelope.model_validate(raw)
+
+
+def test_approval_accepts_only_paired_reversible_write_cleanup_scope() -> None:
+    _, _, _, _, approval = _authority_inputs()
+    raw = approval.model_dump(mode="json", by_alias=True)
+    raw.pop("approvalId")
+    raw.pop("approvalDigest")
+    raw["sideEffectClass"] = "reversible-write"
+    raw["cleanupRequired"] = True
+
+    reversible = ActionApprovalEnvelope.model_validate(raw)
+
+    assert reversible.side_effect_class == "reversible-write"
+    assert reversible.cleanup_required is True
 
 
 @pytest.mark.parametrize(

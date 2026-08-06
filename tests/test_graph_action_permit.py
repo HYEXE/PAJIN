@@ -15,6 +15,9 @@ from pajin.domain.models import AutonomyLevel, ToolRiskTier
 from pajin.graph import (
     ActionApprovalCapabilityPolicy,
     ActionApprovalCapabilityPolicyRegistry,
+    ActionApprovalEnvelope,
+    ActionApprovalIssuerAuthorityBinding,
+    ActionApprovalReleaseRef,
     ActionBudgetLimit,
     ActionBudgetReservation,
     ActionCapabilityRegistry,
@@ -25,6 +28,7 @@ from pajin.graph import (
     ActionPermitError,
     ActionPermitStaleDecision,
     ActionProposal,
+    ApprovedReversibleActionError,
     CleanupPermit,
     CleanupPermitBudgetExceeded,
     CleanupPermitError,
@@ -33,6 +37,8 @@ from pajin.graph import (
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
     GraphAdmissionAuthority,
+    GraphApprovedReversibleActionPermitAuthority,
+    GraphApprovedReversibleActionPermitDispatcher,
     GraphCleanupPermitAuthority,
     GraphCleanupPermitDispatcher,
     GraphContentOrigin,
@@ -56,6 +62,7 @@ from pajin.graph import (
     SQLiteGraphStoreError,
     SurfaceProposal,
     TrustedGraphLineageRegistry,
+    action_permit_attempt_id,
     graph_snapshot_ref,
 )
 
@@ -940,6 +947,104 @@ class _RejectingCleanupInputAuthority(
         raise ValueError("cleanup input is not externally authenticated")
 
 
+class _FixtureApprovalInputAuthority:
+    def __init__(self, *, fail_on_call: int | None = None) -> None:
+        self.calls = 0
+        self.fail_on_call = fail_on_call
+
+    def verify_action_approval(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        approval: ActionApprovalEnvelope,
+    ) -> None:
+        self.calls += 1
+        if (
+            approval.mission_envelope != envelope
+            or approval.proposal != proposal
+            or approval.graph_decision != decision
+        ):
+            raise ValueError("fixture approval lineage differs")
+        if self.calls == self.fail_on_call:
+            raise ValueError("fixture approval authority changed")
+
+
+def _reversible_approval(
+    envelope: MissionEnvelope,
+    proposal: ActionProposal,
+    decision: GraphDecision,
+) -> ActionApprovalEnvelope:
+    return ActionApprovalEnvelope(
+        issuer=ActionApprovalIssuerAuthorityBinding(
+            authorityId="deployment:graph-operator",
+            authorityVersion="1.0.0",
+            implementationType="tests.graph.StaticApprovalAuthority",
+            contextDigest=DIGEST_A,
+        ),
+        requestedBy="principal:graph-planner",
+        approvedBy="principal:range-operator",
+        campaignId=CAMPAIGN,
+        campaignDigest=DIGEST_E,
+        runId=RUN_ID,
+        missionEnvelope=envelope,
+        sourceIntentDigest=decision.decision_payload_digest,
+        activationSetDigest=DIGEST_F,
+        release=ActionApprovalReleaseRef(
+            releaseId=f"capability-release_{DIGEST_B}",
+            releaseDigest=DIGEST_B,
+            capabilityId=proposal.capability.capability_id,
+            capabilityVersion=proposal.capability.capability_version,
+            capabilityDigest=proposal.capability.definition_digest,
+        ),
+        graphDecision=decision,
+        proposal=proposal,
+        expectedActionPermitId=action_permit_attempt_id(envelope, proposal, decision),
+        sideEffectClass="reversible-write",
+        cleanupRequired=True,
+        reservation=proposal.reservation,
+        approvedAt=NOW + timedelta(seconds=6),
+        notBefore=NOW + timedelta(seconds=7),
+        expiresAt=NOW + timedelta(minutes=5),
+    )
+
+
+def _approved_reversible_authority(
+    store: SQLiteGraphStore,
+    action: RegisteredActionCapability,
+    cleanup: RegisteredActionCapability,
+    *,
+    approval_input: _FixtureApprovalInputAuthority | None = None,
+    cleanup_input: ReversibleActionPermitInputAuthority | None = None,
+    clock: datetime = NOW + timedelta(seconds=8),
+) -> GraphApprovedReversibleActionPermitAuthority:
+    return GraphApprovedReversibleActionPermitAuthority(
+        campaign_id=CAMPAIGN,
+        compiler_id=COMPILER_ID,
+        compiler_version=COMPILER_VERSION,
+        compiler_digest=DIGEST_D,
+        capabilities=ActionCapabilityRegistry([action, cleanup]),
+        policies=ActionApprovalCapabilityPolicyRegistry(
+            (
+                ActionApprovalCapabilityPolicy(
+                    capability=action.reference(),
+                    sideEffectClass="reversible-write",
+                    approvalRequired=False,
+                    cleanupRequired=True,
+                ),
+            )
+        ),
+        permit_store=store.permit_store,
+        approval_input_authority=approval_input or _FixtureApprovalInputAuthority(),
+        reversible_input_authority=(
+            cleanup_input or _FixtureCleanupInputAuthority(action, cleanup)
+        ),
+        approval_claim_authority=store,
+        cleanup_claim_authority=store,
+        clock=lambda: clock,
+    )
+
+
 def _reversible_authority(
     store: SQLiteGraphStore,
     action: RegisteredActionCapability,
@@ -1119,6 +1224,143 @@ def test_reversible_action_atomically_holds_cleanup_and_consumes_once(
     assert retry.permit == authorization.permit
 
 
+@pytest.mark.asyncio
+async def test_approved_reversible_action_commits_four_records_and_dispatches_once(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path, risk_tier=ToolRiskTier.T2)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup, tool_call_limit=2)
+    proposal = _action_proposal(envelope, action, decision)
+    approval = _reversible_approval(envelope, proposal, decision)
+    request = _cleanup_reservation_request(envelope, proposal, cleanup)
+    dispatcher = GraphApprovedReversibleActionPermitDispatcher(
+        _approved_reversible_authority(store, action, cleanup)
+    )
+    calls = 0
+
+    async def consume(permit: ActionPermit, receipt: object) -> str:
+        nonlocal calls
+        del receipt
+        calls += 1
+        return permit.dispatch_id
+
+    first = await dispatcher.dispatch_once(
+        envelope,
+        proposal,
+        decision,
+        approval,
+        request,
+        consume,
+    )
+
+    backup = tmp_path / "backups" / "approved-reversible.sqlite3"
+    manifest = store.create_backup(backup, created_at=NOW + timedelta(seconds=9))
+    reopened = SQLiteGraphStore.restore_backup(
+        backup,
+        destination=tmp_path / "restored" / "canonical-graph.sqlite3",
+        campaign_id=CAMPAIGN,
+    )
+    retry = await GraphApprovedReversibleActionPermitDispatcher(
+        _approved_reversible_authority(reopened, action, cleanup)
+    ).dispatch_once(
+        envelope,
+        proposal,
+        decision,
+        approval,
+        request,
+        consume,
+    )
+
+    authorization = first.authorization
+    assert first.dispatched is True
+    assert retry.dispatched is False
+    assert retry.authorization == authorization.model_copy(
+        update={
+            "reversible": authorization.reversible.model_copy(
+                update={
+                    "action": authorization.reversible.action.model_copy(
+                        update={"newly_consumed": False}
+                    )
+                }
+            )
+        }
+    )
+    assert calls == 1
+    assert manifest.action_approval_count == 1
+    assert manifest.action_permit_count == 1
+    assert manifest.approval_consumption_count == 1
+    assert manifest.cleanup_reservation_count == 1
+    assert reopened.permit_store.action_approvals() == (approval,)
+    assert reopened.permit_store.permits() == (authorization.reversible.action.permit,)
+    assert reopened.permit_store.approval_consumptions() == (authorization.receipt,)
+    assert reopened.permit_store.cleanup_reservations() == (
+        authorization.reversible.cleanup_reservation,
+    )
+
+
+def test_approved_reversible_action_rolls_back_all_records_on_hold_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path, risk_tier=ToolRiskTier.T2)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup, tool_call_limit=2)
+    proposal = _action_proposal(envelope, action, decision)
+    approval = _reversible_approval(envelope, proposal, decision)
+    request = _cleanup_reservation_request(envelope, proposal, cleanup)
+
+    def fail_hold_insert(_: object, __: object) -> None:
+        raise RuntimeError("injected approved cleanup hold failure")
+
+    monkeypatch.setattr(
+        sqlite_store_module,
+        "_insert_cleanup_reservation",
+        fail_hold_insert,
+    )
+
+    with pytest.raises(RuntimeError, match="injected approved"):
+        _approved_reversible_authority(
+            store,
+            action,
+            cleanup,
+        ).authorize_for_dispatch(envelope, proposal, decision, approval, request)
+
+    assert store.permit_store.action_approvals() == ()
+    assert store.permit_store.permits() == ()
+    assert store.permit_store.approval_consumptions() == ()
+    assert store.permit_store.cleanup_reservations() == ()
+
+
+def test_approved_reversible_post_verifier_failure_rolls_back_all_records(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path, risk_tier=ToolRiskTier.T2)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup, tool_call_limit=2)
+    proposal = _action_proposal(envelope, action, decision)
+    approval = _reversible_approval(envelope, proposal, decision)
+    request = _cleanup_reservation_request(envelope, proposal, cleanup)
+    approval_input = _FixtureApprovalInputAuthority(fail_on_call=3)
+
+    with pytest.raises(ApprovedReversibleActionError, match="input authority rejected"):
+        _approved_reversible_authority(
+            store,
+            action,
+            cleanup,
+            approval_input=approval_input,
+        ).authorize_for_dispatch(envelope, proposal, decision, approval, request)
+
+    assert approval_input.calls == 3
+    assert store.permit_store.action_approvals() == ()
+    assert store.permit_store.permits() == ()
+    assert store.permit_store.approval_consumptions() == ()
+    assert store.permit_store.cleanup_reservations() == ()
+
+
 def test_generic_writer_cannot_claim_reversible_or_cleanup_transaction(
     tmp_path: Path,
 ) -> None:
@@ -1133,6 +1375,23 @@ def test_generic_writer_cannot_claim_reversible_or_cleanup_transaction(
         COMPILER_VERSION,
         DIGEST_D,
     )
+
+    with pytest.raises(
+        ApprovedReversibleActionError,
+        match="compiler write authority is invalid",
+    ):
+        store.permit_store.authorize_approved_reversible_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+            action,
+            _reversible_approval(envelope, proposal, decision),
+            hold_request,
+            cleanup,
+            writer=writer,
+            evaluated_at=NOW + timedelta(seconds=8),
+            permit_ttl=timedelta(seconds=30),
+        )
 
     with pytest.raises(CleanupPermitError, match="compiler write authority is invalid"):
         store.permit_store.authorize_reversible_for_dispatch(

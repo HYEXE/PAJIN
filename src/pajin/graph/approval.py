@@ -203,8 +203,10 @@ class ActionApprovalEnvelope(StrictModel):
         alias="expectedActionPermitId",
         pattern=r"^action-permit_[a-f0-9]{64}$",
     )
-    side_effect_class: Literal["none", "read-only"] = Field(alias="sideEffectClass")
-    cleanup_required: Literal[False] = Field(default=False, alias="cleanupRequired")
+    side_effect_class: Literal["none", "read-only", "reversible-write"] = Field(
+        alias="sideEffectClass"
+    )
+    cleanup_required: bool = Field(default=False, alias="cleanupRequired")
     reservation: ActionBudgetReservation
     approved_at: datetime = Field(alias="approvedAt")
     not_before: datetime = Field(alias="notBefore")
@@ -220,8 +222,8 @@ class ActionApprovalEnvelope(StrictModel):
     @field_validator("cleanup_required", mode="before")
     @classmethod
     def require_exact_cleanup_flag(cls, value: object) -> object:
-        if type(value) is not bool or value is not False:
-            raise ValueError("Action approval cleanupRequired must be the JSON boolean false")
+        if type(value) is not bool:
+            raise ValueError("Action approval cleanupRequired must be a JSON boolean")
         return value
 
     @field_validator("approved_at", "not_before", "expires_at")
@@ -265,6 +267,10 @@ class ActionApprovalEnvelope(StrictModel):
             raise ValueError("Action approval Capability release differs from its Proposal")
         if proposal.reservation != self.reservation:
             raise ValueError("Action approval reservation differs from its Proposal")
+        if (self.side_effect_class == "reversible-write") is not self.cleanup_required:
+            raise ValueError(
+                "Action approval reversible-write and cleanupRequired must be paired"
+            )
         if proposal.risk_tier > ToolRiskTier.T2:
             raise ValueError("Action approval is restricted to T2 or below")
         if (
@@ -553,10 +559,14 @@ class GraphApprovedActionPermitAuthority:
         capability = self._capabilities.resolve(canonical_proposal.capability)
         policy = self._policies.resolve(capability.reference())
         evaluated_at = _normalize_utc(self._clock(), label="Action approval evaluation time")
-        _validate_action_approval_binding(
+        validate_action_approval_binding(
             canonical_envelope,
             canonical_proposal,
             canonical_decision,
+            capability,
+            canonical_approval,
+        )
+        _validate_no_write_action_approval_policy(
             capability,
             policy,
             canonical_approval,
@@ -786,29 +796,27 @@ def validate_action_approval_authority(
         capability,
         evaluated_at=evaluated_at,
     )
-    _validate_action_approval_binding(
+    validate_action_approval_binding(
         envelope,
         proposal,
         decision,
         capability,
-        policy,
         approval,
     )
+    _validate_no_write_action_approval_policy(capability, policy, approval)
     if not approval.not_before <= evaluated_at < approval.expires_at:
         raise ActionApprovalError("Action approval is not currently active")
 
 
-def _validate_action_approval_binding(
+def validate_action_approval_binding(
     envelope: MissionEnvelope,
     proposal: ActionProposal,
     decision: GraphDecision,
     capability: RegisteredActionCapability,
-    policy: ActionApprovalCapabilityPolicy,
     approval: ActionApprovalEnvelope,
 ) -> None:
     if (
         capability.reference() != proposal.capability
-        or policy.capability != capability.reference()
         or approval.mission_envelope != envelope
         or approval.graph_decision != decision
         or approval.proposal != proposal
@@ -819,13 +827,23 @@ def _validate_action_approval_binding(
         raise ActionApprovalError("Action approval differs from current action authority")
     if proposal.risk_tier > ToolRiskTier.T2:
         raise ActionApprovalError("T3 or higher Actions cannot use this approval authority")
+
+
+def _validate_no_write_action_approval_policy(
+    capability: RegisteredActionCapability,
+    policy: ActionApprovalCapabilityPolicy,
+    approval: ActionApprovalEnvelope,
+) -> None:
     if (
-        policy.side_effect_class not in {"none", "read-only"}
+        policy.capability != capability.reference()
+        or policy.side_effect_class not in {"none", "read-only"}
         or policy.cleanup_required
         or approval.side_effect_class != policy.side_effect_class
         or approval.cleanup_required != policy.cleanup_required
     ):
-        raise ActionApprovalError("Action approval is restricted to cleanup-free no-write actions")
+        raise ActionApprovalError(
+            "Action approval is restricted to cleanup-free no-write actions"
+        )
     if capability.risk_tier is not ToolRiskTier.T2 and not policy.approval_required:
         raise ActionApprovalError("Action approval is not required by current Capability policy")
 

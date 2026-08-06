@@ -302,6 +302,32 @@ is process-local and must be re-injected after restart. See the
 [APPROVAL-001A contract](docs/orchestration/APPROVAL-001A-single-action-approval.md) and
 [ADR-0134](docs/adr/0134-consume-single-approval-with-action-permit.md).
 
+APPROVAL-001B now adds the bounded T2 reversible-write composition without replacing any of those
+records. General Attack commits the authenticated approval, unchanged consumed ActionPermit,
+non-reusable receipt, and pre-action cleanup reservation in one schema-v4 transaction before the
+Worker callback. Both deployment input authorities are pinned to a distinct combined writer and
+verified around the durable claim; any in-transaction drift or insert failure rolls back all four
+records. Exact retry, including after verified backup/restore, cannot redispatch. The authenticated
+outcome rechecks approval side-effect and cleanup flags against the current Definition, then reuses
+the existing one-shot CleanupPermit and restored-state path. The production inventory,
+`capability-graph-v1`, Common Engine, legacy write execution, T3+, batch, and async remain closed.
+See the
+[APPROVAL-001B contract](docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md) and
+[ADR-0135](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md).
+
+APPROVAL-001B now adds the bounded T2 reversible-write composition without replacing any of those
+records. General Attack commits the authenticated approval, unchanged consumed ActionPermit,
+non-reusable receipt, and pre-action cleanup reservation in one schema-v4 transaction before the
+Worker callback. Both deployment input authorities are pinned to a distinct combined writer and
+verified around the durable claim; any in-transaction drift or insert failure rolls back all four
+records. Exact retry, including after verified backup/restore, cannot redispatch. The authenticated
+outcome rechecks approval side-effect and cleanup flags against the current Definition, then reuses
+the existing one-shot CleanupPermit and restored-state path. The production inventory,
+`capability-graph-v1`, Common Engine, legacy write execution, T3+, batch, and async remain closed.
+See the
+[APPROVAL-001B contract](docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md) and
+[ADR-0135](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

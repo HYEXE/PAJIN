@@ -46,6 +46,9 @@ from pajin.graph import (
     GraphApprovedActionPermitAuthority,
     GraphApprovedActionPermitDispatcher,
     GraphApprovedActionPermitStore,
+    GraphApprovedReversibleActionPermitAuthority,
+    GraphApprovedReversibleActionPermitDispatcher,
+    GraphApprovedReversibleActionPermitStore,
     GraphDecision,
     GraphDecisionKind,
     GraphReversibleActionPermitAuthority,
@@ -362,25 +365,62 @@ class GeneralAttackActionPermitGate:
                 inputs,
                 evaluated_at,
             )
-            reversible_dispatcher = self._reversible_dispatcher(
-                inputs.envelope,
-                canonical_campaign,
-                claim.input_authority,
-            )
-            reversible = await reversible_dispatcher.dispatch_once(
-                inputs.envelope,
-                action_proposal,
-                inputs.decision,
-                claim.request,
-                consume,
-            )
-            action = reversible.authorization.action
-            cleanup_reservation = reversible.authorization.cleanup_reservation
-            dispatch_result = ActionDispatchResult(
-                permit=action.permit,
-                dispatched=reversible.dispatched,
-                result=reversible.result,
-            )
+            if approval_claim is not None:
+                approved_reversible_dispatcher = self._approved_reversible_dispatcher(
+                    inputs.envelope,
+                    canonical_campaign,
+                    self._required_approval_input_authority(),
+                    claim.input_authority,
+                )
+
+                async def consume_approved_reversible(
+                    permit: ActionPermit,
+                    receipt: ActionApprovalConsumptionReceipt,
+                ) -> DispatchResultT:
+                    del receipt
+                    return await consume(permit)
+
+                approved_reversible = (
+                    await approved_reversible_dispatcher.dispatch_once(
+                        inputs.envelope,
+                        action_proposal,
+                        inputs.decision,
+                        approval_claim.envelope,
+                        claim.request,
+                        consume_approved_reversible,
+                    )
+                )
+                reversible_authorization = (
+                    approved_reversible.authorization.reversible
+                )
+                action = reversible_authorization.action
+                cleanup_reservation = reversible_authorization.cleanup_reservation
+                approval_receipt = approved_reversible.authorization.receipt
+                dispatch_result = ActionDispatchResult(
+                    permit=action.permit,
+                    dispatched=approved_reversible.dispatched,
+                    result=approved_reversible.result,
+                )
+            else:
+                reversible_dispatcher = self._reversible_dispatcher(
+                    inputs.envelope,
+                    canonical_campaign,
+                    claim.input_authority,
+                )
+                reversible = await reversible_dispatcher.dispatch_once(
+                    inputs.envelope,
+                    action_proposal,
+                    inputs.decision,
+                    claim.request,
+                    consume,
+                )
+                action = reversible.authorization.action
+                cleanup_reservation = reversible.authorization.cleanup_reservation
+                dispatch_result = ActionDispatchResult(
+                    permit=action.permit,
+                    dispatched=reversible.dispatched,
+                    result=reversible.result,
+                )
         elif approval_claim is not None:
             approved_dispatcher = self._approved_dispatcher(
                 inputs.envelope,
@@ -447,18 +487,14 @@ class GeneralAttackActionPermitGate:
             raise GeneralAttackActionPermitError(
                 "no-write action cannot require a cleanup hold"
             )
-        if not no_write and definition.approval_required:
-            raise GeneralAttackActionPermitError(
-                "approval-required write action lacks dual approval and cleanup authority"
-            )
-        if not no_write and risk >= ToolRiskTier.T2:
-            raise GeneralAttackActionPermitError(
-                "T2 write action lacks dual approval and cleanup authority"
-            )
-        required = no_write and (risk is ToolRiskTier.T2 or definition.approval_required)
+        required = risk is ToolRiskTier.T2 or definition.approval_required
         if required and self._approval is None:
             raise GeneralAttackActionPermitError(
-                "no-write action requires an operator approval authority"
+                "action requires an operator approval authority"
+            )
+        if required and not no_write and self._reversible_cleanup is None:
+            raise GeneralAttackActionPermitError(
+                "approved write action requires a cleanup-hold authority"
             )
         return required
 
@@ -475,7 +511,7 @@ class GeneralAttackActionPermitGate:
         authority = self._approval
         if authority is None:
             raise GeneralAttackActionPermitError(
-                "no-write action requires an operator approval authority"
+                "action requires an operator approval authority"
             )
         try:
             bound = authority.bind_for_action(
@@ -521,6 +557,7 @@ class GeneralAttackActionPermitGate:
                 or approval.release.capability_version != prepared.capability.capability_version
                 or approval.release.capability_digest != prepared.capability.definition_digest
                 or approval.side_effect_class != definition.side_effect_class.value
+                or approval.cleanup_required != definition.cleanup_required
             ):
                 raise GeneralAttackActionPermitError(
                     "operator approval differs from the current exact action"
@@ -665,6 +702,47 @@ class GeneralAttackActionPermitGate:
         self._bound_envelope_digest = envelope.envelope_digest
         self._bound_activation_set_digest = activation_digest
         return GraphApprovedActionPermitDispatcher(authority)
+
+    def _approved_reversible_dispatcher(
+        self,
+        envelope: MissionEnvelope,
+        campaign: CampaignManifest,
+        approval_input_authority: ActionApprovalInputAuthority,
+        reversible_input_authority: ReversibleActionPermitInputAuthority,
+    ) -> GraphApprovedReversibleActionPermitDispatcher:
+        activation_digest = self._activation.activation_set.activation_set_digest
+        if self._bound_envelope_digest is not None and (
+            self._bound_envelope_digest != envelope.envelope_digest
+            or self._bound_activation_set_digest != activation_digest
+        ):
+            raise GeneralAttackActionPermitError(
+                "General attack Permit gate is pinned to another authority"
+            )
+        store = self._permit_store
+        if not callable(
+            getattr(store, "authorize_approved_reversible_for_dispatch", None)
+        ):
+            raise GeneralAttackActionPermitError(
+                "GRAPH Permit store lacks atomic approval plus cleanup holds"
+            )
+        authority = GraphApprovedReversibleActionPermitAuthority(
+            campaign_id=envelope.campaign_id,
+            compiler_id=envelope.compiler_id,
+            compiler_version=envelope.compiler_version,
+            compiler_digest=envelope.compiler_digest,
+            capabilities=self._activation.action_registry(),
+            policies=self._policies,
+            permit_store=cast(GraphApprovedReversibleActionPermitStore, store),
+            approval_input_authority=approval_input_authority,
+            reversible_input_authority=reversible_input_authority,
+            approval_claim_authority=self._approval,
+            cleanup_claim_authority=self._reversible_cleanup,
+            clock=lambda: self._claim_evaluated_at(campaign, envelope),
+            permit_ttl=self._permit_ttl,
+        )
+        self._bound_envelope_digest = envelope.envelope_digest
+        self._bound_activation_set_digest = activation_digest
+        return GraphApprovedReversibleActionPermitDispatcher(authority)
 
     def _current_activation_binding(
         self,
