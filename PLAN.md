@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `APPROVAL-001B` 완료 체크포인트 — 다음 사용자 지시에서 안정화·리팩터링
+- 현재 우선순위: `APPROVAL-001B` 동작 보존 리팩터링 — 구현·검증 완료, 로컬 커밋 승인 대기
 
 ## 제품 목표
 
@@ -651,8 +651,10 @@ aggregate budget·latest Snapshot·exact policy를 교차 결박한다. 어느 i
 ledger가 모두 rollback하며 exact retry와 backup/restore retry는 Worker를 다시 호출하지 않는다. authenticated
 outcome은 approval side-effect·cleanup flags를 current Definition과 다시 exact-match하고 기존 PERMIT-004B2
 CleanupPermit·restored-state 경로를 그대로 사용한다. production inventory와 `capability-graph-v1`, Common
-Engine·legacy write, T3+, batch·async는 계속 닫힌다. 다음 개발 항목은 `APPROVAL-001C`이지만, 그 전에
-사용자 요청에 따른 안정화·리팩터링 체크포인트를 수행한다.
+Engine·legacy write, T3+, batch·async는 계속 닫힌다. 동작 보존 리팩터링 체크포인트에서 combined
+authority/store의 결과 조립·row decode·transaction SQL과 General Attack dispatcher authority pin 중복을
+분리했다. wire·schema·authority·검증 순서는 바꾸지 않았으며 로컬 커밋 승인 뒤 다음 개발 항목
+`APPROVAL-001C`의 범위를 다시 확정한다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 

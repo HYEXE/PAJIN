@@ -237,8 +237,7 @@ class GraphApprovedReversibleActionPermitAuthority:
                 approval,
                 cleanup_request,
             )
-            existing = self._canonical_authorization(existing)
-            self._require_exact_result(
+            existing = self._validated_authorization(
                 existing,
                 envelope=envelope,
                 approval=approval,
@@ -304,6 +303,23 @@ class GraphApprovedReversibleActionPermitAuthority:
             approval,
             cleanup_request,
         )
+        return self._validated_authorization(
+            authorization,
+            envelope=envelope,
+            approval=approval,
+            cleanup_request=cleanup_request,
+            cleanup_capability=cleanup_capability,
+        )
+
+    def _validated_authorization(
+        self,
+        authorization: ApprovedReversibleActionPermitAuthorization,
+        *,
+        envelope: MissionEnvelope,
+        approval: ActionApprovalEnvelope,
+        cleanup_request: ActionCleanupReservationRequest,
+        cleanup_capability: RegisteredActionCapability,
+    ) -> ApprovedReversibleActionPermitAuthorization:
         authorization = self._canonical_authorization(authorization)
         self._require_exact_result(
             authorization,

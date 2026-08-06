@@ -2,13 +2,14 @@
 
 - 기록일: 2026-08-06
 - 브랜치: `main`
-- 원격 기준: `origin/main@e05e672314f44790bb662b039d48127be06c1d35`
+- 현재 HEAD: `a90a8bbc34f9dcf3a71a0a3cb96567f3487de0fb`
+- 원격 기준: `origin/main@a90a8bbc34f9dcf3a71a0a3cb96567f3487de0fb`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
 - APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
-- 현재 구현 체크포인트: `APPROVAL-001B` 완료
-- 다음 사용자 체크포인트: 안정화·리팩터링 점검
+- 현재 구현 체크포인트: `APPROVAL-001B` 동작 보존 리팩터링 구현·검증 완료
+- 다음 사용자 체크포인트: 리팩터링 로컬 커밋 승인
 - 이후 로드맵: `APPROVAL-001C` bounded batch·async approval
-- 원격 push: 미실행
+- 원격 push: `a90a8bb`까지 동기화됨, 이번 리팩터링은 미커밋·미push
 
 ## 재개 전 확인
 
@@ -20,8 +21,8 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. 이 HANDOFF 동기화 커밋까지 포함한 `main`은
-`origin/main`보다 3개 커밋 앞서 있어야 한다. 별도 detached worktree
+문서보다 실제 저장소를 우선한다. 현재 `main`과 `origin/main`은 `a90a8bb`로 같고, 리팩터링 코드와
+상태 문서는 working tree에 미커밋 변경으로 남아 있어야 한다. 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
@@ -86,6 +87,19 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 
 ## 현재 검증
 
+### 2026-08-06 동작 보존 리팩터링 후 재검증
+
+- Graph SQLite·backup·approval·General Attack 인접 회귀: 172 passed, 2 skipped
+  - Windows에서 의도적으로 제외한 POSIX link·symlink semantics 2건
+- APPROVAL/PERMIT/General Attack 집중 회귀: 131 passed
+- 변경 모듈 Ruff: 통과
+- Linux 대상 strict mypy: 256 source files 통과
+- Windows 대상 mypy: 기존 POSIX 전용 `os` API 33건만 실패
+- 기본 `.mypy_cache`는 현재 Windows ACL 때문에 열리지 않으므로 쓰기 가능한 별도 cache dir가 필요
+- `git diff --check`: 통과
+
+아래 항목은 APPROVAL-001B 구현 완료 시점의 더 넓은 검증 기록이다.
+
 - APPROVAL/PERMIT/General Attack 집중 회귀: 131 passed
 - approval store·legacy backup·Graph SQLite 인접 회귀: 36 passed, 2 skipped
 - existing Capability rollout: 35 passed
@@ -111,7 +125,8 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 .\.venv\Scripts\python.exe -m pytest -q tests\test_control_plane_web.py
 .\.venv\Scripts\python.exe -m pytest -q tests\test_engine_execution_gate.py
 .\.venv\Scripts\python.exe -m ruff check --no-cache src tests containers
-.\.venv\Scripts\python.exe -m mypy --no-incremental --no-sqlite-cache --platform linux src
+New-Item -ItemType Directory -Path ..\.codex-tmp\pajin-mypy -Force | Out-Null
+.\.venv\Scripts\python.exe -m mypy --platform linux --cache-dir ..\.codex-tmp\pajin-mypy src
 .\.venv\Scripts\python.exe -m pytest -x -q
 git diff --check
 ```
@@ -132,17 +147,20 @@ reversible approval scope의 strict JSON pairing, 기존 no-write authority와 �
 cleanup insert failure, transaction post-verifier drift와 backup/restore retry를 음성·원자성 테스트로
 고정했다.
 
+동작 보존 리팩터링에서는 승인·Permit·receipt·cleanup hold 결과의 row decode와 authorization 조립을
+단일 헬퍼로 모으고, SQLite 원자 트랜잭션의 기존 tuple 조회와 식별자 충돌 SQL을 분리했다. high-level
+authority의 canonical·exact-result 검증과 General Attack dispatcher의 envelope·activation pin도 공통
+경로로 모았다. wire shape, schema version, 공개 authority, error branch와 검증 순서는 변경하지 않았다.
+
 ## 현재 상태와 다음 한 단계
 
-APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 로컬 커밋됐다. 이 HANDOFF
-동기화 커밋 뒤 worktree가 clean이고 `origin/main`보다 3개 앞선 상태인지 확인한다.
+APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 커밋됐고 문서 동기화까지
+`a90a8bb`로 원격에 반영됐다. 현재 리팩터링 변경은 검증됐지만 아직 로컬 커밋하지 않았다.
 
-1. 사용자가 요청할 안정화·리팩터링 체크포인트 전에는 APPROVAL-001C 기능을 시작하지 않는다.
-2. 리팩터링은 동작을 바꾸지 않는 범위에서 combined authority/store의 중복 validation·retry 구조,
-   General Attack dispatcher composition, 대형 SQLite transaction 메서드와 테스트 fixture 중복을 먼저
-   점검한다. 실제 버그는 재현 테스트와 함께 별도 작은 커밋으로 수정한다.
-3. 리팩터링 체크포인트가 끝난 뒤 `APPROVAL-001C` batch·async 상태 머신을 새 계약·ADR로 시작한다.
-4. 원격 push는 별도 사용자 승인 뒤 `git -c http.sslBackend=schannel push origin main`으로 수행하고
+1. 사용자 승인 뒤 현재 변경만 `refactor(approval): 승인 원자 소비 중복 구조 정리`로 로컬 커밋한다.
+2. 커밋 전 staged diff에서 코드 3개와 `PLAN.md`, `HANDOFF.md` 외 파일이 없는지 다시 확인한다.
+3. 별도 요청 전에는 `APPROVAL-001C` batch·async 상태 머신이나 기능 변경을 시작하지 않는다.
+4. 원격 push가 필요하면 별도 사용자 승인 뒤 `git -c http.sslBackend=schannel push origin main`으로 수행하고
    local/upstream/remote/clean 상태를 재검증한다.
 
 ## 알려진 경계

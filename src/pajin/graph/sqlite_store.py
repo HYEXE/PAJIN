@@ -130,6 +130,132 @@ def _canonical_action_policy_registry(
         return ActionApprovalCapabilityPolicyRegistry(policies.policies())
     except (AttributeError, TypeError, ValidationError, ValueError) as exc:
         raise TypeError(f"{label} policy registry is not canonical") from exc
+
+
+def _approved_reversible_records_from_rows(
+    approval_row: sqlite3.Row,
+    permit_row: sqlite3.Row,
+    receipt_row: sqlite3.Row,
+    reservation_row: sqlite3.Row,
+    *,
+    campaign_id: str,
+) -> tuple[
+    ActionApprovalEnvelope,
+    ActionPermit,
+    ActionApprovalConsumptionReceipt,
+    ActionCleanupReservation,
+]:
+    return (
+        _action_approval_from_row(approval_row, campaign_id=campaign_id),
+        _action_permit_from_row(permit_row, campaign_id=campaign_id),
+        _approval_consumption_from_row(receipt_row, campaign_id=campaign_id),
+        _cleanup_reservation_from_row(reservation_row, campaign_id=campaign_id),
+    )
+
+
+def _approved_reversible_authorization(
+    approval: ActionApprovalEnvelope,
+    permit: ActionPermit,
+    receipt: ActionApprovalConsumptionReceipt,
+    reservation: ActionCleanupReservation,
+    *,
+    newly_consumed: bool,
+) -> ApprovedReversibleActionPermitAuthorization:
+    return ApprovedReversibleActionPermitAuthorization(
+        approval=approval,
+        reversible=ReversibleActionPermitAuthorization(
+            action=ActionPermitAuthorization(
+                permit=permit,
+                newlyConsumed=newly_consumed,
+            ),
+            cleanupReservation=reservation,
+        ),
+        receipt=receipt,
+    )
+
+
+def _approved_reversible_transaction_rows(
+    connection: sqlite3.Connection,
+    *,
+    approval_id: str,
+    permit_id: str,
+) -> tuple[
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+    sqlite3.Row | None,
+]:
+    approval_row = connection.execute(
+        """
+        SELECT * FROM graph_action_approval_envelopes
+        WHERE approval_id = ?
+        """,
+        (approval_id,),
+    ).fetchone()
+    permit_row = connection.execute(
+        "SELECT * FROM graph_action_permits WHERE permit_id = ?",
+        (permit_id,),
+    ).fetchone()
+    receipt_row = connection.execute(
+        """
+        SELECT * FROM graph_action_approval_consumptions
+        WHERE permit_id = ?
+        """,
+        (permit_id,),
+    ).fetchone()
+    reservation_row = connection.execute(
+        """
+        SELECT * FROM graph_action_cleanup_reservations
+        WHERE source_action_permit_id = ?
+        """,
+        (permit_id,),
+    ).fetchone()
+    return approval_row, permit_row, receipt_row, reservation_row
+
+
+def _approved_reversible_identity_is_consumed(
+    connection: sqlite3.Connection,
+    *,
+    approval: ActionApprovalEnvelope,
+    proposal: ActionProposal,
+    cleanup_request: ActionCleanupReservationRequest,
+) -> bool:
+    collision = connection.execute(
+        """
+        SELECT 1 FROM graph_action_approval_envelopes
+        WHERE proposal_id = ? OR request_id = ?
+        UNION ALL
+        SELECT 1 FROM graph_action_approval_consumptions
+        WHERE approval_id = ? OR proposal_id = ? OR request_id = ?
+        UNION ALL
+        SELECT 1 FROM graph_action_permits
+        WHERE proposal_id = ? OR request_id = ?
+        UNION ALL
+        SELECT 1 FROM graph_cleanup_permits WHERE request_id = ?
+        LIMIT 1
+        """,
+        (
+            proposal.proposal_id,
+            proposal.request_id,
+            approval.approval_id,
+            proposal.proposal_id,
+            proposal.request_id,
+            proposal.proposal_id,
+            proposal.request_id,
+            proposal.request_id,
+        ),
+    ).fetchone()
+    reservation_collision = connection.execute(
+        """
+        SELECT 1 FROM graph_action_cleanup_reservations
+        WHERE reservation_request_id = ?
+        LIMIT 1
+        """,
+        (cleanup_request.reservation_request_id,),
+    ).fetchone()
+    return collision is not None or reservation_collision is not None
+
+
 GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
     "pajin.dev/sqlite-graph-backup-manifest/v1alpha3"
 ] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha3"
@@ -2169,21 +2295,14 @@ class SQLiteGraphActionPermitStore:
                 assert approval_row is not None
                 assert permit_row is not None
                 assert reservation_row is not None
-                approval = _action_approval_from_row(
-                    approval_row,
-                    campaign_id=self._campaign_id,
-                )
-                permit = _action_permit_from_row(
-                    permit_row,
-                    campaign_id=self._campaign_id,
-                )
-                receipt = _approval_consumption_from_row(
-                    receipt_rows[0],
-                    campaign_id=self._campaign_id,
-                )
-                reservation = _cleanup_reservation_from_row(
-                    reservation_row,
-                    campaign_id=self._campaign_id,
+                approval, permit, receipt, reservation = (
+                    _approved_reversible_records_from_rows(
+                        approval_row,
+                        permit_row,
+                        receipt_rows[0],
+                        reservation_row,
+                        campaign_id=self._campaign_id,
+                    )
                 )
                 if (
                     approval.approval_id != approval_id
@@ -2197,16 +2316,12 @@ class SQLiteGraphActionPermitStore:
                     raise ApprovedReversibleActionError(
                         "approved reversible terminal authority differs"
                     )
-                return ApprovedReversibleActionPermitAuthorization(
-                    approval=approval,
-                    reversible=ReversibleActionPermitAuthorization(
-                        action=ActionPermitAuthorization(
-                            permit=permit,
-                            newlyConsumed=False,
-                        ),
-                        cleanupReservation=reservation,
-                    ),
-                    receipt=receipt,
+                return _approved_reversible_authorization(
+                    approval,
+                    permit,
+                    receipt,
+                    reservation,
+                    newly_consumed=False,
                 )
         except sqlite3.Error as exc:
             raise ApprovedReversibleActionError(
@@ -2282,37 +2397,12 @@ class SQLiteGraphActionPermitStore:
                         raise ApprovedReversibleActionError(
                             "approved reversible compiler differs from durable writer"
                         )
-                    approval_row = connection.execute(
-                        """
-                        SELECT * FROM graph_action_approval_envelopes
-                        WHERE approval_id = ?
-                        """,
-                        (approval.approval_id,),
-                    ).fetchone()
-                    permit_row = connection.execute(
-                        "SELECT * FROM graph_action_permits WHERE permit_id = ?",
-                        (attempt_id,),
-                    ).fetchone()
-                    receipt_row = connection.execute(
-                        """
-                        SELECT * FROM graph_action_approval_consumptions
-                        WHERE permit_id = ?
-                        """,
-                        (attempt_id,),
-                    ).fetchone()
-                    reservation_row = connection.execute(
-                        """
-                        SELECT * FROM graph_action_cleanup_reservations
-                        WHERE source_action_permit_id = ?
-                        """,
-                        (attempt_id,),
-                    ).fetchone()
-                    existing = (
-                        approval_row,
-                        permit_row,
-                        receipt_row,
-                        reservation_row,
+                    existing = _approved_reversible_transaction_rows(
+                        connection,
+                        approval_id=approval.approval_id,
+                        permit_id=attempt_id,
                     )
+                    approval_row, permit_row, receipt_row, reservation_row = existing
                     if any(row is not None for row in existing):
                         if not all(row is not None for row in existing):
                             raise ApprovedReversibleActionError(
@@ -2322,21 +2412,14 @@ class SQLiteGraphActionPermitStore:
                         assert permit_row is not None
                         assert receipt_row is not None
                         assert reservation_row is not None
-                        stored_approval = _action_approval_from_row(
-                            approval_row,
-                            campaign_id=self._campaign_id,
-                        )
-                        permit = _action_permit_from_row(
-                            permit_row,
-                            campaign_id=self._campaign_id,
-                        )
-                        receipt = _approval_consumption_from_row(
-                            receipt_row,
-                            campaign_id=self._campaign_id,
-                        )
-                        reservation = _cleanup_reservation_from_row(
-                            reservation_row,
-                            campaign_id=self._campaign_id,
+                        stored_approval, permit, receipt, reservation = (
+                            _approved_reversible_records_from_rows(
+                                approval_row,
+                                permit_row,
+                                receipt_row,
+                                reservation_row,
+                                campaign_id=self._campaign_id,
+                            )
                         )
                         if stored_approval != approval:
                             raise ApprovedReversibleActionError(
@@ -2363,52 +2446,20 @@ class SQLiteGraphActionPermitStore:
                             raise ApprovedReversibleActionError(
                                 "approved reversible retry receipt differs"
                             )
-                        authorization = ApprovedReversibleActionPermitAuthorization(
-                            approval=stored_approval,
-                            reversible=ReversibleActionPermitAuthorization(
-                                action=ActionPermitAuthorization(
-                                    permit=permit,
-                                    newlyConsumed=False,
-                                ),
-                                cleanupReservation=reservation,
-                            ),
-                            receipt=receipt,
+                        authorization = _approved_reversible_authorization(
+                            stored_approval,
+                            permit,
+                            receipt,
+                            reservation,
+                            newly_consumed=False,
                         )
                     else:
-                        collision = connection.execute(
-                            """
-                            SELECT 1 FROM graph_action_approval_envelopes
-                            WHERE proposal_id = ? OR request_id = ?
-                            UNION ALL
-                            SELECT 1 FROM graph_action_approval_consumptions
-                            WHERE approval_id = ? OR proposal_id = ? OR request_id = ?
-                            UNION ALL
-                            SELECT 1 FROM graph_action_permits
-                            WHERE proposal_id = ? OR request_id = ?
-                            UNION ALL
-                            SELECT 1 FROM graph_cleanup_permits WHERE request_id = ?
-                            LIMIT 1
-                            """,
-                            (
-                                proposal.proposal_id,
-                                proposal.request_id,
-                                approval.approval_id,
-                                proposal.proposal_id,
-                                proposal.request_id,
-                                proposal.proposal_id,
-                                proposal.request_id,
-                                proposal.request_id,
-                            ),
-                        ).fetchone()
-                        reservation_collision = connection.execute(
-                            """
-                            SELECT 1 FROM graph_action_cleanup_reservations
-                            WHERE reservation_request_id = ?
-                            LIMIT 1
-                            """,
-                            (cleanup_request.reservation_request_id,),
-                        ).fetchone()
-                        if collision is not None or reservation_collision is not None:
+                        if _approved_reversible_identity_is_consumed(
+                            connection,
+                            approval=approval,
+                            proposal=proposal,
+                            cleanup_request=cleanup_request,
+                        ):
                             raise ApprovedReversibleActionError(
                                 "approved reversible identity is already consumed"
                             )
@@ -2464,16 +2515,12 @@ class SQLiteGraphActionPermitStore:
                         _insert_action_permit(connection, permit)
                         _insert_approval_consumption(connection, receipt)
                         _insert_cleanup_reservation(connection, reservation)
-                        authorization = ApprovedReversibleActionPermitAuthorization(
-                            approval=approval,
-                            reversible=ReversibleActionPermitAuthorization(
-                                action=ActionPermitAuthorization(
-                                    permit=permit,
-                                    newlyConsumed=True,
-                                ),
-                                cleanupReservation=reservation,
-                            ),
-                            receipt=receipt,
+                        authorization = _approved_reversible_authorization(
+                            approval,
+                            permit,
+                            receipt,
+                            reservation,
+                            newly_consumed=True,
                         )
                     self._verify_pinned_approved_reversible_inputs(
                         envelope,

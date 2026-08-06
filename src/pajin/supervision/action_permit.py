@@ -674,14 +674,7 @@ class GeneralAttackActionPermitGate:
         campaign: CampaignManifest,
         input_authority: ActionApprovalInputAuthority,
     ) -> GraphApprovedActionPermitDispatcher:
-        activation_digest = self._activation.activation_set.activation_set_digest
-        if self._bound_envelope_digest is not None and (
-            self._bound_envelope_digest != envelope.envelope_digest
-            or self._bound_activation_set_digest != activation_digest
-        ):
-            raise GeneralAttackActionPermitError(
-                "General attack Permit gate is pinned to another authority"
-            )
+        activation_digest = self._require_dispatcher_authority(envelope)
         store = self._permit_store
         if not callable(getattr(store, "authorize_approved_for_dispatch", None)):
             raise GeneralAttackActionPermitError(
@@ -699,8 +692,7 @@ class GeneralAttackActionPermitGate:
             clock=lambda: self._claim_evaluated_at(campaign, envelope),
             permit_ttl=self._permit_ttl,
         )
-        self._bound_envelope_digest = envelope.envelope_digest
-        self._bound_activation_set_digest = activation_digest
+        self._pin_dispatcher_authority(envelope, activation_digest)
         return GraphApprovedActionPermitDispatcher(authority)
 
     def _approved_reversible_dispatcher(
@@ -710,14 +702,7 @@ class GeneralAttackActionPermitGate:
         approval_input_authority: ActionApprovalInputAuthority,
         reversible_input_authority: ReversibleActionPermitInputAuthority,
     ) -> GraphApprovedReversibleActionPermitDispatcher:
-        activation_digest = self._activation.activation_set.activation_set_digest
-        if self._bound_envelope_digest is not None and (
-            self._bound_envelope_digest != envelope.envelope_digest
-            or self._bound_activation_set_digest != activation_digest
-        ):
-            raise GeneralAttackActionPermitError(
-                "General attack Permit gate is pinned to another authority"
-            )
+        activation_digest = self._require_dispatcher_authority(envelope)
         store = self._permit_store
         if not callable(
             getattr(store, "authorize_approved_reversible_for_dispatch", None)
@@ -740,8 +725,7 @@ class GeneralAttackActionPermitGate:
             clock=lambda: self._claim_evaluated_at(campaign, envelope),
             permit_ttl=self._permit_ttl,
         )
-        self._bound_envelope_digest = envelope.envelope_digest
-        self._bound_activation_set_digest = activation_digest
+        self._pin_dispatcher_authority(envelope, activation_digest)
         return GraphApprovedReversibleActionPermitDispatcher(authority)
 
     def _current_activation_binding(
@@ -993,15 +977,8 @@ class GeneralAttackActionPermitGate:
         envelope: MissionEnvelope,
         campaign: CampaignManifest,
     ) -> GraphActionPermitDispatcher:
-        activation_digest = self._activation.activation_set.activation_set_digest
+        activation_digest = self._require_dispatcher_authority(envelope)
         if self._dispatcher is not None:
-            if (
-                self._bound_envelope_digest != envelope.envelope_digest
-                or self._bound_activation_set_digest != activation_digest
-            ):
-                raise GeneralAttackActionPermitError(
-                    "General attack Permit gate is pinned to another authority"
-                )
             return self._dispatcher
         authority = GraphActionPermitAuthority(
             campaign_id=envelope.campaign_id,
@@ -1015,9 +992,27 @@ class GeneralAttackActionPermitGate:
             permit_ttl=self._permit_ttl,
         )
         self._dispatcher = GraphActionPermitDispatcher(authority)
+        self._pin_dispatcher_authority(envelope, activation_digest)
+        return self._dispatcher
+
+    def _require_dispatcher_authority(self, envelope: MissionEnvelope) -> str:
+        activation_digest = self._activation.activation_set.activation_set_digest
+        if self._bound_envelope_digest is not None and (
+            self._bound_envelope_digest != envelope.envelope_digest
+            or self._bound_activation_set_digest != activation_digest
+        ):
+            raise GeneralAttackActionPermitError(
+                "General attack Permit gate is pinned to another authority"
+            )
+        return activation_digest
+
+    def _pin_dispatcher_authority(
+        self,
+        envelope: MissionEnvelope,
+        activation_digest: str,
+    ) -> None:
         self._bound_envelope_digest = envelope.envelope_digest
         self._bound_activation_set_digest = activation_digest
-        return self._dispatcher
 
     def _claim_evaluated_at(
         self,
