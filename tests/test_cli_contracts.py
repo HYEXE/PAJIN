@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from platform_test_support import symlink_or_skip
 from typer.testing import CliRunner
 
 import pajin.cli as cli
@@ -458,7 +459,7 @@ def test_provider_checks_fail_closed_on_unsealed_symlink_artifact(tmp_path: Path
     store = _sealed_cli_check_run(tmp_path)
     victim = tmp_path / "operator-secret.txt"
     victim.write_text("provider-secret", encoding="utf-8")
-    (store.path / "unsealed-link.txt").symlink_to(victim)
+    symlink_or_skip(store.path / "unsealed-link.txt", victim)
     outcome = SimpleNamespace(
         run_id=store.run_id,
         run_path=store.path,

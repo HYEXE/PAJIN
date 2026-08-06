@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from platform_test_support import symlink_or_skip
 
 import pajin.runtime.safe_files as safe_files
 from pajin.runtime.safe_files import (
@@ -23,7 +24,7 @@ def test_bounded_regular_reader_enforces_size_and_leaf_identity(tmp_path: Path) 
         read_bounded_regular_bytes(source, max_bytes=10, label="artifact")
 
     alias = tmp_path / "alias.json"
-    alias.symlink_to(source)
+    symlink_or_skip(alias, source)
     with pytest.raises(ValueError, match=r"regular file|symbolic link"):
         read_bounded_regular_bytes(alias, max_bytes=64, label="artifact")
 
@@ -33,7 +34,7 @@ def test_bounded_regular_reader_rejects_symlinked_parent(tmp_path: Path) -> None
     real_parent.mkdir()
     (real_parent / "artifact.json").write_bytes(b"{}")
     linked_parent = tmp_path / "linked"
-    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    symlink_or_skip(linked_parent, real_parent, target_is_directory=True)
 
     with pytest.raises(ValueError, match="parent contains a symbolic link"):
         read_bounded_regular_bytes(

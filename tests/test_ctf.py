@@ -2,6 +2,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from platform_test_support import symlink_or_skip
 from pydantic import ValidationError
 
 from pajin.domain.manifest import load_manifest
@@ -15,13 +16,6 @@ from pajin.modes.ctf import (
 
 def _challenge() -> CTFChallengeManifest:
     return load_ctf_challenge(Path("examples/ctf-web-backup-lab.yaml"))
-
-
-def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
-    try:
-        link.symlink_to(target, target_is_directory=directory)
-    except OSError as exc:  # pragma: no cover - depends on Windows developer privileges
-        pytest.skip(f"symbolic links are unavailable: {exc}")
 
 
 def test_ctf_challenge_compiles_to_one_local_policy_bound_target() -> None:
@@ -136,7 +130,7 @@ def test_ctf_campaign_write_rejects_symlink_leaf_without_touching_target(
     victim.write_text("keep\n", encoding="utf-8")
     output = tmp_path / "generated" / "ctf-campaign.yaml"
     output.parent.mkdir()
-    _symlink_or_skip(output, victim)
+    symlink_or_skip(output, victim)
 
     with pytest.raises(ValueError, match="symbolic link"):
         CTFChallengeService().write_campaign(
@@ -154,7 +148,7 @@ def test_ctf_campaign_write_rejects_symlinked_parent_without_creating_artifact(
     actual = tmp_path / "actual-output"
     actual.mkdir()
     linked = tmp_path / "linked-output"
-    _symlink_or_skip(linked, actual, directory=True)
+    symlink_or_skip(linked, actual, target_is_directory=True)
 
     with pytest.raises(ValueError, match="parent contains a symbolic link"):
         CTFChallengeService().write_campaign(

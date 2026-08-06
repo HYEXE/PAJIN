@@ -3,6 +3,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from platform_test_support import symlink_or_skip
 from pydantic import ValidationError
 
 from pajin.domain.manifest import load_manifest
@@ -38,13 +39,6 @@ def _approval(digest: str) -> BugBountyScopeApproval:
         expires_at=datetime(2027, 7, 13, 1, tzinfo=UTC),
         evidence="private-program-authorization-ticket-123",
     )
-
-
-def _symlink_or_skip(link: Path, target: Path, *, directory: bool = False) -> None:
-    try:
-        link.symlink_to(target, target_is_directory=directory)
-    except OSError as exc:  # pragma: no cover - depends on Windows developer privileges
-        pytest.skip(f"symbolic links are unavailable: {exc}")
 
 
 def test_review_normalizes_scope_and_binds_raw_policy() -> None:
@@ -261,7 +255,7 @@ def test_scope_review_rejects_symlink_leaf_without_touching_its_target(
     directory.mkdir(parents=True)
     victim = tmp_path / "victim.json"
     victim.write_text("keep", encoding="utf-8")
-    _symlink_or_skip(directory / "program.normalized.json", victim)
+    symlink_or_skip(directory / "program.normalized.json", victim)
 
     with pytest.raises(ValueError, match="symbolic link"):
         service.write_review(program, tmp_path / "reviews")
@@ -274,7 +268,7 @@ def test_scope_review_rejects_symlinked_output_parent(tmp_path: Path) -> None:
     actual = tmp_path / "actual-reviews"
     actual.mkdir()
     linked = tmp_path / "linked-reviews"
-    _symlink_or_skip(linked, actual, directory=True)
+    symlink_or_skip(linked, actual, target_is_directory=True)
 
     with pytest.raises(ValueError, match="parent contains a symbolic link"):
         BugBountyScopeService().write_review(program, linked)
@@ -293,7 +287,7 @@ def test_campaign_write_rejects_symlink_leaf_and_parent_without_touching_targets
 
     output = tmp_path / "campaigns" / "campaign.yaml"
     output.parent.mkdir()
-    _symlink_or_skip(output, victim)
+    symlink_or_skip(output, victim)
     with pytest.raises(ValueError, match="symbolic link"):
         service.write_campaign(program, approval, output)
     assert victim.read_text(encoding="utf-8") == "keep"
@@ -301,7 +295,7 @@ def test_campaign_write_rejects_symlink_leaf_and_parent_without_touching_targets
     actual = tmp_path / "actual-campaigns"
     actual.mkdir()
     linked = tmp_path / "linked-campaigns"
-    _symlink_or_skip(linked, actual, directory=True)
+    symlink_or_skip(linked, actual, target_is_directory=True)
     with pytest.raises(ValueError, match="parent contains a symbolic link"):
         service.write_campaign(program, approval, linked / "campaign.yaml")
     assert list(actual.iterdir()) == []

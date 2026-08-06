@@ -6,6 +6,7 @@ from threading import Barrier
 from uuid import UUID
 
 import pytest
+from platform_test_support import symlink_or_skip
 
 import pajin.runtime.control as control_module
 from pajin.domain.manifest import load_manifest
@@ -529,7 +530,7 @@ def test_kill_switch_does_not_disclose_symlink_target(tmp_path: Path) -> None:
     secret = "secret-token-that-must-not-become-a-cancellation-reason"
     secret_path.write_text(secret, encoding="utf-8")
     signal_path = tmp_path / "stop.signal"
-    signal_path.symlink_to(secret_path)
+    symlink_or_skip(signal_path, secret_path)
 
     kill_switch = control_module.KillSwitch(signal_path)
 

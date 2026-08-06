@@ -5,6 +5,7 @@ from hashlib import sha256
 from pathlib import Path
 
 import pytest
+from platform_test_support import symlink_or_skip
 from pydantic import ValidationError
 
 from pajin.collaboration import (
@@ -268,10 +269,7 @@ def test_symlink_substitution_fails_when_platform_can_create_test_link(
     victim = tmp_path / "operator-secret.json"
     victim.write_bytes(ARTIFACT_BYTES)
     artifact_path.unlink()
-    try:
-        artifact_path.symlink_to(victim)
-    except OSError as exc:
-        pytest.skip(f"symbolic links are unavailable: {exc}")
+    symlink_or_skip(artifact_path, victim)
 
     with pytest.raises(SharedArtifactRefError):
         verify_shared_artifact_ref(reference, evidence, source_run_path=source.path)
