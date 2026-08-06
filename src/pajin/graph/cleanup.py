@@ -10,9 +10,11 @@ from typing import Annotated, Literal, Protocol, Self
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from pajin.domain.models import StrictModel
+from pajin.domain.models import StrictModel, ToolRiskTier
 from pajin.graph.authority import (
     ActionBudgetReservation,
+    ActionCapabilityExecutionPolicy,
+    ActionCapabilityExecutionPolicyRegistry,
     ActionCapabilityRef,
     ActionCapabilityRegistry,
     ActionPermit,
@@ -556,11 +558,14 @@ class CleanupPermitAuthorization(StrictModel):
 class GraphReversibleActionPermitStore(Protocol):
     """Storage-neutral atomic ActionPermit plus cleanup-hold transaction."""
 
-    def claim_writer(
+    def claim_reversible_writer(
         self,
         compiler_id: str,
         compiler_version: str,
         compiler_digest: str,
+        policies: ActionCapabilityExecutionPolicyRegistry,
+        input_authority: ReversibleActionPermitInputAuthority,
+        claim_authority: object,
     ) -> object: ...
 
     def authorize_reversible_for_dispatch(
@@ -581,11 +586,13 @@ class GraphReversibleActionPermitStore(Protocol):
 class GraphCleanupPermitStore(Protocol):
     """Storage-neutral one-shot cleanup authority transaction."""
 
-    def claim_writer(
+    def claim_cleanup_writer(
         self,
         compiler_id: str,
         compiler_version: str,
         compiler_digest: str,
+        input_authority: CleanupPermitInputAuthority,
+        claim_authority: object,
     ) -> object: ...
 
     def authorize_cleanup_for_dispatch(
@@ -651,8 +658,10 @@ class GraphReversibleActionPermitAuthority:
         compiler_version: str,
         compiler_digest: str,
         capabilities: ActionCapabilityRegistry,
+        policies: ActionCapabilityExecutionPolicyRegistry,
         permit_store: GraphReversibleActionPermitStore,
         input_authority: ReversibleActionPermitInputAuthority,
+        claim_authority: object | None = None,
         clock: Callable[[], datetime] | None = None,
         permit_ttl: timedelta = timedelta(seconds=30),
     ) -> None:
@@ -663,11 +672,21 @@ class GraphReversibleActionPermitAuthority:
         self._campaign_id = campaign_id
         self._compiler_identity = (compiler_id, compiler_version, compiler_digest)
         self._capabilities = capabilities
+        if not callable(getattr(policies, "resolve", None)):
+            raise TypeError(
+                "reversible ActionPermit authority requires a Capability policy registry"
+            )
+        self._policies = policies
         self._permit_store = permit_store
         self._input_authority = input_authority
         self._clock = clock or (lambda: datetime.now(UTC))
         self._permit_ttl = permit_ttl
-        self._writer = permit_store.claim_writer(*self._compiler_identity)
+        self._writer = permit_store.claim_reversible_writer(
+            *self._compiler_identity,
+            policies,
+            input_authority,
+            claim_authority if claim_authority is not None else input_authority,
+        )
 
     def authorize_for_dispatch(
         self,
@@ -698,12 +717,20 @@ class GraphReversibleActionPermitAuthority:
         ):
             raise CleanupPermitError("MissionEnvelope compiler identity differs")
         action_capability = self._capabilities.resolve(proposal.capability)
+        action_policy = _resolve_reversible_execution_policy(
+            self._policies,
+            action_capability.reference(),
+        )
+        validate_reversible_action_policy(action_capability, action_policy)
+        if action_capability.risk_tier >= ToolRiskTier.T2:
+            raise CleanupPermitError(
+                "T2 or higher reversible Action requires dual approval and cleanup authority"
+            )
         cleanup_capability = self._capabilities.resolve(cleanup_request.cleanup_capability)
         evaluated_at = _normalize_utc(
             self._clock(),
             label="reversible ActionPermit evaluation time",
         )
-        self._verify_input(envelope, proposal, decision, cleanup_request)
         authorization = self._permit_store.authorize_reversible_for_dispatch(
             envelope,
             proposal,
@@ -715,7 +742,6 @@ class GraphReversibleActionPermitAuthority:
             evaluated_at=evaluated_at,
             permit_ttl=self._permit_ttl,
         )
-        self._verify_input(envelope, proposal, decision, cleanup_request)
         return authorization
 
     def _verify_input(
@@ -753,6 +779,7 @@ class GraphCleanupPermitAuthority:
         capabilities: ActionCapabilityRegistry,
         permit_store: GraphCleanupPermitStore,
         input_authority: CleanupPermitInputAuthority,
+        claim_authority: object | None = None,
         clock: Callable[[], datetime] | None = None,
         permit_ttl: timedelta = timedelta(seconds=30),
     ) -> None:
@@ -767,7 +794,11 @@ class GraphCleanupPermitAuthority:
         self._input_authority = input_authority
         self._clock = clock or (lambda: datetime.now(UTC))
         self._permit_ttl = permit_ttl
-        self._writer = permit_store.claim_writer(*self._compiler_identity)
+        self._writer = permit_store.claim_cleanup_writer(
+            *self._compiler_identity,
+            input_authority,
+            claim_authority if claim_authority is not None else input_authority,
+        )
 
     def authorize_for_dispatch(
         self,
@@ -795,7 +826,6 @@ class GraphCleanupPermitAuthority:
             self._clock(),
             label="CleanupPermit evaluation time",
         )
-        self._verify_input(envelope, request, decision)
         authorization = self._permit_store.authorize_cleanup_for_dispatch(
             envelope,
             request,
@@ -805,7 +835,6 @@ class GraphCleanupPermitAuthority:
             evaluated_at=evaluated_at,
             permit_ttl=self._permit_ttl,
         )
-        self._verify_input(envelope, request, decision)
         return authorization
 
     def _verify_input(
@@ -913,6 +942,7 @@ def validate_action_cleanup_reservation_authority(
     proposal: ActionProposal,
     decision: GraphDecision,
     action_capability: RegisteredActionCapability,
+    action_policy: ActionCapabilityExecutionPolicy,
     request: ActionCleanupReservationRequest,
     cleanup_capability: RegisteredActionCapability,
     *,
@@ -927,6 +957,11 @@ def validate_action_cleanup_reservation_authority(
         action_capability,
         evaluated_at=evaluated_at,
     )
+    validate_reversible_action_policy(action_capability, action_policy)
+    if action_capability.risk_tier >= ToolRiskTier.T2:
+        raise CleanupPermitError(
+            "T2 or higher reversible Action requires dual approval and cleanup authority"
+        )
     if (
         request.campaign_id != envelope.campaign_id
         or request.run_id != envelope.run_id
@@ -966,6 +1001,38 @@ def validate_action_cleanup_reservation_authority(
         raise CleanupPermitBudgetExceeded(
             "cleanup reservation exceeds the MissionEnvelope"
         )
+
+
+def validate_reversible_action_policy(
+    capability: RegisteredActionCapability,
+    policy: ActionCapabilityExecutionPolicy,
+) -> None:
+    """Require the exact T0/T1 reversible-write policy supported before APPROVAL-001B."""
+
+    if policy.capability != capability.reference():
+        raise CleanupPermitError("reversible Action Capability policy differs")
+    if (
+        policy.approval_required
+        or policy.side_effect_class != "reversible-write"
+        or not policy.cleanup_required
+    ):
+        raise CleanupPermitError(
+            "reversible ActionPermit requires approval-free reversible-write with cleanup"
+        )
+
+
+def _resolve_reversible_execution_policy(
+    policies: ActionCapabilityExecutionPolicyRegistry,
+    capability: ActionCapabilityRef,
+) -> ActionCapabilityExecutionPolicy:
+    try:
+        return policies.resolve(capability)
+    except CleanupPermitError:
+        raise
+    except Exception as exc:
+        raise CleanupPermitError(
+            "reversible Action Capability policy is not registered"
+        ) from exc
 
 
 def build_action_cleanup_reservation(

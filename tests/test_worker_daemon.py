@@ -1373,7 +1373,7 @@ async def test_cancelled_run_maps_to_typed_worker_context(tmp_path: Path) -> Non
 async def test_control_plane_fence_seals_engine_cleanup_and_quiescence(
     tmp_path: Path,
 ) -> None:
-    campaign = load_manifest(Path("examples/ai-redteam.yaml"))
+    campaign = load_manifest(Path("examples/multi-agent-cancel.yaml"))
     claimed = ClaimedJob(
         job=_job(payload={"input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}}),
         lease_token="l" * 43,
@@ -1712,8 +1712,12 @@ async def test_invalid_executor_outcome_is_permanently_failed(executor: Any) -> 
 
 
 @pytest.mark.asyncio
-async def test_campaign_executor_invokes_existing_local_runner(tmp_path: Path) -> None:
-    campaign = load_manifest(Path("examples/ai-redteam.yaml"))
+async def test_campaign_executor_invokes_existing_local_runner_for_t0(tmp_path: Path) -> None:
+    campaign = load_manifest(Path("examples/multi-agent-cancel.yaml"))
+    target = campaign.spec.targets[0].model_copy(update={"simulation": {"seconds": 0.1}})
+    campaign = campaign.model_copy(
+        update={"spec": campaign.spec.model_copy(update={"targets": [target]})}
+    )
     executor = CampaignJobExecutor(output_root=tmp_path)
     job = _job(payload={"input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}})
 
@@ -1728,10 +1732,10 @@ async def test_campaign_executor_invokes_existing_local_runner(tmp_path: Path) -
     assert result.result["toolCalls"] == 1
     assert result.result["validatedFindings"] == 0
     assert result.result["confirmedFindings"] == 0
-    assert result.result["needsReviewCandidates"] == 1
+    assert result.result["needsReviewCandidates"] == 0
     report_path = Path(str(result.result["reportPath"]))
     assert report_path.is_file()
-    assert "Needs review: `1`" in report_path.read_text(encoding="utf-8")
+    assert "Needs review: `0`" in report_path.read_text(encoding="utf-8")
     run_path = Path(str(result.result["runPath"]))
     execution_context = json.loads(
         (run_path / "execution-context.json").read_text(encoding="utf-8")
@@ -1745,8 +1749,22 @@ async def test_campaign_executor_invokes_existing_local_runner(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_failed_campaign_tool_call_fails_control_plane_job(tmp_path: Path) -> None:
+async def test_campaign_executor_rejects_legacy_t2_before_local_runner(
+    tmp_path: Path,
+) -> None:
     campaign = load_manifest(Path("examples/ai-redteam.yaml"))
+    executor = CampaignJobExecutor(output_root=tmp_path)
+    job = _job(payload={"input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}})
+
+    with pytest.raises(PermanentExecutionError, match="approval-aware"):
+        await executor.execute(job)
+
+    assert not (tmp_path / campaign.metadata.name).exists()
+
+
+@pytest.mark.asyncio
+async def test_failed_campaign_tool_call_fails_control_plane_job(tmp_path: Path) -> None:
+    campaign = load_manifest(Path("examples/multi-agent-cancel.yaml"))
     claimed = ClaimedJob(
         job=_job(payload={"input": {"manifest": campaign.model_dump(mode="json", by_alias=True)}}),
         lease_token="l" * 43,

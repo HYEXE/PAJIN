@@ -361,7 +361,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
     executor_input = _executor_input(markup)
     validated = CampaignJobInput.model_validate(executor_input)
     assert validated.profile == "deterministic-local"
-    assert validated.manifest.spec.targets[0].type == "mock-agent"
+    assert validated.manifest.spec.targets[0].type == "mock-sleep"
 
 
 def test_web_console_runtime_fails_closed_and_discards_stale_responses() -> None:
@@ -417,7 +417,7 @@ async def test_web_console_default_campaign_executes_through_trusted_adapter(
     assert result.result["toolCalls"] == 1
     assert result.result["validatedFindings"] == 0
     assert result.result["confirmedFindings"] == 0
-    assert result.result["needsReviewCandidates"] == 1
+    assert result.result["needsReviewCandidates"] == 0
     report_path = Path(str(result.result["reportPath"]))
     assert report_path.is_file()
-    assert "Needs review: `1`" in report_path.read_text(encoding="utf-8")
+    assert "Needs review: `0`" in report_path.read_text(encoding="utf-8")

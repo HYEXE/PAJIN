@@ -18,13 +18,16 @@ from pydantic import Field, ValidationError, model_validator
 from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.capabilities import (
     CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
+    CapabilityDefinition,
     CapabilityDispatchAuditEvent,
     CapabilityDispatchReconciliationError,
     CapabilityDispatchReconciliationObservation,
     CapabilityDispatchStage,
     CapabilityReleaseRef,
+    CapabilitySideEffectClass,
     ExistingModeCapabilityActivationError,
     ExistingModeCapabilityGatewayDispatcher,
+    PreparedCapabilityAction,
     capability_gateway_outcome_digest,
     reconcile_capability_dispatch,
 )
@@ -37,9 +40,19 @@ from pajin.domain.models import (
     CapabilityGrant,
     StrictModel,
     ToolRequest,
+    ToolRiskTier,
 )
 from pajin.domain.validation import FindingDisposition
-from pajin.graph import ActionPermit, ActionProposal, GraphDecision
+from pajin.graph import (
+    ActionApprovalConsumptionReceipt,
+    ActionApprovalEnvelope,
+    ActionPermit,
+    ActionProposal,
+    ApprovalBoundActionDispatchResult,
+    GraphActionPermitDispatcher,
+    GraphApprovalBoundActionPermitDispatcher,
+    GraphDecision,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
 from pajin.providers.models import NormalizedToolCall, ProviderChatResult, ProviderUsage
@@ -164,11 +177,19 @@ class CapabilityGraphCampaignJobInput(StrictModel):
     release: CapabilityReleaseRef
     request: ToolRequest
     grant: CapabilityGrant
+    approval: ActionApprovalEnvelope | None = None
 
     @model_validator(mode="after")
     def bind_job_authority(self) -> CapabilityGraphCampaignJobInput:
         if self.proposal.campaign_id != self.decision.campaign_id:
             raise ValueError("Capability Graph Job authority belongs to another Campaign or Run")
+        if self.approval is not None and (
+            self.approval.proposal != self.proposal
+            or self.approval.graph_decision != self.decision
+            or self.approval.release.release_id != self.release.release_id
+            or self.approval.release.release_digest != self.release.release_digest
+        ):
+            raise ValueError("Capability Graph Job approval differs from its exact action")
         return self
 
 
@@ -291,6 +312,7 @@ class CampaignJobExecutor:
                 cancellation=cancellation,
             )
         job_input = CampaignJobInput.model_validate(raw_input)
+        self._require_legacy_profile_risk_policy(job_input)
         tools = ToolRegistry()
         tools.register(MockAgentProbe())
         tools.register(SleepCheckTool())
@@ -370,6 +392,7 @@ class CampaignJobExecutor:
             raise PermanentExecutionError(
                 "capability-graph-v1 request preparation failed closed"
             ) from exc
+        permits = self._capability_graph_permits(runtime, job_input, prepared)
         used_calls = sum(
             permit.run_id == envelope.run_id
             for permit in runtime.graph_store.permit_store.permits()
@@ -385,7 +408,7 @@ class CampaignJobExecutor:
         )
         dispatcher = ExistingModeCapabilityGatewayDispatcher(
             activation=runtime.activation,
-            permits=runtime.permits,
+            permits=permits,
             gateway=gateway,
             audit_store=store,
             clock=runtime.clock,
@@ -441,7 +464,106 @@ class CampaignJobExecutor:
             terminal,
             outcome=outcome,
             dispatched=dispatched.dispatched,
+            approval_receipt=(
+                dispatched.approval_receipt
+                if isinstance(dispatched, ApprovalBoundActionDispatchResult)
+                else None
+            ),
         )
+
+    @staticmethod
+    def _capability_graph_permits(
+        runtime: CapabilityGraphDeploymentRuntime,
+        job_input: CapabilityGraphCampaignJobInput,
+        prepared: PreparedCapabilityAction,
+    ) -> GraphActionPermitDispatcher | GraphApprovalBoundActionPermitDispatcher:
+        if job_input.approval is not None and (
+            job_input.approval.release.release_id != prepared.release.release_id
+            or job_input.approval.release.release_digest != prepared.release.release_digest
+            or job_input.approval.release.capability_id
+            != prepared.capability.capability_id
+            or job_input.approval.release.capability_version
+            != prepared.capability.capability_version
+            or job_input.approval.release.capability_digest
+            != prepared.capability.definition_digest
+        ):
+            raise PermanentExecutionError(
+                "capability-graph-v1 approval differs from the prepared release"
+            )
+        binding = next(
+            (
+                item
+                for item in runtime.activation.activation_set.bindings
+                if item.release == prepared.release
+                and item.action_capability.reference() == prepared.capability
+            ),
+            None,
+        )
+        if binding is None:
+            raise PermanentExecutionError(
+                "capability-graph-v1 prepared Capability is not in the activation set"
+            )
+        definition = runtime.activation.rollout.bundle.definitions.resolve(
+            binding.capability.capability
+        )
+        CampaignJobExecutor._require_capability_graph_definition_policy(definition)
+        if prepared.capability.risk_tier >= ToolRiskTier.T3:
+            raise PermanentExecutionError(
+                "capability-graph-v1 T3 or higher action is not executable"
+            )
+        requires_approval = (
+            prepared.capability.risk_tier is ToolRiskTier.T2
+            or definition.approval_required
+        )
+        if requires_approval:
+            if job_input.approval is None or runtime.approved_permits is None:
+                raise PermanentExecutionError(
+                    "capability-graph-v1 action requires deployment-pinned approval"
+                )
+            return GraphApprovalBoundActionPermitDispatcher(
+                runtime.approved_permits,
+                job_input.approval,
+            )
+        if job_input.approval is not None:
+            raise PermanentExecutionError(
+                "capability-graph-v1 Job supplies an approval outside current policy"
+            )
+        return runtime.permits
+
+    @staticmethod
+    def _require_legacy_profile_risk_policy(job_input: CampaignJobInput) -> None:
+        target_tools = {
+            "mock-agent": MockAgentProbe.spec,
+            "mock-sleep": SleepCheckTool.spec,
+        }
+        elevated_tools = sorted(
+            {
+                target_tools[target.type].tool_id
+                for target in job_input.manifest.spec.targets
+                if target_tools[target.type].risk_tier >= ToolRiskTier.T2
+            }
+        )
+        if elevated_tools:
+            raise PermanentExecutionError(
+                "deterministic-local T2 action requires an approval-aware execution profile: "
+                + ", ".join(elevated_tools)
+            )
+
+    @staticmethod
+    def _require_capability_graph_definition_policy(
+        definition: CapabilityDefinition,
+    ) -> None:
+        if (
+            definition.cleanup_required
+            or definition.side_effect_class
+            not in {
+                CapabilitySideEffectClass.NONE,
+                CapabilitySideEffectClass.READ_ONLY,
+            }
+        ):
+            raise PermanentExecutionError(
+                "capability-graph-v1 write or cleanup action requires a cleanup-aware authority"
+            )
 
     @staticmethod
     def _seal_failed_dispatch(store: RunStore) -> None:
@@ -527,12 +649,12 @@ class CampaignJobExecutor:
         *,
         outcome: GatewayOutcome | None,
         dispatched: bool,
+        approval_receipt: ActionApprovalConsumptionReceipt | None,
     ) -> CompletedExecution:
         runtime = self._capability_deployment
         assert runtime is not None
         execution_context = worker_execution_context(self._worker)
-        return CompletedExecution(
-            result={
+        result: dict[str, object] = {
                 "engine": "capability-graph-gateway",
                 "executionProfile": "capability-graph-v1",
                 "deploymentId": runtime.deployment.deployment_id,
@@ -557,7 +679,16 @@ class CampaignJobExecutor:
                 ),
                 "outcomeAvailableInProcess": outcome is not None,
             }
-        )
+        if approval_receipt is not None:
+            result.update(
+                {
+                    "approvalId": approval_receipt.approval.approval_id,
+                    "approvalDigest": approval_receipt.approval.approval_digest,
+                    "approvalReceiptId": approval_receipt.receipt_id,
+                    "approvalReceiptDigest": approval_receipt.receipt_digest,
+                }
+            )
+        return CompletedExecution(result=result)
 
     @staticmethod
     def _verified_execution_context(

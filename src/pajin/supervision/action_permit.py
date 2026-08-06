@@ -17,6 +17,7 @@ from pajin.capabilities import (
     CapabilityDefinitionError,
     CapabilityDefinitionRef,
     CapabilityDefinitionRegistry,
+    CapabilitySideEffectClass,
     CodeBackedCapabilityRef,
     ExistingModeCapabilityActivation,
     ExistingModeCapabilityActivationBinding,
@@ -25,8 +26,14 @@ from pajin.capabilities import (
 )
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
-from pajin.domain.models import CampaignManifest, campaign_manifest_digest
+from pajin.domain.models import CampaignManifest, ToolRiskTier, campaign_manifest_digest
 from pajin.graph import (
+    ActionApprovalCapabilityPolicy,
+    ActionApprovalCapabilityPolicyRegistry,
+    ActionApprovalConsumptionReceipt,
+    ActionApprovalEnvelope,
+    ActionApprovalInputAuthority,
+    ActionApprovalIssuerAuthorityBinding,
     ActionBudgetReservation,
     ActionCleanupReservation,
     ActionCleanupReservationRequest,
@@ -36,6 +43,9 @@ from pajin.graph import (
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
     GraphActionPermitStore,
+    GraphApprovedActionPermitAuthority,
+    GraphApprovedActionPermitDispatcher,
+    GraphApprovedActionPermitStore,
     GraphDecision,
     GraphDecisionKind,
     GraphReversibleActionPermitAuthority,
@@ -115,6 +125,51 @@ class GeneralAttackReversibleCleanupAuthority(Protocol):
     ) -> GeneralAttackReversibleCleanupClaim: ...
 
 
+def _activation_action_policy_registry(
+    activation: ExistingModeCapabilityActivation,
+) -> ActionApprovalCapabilityPolicyRegistry:
+    return ActionApprovalCapabilityPolicyRegistry(
+        tuple(
+            ActionApprovalCapabilityPolicy(
+                capability=binding.action_capability.reference(),
+                sideEffectClass=definition.side_effect_class.value,
+                approvalRequired=definition.approval_required,
+                cleanupRequired=definition.cleanup_required,
+            )
+            for binding in activation.activation_set.bindings
+            for definition in (
+                activation.rollout.bundle.definitions.resolve(
+                    binding.capability.capability
+                ),
+            )
+        )
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class GeneralAttackApprovalClaim:
+    """Exact operator approval returned by a deployment-bound provider."""
+
+    envelope: ActionApprovalEnvelope
+
+
+class GeneralAttackApprovalAuthority(Protocol):
+    """Bind one current no-write action to deployment/operator approval authority."""
+
+    def bind_for_action(
+        self,
+        *,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        proposal: ActionProposal,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        envelope: MissionEnvelope,
+        decision: GraphDecision,
+        evaluated_at: datetime,
+    ) -> GeneralAttackApprovalClaim: ...
+
+
 @dataclass(frozen=True, slots=True)
 class GeneralAttackActionPermitResult[DispatchResultT]:
     """Non-authoritative observation of one exact GRAPH Permit dispatch claim."""
@@ -124,6 +179,7 @@ class GeneralAttackActionPermitResult[DispatchResultT]:
     proposal: ActionProposal
     dispatch: ActionDispatchResult[DispatchResultT]
     cleanup_reservation: ActionCleanupReservation | None = None
+    approval_receipt: ActionApprovalConsumptionReceipt | None = None
 
 
 class GeneralAttackActionPermitGate:
@@ -135,6 +191,9 @@ class GeneralAttackActionPermitGate:
         activation: ExistingModeCapabilityActivation,
         permit_store: GraphActionPermitStore,
         inputs: GeneralAttackActionPermitInputAuthority,
+        approval: GeneralAttackApprovalAuthority | None = None,
+        approval_input_authority: ActionApprovalInputAuthority | None = None,
+        approval_issuer: ActionApprovalIssuerAuthorityBinding | None = None,
         reversible_cleanup: GeneralAttackReversibleCleanupAuthority | None = None,
         clock: Callable[[], datetime] | None = None,
         permit_ttl: timedelta = timedelta(seconds=30),
@@ -144,8 +203,34 @@ class GeneralAttackActionPermitGate:
         if not callable(getattr(inputs, "resolve_for_action", None)):
             raise TypeError("General attack Permit gate requires an external input authority")
         self._activation = activation
+        self._policies = _activation_action_policy_registry(activation)
         self._permit_store = permit_store
         self._inputs = inputs
+        if approval is not None and not callable(getattr(approval, "bind_for_action", None)):
+            raise TypeError("General attack approval authority must bind an exact approval")
+        if approval is None and (
+            approval_input_authority is not None or approval_issuer is not None
+        ):
+            raise TypeError("approval verifier and issuer require an approval provider")
+        if approval is not None and (
+            approval_input_authority is None or approval_issuer is None
+        ):
+            raise TypeError(
+                "General attack approval requires a deployment-bound verifier and issuer"
+            )
+        if approval_input_authority is not None and not callable(
+            getattr(approval_input_authority, "verify_action_approval", None)
+        ):
+            raise TypeError("General attack approval verifier is invalid")
+        self._approval = approval
+        self._approval_input_authority = approval_input_authority
+        self._approval_issuer = (
+            ActionApprovalIssuerAuthorityBinding.model_validate(
+                approval_issuer.model_dump(mode="json", by_alias=True)
+            )
+            if approval_issuer is not None
+            else None
+        )
         if reversible_cleanup is not None and not callable(
             getattr(reversible_cleanup, "bind_for_action", None)
         ):
@@ -202,6 +287,7 @@ class GeneralAttackActionPermitGate:
             canonical_intent,
             definitions,
         )
+        requires_approval = self._requires_action_approval(definition, prepared)
         evaluated_at = self._evaluated_at()
         inputs, reservation = self._resolve_inputs(
             canonical_intent,
@@ -240,10 +326,24 @@ class GeneralAttackActionPermitGate:
             createdAt=inputs.decision.created_at,
         )
 
+        approval_claim: GeneralAttackApprovalClaim | None = None
+        if requires_approval:
+            approval_claim = self._bind_action_approval(
+                canonical_intent,
+                prepared,
+                action_proposal,
+                canonical_campaign,
+                definition,
+                inputs,
+                evaluated_at,
+            )
+            self._revalidate_current_activation(binding, canonical_intent, prepared)
+
         async def consume(permit: ActionPermit) -> DispatchResultT:
             return await dispatch(permit, prepared, action_proposal)
 
         cleanup_reservation: ActionCleanupReservation | None = None
+        approval_receipt: ActionApprovalConsumptionReceipt | None = None
         if definition.side_effect_class.value.endswith("write"):
             if (
                 definition.side_effect_class.value != "reversible-write"
@@ -281,6 +381,34 @@ class GeneralAttackActionPermitGate:
                 dispatched=reversible.dispatched,
                 result=reversible.result,
             )
+        elif approval_claim is not None:
+            approved_dispatcher = self._approved_dispatcher(
+                inputs.envelope,
+                canonical_campaign,
+                self._required_approval_input_authority(),
+            )
+
+            async def consume_approved(
+                permit: ActionPermit,
+                receipt: ActionApprovalConsumptionReceipt,
+            ) -> DispatchResultT:
+                del receipt
+                return await consume(permit)
+
+            approved = await approved_dispatcher.dispatch_once(
+                inputs.envelope,
+                action_proposal,
+                inputs.decision,
+                approval_claim.envelope,
+                consume_approved,
+            )
+            action = approved.authorization.action
+            approval_receipt = approved.authorization.receipt
+            dispatch_result = ActionDispatchResult(
+                permit=action.permit,
+                dispatched=approved.dispatched,
+                result=approved.result,
+            )
         else:
             action_dispatcher = self._bound_dispatcher(
                 inputs.envelope,
@@ -298,7 +426,126 @@ class GeneralAttackActionPermitGate:
             proposal=action_proposal,
             dispatch=dispatch_result,
             cleanup_reservation=cleanup_reservation,
+            approval_receipt=approval_receipt,
         )
+
+    def _requires_action_approval(
+        self,
+        definition: CapabilityDefinition,
+        prepared: PreparedCapabilityAction,
+    ) -> bool:
+        risk = prepared.capability.risk_tier
+        if risk >= ToolRiskTier.T3:
+            raise GeneralAttackActionPermitError(
+                "T3 or higher actions are outside the single-action approval baseline"
+            )
+        no_write = definition.side_effect_class in {
+            CapabilitySideEffectClass.NONE,
+            CapabilitySideEffectClass.READ_ONLY,
+        }
+        if no_write and definition.cleanup_required:
+            raise GeneralAttackActionPermitError(
+                "no-write action cannot require a cleanup hold"
+            )
+        if not no_write and definition.approval_required:
+            raise GeneralAttackActionPermitError(
+                "approval-required write action lacks dual approval and cleanup authority"
+            )
+        if not no_write and risk >= ToolRiskTier.T2:
+            raise GeneralAttackActionPermitError(
+                "T2 write action lacks dual approval and cleanup authority"
+            )
+        required = no_write and (risk is ToolRiskTier.T2 or definition.approval_required)
+        if required and self._approval is None:
+            raise GeneralAttackActionPermitError(
+                "no-write action requires an operator approval authority"
+            )
+        return required
+
+    def _bind_action_approval(
+        self,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        proposal: ActionProposal,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        inputs: GeneralAttackActionPermitInputs,
+        evaluated_at: datetime,
+    ) -> GeneralAttackApprovalClaim:
+        authority = self._approval
+        if authority is None:
+            raise GeneralAttackActionPermitError(
+                "no-write action requires an operator approval authority"
+            )
+        try:
+            bound = authority.bind_for_action(
+                intent=GeneralAttackCompiledIntent.model_validate(
+                    intent.model_dump(mode="json", by_alias=True)
+                ),
+                prepared=PreparedCapabilityAction.model_validate(
+                    prepared.model_dump(mode="json", by_alias=True)
+                ),
+                proposal=ActionProposal.model_validate(
+                    proposal.model_dump(mode="json", by_alias=True)
+                ),
+                campaign=CampaignManifest.model_validate(
+                    campaign.model_dump(mode="json", by_alias=True)
+                ),
+                definition=CapabilityDefinition.model_validate(
+                    definition.model_dump(mode="json", by_alias=True)
+                ),
+                envelope=MissionEnvelope.model_validate(
+                    inputs.envelope.model_dump(mode="json", by_alias=True)
+                ),
+                decision=GraphDecision.model_validate(
+                    inputs.decision.model_dump(mode="json", by_alias=True)
+                ),
+                evaluated_at=evaluated_at,
+            )
+            if type(bound) is not GeneralAttackApprovalClaim:
+                raise TypeError("approval authority returned another claim type")
+            approval = ActionApprovalEnvelope.model_validate(
+                bound.envelope.model_dump(mode="json", by_alias=True)
+            )
+            if (
+                approval.issuer != self._required_approval_issuer()
+                or approval.mission_envelope != inputs.envelope
+                or approval.graph_decision != inputs.decision
+                or approval.proposal != proposal
+                or approval.campaign_digest != campaign_manifest_digest(campaign)
+                or approval.source_intent_digest != intent.intent_digest
+                or approval.activation_set_digest != prepared.activation_set_digest
+                or approval.release.release_id != prepared.release.release_id
+                or approval.release.release_digest != prepared.release.release_digest
+                or approval.release.capability_id != prepared.capability.capability_id
+                or approval.release.capability_version != prepared.capability.capability_version
+                or approval.release.capability_digest != prepared.capability.definition_digest
+                or approval.side_effect_class != definition.side_effect_class.value
+            ):
+                raise GeneralAttackActionPermitError(
+                    "operator approval differs from the current exact action"
+                )
+            return GeneralAttackApprovalClaim(envelope=approval)
+        except GeneralAttackActionPermitError:
+            raise
+        except Exception as exc:
+            raise GeneralAttackActionPermitError("operator approval binding failed closed") from exc
+
+    def _required_approval_input_authority(self) -> ActionApprovalInputAuthority:
+        authority = self._approval_input_authority
+        if authority is None:
+            raise GeneralAttackActionPermitError(
+                "operator approval verifier is not deployment-bound"
+            )
+        return authority
+
+    def _required_approval_issuer(self) -> ActionApprovalIssuerAuthorityBinding:
+        issuer = self._approval_issuer
+        if issuer is None:
+            raise GeneralAttackActionPermitError(
+                "operator approval issuer is not deployment-bound"
+            )
+        return issuer
 
     def _bind_reversible_cleanup(
         self,
@@ -375,12 +622,49 @@ class GeneralAttackActionPermitGate:
             compiler_version=envelope.compiler_version,
             compiler_digest=envelope.compiler_digest,
             capabilities=self._activation.action_registry(),
+            policies=self._policies,
             permit_store=cast(GraphReversibleActionPermitStore, store),
             input_authority=input_authority,
+            claim_authority=self._reversible_cleanup,
             clock=lambda: self._claim_evaluated_at(campaign, envelope),
             permit_ttl=self._permit_ttl,
         )
         return GraphReversibleActionPermitDispatcher(authority)
+
+    def _approved_dispatcher(
+        self,
+        envelope: MissionEnvelope,
+        campaign: CampaignManifest,
+        input_authority: ActionApprovalInputAuthority,
+    ) -> GraphApprovedActionPermitDispatcher:
+        activation_digest = self._activation.activation_set.activation_set_digest
+        if self._bound_envelope_digest is not None and (
+            self._bound_envelope_digest != envelope.envelope_digest
+            or self._bound_activation_set_digest != activation_digest
+        ):
+            raise GeneralAttackActionPermitError(
+                "General attack Permit gate is pinned to another authority"
+            )
+        store = self._permit_store
+        if not callable(getattr(store, "authorize_approved_for_dispatch", None)):
+            raise GeneralAttackActionPermitError(
+                "GRAPH Permit store lacks atomic approval consumption"
+            )
+        authority = GraphApprovedActionPermitAuthority(
+            campaign_id=envelope.campaign_id,
+            compiler_id=envelope.compiler_id,
+            compiler_version=envelope.compiler_version,
+            compiler_digest=envelope.compiler_digest,
+            capabilities=self._activation.action_registry(),
+            policies=self._policies,
+            permit_store=cast(GraphApprovedActionPermitStore, store),
+            input_authority=input_authority,
+            clock=lambda: self._claim_evaluated_at(campaign, envelope),
+            permit_ttl=self._permit_ttl,
+        )
+        self._bound_envelope_digest = envelope.envelope_digest
+        self._bound_activation_set_digest = activation_digest
+        return GraphApprovedActionPermitDispatcher(authority)
 
     def _current_activation_binding(
         self,
@@ -647,6 +931,7 @@ class GeneralAttackActionPermitGate:
             compiler_version=envelope.compiler_version,
             compiler_digest=envelope.compiler_digest,
             capabilities=self._activation.action_registry(),
+            policies=self._policies,
             permit_store=self._permit_store,
             clock=lambda: self._claim_evaluated_at(campaign, envelope),
             permit_ttl=self._permit_ttl,

@@ -39,6 +39,7 @@ from pajin.capabilities import (
     CapabilityReplayVerdict,
     CapabilityReviewDecision,
     CapabilityReviewStatement,
+    CapabilitySideEffectClass,
     CapabilityUseProfile,
     ExistingModeCapabilityActivation,
     ExistingModeCapabilityActivationError,
@@ -85,6 +86,9 @@ from pajin.domain.models import (
     ToolRiskTier,
 )
 from pajin.graph import (
+    ActionApprovalEnvelope,
+    ActionApprovalIssuerAuthorityBinding,
+    ActionApprovalReleaseRef,
     ActionBudgetLimit,
     ActionBudgetReservation,
     ActionPermitError,
@@ -104,6 +108,7 @@ from pajin.graph import (
     SQLiteGraphStore,
     SurfaceProposal,
     TrustedGraphLineageRegistry,
+    action_permit_attempt_id,
     graph_snapshot_ref,
 )
 from pajin.policy.engine import PolicyEngine
@@ -1429,6 +1434,41 @@ def _capability_worker_fixture(
         ),
         createdAt=NOW - timedelta(minutes=6),
     )
+    approval = ActionApprovalEnvelope(
+        issuer=ActionApprovalIssuerAuthorityBinding(
+            authorityId="deployment:capability-graph-operator",
+            authorityVersion="1.0.0",
+            implementationType="tests.DigestPinnedCapabilityGraphDeployment",
+            contextDigest=campaign_digest,
+        ),
+        requestedBy="principal:capability-graph-planner",
+        approvedBy="principal:range-operator",
+        campaignId=campaign.metadata.name,
+        campaignDigest=campaign_digest,
+        runId=graph_run_id,
+        missionEnvelope=envelope,
+        sourceIntentDigest=decision.decision_payload_digest,
+        activationSetDigest=activation.activation_set.activation_set_digest,
+        release=ActionApprovalReleaseRef(
+            releaseId=release.release_id,
+            releaseDigest=release.release_digest,
+            capabilityId=capability.capability_id,
+            capabilityVersion=capability.capability_version,
+            capabilityDigest=capability.definition_digest,
+        ),
+        graphDecision=decision,
+        proposal=proposal,
+        expectedActionPermitId=action_permit_attempt_id(
+            envelope,
+            proposal,
+            decision,
+        ),
+        sideEffectClass=definition.side_effect_class.value,
+        reservation=proposal.reservation,
+        approvedAt=NOW - timedelta(minutes=5),
+        notBefore=NOW - timedelta(minutes=4),
+        expiresAt=NOW + timedelta(minutes=30),
+    )
     grant = CapabilityGrant(
         subject=prepared.request.agent_id,
         campaign=campaign.metadata.name,
@@ -1444,6 +1484,7 @@ def _capability_worker_fixture(
         campaign=campaign,
         campaignDigest=campaign_digest,
         missionEnvelope=envelope,
+        actionApprovals=(approval,),
         lifecyclePolicy=policy,
         trustKeys=keys,
         releases=releases,
@@ -1471,6 +1512,7 @@ def _capability_worker_fixture(
         "release": release.model_dump(mode="json", by_alias=True),
         "request": request.model_dump(mode="json", by_alias=True),
         "grant": grant.model_dump(mode="json", by_alias=True),
+        "approval": approval.model_dump(mode="json", by_alias=True),
     }
     return runtime, job_input, deployment_path, content
 
@@ -1518,6 +1560,13 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
     assert first.result["dispatchStatus"] == "completed"
     assert first.result["toolSuccess"] is True
     assert first.result["outcomeAvailableInProcess"] is True
+    assert first.result["approvalId"] == job_input["approval"]["approvalId"]
+    assert first.result["approvalDigest"] == job_input["approval"]["approvalDigest"]
+    assert first.result["approvalReceiptId"] == retry.result["approvalReceiptId"]
+    assert first.result["approvalReceiptDigest"] == retry.result["approvalReceiptDigest"]
+    durable_receipt = runtime.graph_store.permit_store.approval_consumptions()[0]
+    assert first.result["approvalReceiptId"] == durable_receipt.receipt_id
+    assert first.result["approvalReceiptDigest"] == durable_receipt.receipt_digest
     assert retry.result["permitId"] == first.result["permitId"]
     assert retry.result["dispatched"] is False
     assert retry.result["dispatchStatus"] == "completed"
@@ -1563,6 +1612,117 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
         )
         == reconciliation.record
     )
+
+
+@pytest.mark.asyncio
+async def test_worker_deployment_rejects_t2_without_pinned_approval(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    job_input = dict(job_input)
+    job_input.pop("approval")
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="deployment-pinned approval"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+    assert runtime.graph_store.permit_store.action_approvals() == ()
+
+
+@pytest.mark.asyncio
+async def test_worker_job_rejects_release_substitution_before_permit(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    approved_release = runtime.deployment.action_approvals[0].release
+    foreign_release = next(
+        bundle.release.statement.reference()
+        for bundle in runtime.deployment.releases
+        if bundle.release.statement.release_id != approved_release.release_id
+    )
+    substituted = dict(job_input)
+    substituted["release"] = foreign_release.model_dump(mode="json", by_alias=True)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="Job input is invalid"):
+        await executor.execute(_capability_worker_job(substituted))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+    assert runtime.graph_store.permit_store.action_approvals() == ()
+
+
+def test_worker_deployment_rejects_cross_release_approval_binding(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, _, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    raw = runtime.deployment.model_dump(mode="json", by_alias=True)
+    approval = raw["actionApprovals"][0]
+    approved_capability = approval["release"]["capabilityId"]
+    foreign_statement = next(
+        bundle["release"]["statement"]
+        for bundle in raw["releases"]
+        if bundle["release"]["statement"]["capability"]["capability"][
+            "capabilityId"
+        ]
+        != approved_capability
+    )
+    foreign_ref = {
+        "releaseId": foreign_statement["releaseId"],
+        "releaseDigest": foreign_statement["releaseDigest"],
+    }
+    raw["activatedReleases"] = sorted(
+        [*raw["activatedReleases"], foreign_ref],
+        key=lambda item: (item["releaseId"], item["releaseDigest"]),
+    )
+    approval["release"]["releaseId"] = foreign_ref["releaseId"]
+    approval["release"]["releaseDigest"] = foreign_ref["releaseDigest"]
+    approval["approvalId"] = ""
+    approval["approvalDigest"] = ""
+
+    with pytest.raises(ValidationError, match="deployment approval differs"):
+        CapabilityGraphWorkerDeployment.model_validate(raw)
+
+
+@pytest.mark.parametrize(
+    "definition_update",
+    [
+        {"side_effect_class": CapabilitySideEffectClass.REVERSIBLE_WRITE},
+        {"side_effect_class": CapabilitySideEffectClass.IRREVERSIBLE_WRITE},
+        {"cleanup_required": True},
+    ],
+)
+def test_worker_deployment_plain_path_rejects_write_or_cleanup_policy(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    definition_update: dict[str, object],
+) -> None:
+    runtime, _, _, _ = _capability_worker_fixture(tmp_path, sample_campaign)
+    binding = runtime.activation.activation_set.bindings[0]
+    definition = runtime.activation.rollout.bundle.definitions.resolve(
+        binding.capability.capability
+    )
+    unsafe_definition = definition.model_copy(update=definition_update)
+
+    with pytest.raises(PermanentExecutionError, match="cleanup-aware"):
+        CampaignJobExecutor._require_capability_graph_definition_policy(
+            unsafe_definition
+        )
 
 
 @pytest.mark.asyncio

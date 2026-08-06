@@ -19,14 +19,26 @@ from typing import TYPE_CHECKING, Annotated, Literal, Self, cast
 
 from pydantic import ConfigDict, Field, ValidationError, field_validator, model_validator
 
-from pajin.domain.models import StrictModel
+from pajin.domain.models import StrictModel, ToolRiskTier
 from pajin.graph.admission import (
     GraphAdmissionDecision,
     GraphAdmissionEvent,
     GraphEventLogError,
 )
+from pajin.graph.approval import (
+    ActionApprovalAuthorization,
+    ActionApprovalCapabilityPolicy,
+    ActionApprovalCapabilityPolicyRegistry,
+    ActionApprovalConsumptionReceipt,
+    ActionApprovalEnvelope,
+    ActionApprovalError,
+    ActionApprovalInputAuthority,
+    build_action_approval_consumption_receipt,
+    validate_action_approval_authority,
+)
 from pajin.graph.authority import (
     ActionBudgetReservation,
+    ActionCapabilityExecutionPolicyRegistry,
     ActionPermit,
     ActionPermitAuthorization,
     ActionPermitBudgetExceeded,
@@ -39,6 +51,7 @@ from pajin.graph.authority import (
     action_permit_attempt_id,
     build_action_permit,
     validate_action_authority,
+    validate_plain_action_policy,
 )
 from pajin.graph.cleanup import (
     ActionCleanupReservation,
@@ -48,14 +61,17 @@ from pajin.graph.cleanup import (
     CleanupPermitBudgetExceeded,
     CleanupPermitConflict,
     CleanupPermitError,
+    CleanupPermitInputAuthority,
     CleanupPermitStaleDecision,
     CleanupRequest,
     ReversibleActionPermitAuthorization,
+    ReversibleActionPermitInputAuthority,
     build_action_cleanup_reservation,
     build_cleanup_permit,
     cleanup_permit_attempt_id,
     validate_action_cleanup_reservation_authority,
     validate_cleanup_authority,
+    validate_reversible_action_policy,
 )
 from pajin.graph.consistency import GraphDecision
 from pajin.graph.models import (
@@ -87,7 +103,8 @@ if TYPE_CHECKING:
         SQLiteGraphRetainedBackupManifest,
     )
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
+_CLEANUP_SCHEMA_VERSION = 3
 _ACTION_PERMIT_SCHEMA_VERSION = 2
 _LEGACY_SCHEMA_VERSION = 1
 _APPLICATION_ID = 0x50414752  # ASCII "PAGR"
@@ -95,7 +112,23 @@ _BUSY_TIMEOUT_MS = 30_000
 _MAX_GRAPH_BYTES = 64 * 1024 * 1024
 _MAX_GRAPH_BACKUP_BYTES = 256 * 1024 * 1024
 _MAX_GRAPH_BACKUP_MANIFEST_BYTES = 64 * 1024
+
+
+def _canonical_action_policy_registry(
+    policies: ActionCapabilityExecutionPolicyRegistry,
+    *,
+    label: str,
+) -> ActionApprovalCapabilityPolicyRegistry:
+    if not isinstance(policies, ActionApprovalCapabilityPolicyRegistry):
+        raise TypeError(f"{label} requires the exact deployment policy registry")
+    try:
+        return ActionApprovalCapabilityPolicyRegistry(policies.policies())
+    except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+        raise TypeError(f"{label} policy registry is not canonical") from exc
 GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
+    "pajin.dev/sqlite-graph-backup-manifest/v1alpha3"
+] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha3"
+_CLEANUP_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
     "pajin.dev/sqlite-graph-backup-manifest/v1alpha2"
 ] = "pajin.dev/sqlite-graph-backup-manifest/v1alpha2"
 _LEGACY_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION: Literal[
@@ -308,6 +341,68 @@ _CLEANUP_PERMITS_ENVELOPE_INDEX_SQL = (
     "CREATE INDEX graph_cleanup_permits_envelope_idx "
     "ON graph_cleanup_permits(envelope_id, ordinal)"
 )
+_ACTION_APPROVAL_ENVELOPES_TABLE_SQL = """
+    CREATE TABLE graph_action_approval_envelopes (
+        ordinal INTEGER PRIMARY KEY NOT NULL CHECK (ordinal >= 1),
+        approval_id TEXT NOT NULL UNIQUE,
+        approval_digest TEXT NOT NULL UNIQUE CHECK (length(approval_digest) = 64),
+        campaign_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        envelope_id TEXT NOT NULL,
+        envelope_digest TEXT NOT NULL CHECK (length(envelope_digest) = 64),
+        issuer_authority_id TEXT NOT NULL,
+        issuer_authority_digest TEXT NOT NULL
+            CHECK (length(issuer_authority_digest) = 64),
+        capability_id TEXT NOT NULL,
+        capability_version TEXT NOT NULL,
+        capability_digest TEXT NOT NULL CHECK (length(capability_digest) = 64),
+        release_id TEXT NOT NULL,
+        release_digest TEXT NOT NULL CHECK (length(release_digest) = 64),
+        proposal_id TEXT NOT NULL UNIQUE,
+        proposal_digest TEXT NOT NULL CHECK (length(proposal_digest) = 64),
+        target_digest TEXT NOT NULL CHECK (length(target_digest) = 64),
+        request_id TEXT NOT NULL UNIQUE,
+        request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+        normalized_parameters_digest TEXT NOT NULL
+            CHECK (length(normalized_parameters_digest) = 64),
+        risk_tier TEXT NOT NULL CHECK (risk_tier IN ('T0', 'T1', 'T2')),
+        request_units INTEGER NOT NULL CHECK (request_units >= 1),
+        cost_microusd INTEGER NOT NULL CHECK (cost_microusd >= 0),
+        approved_at TEXT NOT NULL,
+        not_before TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        approval_json BLOB NOT NULL
+    ) STRICT
+    """
+_ACTION_APPROVAL_ENVELOPES_ENVELOPE_INDEX_SQL = (
+    "CREATE INDEX graph_action_approval_envelopes_envelope_idx "
+    "ON graph_action_approval_envelopes(envelope_id, ordinal)"
+)
+_ACTION_APPROVAL_CONSUMPTIONS_TABLE_SQL = """
+    CREATE TABLE graph_action_approval_consumptions (
+        ordinal INTEGER PRIMARY KEY NOT NULL CHECK (ordinal >= 1),
+        receipt_id TEXT NOT NULL UNIQUE,
+        receipt_digest TEXT NOT NULL UNIQUE CHECK (length(receipt_digest) = 64),
+        approval_id TEXT NOT NULL UNIQUE
+            REFERENCES graph_action_approval_envelopes(approval_id),
+        approval_digest TEXT NOT NULL CHECK (length(approval_digest) = 64),
+        permit_id TEXT NOT NULL UNIQUE REFERENCES graph_action_permits(permit_id),
+        permit_digest TEXT NOT NULL CHECK (length(permit_digest) = 64),
+        dispatch_id TEXT NOT NULL UNIQUE,
+        proposal_id TEXT NOT NULL UNIQUE,
+        proposal_digest TEXT NOT NULL CHECK (length(proposal_digest) = 64),
+        request_id TEXT NOT NULL UNIQUE,
+        request_digest TEXT NOT NULL CHECK (length(request_digest) = 64),
+        normalized_parameters_digest TEXT NOT NULL
+            CHECK (length(normalized_parameters_digest) = 64),
+        consumed_at TEXT NOT NULL,
+        receipt_json BLOB NOT NULL
+    ) STRICT
+    """
+_ACTION_APPROVAL_CONSUMPTIONS_ENVELOPE_INDEX_SQL = (
+    "CREATE INDEX graph_action_approval_consumptions_approval_idx "
+    "ON graph_action_approval_consumptions(approval_id, ordinal)"
+)
 
 
 def _immutable_triggers(table: str, identity_column: str) -> dict[tuple[str, str], str]:
@@ -390,8 +485,8 @@ _ACTION_PERMIT_TABLES = _LEGACY_TABLES | {
     "graph_action_permits",
 }
 
-_SCHEMA_OBJECT_SQL = dict(_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
-_SCHEMA_OBJECT_SQL.update(
+_CLEANUP_SCHEMA_OBJECT_SQL = dict(_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
+_CLEANUP_SCHEMA_OBJECT_SQL.update(
     {
         (
             "table",
@@ -412,11 +507,43 @@ for _table, _identity in (
     ("graph_action_cleanup_reservations", "ordinal"),
     ("graph_cleanup_permits", "ordinal"),
 ):
-    _SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
+    _CLEANUP_SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
 
-_TABLES = _ACTION_PERMIT_TABLES | {
+_CLEANUP_TABLES = _ACTION_PERMIT_TABLES | {
     "graph_action_cleanup_reservations",
     "graph_cleanup_permits",
+}
+
+_SCHEMA_OBJECT_SQL = dict(_CLEANUP_SCHEMA_OBJECT_SQL)
+_SCHEMA_OBJECT_SQL.update(
+    {
+        (
+            "table",
+            "graph_action_approval_envelopes",
+        ): _ACTION_APPROVAL_ENVELOPES_TABLE_SQL,
+        (
+            "index",
+            "graph_action_approval_envelopes_envelope_idx",
+        ): _ACTION_APPROVAL_ENVELOPES_ENVELOPE_INDEX_SQL,
+        (
+            "table",
+            "graph_action_approval_consumptions",
+        ): _ACTION_APPROVAL_CONSUMPTIONS_TABLE_SQL,
+        (
+            "index",
+            "graph_action_approval_consumptions_approval_idx",
+        ): _ACTION_APPROVAL_CONSUMPTIONS_ENVELOPE_INDEX_SQL,
+    }
+)
+for _table, _identity in (
+    ("graph_action_approval_envelopes", "ordinal"),
+    ("graph_action_approval_consumptions", "ordinal"),
+):
+    _SCHEMA_OBJECT_SQL.update(_immutable_triggers(_table, _identity))
+
+_TABLES = _CLEANUP_TABLES | {
+    "graph_action_approval_envelopes",
+    "graph_action_approval_consumptions",
 }
 
 
@@ -439,6 +566,7 @@ def _schema_digest(objects: dict[tuple[str, str], str]) -> str:
 
 _LEGACY_SCHEMA_DIGEST = _schema_digest(_LEGACY_SCHEMA_OBJECT_SQL)
 _ACTION_PERMIT_SCHEMA_DIGEST = _schema_digest(_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
+_CLEANUP_SCHEMA_DIGEST = _schema_digest(_CLEANUP_SCHEMA_OBJECT_SQL)
 _SCHEMA_DIGEST = _schema_digest(_SCHEMA_OBJECT_SQL)
 
 
@@ -520,13 +648,13 @@ class _SQLiteGraphBackupManifestV1(StrictModel):
         return self
 
 
-class SQLiteGraphBackupManifest(StrictModel):
-    """Content-addressed identity and logical-state summary for one Graph backup."""
+class _SQLiteGraphBackupManifestV2(StrictModel):
+    """Legacy v3 cleanup database manifest retained solely for verified restore."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
     api_version: Literal["pajin.dev/sqlite-graph-backup-manifest/v1alpha2"] = Field(
-        default=GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
+        default=_CLEANUP_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
         alias="apiVersion",
     )
     kind: Literal["SQLiteGraphBackupManifest"] = "SQLiteGraphBackupManifest"
@@ -538,7 +666,7 @@ class SQLiteGraphBackupManifest(StrictModel):
         pattern=r"^[a-z0-9][a-z0-9-]*$",
     )
     schema_version: Literal[3] = Field(default=3, alias="schemaVersion")
-    schema_digest: _Sha256 = Field(default=_SCHEMA_DIGEST, alias="schemaDigest")
+    schema_digest: _Sha256 = Field(default=_CLEANUP_SCHEMA_DIGEST, alias="schemaDigest")
     created_at: datetime = Field(alias="createdAt")
     database_sha256: _Sha256 = Field(alias="databaseSha256")
     database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_GRAPH_BACKUP_BYTES)
@@ -566,6 +694,8 @@ class SQLiteGraphBackupManifest(StrictModel):
 
     @model_validator(mode="after")
     def bind_backup_identity(self) -> Self:
+        if self.schema_digest != _CLEANUP_SCHEMA_DIGEST:
+            raise ValueError("legacy cleanup SQLite Graph backup schema digest differs")
         if (self.event_count == 0) is not (self.event_log_head_digest is None):
             raise ValueError("SQLite Graph backup Event count and head are inconsistent")
         if self.projection_revision > self.event_count:
@@ -607,6 +737,109 @@ class SQLiteGraphBackupManifest(StrictModel):
         return self
 
 
+class SQLiteGraphBackupManifest(StrictModel):
+    """Content-addressed identity and logical-state summary for one Graph backup."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/sqlite-graph-backup-manifest/v1alpha3"] = Field(
+        default=GRAPH_STORE_BACKUP_MANIFEST_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["SQLiteGraphBackupManifest"] = "SQLiteGraphBackupManifest"
+    backup_id: str = Field(default="", alias="backupId", max_length=96)
+    campaign_id: str = Field(
+        alias="campaignId",
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    schema_version: Literal[4] = Field(default=4, alias="schemaVersion")
+    schema_digest: _Sha256 = Field(default=_SCHEMA_DIGEST, alias="schemaDigest")
+    created_at: datetime = Field(alias="createdAt")
+    database_sha256: _Sha256 = Field(alias="databaseSha256")
+    database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_GRAPH_BACKUP_BYTES)
+    event_count: int = Field(alias="eventCount", ge=0)
+    event_log_head_digest: _Sha256 | None = Field(alias="eventLogHeadDigest")
+    projection_revision: int = Field(alias="projectionRevision", ge=0)
+    projection_digest: _Sha256 = Field(alias="projectionDigest")
+    snapshot_count: int = Field(alias="snapshotCount", ge=0)
+    snapshot_head_digest: _Sha256 | None = Field(alias="snapshotHeadDigest")
+    action_permit_count: int = Field(alias="actionPermitCount", ge=0)
+    action_permit_head_digest: _Sha256 | None = Field(alias="actionPermitHeadDigest")
+    cleanup_reservation_count: int = Field(alias="cleanupReservationCount", ge=0)
+    cleanup_reservation_head_digest: _Sha256 | None = Field(alias="cleanupReservationHeadDigest")
+    cleanup_permit_count: int = Field(alias="cleanupPermitCount", ge=0)
+    cleanup_permit_head_digest: _Sha256 | None = Field(alias="cleanupPermitHeadDigest")
+    action_approval_count: int = Field(default=0, alias="actionApprovalCount", ge=0)
+    action_approval_head_digest: _Sha256 | None = Field(
+        default=None,
+        alias="actionApprovalHeadDigest",
+    )
+    approval_consumption_count: int = Field(
+        default=0,
+        alias="approvalConsumptionCount",
+        ge=0,
+    )
+    approval_consumption_head_digest: _Sha256 | None = Field(
+        default=None,
+        alias="approvalConsumptionHeadDigest",
+    )
+
+    @field_validator("created_at")
+    @classmethod
+    def require_utc_created_at(cls, value: datetime) -> datetime:
+        if value.tzinfo is None or value.utcoffset() != timedelta(0):
+            raise ValueError("SQLite Graph backup creation time must be UTC")
+        return value
+
+    @model_validator(mode="after")
+    def bind_backup_identity(self) -> Self:
+        if self.schema_digest != _SCHEMA_DIGEST:
+            raise ValueError("SQLite Graph backup schema digest differs")
+        if (self.event_count == 0) is not (self.event_log_head_digest is None):
+            raise ValueError("SQLite Graph backup Event count and head are inconsistent")
+        if self.projection_revision > self.event_count:
+            raise ValueError("SQLite Graph backup Projection is ahead of its Event Log")
+        for count, head, label in (
+            (self.snapshot_count, self.snapshot_head_digest, "Snapshot"),
+            (self.action_permit_count, self.action_permit_head_digest, "Permit"),
+            (
+                self.cleanup_reservation_count,
+                self.cleanup_reservation_head_digest,
+                "cleanup reservation",
+            ),
+            (self.cleanup_permit_count, self.cleanup_permit_head_digest, "CleanupPermit"),
+            (self.action_approval_count, self.action_approval_head_digest, "approval"),
+            (
+                self.approval_consumption_count,
+                self.approval_consumption_head_digest,
+                "approval consumption",
+            ),
+        ):
+            if (count == 0) is not (head is None):
+                raise ValueError(f"SQLite Graph backup {label} count and head are inconsistent")
+        if self.action_approval_count != self.approval_consumption_count:
+            raise ValueError("SQLite Graph backup approval and consumption counts are inconsistent")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"backup_id"},
+        )
+        digest = sha256(
+            canonical_graph_json(
+                material,
+                label="SQLiteGraphBackupManifest",
+                max_bytes=_MAX_GRAPH_BACKUP_MANIFEST_BYTES,
+            )
+        ).hexdigest()
+        backup_id = f"graph-store-backup_{digest}"
+        if self.backup_id and self.backup_id != backup_id:
+            raise ValueError("SQLite Graph backup ID differs from canonical material")
+        object.__setattr__(self, "backup_id", backup_id)
+        return self
+
+
 @dataclass(frozen=True, slots=True)
 class _VerifiedGraphStoreState:
     event_count: int
@@ -621,6 +854,10 @@ class _VerifiedGraphStoreState:
     cleanup_reservation_head_digest: str | None
     cleanup_permit_count: int
     cleanup_permit_head_digest: str | None
+    action_approval_count: int
+    action_approval_head_digest: str | None
+    approval_consumption_count: int
+    approval_consumption_head_digest: str | None
 
 
 class SQLiteGraphStore:
@@ -645,6 +882,7 @@ class SQLiteGraphStore:
             self.path,
             campaign_id=campaign_id,
         )
+        self.approved_permit_store = self.permit_store
 
     def create_backup(
         self,
@@ -1231,6 +1469,19 @@ class SQLiteGraphActionPermitStore:
         self._campaign_id = campaign_id
         self._writer: object | None = None
         self._writer_identity: tuple[str, str, str] | None = None
+        self._plain_writer: object | None = None
+        self._plain_policies: ActionApprovalCapabilityPolicyRegistry | None = None
+        self._plain_policy_digest: str | None = None
+        self._approved_writer: object | None = None
+        self._approved_policies: ActionApprovalCapabilityPolicyRegistry | None = None
+        self._approved_policy_digest: str | None = None
+        self._approved_input_authority: ActionApprovalInputAuthority | None = None
+        self._reversible_policies: ActionApprovalCapabilityPolicyRegistry | None = None
+        self._reversible_policy_digest: str | None = None
+        self._reversible_claim_authority: object | None = None
+        self._reversible_writers: dict[object, ReversibleActionPermitInputAuthority] = {}
+        self._cleanup_claim_authority: object | None = None
+        self._cleanup_writers: dict[object, CleanupPermitInputAuthority] = {}
         self._lock = threading.RLock()
 
     def claim_writer(
@@ -1269,6 +1520,122 @@ class SQLiteGraphActionPermitStore:
             self._writer_identity = identity
             return writer
 
+    def claim_plain_writer(
+        self,
+        compiler_id: str,
+        compiler_version: str,
+        compiler_digest: str,
+        policies: ActionCapabilityExecutionPolicyRegistry,
+    ) -> object:
+        """Pin the no-write policy registry to a non-transferable writer token."""
+
+        canonical_policies = _canonical_action_policy_registry(
+            policies,
+            label="plain Action writer",
+        )
+        self.claim_writer(compiler_id, compiler_version, compiler_digest)
+        with self._lock:
+            if self._plain_writer is not None:
+                if self._plain_policy_digest == canonical_policies.registry_digest:
+                    return self._plain_writer
+                raise ActionPermitError("plain Action writer is already claimed")
+            writer = object()
+            self._plain_writer = writer
+            self._plain_policies = canonical_policies
+            self._plain_policy_digest = canonical_policies.registry_digest
+            return writer
+
+    def claim_approved_writer(
+        self,
+        compiler_id: str,
+        compiler_version: str,
+        compiler_digest: str,
+        policies: ActionApprovalCapabilityPolicyRegistry,
+        input_authority: ActionApprovalInputAuthority,
+    ) -> object:
+        """Pin the approval policy and issuer verifier to one in-process writer."""
+
+        if not isinstance(policies, ActionApprovalCapabilityPolicyRegistry):
+            raise TypeError("approved Action writer requires a Capability policy registry")
+        if not callable(getattr(input_authority, "verify_action_approval", None)):
+            raise TypeError("approved Action writer requires an approval input authority")
+        canonical_policies = _canonical_action_policy_registry(
+            policies,
+            label="approved Action writer",
+        )
+        self.claim_writer(compiler_id, compiler_version, compiler_digest)
+        with self._lock:
+            if self._approved_writer is not None:
+                if (
+                    self._approved_policy_digest == canonical_policies.registry_digest
+                    and self._approved_input_authority is input_authority
+                ):
+                    return self._approved_writer
+                raise ActionApprovalError("approved Action writer is already claimed")
+            writer = object()
+            self._approved_writer = writer
+            self._approved_policies = canonical_policies
+            self._approved_policy_digest = canonical_policies.registry_digest
+            self._approved_input_authority = input_authority
+            return writer
+
+    def claim_reversible_writer(
+        self,
+        compiler_id: str,
+        compiler_version: str,
+        compiler_digest: str,
+        policies: ActionCapabilityExecutionPolicyRegistry,
+        input_authority: ReversibleActionPermitInputAuthority,
+        claim_authority: object,
+    ) -> object:
+        """Pin reversible-write policy and authentication to a distinct writer."""
+
+        canonical_policies = _canonical_action_policy_registry(
+            policies,
+            label="reversible Action writer",
+        )
+        if not callable(getattr(input_authority, "verify_reversible_action", None)):
+            raise TypeError("reversible Action writer requires an input authority")
+        self.claim_writer(compiler_id, compiler_version, compiler_digest)
+        with self._lock:
+            if self._reversible_claim_authority is not None and (
+                self._reversible_policy_digest != canonical_policies.registry_digest
+                or self._reversible_claim_authority is not claim_authority
+            ):
+                raise CleanupPermitError("reversible Action writer is already claimed")
+            writer = object()
+            if self._reversible_claim_authority is None:
+                self._reversible_policies = canonical_policies
+                self._reversible_policy_digest = canonical_policies.registry_digest
+                self._reversible_claim_authority = claim_authority
+            self._reversible_writers[writer] = input_authority
+            return writer
+
+    def claim_cleanup_writer(
+        self,
+        compiler_id: str,
+        compiler_version: str,
+        compiler_digest: str,
+        input_authority: CleanupPermitInputAuthority,
+        claim_authority: object,
+    ) -> object:
+        """Pin cleanup authentication to a distinct non-transferable writer."""
+
+        if not callable(getattr(input_authority, "verify_cleanup_request", None)):
+            raise TypeError("CleanupPermit writer requires an input authority")
+        self.claim_writer(compiler_id, compiler_version, compiler_digest)
+        with self._lock:
+            if (
+                self._cleanup_claim_authority is not None
+                and self._cleanup_claim_authority is not claim_authority
+            ):
+                raise CleanupPermitError("CleanupPermit writer is already claimed")
+            writer = object()
+            if self._cleanup_claim_authority is None:
+                self._cleanup_claim_authority = claim_authority
+            self._cleanup_writers[writer] = input_authority
+            return writer
+
     def authorize_for_dispatch(
         self,
         envelope: MissionEnvelope,
@@ -1281,12 +1648,22 @@ class SQLiteGraphActionPermitStore:
         permit_ttl: timedelta,
     ) -> ActionPermitAuthorization:
         with self._lock:
-            if writer is not self._writer or self._writer_identity is None:
+            if (
+                writer is not self._plain_writer
+                or self._writer_identity is None
+                or self._plain_policies is None
+            ):
                 raise ActionPermitError("ActionPermit compiler write authority is invalid")
             envelope = _canonical_mission_envelope(envelope)
             proposal = _canonical_action_proposal(proposal)
             decision = _canonical_graph_decision(decision)
             capability = _canonical_registered_capability(capability)
+            policy = self._plain_policies.resolve(capability.reference())
+            validate_plain_action_policy(capability, policy)
+            if capability.risk_tier >= ToolRiskTier.T2:
+                raise ActionPermitError(
+                    "T2 or higher Action requires an approved or reversible Permit authority"
+                )
             if (
                 envelope.campaign_id != self._campaign_id
                 or proposal.campaign_id != self._campaign_id
@@ -1385,6 +1762,368 @@ class SQLiteGraphActionPermitStore:
             except sqlite3.Error as exc:
                 raise ActionPermitError("ActionPermit authority transaction failed") from exc
 
+    def approved_authorization(
+        self,
+        approval_id: str,
+        permit_id: str,
+    ) -> ActionApprovalAuthorization | None:
+        """Read one exact terminal approval tuple without granting redispatch authority."""
+
+        if fullmatch(r"^action-approval_[a-f0-9]{64}$", approval_id) is None:
+            raise ActionApprovalError("Action approval ID is invalid")
+        if fullmatch(r"^action-permit_[a-f0-9]{64}$", permit_id) is None:
+            raise ActionApprovalError("approved ActionPermit ID is invalid")
+        try:
+            with _readonly_connection(self.path) as connection:
+                approval_row = connection.execute(
+                    "SELECT * FROM graph_action_approval_envelopes WHERE approval_id = ?",
+                    (approval_id,),
+                ).fetchone()
+                permit_row = connection.execute(
+                    "SELECT * FROM graph_action_permits WHERE permit_id = ?",
+                    (permit_id,),
+                ).fetchone()
+                receipt_rows = connection.execute(
+                    """
+                    SELECT * FROM graph_action_approval_consumptions
+                    WHERE approval_id = ? OR permit_id = ?
+                    """,
+                    (approval_id, permit_id),
+                ).fetchall()
+                present = (
+                    approval_row is not None,
+                    permit_row is not None,
+                    bool(receipt_rows),
+                )
+                if not any(present):
+                    return None
+                if not all(present) or len(receipt_rows) != 1:
+                    raise ActionApprovalError(
+                        "approved Action authority is partially committed"
+                    )
+                assert approval_row is not None
+                assert permit_row is not None
+                approval = _action_approval_from_row(
+                    approval_row,
+                    campaign_id=self._campaign_id,
+                )
+                permit = _action_permit_from_row(
+                    permit_row,
+                    campaign_id=self._campaign_id,
+                )
+                receipt = _approval_consumption_from_row(
+                    receipt_rows[0],
+                    campaign_id=self._campaign_id,
+                )
+                if (
+                    approval.approval_id != approval_id
+                    or permit.permit_id != permit_id
+                    or receipt
+                    != build_action_approval_consumption_receipt(approval, permit)
+                ):
+                    raise ActionApprovalError(
+                        "approved Action terminal authority differs"
+                    )
+                return ActionApprovalAuthorization(
+                    approval=approval,
+                    action=ActionPermitAuthorization(
+                        permit=permit,
+                        newlyConsumed=False,
+                    ),
+                    receipt=receipt,
+                )
+        except sqlite3.Error as exc:
+            raise ActionApprovalError("approved Action terminal lookup failed") from exc
+
+    def authorize_approved_for_dispatch(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        capability: RegisteredActionCapability,
+        approval: ActionApprovalEnvelope,
+        *,
+        writer: object,
+        evaluated_at: datetime,
+        permit_ttl: timedelta,
+    ) -> ActionApprovalAuthorization:
+        """Atomically consume one approval with its exact ActionPermit and receipt."""
+
+        with self._lock:
+            if (
+                writer is not self._approved_writer
+                or self._writer_identity is None
+                or self._approved_policies is None
+                or self._approved_input_authority is None
+            ):
+                raise ActionApprovalError("approved Action compiler write authority is invalid")
+            envelope = _canonical_mission_envelope(envelope)
+            proposal = _canonical_action_proposal(proposal)
+            decision = _canonical_graph_decision(decision)
+            capability = _canonical_registered_capability(capability)
+            try:
+                policy = ActionApprovalCapabilityPolicy.model_validate(
+                    self._approved_policies.resolve(capability.reference()).model_dump(
+                        mode="json",
+                        by_alias=True,
+                    )
+                )
+            except (AttributeError, ValidationError, ValueError) as exc:
+                raise ActionApprovalError(
+                    "approved Action Capability policy is not canonical"
+                ) from exc
+            approval = _canonical_action_approval(approval)
+            self._verify_pinned_approval_input(envelope, proposal, decision, approval)
+            if (
+                envelope.campaign_id != self._campaign_id
+                or proposal.campaign_id != self._campaign_id
+                or decision.campaign_id != self._campaign_id
+                or approval.campaign_id != self._campaign_id
+            ):
+                raise ActionApprovalError("approved Action input belongs to another Campaign")
+            if self._writer_identity != (
+                envelope.compiler_id,
+                envelope.compiler_version,
+                envelope.compiler_digest,
+            ):
+                raise ActionApprovalError("approved Action compiler differs from durable writer")
+            attempt_id = action_permit_attempt_id(envelope, proposal, decision)
+            try:
+                with _write_transaction(self.path) as connection:
+                    if _action_permit_writer_identity(connection) != self._writer_identity:
+                        raise ActionApprovalError(
+                            "approved Action compiler differs from durable writer"
+                        )
+                    approval_row = connection.execute(
+                        """
+                        SELECT * FROM graph_action_approval_envelopes
+                        WHERE approval_id = ?
+                        """,
+                        (approval.approval_id,),
+                    ).fetchone()
+                    permit_row = connection.execute(
+                        "SELECT * FROM graph_action_permits WHERE permit_id = ?",
+                        (attempt_id,),
+                    ).fetchone()
+                    receipt_row = connection.execute(
+                        """
+                        SELECT * FROM graph_action_approval_consumptions
+                        WHERE permit_id = ?
+                        """,
+                        (attempt_id,),
+                    ).fetchone()
+                    existing = (approval_row, permit_row, receipt_row)
+                    if any(row is not None for row in existing):
+                        if not all(row is not None for row in existing):
+                            raise ActionApprovalError(
+                                "approved Action authority is partially committed"
+                            )
+                        assert approval_row is not None
+                        assert permit_row is not None
+                        assert receipt_row is not None
+                        stored_approval = _action_approval_from_row(
+                            approval_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        permit = _action_permit_from_row(
+                            permit_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        receipt = _approval_consumption_from_row(
+                            receipt_row,
+                            campaign_id=self._campaign_id,
+                        )
+                        if stored_approval != approval:
+                            raise ActionApprovalError(
+                                "approved Action exact retry names another approval"
+                            )
+                        _require_exact_action_permit_retry(
+                            permit,
+                            envelope=envelope,
+                            proposal=proposal,
+                            decision=decision,
+                            capability=capability,
+                        )
+                        expected_receipt = build_action_approval_consumption_receipt(
+                            stored_approval,
+                            permit,
+                        )
+                        if receipt != expected_receipt:
+                            raise ActionApprovalError("approved Action exact retry receipt differs")
+                        authorization = ActionApprovalAuthorization(
+                            approval=stored_approval,
+                            action=ActionPermitAuthorization(
+                                permit=permit,
+                                newlyConsumed=False,
+                            ),
+                            receipt=receipt,
+                        )
+                    else:
+                        collision = connection.execute(
+                            """
+                            SELECT 1 FROM graph_action_approval_envelopes
+                            WHERE proposal_id = ? OR request_id = ?
+                            UNION ALL
+                            SELECT 1 FROM graph_action_approval_consumptions
+                            WHERE approval_id = ? OR proposal_id = ? OR request_id = ?
+                            UNION ALL
+                            SELECT 1 FROM graph_action_permits
+                            WHERE proposal_id = ? OR request_id = ?
+                            UNION ALL
+                            SELECT 1 FROM graph_cleanup_permits WHERE request_id = ?
+                            LIMIT 1
+                            """,
+                            (
+                                proposal.proposal_id,
+                                proposal.request_id,
+                                approval.approval_id,
+                                proposal.proposal_id,
+                                proposal.request_id,
+                                proposal.proposal_id,
+                                proposal.request_id,
+                                proposal.request_id,
+                            ),
+                        ).fetchone()
+                        if collision is not None:
+                            raise ActionApprovalError(
+                                "approved Action identity is already consumed"
+                            )
+                        validate_action_approval_authority(
+                            envelope,
+                            proposal,
+                            decision,
+                            capability,
+                            policy,
+                            approval,
+                            evaluated_at=evaluated_at,
+                        )
+                        _require_latest_action_snapshot(
+                            connection,
+                            campaign_id=self._campaign_id,
+                            proposal=proposal,
+                            decision=decision,
+                        )
+                        _require_aggregate_action_budget(
+                            connection,
+                            envelope=envelope,
+                            new_reservations=(proposal.reservation,),
+                            evaluated_at=evaluated_at,
+                            error_type=ActionPermitBudgetExceeded,
+                        )
+                        permit = build_action_permit(
+                            envelope,
+                            proposal,
+                            decision,
+                            evaluated_at=evaluated_at,
+                            permit_ttl=permit_ttl,
+                        )
+                        if permit.permit_id != attempt_id:
+                            raise ActionApprovalError(
+                                "approved ActionPermit deterministic identity differs"
+                            )
+                        receipt = build_action_approval_consumption_receipt(
+                            approval,
+                            permit,
+                        )
+                        _insert_action_approval(connection, approval)
+                        _insert_action_permit(connection, permit)
+                        _insert_approval_consumption(connection, receipt)
+                        authorization = ActionApprovalAuthorization(
+                            approval=approval,
+                            action=ActionPermitAuthorization(
+                                permit=permit,
+                                newlyConsumed=True,
+                            ),
+                            receipt=receipt,
+                        )
+                    self._verify_pinned_approval_input(
+                        envelope,
+                        proposal,
+                        decision,
+                        approval,
+                    )
+            except sqlite3.IntegrityError as exc:
+                raise ActionApprovalError(
+                    "approved Action durable compare-and-set conflicted"
+                ) from exc
+            except sqlite3.Error as exc:
+                raise ActionApprovalError("approved Action authority transaction failed") from exc
+            return authorization
+
+    def _verify_pinned_approval_input(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        approval: ActionApprovalEnvelope,
+    ) -> None:
+        authority = self._approved_input_authority
+        if authority is None:
+            raise ActionApprovalError("approved Action input authority is not pinned")
+        try:
+            authority.verify_action_approval(
+                envelope.model_copy(deep=True),
+                proposal.model_copy(deep=True),
+                decision.model_copy(deep=True),
+                approval.model_copy(deep=True),
+            )
+        except ActionApprovalError:
+            raise
+        except Exception as exc:
+            raise ActionApprovalError(
+                "approved Action input authority rejected the durable claim"
+            ) from exc
+
+    def _verify_pinned_reversible_input(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        cleanup_request: ActionCleanupReservationRequest,
+        *,
+        writer: object,
+    ) -> None:
+        authority = self._reversible_writers.get(writer)
+        if authority is None:
+            raise CleanupPermitError("reversible Action input authority is not pinned")
+        try:
+            authority.verify_reversible_action(
+                envelope.model_copy(deep=True),
+                proposal.model_copy(deep=True),
+                decision.model_copy(deep=True),
+                cleanup_request.model_copy(deep=True),
+            )
+        except CleanupPermitError:
+            raise
+        except Exception as exc:
+            raise CleanupPermitError(
+                "reversible Action input authority rejected the durable claim"
+            ) from exc
+
+    def _verify_pinned_cleanup_input(
+        self,
+        envelope: MissionEnvelope,
+        request: CleanupRequest,
+        decision: GraphDecision,
+        *,
+        writer: object,
+    ) -> None:
+        authority = self._cleanup_writers.get(writer)
+        if authority is None:
+            raise CleanupPermitError("CleanupPermit input authority is not pinned")
+        try:
+            authority.verify_cleanup_request(
+                envelope.model_copy(deep=True),
+                request.model_copy(deep=True),
+                decision.model_copy(deep=True),
+            )
+        except CleanupPermitError:
+            raise
+        except Exception as exc:
+            raise CleanupPermitError(
+                "CleanupPermit input authority rejected the durable claim"
+            ) from exc
+
     def authorize_reversible_for_dispatch(
         self,
         envelope: MissionEnvelope,
@@ -1401,14 +2140,29 @@ class SQLiteGraphActionPermitStore:
         """Atomically consume one ActionPermit and reserve its cleanup budget."""
 
         with self._lock:
-            if writer is not self._writer or self._writer_identity is None:
+            if (
+                writer not in self._reversible_writers
+                or self._writer_identity is None
+                or self._reversible_policies is None
+            ):
                 raise CleanupPermitError("reversible Action compiler write authority is invalid")
             envelope = _canonical_mission_envelope(envelope)
             proposal = _canonical_action_proposal(proposal)
             decision = _canonical_graph_decision(decision)
             action_capability = _canonical_registered_capability(action_capability)
+            action_policy = self._reversible_policies.resolve(
+                action_capability.reference()
+            )
+            validate_reversible_action_policy(action_capability, action_policy)
             cleanup_request = _canonical_cleanup_reservation_request(cleanup_request)
             cleanup_capability = _canonical_registered_capability(cleanup_capability)
+            self._verify_pinned_reversible_input(
+                envelope,
+                proposal,
+                decision,
+                cleanup_request,
+                writer=writer,
+            )
             if (
                 envelope.campaign_id != self._campaign_id
                 or proposal.campaign_id != self._campaign_id
@@ -1472,13 +2226,21 @@ class SQLiteGraphActionPermitStore:
                             request=cleanup_request,
                             cleanup_capability=cleanup_capability,
                         )
-                        return ReversibleActionPermitAuthorization(
+                        authorization = ReversibleActionPermitAuthorization(
                             action=ActionPermitAuthorization(
                                 permit=action,
                                 newlyConsumed=False,
                             ),
                             cleanupReservation=reservation,
                         )
+                        self._verify_pinned_reversible_input(
+                            envelope,
+                            proposal,
+                            decision,
+                            cleanup_request,
+                            writer=writer,
+                        )
+                        return authorization
                     collision = connection.execute(
                         """
                         SELECT 1
@@ -1513,6 +2275,7 @@ class SQLiteGraphActionPermitStore:
                         proposal,
                         decision,
                         action_capability,
+                        action_policy,
                         cleanup_request,
                         cleanup_capability,
                         evaluated_at=evaluated_at,
@@ -1552,13 +2315,21 @@ class SQLiteGraphActionPermitStore:
                     )
                     _insert_action_permit(connection, action)
                     _insert_cleanup_reservation(connection, reservation)
-                    return ReversibleActionPermitAuthorization(
+                    authorization = ReversibleActionPermitAuthorization(
                         action=ActionPermitAuthorization(
                             permit=action,
                             newlyConsumed=True,
                         ),
                         cleanupReservation=reservation,
                     )
+                    self._verify_pinned_reversible_input(
+                        envelope,
+                        proposal,
+                        decision,
+                        cleanup_request,
+                        writer=writer,
+                    )
+                    return authorization
             except sqlite3.IntegrityError as exc:
                 raise CleanupPermitConflict(
                     "reversible Action durable compare-and-set conflicted"
@@ -1582,12 +2353,21 @@ class SQLiteGraphActionPermitStore:
         """Consume one pre-reserved CleanupPermit without charging budget twice."""
 
         with self._lock:
-            if writer is not self._writer or self._writer_identity is None:
+            if (
+                writer not in self._cleanup_writers
+                or self._writer_identity is None
+            ):
                 raise CleanupPermitError("CleanupPermit compiler write authority is invalid")
             envelope = _canonical_mission_envelope(envelope)
             request = _canonical_cleanup_request(request)
             decision = _canonical_graph_decision(decision)
             capability = _canonical_registered_capability(capability)
+            self._verify_pinned_cleanup_input(
+                envelope,
+                request,
+                decision,
+                writer=writer,
+            )
             if (
                 envelope.campaign_id != self._campaign_id
                 or request.campaign_id != self._campaign_id
@@ -1623,10 +2403,17 @@ class SQLiteGraphActionPermitStore:
                             decision=decision,
                             capability=capability,
                         )
-                        return CleanupPermitAuthorization(
+                        authorization = CleanupPermitAuthorization(
                             permit=existing,
                             newlyConsumed=False,
                         )
+                        self._verify_pinned_cleanup_input(
+                            envelope,
+                            request,
+                            decision,
+                            writer=writer,
+                        )
+                        return authorization
                     collision = connection.execute(
                         """
                         SELECT 1 FROM graph_cleanup_permits
@@ -1700,10 +2487,17 @@ class SQLiteGraphActionPermitStore:
                             "CleanupPermit deterministic attempt identity differs"
                         )
                     _insert_cleanup_permit(connection, permit)
-                    return CleanupPermitAuthorization(
+                    authorization = CleanupPermitAuthorization(
                         permit=permit,
                         newlyConsumed=True,
                     )
+                    self._verify_pinned_cleanup_input(
+                        envelope,
+                        request,
+                        decision,
+                        writer=writer,
+                    )
+                    return authorization
             except sqlite3.IntegrityError as exc:
                 raise CleanupPermitConflict(
                     "CleanupPermit durable compare-and-set conflicted"
@@ -1739,6 +2533,80 @@ class SQLiteGraphActionPermitStore:
                 )
         except sqlite3.Error as exc:
             raise ActionPermitError("ActionPermit ledger read failed") from exc
+
+    def action_approval(self, approval_id: str) -> ActionApprovalEnvelope | None:
+        if fullmatch(r"^action-approval_[a-f0-9]{64}$", approval_id) is None:
+            raise ActionApprovalError("Action approval ID is invalid")
+        try:
+            with _readonly_connection(self.path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM graph_action_approval_envelopes
+                    WHERE approval_id = ?
+                    """,
+                    (approval_id,),
+                ).fetchone()
+                return (
+                    _action_approval_from_row(row, campaign_id=self._campaign_id)
+                    if row is not None
+                    else None
+                )
+        except sqlite3.Error as exc:
+            raise ActionApprovalError("Action approval lookup failed") from exc
+
+    def action_approvals(self) -> tuple[ActionApprovalEnvelope, ...]:
+        try:
+            with _readonly_connection(self.path) as connection:
+                rows = connection.execute(
+                    "SELECT * FROM graph_action_approval_envelopes ORDER BY ordinal"
+                ).fetchall()
+                return tuple(
+                    _action_approval_from_row(row, campaign_id=self._campaign_id) for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise ActionApprovalError("Action approval ledger read failed") from exc
+
+    def approval_consumption(
+        self,
+        receipt_id: str,
+    ) -> ActionApprovalConsumptionReceipt | None:
+        if fullmatch(r"^action-approval-receipt_[a-f0-9]{64}$", receipt_id) is None:
+            raise ActionApprovalError("Action approval receipt ID is invalid")
+        try:
+            with _readonly_connection(self.path) as connection:
+                row = connection.execute(
+                    """
+                    SELECT * FROM graph_action_approval_consumptions
+                    WHERE receipt_id = ?
+                    """,
+                    (receipt_id,),
+                ).fetchone()
+                return (
+                    _approval_consumption_from_row(
+                        row,
+                        campaign_id=self._campaign_id,
+                    )
+                    if row is not None
+                    else None
+                )
+        except sqlite3.Error as exc:
+            raise ActionApprovalError("Action approval receipt lookup failed") from exc
+
+    def approval_consumptions(self) -> tuple[ActionApprovalConsumptionReceipt, ...]:
+        try:
+            with _readonly_connection(self.path) as connection:
+                rows = connection.execute(
+                    "SELECT * FROM graph_action_approval_consumptions ORDER BY ordinal"
+                ).fetchall()
+                return tuple(
+                    _approval_consumption_from_row(
+                        row,
+                        campaign_id=self._campaign_id,
+                    )
+                    for row in rows
+                )
+        except sqlite3.Error as exc:
+            raise ActionApprovalError("Action approval receipt ledger read failed") from exc
 
     def cleanup_reservation(
         self,
@@ -1857,6 +2725,10 @@ def _create_backup(
             cleanupReservationHeadDigest=state.cleanup_reservation_head_digest,
             cleanupPermitCount=state.cleanup_permit_count,
             cleanupPermitHeadDigest=state.cleanup_permit_head_digest,
+            actionApprovalCount=state.action_approval_count,
+            actionApprovalHeadDigest=state.action_approval_head_digest,
+            approvalConsumptionCount=state.approval_consumption_count,
+            approvalConsumptionHeadDigest=state.approval_consumption_head_digest,
         )
         temporary_manifest = _write_private_temporary(
             manifest_path,
@@ -1872,6 +2744,7 @@ def _create_backup(
         temporary_manifest = None
         return manifest
     except (
+        ActionApprovalError,
         OSError,
         sqlite3.Error,
         ValidationError,
@@ -1895,7 +2768,7 @@ def _create_backup(
 
 def _parse_backup_manifest(
     raw: bytes,
-) -> SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV1:
+) -> SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV2 | _SQLiteGraphBackupManifestV1:
     try:
         material = parse_strict_json_bytes(
             raw,
@@ -1909,6 +2782,8 @@ def _parse_backup_manifest(
         api_version = material.get("apiVersion")
         if api_version == GRAPH_STORE_BACKUP_MANIFEST_API_VERSION:
             return SQLiteGraphBackupManifest.model_validate(material)
+        if api_version == _CLEANUP_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION:
+            return _SQLiteGraphBackupManifestV2.model_validate(material)
         if api_version == _LEGACY_GRAPH_STORE_BACKUP_MANIFEST_API_VERSION:
             return _SQLiteGraphBackupManifestV1.model_validate(material)
         raise ValueError("SQLite Graph backup manifest version is unsupported")
@@ -1968,9 +2843,29 @@ def _restore_backup(
             if (
                 migrated_state.cleanup_reservation_count != 0
                 or migrated_state.cleanup_permit_count != 0
+                or migrated_state.action_approval_count != 0
+                or migrated_state.approval_consumption_count != 0
             ):
                 raise SQLiteGraphStoreError(
-                    "legacy SQLite Graph restore fabricated cleanup authority"
+                    "legacy SQLite Graph restore fabricated later authority"
+                )
+        elif isinstance(manifest, _SQLiteGraphBackupManifestV2):
+            cleanup_state = _verified_v3_graph_store_state(
+                temporary,
+                campaign_id=campaign_id,
+            )
+            _require_cleanup_manifest_state(manifest, cleanup_state)
+            _initialize(temporary, campaign_id)
+            migrated_state = _verified_graph_store_state(
+                temporary,
+                campaign_id=campaign_id,
+            )
+            if (
+                migrated_state.action_approval_count != 0
+                or migrated_state.approval_consumption_count != 0
+            ):
+                raise SQLiteGraphStoreError(
+                    "legacy cleanup Graph restore fabricated approval authority"
                 )
         else:
             state = _verified_graph_store_state(temporary, campaign_id=campaign_id)
@@ -1981,6 +2876,7 @@ def _restore_backup(
             label="SQLite Graph restore destination",
         )
     except (
+        ActionApprovalError,
         OSError,
         sqlite3.Error,
         ValidationError,
@@ -2048,6 +2944,16 @@ def _verified_graph_store_state(
             action_permits=permits,
             reservations=reservations,
         )
+        approvals = _verified_action_approvals(
+            connection,
+            campaign_id=campaign_id,
+        )
+        approval_consumptions = _verified_approval_consumptions(
+            connection,
+            campaign_id=campaign_id,
+            action_permits=permits,
+            approvals=approvals,
+        )
         current_projection = projections[max(projections)]
         return _VerifiedGraphStoreState(
             event_count=len(events),
@@ -2065,6 +2971,12 @@ def _verified_graph_store_state(
             cleanup_permit_count=len(cleanup_permits),
             cleanup_permit_head_digest=(
                 cleanup_permits[-1].cleanup_permit_digest if cleanup_permits else None
+            ),
+            action_approval_count=len(approvals),
+            action_approval_head_digest=(approvals[-1].approval_digest if approvals else None),
+            approval_consumption_count=len(approval_consumptions),
+            approval_consumption_head_digest=(
+                approval_consumptions[-1].receipt_digest if approval_consumptions else None
             ),
         )
 
@@ -2116,6 +3028,80 @@ def _verified_v2_graph_store_state(
             cleanup_reservation_head_digest=None,
             cleanup_permit_count=0,
             cleanup_permit_head_digest=None,
+            action_approval_count=0,
+            action_approval_head_digest=None,
+            approval_consumption_count=0,
+            approval_consumption_head_digest=None,
+        )
+
+
+def _verified_v3_graph_store_state(
+    path: Path,
+    *,
+    campaign_id: str,
+) -> _VerifiedGraphStoreState:
+    """Verify an exact legacy v3 cleanup store without mutating its backup source."""
+
+    with _readonly_connection(path) as connection:
+        _validate_schema_contract(
+            connection,
+            campaign_id=campaign_id,
+            tables=_CLEANUP_TABLES,
+            objects=_CLEANUP_SCHEMA_OBJECT_SQL,
+            version=_CLEANUP_SCHEMA_VERSION,
+            digest=_CLEANUP_SCHEMA_DIGEST,
+        )
+        events = _events_from_connection(connection, campaign_id=campaign_id)
+        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+        projections = _verified_projections(
+            connection,
+            campaign_id=campaign_id,
+            events=events,
+        )
+        snapshots, snapshot_head = _verified_snapshots(
+            connection,
+            campaign_id=campaign_id,
+            projections=projections,
+        )
+        permits = _verified_action_permits(
+            connection,
+            campaign_id=campaign_id,
+            snapshots=snapshots,
+        )
+        reservations = _verified_cleanup_reservations(
+            connection,
+            campaign_id=campaign_id,
+            action_permits=permits,
+        )
+        cleanup_permits = _verified_cleanup_permits(
+            connection,
+            campaign_id=campaign_id,
+            snapshots=snapshots,
+            action_permits=permits,
+            reservations=reservations,
+        )
+        current_projection = projections[max(projections)]
+        return _VerifiedGraphStoreState(
+            event_count=len(events),
+            event_log_head_digest=events[-1].event_digest if events else None,
+            projection_revision=current_projection.revision,
+            projection_digest=current_projection.projection_digest,
+            snapshot_count=len(snapshots),
+            snapshot_head_digest=snapshot_head,
+            action_permit_count=len(permits),
+            action_permit_head_digest=permits[-1].permit_digest if permits else None,
+            cleanup_reservation_count=len(reservations),
+            cleanup_reservation_head_digest=(
+                reservations[-1].cleanup_reservation_digest if reservations else None
+            ),
+            cleanup_permit_count=len(cleanup_permits),
+            cleanup_permit_head_digest=(
+                cleanup_permits[-1].cleanup_permit_digest if cleanup_permits else None
+            ),
+            action_approval_count=0,
+            action_approval_head_digest=None,
+            approval_consumption_count=0,
+            approval_consumption_head_digest=None,
         )
 
 
@@ -2237,6 +3223,68 @@ def _verified_action_permits(
             )
         permits.append(permit)
     return permits
+
+
+def _verified_action_approvals(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+) -> list[ActionApprovalEnvelope]:
+    rows = connection.execute(
+        "SELECT * FROM graph_action_approval_envelopes ORDER BY ordinal"
+    ).fetchall()
+    approvals: list[ActionApprovalEnvelope] = []
+    for ordinal, row in enumerate(rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup Action approval ordinals are not contiguous"
+            )
+        approvals.append(_action_approval_from_row(row, campaign_id=campaign_id))
+    return approvals
+
+
+def _verified_approval_consumptions(
+    connection: sqlite3.Connection,
+    *,
+    campaign_id: str,
+    action_permits: list[ActionPermit],
+    approvals: list[ActionApprovalEnvelope],
+) -> list[ActionApprovalConsumptionReceipt]:
+    rows = connection.execute(
+        "SELECT * FROM graph_action_approval_consumptions ORDER BY ordinal"
+    ).fetchall()
+    approval_by_id = {
+        approval.approval_id: (ordinal, approval)
+        for ordinal, approval in enumerate(approvals, start=1)
+    }
+    permit_by_id = {permit.permit_id: permit for permit in action_permits}
+    receipts: list[ActionApprovalConsumptionReceipt] = []
+    consumed_approval_ids: set[str] = set()
+    for ordinal, row in enumerate(rows, start=1):
+        if row["ordinal"] != ordinal:
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup approval consumption ordinals are not contiguous"
+            )
+        receipt = _approval_consumption_from_row(row, campaign_id=campaign_id)
+        approval_entry = approval_by_id.get(receipt.approval.approval_id)
+        permit = permit_by_id.get(receipt.action_permit.permit_id)
+        if (
+            approval_entry is None
+            or permit is None
+            or approval_entry[0] != ordinal
+            or approval_entry[1] != receipt.approval
+            or permit != receipt.action_permit
+            or receipt
+            != build_action_approval_consumption_receipt(approval_entry[1], permit)
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph backup approval receipt differs from source authority"
+            )
+        consumed_approval_ids.add(approval_entry[1].approval_id)
+        receipts.append(receipt)
+    if consumed_approval_ids != set(approval_by_id):
+        raise SQLiteGraphStoreError("SQLite Graph backup approval authority is partially committed")
+    return receipts
 
 
 def _verified_cleanup_reservations(
@@ -2387,8 +3435,37 @@ def _require_manifest_state(
         != state.cleanup_reservation_head_digest
         or manifest.cleanup_permit_count != state.cleanup_permit_count
         or manifest.cleanup_permit_head_digest != state.cleanup_permit_head_digest
+        or manifest.action_approval_count != state.action_approval_count
+        or manifest.action_approval_head_digest != state.action_approval_head_digest
+        or manifest.approval_consumption_count != state.approval_consumption_count
+        or manifest.approval_consumption_head_digest != state.approval_consumption_head_digest
     ):
         raise SQLiteGraphStoreError("SQLite Graph backup manifest differs from restored state")
+
+
+def _require_cleanup_manifest_state(
+    manifest: _SQLiteGraphBackupManifestV2,
+    state: _VerifiedGraphStoreState,
+) -> None:
+    if (
+        manifest.schema_version != _CLEANUP_SCHEMA_VERSION
+        or manifest.schema_digest != _CLEANUP_SCHEMA_DIGEST
+        or manifest.event_count != state.event_count
+        or manifest.event_log_head_digest != state.event_log_head_digest
+        or manifest.projection_revision != state.projection_revision
+        or manifest.projection_digest != state.projection_digest
+        or manifest.snapshot_count != state.snapshot_count
+        or manifest.snapshot_head_digest != state.snapshot_head_digest
+        or manifest.action_permit_count != state.action_permit_count
+        or manifest.action_permit_head_digest != state.action_permit_head_digest
+        or manifest.cleanup_reservation_count != state.cleanup_reservation_count
+        or manifest.cleanup_reservation_head_digest != state.cleanup_reservation_head_digest
+        or manifest.cleanup_permit_count != state.cleanup_permit_count
+        or manifest.cleanup_permit_head_digest != state.cleanup_permit_head_digest
+    ):
+        raise SQLiteGraphStoreError(
+            "legacy cleanup SQLite Graph backup manifest differs from restored state"
+        )
 
 
 def _require_legacy_manifest_state(
@@ -2413,7 +3490,9 @@ def _require_legacy_manifest_state(
 
 
 def _backup_manifest_bytes(
-    manifest: SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV1,
+    manifest: (
+        SQLiteGraphBackupManifest | _SQLiteGraphBackupManifestV2 | _SQLiteGraphBackupManifestV1
+    ),
 ) -> bytes:
     return (
         canonical_graph_json(
@@ -2708,6 +3787,16 @@ def _initialize(path: Path, campaign_id: str) -> None:
                     digest=_ACTION_PERMIT_SCHEMA_DIGEST,
                 )
                 _migrate_action_permit_schema(connection)
+            elif tables == _CLEANUP_TABLES:
+                _validate_schema_contract(
+                    connection,
+                    campaign_id=campaign_id,
+                    tables=_CLEANUP_TABLES,
+                    objects=_CLEANUP_SCHEMA_OBJECT_SQL,
+                    version=_CLEANUP_SCHEMA_VERSION,
+                    digest=_CLEANUP_SCHEMA_DIGEST,
+                )
+                _migrate_cleanup_schema(connection)
             _validate_schema(connection, campaign_id=campaign_id)
             connection.execute("COMMIT")
         except BaseException:
@@ -2867,15 +3956,21 @@ def _validate_schema_contract(
 
 
 def _migrate_legacy_schema(connection: sqlite3.Connection) -> None:
-    """Upgrade the exact append-only v1 store to the v3 cleanup authority schema."""
+    """Upgrade the exact append-only v1 store to the current authority schema."""
 
     _migrate_schema(connection, previous_objects=_LEGACY_SCHEMA_OBJECT_SQL)
 
 
 def _migrate_action_permit_schema(connection: sqlite3.Connection) -> None:
-    """Upgrade the exact v2 ActionPermit store to the v3 cleanup authority schema."""
+    """Upgrade the exact v2 ActionPermit store to the current authority schema."""
 
     _migrate_schema(connection, previous_objects=_ACTION_PERMIT_SCHEMA_OBJECT_SQL)
+
+
+def _migrate_cleanup_schema(connection: sqlite3.Connection) -> None:
+    """Upgrade the exact v3 cleanup store without fabricating approval authority."""
+
+    _migrate_schema(connection, previous_objects=_CLEANUP_SCHEMA_OBJECT_SQL)
 
 
 def _migrate_schema(
@@ -3353,6 +4448,101 @@ def _insert_action_permit(connection: sqlite3.Connection, permit: ActionPermit) 
     )
 
 
+def _insert_action_approval(
+    connection: sqlite3.Connection,
+    approval: ActionApprovalEnvelope,
+) -> None:
+    ordinal_row = connection.execute(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal FROM graph_action_approval_envelopes"
+    ).fetchone()
+    assert ordinal_row is not None
+    proposal = approval.proposal
+    connection.execute(
+        """
+        INSERT INTO graph_action_approval_envelopes (
+            ordinal, approval_id, approval_digest, campaign_id, run_id,
+            envelope_id, envelope_digest, issuer_authority_id,
+            issuer_authority_digest, capability_id, capability_version,
+            capability_digest, release_id, release_digest,
+            proposal_id, proposal_digest, target_digest,
+            request_id, request_digest, normalized_parameters_digest,
+            risk_tier, request_units, cost_microusd,
+            approved_at, not_before, expires_at, approval_json
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+            ?, ?, ?, ?, ?, ?, ?
+        )
+        """,
+        (
+            cast(int, ordinal_row["next_ordinal"]),
+            approval.approval_id,
+            approval.approval_digest,
+            approval.campaign_id,
+            approval.run_id,
+            approval.mission_envelope.envelope_id,
+            approval.mission_envelope.envelope_digest,
+            approval.issuer.authority_id,
+            approval.issuer.authority_digest,
+            approval.release.capability_id,
+            approval.release.capability_version,
+            approval.release.capability_digest,
+            approval.release.release_id,
+            approval.release.release_digest,
+            proposal.proposal_id,
+            proposal.proposal_digest,
+            proposal.target_digest,
+            proposal.request_id,
+            proposal.request_digest,
+            proposal.normalized_parameters_digest,
+            proposal.risk_tier.name,
+            proposal.reservation.request_units,
+            proposal.reservation.cost_microusd,
+            approval.approved_at.isoformat(),
+            approval.not_before.isoformat(),
+            approval.expires_at.isoformat(),
+            sqlite3.Binary(_action_approval_bytes(approval)),
+        ),
+    )
+
+
+def _insert_approval_consumption(
+    connection: sqlite3.Connection,
+    receipt: ActionApprovalConsumptionReceipt,
+) -> None:
+    ordinal_row = connection.execute(
+        "SELECT COALESCE(MAX(ordinal), 0) + 1 AS next_ordinal "
+        "FROM graph_action_approval_consumptions"
+    ).fetchone()
+    assert ordinal_row is not None
+    connection.execute(
+        """
+        INSERT INTO graph_action_approval_consumptions (
+            ordinal, receipt_id, receipt_digest, approval_id, approval_digest,
+            permit_id, permit_digest, dispatch_id, proposal_id, proposal_digest,
+            request_id, request_digest, normalized_parameters_digest,
+            consumed_at, receipt_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cast(int, ordinal_row["next_ordinal"]),
+            receipt.receipt_id,
+            receipt.receipt_digest,
+            receipt.approval.approval_id,
+            receipt.approval.approval_digest,
+            receipt.action_permit.permit_id,
+            receipt.action_permit.permit_digest,
+            receipt.dispatch_id,
+            receipt.proposal_id,
+            receipt.proposal_digest,
+            receipt.request_id,
+            receipt.request_digest,
+            receipt.normalized_parameters_digest,
+            receipt.action_permit.consumed_at.isoformat(),
+            sqlite3.Binary(_approval_consumption_bytes(receipt)),
+        ),
+    )
+
+
 def _insert_cleanup_reservation(
     connection: sqlite3.Connection,
     reservation: ActionCleanupReservation,
@@ -3500,6 +4690,22 @@ def _action_permit_bytes(permit: ActionPermit) -> bytes:
     return canonical_graph_json(
         permit.model_dump(mode="json", by_alias=True),
         label="ActionPermit",
+        max_bytes=_MAX_GRAPH_BYTES,
+    )
+
+
+def _action_approval_bytes(approval: ActionApprovalEnvelope) -> bytes:
+    return canonical_graph_json(
+        approval.model_dump(mode="json", by_alias=True),
+        label="ActionApprovalEnvelope",
+        max_bytes=_MAX_GRAPH_BYTES,
+    )
+
+
+def _approval_consumption_bytes(receipt: ActionApprovalConsumptionReceipt) -> bytes:
+    return canonical_graph_json(
+        receipt.model_dump(mode="json", by_alias=True),
+        label="ActionApprovalConsumptionReceipt",
         max_bytes=_MAX_GRAPH_BYTES,
     )
 
@@ -3672,6 +4878,17 @@ def _canonical_registered_capability(
         raise ActionPermitError("Registered Action Capability is not canonical") from exc
 
 
+def _canonical_action_approval(
+    approval: ActionApprovalEnvelope,
+) -> ActionApprovalEnvelope:
+    try:
+        return ActionApprovalEnvelope.model_validate(
+            approval.model_dump(mode="json", by_alias=True)
+        )
+    except (AttributeError, ValidationError, ValueError) as exc:
+        raise ActionApprovalError("Action approval Envelope is not canonical") from exc
+
+
 def _canonical_cleanup_reservation_request(
     request: ActionCleanupReservationRequest,
 ) -> ActionCleanupReservationRequest:
@@ -3728,6 +4945,89 @@ def _action_permit_from_row(
     ):
         raise ActionPermitError("stored ActionPermit index differs from payload")
     return permit
+
+
+def _action_approval_from_row(
+    row: sqlite3.Row,
+    *,
+    campaign_id: str,
+) -> ActionApprovalEnvelope:
+    raw = _required_bytes(row, "approval_json")
+    try:
+        approval = ActionApprovalEnvelope.model_validate(
+            _decode_json(raw, label="ActionApprovalEnvelope")
+        )
+    except ValidationError as exc:
+        raise ActionApprovalError("stored Action approval is invalid") from exc
+    if raw != _action_approval_bytes(approval):
+        raise ActionApprovalError("stored Action approval is not canonical bytes")
+    proposal = approval.proposal
+    if (
+        approval.campaign_id != campaign_id
+        or approval.approval_id != row["approval_id"]
+        or approval.approval_digest != row["approval_digest"]
+        or approval.campaign_id != row["campaign_id"]
+        or approval.run_id != row["run_id"]
+        or approval.mission_envelope.envelope_id != row["envelope_id"]
+        or approval.mission_envelope.envelope_digest != row["envelope_digest"]
+        or approval.issuer.authority_id != row["issuer_authority_id"]
+        or approval.issuer.authority_digest != row["issuer_authority_digest"]
+        or approval.release.capability_id != row["capability_id"]
+        or approval.release.capability_version != row["capability_version"]
+        or approval.release.capability_digest != row["capability_digest"]
+        or approval.release.release_id != row["release_id"]
+        or approval.release.release_digest != row["release_digest"]
+        or proposal.proposal_id != row["proposal_id"]
+        or proposal.proposal_digest != row["proposal_digest"]
+        or proposal.target_digest != row["target_digest"]
+        or proposal.request_id != row["request_id"]
+        or proposal.request_digest != row["request_digest"]
+        or proposal.normalized_parameters_digest != row["normalized_parameters_digest"]
+        or proposal.risk_tier.name != row["risk_tier"]
+        or proposal.reservation.request_units != row["request_units"]
+        or proposal.reservation.cost_microusd != row["cost_microusd"]
+        or approval.approved_at.isoformat() != row["approved_at"]
+        or approval.not_before.isoformat() != row["not_before"]
+        or approval.expires_at.isoformat() != row["expires_at"]
+    ):
+        raise ActionApprovalError("stored Action approval index differs from payload")
+    return approval
+
+
+def _approval_consumption_from_row(
+    row: sqlite3.Row,
+    *,
+    campaign_id: str,
+) -> ActionApprovalConsumptionReceipt:
+    raw = _required_bytes(row, "receipt_json")
+    try:
+        receipt = ActionApprovalConsumptionReceipt.model_validate(
+            _decode_json(raw, label="ActionApprovalConsumptionReceipt")
+        )
+    except ValidationError as exc:
+        raise ActionApprovalError("stored Action approval receipt is invalid") from exc
+    if raw != _approval_consumption_bytes(receipt):
+        raise ActionApprovalError("stored Action approval receipt is not canonical bytes")
+    approval = receipt.approval
+    permit = receipt.action_permit
+    if (
+        approval.campaign_id != campaign_id
+        or receipt.receipt_id != row["receipt_id"]
+        or receipt.receipt_digest != row["receipt_digest"]
+        or approval.approval_id != row["approval_id"]
+        or approval.approval_digest != row["approval_digest"]
+        or permit.permit_id != row["permit_id"]
+        or permit.permit_digest != row["permit_digest"]
+        or receipt.dispatch_id != row["dispatch_id"]
+        or receipt.proposal_id != row["proposal_id"]
+        or receipt.proposal_digest != row["proposal_digest"]
+        or receipt.request_id != row["request_id"]
+        or receipt.request_digest != row["request_digest"]
+        or receipt.normalized_parameters_digest != row["normalized_parameters_digest"]
+        or permit.consumed_at.isoformat() != row["consumed_at"]
+    ):
+        raise ActionApprovalError("stored Action approval receipt index differs from payload")
+    return receipt
 
 
 def _cleanup_reservation_from_row(

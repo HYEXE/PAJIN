@@ -642,6 +642,7 @@ class GeneralAttackActionCleanupGate:
                 capabilities=self._activation.action_registry(),
                 permit_store=self._cleanup_store,
                 input_authority=input_authority,
+                claim_authority=self,
                 clock=lambda: claim_at,
                 permit_ttl=self._permit_ttl,
             )

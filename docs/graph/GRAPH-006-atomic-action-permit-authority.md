@@ -38,7 +38,7 @@ compiler identity, canonical permit and dispatch IDs, and a short authority wind
 the Envelope. Its ID excludes clock values, so an exact response-loss retry resolves the stored row
 but returns `newlyConsumed=false` and cannot redispatch.
 
-## SQLite schema v2 and cleanup extension v3
+## SQLite schema v2 through approval extension v4
 
 GRAPH-005 schema v1 gains two append-only tables:
 
@@ -65,17 +65,34 @@ The two additive public claim authorities require external reversible-definition
 input authorities, respectively; the GRAPH layer supplies no permissive default or production
 source authenticator.
 
+APPROVAL-001A advances the database to schema v4. Append-only
+`graph_action_approval_envelopes` and `graph_action_approval_consumptions` ledgers persist one exact
+operator approval and its non-reusable receipt beside the unchanged ActionPermit. The approved
+transaction commits all three records atomically after resolving a deployment-pinned full-policy
+registry and authenticating the approval before and after the storage boundary. Plain, approved,
+reversible, and cleanup paths use distinct non-transferable process writer tokens; a generic writer
+cannot select its own policy or verifier and enter a specialized transaction.
+
+Current direct and retained backup outer wires advance to v1alpha3/schema v4. Strict verified
+v1alpha2/schema-v3 and v1alpha1/schema-v2 readers remain, and migration fabricates no approval or
+receipt authority. Policy and verifier pins remain process-local deployment TCB: reopening a
+database must re-inject the same trusted verifier and complete policy inventory. Durable approval,
+Permit, and receipt rows do not by themselves authenticate attacker-selected runtime code.
+
 ## Final authority transaction
 
 ```text
 BEGIN IMMEDIATE
   verify pinned compiler
+  verify path-specific writer and deployment policy
+  authenticate approval when the selected path requires it
   resolve deterministic exact retry
   reject request/proposal equivocation
   validate Envelope + Proposal + Capability algebra
   reproject durable Event Log
   compare stored Projection + Snapshot exactly
   calculate durable budget/rate use
+  append approval envelope and non-reusable receipt when required
   append consumed ActionPermit
 COMMIT  # authoritative dispatch-claim point
 ```
@@ -121,8 +138,11 @@ unchanged, and local signed fixtures are not organization-issued activation auth
 - out-of-Scope target or excessive risk;
 - inactive or expired Envelope;
 - cumulative budget or rolling-rate exhaustion;
-- different material under an existing proposal or request identity; and
-- compiler writer drift.
+- different material under an existing proposal or request identity;
+- compiler writer drift;
+- missing, forged, stale, substituted, or policy-incompatible approval;
+- generic or wrong-path writer use; and
+- T2 write, T3+, batch, or asynchronous approval claims without a separately versioned authority.
 
 ## Verification
 
@@ -151,6 +171,14 @@ the skips are the existing POSIX symlink/hard-link semantics checks.
 The additive PERMIT-004B1 suite also covers atomic Action-plus-hold rollback, call/unit/cost/rolling
 budget aggregation, cross-instance one-winner races, one-shot cleanup uncertainty, cleanup-ledger
 tampering, v1/v2-to-v3 migration, v3 backup/restore, and legacy v2 backup destination migration.
+
+The additive APPROVAL-001A suite covers strict canonical approval and receipt types, deployment
+issuer rejection before and after the transaction, policy and release substitution, specialized
+writer isolation, atomic approval/Permit/receipt rollback, exact retry after expiry, concurrent
+single consumption, v2/v3-to-v4 migration, v1alpha3 backup/restore, General Attack outcome receipt
+binding, and Control Plane completion evidence. See the
+[APPROVAL-001A contract](../orchestration/APPROVAL-001A-single-action-approval.md) and
+[ADR-0134](../adr/0134-consume-single-approval-with-action-permit.md).
 
 ## Remaining boundaries
 

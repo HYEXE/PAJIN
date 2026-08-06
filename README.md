@@ -290,6 +290,18 @@ path is activated. See the
 [ADR-0132](docs/adr/0132-pre-reserve-cleanup-capacity-before-reversible-write.md), and
 [ADR-0133](docs/adr/0133-authenticate-and-verify-reversible-cleanup.md).
 
+APPROVAL-001A now adds a bounded operator-approval path before the existing ActionPermit claim.
+One content-addressed approval exact-binds the Campaign, Run, Envelope, activation and release,
+Decision, Proposal, request, target, risk, budget, expected Permit, issuer, principals, and time
+window. Deployment code authenticates the issuer; the digest alone is not a signature. The GRAPH
+schema-v4 transaction atomically persists approval, unchanged consumed Permit, and one
+non-reusable receipt. General Attack and `capability-graph-v1` admit only T2 no-write or T0/T1
+definition-required approval, and expose the receipt in outcome/completion audit. Common Engine,
+legacy T2, T2 write, T3+, batch, and async remain fail closed. The deployment policy/verifier pin
+is process-local and must be re-injected after restart. See the
+[APPROVAL-001A contract](docs/orchestration/APPROVAL-001A-single-action-approval.md) and
+[ADR-0134](docs/adr/0134-consume-single-approval-with-action-permit.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

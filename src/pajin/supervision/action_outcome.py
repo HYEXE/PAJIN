@@ -57,8 +57,10 @@ from pajin.domain.models import (
     StrictModel,
     ToolRequest,
     ToolResult,
+    ToolRiskTier,
     campaign_manifest_digest,
 )
+from pajin.graph.approval import ActionApprovalConsumptionReceipt
 from pajin.graph.authority import ActionPermit, ActionProposal, GraphActionPermitStore
 from pajin.policy.engine import PolicyDecision
 from pajin.runtime.secrets import SecretLease, SecretLeaseStatus
@@ -132,6 +134,7 @@ class _AuthenticatedGeneralAttackActionResult:
     worker_result: WorkerResult
     worker_execution_id: str
     normalized_result: ToolResult
+    approval_receipt: ActionApprovalConsumptionReceipt | None
     evidence: GeneralAttackSealedEvidenceRef
     data_flow: GeneralAttackDataFlowObservation
     active_authorities: CapabilityAuthorityRegistry
@@ -329,6 +332,17 @@ class GeneralAttackActionOutcomeAssessment(StrictModel):
     permit_id: str = Field(alias="permitId", min_length=1, max_length=100)
     permit_digest: _Sha256 = Field(alias="permitDigest")
     dispatch_id: str = Field(alias="dispatchId", min_length=1, max_length=100)
+    approval_id: str | None = Field(default=None, alias="approvalId", max_length=100)
+    approval_digest: _Sha256 | None = Field(default=None, alias="approvalDigest")
+    approval_receipt_id: str | None = Field(
+        default=None,
+        alias="approvalReceiptId",
+        max_length=120,
+    )
+    approval_receipt_digest: _Sha256 | None = Field(
+        default=None,
+        alias="approvalReceiptDigest",
+    )
     run_audit_anchor: CapabilityGraphRunAuditAnchor = Field(alias="runAuditAnchor")
     run_audit_anchor_event_hash: _Sha256 = Field(alias="runAuditAnchorEventHash")
     run_audit_anchor_seal_root_digest: _Sha256 = Field(
@@ -430,10 +444,30 @@ class GeneralAttackActionOutcomeAssessment(StrictModel):
             raise ValueError("general attack data-flow Definition differs from its Capability")
         if self.expected_evidence_types != tuple(sorted(set(self.expected_evidence_types))):
             raise ValueError("expected evidence types must be unique and sorted")
+        approval_fields = (
+            self.approval_id,
+            self.approval_digest,
+            self.approval_receipt_id,
+            self.approval_receipt_digest,
+        )
+        if any(value is not None for value in approval_fields) and not all(
+            value is not None for value in approval_fields
+        ):
+            raise ValueError("general attack approval audit binding is incomplete")
+        excluded = {"assessment_id", "assessment_digest"}
+        if self.approval_receipt_id is None:
+            excluded.update(
+                {
+                    "approval_id",
+                    "approval_digest",
+                    "approval_receipt_id",
+                    "approval_receipt_digest",
+                }
+            )
         material = self.model_dump(
             mode="json",
             by_alias=True,
-            exclude={"assessment_id", "assessment_digest"},
+            exclude=excluded,
         )
         digest = capability_definition_digest(
             "pajin.supervision.general-attack-action-outcome-assessment/v1",
@@ -537,6 +571,26 @@ class GeneralAttackActionOutcomeGate:
                 permitId=authenticated.permit.permit_id,
                 permitDigest=authenticated.permit.permit_digest,
                 dispatchId=authenticated.permit.dispatch_id,
+                approvalId=(
+                    authenticated.approval_receipt.approval.approval_id
+                    if authenticated.approval_receipt is not None
+                    else None
+                ),
+                approvalDigest=(
+                    authenticated.approval_receipt.approval.approval_digest
+                    if authenticated.approval_receipt is not None
+                    else None
+                ),
+                approvalReceiptId=(
+                    authenticated.approval_receipt.receipt_id
+                    if authenticated.approval_receipt is not None
+                    else None
+                ),
+                approvalReceiptDigest=(
+                    authenticated.approval_receipt.receipt_digest
+                    if authenticated.approval_receipt is not None
+                    else None
+                ),
                 runAuditAnchor=authenticated.run_anchor,
                 runAuditAnchorEventHash=authenticated.run_anchor_event_hash,
                 runAuditAnchorSealRootDigest=(
@@ -611,12 +665,13 @@ class GeneralAttackActionOutcomeGate:
         graph_proposal = ActionProposal.model_validate(
             result.proposal.model_dump(mode="json", by_alias=True)
         )
-        self._require_exact_consumed_action(
+        approval_receipt = self._require_exact_consumed_action(
             result,
             canonical_intent,
             prepared,
             graph_proposal,
             permit,
+            definition,
         )
         inputs = self._resolve_inputs(permit, prepared, campaign, definition)
         evidence_path = f"evidence/{permit.request_id}.json"
@@ -717,6 +772,7 @@ class GeneralAttackActionOutcomeGate:
             worker_result=worker_result,
             worker_execution_id=worker_result.execution_id,
             normalized_result=normalized,
+            approval_receipt=approval_receipt,
             evidence=evidence_ref,
             data_flow=data_flow,
             active_authorities=active_authorities,
@@ -964,7 +1020,8 @@ class GeneralAttackActionOutcomeGate:
         prepared: PreparedCapabilityAction,
         proposal: ActionProposal,
         permit: ActionPermit,
-    ) -> None:
+        definition: CapabilityDefinition,
+    ) -> ActionApprovalConsumptionReceipt | None:
         canonical_prepared = PreparedCapabilityAction.model_validate(
             result.prepared.model_dump(mode="json", by_alias=True)
         )
@@ -1003,6 +1060,43 @@ class GeneralAttackActionOutcomeGate:
             != intent.normalized_parameters_digest
         ):
             raise ValueError("consumed ActionPermit lineage differs from PERMIT-003")
+        requires_approval = (
+            permit.capability.risk_tier >= ToolRiskTier.T2
+            or definition.approval_required
+        )
+        if not requires_approval:
+            if result.approval_receipt is not None:
+                raise ValueError("approval receipt is present outside current policy")
+            return None
+        if result.approval_receipt is None:
+            raise ValueError("approval-required result lacks its consumption receipt")
+        receipt = ActionApprovalConsumptionReceipt.model_validate(
+            result.approval_receipt.model_dump(mode="json", by_alias=True)
+        )
+        lookup = getattr(self._permit_store, "approval_consumption", None)
+        if not callable(lookup):
+            raise ValueError("outcome store cannot resolve approval consumption receipts")
+        stored_receipt = lookup(receipt.receipt_id)
+        if stored_receipt is None:
+            raise ValueError("approval consumption receipt is absent from the GRAPH store")
+        stored_receipt = ActionApprovalConsumptionReceipt.model_validate(
+            stored_receipt.model_dump(mode="json", by_alias=True)
+        )
+        if (
+            stored_receipt != receipt
+            or receipt.action_permit != permit
+            or receipt.approval.proposal != proposal
+            or receipt.approval.release.release_id != prepared.release.release_id
+            or receipt.approval.release.release_digest != prepared.release.release_digest
+            or receipt.approval.release.capability_id
+            != prepared.capability.capability_id
+            or receipt.approval.release.capability_version
+            != prepared.capability.capability_version
+            or receipt.approval.release.capability_digest
+            != prepared.capability.definition_digest
+        ):
+            raise ValueError("approval consumption differs from the sealed action")
+        return receipt
 
     def _require_terminal_outcome(
         self,

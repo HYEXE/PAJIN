@@ -120,7 +120,7 @@ class _StateTool(Tool):
             tool_id=tool_id,
             version="1.0.0",
             description=f"isolated {command} fixture",
-            risk_tier=ToolRiskTier.T2,
+            risk_tier=ToolRiskTier.T1,
             categories=frozenset({"active-test"}),
             evidence_types=frozenset({"state-digest"}),
             network_access=False,
@@ -448,9 +448,11 @@ def _definition(
     capability_id: str,
     tool_id: str,
     cleanup_required: bool,
+    approval_required: bool = False,
     side_effect_class: CapabilitySideEffectClass = (
         CapabilitySideEffectClass.REVERSIBLE_WRITE
     ),
+    risk_tier: ToolRiskTier = ToolRiskTier.T1,
 ) -> CapabilityDefinition:
     return CapabilityDefinition(
         capabilityId=capability_id,
@@ -465,11 +467,11 @@ def _definition(
             toolVersion="1.0.0",
             toolDigest=sha256(f"tool:{tool_id}".encode()).hexdigest(),
         ),
-        riskTier="T2",
+        riskTier=risk_tier,
         sideEffectClass=side_effect_class,
         evidenceTypes=("state-digest",),
         networkAccess=False,
-        approvalRequired=True,
+        approvalRequired=approval_required,
         requestUnitCost=1,
         cleanupRequired=cleanup_required,
         parallelSafe=False,
@@ -481,6 +483,7 @@ def _context(
     sample_campaign: CampaignManifest,
     *,
     source_cleanup_required: bool = True,
+    source_approval_required: bool = False,
     source_side_effect: CapabilitySideEffectClass = (
         CapabilitySideEffectClass.REVERSIBLE_WRITE
     ),
@@ -493,6 +496,7 @@ def _context(
         capability_id=SOURCE_CAPABILITY,
         tool_id=SOURCE_TOOL,
         cleanup_required=source_cleanup_required,
+        approval_required=source_approval_required,
         side_effect_class=source_side_effect,
     )
     cleanup_definition = _definition(
@@ -626,7 +630,7 @@ def _context(
             cleanup_binding.action_capability.reference(),
         ),
         allowedTargetDigests=(intent.target_digest,),
-        maxRiskTier="T2",
+        maxRiskTier="T1",
         budget=ActionBudgetLimit(
             toolCallLimit=2,
             requestUnitLimit=2,
@@ -922,9 +926,58 @@ async def test_reversible_write_without_hold_authority_is_rejected_before_worker
 
 
 @pytest.mark.asyncio
+async def test_approval_required_write_fails_before_cleanup_hold_and_worker(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    context = _context(
+        tmp_path,
+        sample_campaign,
+        source_approval_required=True,
+    )
+    cleanup_authority = _UnexpectedCleanupAuthority()
+    gate = GeneralAttackActionPermitGate(
+        activation=context.activation,
+        permit_store=context.graph.permit_store,
+        inputs=_PermitInputs(
+            GeneralAttackActionPermitInputs(
+                envelope=context.envelope,
+                decision=context.source_decision,
+                cost_microusd=0,
+            )
+        ),
+        reversible_cleanup=cleanup_authority,
+        clock=lambda: SOURCE_NOW,
+    )
+
+    async def consume(*_args):
+        raise AssertionError("unapproved write reached its Worker consumer")
+
+    with pytest.raises(GeneralAttackActionPermitError, match="dual approval"):
+        await gate.dispatch_once(
+            context.intent,
+            context.source_proposal,
+            context.campaign,
+            context.hypotheses,
+            context.plan,
+            context.task.task_digest,
+            context.source_definition.reference(),
+            context.definitions,
+            context.source_binding.capability,
+            context.authorities,
+            consume,
+        )
+
+    assert cleanup_authority.calls == 0
+    assert context.worker.calls == []
+    assert context.graph.permit_store.permits() == ()
+    assert context.graph.permit_store.cleanup_reservations() == ()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("stable_plan_calls", "expected_cleanup_permits"),
-    ((1, 0), (2, 1)),
+    ((1, 0), (2, 0)),
 )
 async def test_cleanup_handler_plan_equivocation_fails_before_worker(
     tmp_path: Path,

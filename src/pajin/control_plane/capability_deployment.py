@@ -32,8 +32,16 @@ from pajin.domain.models import (
     campaign_manifest_digest,
 )
 from pajin.graph import (
+    ActionApprovalCapabilityPolicy,
+    ActionApprovalCapabilityPolicyRegistry,
+    ActionApprovalEnvelope,
+    ActionApprovalError,
+    ActionProposal,
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
+    GraphApprovedActionPermitAuthority,
+    GraphApprovedActionPermitDispatcher,
+    GraphDecision,
     MissionEnvelope,
     SQLiteGraphStore,
 )
@@ -93,6 +101,11 @@ class CapabilityGraphWorkerDeployment(StrictModel):
         pattern=r"^[a-f0-9]{64}$",
     )
     mission_envelope: MissionEnvelope = Field(alias="missionEnvelope")
+    action_approvals: tuple[ActionApprovalEnvelope, ...] = Field(
+        default=(),
+        alias="actionApprovals",
+        max_length=1_024,
+    )
     lifecycle_policy: CapabilityLifecyclePolicy = Field(alias="lifecyclePolicy")
     trust_keys: tuple[CapabilityLifecycleTrustKey, ...] = Field(
         alias="trustKeys",
@@ -157,6 +170,65 @@ class CapabilityGraphWorkerDeployment(StrictModel):
             )
         ):
             raise ValueError("Capability Graph deployment MissionEnvelope authority differs")
+        approval_ids: set[str] = set()
+        approval_proposals: set[str] = set()
+        approval_requests: set[str] = set()
+        release_capabilities = {
+            (
+                bundle.release.statement.release_id,
+                bundle.release.statement.release_digest,
+            ): bundle.release.statement.capability.capability
+            for bundle in self.releases
+        }
+        activated_release_bindings = {
+            (
+                item.release_id,
+                item.release_digest,
+                capability.capability_id,
+                capability.capability_version,
+                capability.capability_digest,
+            )
+            for item in self.activated_releases
+            for capability in (
+                release_capabilities.get((item.release_id, item.release_digest)),
+            )
+            if capability is not None
+        }
+        if len(activated_release_bindings) != len(self.activated_releases):
+            raise ValueError(
+                "Capability Graph activated release is absent from signed inventory"
+            )
+        for approval in self.action_approvals:
+            if (
+                approval.approval_id in approval_ids
+                or approval.proposal.proposal_id in approval_proposals
+                or approval.proposal.request_id in approval_requests
+            ):
+                raise ValueError("Capability Graph deployment approvals are not unique")
+            if (
+                approval.campaign_id != self.campaign.metadata.name
+                or approval.campaign_digest != self.campaign_digest
+                or approval.run_id != self.mission_envelope.run_id
+                or approval.mission_envelope != self.mission_envelope
+                or approval.activation_set_digest != self.activation_set_digest
+                or approval.proposal.capability
+                not in self.mission_envelope.allowed_capabilities
+                or (
+                    approval.release.release_id,
+                    approval.release.release_digest,
+                    approval.release.capability_id,
+                    approval.release.capability_version,
+                    approval.release.capability_digest,
+                )
+                not in activated_release_bindings
+                or approval.issuer.context_digest != self.campaign_digest
+            ):
+                raise ValueError(
+                    "Capability Graph deployment approval differs from deployment authority"
+                )
+            approval_ids.add(approval.approval_id)
+            approval_proposals.add(approval.proposal.proposal_id)
+            approval_requests.add(approval.proposal.request_id)
         graph_database = Path(self.graph_database)
         run_root = Path(self.run_root)
         if graph_database == run_root or graph_database.parent == run_root:
@@ -178,6 +250,7 @@ class CapabilityGraphDeploymentRuntime:
     tools: ToolRegistry
     graph_store: SQLiteGraphStore
     permits: GraphActionPermitDispatcher
+    approved_permits: GraphApprovedActionPermitDispatcher | None
     clock: Callable[[], datetime]
 
     def open_run_store(self, run_id: str) -> RunStore:
@@ -262,6 +335,32 @@ class CapabilityGraphDeploymentRuntime:
                 )
 
 
+class _DeploymentActionApprovalInputAuthority:
+    """Authenticate approvals against the exact digest-pinned deployment inventory."""
+
+    def __init__(self, approvals: tuple[ActionApprovalEnvelope, ...]) -> None:
+        self._approvals = {item.approval_id: item for item in approvals}
+
+    def verify_action_approval(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        approval: ActionApprovalEnvelope,
+    ) -> None:
+        expected = self._approvals.get(approval.approval_id)
+        if (
+            expected is None
+            or expected != approval
+            or approval.mission_envelope != envelope
+            or approval.proposal != proposal
+            or approval.graph_decision != decision
+        ):
+            raise ActionApprovalError(
+                "Action approval is not pinned by the Worker deployment"
+            )
+
+
 def capability_graph_campaign_digest(campaign: CampaignManifest) -> str:
     """Fingerprint one canonical Campaign used by the deployment and envelope."""
 
@@ -337,15 +436,50 @@ def load_capability_graph_deployment(
             campaign_id=deployment.campaign.metadata.name,
         )
         compiler = deployment.compiler
+        approval_policies = ActionApprovalCapabilityPolicyRegistry(
+            tuple(
+                ActionApprovalCapabilityPolicy(
+                    capability=binding.action_capability.reference(),
+                    sideEffectClass=definition.side_effect_class.value,
+                    approvalRequired=definition.approval_required,
+                    cleanupRequired=definition.cleanup_required,
+                )
+                for binding in activation.activation_set.bindings
+                for definition in (
+                    rollout.bundle.definitions.resolve(binding.capability.capability),
+                )
+            )
+        )
         authority = GraphActionPermitAuthority(
             campaign_id=deployment.campaign.metadata.name,
             compiler_id=compiler.compiler_id,
             compiler_version=compiler.compiler_version,
             compiler_digest=compiler.compiler_digest,
             capabilities=activation.action_registry(),
+            policies=approval_policies,
             permit_store=graph_store.permit_store,
             clock=selected_clock,
             permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
+        )
+        approved_dispatcher = (
+            GraphApprovedActionPermitDispatcher(
+                GraphApprovedActionPermitAuthority(
+                    campaign_id=deployment.campaign.metadata.name,
+                    compiler_id=compiler.compiler_id,
+                    compiler_version=compiler.compiler_version,
+                    compiler_digest=compiler.compiler_digest,
+                    capabilities=activation.action_registry(),
+                    policies=approval_policies,
+                    permit_store=graph_store.permit_store,
+                    input_authority=_DeploymentActionApprovalInputAuthority(
+                        deployment.action_approvals
+                    ),
+                    clock=selected_clock,
+                    permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
+                )
+            )
+            if deployment.action_approvals
+            else None
         )
     except CapabilityGraphDeploymentError:
         raise
@@ -359,6 +493,7 @@ def load_capability_graph_deployment(
         tools=tools,
         graph_store=graph_store,
         permits=GraphActionPermitDispatcher(authority),
+        approved_permits=approved_dispatcher,
         clock=selected_clock,
     )
 

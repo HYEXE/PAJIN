@@ -8,14 +8,25 @@ from pathlib import Path
 import pytest
 
 from pajin.capabilities import (
+    CapabilityDefinition,
+    CapabilitySideEffectClass,
     CapabilityUseProfile,
     ExistingModeCapabilityActivation,
     ExistingModeCapabilityActivationError,
+    PreparedCapabilityAction,
     activate_existing_mode_capabilities,
     admit_existing_mode_capability_releases,
 )
-from pajin.domain.models import AutonomyLevel, CampaignManifest, campaign_manifest_digest
+from pajin.domain.models import (
+    AutonomyLevel,
+    CampaignManifest,
+    ToolRiskTier,
+    campaign_manifest_digest,
+)
 from pajin.graph import (
+    ActionApprovalEnvelope,
+    ActionApprovalIssuerAuthorityBinding,
+    ActionApprovalReleaseRef,
     ActionBudgetLimit,
     ActionBudgetReservation,
     ActionPermit,
@@ -32,11 +43,13 @@ from pajin.graph import (
     SQLiteGraphStore,
     SurfaceProposal,
     TrustedGraphLineageRegistry,
+    action_permit_attempt_id,
 )
 from pajin.supervision import (
     GeneralAttackActionPermitError,
     GeneralAttackActionPermitGate,
     GeneralAttackActionPermitInputs,
+    GeneralAttackApprovalClaim,
     GeneralAttackCompiledIntent,
     compile_general_attack_action_intent,
 )
@@ -65,6 +78,78 @@ class _StaticPermitInputAuthority:
         del kwargs
         self.calls += 1
         return self.value
+
+
+class _StaticApprovalInputAuthority:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def verify_action_approval(
+        self,
+        envelope,
+        proposal,
+        decision,
+        approval,
+    ) -> None:
+        self.calls += 1
+        assert approval.mission_envelope == envelope
+        assert approval.proposal == proposal
+        assert approval.graph_decision == decision
+
+
+class _StaticApprovalAuthority:
+    def __init__(self, issuer: ActionApprovalIssuerAuthorityBinding) -> None:
+        self.calls = 0
+        self.issuer = issuer
+
+    def bind_for_action(
+        self,
+        *,
+        intent,
+        prepared,
+        proposal,
+        campaign,
+        definition,
+        envelope,
+        decision,
+        evaluated_at,
+    ) -> GeneralAttackApprovalClaim:
+        self.calls += 1
+        campaign_digest = campaign_manifest_digest(campaign)
+        approval = ActionApprovalEnvelope(
+            issuer=self.issuer,
+            requestedBy="principal:general-attack-planner",
+            approvedBy="principal:range-operator",
+            campaignId=campaign.metadata.name,
+            campaignDigest=campaign_digest,
+            runId=envelope.run_id,
+            missionEnvelope=envelope,
+            sourceIntentDigest=intent.intent_digest,
+            activationSetDigest=prepared.activation_set_digest,
+            release=ActionApprovalReleaseRef(
+                releaseId=prepared.release.release_id,
+                releaseDigest=prepared.release.release_digest,
+                capabilityId=prepared.capability.capability_id,
+                capabilityVersion=prepared.capability.capability_version,
+                capabilityDigest=prepared.capability.definition_digest,
+            ),
+            graphDecision=decision,
+            proposal=proposal,
+            expectedActionPermitId=action_permit_attempt_id(
+                envelope,
+                proposal,
+                decision,
+            ),
+            sideEffectClass=definition.side_effect_class.value,
+            reservation=proposal.reservation,
+            approvedAt=evaluated_at - timedelta(seconds=30),
+            notBefore=evaluated_at - timedelta(seconds=15),
+            expiresAt=min(
+                envelope.expires_at,
+                evaluated_at + timedelta(minutes=2),
+            ),
+        )
+        return GeneralAttackApprovalClaim(envelope=approval)
 
 
 @dataclass(frozen=True, slots=True)
@@ -200,14 +285,33 @@ def _inputs(context: _PermitContext) -> GeneralAttackActionPermitInputs:
     )
 
 
+def _approval_issuer(context: _PermitContext) -> ActionApprovalIssuerAuthorityBinding:
+    return ActionApprovalIssuerAuthorityBinding(
+        authorityId="deployment:general-attack-operator",
+        authorityVersion="1.0.0",
+        implementationType="tests.StaticGeneralAttackApprovalAuthority",
+        contextDigest=campaign_manifest_digest(context.campaign),
+    )
+
+
+def _approval_components(
+    context: _PermitContext,
+) -> tuple[_StaticApprovalAuthority, _StaticApprovalInputAuthority]:
+    return _StaticApprovalAuthority(_approval_issuer(context)), _StaticApprovalInputAuthority()
+
+
 def _gate(
     context: _PermitContext,
     authority: _StaticPermitInputAuthority,
 ) -> GeneralAttackActionPermitGate:
+    approval, verifier = _approval_components(context)
     return GeneralAttackActionPermitGate(
         activation=context.activation,
         permit_store=context.graph.permit_store,
         inputs=authority,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: _GATE_NOW,
     )
 
@@ -326,11 +430,292 @@ async def test_general_attack_gate_consumes_existing_permit_once(
     assert retry.dispatch.dispatched is False
     assert retry.dispatch.result is None
     assert retry.dispatch.permit == first.dispatch.permit
+    assert first.approval_receipt is not None
+    assert retry.approval_receipt == first.approval_receipt
+    assert first.approval_receipt.action_permit == first.dispatch.permit
     assert calls == [first.dispatch.permit]
     assert authority.calls == 2
     assert permit_context.graph.permit_store.permits() == (first.dispatch.permit,)
+    assert permit_context.graph.permit_store.action_approvals() == (
+        first.approval_receipt.approval,
+    )
+    assert permit_context.graph.permit_store.approval_consumptions() == (first.approval_receipt,)
     assert permit_context.intent.permit_granted is False
     assert permit_context.intent.execution_authorized is False
+
+
+@pytest.mark.asyncio
+async def test_consumed_approval_exact_retry_recovers_after_approval_expiry(
+    permit_context: _PermitContext,
+) -> None:
+    class _PinnedApprovalAuthority(_StaticApprovalAuthority):
+        pinned: GeneralAttackApprovalClaim | None = None
+
+        def bind_for_action(self, **kwargs) -> GeneralAttackApprovalClaim:
+            if self.pinned is None:
+                self.pinned = super().bind_for_action(**kwargs)
+            else:
+                self.calls += 1
+            return self.pinned
+
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    approval = _PinnedApprovalAuthority(_approval_issuer(permit_context))
+    verifier = _StaticApprovalInputAuthority()
+
+    def gate_at(evaluated_at):
+        return GeneralAttackActionPermitGate(
+            activation=permit_context.activation,
+            permit_store=permit_context.graph.permit_store,
+            inputs=inputs,
+            approval=approval,
+            approval_input_authority=verifier,
+            approval_issuer=approval.issuer,
+            clock=lambda: evaluated_at,
+        )
+
+    callback_calls = 0
+
+    async def consume(permit: ActionPermit, prepared, proposal) -> str:
+        nonlocal callback_calls
+        del prepared, proposal
+        callback_calls += 1
+        return permit.dispatch_id
+
+    first = await _dispatch(gate_at(_GATE_NOW), permit_context, consume)
+    assert approval.pinned is not None
+    assert approval.pinned.envelope.expires_at == _GATE_NOW + timedelta(minutes=2)
+
+    retry = await _dispatch(
+        gate_at(_GATE_NOW + timedelta(minutes=3)),
+        permit_context,
+        consume,
+    )
+
+    assert first.dispatch.dispatched is True
+    assert retry.dispatch.dispatched is False
+    assert retry.dispatch.permit == first.dispatch.permit
+    assert retry.approval_receipt == first.approval_receipt
+    assert callback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_t2_no_write_requires_approval_before_external_inputs(
+    permit_context: _PermitContext,
+) -> None:
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    gate = GeneralAttackActionPermitGate(
+        activation=permit_context.activation,
+        permit_store=permit_context.graph.permit_store,
+        inputs=inputs,
+        clock=lambda: _GATE_NOW,
+    )
+    callback_calls = 0
+
+    async def consume(_: ActionPermit, prepared, proposal) -> None:
+        nonlocal callback_calls
+        del prepared, proposal
+        callback_calls += 1
+
+    with pytest.raises(GeneralAttackActionPermitError, match=r"requires.*approval"):
+        await _dispatch(gate, permit_context, consume)
+
+    assert inputs.calls == 0
+    assert callback_calls == 0
+    assert permit_context.graph.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_approval_activation_substitution_fails_before_permit(
+    permit_context: _PermitContext,
+) -> None:
+    class _ForgedApprovalAuthority(_StaticApprovalAuthority):
+        def bind_for_action(self, **kwargs) -> GeneralAttackApprovalClaim:
+            claim = super().bind_for_action(**kwargs)
+            raw = claim.envelope.model_dump(mode="json", by_alias=True)
+            raw.pop("approvalId")
+            raw.pop("approvalDigest")
+            raw["activationSetDigest"] = "f" * 64
+            return GeneralAttackApprovalClaim(
+                envelope=ActionApprovalEnvelope.model_validate(raw),
+            )
+
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    approval = _ForgedApprovalAuthority(_approval_issuer(permit_context))
+    verifier = _StaticApprovalInputAuthority()
+    gate = GeneralAttackActionPermitGate(
+        activation=permit_context.activation,
+        permit_store=permit_context.graph.permit_store,
+        inputs=inputs,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
+        clock=lambda: _GATE_NOW,
+    )
+    callback_calls = 0
+
+    async def consume(_: ActionPermit, prepared, proposal) -> None:
+        nonlocal callback_calls
+        del prepared, proposal
+        callback_calls += 1
+
+    with pytest.raises(GeneralAttackActionPermitError, match="current exact action"):
+        await _dispatch(gate, permit_context, consume)
+
+    assert inputs.calls == 1
+    assert approval.calls == 1
+    assert verifier.calls == 0
+    assert callback_calls == 0
+    assert permit_context.graph.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_approval_provider_cannot_supply_its_own_unpinned_issuer(
+    permit_context: _PermitContext,
+) -> None:
+    expected_issuer = _approval_issuer(permit_context)
+    forged_issuer = ActionApprovalIssuerAuthorityBinding(
+        authorityId="deployment:untrusted-self-verifying-operator",
+        authorityVersion=expected_issuer.authority_version,
+        implementationType="tests.UntrustedSelfVerifyingApprovalProvider",
+        contextDigest=expected_issuer.context_digest,
+    )
+    approval = _StaticApprovalAuthority(forged_issuer)
+    verifier = _StaticApprovalInputAuthority()
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    gate = GeneralAttackActionPermitGate(
+        activation=permit_context.activation,
+        permit_store=permit_context.graph.permit_store,
+        inputs=inputs,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=expected_issuer,
+        clock=lambda: _GATE_NOW,
+    )
+
+    async def consume(*_args) -> None:
+        raise AssertionError("unpinned approval issuer reached the Permit consumer")
+
+    with pytest.raises(GeneralAttackActionPermitError, match="current exact action"):
+        await _dispatch(gate, permit_context, consume)
+
+    assert inputs.calls == 1
+    assert approval.calls == 1
+    assert verifier.calls == 0
+    assert permit_context.graph.permit_store.permits() == ()
+
+
+def test_single_action_approval_policy_boundaries(
+    permit_context: _PermitContext,
+) -> None:
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    approved_gate = _gate(permit_context, inputs)
+    unapproved_gate = GeneralAttackActionPermitGate(
+        activation=permit_context.activation,
+        permit_store=permit_context.graph.permit_store,
+        inputs=inputs,
+        clock=lambda: _GATE_NOW,
+    )
+    prepared = permit_context.activation.prepare_action(
+        release=permit_context.activation.activation_set.bindings[0].release,
+        request=permit_context.intent.request,
+        parameters=permit_context.intent.request.arguments,
+    )
+
+    def policy_inputs(
+        risk: ToolRiskTier,
+        *,
+        approval_required: bool,
+        cleanup_required: bool = False,
+        side_effect_class: CapabilitySideEffectClass | None = None,
+    ) -> tuple[CapabilityDefinition, PreparedCapabilityAction]:
+        definition_raw = permit_context.definition.model_dump(mode="json", by_alias=True)
+        definition_raw.pop("capabilityDigest")
+        definition_raw["riskTier"] = risk.name
+        definition_raw["approvalRequired"] = approval_required
+        definition_raw["cleanupRequired"] = cleanup_required
+        if side_effect_class is not None:
+            definition_raw["sideEffectClass"] = side_effect_class.value
+        definition = CapabilityDefinition.model_validate(definition_raw)
+        prepared_raw = prepared.model_dump(mode="json", by_alias=True)
+        prepared_raw["capability"]["riskTier"] = risk.name
+        return definition, PreparedCapabilityAction.model_validate(prepared_raw)
+
+    t1_optional = policy_inputs(ToolRiskTier.T1, approval_required=False)
+    t1_required = policy_inputs(ToolRiskTier.T1, approval_required=True)
+    t2 = policy_inputs(ToolRiskTier.T2, approval_required=False)
+    t2_cleanup = policy_inputs(
+        ToolRiskTier.T2,
+        approval_required=False,
+        cleanup_required=True,
+    )
+    t2_write = policy_inputs(
+        ToolRiskTier.T2,
+        approval_required=False,
+        cleanup_required=True,
+        side_effect_class=CapabilitySideEffectClass.REVERSIBLE_WRITE,
+    )
+    t3 = policy_inputs(ToolRiskTier.T3, approval_required=True)
+
+    assert approved_gate._requires_action_approval(*t1_optional) is False
+    assert approved_gate._requires_action_approval(*t1_required) is True
+    assert approved_gate._requires_action_approval(*t2) is True
+    with pytest.raises(GeneralAttackActionPermitError, match="cannot require a cleanup"):
+        approved_gate._requires_action_approval(*t2_cleanup)
+    with pytest.raises(GeneralAttackActionPermitError, match="dual approval"):
+        approved_gate._requires_action_approval(*t2_write)
+    with pytest.raises(GeneralAttackActionPermitError, match="T3 or higher"):
+        approved_gate._requires_action_approval(*t3)
+    with pytest.raises(GeneralAttackActionPermitError, match=r"requires.*approval"):
+        unapproved_gate._requires_action_approval(*t1_required)
+
+
+@pytest.mark.asyncio
+async def test_t3_is_rejected_before_inputs_approval_and_permit(
+    permit_context: _PermitContext,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    approval, verifier = _approval_components(permit_context)
+    gate = GeneralAttackActionPermitGate(
+        activation=permit_context.activation,
+        permit_store=permit_context.graph.permit_store,
+        inputs=inputs,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
+        clock=lambda: _GATE_NOW,
+    )
+    prepared = permit_context.activation.prepare_action(
+        release=permit_context.activation.activation_set.bindings[0].release,
+        request=permit_context.intent.request,
+        parameters=permit_context.intent.request.arguments,
+    )
+    prepared_raw = prepared.model_dump(mode="json", by_alias=True)
+    prepared_raw["capability"]["riskTier"] = ToolRiskTier.T3.name
+    elevated = PreparedCapabilityAction.model_validate(prepared_raw)
+
+    def return_elevated(*_args, **_kwargs):
+        return elevated, permit_context.definition
+
+    monkeypatch.setattr(
+        GeneralAttackActionPermitGate,
+        "_prepare_current_action",
+        return_elevated,
+    )
+    callback_calls = 0
+
+    async def consume(_: ActionPermit, prepared, proposal) -> None:
+        nonlocal callback_calls
+        del prepared, proposal
+        callback_calls += 1
+
+    with pytest.raises(GeneralAttackActionPermitError, match="T3 or higher"):
+        await _dispatch(gate, permit_context, consume)
+
+    assert inputs.calls == 0
+    assert approval.calls == 0
+    assert callback_calls == 0
+    assert permit_context.graph.permit_store.permits() == ()
 
 
 @pytest.mark.asyncio
@@ -363,10 +748,14 @@ async def test_general_attack_gate_wraps_external_authority_failure(
             del kwargs
             raise RuntimeError("provider unavailable")
 
+    approval, verifier = _approval_components(permit_context)
     gate = GeneralAttackActionPermitGate(
         activation=permit_context.activation,
         permit_store=permit_context.graph.permit_store,
         inputs=_FailingAuthority(),
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: _GATE_NOW,
     )
 
@@ -391,10 +780,14 @@ async def test_general_attack_gate_detaches_request_material_from_external_autho
             prepared.request.arguments["simulation"] = {"expanded": True}
             return _inputs(permit_context)
 
+    approval, verifier = _approval_components(permit_context)
     gate = GeneralAttackActionPermitGate(
         activation=permit_context.activation,
         permit_store=permit_context.graph.permit_store,
         inputs=_MutatingAuthority(),
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: _GATE_NOW,
     )
     observed = []
@@ -432,10 +825,14 @@ async def test_general_attack_gate_rejects_provider_campaign_mutation_forgery(
                 cost_microusd=0,
             )
 
+    approval, verifier = _approval_components(permit_context)
     gate = GeneralAttackActionPermitGate(
         activation=permit_context.activation,
         permit_store=permit_context.graph.permit_store,
         inputs=_MutatingAuthority(),
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: _GATE_NOW,
     )
 
@@ -685,10 +1082,14 @@ async def test_general_attack_gate_rechecks_campaign_window_at_atomic_claim(
     )
     clock_values = iter((_GATE_NOW, _GATE_NOW + timedelta(minutes=2)))
     authority = _StaticPermitInputAuthority(_inputs(windowed))
+    approval, verifier = _approval_components(windowed)
     gate = GeneralAttackActionPermitGate(
         activation=windowed.activation,
         permit_store=windowed.graph.permit_store,
         inputs=authority,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: next(clock_values),
     )
     calls = 0
@@ -750,10 +1151,14 @@ async def test_general_attack_gate_requires_current_signed_activation(
         profile=CapabilityUseProfile.RANGE,
     )
     authority = _StaticPermitInputAuthority(_inputs(permit_context))
+    approval, verifier = _approval_components(permit_context)
     gate = GeneralAttackActionPermitGate(
         activation=foreign_activation,
         permit_store=permit_context.graph.permit_store,
         inputs=authority,
+        approval=approval,
+        approval_input_authority=verifier,
+        approval_issuer=approval.issuer,
         clock=lambda: _GATE_NOW,
     )
 

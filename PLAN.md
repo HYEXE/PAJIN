@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
+- 현재 우선순위: `APPROVAL-001B` T2 write 승인·cleanup hold 원자 결합
 
 ## 제품 목표
 
@@ -635,6 +635,16 @@ verifier가 실제 target state digest를 독립 관찰해야 restored assessmen
 incomplete·uncertain source, stale/cross-action substitution, forged plan/Permit, unknown cleanup과 Gateway
 success-only restoration은 계속 거부한다.
 
+`APPROVAL-001A`는 하나의 deployment-authenticated operator approval을 기존 GRAPH 최종 transaction에
+추가한다. `mode=single`, `maxActions=1`인 Envelope는 issuer·principal, Campaign·Run·MissionEnvelope,
+source intent·activation·release, Decision·Proposal·request·target·risk·reservation·expected Permit과
+시간창을 exact-bind한다. content digest는 서명이 아니며 deployment-pinned input authority가 claim 전후
+issuer를 인증한다. schema v4 transaction은 approval·기존 consumed ActionPermit·non-reusable receipt를
+원자적으로 커밋하고 exact retry는 같은 tuple만 반환해 Worker를 다시 호출하지 않는다. General Attack과
+`capability-graph-v1`은 T2 no-write와 T0/T1 `approvalRequired`만 지원하며 outcome/completion에 receipt를
+결박한다. Common Engine·legacy T2, T2 write, T3+, batch·async는 계속 닫힌다. 다음 `APPROVAL-001B`는
+approval과 기존 reversible cleanup hold를 한 transaction에서 함께 소비해 bounded T2 write를 연다.
+
 ### Phase 7 — 제한된 Supervisor 활성화
 
 - [x] `PERMIT-001` 일반 공격 ActionProposal
@@ -646,6 +656,9 @@ success-only restoration은 계속 거부한다.
     - [x] `PERMIT-004B1` pre-reserved cleanup budget와 GRAPH one-shot CleanupPermit
     - [x] `PERMIT-004B2` authenticated write outcome·Handler plan·cleanup dispatch·restored state
 - [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
+  - [x] `APPROVAL-001A` single T2 no-write ApprovalEnvelope·Permit·receipt 원자 소비
+  - [ ] `APPROVAL-001B` T2 write approval·cleanup hold 원자 결합
+  - [ ] `APPROVAL-001C` bounded batch·async claim·partial/unknown outcome 조정
 - [ ] `SUP-007` opt-in T0/T1 실행
 - [ ] T2는 사전 승인 Envelope를 요구하고 T3+는 기본 거부
 

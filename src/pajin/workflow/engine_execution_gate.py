@@ -21,7 +21,18 @@ from pajin.capabilities.activation import (
     capability_tool_request_digest,
 )
 from pajin.capabilities.lifecycle import CapabilityReleaseRef
-from pajin.domain.models import CampaignManifest, CapabilityGrant, StrictModel, ToolRequest
+from pajin.capabilities.models import CapabilitySideEffectClass
+from pajin.domain.models import (
+    CampaignManifest,
+    CapabilityGrant,
+    StrictModel,
+    ToolRequest,
+    ToolRiskTier,
+)
+from pajin.graph.approval import (
+    ActionApprovalCapabilityPolicy,
+    ActionApprovalCapabilityPolicyRegistry,
+)
 from pajin.graph.authority import (
     ActionBudgetReservation,
     ActionCapabilityRef,
@@ -465,6 +476,22 @@ class CommonEngineExecutionGate:
         ):
             raise TypeError("Common execution gate requires an append-only audit store")
         self._activation = activation
+        self._policies = ActionApprovalCapabilityPolicyRegistry(
+            tuple(
+                ActionApprovalCapabilityPolicy(
+                    capability=item.action_capability.reference(),
+                    sideEffectClass=definition.side_effect_class.value,
+                    approvalRequired=definition.approval_required,
+                    cleanupRequired=definition.cleanup_required,
+                )
+                for item in activation.activation_set.bindings
+                for definition in (
+                    activation.rollout.bundle.definitions.resolve(
+                        item.capability.capability
+                    ),
+                )
+            )
+        )
         self._permit_store = permit_store
         self._gateway = gateway
         self._audit_store = audit_store
@@ -513,6 +540,11 @@ class CommonEngineExecutionGate:
             evaluated_at,
         )
         prepared = self._prepare_current_action(binding, canonical_intent)
+        self._require_plain_definition_policy(binding)
+        if prepared.capability.risk_tier >= ToolRiskTier.T2:
+            raise CommonEngineExecutionGateError(
+                "T2 or higher Common action requires an approval-aware execution gate"
+            )
         proposal = ActionProposal(
             campaignId=canonical_intent.campaign_id,
             runId=canonical_intent.run_id,
@@ -568,6 +600,7 @@ class CommonEngineExecutionGate:
             compiler_version=authority.envelope.compiler_version,
             compiler_digest=authority.envelope.compiler_digest,
             capabilities=self._activation.action_registry(),
+            policies=self._policies,
             permit_store=self._permit_store,
             clock=self._evaluated_at,
             permit_ttl=self._permit_ttl,
@@ -661,6 +694,27 @@ class CommonEngineExecutionGate:
                 "current Capability materialization differs from C1 action intent"
             )
         return prepared
+
+    @staticmethod
+    def _require_plain_definition_policy(
+        binding: CommonEngineMissionCapabilityBinding,
+    ) -> None:
+        definition = binding.definition
+        if definition.approval_required:
+            raise CommonEngineExecutionGateError(
+                "approval-required Common action requires an approval-aware execution gate"
+            )
+        if (
+            definition.cleanup_required
+            or definition.side_effect_class
+            not in {
+                CapabilitySideEffectClass.NONE,
+                CapabilitySideEffectClass.READ_ONLY,
+            }
+        ):
+            raise CommonEngineExecutionGateError(
+                "write or cleanup Common action requires a cleanup-aware execution gate"
+            )
 
     def _evaluated_at(self) -> datetime:
         try:

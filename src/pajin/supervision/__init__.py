@@ -39,6 +39,8 @@ from pajin.supervision.action_permit import (
     GeneralAttackActionPermitInputAuthority,
     GeneralAttackActionPermitInputs,
     GeneralAttackActionPermitResult,
+    GeneralAttackApprovalAuthority,
+    GeneralAttackApprovalClaim,
     GeneralAttackReversibleCleanupAuthority,
     GeneralAttackReversibleCleanupClaim,
 )
@@ -191,6 +193,8 @@ __all__ = [
     "GeneralAttackActionPermitResult",
     "GeneralAttackActionProposal",
     "GeneralAttackActionProposalError",
+    "GeneralAttackApprovalAuthority",
+    "GeneralAttackApprovalClaim",
     "GeneralAttackCleanupAssessment",
     "GeneralAttackCleanupDispatch",
     "GeneralAttackCleanupGrantInputAuthority",

@@ -13,6 +13,8 @@ import pajin.graph.backup_retention as backup_retention_module
 import pajin.graph.sqlite_store as sqlite_store_module
 from pajin.domain.models import AutonomyLevel, ToolRiskTier
 from pajin.graph import (
+    ActionApprovalCapabilityPolicy,
+    ActionApprovalCapabilityPolicyRegistry,
     ActionBudgetLimit,
     ActionBudgetReservation,
     ActionCapabilityRegistry,
@@ -137,7 +139,11 @@ def _admission_authority(
     )
 
 
-def _capability(*, tool_digest: str = DIGEST_B) -> RegisteredActionCapability:
+def _capability(
+    *,
+    tool_digest: str = DIGEST_B,
+    risk_tier: ToolRiskTier = ToolRiskTier.T1,
+) -> RegisteredActionCapability:
     return RegisteredActionCapability(
         capabilityId="capability:http-observe",
         capabilityVersion="1.0.0",
@@ -145,7 +151,7 @@ def _capability(*, tool_digest: str = DIGEST_B) -> RegisteredActionCapability:
         toolId="http.request",
         toolVersion="1.0.0",
         toolDigest=tool_digest,
-        riskTier=ToolRiskTier.T2,
+        riskTier=risk_tier,
     )
 
 
@@ -169,7 +175,7 @@ def _envelope(
         sourceCampaignDigest=DIGEST_E,
         allowedCapabilities=(capability.reference(),),
         allowedTargetDigests=(TARGET_DIGEST,),
-        maxRiskTier=ToolRiskTier.T2,
+        maxRiskTier=capability.risk_tier,
         budget=ActionBudgetLimit(
             toolCallLimit=tool_call_limit,
             requestUnitLimit=request_unit_limit,
@@ -209,7 +215,7 @@ def _action_proposal(
         requestId=request_id,
         requestDigest=request_digest,
         normalizedParametersDigest=DIGEST_E,
-        riskTier=ToolRiskTier.T2,
+        riskTier=capability.risk_tier,
         reservation=ActionBudgetReservation(
             requestUnits=request_units,
             costMicrousd=1_000,
@@ -220,6 +226,8 @@ def _action_proposal(
 
 def _seed(
     path: Path,
+    *,
+    risk_tier: ToolRiskTier = ToolRiskTier.T1,
 ) -> tuple[
     SQLiteGraphStore,
     GraphAdmissionAuthority,
@@ -258,7 +266,7 @@ def _seed(
         actorDigest=DIGEST_F,
         createdAt=NOW + timedelta(seconds=5),
     )
-    capability = _capability()
+    capability = _capability(risk_tier=risk_tier)
     envelope = _envelope(capability)
     proposal = _action_proposal(envelope, capability, decision)
     return store, admission, decision, capability, envelope, proposal
@@ -269,6 +277,9 @@ def _permit_authority(
     capability: RegisteredActionCapability,
     *,
     clock: datetime = NOW + timedelta(seconds=7),
+    side_effect_class: str = "read-only",
+    approval_required: bool = False,
+    cleanup_required: bool = False,
 ) -> GraphActionPermitAuthority:
     return GraphActionPermitAuthority(
         campaign_id=CAMPAIGN,
@@ -276,6 +287,16 @@ def _permit_authority(
         compiler_version=COMPILER_VERSION,
         compiler_digest=DIGEST_D,
         capabilities=ActionCapabilityRegistry([capability]),
+        policies=ActionApprovalCapabilityPolicyRegistry(
+            (
+                ActionApprovalCapabilityPolicy(
+                    capability=capability.reference(),
+                    sideEffectClass=side_effect_class,
+                    approvalRequired=approval_required,
+                    cleanupRequired=cleanup_required,
+                ),
+            )
+        ),
         permit_store=store.permit_store,
         clock=lambda: clock,
     )
@@ -334,6 +355,72 @@ def test_final_authority_transaction_persists_one_consumed_permit_and_retry(
     assert retry.newly_consumed is False
     assert retry.permit == first.permit
     assert reopened.permit_store.permits() == (first.permit,)
+
+
+def test_plain_permit_authority_rejects_t2_before_durable_claim(tmp_path: Path) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, capability, envelope, proposal = _seed(
+        path,
+        risk_tier=ToolRiskTier.T2,
+    )
+
+    with pytest.raises(ActionPermitError, match="approved or reversible"):
+        _permit_authority(store, capability).authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+
+    assert store.permit_store.permits() == ()
+
+
+def test_generic_writer_cannot_claim_plain_action_transaction(tmp_path: Path) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, capability, envelope, proposal = _seed(path)
+    writer = store.permit_store.claim_writer(
+        COMPILER_ID,
+        COMPILER_VERSION,
+        DIGEST_D,
+    )
+
+    with pytest.raises(ActionPermitError, match="compiler write authority is invalid"):
+        store.permit_store.authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+            capability,
+            writer=writer,
+            evaluated_at=NOW + timedelta(seconds=7),
+            permit_ttl=timedelta(seconds=30),
+        )
+
+    assert store.permit_store.permits() == ()
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"approval_required": True},
+        {"cleanup_required": True},
+        {"side_effect_class": "reversible-write"},
+        {"side_effect_class": "irreversible-write"},
+    ],
+)
+def test_plain_permit_authority_rejects_non_plain_definition_policy(
+    tmp_path: Path,
+    policy: dict[str, object],
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, capability, envelope, proposal = _seed(path)
+
+    with pytest.raises(ActionPermitError, match="no-write"):
+        _permit_authority(store, capability, **policy).authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+
+    assert store.permit_store.permits() == ()
 
 
 def test_verified_backup_restore_preserves_consumed_action_permit(tmp_path: Path) -> None:
@@ -619,7 +706,7 @@ def test_v1_store_migrates_without_fabricating_permit_authority(tmp_path: Path) 
     assert migrated.permit_store.permits() == ()
     check = sqlite3.connect(path)
     try:
-        assert check.execute("PRAGMA user_version").fetchone() == (3,)
+        assert check.execute("PRAGMA user_version").fetchone() == (4,)
         tables = {
             row[0]
             for row in check.execute(
@@ -677,7 +764,7 @@ def _reversible_envelope(
         sourceCampaignDigest=DIGEST_E,
         allowedCapabilities=capabilities,
         allowedTargetDigests=(TARGET_DIGEST,),
-        maxRiskTier=ToolRiskTier.T2,
+        maxRiskTier=max(action.risk_tier, cleanup.risk_tier),
         budget=ActionBudgetLimit(
             toolCallLimit=tool_call_limit,
             requestUnitLimit=request_unit_limit,
@@ -768,9 +855,7 @@ class _FixtureCleanupInputAuthority(
             cleanup_request.cleanup_executor_digest,
         )
         if actual != expected or decision.decision_payload_digest != DIGEST_C:
-            raise ValueError(
-                "fixture definition is not reversible-write with required cleanup"
-            )
+            raise ValueError("fixture definition is not reversible-write with required cleanup")
         if (
             envelope.run_id != RUN_ID
             or cleanup_request.source_action_proposal_id != proposal.proposal_id
@@ -862,6 +947,9 @@ def _reversible_authority(
     *,
     clock: datetime = NOW + timedelta(seconds=7),
     input_authority: ReversibleActionPermitInputAuthority | None = None,
+    side_effect_class: str = "reversible-write",
+    approval_required: bool = False,
+    cleanup_required: bool = True,
 ) -> GraphReversibleActionPermitAuthority:
     return GraphReversibleActionPermitAuthority(
         campaign_id=CAMPAIGN,
@@ -869,9 +957,20 @@ def _reversible_authority(
         compiler_version=COMPILER_VERSION,
         compiler_digest=DIGEST_D,
         capabilities=ActionCapabilityRegistry([action, cleanup]),
+        policies=ActionApprovalCapabilityPolicyRegistry(
+            (
+                ActionApprovalCapabilityPolicy(
+                    capability=action.reference(),
+                    sideEffectClass=side_effect_class,
+                    approvalRequired=approval_required,
+                    cleanupRequired=cleanup_required,
+                ),
+            )
+        ),
         permit_store=store.permit_store,
         input_authority=input_authority
         or _FixtureCleanupInputAuthority(action, cleanup),
+        claim_authority=store,
         clock=lambda: clock,
     )
 
@@ -898,6 +997,7 @@ def _cleanup_authority(
         capabilities=ActionCapabilityRegistry([action, cleanup]),
         permit_store=store.permit_store,
         input_authority=input_authority or default_input_authority,
+        claim_authority=store,
         clock=lambda: clock,
     )
 
@@ -982,9 +1082,7 @@ def test_reversible_action_atomically_holds_cleanup_and_consumes_once(
         reversible.action.permit.permit_id
     )
     assert store.permit_store.permits() == (reversible.action.permit,)
-    assert store.permit_store.cleanup_reservations() == (
-        reversible.cleanup_reservation,
-    )
+    assert store.permit_store.cleanup_reservations() == (reversible.cleanup_reservation,)
 
     cleanup_decision, request = _cleanup_request(
         envelope,
@@ -1019,6 +1117,118 @@ def test_reversible_action_atomically_holds_cleanup_and_consumes_once(
     )
     assert retry.newly_consumed is False
     assert retry.permit == authorization.permit
+
+
+def test_generic_writer_cannot_claim_reversible_or_cleanup_transaction(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup, tool_call_limit=2)
+    proposal = _action_proposal(envelope, action, decision)
+    hold_request = _cleanup_reservation_request(envelope, proposal, cleanup)
+    writer = store.permit_store.claim_writer(
+        COMPILER_ID,
+        COMPILER_VERSION,
+        DIGEST_D,
+    )
+
+    with pytest.raises(CleanupPermitError, match="compiler write authority is invalid"):
+        store.permit_store.authorize_reversible_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+            action,
+            hold_request,
+            cleanup,
+            writer=writer,
+            evaluated_at=NOW + timedelta(seconds=7),
+            permit_ttl=timedelta(seconds=30),
+        )
+
+    reversible = _reversible_authority(store, action, cleanup).authorize_for_dispatch(
+        envelope,
+        proposal,
+        decision,
+        hold_request,
+    )
+    cleanup_decision, request = _cleanup_request(
+        envelope,
+        reversible.action.permit,
+        reversible.cleanup_reservation,
+        cleanup,
+        decision.snapshot,
+    )
+    with pytest.raises(CleanupPermitError, match="compiler write authority is invalid"):
+        store.permit_store.authorize_cleanup_for_dispatch(
+            envelope,
+            request,
+            cleanup_decision,
+            cleanup,
+            writer=writer,
+            evaluated_at=NOW + timedelta(seconds=10),
+            permit_ttl=timedelta(seconds=30),
+        )
+
+    assert store.permit_store.cleanup_permits() == ()
+
+
+@pytest.mark.parametrize("risk_tier", [ToolRiskTier.T2, ToolRiskTier.T3])
+def test_reversible_authority_rejects_elevated_risk_before_input_or_claim(
+    tmp_path: Path,
+    risk_tier: ToolRiskTier,
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path, risk_tier=risk_tier)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup)
+    proposal = _action_proposal(envelope, action, decision)
+    request = _cleanup_reservation_request(envelope, proposal, cleanup)
+    input_authority = _RejectingCleanupInputAuthority()
+
+    with pytest.raises(CleanupPermitError, match="dual approval"):
+        _reversible_authority(
+            store,
+            action,
+            cleanup,
+            input_authority=input_authority,
+        ).authorize_for_dispatch(envelope, proposal, decision, request)
+
+    assert store.permit_store.permits() == ()
+    assert store.permit_store.cleanup_reservations() == ()
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        {"approval_required": True},
+        {"cleanup_required": False},
+        {"side_effect_class": "read-only"},
+        {"side_effect_class": "irreversible-write"},
+    ],
+)
+def test_reversible_authority_rejects_non_reversible_definition_policy(
+    tmp_path: Path,
+    policy: dict[str, object],
+) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _, decision, action, _, _ = _seed(path)
+    cleanup = _cleanup_capability()
+    envelope = _reversible_envelope(action, cleanup)
+    proposal = _action_proposal(envelope, action, decision)
+    request = _cleanup_reservation_request(envelope, proposal, cleanup)
+
+    with pytest.raises(CleanupPermitError, match="approval-free reversible-write"):
+        _reversible_authority(store, action, cleanup, **policy).authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+            request,
+        )
+
+    assert store.permit_store.permits() == ()
+    assert store.permit_store.cleanup_reservations() == ()
 
 
 def test_reversible_pair_budget_is_atomic_and_outstanding_hold_blocks_action(
@@ -1135,9 +1345,7 @@ async def test_cleanup_dispatch_uncertainty_is_terminal_and_not_retried(
         cleanup,
         decision.snapshot,
     )
-    dispatcher = GraphCleanupPermitDispatcher(
-        _cleanup_authority(store, action, cleanup)
-    )
+    dispatcher = GraphCleanupPermitDispatcher(_cleanup_authority(store, action, cleanup))
     calls = 0
 
     async def uncertain(_: object) -> str:
@@ -1387,7 +1595,7 @@ def test_cleanup_authority_backup_restore_preserves_exact_retry(tmp_path: Path) 
         campaign_id=CAMPAIGN,
     )
 
-    assert manifest.schema_version == 3
+    assert manifest.schema_version == 4
     assert manifest.cleanup_reservation_count == 1
     assert manifest.cleanup_reservation_head_digest == (
         reversible.cleanup_reservation.cleanup_reservation_digest
@@ -1413,11 +1621,15 @@ def test_backup_rejects_canonical_cleanup_hold_with_substituted_lineage(
     cleanup = _cleanup_capability()
     envelope = _reversible_envelope(action, cleanup, tool_call_limit=2)
     proposal = _action_proposal(envelope, action, decision)
-    source = _permit_authority(store, action).authorize_for_dispatch(
-        envelope,
-        proposal,
-        decision,
-    ).permit
+    source = (
+        _permit_authority(store, action)
+        .authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+        .permit
+    )
     hold_request = _cleanup_reservation_request(envelope, proposal, cleanup)
     legitimate = sqlite_store_module.build_action_cleanup_reservation(
         envelope,
@@ -1564,8 +1776,7 @@ def test_backup_and_restore_reject_cleanup_permit_beyond_held_deadline(
             "cleanupPermitDigest": "",
             "cleanupDispatchId": "",
             "expiresAt": (
-                reversible.cleanup_reservation.claim_expires_at
-                + timedelta(seconds=1)
+                reversible.cleanup_reservation.claim_expires_at + timedelta(seconds=1)
             ).isoformat(),
         }
     )
@@ -1604,9 +1815,7 @@ def test_backup_and_restore_reject_cleanup_permit_beyond_held_deadline(
     with pytest.raises(SQLiteGraphStoreError, match="differs from its source authority"):
         SQLiteGraphStore.restore_backup(
             path,
-            destination=(
-                tmp_path / "restored-extended-permit" / "canonical-graph.sqlite3"
-            ),
+            destination=(tmp_path / "restored-extended-permit" / "canonical-graph.sqlite3"),
             campaign_id=CAMPAIGN,
         )
 
@@ -1640,13 +1849,11 @@ def _copy_current_store_as_v2(source: Path, destination: Path) -> None:
             "graph_action_permits",
         ):
             columns = tuple(
-                row[1]
-                for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
+                row[1] for row in connection.execute(f"PRAGMA table_info({table})").fetchall()
             )
             column_sql = ", ".join(columns)
             connection.execute(
-                f"INSERT INTO {table} ({column_sql}) "
-                f"SELECT {column_sql} FROM current_store.{table}"
+                f"INSERT INTO {table} ({column_sql}) SELECT {column_sql} FROM current_store.{table}"
             )
         connection.execute("PRAGMA user_version = 2")
         connection.execute(f"PRAGMA application_id = {sqlite_store_module._APPLICATION_ID}")
@@ -1661,11 +1868,15 @@ def test_v2_store_migration_preserves_action_without_fabricating_cleanup(
 ) -> None:
     current_path = tmp_path / "current" / "canonical-graph.sqlite3"
     current, _, decision, action, envelope, proposal = _seed(current_path)
-    action_permit = _permit_authority(current, action).authorize_for_dispatch(
-        envelope,
-        proposal,
-        decision,
-    ).permit
+    action_permit = (
+        _permit_authority(current, action)
+        .authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+        .permit
+    )
     v2_path = tmp_path / "v2" / "canonical-graph.sqlite3"
     _copy_current_store_as_v2(current_path, v2_path)
 
@@ -1676,7 +1887,7 @@ def test_v2_store_migration_preserves_action_without_fabricating_cleanup(
     assert migrated.permit_store.cleanup_permits() == ()
     connection = sqlite3.connect(v2_path)
     try:
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
     finally:
         connection.close()
 
@@ -1684,11 +1895,15 @@ def test_v2_store_migration_preserves_action_without_fabricating_cleanup(
 def test_legacy_v2_backup_is_verified_then_migrated_on_restore(tmp_path: Path) -> None:
     current_path = tmp_path / "current" / "canonical-graph.sqlite3"
     current, _, decision, action, envelope, proposal = _seed(current_path)
-    action_permit = _permit_authority(current, action).authorize_for_dispatch(
-        envelope,
-        proposal,
-        decision,
-    ).permit
+    action_permit = (
+        _permit_authority(current, action)
+        .authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+        .permit
+    )
     backup = tmp_path / "legacy-backup" / "graph-lab.sqlite3"
     _copy_current_store_as_v2(current_path, backup)
     database = backup.read_bytes()
@@ -1730,11 +1945,15 @@ def test_legacy_retained_v1alpha1_backup_is_read_without_wire_reinterpretation(
 ) -> None:
     current_path = tmp_path / "current" / "canonical-graph.sqlite3"
     current, _, decision, action, envelope, proposal = _seed(current_path)
-    action_permit = _permit_authority(current, action).authorize_for_dispatch(
-        envelope,
-        proposal,
-        decision,
-    ).permit
+    action_permit = (
+        _permit_authority(current, action)
+        .authorize_for_dispatch(
+            envelope,
+            proposal,
+            decision,
+        )
+        .permit
+    )
     plaintext = tmp_path / "legacy-plaintext" / "graph-lab.sqlite3"
     _copy_current_store_as_v2(current_path, plaintext)
     database = plaintext.read_bytes()
@@ -1760,9 +1979,7 @@ def test_legacy_retained_v1alpha1_backup_is_read_without_wire_reinterpretation(
     signing_seed = bytes(range(32))
     signer_key = backup_retention_module.SQLiteGraphBackupVerificationKey(
         keyId="legacy-retained-signing",
-        publicKeyBase64url=backup_retention_module.sqlite_graph_backup_public_key(
-            signing_seed
-        ),
+        publicKeyBase64url=backup_retention_module.sqlite_graph_backup_public_key(signing_seed),
     )
     signer = backup_retention_module.SQLiteGraphBackupSigner.from_private_key_bytes(
         key=signer_key,
@@ -1786,24 +2003,20 @@ def test_legacy_retained_v1alpha1_backup_is_read_without_wire_reinterpretation(
         ciphertextSha256=sqlite_store_module.sha256(ciphertext).hexdigest(),
         ciphertextBytes=len(ciphertext),
     )
-    statement_bytes = backup_retention_module._retained_backup_statement_bytes(
-        statement
-    )
+    statement_bytes = backup_retention_module._retained_backup_statement_bytes(statement)
     manifest = backup_retention_module._SQLiteGraphRetainedBackupManifestV1(
         statement=statement,
         signingKeyId=signer_key.key_id,
         signatureBase64url=backup_retention_module._base64url_encode(
-            signer.private_key.sign(
-                backup_retention_module._SIGNATURE_DOMAIN_V1 + statement_bytes
-            )
+            signer.private_key.sign(backup_retention_module._SIGNATURE_DOMAIN_V1 + statement_bytes)
         ),
     )
     retained = tmp_path / "legacy-retained" / "graph-lab.sqlite3.enc"
     retained.parent.mkdir(mode=0o700)
     retained.write_bytes(ciphertext)
-    backup_retention_module.sqlite_graph_retained_backup_manifest_path(
-        retained
-    ).write_bytes(backup_retention_module._retained_backup_manifest_bytes(manifest))
+    backup_retention_module.sqlite_graph_retained_backup_manifest_path(retained).write_bytes(
+        backup_retention_module._retained_backup_manifest_bytes(manifest)
+    )
 
     verified = backup_retention_module.verify_retained_sqlite_graph_backup(
         retained,
@@ -1887,11 +2100,15 @@ def test_cleanup_ledgers_are_append_only_and_schema_fingerprinted(tmp_path: Path
         cleanup,
         decision.snapshot,
     )
-    permit = _cleanup_authority(store, action, cleanup).authorize_for_dispatch(
-        envelope,
-        request,
-        cleanup_decision,
-    ).permit
+    permit = (
+        _cleanup_authority(store, action, cleanup)
+        .authorize_for_dispatch(
+            envelope,
+            request,
+            cleanup_decision,
+        )
+        .permit
+    )
 
     connection = sqlite3.connect(path)
     try:

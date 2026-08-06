@@ -679,6 +679,21 @@ unknown, stale, substituted, irreversible, recursive, or success-only cleanup re
 SUP-007 still owns default Grant/Gateway/Worker composition, and the current production inventory
 remains no-write.
 
+APPROVAL-001A adds one deployment-authenticated operator approval before Permit consumption
+without introducing another execution wire. A single `ActionApprovalEnvelope` exact-binds issuer,
+principals, Campaign, Run, MissionEnvelope, source intent, activation, release, Decision, Proposal,
+request, target, risk, reservation, expected Permit, and authority window. The existing GRAPH
+transaction atomically appends that approval, the unchanged consumed ActionPermit, and one
+non-reusable receipt under a path-specific writer and a canonical full-activation policy snapshot.
+General Attack and `capability-graph-v1` support T2 no-write plus T0/T1 definition-required approval;
+Common Engine and legacy execution remain fail closed. General Attack assessments and Control Plane
+completion results bind the durable receipt. Schema v4 and v1alpha3 backups preserve strict legacy
+schema-v3/v1alpha2 and schema-v2/v1alpha1 reads. The issuer verifier and policy inventory are
+process-local deployment TCB and must be re-injected after restart; only the approval, Permit, and
+receipt consumption is durable. T2 write, T3+, batch, and async remain closed for APPROVAL-001B/C.
+See the [APPROVAL-001A contract](../orchestration/APPROVAL-001A-single-action-approval.md) and
+[ADR-0134](../adr/0134-consume-single-approval-with-action-permit.md).
+
 BENCH-003B1 next admits only complete sealed raw observations from one exact measurement authority
 over both arms and every Manifest seed/repetition coordinate. It deterministically aggregates all
 twelve metrics, seals two completed Results and the canonical numeric Comparison, and still fixes

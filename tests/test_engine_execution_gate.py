@@ -19,6 +19,7 @@ from test_engine_mission_envelope import (
 
 from pajin.capabilities import ExistingModeCapabilityActivation
 from pajin.capabilities.activation import capability_tool_request_digest
+from pajin.capabilities.models import CapabilitySideEffectClass
 from pajin.domain.models import CampaignManifest, CapabilityGrant
 from pajin.graph import (
     ActionPermitStaleDecision,
@@ -352,6 +353,67 @@ async def test_explicit_gate_dispatches_once_through_existing_permit_and_gateway
         "capability.dispatch.claimed",
         "capability.dispatch.completed",
     ]
+
+
+@pytest.mark.asyncio
+async def test_plain_common_gate_rejects_t2_before_permit_or_worker(
+    tmp_path: Path,
+    c2_context: _C2Context,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    binding_ordinal = 0
+    intent = compile_common_engine_action_intent(
+        c2_context.gate_authority,
+        binding_ordinal,
+        cost_microusd=0,
+    )
+    graph, _, decision = _graph_decision(tmp_path, c2_context, intent)
+    gate, _, worker = _gate(tmp_path, c2_context, intent, graph)
+    binding = c2_context.gate_authority.mission_compilation.capability_bindings[
+        binding_ordinal
+    ]
+    prepared = gate._prepare_current_action(binding, intent)
+    elevated_raw = prepared.model_dump(mode="json", by_alias=True)
+    elevated_raw["capability"]["riskTier"] = "T2"
+    elevated = type(prepared).model_validate(elevated_raw)
+    monkeypatch.setattr(gate, "_prepare_current_action", lambda *_args: elevated)
+
+    with pytest.raises(CommonEngineExecutionGateError, match="approval-aware"):
+        await gate.dispatch_once(
+            c2_context.gate_authority,
+            intent,
+            decision,
+            campaign=c2_context.campaign,
+            grant=_grant(c2_context, intent),
+        )
+
+    assert graph.permit_store.permits() == ()
+    assert worker.jobs == []
+
+
+@pytest.mark.parametrize(
+    ("definition_update", "message"),
+    [
+        ({"approval_required": True}, "approval-aware"),
+        (
+            {"side_effect_class": CapabilitySideEffectClass.REVERSIBLE_WRITE},
+            "cleanup-aware",
+        ),
+        ({"cleanup_required": True}, "cleanup-aware"),
+    ],
+)
+def test_plain_common_gate_rejects_policy_requiring_missing_authority(
+    c2_context: _C2Context,
+    definition_update: dict[str, object],
+    message: str,
+) -> None:
+    binding = c2_context.gate_authority.mission_compilation.capability_bindings[0]
+    unsafe_binding = binding.model_copy(
+        update={"definition": binding.definition.model_copy(update=definition_update)}
+    )
+
+    with pytest.raises(CommonEngineExecutionGateError, match=message):
+        CommonEngineExecutionGate._require_plain_definition_policy(unsafe_binding)
 
 
 @pytest.mark.asyncio

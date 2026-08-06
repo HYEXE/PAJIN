@@ -505,14 +505,38 @@ class ActionPermitAuthorization(StrictModel):
     newly_consumed: bool = Field(alias="newlyConsumed")
 
 
+class ActionCapabilityExecutionPolicy(Protocol):
+    """Deployment-pinned Definition semantics required by a Permit authority."""
+
+    capability: ActionCapabilityRef
+    side_effect_class: Literal[
+        "none",
+        "read-only",
+        "reversible-write",
+        "irreversible-write",
+    ]
+    approval_required: bool
+    cleanup_required: bool
+
+
+class ActionCapabilityExecutionPolicyRegistry(Protocol):
+    """Resolve one exact Capability to its deployment-pinned execution policy."""
+
+    def resolve(
+        self,
+        capability: ActionCapabilityRef,
+    ) -> ActionCapabilityExecutionPolicy: ...
+
+
 class GraphActionPermitStore(Protocol):
     """Storage-neutral final authority transaction required by the compiler."""
 
-    def claim_writer(
+    def claim_plain_writer(
         self,
         compiler_id: str,
         compiler_version: str,
         compiler_digest: str,
+        policies: ActionCapabilityExecutionPolicyRegistry,
     ) -> object: ...
 
     def authorize_for_dispatch(
@@ -543,6 +567,7 @@ class GraphActionPermitAuthority:
         compiler_version: str,
         compiler_digest: str,
         capabilities: ActionCapabilityRegistry,
+        policies: ActionCapabilityExecutionPolicyRegistry,
         permit_store: GraphActionPermitStore,
         clock: Callable[[], datetime] | None = None,
         permit_ttl: timedelta = timedelta(seconds=30),
@@ -560,13 +585,17 @@ class GraphActionPermitAuthority:
         self._campaign_id = campaign_id
         self._compiler_identity = (compiler_id, compiler_version, compiler_digest)
         self._capabilities = capabilities
+        if not callable(getattr(policies, "resolve", None)):
+            raise TypeError("ActionPermit authority requires a Capability policy registry")
+        self._policies = policies
         self._permit_store = permit_store
         self._clock = clock or (lambda: datetime.now(UTC))
         self._permit_ttl = permit_ttl
-        self._writer = permit_store.claim_writer(
+        self._writer = permit_store.claim_plain_writer(
             compiler_id,
             compiler_version,
             compiler_digest,
+            policies,
         )
 
     def authorize_for_dispatch(
@@ -591,6 +620,12 @@ class GraphActionPermitAuthority:
         ):
             raise ActionPermitError("MissionEnvelope compiler identity differs")
         capability = self._capabilities.resolve(proposal.capability)
+        policy = _resolve_execution_policy(self._policies, capability.reference())
+        validate_plain_action_policy(capability, policy)
+        if capability.risk_tier >= ToolRiskTier.T2:
+            raise ActionPermitError(
+                "T2 or higher Action requires an approved or reversible Permit authority"
+            )
         evaluated_at = _normalize_utc(
             self._clock(),
             label="ActionPermit evaluation time",
@@ -604,6 +639,36 @@ class GraphActionPermitAuthority:
             evaluated_at=evaluated_at,
             permit_ttl=self._permit_ttl,
         )
+
+
+def validate_plain_action_policy(
+    capability: RegisteredActionCapability,
+    policy: ActionCapabilityExecutionPolicy,
+) -> None:
+    """Require the exact no-write policy supported by the ordinary Permit path."""
+
+    if policy.capability != capability.reference():
+        raise ActionPermitError("Action Capability execution policy differs")
+    if (
+        policy.approval_required
+        or policy.cleanup_required
+        or policy.side_effect_class not in {"none", "read-only"}
+    ):
+        raise ActionPermitError(
+            "plain ActionPermit requires no-write, approval-free, cleanup-free policy"
+        )
+
+
+def _resolve_execution_policy(
+    policies: ActionCapabilityExecutionPolicyRegistry,
+    capability: ActionCapabilityRef,
+) -> ActionCapabilityExecutionPolicy:
+    try:
+        return policies.resolve(capability)
+    except ActionPermitError:
+        raise
+    except Exception as exc:
+        raise ActionPermitError("Action Capability execution policy is not registered") from exc
 
 
 @dataclass(frozen=True)

@@ -3,6 +3,25 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## APPROVAL-001A process-local verifier pin과 미지원 실행 형태
+
+- 상태: single no-write approval은 구현됐고 cross-process deployment pin과 write·batch·async는 의도적으로 닫힘
+- 현재 보장: deployment-pinned full Capability policy registry와 issuer input authority를 approval claim
+  전후 검증하고, path-specific writer 아래 approval·ActionPermit·non-reusable receipt를 schema v4 SQLite
+  transaction 하나에서 원자적으로 소비한다. General Attack outcome과 Control Plane completion은 durable
+  receipt ID·digest를 다시 결박하며 exact retry는 Worker를 재호출하지 않는다.
+- 제한: policy registry, writer token과 verifier 구현은 process-local deployment TCB다. 동일 DB를 새
+  `SQLiteGraphStore`로 열 때 verifier code 자체는 DB에 영속 pin되지 않으므로 trusted deployment가 같은
+  verifier와 complete policy inventory를 다시 주입해야 한다. 공격자가 재시작 runtime code를 선택할 수 있는
+  환경에 대한 durable verifier identity·anti-rollback 보장은 없다. T2 write는 approval+cleanup 결합이 없고,
+  T3+, batch, async 및 partial/unknown batch claim도 미지원이다.
+- 영향: 신뢰된 deployment composition 밖에서 DB만 재사용해 승인 issuer를 인증했다고 주장할 수 없다.
+  지원되지 않는 실행 형태는 Permit·Worker 전에 fail closed한다.
+- 해소 조건: `APPROVAL-001B`가 approval과 reversible cleanup hold를 원자 결합하고,
+  `APPROVAL-001C`가 bounded batch·async durable state machine을 정의한다. cross-process verifier pin이
+  필요하면 signed deployment inventory 또는 host-attested activation과 anti-rollback을 별도 계약·ADR로
+  구현한다.
+
 ## PERMIT-004B2 production cleanup composition과 hold recovery 경계
 
 - 상태: authenticated cleanup 경로는 구현됐지만 기본 제품 활성화는 의도적으로 닫힘
@@ -442,7 +461,7 @@
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
 - 마지막 확인: 2026-08-05
 - 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 248 source files 통과
+- 현재 결과: 255 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브

@@ -342,11 +342,64 @@ async def test_outcome_gate_binds_sealed_result_oracle_data_flow_and_cleanup(
     )
     assert assessment.evidence.sha256
     assert assessment.gateway_outcome_digest
+    assert authenticated.permit_result.approval_receipt is not None
+    assert assessment.approval_id == (
+        authenticated.permit_result.approval_receipt.approval.approval_id
+    )
+    assert assessment.approval_digest == (
+        authenticated.permit_result.approval_receipt.approval.approval_digest
+    )
+    assert assessment.approval_receipt_id == (
+        authenticated.permit_result.approval_receipt.receipt_id
+    )
+    assert assessment.approval_receipt_digest == (
+        authenticated.permit_result.approval_receipt.receipt_digest
+    )
     assert assessment.run_audit_anchor == authenticated.run_anchor
     assert assessment.run_audit_anchor_seal_root_digest
     assert assessment.capability_grant_digest == capability_grant_digest(
         authenticated.grant
     )
+
+
+@pytest.mark.asyncio
+async def test_outcome_gate_rejects_missing_approval_consumption_receipt(
+    tmp_path: Path,
+    permit_context_fixture: _PermitContext,
+) -> None:
+    authenticated = await _authenticated_outcome(tmp_path, permit_context_fixture)
+    missing = replace(authenticated.permit_result, approval_receipt=None)
+
+    with pytest.raises(GeneralAttackActionOutcomeError, match="failed closed"):
+        _assess(authenticated, result=missing)
+
+
+@pytest.mark.asyncio
+async def test_outcome_gate_rejects_another_durable_approval_consumption_receipt(
+    tmp_path: Path,
+    permit_context_fixture: _PermitContext,
+) -> None:
+    authenticated = await _authenticated_outcome(
+        tmp_path / "first",
+        permit_context_fixture,
+    )
+    alternate = await _authenticated_outcome(
+        tmp_path / "alternate",
+        permit_context_fixture,
+    )
+    assert authenticated.permit_result.approval_receipt is not None
+    assert alternate.permit_result.approval_receipt is not None
+    assert (
+        authenticated.permit_result.approval_receipt.receipt_id
+        != alternate.permit_result.approval_receipt.receipt_id
+    )
+    substituted = replace(
+        authenticated.permit_result,
+        approval_receipt=alternate.permit_result.approval_receipt,
+    )
+
+    with pytest.raises(GeneralAttackActionOutcomeError, match="failed closed"):
+        _assess(authenticated, result=substituted)
 
 
 @pytest.mark.asyncio
