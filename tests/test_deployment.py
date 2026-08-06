@@ -1,5 +1,6 @@
 import importlib.util
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -35,11 +36,11 @@ def test_control_plane_image_installs_only_hash_locked_dependencies() -> None:
 
 
 def test_control_plane_dependency_export_matches_the_root_lock(tmp_path: Path) -> None:
-    uv = Path(sys.executable).with_name("uv")
-    assert uv.is_file(), "the development environment must include the locked uv executable"
+    uv = shutil.which("uv", path=str(Path(sys.executable).parent))
+    assert uv is not None, "the development environment must include the locked uv executable"
     completed = subprocess.run(
         [
-            str(uv),
+            uv,
             "export",
             "--cache-dir",
             str(tmp_path / "uv-cache"),
