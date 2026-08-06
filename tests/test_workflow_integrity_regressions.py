@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 import stat
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
@@ -689,18 +690,19 @@ def test_confirmation_projection_keeps_private_permissions_and_escapes_markdown(
         tickets=batch.tickets,
     )
 
-    for directory in (
-        source.run_path / "validation",
-        source.run_path / "validation" / "v1alpha1",
-        source.run_path.parent / ".pajin-confirmation-locks",
-    ):
-        assert stat.S_IMODE(directory.stat().st_mode) == 0o700
-    for artifact in (
-        source.run_path / "events.jsonl",
-        source.run_path / "validation" / "v1alpha1" / "report.md",
-        source.run_path / "validation" / "v1alpha1" / "transaction.json",
-    ):
-        assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    if os.name == "posix":
+        for directory in (
+            source.run_path / "validation",
+            source.run_path / "validation" / "v1alpha1",
+            source.run_path.parent / ".pajin-confirmation-locks",
+        ):
+            assert stat.S_IMODE(directory.stat().st_mode) == 0o700
+        for artifact in (
+            source.run_path / "events.jsonl",
+            source.run_path / "validation" / "v1alpha1" / "report.md",
+            source.run_path / "validation" / "v1alpha1" / "transaction.json",
+        ):
+            assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
 
     replayed_index = next(
         index
