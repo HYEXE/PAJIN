@@ -325,6 +325,7 @@ def _registry() -> BenchmarkMeasurementTrustRegistry:
 
 
 def _distribution():
+    registry = _registry()
     anchor = BenchmarkMeasurementRegistryDistributionTrustAnchor(
         trustDomain="benchmark-registry:deterministic-baseline",
         issuer="benchmark-registry-issuer:deterministic-baseline",
@@ -346,11 +347,12 @@ def _distribution():
         private_key=DISTRIBUTION_KEY,
         trust_anchor=anchor,
     )
+    issued_at = max(datetime.now(UTC) - timedelta(minutes=1), registry.issued_at)
     bundle = signer.sign(
-        registry=_registry(),
-        issued_at=NOW - timedelta(minutes=1),
-        not_before=NOW - timedelta(minutes=1),
-        expires_at=NOW + timedelta(days=1),
+        registry=registry,
+        issued_at=issued_at,
+        not_before=issued_at,
+        expires_at=issued_at + timedelta(days=1),
     )
     return anchor, bundle
 

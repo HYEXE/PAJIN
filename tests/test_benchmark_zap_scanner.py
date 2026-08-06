@@ -378,11 +378,12 @@ def _distribution():
         private_key=DISTRIBUTION_KEY,
         trust_anchor=distribution_anchor,
     )
+    issued_at = max(datetime.now(UTC) - timedelta(minutes=1), registry.issued_at)
     bundle = signer.sign(
         registry=registry,
-        issued_at=NOW - timedelta(minutes=1),
-        not_before=NOW - timedelta(minutes=1),
-        expires_at=NOW + timedelta(days=1),
+        issued_at=issued_at,
+        not_before=issued_at,
+        expires_at=issued_at + timedelta(days=1),
     )
     return distribution_anchor, bundle
 
