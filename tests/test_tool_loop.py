@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -609,7 +610,8 @@ def test_high_risk_tool_waits_for_exact_approval_and_resumes_in_new_run(
     claim = json.loads(claim_files[0].read_text(encoding="utf-8"))
     assert claim["source_run_id"] == waiting.run_id
     assert claim["continuation_run_id"] == resumed.run_id
-    assert claim_files[0].stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert claim_files[0].stat().st_mode & 0o777 == 0o600
     assert not waiting.checkpoint_path.with_suffix(
         waiting.checkpoint_path.suffix + ".claimed"
     ).exists()
