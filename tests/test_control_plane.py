@@ -23,6 +23,7 @@ from pajin.control_plane.api import (
     _MAX_CONTROL_PLANE_REQUEST_BODY_BYTES,
     _MAX_CONTROL_PLANE_REQUEST_BODY_CHUNKS,
     ControlPlaneSettings,
+    _parse_replay_executor_profiles,
     create_app,
 )
 from pajin.control_plane.database import (
@@ -1868,7 +1869,6 @@ def test_replay_executor_profile_environment_is_explicit_and_subject_bound(
         ('{"worker-service":["kisa-exact-v1"],"worker-service":["kisa-exact-v2"]}'),
         '{"worker-service":[NaN]}',
         '{"worker-service":' + ("[" * 6) + '"kisa-exact-v1"' + ("]" * 6) + "}",
-        "{" + '"padding":"' + ("x" * (64 * 1024)) + '"}',
     ],
 )
 def test_replay_executor_profile_environment_rejects_ambiguous_authority(
@@ -1883,6 +1883,13 @@ def test_replay_executor_profile_environment_rejects_ambiguous_authority(
 
     with pytest.raises(RuntimeError, match="PAJIN_CP_REPLAY_EXECUTOR_PROFILES"):
         ControlPlaneSettings.from_env()
+
+
+def test_replay_executor_profile_parser_rejects_oversized_authority() -> None:
+    raw_allowlist = "{" + '"padding":"' + ("x" * (64 * 1024)) + '"}'
+
+    with pytest.raises(RuntimeError, match="PAJIN_CP_REPLAY_EXECUTOR_PROFILES"):
+        _parse_replay_executor_profiles(raw_allowlist, credentials={})
 
 
 def test_replay_profile_environment_requires_a_distinct_dedicated_principal(
