@@ -351,7 +351,13 @@ def test_worker_mcp_success_does_not_forward_child_stderr(
     )
     monkeypatch.setattr(worker, "_run_bounded_child", lambda *_args, **_kwargs: completed)
 
-    assert worker.mcp_call({}) == {}
+    assert worker.mcp_call(
+        {
+            "serverId": "demo-security",
+            "toolName": "inspect_text",
+            "arguments": {},
+        }
+    ) == {}
     captured = capsys.readouterr()
     assert captured.err == ""
     assert _SECRET not in captured.out

@@ -521,7 +521,13 @@ def test_mcp_call_fails_closed_on_truncated_child_stream(
     monkeypatch.setattr(worker, "_run_bounded_child", lambda *_args, **_kwargs: completed)
 
     with pytest.raises(ValueError, match=message):
-        worker.mcp_call({"serverId": "demo-security", "toolName": "inspect_text"})
+        worker.mcp_call(
+            {
+                "serverId": "demo-security",
+                "toolName": "inspect_text",
+                "arguments": {},
+            }
+        )
 
 
 def test_mcp_child_timeout_cleans_up_descendants(
