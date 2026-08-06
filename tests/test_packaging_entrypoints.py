@@ -29,6 +29,18 @@ build_backend = importlib_util.module_from_spec(_BUILD_BACKEND_SPEC)
 _BUILD_BACKEND_SPEC.loader.exec_module(build_backend)
 
 
+def _copy_distribution_source(destination: Path) -> Path:
+    destination.mkdir()
+    for filename in ("pyproject.toml", "build_backend.py", "MANIFEST.in", "README.md"):
+        shutil.copy2(filename, destination / filename)
+    shutil.copytree(
+        "src/pajin",
+        destination / "src/pajin",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
+    return destination
+
+
 def test_package_main_module_is_safe_to_import() -> None:
     """Module discovery must not invoke Typer merely by importing ``pajin.__main__``."""
 
@@ -159,15 +171,7 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     uv = Path(sys.executable).with_name("uv.exe" if os.name == "nt" else "uv")
     assert uv.is_file(), "the development environment must include the locked uv executable"
     uv_environment = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
-    source = tmp_path / "source"
-    source.mkdir()
-    for filename in ("pyproject.toml", "build_backend.py", "MANIFEST.in", "README.md"):
-        shutil.copy2(filename, source / filename)
-    shutil.copytree(
-        "src/pajin",
-        source / "src/pajin",
-        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
-    )
+    source = _copy_distribution_source(tmp_path / "source")
     dist = tmp_path / "dist"
     build = subprocess.run(
         [
@@ -377,6 +381,7 @@ def test_source_distribution_is_reproducible_with_source_date_epoch(tmp_path: Pa
     }
     artifacts: list[tuple[Path, Path]] = []
     for name in ("first", "second"):
+        source = _copy_distribution_source(tmp_path / f"{name}-source")
         output = tmp_path / name
         completed = subprocess.run(
             [
@@ -390,7 +395,7 @@ def test_source_distribution_is_reproducible_with_source_date_epoch(tmp_path: Pa
                 "--out-dir",
                 str(output),
                 "--no-progress",
-                ".",
+                str(source),
             ],
             check=False,
             capture_output=True,
