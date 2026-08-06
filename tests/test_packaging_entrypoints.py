@@ -1,8 +1,10 @@
 import os
+import shutil
 import subprocess
 import sys
 import tarfile
 import zipfile
+from email.parser import BytesParser
 from importlib import import_module
 from importlib import util as importlib_util
 from pathlib import Path
@@ -157,6 +159,15 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     uv = Path(sys.executable).with_name("uv.exe" if os.name == "nt" else "uv")
     assert uv.is_file(), "the development environment must include the locked uv executable"
     uv_environment = {**os.environ, "UV_CACHE_DIR": str(tmp_path / "uv-cache")}
+    source = tmp_path / "source"
+    source.mkdir()
+    for filename in ("pyproject.toml", "build_backend.py", "MANIFEST.in", "README.md"):
+        shutil.copy2(filename, source / filename)
+    shutil.copytree(
+        "src/pajin",
+        source / "src/pajin",
+        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+    )
     dist = tmp_path / "dist"
     build = subprocess.run(
         [
@@ -170,7 +181,7 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
             "--out-dir",
             str(dist),
             "--no-progress",
-            ".",
+            str(source),
         ],
         check=False,
         capture_output=True,
@@ -189,7 +200,7 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
         metadata_path = next(
             member for member in wheel_members if member.endswith(".dist-info/METADATA")
         )
-        metadata_headers = archive.read(metadata_path).decode("utf-8").partition("\n\n")[0]
+        metadata = BytesParser().parsebytes(archive.read(metadata_path), headersonly=True)
     assert "pajin/py.typed" in wheel_members
     assert "pajin/control_plane/replay_worker_main.py" in wheel_members
     assert "pajin/control_plane/web/index.html" in wheel_members
@@ -205,7 +216,7 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     }
     assert packaged_python_modules == expected_python_modules
     assert not any("/__pycache__/" in member or member.endswith(".pyc") for member in wheel_members)
-    assert f"\nVersion: {package_version}\n" in f"\n{metadata_headers}\n"
+    assert metadata["Version"] == package_version
     assert "pajin = pajin.cli:app" in entry_points
     assert "pajin-control-plane = pajin.entrypoints:control_plane_main" in entry_points
     assert (
