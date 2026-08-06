@@ -109,7 +109,9 @@ existing one-shot cleanup/restored-state path.
 
 ## Follow-up
 
-- APPROVAL-001C must define separately versioned bounded batch and asynchronous approval state,
-  partial-claim handling, cancellation, and unknown-outcome reconciliation.
+- APPROVAL-001C1 now defines the separately versioned bounded no-write batch coordinator,
+  partial-claim handling, pending-only cancellation, and unknown-outcome reconciliation.
+- APPROVAL-001C2 now binds reversible batch items to exact cleanup reservations and authenticated
+  restored-state evidence without duplicating this combined authority.
 - A future deployment-security slice may durably bind verifier inventory across process or host
   restart. Existing process-local pins must not be reinterpreted as durable identity.

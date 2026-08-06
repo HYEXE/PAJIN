@@ -315,18 +315,24 @@ See the
 [APPROVAL-001B contract](docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md) and
 [ADR-0135](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md).
 
-APPROVAL-001B now adds the bounded T2 reversible-write composition without replacing any of those
-records. General Attack commits the authenticated approval, unchanged consumed ActionPermit,
-non-reusable receipt, and pre-action cleanup reservation in one schema-v4 transaction before the
-Worker callback. Both deployment input authorities are pinned to a distinct combined writer and
-verified around the durable claim; any in-transaction drift or insert failure rolls back all four
-records. Exact retry, including after verified backup/restore, cannot redispatch. The authenticated
-outcome rechecks approval side-effect and cleanup flags against the current Definition, then reuses
-the existing one-shot CleanupPermit and restored-state path. The production inventory,
-`capability-graph-v1`, Common Engine, legacy write execution, T3+, batch, and async remain closed.
-See the
-[APPROVAL-001B contract](docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md) and
-[ADR-0135](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md).
+APPROVAL-001C1 adds an opt-in host-local coordinator for two through eight ordered no-write
+approvals. It records `claim-started` before entering the existing Graph authority and binds the
+exact durable Permit and approval receipt before any async Worker callback. Callback failures and
+process ambiguity remain outcome-unknown and cannot redispatch; authenticated manual
+reconciliation or pending-only cancellation closes individual items without changing the existing
+Graph schema or single-action wire. Reversible-write batches, default General Attack or Control
+Plane integration, T3+, and cross-host coordination remain closed. See the
+[APPROVAL-001C1 contract](docs/orchestration/APPROVAL-001C1-bounded-async-approval-batch.md) and
+[ADR-0136](docs/adr/0136-coordinate-bounded-async-approval-batches.md).
+
+APPROVAL-001C2 extends the same coordinator to paired reversible-write approvals without creating a
+batch cleanup authority. Each item reuses APPROVAL-001B to commit its approval, unchanged Permit,
+receipt, and exact cleanup reservation atomically before the async callback. A reversible terminal
+record must bind that reservation and a deployment-authenticated restored-state evidence digest;
+missing, partial, substituted, or ambiguous evidence leaves the item unknown and non-redispatchable.
+General Attack and Control Plane batch workflow integration remains opt-in follow-up work. See the
+[APPROVAL-001C2 contract](docs/orchestration/APPROVAL-001C2-reversible-async-approval-batch.md) and
+[ADR-0137](docs/adr/0137-bind-reversible-batch-items-to-cleanup-authority.md).
 
 ## B2.8g resumable multipart portable Artifact transport
 

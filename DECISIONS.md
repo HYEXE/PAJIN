@@ -5,6 +5,8 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0137: Bind Reversible Batch Items to Existing Cleanup Authority](docs/adr/0137-bind-reversible-batch-items-to-cleanup-authority.md)
+- [ADR-0136: Coordinate Bounded Async Approval Batches Without Duplicating Execution Authority](docs/adr/0136-coordinate-bounded-async-approval-batches.md)
 - [ADR-0135: Atomically Bind Approval and Cleanup Hold](docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md)
 - [ADR-0134: Consume One Operator Approval with One ActionPermit](docs/adr/0134-consume-single-approval-with-action-permit.md)
 - [ADR-0133: Authenticate and Verify Reversible Cleanup](docs/adr/0133-authenticate-and-verify-reversible-cleanup.md)

@@ -126,7 +126,10 @@ binding, Common Engine rejection, and Worker non-redispatch.
 ## Follow-up
 
 - APPROVAL-001B is delivered as the separate atomic approval plus reversible cleanup-hold path.
-- APPROVAL-001C: define separately versioned bounded batch and asynchronous approval consumption,
-  partial-claim handling, and unknown-outcome reconciliation.
+- APPROVAL-001C1 now defines the separately versioned bounded no-write batch coordinator,
+  partial-claim handling, pending-only cancellation, and unknown-outcome reconciliation.
+- APPROVAL-001C2 now binds reversible batch items to the existing approval plus cleanup-hold
+  transaction and authenticated restored-state evidence.
+- APPROVAL-001C3 remains responsible for opt-in runtime workflow/retention.
 - A future deployment-security slice may durably bind policy/verifier inventory across process or
   host restart. It must not reinterpret existing process-local pins as durable authority.
