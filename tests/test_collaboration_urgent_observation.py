@@ -556,7 +556,7 @@ def _reader(
     expires_at: datetime | None = None,
     read_at: datetime = NOW + timedelta(seconds=6),
 ) -> tuple[ReceiverBoundArtifactReader, CapabilityLedger, CapabilityGrant]:
-    ledger = CapabilityLedger(max_depth=1)
+    ledger = CapabilityLedger(max_depth=1, clock=lambda: NOW)
     root = ledger.issue_root(
         campaign,
         subject="agent:supervisor:handoff",

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 from threading import RLock
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -30,7 +31,12 @@ class CapabilityRecord(BaseModel):
 class CapabilityLedger:
     """Track grant lineage so a child invocation consumes every ancestor budget."""
 
-    def __init__(self, *, max_depth: int) -> None:
+    def __init__(
+        self,
+        *,
+        max_depth: int,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         if (
             isinstance(max_depth, bool)
             or not isinstance(max_depth, int)
@@ -38,6 +44,7 @@ class CapabilityLedger:
         ):
             raise ValueError("maximum capability depth must be an integer from 0 through 100")
         self._max_depth = max_depth
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._records: dict[str, CapabilityRecord] = {}
         self._lock = RLock()
 
@@ -64,6 +71,7 @@ class CapabilityLedger:
                 max_calls=campaign.spec.budgets.max_tool_calls,
                 expires_at=campaign.spec.authorization.expires_at,
                 delegable=True,
+                issued_at=self._issued_at(),
                 depth=0,
             )
             self._store_grant(grant)
@@ -103,6 +111,7 @@ class CapabilityLedger:
                 max_calls=max_calls,
                 expires_at=expires_at or parent.expires_at,
                 delegable=delegable,
+                issued_at=self._issued_at(),
                 depth=child_depth,
             )
             if not child.attenuates(parent):
@@ -183,6 +192,15 @@ class CapabilityLedger:
             grant=owned_grant,
             remaining_calls=owned_grant.max_calls,
         )
+
+    def _issued_at(self) -> datetime:
+        try:
+            value = self._clock()
+        except Exception as exc:
+            raise CapabilityError("capability issuance clock failed") from exc
+        if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+            raise CapabilityError("capability issuance clock requires a UTC offset or Z")
+        return value.astimezone(UTC)
 
     @staticmethod
     def _copy_grant(grant: CapabilityGrant) -> CapabilityGrant:

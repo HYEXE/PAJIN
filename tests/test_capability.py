@@ -131,6 +131,48 @@ def test_attenuation_rejects_bypassed_naive_timestamp_with_typed_error() -> None
         child.attenuates(parent)
 
 
+def test_ledger_uses_injected_clock_for_root_and_child_issuance() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    korea = timezone(timedelta(hours=9))
+    issued_at = datetime(2026, 7, 19, 9, tzinfo=korea)
+    ledger = CapabilityLedger(max_depth=1, clock=lambda: issued_at)
+    target = campaign.spec.targets[0].endpoint
+
+    root = ledger.issue_root(
+        campaign,
+        subject="agent:supervisor",
+        tools={"mock.agent-probe"},
+        targets={target},
+    )
+    child = ledger.delegate(
+        root.grant_id,
+        subject="agent:specialist",
+        tools={"mock.agent-probe"},
+        targets={target},
+        max_risk_tier=ToolRiskTier.T1,
+        max_calls=1,
+    )
+
+    assert root.issued_at == datetime(2026, 7, 19, tzinfo=UTC)
+    assert child.issued_at == root.issued_at
+
+
+def test_ledger_rejects_clock_without_explicit_timezone() -> None:
+    campaign = load_manifest(Path("examples/multi-agent.yaml"))
+    ledger = CapabilityLedger(
+        max_depth=1,
+        clock=lambda: datetime(2026, 7, 19),
+    )
+
+    with pytest.raises(CapabilityError, match="clock requires a UTC offset"):
+        ledger.issue_root(
+            campaign,
+            subject="agent:supervisor",
+            tools={"mock.agent-probe"},
+            targets={campaign.spec.targets[0].endpoint},
+        )
+
+
 def test_sibling_grants_cannot_amplify_ancestor_call_budget() -> None:
     campaign = load_manifest(Path("examples/multi-agent.yaml"))
     ledger = CapabilityLedger(max_depth=1)
