@@ -304,7 +304,7 @@ def test_control_plane_build_context_is_allowlisted() -> None:
     assert "examples" not in ignore
 
 
-def test_storage_initializer_does_not_reflect_paths_or_os_errors() -> None:
+def test_storage_initializer_does_not_reflect_paths_or_os_errors(tmp_path: Path) -> None:
     initializer_path = Path("containers/control-plane/init_storage.py")
     spec = importlib.util.spec_from_file_location(
         "pajin_storage_initializer_test",
@@ -317,7 +317,7 @@ def test_storage_initializer_does_not_reflect_paths_or_os_errors() -> None:
     secret = "pajin-secret-path-value\nforged-log-record"
 
     with pytest.raises(SystemExit) as failure:
-        initializer._initialize_private_root(Path("/missing") / secret)
+        initializer._initialize_private_root(tmp_path / secret)
 
     diagnostic = str(failure.value)
     assert diagnostic == "cannot initialize private artifact root"
