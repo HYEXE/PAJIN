@@ -2,15 +2,16 @@
 
 - 기록일: 2026-08-06
 - 브랜치: `main`
-- 현재 코드 체크포인트: `0f119d49b30b3ea02b1cef03214648519bd39d19`
+- 현재 코드 체크포인트: `ba7274af4f96c1207b9d5dd509b659877f2a27b5`
 - 문서 동기화: 이 HANDOFF를 포함한 최종 로컬 커밋
-- 원격 기준: `origin/main@a90a8bbc34f9dcf3a71a0a3cb96567f3487de0fb`
+- 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
 - APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
-- 현재 구현 체크포인트: `APPROVAL-001B` 이후 저장소 전 범위 리팩터링·안정화 구현, 분할 회귀 검증, 로컬 커밋 완료
-- 다음 사용자 체크포인트: `https://github.com/HYEXEN/PAJIN.git`의 `origin/main`으로 로컬 커밋 전체를 push하는 구체적 승인
-- 이후 로드맵: `APPROVAL-001C` bounded batch·async approval
-- 원격 push: `a90a8bb`까지 동기화됨, 로컬 `main`은 문서 동기화 전 기준 14 commits ahead이며 아직 미push
+- APPROVAL-001C1/C2 구현 커밋: `ba7274af4f96c1207b9d5dd509b659877f2a27b5`
+- 현재 구현 체크포인트: 2~8개 no-write/reversible approval async coordinator·partial cancellation·manual reconciliation 구현·통합 회귀·기능 커밋 완료
+- 다음 사용자 체크포인트: `origin/main` push 승인 또는 APPROVAL-001C3 별도 수직 슬라이스 착수 결정
+- 이후 로드맵: `APPROVAL-001C3` General Attack/Control Plane opt-in workflow·journal retention
+- 원격 push: GitHub `main`과 `origin/main`은 `021a1f4`, 로컬 `main`은 기능·문서 커밋 2개 앞서 있어야 하며 아직 미push
 
 ## 재개 전 확인
 
@@ -22,9 +23,9 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. 현재 `main`은 `origin/main@a90a8bb`보다 앞서 있고 리팩터링 코드와
-테스트는 논리 단위별 로컬 커밋으로 보존돼 있어야 한다. 이 문서의 코드 체크포인트 뒤에는 문서 동기화
-커밋만 있어야 하며 working tree는 clean이어야 한다. 별도 detached worktree
+문서보다 실제 저장소를 우선한다. APPROVAL-001C1/C2 기능·테스트·계약·ADR은 `ba7274a`에 보존됐고
+그 뒤에는 이 HANDOFF·PLAN·KNOWN_ISSUES 동기화 커밋만 있어야 한다. 로컬 `main`은 `origin/main@021a1f4`
+보다 2 commits ahead이고 working tree는 clean이어야 한다. 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
@@ -37,6 +38,11 @@ operator approval, 기존 consumed `ActionPermit`, non-reusable consumption rece
 `APPROVAL-001B`는 이 no-write 경계를 유지하면서 General Attack의
 `reversible-write + cleanupRequired=true`에 한해 approval, 기존 consumed ActionPermit,
 non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하나에서 원자 소비한다.
+
+`APPROVAL-001C1/C2`는 기존 single-action authority를 2~8개 ordered host-local async batch로
+조정한다. no-write 항목은 APPROVAL-001A, reversible-write 항목은 APPROVAL-001B combined authority를
+그대로 호출한다. reversible terminal은 exact cleanup reservation과 deployment-authenticated
+restored-state evidence를 요구하며, partial/unknown 상태는 자동 redispatch 권위를 만들지 않는다.
 
 - `ActionApprovalEnvelope`는 `mode=single`, JSON integer `maxActions=1`로 고정하고 issuer·requester·
   approver, Campaign·Run·MissionEnvelope, source intent·activation set, signed release·Capability,
@@ -64,8 +70,8 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 - exact retry와 verified backup/restore retry는 같은 네 레코드를 `newlyConsumed=false`로 반환하고
   Worker를 다시 호출하지 않는다. authenticated outcome은 approval side-effect·cleanup flags를 current
   signed Definition과 다시 exact-match한 뒤 기존 PERMIT-004B2 cleanup 경로에 전달한다.
-- production inventory와 `capability-graph-v1`, Common Engine, legacy write는 계속 닫혀 있다. T3+, batch,
-  async도 미지원이며 `APPROVAL-001C` 전까지 fail closed한다.
+- production inventory와 `capability-graph-v1`, Common Engine, legacy write는 계속 닫혀 있다. T3+와
+  기본 runtime batch/async workflow는 C3 전까지 fail closed한다.
 - current direct/retained Graph backup은 v1alpha3/schema v4다. strict v1alpha2/schema v3와
   v1alpha1/schema v2 reader·migration은 legacy material을 검증하되 approval을 backfill하지 않는다.
 
@@ -73,6 +79,7 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 
 - `src/pajin/graph/approval.py`
 - `src/pajin/graph/approved_cleanup.py`
+- `src/pajin/graph/approval_batch.py`
 - `src/pajin/graph/sqlite_store.py`
 - `src/pajin/graph/authority.py`
 - `src/pajin/graph/cleanup.py`
@@ -84,10 +91,24 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 - `src/pajin/workflow/engine_execution_gate.py`
 - `docs/orchestration/APPROVAL-001A-single-action-approval.md`
 - `docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md`
+- `docs/orchestration/APPROVAL-001C1-bounded-async-approval-batch.md`
+- `docs/orchestration/APPROVAL-001C2-reversible-async-approval-batch.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
+- `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
+- `docs/adr/0137-bind-reversible-batch-items-to-cleanup-authority.md`
 
 ## 현재 검증
+
+### 2026-08-06 APPROVAL-001C1/C2 집중 검증
+
+- 새 no-write/reversible batch model·journal·dispatcher 집중 테스트: 13 passed
+- 기존 APPROVAL-001A/B·Permit·General Attack과 C1/C2 결합 회귀: 161 passed
+- Graph 전체 모듈 회귀: 178 passed, 2 skipped(POSIX link semantics)
+- Ruff 전체: 통과
+- Linux 대상 strict mypy: 257 source files 통과
+- 변경 Python format check: 통과
+- 공개 `pajin.graph` import: 통과
 
 ### 2026-08-06 저장소 전 범위 리팩터링·안정화 재검증
 
@@ -174,13 +195,18 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 ## 현재 상태와 다음 한 단계
 
 APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 커밋됐고 문서 동기화까지
-`a90a8bb`로 원격에 반영됐다. 저장소 전 범위 리팩터링·안정화는 `2174cde`부터 `0f119d4`까지
-14개 로컬 커밋으로 보존됐고, 이 HANDOFF 동기화 커밋이 그 뒤를 따른다.
+리팩터링·HANDOFF 동기화 `021a1f4`까지 원격에 반영됐다. APPROVAL-001C1/C2는 기존 single no-write와
+approved reversible authority를 2~8개 ordered batch로 결박하고 claim-started,
+dispatch-started/unknown, terminal, pending-only cancellation을 durable하게 구분한다. reversible 항목은
+기존 네-record Graph transaction의 exact cleanup reservation을 callback 전에 journal에 결박하고,
+authenticated restored-state evidence 없이는 terminal로 닫히지 않는다. coordinator journal과 모든
+completion/cancellation은 redispatch authority를 만들지 않는다.
 
-1. 사용자가 `https://github.com/HYEXEN/PAJIN.git`의 `origin/main`으로 현재 로컬 `main` 전체를
-   push해도 된다고 구체적으로 승인하면 `git -c http.sslBackend=schannel push origin main`을 실행한다.
-2. push 뒤 local HEAD, upstream, `ls-remote`와 clean working tree를 다시 확인한다.
-3. 별도 요청 전에는 `APPROVAL-001C` batch·async 상태 머신이나 추가 기능 개발을 시작하지 않는다.
+1. 전체 Ruff, Linux 대상 strict mypy, 문서 링크·diff와 관련 회귀를 완료했다.
+2. APPROVAL-001C1/C2 기능은 `ba7274a`에 보존했고 이 운영 문서 동기화 커밋이 뒤따른다.
+3. 사용자가 원격 반영을 승인하면 `git -c http.sslBackend=schannel push origin main` 뒤 local/upstream/
+   GitHub SHA와 clean worktree를 확인한다.
+4. 다음 별도 수직 슬라이스는 `APPROVAL-001C3` opt-in runtime workflow와 journal retention/backup이다.
 
 ## 알려진 경계
 
@@ -189,7 +215,10 @@ APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 커밋�
   않는다.
 - current production inventory에는 reversible-write Capability가 없다. `capability-graph-v1`, Common
   Engine과 legacy write는 cleanup authority composition이 없어 닫혀 있다.
-- T3+·batch·async와 partial/unknown batch claim은 미지원이다.
+- C1/C2는 no-write/reversible direct-call coordinator이며 General Attack/Control Plane 기본 batch
+  workflow는 없다. cleanup-hold aggregation, cross-host coordination과 T3+는 미지원이다.
+- batch journal과 Graph DB는 하나의 transaction이 아니므로 경계 crash는 manual review로 닫히며 자동
+  redispatch하지 않는다. journal retention/backup과 durable verifier identity도 아직 없다.
 - Graph schema v4 direct downgrade는 없다. rollback 시 v4 reader와 immutable consumption evidence를
   유지해야 한다.
 - Windows `dirfd`/directory fsync/symlink/비이식 파일명과 조직 AppControl 제약은 코드 회귀와 구분한다.
