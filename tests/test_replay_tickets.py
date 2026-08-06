@@ -801,6 +801,7 @@ def test_process_local_recovery_is_context_bound_and_idempotent() -> None:
         ("finalize", "claimed", 2),
     ],
 )
+@pytest.mark.skipif(os.name != "posix", reason="fchmod permission hardening is POSIX-only")
 def test_permission_hardening_failure_precedes_ticket_transaction(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
