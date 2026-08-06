@@ -208,48 +208,35 @@
 ## Windows 심볼릭 링크 테스트 권한
 
 - 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-04
-- 명령:
-  `.\.venv\Scripts\python.exe -m pytest -x -q --ignore=tests\test_benchmark_single_agent_measurement.py --ignore=tests\test_benchmark_zap_scanner.py`
-- 결과: 349 passed, 6 skipped 이후
-  `test_provider_checks_fail_closed_on_unsealed_symlink_artifact`가 테스트용 심볼릭 링크를
-  생성하는 과정에서 `WinError 1314`로 중단됐다.
-- 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서는 전체 테스트를 완료할 수 없다.
-  이는 PAJIN 코드 회귀의 증거가 아니다.
+- 마지막 재현: 2026-08-06
+- 현재 결과: 공통 `tests/platform_test_support.py::symlink_or_skip`을 사용해 권한 없는 Windows에서
+  `WinError 1314`를 명시적 skip으로 분류한다. 관련 CLI·artifact·control·CTF·safe-files 묶음은
+  기능 테스트를 계속 실행하고 symlink 생성이 필요한 음성 사례만 skip한다.
+- 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서도 나머지 테스트는 진행되지만, link substitution
+  자체의 fail-closed 동작은 이 환경에서 증명할 수 없다. 이는 PAJIN 코드 회귀의 증거가 아니다.
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
 
 ## Benchmark Harness 고정 fixture 만료
 
-- 상태: 활성 테스트 시간 의존성
-- 마지막 재현: 2026-08-05
-- 명령: `.\.venv\Scripts\python.exe -m pytest -x -q`
-- 결과: 190 passed, 3 skipped 이후
-  `test_single_agent_measurement_seals_completed_result_and_exact_trace`가
-  `Benchmark registry distribution is not currently valid`로 중단됐다. 해당 파일을 제외하면
-  `test_zap_baseline_seals_realistic_sarif_and_zero_recall_result`도 같은 원인으로 중단된다.
-- 원인: 두 테스트가 `NOW = 2026-08-02`와 `expires_at=NOW + 1 day`로 bundle을 만들지만 Harness는
-  주입된 fixture 시각이 아니라 실제 `datetime.now(UTC)`로 activation을 검사한다.
-- 영향: 2026-08-03 이후 전체 pytest가 기존 Windows symlink 제약에 도달하기 전에 중단된다.
-  MEM-001 코드 경로와 무관한 기존 fixture/harness clock 경계다.
-- 해소 조건: Harness에 검증 clock을 명시적으로 주입하거나 테스트가 현재 시각에 의존하지 않는
-  유효 기간을 사용하도록 별도 변경하고, 만료 음성 테스트는 고정 clock으로 유지한다.
+- 상태: 2026-08-06 해소
+- 원인: distribution fixture가 고정된 과거 `issued_at/expires_at`을 사용해 실제 activation 시각에
+  만료됐다.
+- 조치: distribution fixture의 `issued_at`을 현재 시각 기준으로 만들되 registry 발급 시각보다
+  앞서지 않도록 하고, 만료 음성 테스트의 고정 시각 계약은 유지했다.
+- 검증: deterministic baseline·single-agent·ZAP 관련 묶음 17 passed, 2 skipped.
 
 ## Windows POSIX 파일·디렉터리 mode 검사
 
-- 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-04
+- 상태: 테스트 플랫폼 분리 완료, POSIX 보안 검증은 Linux 필요
+- 마지막 재현: 2026-08-06
 - 명령:
   `.\.venv\Scripts\python.exe -m pytest -q tests\test_workflow_integrity_regressions.py::test_confirmation_projection_keeps_private_permissions_and_escapes_markdown`
 - 추가 명령:
   `.\.venv\Scripts\python.exe -m pytest -q tests\test_tool_loop.py::test_high_risk_tool_waits_for_exact_approval_and_resumes_in_new_run`
-- 결과: PAJIN이 `0700`으로 생성한 validation·lock 디렉터리를 Windows `stat()`이 `0777`로
-  보고해 `assert 511 == 448`에서 실패한다. Tool Loop private claim 파일도 `fchmod(0600)` 뒤
-  Windows `stat()`이 `0666`으로 보고해 `assert 438 == 384`에서 실패한다.
-- 영향: POSIX private file/directory mode assertion을 Windows에서 증명할 수 없다. 같은 실행의
-  기능·escaping 검증에 도달하기 전에 플랫폼 mode 표현 차이로 중단되며 ENG-001 회귀 증거는 아니다.
-- 해소 조건: Linux CI에서 검증하거나, 별도 작업으로 Windows ACL을 확인하는 platform-specific
-  assertion과 POSIX mode assertion을 분리한다.
+- 결과: 기능·escaping·approval 재개 검증은 Windows에서도 실행하고 `0700/0600` mode assertion만
+  POSIX에서 실행하도록 분리했다. Tool Loop 37 passed, workflow integrity 20 passed.
+- 영향: POSIX private mode 자체는 Windows에서 증명할 수 없으며 Linux CI가 필요하다.
 
 ## PROF-001 Profile semantic authority 경계
 
@@ -461,12 +448,26 @@
 - 해소 조건: 운영 백업 또는 독립 transparency/checkpoint anchor와 명시적 distribution Trust
   Anchor rotation authority를 추가한다.
 
+## Windows 애플리케이션 제어에 의한 임시 console-script 차단
+
+- 상태: 활성 환경 제약
+- 마지막 재현: 2026-08-06
+- 명령:
+  `.\.venv\Scripts\python.exe -m pytest -q tests\test_packaging_entrypoints.py::test_distribution_artifacts_work_in_a_clean_no_dependency_install`
+- 결과: clean source에서 wheel·sdist build, wheel install, isolated import와 metadata 검증까지 통과한 뒤
+  임시 venv의 `pajin-control-plane.exe` 또는 후속 console-script 실행이 `WinError 4551`로 차단됐다.
+  비샌드박스 실행과 저장소 내부 전용 basetemp에서도 동일했다.
+- 영향: 설치된 console-wrapper의 실제 `--help`·invalid option·missing extra 동작 한 건을 이 Windows
+  정책에서 완료할 수 없다. 해당 smoke를 제외한 packaging/entrypoint 16건은 통과했다.
+- 해소 조건: Linux CI 또는 조직 AppControl이 빌드 산출물 실행을 허용하는 서명된 환경에서 같은
+  테스트를 실행한다. 테스트 assertion이나 애플리케이션 제어 정책을 우회하지 않는다.
+
 ## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
 
 - 상태: 현재 재현되지 않음, 재발 가능 환경 제약
-- 마지막 확인: 2026-08-05
-- 명령: `.\.venv\Scripts\python.exe -m mypy --no-incremental --platform linux src`
-- 현재 결과: 255 source files 통과
+- 마지막 확인: 2026-08-06
+- 명령: `.\.venv\Scripts\python.exe -m mypy --platform linux --cache-dir <writable-cache> src\pajin`
+- 현재 결과: 256 source files 통과
 - 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
   차단했다.
 - 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브

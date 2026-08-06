@@ -2,14 +2,15 @@
 
 - 기록일: 2026-08-06
 - 브랜치: `main`
-- 현재 HEAD: `a90a8bbc34f9dcf3a71a0a3cb96567f3487de0fb`
+- 현재 코드 체크포인트: `0f119d49b30b3ea02b1cef03214648519bd39d19`
+- 문서 동기화: 이 HANDOFF를 포함한 최종 로컬 커밋
 - 원격 기준: `origin/main@a90a8bbc34f9dcf3a71a0a3cb96567f3487de0fb`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
 - APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
-- 현재 구현 체크포인트: `APPROVAL-001B` 동작 보존 리팩터링 구현·검증 완료
-- 다음 사용자 체크포인트: 리팩터링 로컬 커밋 승인
+- 현재 구현 체크포인트: `APPROVAL-001B` 이후 저장소 전 범위 리팩터링·안정화 구현, 분할 회귀 검증, 로컬 커밋 완료
+- 다음 사용자 체크포인트: `https://github.com/HYEXEN/PAJIN.git`의 `origin/main`으로 로컬 커밋 전체를 push하는 구체적 승인
 - 이후 로드맵: `APPROVAL-001C` bounded batch·async approval
-- 원격 push: `a90a8bb`까지 동기화됨, 이번 리팩터링은 미커밋·미push
+- 원격 push: `a90a8bb`까지 동기화됨, 로컬 `main`은 문서 동기화 전 기준 14 commits ahead이며 아직 미push
 
 ## 재개 전 확인
 
@@ -21,8 +22,9 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. 현재 `main`과 `origin/main`은 `a90a8bb`로 같고, 리팩터링 코드와
-상태 문서는 working tree에 미커밋 변경으로 남아 있어야 한다. 별도 detached worktree
+문서보다 실제 저장소를 우선한다. 현재 `main`은 `origin/main@a90a8bb`보다 앞서 있고 리팩터링 코드와
+테스트는 논리 단위별 로컬 커밋으로 보존돼 있어야 한다. 이 문서의 코드 체크포인트 뒤에는 문서 동기화
+커밋만 있어야 하며 working tree는 clean이어야 한다. 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
@@ -87,16 +89,33 @@ non-reusable receipt와 기존 cleanup reservation을 schema v4 transaction 하�
 
 ## 현재 검증
 
-### 2026-08-06 동작 보존 리팩터링 후 재검증
+### 2026-08-06 저장소 전 범위 리팩터링·안정화 재검증
 
-- Graph SQLite·backup·approval·General Attack 인접 회귀: 172 passed, 2 skipped
-  - Windows에서 의도적으로 제외한 POSIX link·symlink semantics 2건
-- APPROVAL/PERMIT/General Attack 집중 회귀: 131 passed
-- 변경 모듈 Ruff: 통과
+- APPROVAL-001B 중복 구조 정리 뒤 benchmark distribution fixture 만료, Capability 발급 wall-clock,
+  긴 환경변수, Windows `uv`·절대 경로, MCP envelope, 패키징 source tree, POSIX mode·process-group,
+  Linux container observation fixture의 실제 실패를 각각 독립 커밋으로 수정했다.
+- Windows first-failure 전체 회귀는 POSIX 전용 파일을 제외한 상태에서 1,063 passed, 78 skipped까지
+  진행한 뒤 stale MCP fixture를 찾았고, 수정 후 나머지는 파일 묶음으로 분할 검증했다.
+- error-safety부터 Graph admission: 362 passed
+- Graph backup·CampaignFact·SQLite·KISA·local replay: 195 passed, 2 skipped
+- policy·provider·replay runtime 1차: 264 passed, 1 skipped
+  - replay tickets 전체: 39 passed, 10 skipped
+  - replay verify CLI·worker process: 11 passed, 1 skipped
+- safe-files·scope·secrets·Supervisor: 206 passed, 2 skipped
+- Tool Loop 전체: 37 passed, validation artifact 묶음: 51 passed
+- Worker HTTP 전체: 35 passed, 1 skipped
+- workflow integrity 전체: 20 passed, YAML loader: 18 passed
+- 패키징은 생성 console-script 실행 smoke 1건을 제외한 16건이 통과했다. 제외한 한 건도 clean
+  wheel/sdist build·install·import·metadata까지 통과한 뒤 조직 Windows 애플리케이션 제어가 임시
+  console-script `.exe` 실행을 `WinError 4551`로 차단했다.
+- Ruff 전체: 통과
 - Linux 대상 strict mypy: 256 source files 통과
-- Windows 대상 mypy: 기존 POSIX 전용 `os` API 33건만 실패
-- 기본 `.mypy_cache`는 현재 Windows ACL 때문에 열리지 않으므로 쓰기 가능한 별도 cache dir가 필요
+- Windows 대상 mypy: 배포 코드의 POSIX 전용 `os` API 33건만 실패
 - `git diff --check`: 통과
+- Windows에서 단일 전체 pytest는 POSIX directory fsync·dirfd·비이식 파일명·worker daemon 경계 때문에
+  완료하지 못했다. `tests/test_control_plane_artifacts.py`, `test_control_plane_artifact_admission.py`,
+  `test_control_plane_replay.py`, `test_integrity.py`, `test_worker_daemon.py`, `test_worker_health.py`의
+  Linux 경로와 packaging console-wrapper smoke는 Linux CI 또는 허용된 환경에서 재검증해야 한다.
 
 아래 항목은 APPROVAL-001B 구현 완료 시점의 더 넓은 검증 기록이다.
 
@@ -155,13 +174,13 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 ## 현재 상태와 다음 한 단계
 
 APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 커밋됐고 문서 동기화까지
-`a90a8bb`로 원격에 반영됐다. 현재 리팩터링 변경은 검증됐지만 아직 로컬 커밋하지 않았다.
+`a90a8bb`로 원격에 반영됐다. 저장소 전 범위 리팩터링·안정화는 `2174cde`부터 `0f119d4`까지
+14개 로컬 커밋으로 보존됐고, 이 HANDOFF 동기화 커밋이 그 뒤를 따른다.
 
-1. 사용자 승인 뒤 현재 변경만 `refactor(approval): 승인 원자 소비 중복 구조 정리`로 로컬 커밋한다.
-2. 커밋 전 staged diff에서 코드 3개와 `PLAN.md`, `HANDOFF.md` 외 파일이 없는지 다시 확인한다.
-3. 별도 요청 전에는 `APPROVAL-001C` batch·async 상태 머신이나 기능 변경을 시작하지 않는다.
-4. 원격 push가 필요하면 별도 사용자 승인 뒤 `git -c http.sslBackend=schannel push origin main`으로 수행하고
-   local/upstream/remote/clean 상태를 재검증한다.
+1. 사용자가 `https://github.com/HYEXEN/PAJIN.git`의 `origin/main`으로 현재 로컬 `main` 전체를
+   push해도 된다고 구체적으로 승인하면 `git -c http.sslBackend=schannel push origin main`을 실행한다.
+2. push 뒤 local HEAD, upstream, `ls-remote`와 clean working tree를 다시 확인한다.
+3. 별도 요청 전에는 `APPROVAL-001C` batch·async 상태 머신이나 추가 기능 개발을 시작하지 않는다.
 
 ## 알려진 경계
 
@@ -173,5 +192,5 @@ APPROVAL-001A와 APPROVAL-001B 구현은 각각 `8733ccc`, `6c75896`에 커밋�
 - T3+·batch·async와 partial/unknown batch claim은 미지원이다.
 - Graph schema v4 direct downgrade는 없다. rollback 시 v4 reader와 immutable consumption evidence를
   유지해야 한다.
-- 전체 pytest의 Benchmark registry 만료, Windows `dirfd`/symlink 제약은 코드 회귀와 구분한다.
+- Windows `dirfd`/directory fsync/symlink/비이식 파일명과 조직 AppControl 제약은 코드 회귀와 구분한다.
 - Docker daemon과 real-container 경로는 이번 체크포인트에서 확인하지 않았다.
