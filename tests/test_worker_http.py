@@ -1,6 +1,7 @@
 import errno
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 import time
@@ -10,7 +11,7 @@ from email.message import Message
 from hashlib import sha256
 from io import BytesIO, StringIO
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from urllib.error import HTTPError
 from urllib.request import Request
 
@@ -31,6 +32,20 @@ def _worker_entry() -> ModuleType:
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def _stub_linux_isolation_host(
+    worker: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(worker.os, "geteuid", lambda: 10001, raising=False)
+    monkeypatch.setattr(worker.os, "ST_RDONLY", 1, raising=False)
+    monkeypatch.setattr(
+        worker.os,
+        "statvfs",
+        lambda _path: SimpleNamespace(f_flag=1),
+        raising=False,
+    )
 
 
 def test_http_worker_installs_a_redirect_refusing_handler() -> None:
@@ -311,6 +326,7 @@ def test_isolation_check_accepts_inert_non_loopback_interfaces_without_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker = _worker_entry()
+    _stub_linux_isolation_host(worker, monkeypatch)
 
     def blocked_connection(*_args: object, **_kwargs: object) -> None:
         raise OSError("blocked")
@@ -333,6 +349,7 @@ def test_isolation_check_rejects_a_non_loopback_route(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker = _worker_entry()
+    _stub_linux_isolation_host(worker, monkeypatch)
 
     def blocked_connection(*_args: object, **_kwargs: object) -> None:
         raise OSError("blocked")
@@ -352,6 +369,7 @@ def test_isolation_check_fails_closed_when_interfaces_cannot_be_enumerated(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker = _worker_entry()
+    _stub_linux_isolation_host(worker, monkeypatch)
 
     def blocked_connection(*_args: object, **_kwargs: object) -> None:
         raise OSError("blocked")
@@ -375,6 +393,7 @@ def test_isolation_check_accepts_only_loopback_with_blocked_external_probe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     worker = _worker_entry()
+    _stub_linux_isolation_host(worker, monkeypatch)
 
     def blocked_connection(*_args: object, **_kwargs: object) -> None:
         raise OSError("blocked")
@@ -530,6 +549,7 @@ def test_mcp_call_fails_closed_on_truncated_child_stream(
         )
 
 
+@pytest.mark.skipif(os.name != "posix", reason="MCP process-group cleanup is POSIX-only")
 def test_mcp_child_timeout_cleans_up_descendants(
     tmp_path: Path,
 ) -> None:
