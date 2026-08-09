@@ -15,8 +15,8 @@ authority by itself.
 
 The gate is additive and direct-call only. It does not dispatch a Gateway or Worker, prepare a
 second `WorkerJob`, issue another ordinary ActionPermit, create a cleanup Permit, add a store, or
-wire a default Supervisor workflow. SUP-007 remains responsible for product composition that
-produces the existing Grant-bound Gateway lifecycle and sealed Run evidence.
+wire a default Supervisor workflow. SUP-007A now composes it after the existing Grant-bound Gateway
+lifecycle and sealed Run evidence for an explicit T0/T1 no-write direct call.
 
 ## Required authority intersection
 
@@ -28,8 +28,8 @@ order:
 
 This provider is a deployment TCB. The gate removes caller path selection and detects content or
 lineage divergence inside the resolved Run; it does not independently prove that a compromised or
-misconfigured provider selected the deployment's canonical managed path. SUP-007 must own that
-mapping rather than deriving it from action output.
+misconfigured provider selected the deployment's canonical managed path. SUP-007A owns that mapping
+for its direct-call path by deriving the Run from a deployment-managed root and the exact Envelope.
 
 1. require a first dispatch with an exact `GatewayOutcome`; an exact retry with
    `dispatched=false` or a missing result is not assessable;
@@ -162,10 +162,10 @@ bounded one-shot CleanupPermit in the existing GRAPH authority. This no-write ga
 remains unchanged. PERMIT-004B2 reuses its sealed result-authentication core for a
 `reversible-write + cleanupRequired=true` path, exact-rebuilds the current Handler plan, proves an
 exact pre-action hold, dispatches a distinct cleanup Capability, and authenticates restored state.
-SUP-007 must later compose the existing PERMIT-003 callback, Grant, RunStore, Gateway, Worker, and
-post-dispatch gates without adding another execution authority. The production outcome input
-authority and its canonical managed Run mapping remain SUP-007 composition responsibilities and
-part of the deployment TCB.
+SUP-007A composes the existing PERMIT-003 callback, Grant, RunStore, Gateway, Worker, and this
+post-dispatch gate without adding another execution authority. Its deployment ID, managed Run root,
+Permit inputs, execution inputs, Gateway dependencies, and current activation remain explicit
+deployment TCBs. SUP-007B still owns concrete product exposure and T2 policy.
 
 ## Related documents
 
@@ -174,4 +174,5 @@ part of the deployment TCB.
 - [CAP-005 contract](../capability/CAP-005-existing-mode-tool-replay-adapters.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [PERMIT-004B1 contract](PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md)
+- [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

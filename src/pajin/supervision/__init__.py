@@ -23,6 +23,13 @@ from pajin.supervision.action_compiler import (
     compile_general_attack_action_intent,
     verify_general_attack_compiled_intent,
 )
+from pajin.supervision.action_execution import (
+    GeneralAttackActionExecutionError,
+    GeneralAttackActionExecutionGate,
+    GeneralAttackActionExecutionInputAuthority,
+    GeneralAttackActionExecutionInputs,
+    GeneralAttackActionExecutionResult,
+)
 from pajin.supervision.action_outcome import (
     GENERAL_ATTACK_ACTION_OUTCOME_ASSESSMENT_API_VERSION,
     GeneralAttackActionOutcomeAssessment,
@@ -183,6 +190,11 @@ __all__ = [
     "GeneralAttackActionCleanupError",
     "GeneralAttackActionCleanupGate",
     "GeneralAttackActionCompilerError",
+    "GeneralAttackActionExecutionError",
+    "GeneralAttackActionExecutionGate",
+    "GeneralAttackActionExecutionInputAuthority",
+    "GeneralAttackActionExecutionInputs",
+    "GeneralAttackActionExecutionResult",
     "GeneralAttackActionOutcomeAssessment",
     "GeneralAttackActionOutcomeError",
     "GeneralAttackActionOutcomeGate",

@@ -104,6 +104,9 @@ def _surface_sources(
     bind_campaign_digest: bool = True,
     tool_id: str = TOOL_ID,
     risk_tier: str | int = "T1",
+    target: str = "https://staging.example.invalid/api/chat",
+    target_id: str = "staging-assistant",
+    threat_class: str = "A02",
 ):
     hypothesis = AttackHypothesis(
         compiler_id="pajin.discovery.registered-hypothesis-compiler.v1",
@@ -111,8 +114,8 @@ def _surface_sources(
         campaign=campaign.metadata.name,
         surface_set_id=SURFACE_SET_ID,
         surface_id=SURFACE_ID,
-        target_id="staging-assistant",
-        threat_class="A02",
+        target_id=target_id,
+        threat_class=threat_class,
         statement="A tainted document may influence an MCP tool call.",
         expected_observable="A registered tool result is captured as sealed evidence.",
         required_tool_id=tool_id,
@@ -135,7 +138,7 @@ def _surface_sources(
         request_id="planned-action-request",
         agent_id=f"hypothesis-specialist:{hypothesis.hypothesis_id[-32:]}",
         tool_id=tool_id,
-        target="https://staging.example.invalid/api/chat",
+        target=target,
         method=method,
         arguments=(HOSTILE_ARGUMENTS if arguments is None else dict(arguments)),
     )
@@ -184,6 +187,9 @@ def _proposal(
     projection_digest: str = SHA_B,
     method: str = "POST",
     arguments: Mapping[str, JsonValue] | None = None,
+    target: str = "https://staging.example.invalid/api/chat",
+    target_id: str = "staging-assistant",
+    threat_class: str = "A02",
 ):
     selected = definition or _definition()
     definitions = CapabilityDefinitionRegistry((selected,))
@@ -195,6 +201,9 @@ def _proposal(
         arguments=arguments,
         tool_id=selected.tool.tool_id,
         risk_tier=selected.risk_tier,
+        target=target,
+        target_id=target_id,
+        threat_class=threat_class,
     )
     proposal = build_general_attack_action_proposal(
         campaign,

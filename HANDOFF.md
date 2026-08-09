@@ -2,17 +2,18 @@
 
 - 기록일: 2026-08-09
 - 브랜치: `main`
-- 현재 HEAD: `610616f5fdf4cc5c38aa241edc796057b71d62c6`
-- 현재 코드 체크포인트: APPROVAL-001C3 구현·문서가 working tree에 있으며 아직 미커밋
-- 문서 동기화: 이 HANDOFF를 포함해 working tree에서 완료, 로컬 커밋 승인 대기
+- 현재 HEAD: `613425367ef7a8f2e881812559efb48e4dc9d73d`
+- 현재 코드 체크포인트: `SUP-007A` direct-call T0/T1 no-write 실행 조합이 working tree에 있으며 아직 미커밋
+- 문서 동기화: SUP-007A 계약·ADR·README·상태 문서를 working tree에서 동기화, 로컬 커밋 승인 대기
 - 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
 - APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
 - APPROVAL-001C1/C2 구현 커밋: `ba7274af4f96c1207b9d5dd509b659877f2a27b5`
-- 현재 구현 체크포인트: C1/C2 coordinator에 General Attack 별도 batch 메서드, Control Plane deployment v1alpha2/`capability-graph-batch-v1`, journal local backup/restore·retention assessment 연결 완료
-- 다음 사용자 체크포인트: APPROVAL-001C3 변경의 로컬 커밋 승인
-- 이후 로드맵: 커밋 체크포인트 뒤 Phase 7 `SUP-007` opt-in T0/T1 실행 범위 결정
-- 원격 push: GitHub `main`과 `origin/main`은 `021a1f4`, 로컬 `main`은 기능·문서 커밋 2개 앞서 있어야 하며 아직 미push
+- APPROVAL-001C3 구현 커밋: `613425367ef7a8f2e881812559efb48e4dc9d73d`
+- 현재 구현 체크포인트: 기존 Permit·Gateway·managed Run·Outcome 권한을 재사용하는 `GeneralAttackActionExecutionGate`와 T0 CTF 실경로·fail-closed 회귀 테스트 추가
+- 다음 사용자 체크포인트: SUP-007A 변경의 로컬 커밋 승인
+- 이후 로드맵: `SUP-007B` 구체 CLI/API/Control Plane 노출 위치와 T2 사전 승인 정책 결정
+- 원격 push: `origin/main@021a1f4`, 로컬 `main`은 3 commits ahead이며 SUP-007A working tree는 미push
 
 ## 재개 전 확인
 
@@ -24,9 +25,9 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. APPROVAL-001C1/C2 기능·테스트·계약·ADR은 `ba7274a`, 이전 HANDOFF
-동기화는 `610616f`에 보존됐다. 로컬 `main`은 `origin/main@021a1f4`보다 2 commits ahead이며 현재
-working tree에는 APPROVAL-001C3 코드·테스트·문서 변경만 있어야 한다. 별도 detached worktree
+문서보다 실제 저장소를 우선한다. APPROVAL-001C3 기능·테스트·문서는 `6134253`에 보존됐다. 로컬
+`main`은 `origin/main@021a1f4`보다 3 commits ahead이며 현재 working tree에는 SUP-007A 코드·테스트·계약·ADR과
+연결 문서 변경만 있어야 한다. 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
@@ -217,18 +218,17 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-APPROVAL-001C1/C2는 `ba7274a`, 이전 운영 문서는 `610616f`에 보존됐다. 현재 working tree의 C3는
-General Attack/Control Plane opt-in runtime, pinned cancellation delivery, sealed completion 검증과 journal
-local backup/restore·retention assessment를 추가한다. single-action 기본 경로, Graph schema와 backup wire,
-T3+, Control Plane write와 cross-host authority는 바꾸지 않는다.
+APPROVAL-001C3는 `6134253`에 보존됐다. 현재 working tree의 SUP-007A는 `GeneralAttackActionExecutionGate`를
+추가해 deployment-owned 실행 입력, managed Run anchor, 기존 GRAPH Permit, Capability Gateway, Worker와
+PERMIT-004A outcome을 하나의 명시적 direct-call T0/T1 no-write 경로로 조합한다. 새 Permit·Grant·store·record
+type은 추가하지 않으며 T2/T3+, write, cleanup-required, 자동 redispatch와 기존 default workflow는 닫혀 있다.
 
-1. C3 집중 85 tests, 인접 180 tests, 전체 Ruff와 Linux 대상 strict mypy를 완료했다.
-2. 전체 pytest 최초 실패는 C3 밖의 artifact-admission 오류 메시지 기대값 불일치로 분류했고, 전체 run은
-   20분 상한에서 종료했다.
-3. 현재 변경은 미커밋이다. 사용자가 로컬 커밋을 승인하면 C3 기능·테스트·문서만 명시적으로 stage하고
+1. SUP-007A 집중 11 tests와 Proposal·Permit·Outcome·rollout 인접 통합 147 tests가 통과했다.
+2. 전체 Linux 대상 strict mypy는 258 source files에서 통과했다.
+3. 현재 변경은 미커밋이다. 사용자가 로컬 커밋을 승인하면 SUP-007A 코드·테스트·문서만 명시적으로 stage하고
    한글 Conventional Commit으로 보존한다.
-4. push는 별도 명시 승인 전까지 수행하지 않는다. 다음 개발 수직 슬라이스는 커밋 뒤 `SUP-007` 범위를
-   실제 저장소 상태에서 다시 정한다.
+4. push는 별도 명시 승인 전까지 수행하지 않는다. 다음 수직 슬라이스는 SUP-007B의 구체 제품 노출과 T2
+   사전 승인 정책이다.
 
 ## 알려진 경계
 

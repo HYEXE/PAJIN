@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0139: Compose General Attack Through the Managed Gateway](docs/adr/0139-compose-general-attack-through-managed-gateway.md)
 - [ADR-0138: Compose Batch Runtime Explicitly and Retain Unknown Journals](docs/adr/0138-compose-opt-in-batch-runtime-and-journal-retention.md)
 - [ADR-0137: Bind Reversible Batch Items to Existing Cleanup Authority](docs/adr/0137-bind-reversible-batch-items-to-cleanup-authority.md)
 - [ADR-0136: Coordinate Bounded Async Approval Batches Without Duplicating Execution Authority](docs/adr/0136-coordinate-bounded-async-approval-batches.md)

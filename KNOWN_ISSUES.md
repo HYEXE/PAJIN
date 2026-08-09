@@ -3,6 +3,27 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## SUP-007A direct-call 실행의 deployment TCB·제품 노출 경계
+
+- 상태: T0/T1 `none`·`read-only` General Attack의 명시적 direct-call 제품 조합은 구현됐고,
+  구체 CLI/API/Control Plane 노출과 T2 정책은 닫힘
+- 현재 보장: deployment가 고정한 activation, Permit input authority, execution input authority,
+  Tool registry, Worker와 managed Run root를 사용한다. exact Envelope·Decision·Grant를 Permit 전에
+  교차 검증하고 deployment·Campaign·Envelope·release·activation·compiler에 결박된 Run anchor를 첫 event로
+  seal한 뒤 기존 GRAPH Permit을 소비한다. 기존 Capability Gateway와 PERMIT-004A outcome gate만 재사용하며,
+  exact retry와 callback 실패는 Worker를 자동 재호출하지 않는다. T2/T3+, write, cleanup-required,
+  cross-authority substitution은 Worker 전에 fail closed한다.
+- 제한: Envelope·Decision provenance, Grant와 used-call count를 공급하는 두 input authority와 deployment ID,
+  managed Run root, Tool/Policy/Worker 선택은 process-local deployment TCB다. direct-call API만 존재하며 사용자
+  또는 운영자가 호출할 CLI/API/Control Plane profile은 없다. production inventory는 no-write이고 T2 사전 승인
+  제품 정책, reversible-write cleanup composition과 cross-host fencing은 활성화하지 않았다.
+- 영향: 신뢰된 deployment composition 밖의 caller가 임의 Run·Grant·Gateway를 골라 성공을 주장할 수 없다.
+  반대로 deployment input authority 자체가 잘못된 provenance를 인증하는 경우를 이 조합이 암호학적으로
+  보정한다고 주장하지 않는다.
+- 해소 조건: SUP-007B에서 실제 배포 surface와 운영 주체를 선택하고, verified Envelope producer와 Graph
+  Decision actor/provenance registry를 고정한다. T2를 열 경우 기존 APPROVAL-001A authority를 필수로 하는
+  별도 product profile과 negative coverage를 계약화하며 T3+와 write는 계속 별도 승인 전까지 닫는다.
+
 ## APPROVAL-001C3 이후 process-local verifier·host-local journal 제한
 
 - 상태: single no-write, bounded General Attack reversible-write, 2~8개 no-write/reversible async
@@ -51,8 +72,8 @@
   cleanup success 뒤에도 독립 verifier가 actual target-state digest를 관찰해야 restored로 판정한다.
 - 제한: current CAP-005 production inventory에는 reversible-write Capability가 없으며 positive path는 격리된
   synthetic state fixture다. Envelope·Decision provenance, fixed-point pricing, managed Run/Grant, code-owned
-  mapping, cleanup Grant와 restored-state verifier의 deployment composition은 명시적 TCB로 남는다. SUP-007이
-  default opt-in 실행을 소유하며 B2는 이를 활성화하지 않는다. schema v3 생성 뒤 v2 code로 direct downgrade할
+  mapping, cleanup Grant와 restored-state verifier의 deployment composition은 명시적 TCB로 남는다. SUP-007A는
+  no-write direct-call만 열며 B2 write 경로를 활성화하지 않는다. schema v3 생성 뒤 v2 code로 direct downgrade할
   수 없고 expired·abandoned hold를 자동 release하지 않으며, failed·unknown cleanup도 자동 retry하지 않는다.
 - 해소 조건: 실제 reversible-write Capability를 활성화할 때 deployment authority 등록·운영 절차와 Target별
   restored-state verifier를 계약화한다. hold release나 unknown-outcome recovery가 필요하면 restored state를
@@ -60,7 +81,7 @@
 
 ## PERMIT-003 외부 Envelope·Decision·비용 권위 경계
 
-- 상태: 의도적으로 분리된 direct-call Permit bridge
+- 상태: 기존 Permit bridge는 유지되며 SUP-007A가 별도 direct-call T0/T1 no-write 제품 조합으로 연결
 - 현재 보장: complete PERMIT-001/002·ORCH·CAP-001/002 source를 exact-rebuild하고 current signed CAP-005
   activation에서 request를 다시 prepare한다. 외부 authority가 공급한 기존 run-level MissionEnvelope,
   current Graph Decision과 strict-integer cost도 current Campaign authorization/testing window, Envelope
@@ -73,13 +94,14 @@
   전에 거부한다. synchronous callback과 외부 authority 운영 실패는 Permit claim 전에 typed fail-closed
   오류로 거부된다.
 - 제한: 일반 공격용 verified Envelope producer, Graph Decision actor/provenance registry와 generic trusted
-  micro-USD pricing service가 아직 없다. 따라서 `GeneralAttackActionPermitInputAuthority`는 deployment가
-  공급하는 code-owned 또는 외부-backed TCB이며 그 구현의 잘못된 인증을 gate가 암호학적으로 보정한다고
-  주장하지 않는다. default workflow, Gateway, Worker, Grant·Run audit, Success Oracle과 cleanup은 연결되지
-  않았다. Permit callback 실패는 consumed terminal이고 자동 redispatch하지 않는다.
-- 해소 조건: PERMIT-004에서 side-effect·data-flow·Oracle·cleanup authority를 결박하고, SUP-007에서 current
-  Grant·Run audit·Gateway·Worker와 조직이 승인한 Envelope·Decision·pricing provider를 명시적 T0/T1 opt-in
-  composition으로 연결한다.
+  micro-USD pricing service가 아직 없다. 따라서 `GeneralAttackActionPermitInputAuthority`와 SUP-007A execution
+  input authority는 deployment가 공급하는 code-owned 또는 외부-backed TCB이며 그 구현의 잘못된 인증을
+  gate가 암호학적으로 보정한다고 주장하지 않는다. SUP-007A는 명시적 direct-call에서만 Gateway, Worker,
+  Grant·Run audit과 Success Oracle을 연결하며 default workflow와 cleanup write는 닫혀 있다. Permit callback
+  실패는 consumed terminal이고 자동 redispatch하지 않는다.
+- 해소 조건: SUP-007B에서 조직이 승인한 Envelope·Decision·pricing provider와 구체 제품 surface를 고정한다.
+  T2는 기존 approval authority를 필수로 하고 write는 production cleanup Capability와 복구 운영 절차가 생기기
+  전까지 분리한다.
 
 ## SUP-004A model input 크기 경계
 

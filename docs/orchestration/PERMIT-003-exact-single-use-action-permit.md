@@ -94,13 +94,13 @@ current `PreparedCapabilityAction` and derived `ActionProposal`; downstream code
 reconstruct request material from a stale caller closure. Callback failure remains terminal under
 the existing safety-first GRAPH contract; automatic redispatch is forbidden.
 
-The new gate does not itself call `ToolGateway`, a Worker, CAP-002 Success Oracle, Replay Strategy,
-Cleanup Handler, or Executor Adapter. Tests use a counting callback only to prove first-consumption
-semantics. SUP-007 must provide the explicit product composition that connects this callback to an
-authorized Gateway path, including the existing Grant and Run audit requirements. PERMIT-004A now
-requires a deployment input authority to resolve the Run, pre-claim audit anchor, and exact Grant;
-then authenticates the resulting sealed no-write lifecycle and `worker.dispatched` job before
-Oracle, bounded data-flow observation, or Cleanup Handler use.
+The PERMIT-003 gate does not itself call `ToolGateway`, a Worker, CAP-002 Success Oracle, Replay
+Strategy, Cleanup Handler, or Executor Adapter. Its focused tests use a counting callback only to
+prove first-consumption semantics. SUP-007A now composes that callback with the existing Grant,
+deployment-managed Run audit, Gateway, Worker, and PERMIT-004A outcome gate for an explicit T0/T1
+no-write direct call. PERMIT-004A still requires an exact Run anchor and Grant and authenticates the
+resulting sealed lifecycle and `worker.dispatched` job before Oracle, bounded data-flow observation,
+or Cleanup Handler use.
 
 ## Negative boundaries
 
@@ -142,17 +142,18 @@ request dispatchable again.
 ## Remaining boundary
 
 PERMIT-004A binds current Success Oracle, side-effect ceiling, bounded transport observation, and
-Cleanup Handler to a completed Permit-bound sealed no-write result. PERMIT-004B must add a separate
-typed cleanup request, one-shot cleanup Permit, and aggregate Campaign budget accounting before
-write or cleanup-required actions are admitted. SUP-007 must later supply an explicit T0/T1 product
-composition with a deployment-owned Run resolver, current Grant, Run audit, Gateway, Worker, and
-outcome-gate authorities. Until that checkpoint, PERMIT-003 is an available authority bridge but
-not a default execution path.
+Cleanup Handler to a completed Permit-bound sealed no-write result. PERMIT-004B supplies the
+separate typed cleanup request, one-shot cleanup Permit, and restored-state boundary, but the
+production inventory remains no-write. SUP-007A provides an explicit direct-call T0/T1 product
+composition with a deployment-managed Run root, current Grant, Run audit, Gateway, Worker, and
+outcome-gate authorities. SUP-007B must decide any concrete CLI/API/Control Plane exposure and T2
+policy; the existing default execution paths remain unchanged.
 
 ## Related documents
 
 - [PERMIT-002 contract](PERMIT-002-deterministic-action-compiler.md)
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
+- [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [CAP-004 contract](../capability/CAP-004-maturity-signing-review-deprecation.md)
 - [CAP-005 contract](../capability/CAP-005-existing-mode-tool-replay-adapters.md)

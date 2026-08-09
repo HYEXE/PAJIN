@@ -158,7 +158,8 @@ uncertainty classes.
 
 Production composition still requires deployment-owned Envelope, Decision/provenance, pricing,
 Run/Grant, cleanup Grant, mapping, and restored-state verifier authorities. No current CAP-005
-release is reversible-write, and SUP-007 remains the owner of any default opt-in execution path.
+release is reversible-write. SUP-007A opens only the no-write direct-call path; SUP-007B or a later
+explicit write profile remains responsible for any reversible-write product activation.
 Expired or abandoned pre-action holds still require a separate operational recovery/release
 contract; B2 does not manufacture restored state or reusable budget.
 

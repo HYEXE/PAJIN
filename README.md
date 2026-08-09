@@ -334,6 +334,23 @@ General Attack and Control Plane batch workflow integration remains opt-in follo
 [APPROVAL-001C2 contract](docs/orchestration/APPROVAL-001C2-reversible-async-approval-batch.md) and
 [ADR-0137](docs/adr/0137-bind-reversible-batch-items-to-cleanup-authority.md).
 
+APPROVAL-001C3 connects those existing coordinators to separate opt-in General Attack and Control
+Plane batch entry points and adds host-local journal backup, restore, and retention assessment.
+It preserves manual reconciliation for dispatch-started unknown outcomes and does not add cross-host
+coordination, Control Plane write, default batch execution, or T3+ authority. See the
+[APPROVAL-001C3 contract](docs/orchestration/APPROVAL-001C3-opt-in-batch-runtime-and-retention.md) and
+[ADR-0138](docs/adr/0138-compose-opt-in-batch-runtime-and-journal-retention.md).
+
+SUP-007A adds an explicit direct-call product composition for T0/T1 `none` and `read-only` General
+Attack actions. A deployment-owned input authority supplies the exact Envelope, Decision, Grant,
+and used-call count; the gate derives the managed Run from a pinned root, seals its deployment-bound
+anchor before claiming the existing Permit, dispatches through the unchanged Capability Gateway,
+and authenticates the sealed result through PERMIT-004A. Exact retries never call the Worker twice.
+T2, T3+, write, cleanup-required, default workflow, and concrete CLI/API/Control Plane exposure
+remain closed for SUP-007B. See the
+[SUP-007A contract](docs/orchestration/SUP-007A-opt-in-general-attack-execution.md) and
+[ADR-0139](docs/adr/0139-compose-general-attack-through-managed-gateway.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

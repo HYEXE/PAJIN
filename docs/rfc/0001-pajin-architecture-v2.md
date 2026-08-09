@@ -676,8 +676,11 @@ and Worker exactly once. Its source identity binds the immutable source-evidence
 than the mutable latest Run root. A completed cleanup Oracle result is still insufficient: a
 code-identified independent verifier must observe the expected current target-state digest. Failed,
 unknown, stale, substituted, irreversible, recursive, or success-only cleanup remains fail closed.
-SUP-007 still owns default Grant/Gateway/Worker composition, and the current production inventory
-remains no-write.
+SUP-007A now supplies an explicit direct-call T0/T1 no-write composition over the deployment-owned
+Grant, managed Run root, Gateway, Worker, existing Permit, and authenticated outcome gates. It
+rejects T2, T3+, write, cleanup-required, caller-selected Run, and automatic redispatch. SUP-007B
+still owns any concrete CLI, API, or Control Plane exposure and T2 product policy, and the current
+production inventory remains no-write.
 
 APPROVAL-001A adds one deployment-authenticated operator approval before Permit consumption
 without introducing another execution wire. A single `ActionApprovalEnvelope` exact-binds issuer,
