@@ -28,6 +28,10 @@ from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import CampaignManifest, ToolRiskTier, campaign_manifest_digest
 from pajin.graph import (
+    ActionApprovalBatchCompletion,
+    ActionApprovalBatchDispatchResult,
+    ActionApprovalBatchEnvelope,
+    ActionApprovalBatchError,
     ActionApprovalCapabilityPolicy,
     ActionApprovalCapabilityPolicyRegistry,
     ActionApprovalConsumptionReceipt,
@@ -43,6 +47,7 @@ from pajin.graph import (
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
     GraphActionPermitStore,
+    GraphApprovedActionBatchDispatcher,
     GraphApprovedActionPermitAuthority,
     GraphApprovedActionPermitDispatcher,
     GraphApprovedActionPermitStore,
@@ -56,6 +61,7 @@ from pajin.graph import (
     GraphReversibleActionPermitStore,
     MissionEnvelope,
     ReversibleActionPermitInputAuthority,
+    SQLiteActionApprovalBatchJournal,
 )
 from pajin.supervision.action_compiler import (
     GeneralAttackActionCompilerError,
@@ -141,9 +147,7 @@ def _activation_action_policy_registry(
             )
             for binding in activation.activation_set.bindings
             for definition in (
-                activation.rollout.bundle.definitions.resolve(
-                    binding.capability.capability
-                ),
+                activation.rollout.bundle.definitions.resolve(binding.capability.capability),
             )
         )
     )
@@ -185,6 +189,29 @@ class GeneralAttackActionPermitResult[DispatchResultT]:
     approval_receipt: ActionApprovalConsumptionReceipt | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class GeneralAttackActionApprovalBatchResult:
+    """Verified General Attack inputs plus one batch-coordinator dispatch result."""
+
+    intent: GeneralAttackCompiledIntent
+    prepared: PreparedCapabilityAction
+    proposal: ActionProposal
+    dispatch: ActionApprovalBatchDispatchResult
+
+
+@dataclass(frozen=True, slots=True)
+class _GeneralAttackPreparedPermitAction:
+    intent: GeneralAttackCompiledIntent
+    prepared: PreparedCapabilityAction
+    definition: CapabilityDefinition
+    campaign: CampaignManifest
+    binding: ExistingModeCapabilityActivationBinding
+    inputs: GeneralAttackActionPermitInputs
+    proposal: ActionProposal
+    approval: GeneralAttackApprovalClaim | None
+    evaluated_at: datetime
+
+
 class GeneralAttackActionPermitGate:
     """Exact-rebuild PERMIT-002 and consume the existing Permit only at callback dispatch."""
 
@@ -215,9 +242,7 @@ class GeneralAttackActionPermitGate:
             approval_input_authority is not None or approval_issuer is not None
         ):
             raise TypeError("approval verifier and issuer require an approval provider")
-        if approval is not None and (
-            approval_input_authority is None or approval_issuer is None
-        ):
+        if approval is not None and (approval_input_authority is None or approval_issuer is None):
             raise TypeError(
                 "General attack approval requires a deployment-bound verifier and issuer"
             )
@@ -245,7 +270,7 @@ class GeneralAttackActionPermitGate:
         self._bound_activation_set_digest: str | None = None
         self._dispatcher: GraphActionPermitDispatcher | None = None
 
-    async def dispatch_once[DispatchResultT](
+    def _prepare_permit_action(
         self,
         intent: GeneralAttackCompiledIntent,
         proposal: GeneralAttackActionProposal,
@@ -257,15 +282,7 @@ class GeneralAttackActionPermitGate:
         definitions: CapabilityDefinitionRegistry,
         code_backed_capability: CodeBackedCapabilityRef,
         authorities: CapabilityAuthorityRegistry,
-        dispatch: Callable[
-            [ActionPermit, PreparedCapabilityAction, ActionProposal],
-            Awaitable[DispatchResultT],
-        ],
-    ) -> GeneralAttackActionPermitResult[DispatchResultT]:
-        """Rebuild every predecessor, claim one existing Permit, and call a consumer once."""
-
-        if not _is_async_callable(dispatch):
-            raise TypeError("General attack Permit dispatch callback must be async")
+    ) -> _GeneralAttackPreparedPermitAction:
         canonical_campaign = self._canonical_campaign(campaign)
         try:
             canonical_intent = verify_general_attack_compiled_intent(
@@ -328,7 +345,6 @@ class GeneralAttackActionPermitGate:
             reservation=reservation,
             createdAt=inputs.decision.created_at,
         )
-
         approval_claim: GeneralAttackApprovalClaim | None = None
         if requires_approval:
             approval_claim = self._bind_action_approval(
@@ -341,6 +357,59 @@ class GeneralAttackActionPermitGate:
                 evaluated_at,
             )
             self._revalidate_current_activation(binding, canonical_intent, prepared)
+        return _GeneralAttackPreparedPermitAction(
+            intent=canonical_intent,
+            prepared=prepared,
+            definition=definition,
+            campaign=canonical_campaign,
+            binding=binding,
+            inputs=inputs,
+            proposal=action_proposal,
+            approval=approval_claim,
+            evaluated_at=evaluated_at,
+        )
+
+    async def dispatch_once[DispatchResultT](
+        self,
+        intent: GeneralAttackCompiledIntent,
+        proposal: GeneralAttackActionProposal,
+        campaign: CampaignManifest,
+        hypothesis_set: AttackHypothesisSet,
+        plan: SurfaceBoundPlan,
+        task_digest: str,
+        action_definition: CapabilityDefinitionRef,
+        definitions: CapabilityDefinitionRegistry,
+        code_backed_capability: CodeBackedCapabilityRef,
+        authorities: CapabilityAuthorityRegistry,
+        dispatch: Callable[
+            [ActionPermit, PreparedCapabilityAction, ActionProposal],
+            Awaitable[DispatchResultT],
+        ],
+    ) -> GeneralAttackActionPermitResult[DispatchResultT]:
+        """Rebuild every predecessor, claim one existing Permit, and call a consumer once."""
+
+        if not _is_async_callable(dispatch):
+            raise TypeError("General attack Permit dispatch callback must be async")
+        current = self._prepare_permit_action(
+            intent,
+            proposal,
+            campaign,
+            hypothesis_set,
+            plan,
+            task_digest,
+            action_definition,
+            definitions,
+            code_backed_capability,
+            authorities,
+        )
+        canonical_intent = current.intent
+        prepared = current.prepared
+        definition = current.definition
+        canonical_campaign = current.campaign
+        inputs = current.inputs
+        action_proposal = current.proposal
+        approval_claim = current.approval
+        evaluated_at = current.evaluated_at
 
         async def consume(permit: ActionPermit) -> DispatchResultT:
             return await dispatch(permit, prepared, action_proposal)
@@ -380,19 +449,15 @@ class GeneralAttackActionPermitGate:
                     del receipt
                     return await consume(permit)
 
-                approved_reversible = (
-                    await approved_reversible_dispatcher.dispatch_once(
-                        inputs.envelope,
-                        action_proposal,
-                        inputs.decision,
-                        approval_claim.envelope,
-                        claim.request,
-                        consume_approved_reversible,
-                    )
+                approved_reversible = await approved_reversible_dispatcher.dispatch_once(
+                    inputs.envelope,
+                    action_proposal,
+                    inputs.decision,
+                    approval_claim.envelope,
+                    claim.request,
+                    consume_approved_reversible,
                 )
-                reversible_authorization = (
-                    approved_reversible.authorization.reversible
-                )
+                reversible_authorization = approved_reversible.authorization.reversible
                 action = reversible_authorization.action
                 cleanup_reservation = reversible_authorization.cleanup_reservation
                 approval_receipt = approved_reversible.authorization.receipt
@@ -469,6 +534,167 @@ class GeneralAttackActionPermitGate:
             approval_receipt=approval_receipt,
         )
 
+    async def dispatch_approved_batch_item_once(
+        self,
+        intent: GeneralAttackCompiledIntent,
+        proposal: GeneralAttackActionProposal,
+        campaign: CampaignManifest,
+        hypothesis_set: AttackHypothesisSet,
+        plan: SurfaceBoundPlan,
+        task_digest: str,
+        action_definition: CapabilityDefinitionRef,
+        definitions: CapabilityDefinitionRegistry,
+        code_backed_capability: CodeBackedCapabilityRef,
+        authorities: CapabilityAuthorityRegistry,
+        batch: ActionApprovalBatchEnvelope,
+        ordinal: int,
+        journal: SQLiteActionApprovalBatchJournal,
+        dispatch: Callable[
+            [
+                ActionPermit,
+                ActionApprovalConsumptionReceipt,
+                PreparedCapabilityAction,
+                ActionProposal,
+                ActionCleanupReservation | None,
+            ],
+            Awaitable[ActionApprovalBatchCompletion],
+        ],
+    ) -> GeneralAttackActionApprovalBatchResult:
+        """Opt in one exact approved action to the host-local batch coordinator."""
+
+        if not isinstance(journal, SQLiteActionApprovalBatchJournal):
+            raise TypeError("General attack batch dispatch requires its exact journal")
+        if not _is_async_callable(dispatch):
+            raise TypeError("General attack batch dispatch callback must be async")
+        try:
+            canonical_batch = ActionApprovalBatchEnvelope.model_validate(
+                batch.model_dump(mode="json", by_alias=True)
+            )
+        except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+            raise GeneralAttackActionPermitError(
+                "General attack Action approval batch is not canonical"
+            ) from exc
+        current = self._prepare_permit_action(
+            intent,
+            proposal,
+            campaign,
+            hypothesis_set,
+            plan,
+            task_digest,
+            action_definition,
+            definitions,
+            code_backed_capability,
+            authorities,
+        )
+        approval_claim = current.approval
+        if approval_claim is None:
+            raise GeneralAttackActionPermitError(
+                "General attack batch item requires current operator approval"
+            )
+        if current.prepared.capability.risk_tier >= ToolRiskTier.T3:
+            raise GeneralAttackActionPermitError(
+                "General attack batch does not execute T3 or higher actions"
+            )
+        try:
+            batch_approval = canonical_batch.approval_at(ordinal)
+            cleanup_request = canonical_batch.cleanup_request_at(ordinal)
+        except ActionApprovalBatchError as exc:
+            raise GeneralAttackActionPermitError("General attack batch ordinal is invalid") from exc
+        if batch_approval != approval_claim.envelope:
+            raise GeneralAttackActionPermitError(
+                "General attack batch approval differs from the rebuilt action"
+            )
+
+        cleanup_claim: GeneralAttackReversibleCleanupClaim | None = None
+        if current.definition.side_effect_class.value.endswith("write"):
+            if (
+                current.definition.side_effect_class.value != "reversible-write"
+                or not current.definition.cleanup_required
+                or self._reversible_cleanup is None
+            ):
+                raise GeneralAttackActionPermitError(
+                    "General attack batch write lacks a reversible cleanup authority"
+                )
+            cleanup_claim = self._bind_reversible_cleanup(
+                current.intent,
+                current.prepared,
+                current.proposal,
+                current.campaign,
+                current.definition,
+                current.inputs,
+                current.evaluated_at,
+            )
+            if cleanup_request != cleanup_claim.request:
+                raise GeneralAttackActionPermitError(
+                    "General attack batch cleanup request differs from the rebuilt action"
+                )
+            coordinator = GraphApprovedActionBatchDispatcher(
+                None,
+                journal,
+                reversible_authority=self._approved_reversible_authority(
+                    current.inputs.envelope,
+                    current.campaign,
+                    self._required_approval_input_authority(),
+                    cleanup_claim.input_authority,
+                ),
+            )
+
+            async def consume_reversible(
+                permit: ActionPermit,
+                receipt: ActionApprovalConsumptionReceipt,
+                reservation: ActionCleanupReservation,
+            ) -> ActionApprovalBatchCompletion:
+                return await dispatch(
+                    permit,
+                    receipt,
+                    current.prepared,
+                    current.proposal,
+                    reservation,
+                )
+
+            dispatched = await coordinator.dispatch_reversible_item_once(
+                canonical_batch,
+                ordinal,
+                consume_reversible,
+            )
+        else:
+            if cleanup_request is not None:
+                raise GeneralAttackActionPermitError(
+                    "General attack no-write batch item contains a cleanup request"
+                )
+            coordinator = GraphApprovedActionBatchDispatcher(
+                self._approved_authority(
+                    current.inputs.envelope,
+                    current.campaign,
+                    self._required_approval_input_authority(),
+                ),
+                journal,
+            )
+
+            async def consume_no_write(
+                permit: ActionPermit,
+                receipt: ActionApprovalConsumptionReceipt,
+            ) -> ActionApprovalBatchCompletion:
+                return await dispatch(
+                    permit,
+                    receipt,
+                    current.prepared,
+                    current.proposal,
+                    None,
+                )
+
+            dispatched = await coordinator.dispatch_item_once(
+                canonical_batch,
+                ordinal,
+                consume_no_write,
+            )
+        return GeneralAttackActionApprovalBatchResult(
+            intent=current.intent,
+            prepared=current.prepared,
+            proposal=current.proposal,
+            dispatch=dispatched,
+        )
+
     def _requires_action_approval(
         self,
         definition: CapabilityDefinition,
@@ -484,14 +710,10 @@ class GeneralAttackActionPermitGate:
             CapabilitySideEffectClass.READ_ONLY,
         }
         if no_write and definition.cleanup_required:
-            raise GeneralAttackActionPermitError(
-                "no-write action cannot require a cleanup hold"
-            )
+            raise GeneralAttackActionPermitError("no-write action cannot require a cleanup hold")
         required = risk is ToolRiskTier.T2 or definition.approval_required
         if required and self._approval is None:
-            raise GeneralAttackActionPermitError(
-                "action requires an operator approval authority"
-            )
+            raise GeneralAttackActionPermitError("action requires an operator approval authority")
         if required and not no_write and self._reversible_cleanup is None:
             raise GeneralAttackActionPermitError(
                 "approved write action requires a cleanup-hold authority"
@@ -510,9 +732,7 @@ class GeneralAttackActionPermitGate:
     ) -> GeneralAttackApprovalClaim:
         authority = self._approval
         if authority is None:
-            raise GeneralAttackActionPermitError(
-                "action requires an operator approval authority"
-            )
+            raise GeneralAttackActionPermitError("action requires an operator approval authority")
         try:
             bound = authority.bind_for_action(
                 intent=GeneralAttackCompiledIntent.model_validate(
@@ -579,9 +799,7 @@ class GeneralAttackActionPermitGate:
     def _required_approval_issuer(self) -> ActionApprovalIssuerAuthorityBinding:
         issuer = self._approval_issuer
         if issuer is None:
-            raise GeneralAttackActionPermitError(
-                "operator approval issuer is not deployment-bound"
-            )
+            raise GeneralAttackActionPermitError("operator approval issuer is not deployment-bound")
         return issuer
 
     def _bind_reversible_cleanup(
@@ -674,6 +892,16 @@ class GeneralAttackActionPermitGate:
         campaign: CampaignManifest,
         input_authority: ActionApprovalInputAuthority,
     ) -> GraphApprovedActionPermitDispatcher:
+        return GraphApprovedActionPermitDispatcher(
+            self._approved_authority(envelope, campaign, input_authority)
+        )
+
+    def _approved_authority(
+        self,
+        envelope: MissionEnvelope,
+        campaign: CampaignManifest,
+        input_authority: ActionApprovalInputAuthority,
+    ) -> GraphApprovedActionPermitAuthority:
         activation_digest = self._require_dispatcher_authority(envelope)
         store = self._permit_store
         if not callable(getattr(store, "authorize_approved_for_dispatch", None)):
@@ -693,7 +921,7 @@ class GeneralAttackActionPermitGate:
             permit_ttl=self._permit_ttl,
         )
         self._pin_dispatcher_authority(envelope, activation_digest)
-        return GraphApprovedActionPermitDispatcher(authority)
+        return authority
 
     def _approved_reversible_dispatcher(
         self,
@@ -702,11 +930,25 @@ class GeneralAttackActionPermitGate:
         approval_input_authority: ActionApprovalInputAuthority,
         reversible_input_authority: ReversibleActionPermitInputAuthority,
     ) -> GraphApprovedReversibleActionPermitDispatcher:
+        return GraphApprovedReversibleActionPermitDispatcher(
+            self._approved_reversible_authority(
+                envelope,
+                campaign,
+                approval_input_authority,
+                reversible_input_authority,
+            )
+        )
+
+    def _approved_reversible_authority(
+        self,
+        envelope: MissionEnvelope,
+        campaign: CampaignManifest,
+        approval_input_authority: ActionApprovalInputAuthority,
+        reversible_input_authority: ReversibleActionPermitInputAuthority,
+    ) -> GraphApprovedReversibleActionPermitAuthority:
         activation_digest = self._require_dispatcher_authority(envelope)
         store = self._permit_store
-        if not callable(
-            getattr(store, "authorize_approved_reversible_for_dispatch", None)
-        ):
+        if not callable(getattr(store, "authorize_approved_reversible_for_dispatch", None)):
             raise GeneralAttackActionPermitError(
                 "GRAPH Permit store lacks atomic approval plus cleanup holds"
             )
@@ -726,7 +968,7 @@ class GeneralAttackActionPermitGate:
             permit_ttl=self._permit_ttl,
         )
         self._pin_dispatcher_authority(envelope, activation_digest)
-        return GraphApprovedReversibleActionPermitDispatcher(authority)
+        return authority
 
     def _current_activation_binding(
         self,

@@ -68,6 +68,7 @@ from pajin.capabilities import (
     verify_web_ai_hybrid_campaign_exit_gate,
 )
 from pajin.control_plane.capability_deployment import (
+    CAPABILITY_GRAPH_BATCH_DEPLOYMENT_API_VERSION,
     CapabilityGraphCompilerIdentity,
     CapabilityGraphDeploymentError,
     CapabilityGraphDeploymentRuntime,
@@ -86,6 +87,10 @@ from pajin.domain.models import (
     ToolRiskTier,
 )
 from pajin.graph import (
+    ActionApprovalBatchCancellation,
+    ActionApprovalBatchEnvelope,
+    ActionApprovalBatchError,
+    ActionApprovalBatchItemState,
     ActionApprovalEnvelope,
     ActionApprovalIssuerAuthorityBinding,
     ActionApprovalReleaseRef,
@@ -1517,6 +1522,82 @@ def _capability_worker_fixture(
     return runtime, job_input, deployment_path, content
 
 
+def _capability_worker_batch_fixture(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    *,
+    include_cancellation: bool = False,
+) -> tuple[CapabilityGraphDeploymentRuntime, dict[str, object]]:
+    base_runtime, job_input, _, _ = _capability_worker_fixture(tmp_path, campaign)
+    first_approval = base_runtime.deployment.action_approvals[0]
+    second_proposal_raw = first_approval.proposal.model_dump(mode="json", by_alias=True)
+    second_proposal_raw.pop("proposalId")
+    second_proposal_raw.pop("proposalDigest")
+    second_proposal_raw["requestId"] = "capability-graph-batch-second"
+    second_proposal = ActionProposal.model_validate(second_proposal_raw)
+    second_approval_raw = first_approval.model_dump(mode="json", by_alias=True)
+    second_approval_raw.pop("approvalId")
+    second_approval_raw.pop("approvalDigest")
+    second_approval_raw["proposal"] = second_proposal.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    second_approval_raw["expectedActionPermitId"] = action_permit_attempt_id(
+        base_runtime.deployment.mission_envelope,
+        second_proposal,
+        first_approval.graph_decision,
+    )
+    second_approval = ActionApprovalEnvelope.model_validate(second_approval_raw)
+    batch = ActionApprovalBatchEnvelope(
+        maxActions=2,
+        issuer=first_approval.issuer,
+        campaignId=first_approval.campaign_id,
+        campaignDigest=first_approval.campaign_digest,
+        runId=first_approval.run_id,
+        approvals=(first_approval, second_approval),
+        approvedAt=first_approval.approved_at,
+        notBefore=first_approval.not_before,
+        expiresAt=first_approval.expires_at,
+    )
+    deployment_raw = base_runtime.deployment.model_dump(mode="json", by_alias=True)
+    deployment_raw["apiVersion"] = CAPABILITY_GRAPH_BATCH_DEPLOYMENT_API_VERSION
+    deployment_raw["actionApprovals"] = [
+        first_approval.model_dump(mode="json", by_alias=True),
+        second_approval.model_dump(mode="json", by_alias=True),
+    ]
+    deployment_raw["actionApprovalBatches"] = [batch.model_dump(mode="json", by_alias=True)]
+    if include_cancellation:
+        cancellation = ActionApprovalBatchCancellation(
+            batchId=batch.batch_id,
+            batchDigest=batch.batch_digest,
+            itemOrdinals=(2,),
+            reasonDigest=sha256(b"operator-cancelled-second-item").hexdigest(),
+            cancelledAt=NOW,
+        )
+        deployment_raw["actionApprovalBatchCancellations"] = [
+            cancellation.model_dump(mode="json", by_alias=True)
+        ]
+    deployment_raw["actionApprovalBatchJournal"] = str(
+        (tmp_path / "approval-batch" / "journal.sqlite3").resolve()
+    )
+    deployment = CapabilityGraphWorkerDeployment.model_validate(deployment_raw)
+    content = deployment.model_dump_json(by_alias=True).encode()
+    deployment_path = tmp_path / "capability-graph-batch-deployment.json"
+    deployment_path.write_bytes(content)
+    runtime = load_capability_graph_deployment(
+        deployment_path,
+        expected_sha256=sha256(content).hexdigest(),
+        clock=lambda: NOW,
+    )
+    batch_job = dict(job_input)
+    batch_job["profile"] = "capability-graph-batch-v1"
+    batch_job.pop("approval")
+    batch_job["batchId"] = batch.batch_id
+    batch_job["batchDigest"] = batch.batch_digest
+    batch_job["itemOrdinal"] = 1
+    return runtime, batch_job
+
+
 def _capability_worker_job(job_input: dict[str, object]) -> JobView:
     return JobView(
         job_id="job_" + "1" * 32,
@@ -1615,6 +1696,109 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
 
 
 @pytest.mark.asyncio
+async def test_worker_batch_profile_dispatches_pinned_item_once_and_seals_completion(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, job_input = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+
+    first = await executor.execute(job)
+    retry = await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    assert first.result["executionProfile"] == "capability-graph-batch-v1"
+    assert first.result["dispatched"] is True
+    assert retry.result["dispatched"] is False
+    assert retry.result["permitId"] == first.result["permitId"]
+    assert retry.result["approvalReceiptId"] == first.result["approvalReceiptId"]
+    assert worker.calls == 1
+    assert runtime.approval_batch_journal is not None
+    batch = runtime.deployment.action_approval_batches[0]
+    publication = runtime.approval_batch_journal.publication(batch.batch_id)
+    assert publication.items[0].state is ActionApprovalBatchItemState.TERMINAL_SUCCEEDED
+    assert publication.items[0].completion is not None
+    assert publication.items[0].completion.evidence_digest == first.result["gatewayOutcomeDigest"]
+    assert publication.items[1].state is ActionApprovalBatchItemState.PENDING
+
+
+@pytest.mark.asyncio
+async def test_worker_batch_profile_rejects_cross_item_substitution_before_permit(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, job_input = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    job_input = dict(job_input)
+    job_input["itemOrdinal"] = 2
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="deployment-pinned item"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+def test_worker_batch_deployment_delivers_only_pinned_pending_cancellation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, _ = _capability_worker_batch_fixture(
+        tmp_path,
+        sample_campaign,
+        include_cancellation=True,
+    )
+    cancellation = runtime.deployment.action_approval_batch_cancellations[0]
+
+    publication = runtime.deliver_batch_cancellation(cancellation.cancellation_id)
+
+    assert publication.items[0].state is ActionApprovalBatchItemState.PENDING
+    assert publication.items[1].state is ActionApprovalBatchItemState.CANCELLED_BEFORE_DISPATCH
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_worker_batch_profile_refuses_unknown_item_redispatch(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+) -> None:
+    runtime, job_input = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    batch = runtime.deployment.action_approval_batches[0]
+    coordinator = runtime.approval_batch_dispatcher
+    assert coordinator is not None
+
+    async def interrupted_after_claim(*_args):
+        raise RuntimeError("transport outcome unknown")
+
+    with pytest.raises(ActionApprovalBatchError, match="outcome is unknown"):
+        await coordinator.dispatch_item_once(batch, 1, interrupted_after_claim)
+
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+    with pytest.raises(PermanentExecutionError, match="manual review"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.approval_batch_journal is not None
+    publication = runtime.approval_batch_journal.publication(batch.batch_id)
+    assert publication.manual_review_required is True
+
+
+@pytest.mark.asyncio
 async def test_worker_deployment_rejects_t2_without_pinned_approval(
     tmp_path: Path,
     sample_campaign: CampaignManifest,
@@ -1677,9 +1861,7 @@ def test_worker_deployment_rejects_cross_release_approval_binding(
     foreign_statement = next(
         bundle["release"]["statement"]
         for bundle in raw["releases"]
-        if bundle["release"]["statement"]["capability"]["capability"][
-            "capabilityId"
-        ]
+        if bundle["release"]["statement"]["capability"]["capability"]["capabilityId"]
         != approved_capability
     )
     foreign_ref = {
@@ -1720,9 +1902,7 @@ def test_worker_deployment_plain_path_rejects_write_or_cleanup_policy(
     unsafe_definition = definition.model_copy(update=definition_update)
 
     with pytest.raises(PermanentExecutionError, match="cleanup-aware"):
-        CampaignJobExecutor._require_capability_graph_definition_policy(
-            unsafe_definition
-        )
+        CampaignJobExecutor._require_capability_graph_definition_policy(unsafe_definition)
 
 
 @pytest.mark.asyncio

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `APPROVAL-001C` bounded batch·async approval — C1/C2 direct-call 최소 수직 슬라이스 구현·통합 검증·로컬 커밋 완료, C3 opt-in runtime 연결 전 원격 반영 승인 대기
+- 현재 우선순위: `APPROVAL-001C3` opt-in batch runtime·journal retention — General Attack/Control Plane 연결과 local backup/restore 구현 완료, 최종 통합 검증·로컬 커밋 승인 체크포인트
 
 ## 제품 목표
 
@@ -660,7 +660,10 @@ coordinator는 partial/unknown 상태와 manual reconciliation만 기록하며 r
 `APPROVAL-001C2`는 기존 APPROVAL-001B combined authority를 항목별로 재사용해 reversible-write approval,
 ActionPermit, receipt, exact cleanup reservation을 원자 소비한다. journal은 reservation을 실행 권위로
 재해석하지 않고, deployment-authenticated restored-state evidence가 exact reservation과 결박돼야 terminal을
-허용한다. 다음 C3는 이 direct-call primitive를 opt-in runtime workflow와 retention에 연결한다.
+허용한다. `APPROVAL-001C3`는 별도 General Attack batch 메서드와 Control Plane
+`capability-graph-batch-v1`/deployment v1alpha2에만 이 primitive를 연결한다. Control Plane completion은
+Gateway Run seal을 먼저 검증하며, journal은 content-addressed local backup·새 경로 restore·terminal-only
+retention 적격성만 제공하고 삭제·remote authenticity·cross-host redispatch authority는 만들지 않는다.
 
 ### Phase 7 — 제한된 Supervisor 활성화
 
@@ -672,13 +675,13 @@ ActionPermit, receipt, exact cleanup reservation을 원자 소비한다. journal
   - [x] `PERMIT-004B` bounded one-shot Cleanup Permit와 aggregate Campaign budget
     - [x] `PERMIT-004B1` pre-reserved cleanup budget와 GRAPH one-shot CleanupPermit
     - [x] `PERMIT-004B2` authenticated write outcome·Handler plan·cleanup dispatch·restored state
-- [ ] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
+- [x] `APPROVAL-001` T2 ApprovalEnvelope와 Batch·Async 승인
   - [x] `APPROVAL-001A` single T2 no-write ApprovalEnvelope·Permit·receipt 원자 소비
   - [x] `APPROVAL-001B` T2 write approval·cleanup hold 원자 결합
-  - [ ] `APPROVAL-001C` bounded batch·async claim·partial/unknown outcome 조정
+  - [x] `APPROVAL-001C` bounded batch·async claim·partial/unknown outcome 조정
     - [x] `APPROVAL-001C1` 2~8개 no-write approval host-local async coordinator·pending cancellation·manual reconciliation
     - [x] `APPROVAL-001C2` reversible-write batch item·cleanup reservation·restored-state 결합
-    - [ ] `APPROVAL-001C3` General Attack/Control Plane opt-in workflow·journal retention
+    - [x] `APPROVAL-001C3` General Attack/Control Plane opt-in workflow·journal retention
 - [ ] `SUP-007` opt-in T0/T1 실행
 - [ ] T2는 사전 승인 Envelope를 요구하고 T3+는 기본 거부
 

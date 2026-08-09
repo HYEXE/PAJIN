@@ -3,10 +3,11 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## APPROVAL-001A/B/C1/C2 process-local verifier·batch journal과 미지원 실행 형태
+## APPROVAL-001C3 이후 process-local verifier·host-local journal 제한
 
-- 상태: single no-write, bounded General Attack reversible-write와 2~8개 no-write/reversible async
-  direct-call coordinator는 구현됐고 cross-process deployment pin과 기본 runtime 연결은 닫힘
+- 상태: single no-write, bounded General Attack reversible-write, 2~8개 no-write/reversible async
+  coordinator와 명시적 General Attack/Control Plane opt-in runtime은 구현됐고 cross-process verifier pin,
+  Control Plane write와 cross-host coordination은 닫힘
 - 현재 보장: deployment-pinned full Capability policy registry와 issuer input authority를 approval claim
   전후 검증하고, path-specific writer 아래 approval·ActionPermit·non-reusable receipt를 schema v4 SQLite
   transaction 하나에서 원자적으로 소비한다. General Attack T2 reversible-write는 기존 cleanup input
@@ -17,23 +18,25 @@
   subset cancellation과 authenticated terminal/manual reconciliation만 허용하며 모든 상태의 redispatch
   authority는 false다. C2는 reversible 항목마다 기존 combined approval·cleanup authority를 재사용해 exact
   cleanup reservation을 callback 전에 결박하고 authenticated restored-state evidence 없이는 terminal을
-  허용하지 않는다.
+  허용하지 않는다. C3 General Attack은 별도 batch 메서드에서 current approval·cleanup request를 재구성하고,
+  Control Plane은 deployment v1alpha2와 `capability-graph-batch-v1`에서만 no-write batch를 실행한다. Control
+  Plane completion은 sealed Gateway audit와 outcome digest를 다시 검증한다. journal local backup/restore는
+  전체 logical state를 재검증하며 pending·unknown은 retention deletion 적격으로 판정하지 않는다.
 - 제한: policy registry, writer token과 verifier 구현은 process-local deployment TCB다. 동일 DB를 새
   `SQLiteGraphStore`로 열 때 verifier code 자체는 DB에 영속 pin되지 않으므로 trusted deployment가 같은
   verifier와 complete policy inventory를 다시 주입해야 한다. 공격자가 재시작 runtime code를 선택할 수 있는
   환경에 대한 durable verifier identity·anti-rollback 보장은 없다. production inventory에는 실제
   reversible-write Capability가 없고 `capability-graph-v1`, Common Engine, legacy write는 cleanup authority
-  composition이 없어 닫혀 있다. C1/C2 journal은 Graph DB와 하나의 transaction이 아니므로 Graph claim 전후
-  crash는 보수적으로 manual review가 필요하다. journal verifier·retention·backup과 cross-host fencing도
-  미지원이다. reversible-write batch는 direct-call primitive만 제공하며 General Attack/Control Plane 기본
-  batch workflow와 T3+는 계속 닫혀 있다.
+  composition이 없어 닫혀 있다. journal은 Graph DB와 하나의 transaction이 아니므로 Graph claim 전후
+  crash는 보수적으로 manual review가 필요하다. backup manifest는 local integrity wire이며 서명·암호화된
+  remote retention이나 anti-rollback 저장소가 아니다. journal 삭제는 구현하지 않았고 cross-host fencing,
+  기본 batch workflow와 T3+도 계속 닫혀 있다.
 - 영향: 신뢰된 deployment composition 밖에서 DB만 재사용해 승인 issuer를 인증했다고 주장할 수 없다.
   지원되지 않는 실행 형태는 Permit·Worker 전에 fail closed하고 unknown batch item은 자동 재호출할 수 없다.
-- 해소 조건: `APPROVAL-001C3`가 opt-in runtime·journal retention을 정의한다. 다른 runtime에서 write를 열려면
-  current signed Definition, code-owned cleanup mapping, authenticated outcome, CleanupPermit과 restored-state
-  verifier를 같은 수준으로 composition해야 한다. cross-process verifier pin이
-  필요하면 signed deployment inventory 또는 host-attested activation과 anti-rollback을 별도 계약·ADR로
-  구현한다.
+- 해소 조건: Control Plane 등 다른 runtime에서 write를 열려면 current signed Definition, code-owned cleanup
+  mapping, authenticated outcome, CleanupPermit과 restored-state verifier를 같은 수준으로 composition해야
+  한다. cross-process verifier pin이나 remote retention이 필요하면 signed deployment inventory 또는
+  host-attested activation, encryption과 anti-rollback repository를 별도 계약·ADR로 구현한다.
 
 ## PERMIT-004B2 production cleanup composition과 hold recovery 경계
 

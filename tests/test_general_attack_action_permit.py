@@ -24,6 +24,8 @@ from pajin.domain.models import (
     campaign_manifest_digest,
 )
 from pajin.graph import (
+    ActionApprovalBatchCompletion,
+    ActionApprovalBatchEnvelope,
     ActionApprovalEnvelope,
     ActionApprovalIssuerAuthorityBinding,
     ActionApprovalReleaseRef,
@@ -31,6 +33,7 @@ from pajin.graph import (
     ActionBudgetReservation,
     ActionPermit,
     ActionPermitStaleDecision,
+    ActionProposal,
     GraphAdmissionAuthority,
     GraphContentOrigin,
     GraphDecision,
@@ -40,6 +43,7 @@ from pajin.graph import (
     GraphProposalKind,
     GraphProposalLineage,
     MissionEnvelope,
+    SQLiteActionApprovalBatchJournal,
     SQLiteGraphStore,
     SurfaceProposal,
     TrustedGraphLineageRegistry,
@@ -63,6 +67,12 @@ from tests.test_existing_capability_rollout import (
 )
 from tests.test_general_attack_action_proposal import NOW as SOURCE_NOW
 from tests.test_general_attack_action_proposal import _proposal
+from tests.test_graph_action_approval_batch import (
+    _BatchInputAuthority,
+    _CancellationAuthority,
+    _completion,
+    _CompletionAuthority,
+)
 
 _CAPABILITY_ID = "pajin.ai.kisa.indirect-tool-hijacking"
 _ARGUMENTS = {"simulation": {"unauthorizedToolCall": True}}
@@ -496,6 +506,112 @@ async def test_consumed_approval_exact_retry_recovers_after_approval_expiry(
     assert retry.dispatch.permit == first.dispatch.permit
     assert retry.approval_receipt == first.approval_receipt
     assert callback_calls == 1
+
+
+@pytest.mark.asyncio
+async def test_general_attack_opt_in_batch_dispatches_exact_item_once(
+    permit_context: _PermitContext,
+    tmp_path: Path,
+) -> None:
+    inputs = _StaticPermitInputAuthority(_inputs(permit_context))
+    gate = _gate(permit_context, inputs)
+    current = gate._prepare_permit_action(
+        permit_context.intent,
+        permit_context.source_proposal,
+        permit_context.campaign,
+        permit_context.hypotheses,
+        permit_context.plan,
+        permit_context.task.task_digest,
+        permit_context.definition.reference(),
+        permit_context.definitions,
+        permit_context.code_backed,
+        permit_context.authorities,
+    )
+    assert current.approval is not None
+    first_approval = current.approval.envelope
+    second_proposal_raw = first_approval.proposal.model_dump(mode="json", by_alias=True)
+    second_proposal_raw.pop("proposalId")
+    second_proposal_raw.pop("proposalDigest")
+    second_proposal_raw["requestId"] = "general-attack-batch-second"
+    second_proposal = ActionProposal.model_validate(second_proposal_raw)
+    second_approval_raw = first_approval.model_dump(mode="json", by_alias=True)
+    second_approval_raw.pop("approvalId")
+    second_approval_raw.pop("approvalDigest")
+    second_approval_raw["proposal"] = second_proposal.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    second_approval_raw["expectedActionPermitId"] = action_permit_attempt_id(
+        permit_context.envelope,
+        second_proposal,
+        permit_context.decision,
+    )
+    second_approval = ActionApprovalEnvelope.model_validate(second_approval_raw)
+    batch = ActionApprovalBatchEnvelope(
+        maxActions=2,
+        issuer=first_approval.issuer,
+        campaignId=first_approval.campaign_id,
+        campaignDigest=first_approval.campaign_digest,
+        runId=first_approval.run_id,
+        approvals=(first_approval, second_approval),
+        approvedAt=first_approval.approved_at,
+        notBefore=first_approval.not_before,
+        expiresAt=first_approval.expires_at,
+    )
+    journal = SQLiteActionApprovalBatchJournal(
+        tmp_path / "general-attack-batch.sqlite3",
+        input_authority=_BatchInputAuthority(),
+        completion_authority=_CompletionAuthority(),
+        cancellation_authority=_CancellationAuthority(),
+        clock=lambda: _GATE_NOW,
+    )
+    calls = 0
+
+    async def consume(
+        permit: ActionPermit,
+        receipt,
+        prepared,
+        proposal,
+        cleanup_reservation,
+    ) -> ActionApprovalBatchCompletion:
+        nonlocal calls
+        calls += 1
+        assert prepared == current.prepared
+        assert proposal == current.proposal
+        assert cleanup_reservation is None
+        return _completion(batch, 1, permit, receipt)
+
+    async def dispatch(ordinal: int):
+        return await gate.dispatch_approved_batch_item_once(
+            permit_context.intent,
+            permit_context.source_proposal,
+            permit_context.campaign,
+            permit_context.hypotheses,
+            permit_context.plan,
+            permit_context.task.task_digest,
+            permit_context.definition.reference(),
+            permit_context.definitions,
+            permit_context.code_backed,
+            permit_context.authorities,
+            batch,
+            ordinal,
+            journal,
+            consume,
+        )
+
+    first = await dispatch(1)
+    retry = await dispatch(1)
+
+    assert first.dispatch.dispatched is True
+    assert retry.dispatch.dispatched is False
+    assert calls == 1
+    assert len(permit_context.graph.permit_store.permits()) == 1
+    with pytest.raises(
+        GeneralAttackActionPermitError,
+        match="batch approval differs",
+    ):
+        await dispatch(2)
+    assert calls == 1
 
 
 @pytest.mark.asyncio

@@ -6,8 +6,9 @@ import asyncio
 import os
 import sqlite3
 import stat
+import tempfile
 from collections.abc import Awaitable, Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from enum import StrEnum
 from hashlib import sha256
@@ -33,6 +34,7 @@ from pajin.graph.approved_cleanup import (
 from pajin.graph.authority import ActionPermit
 from pajin.graph.cleanup import ActionCleanupReservation, ActionCleanupReservationRequest
 from pajin.graph.models import canonical_graph_json, graph_digest
+from pajin.runtime.safe_files import parse_strict_json_bytes, read_bounded_regular_bytes
 
 ACTION_APPROVAL_BATCH_API_VERSION: Literal["pajin.dev/action-approval-batch/v1alpha1"] = (
     "pajin.dev/action-approval-batch/v1alpha1"
@@ -43,9 +45,18 @@ ACTION_APPROVAL_BATCH_COMPLETION_API_VERSION: Literal[
 ACTION_APPROVAL_BATCH_CANCELLATION_API_VERSION: Literal[
     "pajin.dev/action-approval-batch-cancellation/v1alpha1"
 ] = "pajin.dev/action-approval-batch-cancellation/v1alpha1"
+ACTION_APPROVAL_BATCH_JOURNAL_BACKUP_MANIFEST_API_VERSION: Literal[
+    "pajin.dev/action-approval-batch-journal-backup-manifest/v1alpha1"
+] = "pajin.dev/action-approval-batch-journal-backup-manifest/v1alpha1"
+ACTION_APPROVAL_BATCH_JOURNAL_RETENTION_API_VERSION: Literal[
+    "pajin.dev/action-approval-batch-journal-retention/v1alpha1"
+] = "pajin.dev/action-approval-batch-journal-retention/v1alpha1"
 
 _MAX_BATCH_ACTIONS = 8
 _MAX_BATCH_BYTES = 4 * 1024 * 1024
+_MAX_JOURNAL_BACKUP_BYTES = 64 * 1024 * 1024
+_MAX_JOURNAL_BACKUP_MANIFEST_BYTES = 128 * 1024
+_MAX_JOURNAL_STATE_BYTES = 32 * 1024 * 1024
 _SCHEMA_VERSION = 1
 _APPLICATION_ID = 0x50414A42
 _BUSY_TIMEOUT_MS = 5_000
@@ -521,6 +532,93 @@ class ActionApprovalBatchPublication(StrictModel):
         return self
 
 
+class ActionApprovalBatchJournalRetentionAssessment(StrictModel):
+    """Verified eligibility evidence; it never deletes a journal or grants redispatch."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/action-approval-batch-journal-retention/v1alpha1"] = Field(
+        default=ACTION_APPROVAL_BATCH_JOURNAL_RETENTION_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["ActionApprovalBatchJournalRetentionAssessment"] = (
+        "ActionApprovalBatchJournalRetentionAssessment"
+    )
+    evaluated_at: datetime = Field(alias="evaluatedAt")
+    minimum_retain_until: datetime = Field(alias="minimumRetainUntil")
+    batch_count: int = Field(alias="batchCount", ge=0)
+    terminal_batch_count: int = Field(alias="terminalBatchCount", ge=0)
+    manual_review_required: bool = Field(alias="manualReviewRequired")
+    deletion_eligible: bool = Field(alias="deletionEligible")
+    journal_state_digest: _Sha256 = Field(alias="journalStateDigest")
+    redispatch_authority: Literal[False] = Field(default=False, alias="redispatchAuthority")
+
+    @field_validator("evaluated_at", "minimum_retain_until")
+    @classmethod
+    def normalize_time(cls, value: datetime) -> datetime:
+        return _normalize_utc(value, label="Action approval batch journal retention time")
+
+    @model_validator(mode="after")
+    def bind_retention(self) -> Self:
+        if self.terminal_batch_count > self.batch_count:
+            raise ValueError("Batch journal terminal count exceeds its batch count")
+        expected = (
+            self.batch_count > 0
+            and self.terminal_batch_count == self.batch_count
+            and not self.manual_review_required
+            and self.evaluated_at >= self.minimum_retain_until
+        )
+        if self.deletion_eligible is not expected:
+            raise ValueError("Batch journal deletion eligibility differs")
+        return self
+
+
+class SQLiteActionApprovalBatchJournalBackupManifest(StrictModel):
+    """Content-addressed local backup and verified retention summary."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/action-approval-batch-journal-backup-manifest/v1alpha1"] = (
+        Field(
+            default=ACTION_APPROVAL_BATCH_JOURNAL_BACKUP_MANIFEST_API_VERSION,
+            alias="apiVersion",
+        )
+    )
+    kind: Literal["SQLiteActionApprovalBatchJournalBackupManifest"] = (
+        "SQLiteActionApprovalBatchJournalBackupManifest"
+    )
+    backup_id: str = Field(default="", alias="backupId", max_length=112)
+    schema_version: Literal[1] = Field(default=1, alias="schemaVersion")
+    schema_digest: _Sha256 = Field(default_factory=lambda: _SCHEMA_DIGEST, alias="schemaDigest")
+    created_at: datetime = Field(alias="createdAt")
+    database_sha256: _Sha256 = Field(alias="databaseSha256")
+    database_bytes: int = Field(alias="databaseBytes", ge=1, le=_MAX_JOURNAL_BACKUP_BYTES)
+    retention: ActionApprovalBatchJournalRetentionAssessment
+
+    @field_validator("created_at")
+    @classmethod
+    def normalize_created_at(cls, value: datetime) -> datetime:
+        return _normalize_utc(value, label="Action approval batch journal backup time")
+
+    @model_validator(mode="after")
+    def bind_backup(self) -> Self:
+        if self.schema_digest != _SCHEMA_DIGEST:
+            raise ValueError("Batch journal backup schema digest differs")
+        if self.retention.evaluated_at != self.created_at:
+            raise ValueError("Batch journal backup retention time differs")
+        material = self.model_dump(mode="json", by_alias=True, exclude={"backup_id"})
+        digest = graph_digest(
+            "pajin.action.approval-batch-journal-backup/v1",
+            material,
+            max_bytes=_MAX_JOURNAL_BACKUP_MANIFEST_BYTES,
+        )
+        backup_id = f"action-approval-batch-journal-backup_{digest}"
+        if self.backup_id and self.backup_id != backup_id:
+            raise ValueError("Batch journal backup ID differs")
+        object.__setattr__(self, "backup_id", backup_id)
+        return self
+
+
 class ActionApprovalBatchDispatchResult(StrictModel):
     """One dispatch attempt result without any retry authority."""
 
@@ -764,7 +862,7 @@ def _normalize_schema_sql(value: str) -> str:
     return " ".join(value.split())
 
 
-_SCHEMA_DIGEST = sha256(
+_SCHEMA_DIGEST: str = sha256(
     canonical_graph_json(
         {
             f"{kind}:{name}": _normalize_schema_sql(statement)
@@ -812,6 +910,77 @@ class SQLiteActionApprovalBatchJournal:
         self._cancellation_authority = cancellation_authority
         self._clock = clock or (lambda: datetime.now(UTC))
         _initialize(self.path)
+
+    def publications(self) -> tuple[ActionApprovalBatchPublication, ...]:
+        """Read and authenticate every batch in canonical ID order."""
+
+        try:
+            with _readonly_connection(self.path) as connection:
+                _validate_schema(connection)
+                batch_ids = tuple(
+                    _required_text(row, "batch_id")
+                    for row in connection.execute(
+                        "SELECT batch_id FROM action_approval_batches ORDER BY batch_id"
+                    ).fetchall()
+                )
+            return tuple(self.publication(batch_id) for batch_id in batch_ids)
+        except sqlite3.Error as exc:
+            raise ActionApprovalBatchError(
+                "Action approval batch journal inventory read failed"
+            ) from exc
+
+    def assess_retention(
+        self,
+        *,
+        minimum_retain_until: datetime,
+        evaluated_at: datetime | None = None,
+    ) -> ActionApprovalBatchJournalRetentionAssessment:
+        """Verify all records and report whether an external deletion may be considered."""
+
+        publications = self.publications()
+        return _retention_assessment(
+            publications,
+            minimum_retain_until=minimum_retain_until,
+            evaluated_at=evaluated_at or self._now(),
+        )
+
+    def create_backup(
+        self,
+        destination: Path,
+        *,
+        minimum_retain_until: datetime,
+        created_at: datetime | None = None,
+    ) -> SQLiteActionApprovalBatchJournalBackupManifest:
+        """Create one verified local backup without changing retention or dispatch state."""
+
+        return _create_journal_backup(
+            self,
+            destination,
+            minimum_retain_until=minimum_retain_until,
+            created_at=created_at or self._now(),
+        )
+
+    @classmethod
+    def restore_backup(
+        cls,
+        backup: Path,
+        *,
+        destination: Path,
+        input_authority: ActionApprovalBatchInputAuthority,
+        completion_authority: ActionApprovalBatchCompletionAuthority,
+        cancellation_authority: ActionApprovalBatchCancellationAuthority,
+        clock: Callable[[], datetime] | None = None,
+    ) -> SQLiteActionApprovalBatchJournal:
+        """Verify one backup and restore only to a previously absent journal path."""
+
+        return _restore_journal_backup(
+            backup,
+            destination=destination,
+            input_authority=input_authority,
+            completion_authority=completion_authority,
+            cancellation_authority=cancellation_authority,
+            clock=clock,
+        )
 
     def register(self, batch: ActionApprovalBatchEnvelope) -> ActionApprovalBatchPublication:
         """Persist one exact batch and all pending items before any claim."""
@@ -2068,6 +2237,382 @@ def _canonical[ModelT: StrictModel](
         return model.model_validate(value.model_dump(mode="json", by_alias=True))
     except (AttributeError, TypeError, ValidationError, ValueError) as exc:
         raise ActionApprovalBatchError(f"Action approval {label} is not canonical") from exc
+
+
+def action_approval_batch_journal_backup_manifest_path(backup: Path) -> Path:
+    """Return the fixed sidecar path for one batch journal backup."""
+
+    backup_path = Path(os.path.abspath(backup))
+    return Path(f"{backup_path}.manifest.json")
+
+
+def _retention_assessment(
+    publications: tuple[ActionApprovalBatchPublication, ...],
+    *,
+    minimum_retain_until: datetime,
+    evaluated_at: datetime,
+) -> ActionApprovalBatchJournalRetentionAssessment:
+    retain_until = _normalize_utc(
+        minimum_retain_until,
+        label="Action approval batch journal minimum retention time",
+    )
+    evaluated = _normalize_utc(
+        evaluated_at,
+        label="Action approval batch journal retention evaluation time",
+    )
+    terminal_states = {
+        ActionApprovalBatchState.TERMINAL_SUCCEEDED,
+        ActionApprovalBatchState.TERMINAL_PARTIAL,
+        ActionApprovalBatchState.CANCELLED,
+    }
+    terminal_count = sum(item.state in terminal_states for item in publications)
+    manual_review_required = any(item.manual_review_required for item in publications)
+    state_digest = graph_digest(
+        "pajin.action.approval-batch-journal-state/v1",
+        tuple(item.model_dump(mode="json", by_alias=True) for item in publications),
+        max_bytes=_MAX_JOURNAL_STATE_BYTES,
+    )
+    deletion_eligible = (
+        bool(publications)
+        and terminal_count == len(publications)
+        and not manual_review_required
+        and evaluated >= retain_until
+    )
+    return ActionApprovalBatchJournalRetentionAssessment(
+        evaluatedAt=evaluated,
+        minimumRetainUntil=retain_until,
+        batchCount=len(publications),
+        terminalBatchCount=terminal_count,
+        manualReviewRequired=manual_review_required,
+        deletionEligible=deletion_eligible,
+        journalStateDigest=state_digest,
+    )
+
+
+def _create_journal_backup(
+    journal: SQLiteActionApprovalBatchJournal,
+    destination: Path,
+    *,
+    minimum_retain_until: datetime,
+    created_at: datetime,
+) -> SQLiteActionApprovalBatchJournalBackupManifest:
+    created = _normalize_utc(
+        created_at,
+        label="Action approval batch journal backup time",
+    )
+    retain_until = _normalize_utc(
+        minimum_retain_until,
+        label="Action approval batch journal minimum retention time",
+    )
+    if retain_until < created:
+        raise ActionApprovalBatchError(
+            "Action approval batch journal retention ends before backup creation"
+        )
+    backup_path = Path(os.path.abspath(destination))
+    manifest_path = action_approval_batch_journal_backup_manifest_path(backup_path)
+    if journal.path in {backup_path, manifest_path}:
+        raise ActionApprovalBatchError(
+            "Action approval batch journal backup overlaps the live journal"
+        )
+    _prepare_private_parent(backup_path.parent)
+    _require_absent_leaf(backup_path, label="Action approval batch journal backup")
+    _require_absent_leaf(
+        manifest_path,
+        label="Action approval batch journal backup manifest",
+    )
+    temporary_backup = _private_temporary_path(backup_path)
+    temporary_manifest: Path | None = None
+    backup_published = False
+    try:
+        _copy_journal_database(journal.path, temporary_backup)
+        verified = SQLiteActionApprovalBatchJournal(
+            temporary_backup,
+            input_authority=journal._input_authority,
+            completion_authority=journal._completion_authority,
+            cancellation_authority=journal._cancellation_authority,
+            clock=journal._clock,
+        )
+        publications = verified.publications()
+        retention = _retention_assessment(
+            publications,
+            minimum_retain_until=retain_until,
+            evaluated_at=created,
+        )
+        database = read_bounded_regular_bytes(
+            temporary_backup,
+            max_bytes=_MAX_JOURNAL_BACKUP_BYTES,
+            label="Action approval batch journal backup database",
+            require_single_link=True,
+        )
+        manifest = SQLiteActionApprovalBatchJournalBackupManifest(
+            createdAt=created,
+            databaseSha256=sha256(database).hexdigest(),
+            databaseBytes=len(database),
+            retention=retention,
+        )
+        temporary_manifest = _write_private_temporary(
+            manifest_path,
+            _journal_backup_manifest_bytes(manifest),
+        )
+        _publish_exclusive(
+            temporary_backup,
+            backup_path,
+            label="Action approval batch journal backup",
+        )
+        backup_published = True
+        _publish_exclusive(
+            temporary_manifest,
+            manifest_path,
+            label="Action approval batch journal backup manifest",
+        )
+        temporary_manifest = None
+        return manifest
+    except (
+        ActionApprovalBatchError,
+        OSError,
+        sqlite3.Error,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        if backup_published:
+            with suppress(OSError):
+                backup_path.unlink()
+                _fsync_directory(backup_path.parent)
+        if isinstance(exc, ActionApprovalBatchError):
+            raise
+        raise ActionApprovalBatchError(
+            "Action approval batch journal backup creation failed"
+        ) from exc
+    finally:
+        with suppress(FileNotFoundError):
+            temporary_backup.unlink()
+        if temporary_manifest is not None:
+            with suppress(FileNotFoundError):
+                temporary_manifest.unlink()
+
+
+def _restore_journal_backup(
+    backup: Path,
+    *,
+    destination: Path,
+    input_authority: ActionApprovalBatchInputAuthority,
+    completion_authority: ActionApprovalBatchCompletionAuthority,
+    cancellation_authority: ActionApprovalBatchCancellationAuthority,
+    clock: Callable[[], datetime] | None,
+) -> SQLiteActionApprovalBatchJournal:
+    backup_path = Path(os.path.abspath(backup))
+    manifest_path = action_approval_batch_journal_backup_manifest_path(backup_path)
+    destination_path = Path(os.path.abspath(destination))
+    if destination_path in {backup_path, manifest_path}:
+        raise ActionApprovalBatchError("Action approval batch journal restore overlaps its backup")
+    _prepare_private_parent(destination_path.parent)
+    _require_absent_leaf(
+        destination_path,
+        label="Action approval batch journal restore destination",
+    )
+    temporary = _private_temporary_path(destination_path)
+    published = False
+    selected_clock = clock or (lambda: datetime.now(UTC))
+    try:
+        manifest_raw = read_bounded_regular_bytes(
+            manifest_path,
+            max_bytes=_MAX_JOURNAL_BACKUP_MANIFEST_BYTES,
+            label="Action approval batch journal backup manifest",
+            require_single_link=True,
+        )
+        manifest = _parse_journal_backup_manifest(manifest_raw)
+        if manifest_raw != _journal_backup_manifest_bytes(manifest):
+            raise ActionApprovalBatchError(
+                "Action approval batch journal backup manifest is not canonical bytes"
+            )
+        database = read_bounded_regular_bytes(
+            backup_path,
+            max_bytes=_MAX_JOURNAL_BACKUP_BYTES,
+            label="Action approval batch journal backup database",
+            require_single_link=True,
+        )
+        if (
+            len(database) != manifest.database_bytes
+            or sha256(database).hexdigest() != manifest.database_sha256
+        ):
+            raise ActionApprovalBatchError(
+                "Action approval batch journal backup database digest differs"
+            )
+        _write_existing_private_file(temporary, database)
+        verified = SQLiteActionApprovalBatchJournal(
+            temporary,
+            input_authority=input_authority,
+            completion_authority=completion_authority,
+            cancellation_authority=cancellation_authority,
+            clock=selected_clock,
+        )
+        observed = _retention_assessment(
+            verified.publications(),
+            minimum_retain_until=manifest.retention.minimum_retain_until,
+            evaluated_at=manifest.created_at,
+        )
+        if observed != manifest.retention:
+            raise ActionApprovalBatchError(
+                "Action approval batch journal backup logical state differs"
+            )
+        _publish_exclusive(
+            temporary,
+            destination_path,
+            label="Action approval batch journal restore destination",
+        )
+        published = True
+        return SQLiteActionApprovalBatchJournal(
+            destination_path,
+            input_authority=input_authority,
+            completion_authority=completion_authority,
+            cancellation_authority=cancellation_authority,
+            clock=selected_clock,
+        )
+    except (
+        ActionApprovalBatchError,
+        OSError,
+        sqlite3.Error,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        if published:
+            with suppress(OSError):
+                destination_path.unlink()
+                _fsync_directory(destination_path.parent)
+        if isinstance(exc, ActionApprovalBatchError):
+            raise
+        raise ActionApprovalBatchError("Action approval batch journal restore failed") from exc
+    finally:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+
+
+def _parse_journal_backup_manifest(
+    raw: bytes,
+) -> SQLiteActionApprovalBatchJournalBackupManifest:
+    try:
+        parsed = parse_strict_json_bytes(
+            raw,
+            label="Action approval batch journal backup manifest",
+            max_bytes=_MAX_JOURNAL_BACKUP_MANIFEST_BYTES,
+            max_depth=16,
+            max_nodes=128,
+        )
+        return SQLiteActionApprovalBatchJournalBackupManifest.model_validate(parsed)
+    except (TypeError, ValidationError, ValueError) as exc:
+        raise ActionApprovalBatchError(
+            "Action approval batch journal backup manifest is invalid"
+        ) from exc
+
+
+def _journal_backup_manifest_bytes(
+    manifest: SQLiteActionApprovalBatchJournalBackupManifest,
+) -> bytes:
+    return (
+        canonical_graph_json(
+            manifest.model_dump(mode="json", by_alias=True),
+            label="SQLiteActionApprovalBatchJournalBackupManifest",
+            max_bytes=_MAX_JOURNAL_BACKUP_MANIFEST_BYTES,
+        )
+        + b"\n"
+    )
+
+
+def _copy_journal_database(source: Path, destination: Path) -> None:
+    destination_connection: sqlite3.Connection | None = None
+    try:
+        with _readonly_connection(source) as source_connection:
+            destination_connection = sqlite3.connect(
+                destination,
+                isolation_level=None,
+                timeout=_BUSY_TIMEOUT_MS / 1_000,
+            )
+            source_connection.backup(destination_connection)
+        if destination_connection is not None:
+            destination_connection.close()
+            destination_connection = None
+        if os.name == "posix":
+            destination.chmod(0o600)
+        _require_safe_path(destination)
+        _require_safe_sidecars(destination)
+    finally:
+        if destination_connection is not None:
+            destination_connection.close()
+
+
+def _prepare_private_parent(parent: Path) -> None:
+    probe = parent / ".approval-batch-path-probe"
+    _require_safe_path(probe)
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if os.name == "posix":
+        parent.chmod(0o700)
+    _require_safe_path(probe)
+
+
+def _require_absent_leaf(path: Path, *, label: str) -> None:
+    _require_safe_path(path)
+    if path.exists() or path.is_symlink():
+        raise ActionApprovalBatchError(f"{label} already exists")
+
+
+def _private_temporary_path(destination: Path) -> Path:
+    descriptor, name = tempfile.mkstemp(
+        prefix=f".{destination.name}.",
+        suffix=".tmp",
+        dir=destination.parent,
+    )
+    os.close(descriptor)
+    if os.name == "posix":
+        Path(name).chmod(0o600)
+    return Path(name)
+
+
+def _write_private_temporary(destination: Path, content: bytes) -> Path:
+    temporary = _private_temporary_path(destination)
+    try:
+        _write_existing_private_file(temporary, content)
+        return temporary
+    except BaseException:
+        with suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
+
+
+def _write_existing_private_file(path: Path, content: bytes) -> None:
+    _require_safe_path(path)
+    with path.open("wb") as handle:
+        handle.write(content)
+        handle.flush()
+        os.fsync(handle.fileno())
+    if os.name == "posix":
+        path.chmod(0o600)
+
+
+def _publish_exclusive(source: Path, destination: Path, *, label: str) -> None:
+    _require_absent_leaf(destination, label=label)
+    try:
+        os.link(source, destination)
+    except FileExistsError as exc:
+        raise ActionApprovalBatchError(f"{label} already exists") from exc
+    except OSError as exc:
+        raise ActionApprovalBatchError(f"{label} publication failed") from exc
+    try:
+        source.unlink()
+    except OSError as exc:
+        with suppress(OSError):
+            destination.unlink()
+        raise ActionApprovalBatchError(f"{label} publication finalization failed") from exc
+    _fsync_directory(destination.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name != "posix":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _initialize(path: Path) -> None:

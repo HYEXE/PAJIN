@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
@@ -44,6 +44,11 @@ from pajin.domain.models import (
 )
 from pajin.domain.validation import FindingDisposition
 from pajin.graph import (
+    ActionApprovalAuthorization,
+    ActionApprovalBatchCompletion,
+    ActionApprovalBatchEnvelope,
+    ActionApprovalBatchError,
+    ActionApprovalBatchItemState,
     ActionApprovalConsumptionReceipt,
     ActionApprovalEnvelope,
     ActionPermit,
@@ -52,6 +57,7 @@ from pajin.graph import (
     GraphActionPermitDispatcher,
     GraphApprovalBoundActionPermitDispatcher,
     GraphDecision,
+    MissionEnvelope,
 )
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import OpenAICompatibleChatTool, ProviderRegistration
@@ -193,6 +199,157 @@ class CapabilityGraphCampaignJobInput(StrictModel):
         return self
 
 
+class CapabilityGraphBatchCampaignJobInput(StrictModel):
+    """One exact deployment-pinned batch item selected by an opt-in Job profile."""
+
+    profile: Literal["capability-graph-batch-v1"]
+    batch_id: str = Field(
+        alias="batchId",
+        pattern=r"^action-approval-batch_[a-f0-9]{64}$",
+    )
+    batch_digest: str = Field(alias="batchDigest", pattern=r"^[a-f0-9]{64}$")
+    item_ordinal: int = Field(alias="itemOrdinal", ge=1, le=8)
+    proposal: ActionProposal
+    decision: GraphDecision
+    release: CapabilityReleaseRef
+    request: ToolRequest
+    grant: CapabilityGrant
+
+    @model_validator(mode="after")
+    def bind_job_authority(self) -> CapabilityGraphBatchCampaignJobInput:
+        if self.proposal.campaign_id != self.decision.campaign_id:
+            raise ValueError(
+                "Capability Graph batch Job authority belongs to another Campaign or Run"
+            )
+        return self
+
+
+class _CapabilityGraphBatchPermitDispatcher:
+    """Adapt one pinned batch item to the existing Capability Gateway permit protocol."""
+
+    def __init__(
+        self,
+        *,
+        runtime: CapabilityGraphDeploymentRuntime,
+        batch: ActionApprovalBatchEnvelope,
+        ordinal: int,
+        store: RunStore,
+    ) -> None:
+        self._runtime = runtime
+        self._batch = batch
+        self._ordinal = ordinal
+        self._store = store
+
+    async def dispatch_once(
+        self,
+        envelope: MissionEnvelope,
+        proposal: ActionProposal,
+        decision: GraphDecision,
+        dispatch: Callable[[ActionPermit], Awaitable[GatewayOutcome]],
+    ) -> ApprovalBoundActionDispatchResult[GatewayOutcome]:
+        coordinator = self._runtime.approval_batch_dispatcher
+        if coordinator is None:
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 requires a deployment-pinned coordinator"
+            )
+        approval = self._batch.approval_at(self._ordinal)
+        if (
+            envelope != approval.mission_envelope
+            or proposal != approval.proposal
+            or decision != approval.graph_decision
+            or self._batch.cleanup_request_at(self._ordinal) is not None
+        ):
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 item differs from the Gateway dispatch"
+            )
+        observed: GatewayOutcome | None = None
+
+        async def consume(
+            permit: ActionPermit,
+            receipt: ActionApprovalConsumptionReceipt,
+        ) -> ActionApprovalBatchCompletion:
+            nonlocal observed
+            observed = await dispatch(permit)
+            self._store.seal()
+            return ActionApprovalBatchCompletion(
+                batchId=self._batch.batch_id,
+                batchDigest=self._batch.batch_digest,
+                itemOrdinal=self._ordinal,
+                approvalId=approval.approval_id,
+                approvalDigest=approval.approval_digest,
+                permitId=permit.permit_id,
+                permitDigest=permit.permit_digest,
+                receiptId=receipt.receipt_id,
+                receiptDigest=receipt.receipt_digest,
+                outcome="succeeded",
+                source="worker-completion",
+                evidenceDigest=capability_gateway_outcome_digest(observed),
+                completedAt=self._runtime.clock(),
+            )
+
+        try:
+            result = await coordinator.dispatch_item_once(
+                self._batch,
+                self._ordinal,
+                consume,
+            )
+        except ActionApprovalBatchError as exc:
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 coordination failed closed"
+            ) from exc
+        authorization = result.authorization
+        if (
+            not result.dispatched
+            and result.item.state is not ActionApprovalBatchItemState.TERMINAL_SUCCEEDED
+        ):
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 item requires manual review; redispatch is prohibited"
+            )
+        if isinstance(authorization, ActionApprovalAuthorization):
+            permit = authorization.action.permit
+            receipt = authorization.receipt
+        else:
+            permit = self._stored_permit(result.item.permit_id, result.item.permit_digest)
+            receipt = self._stored_receipt(
+                result.item.receipt_id,
+                result.item.receipt_digest,
+            )
+        return ApprovalBoundActionDispatchResult(
+            permit=permit,
+            approval_receipt=receipt,
+            dispatched=result.dispatched,
+            result=observed if result.dispatched else None,
+        )
+
+    def _stored_permit(self, permit_id: str | None, permit_digest: str | None) -> ActionPermit:
+        matches = tuple(
+            item
+            for item in self._runtime.graph_store.permit_store.permits()
+            if item.permit_id == permit_id and item.permit_digest == permit_digest
+        )
+        if len(matches) != 1:
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 durable Permit is absent or equivocated"
+            )
+        return matches[0]
+
+    def _stored_receipt(
+        self,
+        receipt_id: str | None,
+        receipt_digest: str | None,
+    ) -> ActionApprovalConsumptionReceipt:
+        matches = tuple(
+            item
+            for item in self._runtime.graph_store.permit_store.approval_consumptions()
+            if item.receipt_id == receipt_id and item.receipt_digest == receipt_digest
+        )
+        if len(matches) != 1:
+            raise PermanentExecutionError(
+                "capability-graph-batch-v1 durable approval receipt is absent or equivocated"
+            )
+        return matches[0]
+
+
 class ToolLoopJobInput(StrictModel):
     manifest: CampaignManifest
     prompt: str = Field(min_length=1, max_length=32_768)
@@ -305,7 +462,10 @@ class CampaignJobExecutor:
         cancellation: ExecutionCancellationContext | None = None,
     ) -> CompletedExecution:
         raw_input = self._input(job)
-        if raw_input.get("profile") == "capability-graph-v1":
+        if raw_input.get("profile") in {
+            "capability-graph-v1",
+            "capability-graph-batch-v1",
+        }:
             return await self._execute_capability_graph(
                 job,
                 raw_input,
@@ -368,10 +528,17 @@ class CampaignJobExecutor:
             raise PermanentExecutionError(
                 "capability-graph-v1 requires a startup-pinned Worker deployment"
             )
+        batch_profile = raw_input.get("profile") == "capability-graph-batch-v1"
         try:
-            job_input = CapabilityGraphCampaignJobInput.model_validate(raw_input)
+            job_input: CapabilityGraphCampaignJobInput | CapabilityGraphBatchCampaignJobInput = (
+                CapabilityGraphBatchCampaignJobInput.model_validate(raw_input)
+                if batch_profile
+                else CapabilityGraphCampaignJobInput.model_validate(raw_input)
+            )
         except ValidationError as exc:
-            raise PermanentExecutionError("capability-graph-v1 Job input is invalid") from exc
+            raise PermanentExecutionError(
+                f"{raw_input.get('profile')} Job input is invalid"
+            ) from exc
         deployment = runtime.deployment
         campaign = deployment.campaign
         envelope = deployment.mission_envelope
@@ -382,6 +549,17 @@ class CampaignJobExecutor:
             raise PermanentExecutionError(
                 "capability-graph-v1 Job differs from its deployed Campaign authority"
             )
+        batch: ActionApprovalBatchEnvelope | None = None
+        if isinstance(job_input, CapabilityGraphBatchCampaignJobInput):
+            batch = runtime.approval_batch(job_input.batch_id)
+            if (
+                batch.batch_digest != job_input.batch_digest
+                or batch.approval_at(job_input.item_ordinal).proposal != job_input.proposal
+                or batch.approval_at(job_input.item_ordinal).graph_decision != job_input.decision
+            ):
+                raise PermanentExecutionError(
+                    "capability-graph-batch-v1 Job differs from its deployment-pinned item"
+                )
         try:
             prepared = runtime.activation.prepare_action(
                 release=job_input.release,
@@ -392,12 +570,18 @@ class CampaignJobExecutor:
             raise PermanentExecutionError(
                 "capability-graph-v1 request preparation failed closed"
             ) from exc
-        permits = self._capability_graph_permits(runtime, job_input, prepared)
+        store = runtime.open_run_store(envelope.run_id)
+        permits = self._capability_graph_permits(
+            runtime,
+            job_input,
+            prepared,
+            store=store,
+            batch=batch,
+        )
         used_calls = sum(
             permit.run_id == envelope.run_id
             for permit in runtime.graph_store.permit_store.permits()
         )
-        store = runtime.open_run_store(envelope.run_id)
         gateway = ToolGateway(
             policy=PolicyEngine(),
             tools=runtime.tools,
@@ -431,7 +615,7 @@ class CampaignJobExecutor:
         except Exception:
             self._seal_failed_dispatch(store)
             raise
-        if dispatched.dispatched:
+        if dispatched.dispatched and not batch_profile:
             store.seal()
         reconciliation = self._verified_dispatch_reconciliation(
             store,
@@ -462,6 +646,7 @@ class CampaignJobExecutor:
             job,
             dispatched.permit,
             terminal,
+            execution_profile=job_input.profile,
             outcome=outcome,
             dispatched=dispatched.dispatched,
             approval_receipt=(
@@ -474,18 +659,29 @@ class CampaignJobExecutor:
     @staticmethod
     def _capability_graph_permits(
         runtime: CapabilityGraphDeploymentRuntime,
-        job_input: CapabilityGraphCampaignJobInput,
+        job_input: CapabilityGraphCampaignJobInput | CapabilityGraphBatchCampaignJobInput,
         prepared: PreparedCapabilityAction,
-    ) -> GraphActionPermitDispatcher | GraphApprovalBoundActionPermitDispatcher:
-        if job_input.approval is not None and (
-            job_input.approval.release.release_id != prepared.release.release_id
-            or job_input.approval.release.release_digest != prepared.release.release_digest
-            or job_input.approval.release.capability_id
-            != prepared.capability.capability_id
-            or job_input.approval.release.capability_version
-            != prepared.capability.capability_version
-            or job_input.approval.release.capability_digest
-            != prepared.capability.definition_digest
+        *,
+        store: RunStore,
+        batch: ActionApprovalBatchEnvelope | None,
+    ) -> (
+        GraphActionPermitDispatcher
+        | GraphApprovalBoundActionPermitDispatcher
+        | _CapabilityGraphBatchPermitDispatcher
+    ):
+        approval = (
+            batch.approval_at(job_input.item_ordinal)
+            if isinstance(job_input, CapabilityGraphBatchCampaignJobInput) and batch is not None
+            else job_input.approval
+            if isinstance(job_input, CapabilityGraphCampaignJobInput)
+            else None
+        )
+        if approval is not None and (
+            approval.release.release_id != prepared.release.release_id
+            or approval.release.release_digest != prepared.release.release_digest
+            or approval.release.capability_id != prepared.capability.capability_id
+            or approval.release.capability_version != prepared.capability.capability_version
+            or approval.release.capability_digest != prepared.capability.definition_digest
         ):
             raise PermanentExecutionError(
                 "capability-graph-v1 approval differs from the prepared release"
@@ -512,19 +708,29 @@ class CampaignJobExecutor:
                 "capability-graph-v1 T3 or higher action is not executable"
             )
         requires_approval = (
-            prepared.capability.risk_tier is ToolRiskTier.T2
-            or definition.approval_required
+            prepared.capability.risk_tier is ToolRiskTier.T2 or definition.approval_required
         )
         if requires_approval:
-            if job_input.approval is None or runtime.approved_permits is None:
+            if approval is None or runtime.approved_permits is None:
                 raise PermanentExecutionError(
                     "capability-graph-v1 action requires deployment-pinned approval"
                 )
+            if isinstance(job_input, CapabilityGraphBatchCampaignJobInput):
+                if batch is None or runtime.approval_batch_dispatcher is None:
+                    raise PermanentExecutionError(
+                        "capability-graph-batch-v1 coordinator is not deployment-pinned"
+                    )
+                return _CapabilityGraphBatchPermitDispatcher(
+                    runtime=runtime,
+                    batch=batch,
+                    ordinal=job_input.item_ordinal,
+                    store=store,
+                )
             return GraphApprovalBoundActionPermitDispatcher(
                 runtime.approved_permits,
-                job_input.approval,
+                approval,
             )
-        if job_input.approval is not None:
+        if approval is not None:
             raise PermanentExecutionError(
                 "capability-graph-v1 Job supplies an approval outside current policy"
             )
@@ -553,14 +759,10 @@ class CampaignJobExecutor:
     def _require_capability_graph_definition_policy(
         definition: CapabilityDefinition,
     ) -> None:
-        if (
-            definition.cleanup_required
-            or definition.side_effect_class
-            not in {
-                CapabilitySideEffectClass.NONE,
-                CapabilitySideEffectClass.READ_ONLY,
-            }
-        ):
+        if definition.cleanup_required or definition.side_effect_class not in {
+            CapabilitySideEffectClass.NONE,
+            CapabilitySideEffectClass.READ_ONLY,
+        }:
             raise PermanentExecutionError(
                 "capability-graph-v1 write or cleanup action requires a cleanup-aware authority"
             )
@@ -647,6 +849,10 @@ class CampaignJobExecutor:
         permit: ActionPermit,
         terminal: CapabilityDispatchAuditEvent,
         *,
+        execution_profile: Literal[
+            "capability-graph-v1",
+            "capability-graph-batch-v1",
+        ],
         outcome: GatewayOutcome | None,
         dispatched: bool,
         approval_receipt: ActionApprovalConsumptionReceipt | None,
@@ -655,30 +861,30 @@ class CampaignJobExecutor:
         assert runtime is not None
         execution_context = worker_execution_context(self._worker)
         result: dict[str, object] = {
-                "engine": "capability-graph-gateway",
-                "executionProfile": "capability-graph-v1",
-                "deploymentId": runtime.deployment.deployment_id,
-                "releaseSetDigest": runtime.deployment.release_set_digest,
-                "activationSetDigest": runtime.deployment.activation_set_digest,
-                "controlPlaneRunId": job.run_id,
-                "graphRunId": permit.run_id,
-                "permitId": permit.permit_id,
-                "permitDigest": permit.permit_digest,
-                "dispatchId": permit.dispatch_id,
-                "dispatched": dispatched,
-                "dispatchStatus": terminal.stage.value,
-                "gatewayOutcomeDigest": terminal.gateway_outcome_digest,
-                "gatewayExecutionId": terminal.gateway_execution_id,
-                "executed": terminal.executed,
-                "policyAllowed": terminal.policy_allowed,
-                "toolSuccess": terminal.tool_success,
-                "evidence": list(terminal.evidence),
-                "executionContext": execution_context.model_dump(
-                    mode="json",
-                    by_alias=True,
-                ),
-                "outcomeAvailableInProcess": outcome is not None,
-            }
+            "engine": "capability-graph-gateway",
+            "executionProfile": execution_profile,
+            "deploymentId": runtime.deployment.deployment_id,
+            "releaseSetDigest": runtime.deployment.release_set_digest,
+            "activationSetDigest": runtime.deployment.activation_set_digest,
+            "controlPlaneRunId": job.run_id,
+            "graphRunId": permit.run_id,
+            "permitId": permit.permit_id,
+            "permitDigest": permit.permit_digest,
+            "dispatchId": permit.dispatch_id,
+            "dispatched": dispatched,
+            "dispatchStatus": terminal.stage.value,
+            "gatewayOutcomeDigest": terminal.gateway_outcome_digest,
+            "gatewayExecutionId": terminal.gateway_execution_id,
+            "executed": terminal.executed,
+            "policyAllowed": terminal.policy_allowed,
+            "toolSuccess": terminal.tool_success,
+            "evidence": list(terminal.evidence),
+            "executionContext": execution_context.model_dump(
+                mode="json",
+                by_alias=True,
+            ),
+            "outcomeAvailableInProcess": outcome is not None,
+        }
         if approval_receipt is not None:
             result.update(
                 {

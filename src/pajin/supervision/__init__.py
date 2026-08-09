@@ -34,6 +34,7 @@ from pajin.supervision.action_outcome import (
     GeneralAttackSealedEvidenceRef,
 )
 from pajin.supervision.action_permit import (
+    GeneralAttackActionApprovalBatchResult,
     GeneralAttackActionPermitError,
     GeneralAttackActionPermitGate,
     GeneralAttackActionPermitInputAuthority,
@@ -178,6 +179,7 @@ __all__ = [
     "CleanupCapabilityMappingAuthorityBinding",
     "CleanupCapabilityMappingError",
     "CleanupCapabilityMappingRegistry",
+    "GeneralAttackActionApprovalBatchResult",
     "GeneralAttackActionCleanupError",
     "GeneralAttackActionCleanupGate",
     "GeneralAttackActionCompilerError",

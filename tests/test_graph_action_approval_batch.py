@@ -26,6 +26,7 @@ from pajin.graph.approval_batch import (
     ActionApprovalBatchState,
     GraphApprovedActionBatchDispatcher,
     SQLiteActionApprovalBatchJournal,
+    action_approval_batch_journal_backup_manifest_path,
 )
 from pajin.graph.authority import ActionPermit, RegisteredActionCapability
 from pajin.graph.cleanup import ActionCleanupReservation
@@ -474,10 +475,8 @@ async def test_unknown_outcome_requires_authenticated_manual_reconciliation(
 @pytest.mark.asyncio
 async def test_task_cancellation_leaves_unknown_item_nonredispatchable(tmp_path: Path) -> None:
     store, capability, batch, journal = _batch(tmp_path)
-    dispatcher = GraphApprovedActionBatchDispatcher(
-        _approved_authority(store, capability),
-        journal,
-    )
+    graph_authority = _approved_authority(store, capability)
+    dispatcher = GraphApprovedActionBatchDispatcher(graph_authority, journal)
     started = asyncio.Event()
     release = asyncio.Event()
     calls = 0
@@ -797,3 +796,144 @@ def test_journal_schema_and_authority_rows_resist_direct_mutation(tmp_path: Path
                 """,
                 (batch.batch_id,),
             )
+
+
+@pytest.mark.asyncio
+async def test_journal_backup_restore_preserves_exact_terminal_and_pending_state(
+    tmp_path: Path,
+) -> None:
+    input_authority = _BatchInputAuthority()
+    completion_authority = _CompletionAuthority()
+    cancellation_authority = _CancellationAuthority()
+    store, capability, batch, journal = _batch(
+        tmp_path,
+        input_authority=input_authority,
+        completion_authority=completion_authority,
+        cancellation_authority=cancellation_authority,
+    )
+    graph_authority = _approved_authority(store, capability)
+    dispatcher = GraphApprovedActionBatchDispatcher(graph_authority, journal)
+    calls = 0
+
+    async def consumer(
+        permit: ActionPermit,
+        receipt: ActionApprovalConsumptionReceipt,
+    ) -> ActionApprovalBatchCompletion:
+        nonlocal calls
+        calls += 1
+        return _completion(batch, 1, permit, receipt)
+
+    first = await dispatcher.dispatch_item_once(batch, 1, consumer)
+    before = journal.publications()
+    backup = tmp_path / "backups" / "approval-batch.sqlite3"
+    manifest = journal.create_backup(
+        backup,
+        created_at=NOW + timedelta(seconds=10),
+        minimum_retain_until=NOW + timedelta(days=30),
+    )
+
+    assert first.dispatched is True
+    assert manifest.retention.batch_count == 1
+    assert manifest.retention.terminal_batch_count == 0
+    assert manifest.retention.deletion_eligible is False
+    assert backup.is_file()
+    assert action_approval_batch_journal_backup_manifest_path(backup).is_file()
+
+    restored = SQLiteActionApprovalBatchJournal.restore_backup(
+        backup,
+        destination=tmp_path / "restored" / "approval-batch.sqlite3",
+        input_authority=input_authority,
+        completion_authority=completion_authority,
+        cancellation_authority=cancellation_authority,
+        clock=lambda: NOW + timedelta(seconds=11),
+    )
+    assert restored.publications() == before
+    retry = await GraphApprovedActionBatchDispatcher(
+        graph_authority,
+        restored,
+    ).dispatch_item_once(batch, 1, consumer)
+    assert retry.dispatched is False
+    assert calls == 1
+
+
+def test_journal_retention_never_eligibles_pending_or_unknown_batches(
+    tmp_path: Path,
+) -> None:
+    _, _, batch, journal = _batch(tmp_path)
+    journal.register(batch)
+    future = NOW + timedelta(days=30)
+    assert (
+        journal.assess_retention(
+            minimum_retain_until=NOW,
+            evaluated_at=future,
+        ).deletion_eligible
+        is False
+    )
+
+    journal.claim(batch, 1)
+    assessment = journal.assess_retention(
+        minimum_retain_until=NOW,
+        evaluated_at=future,
+    )
+    assert assessment.manual_review_required is True
+    assert assessment.deletion_eligible is False
+
+    _, _, terminal_batch, terminal_journal = _batch(tmp_path / "terminal")
+    terminal_journal.register(terminal_batch)
+    terminal_journal.cancel_pending(
+        terminal_batch,
+        _cancellation(terminal_batch, 1, 2),
+    )
+    terminal = terminal_journal.assess_retention(
+        minimum_retain_until=NOW,
+        evaluated_at=future,
+    )
+    assert terminal.terminal_batch_count == 1
+    assert terminal.manual_review_required is False
+    assert terminal.deletion_eligible is True
+
+
+def test_journal_backup_restore_rejects_tampering_and_existing_destination(
+    tmp_path: Path,
+) -> None:
+    input_authority = _BatchInputAuthority()
+    completion_authority = _CompletionAuthority()
+    cancellation_authority = _CancellationAuthority()
+    _, _, batch, journal = _batch(
+        tmp_path,
+        input_authority=input_authority,
+        completion_authority=completion_authority,
+        cancellation_authority=cancellation_authority,
+    )
+    journal.register(batch)
+    backup = tmp_path / "backups" / "approval-batch.sqlite3"
+    journal.create_backup(
+        backup,
+        created_at=NOW + timedelta(seconds=10),
+        minimum_retain_until=NOW + timedelta(days=30),
+    )
+    database = bytearray(backup.read_bytes())
+    database[-1] ^= 1
+    backup.write_bytes(database)
+
+    destination = tmp_path / "restore" / "approval-batch.sqlite3"
+    with pytest.raises(ActionApprovalBatchError, match="database digest differs"):
+        SQLiteActionApprovalBatchJournal.restore_backup(
+            backup,
+            destination=destination,
+            input_authority=input_authority,
+            completion_authority=completion_authority,
+            cancellation_authority=cancellation_authority,
+        )
+    assert not destination.exists()
+
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(b"occupied")
+    with pytest.raises(ActionApprovalBatchError, match="already exists"):
+        SQLiteActionApprovalBatchJournal.restore_backup(
+            backup,
+            destination=destination,
+            input_authority=input_authority,
+            completion_authority=completion_authority,
+            cancellation_authority=cancellation_authority,
+        )
