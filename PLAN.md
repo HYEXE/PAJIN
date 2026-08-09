@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `CHAIN-003` — Prompt Injection에서 URL Tool Control과 Internal API까지의 mode-neutral attack chain 계약
+- 현재 우선순위: Phase 8 `CHAIN-004` — Cross-tenant Retrieval에서 Data Exposure까지의 mode-neutral attack chain 계약
 
 ## 제품 목표
 
@@ -694,7 +694,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 
 - [x] `CHAIN-001` Auth Bypass → AI Admin Surface
 - [x] `CHAIN-002` File Upload → RAG Injection → Tool Abuse
-- [ ] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
+- [x] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
 - [ ] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
 - [ ] `CHAIN-005` MCP Authorization Failure → Privileged Action
 - [ ] `VAL-001` Mode-neutral Claim Replay
@@ -711,9 +711,16 @@ Replay·Finding confirmation은 모두 false다.
 Hypothesis 계보를 다시 열어 File Upload → RAG Injection → Tool Abuse를 3개 ordered stage와 2개
 `enables` edge로 결박한다. P0-D2B는 의미·순서 대조에만 사용하고 provider·matcher·measurement
 증거는 admission하지 않는다. 결과는 동일하게 `hypothesized-not-validated`이며 Capability·execution·
-Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-003`은 기존 URL Tool·내부 API typed
-Surface와 실행 권위를 조사한 뒤 Prompt Injection → URL Tool Control → Internal API를 같은 비실행
-계약 계층으로 추가한다.
+Claim Replay·Finding confirmation은 모두 false다.
+
+`CHAIN-003`은 MCP discovery의 top-level `string/uri` argument만 `mcp-url-tool`로, OpenAPI의 exact
+boolean `x-pajin-internal-api: true`만 `http-internal-api`로 admission한다. 같은 MCP Target·server의
+prompt와 URL Tool, 같은 Campaign의 명시적 Internal API를 두 sealed Surface Snapshot에서 다시 검증해
+3개 ordered stage와 2개 `enables` edge로 결박한다. URL 값·설명·raw schema·private address·route 이름은
+권위로 사용하지 않는다. 결과는 `hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 Capability·
+execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-004`는 cross-tenant와 data
+exposure를 나타내는 기존 typed authority가 실제로 있는지 먼저 조사하고, 문자열·tenant 이름·응답 설명으로
+의미를 추론하지 않는다.
 
 ### Phase 9 — Product UX·Operations
 

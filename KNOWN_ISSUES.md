@@ -3,6 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## CHAIN-003 Surface-only URL Tool·Internal API 경계
+
+- 상태: Prompt Injection → URL Tool Control → Internal API의 mode-neutral ordered coverage 계약은
+  구현됐고 실제 prompt influence·URL dispatch·network reachability·API access·validation은 닫힘
+- 현재 보장: MCP top-level JSON Schema의 exact `string/uri` argument와 OpenAPI operation의 exact boolean
+  `x-pajin-internal-api: true`만 typed Surface로 admission한다. 같은 Target·MCP server의 prompt와 URL Tool,
+  같은 Campaign의 명시적 Internal API를 두 sealed Recon·Surface Snapshot에서 다시 검증한다. generic Tool·
+  route, 다른 publication, 변조 projection, forged digest·boolean authority marker 치환은 fail closed한다.
+  Capability·execution·Claim Replay·Finding confirmation은 모두 false다.
+- 제한: advertised prompt argument가 실제로 untrusted text의 영향을 받는지, URL Tool이 invocable한지, URL이
+  해석·접속되는지, Internal API가 요청을 수락하거나 데이터를 노출하는지는 관찰하지 않는다. demo
+  `inspect_url`은 discovery에만 광고되고 invocation allowlist에는 없다. Internal API 표시는 Target이 제공한
+  OpenAPI 선언을 신뢰하며 실제 network 위치나 접근 제어를 증명하지 않는다.
+- 영향: CHAIN-003은 coverage hypothesis로만 사용할 수 있고 SSRF, prompt injection, 내부 API 접근, 데이터
+  노출, Finding, Report, Permit 또는 dispatch의 근거가 될 수 없다.
+- 해소 조건: validation 상태를 올리려면 VAL-001 이후 exact Claim, 독립 fresh Replay, prompt-to-argument
+  influence와 network receipt, negative control을 같은 Campaign·Snapshot·Surface lineage에 결박한다.
+
 ## CHAIN-002 WALK Hypothesis-only chain 경계
 
 - 상태: File Upload → RAG Injection → Tool Abuse의 mode-neutral ordered chain 계약은 구현됐고 실제 upload·retrieval·Tool abuse·validation은 닫힘

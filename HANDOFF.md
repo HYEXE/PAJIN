@@ -2,10 +2,10 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `c01814c`
-- 현재 코드 체크포인트: Phase 8 `CHAIN-002` 완료 후 원격 전 승인 배치 신뢰 경계 안정화
+- 현재 기능 HEAD: `886236d053131697a674d67179ff1941959b6aed`
+- 현재 코드 체크포인트: Phase 8 `CHAIN-003` Prompt Injection → URL Tool Control → Internal API coverage hypothesis 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
-- 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
+- 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
 - APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
 - APPROVAL-001C1/C2 구현 커밋: `ba7274af4f96c1207b9d5dd509b659877f2a27b5`
@@ -16,9 +16,11 @@
 - CHAIN-001 구현 커밋: `4c19ca81437a37e203fad71b0d97d4c4f586dec2`
 - CHAIN-002 구현 커밋: `296c9a82ed7170f13082aed19e365d3331ef0c0e`
 - 승인 배치 신뢰 경계 수정 커밋: `c01814c`
-- 현재 구현 체크포인트: CHAIN-002 coverage hypothesis와 current-authority 재검증을 포함한 APPROVAL-001C journal 복구 경계
-- 다음 로드맵: Phase 8 `CHAIN-003` Prompt Injection → URL Tool Control → Internal API mode-neutral attack chain 계약
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 14 commits ahead
+- CHAIN-003 typed Surface 구현 커밋: `9a2ad103a8f64ddb5289909f461b9d2e217b3dfe`
+- CHAIN-003 chain 구현 커밋: `886236d053131697a674d67179ff1941959b6aed`
+- 현재 구현 체크포인트: CHAIN-003 explicit URL Tool·Internal API discovery와 sealed Snapshot-bound coverage hypothesis
+- 다음 로드맵: Phase 8 `CHAIN-004` Cross-tenant Retrieval → Data Exposure mode-neutral attack chain 계약
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 3 commits ahead
 
 ## 재개 전 확인
 
@@ -31,9 +33,9 @@ git status --porcelain=v2 --branch
 ```
 
 문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
-CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`에 보존됐다.
-이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 14 commits ahead이고 working tree는
-clean이어야 한다.
+CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`, CHAIN-003
+typed Surface는 `9a2ad10`, chain authority는 `886236d`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬
+`main`은 `origin/main@0ed5ac7`보다 3 commits ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -55,6 +57,22 @@ authority를 참조하며 두 Target은 같은 Campaign에 각각 정확히 선�
 않지만 WALK digest와 canonical Campaign digest를 모두 보존한다. P0-D2B는 profile identity 의미 대조만
 기록하고 provider·matcher·measurement evidence는 admission하지 않는다. 결과는
 `hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이며 Capability·execution·Claim Replay·Finding
+confirmation은 모두 false다.
+
+`CHAIN-003A`는 MCP discovery에서 top-level JSON Schema의 exact `type=string`, `format=uri` property만
+`mcp-url-tool`로 admission하고 argument 이름·strict required flag와 schema digest만 보존한다. OpenAPI는
+operation의 exact boolean `x-pajin-internal-api: true`만 `http-internal-api`로 admission한다. URL 값·설명·
+raw schema·private address·route 이름으로 의미를 추론하지 않는다. 전용 `HTTPInternalAPIReconPlanner`는
+이 Surface가 누락되면 Recon을 fail closed한다. demo `inspect_url`은 discovery에는 광고되지만 invocation
+allowlist에는 추가되지 않았다.
+
+`CHAIN-003B`는 MCP와 Internal API의 exact sealed Recon source·projection Run을 다시 검증해 두
+`SurfaceSnapshotAuthority`를 결박한다. non-empty prompt argument와 URL Tool은 같은 Campaign Target·MCP
+server여야 하고, Internal API Target은 같은 Campaign에 정확히 한 번 선언돼야 한다. 세 단계는 각각
+`prompt-injection-hypothesis`, `mcp-url-argument-control-hypothesis`,
+`target-declared-internal-api-surface`로 기록되며 실제 influence나 reachability를 주장하지 않는다. 결과는
+`hypothesized-not-validated`, `surfaceEvidenceOnly=true`,
+`crossTargetBinding=same-campaign-hypothesis-only`이고 Capability·execution·Claim Replay·Finding
 confirmation은 모두 false다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
@@ -141,8 +159,10 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `src/pajin/control_plane/executors.py`
 - `src/pajin/workflow/engine_execution_gate.py`
 - `src/pajin/discovery/attack_chain.py`
+- `src/pajin/discovery/url_attack_chain.py`
 - `src/pajin/discovery/walking_replanning.py`
 - `tests/test_mode_neutral_attack_chain.py`
+- `tests/test_mode_neutral_url_attack_chain.py`
 - `tests/test_walking_mcp_authorization.py`
 - `docs/orchestration/APPROVAL-001A-single-action-approval.md`
 - `docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md`
@@ -154,6 +174,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/SUP-008-approved-general-attack-control-plane-profile.md`
 - `docs/orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md`
 - `docs/orchestration/CHAIN-002-file-upload-rag-tool-abuse.md`
+- `docs/orchestration/CHAIN-003-prompt-url-tool-internal-api.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -164,8 +185,25 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0141-compose-approved-general-attack-profile.md`
 - `docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md`
 - `docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md`
+- `docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md`
 
 ## 현재 검증
+
+### 2026-08-10 CHAIN-003 explicit URL Tool·Internal API chain 검증
+
+- typed Surface 구현 커밋: `9a2ad10`
+- Snapshot-bound chain 구현 커밋: `886236d`
+- CHAIN-003 전용 mode-neutral·generic locator substitution·strict declaration·stale publication·
+  authority forgery 회귀: 7 passed
+- CHAIN-001/002·MCP authorization·HTTP/MCP discovery 결합 확장 회귀: 159 passed
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 Python 3.12 strict mypy: 260 source files 통과
+- CHAIN-003B 변경 Python format check: 통과. `src/pajin/runtime/worker.py` 전체 format check의 기존
+  formatter-only 차이는 관련 없는 churn을 피하려고 복원했으며 Ruff lint 전체는 통과
+- 변경 Markdown 상대 링크 검사: 통과
+- changed-file credential pattern scan과 `git diff --cached --check`: 통과
+- 전체 pytest는 기존 Artifact admission 오류 메시지 불일치가 미해결이므로 같은 원인의 전 범위 실행을
+  반복하지 않았다. CHAIN-003 및 predecessor Discovery·CHAIN·WALK 경계는 위와 같이 통과했다.
 
 ### 2026-08-10 원격 전 승인 배치 신뢰 경계 점검
 
@@ -349,16 +387,15 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-CHAIN-002는 `296c9a8`에 보존됐다. 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시
-승인 전까지 수행하지 않는다.
+CHAIN-003 typed Surface는 `9a2ad10`, sealed Snapshot-bound chain authority는 `886236d`에 보존됐다.
+이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `CHAIN-003`이다. 먼저 `src/pajin/discovery/models.py`,
-`src/pajin/discovery/adapters.py`, `src/pajin/tools/http.py`와 Capability 등록을 대조해 Prompt Injection,
-URL Tool Control, Internal API를 나타내는 현재 typed locator·authority가 실제로 존재하는지 확인한다.
-현재 검색에서는 roadmap 문구 외에 전용 URL Tool·Internal API 계약이 확인되지 않았으므로 URL 문자열이나
-설명으로 의미를 추론하지 않는다. predecessor typed boundary가 없으면 CHAIN contract부터 만들지 말고 가장
-작은 additive discovery locator·trusted admission을 먼저 정의한다. CHAIN-002의 ordered step·edge primitive를
-재사용하되 Capability·execution·Claim Replay·Finding confirmation은 계속 false로 둔다.
+다음 수직 슬라이스는 `CHAIN-004` Cross-tenant Retrieval → Data Exposure다. 첫 작업은 기존
+`src/pajin/discovery/models.py`, Graph fact·relationship, RAG/retrieval Surface와 tenant·data exposure를
+나타내는 typed authority가 실제로 있는지 조사하는 것이다. tenant ID가 들어간 문자열, URL path, 설명,
+응답 이름이나 synthetic benchmark Finding을 일반 authority로 추론하지 않는다. predecessor가 없으면 가장
+작은 bounded locator·trusted admission을 먼저 제안하고, 실제 retrieval·cross-tenant access·data exposure·
+Finding confirmation과 execution 권위는 계속 분리한다.
 
 ## 알려진 경계
 
@@ -367,6 +404,9 @@ URL Tool Control, Internal API를 나타내는 현재 typed locator·authority�
 - CHAIN-002는 WALK-003가 봉인할 때 검증해 포함한 WALK-002 nested root·artifact authority를 신뢰하며
   실제 upload·retrieval·MCP argument influence·승인 누락·internal data access를 관찰하지 않는다.
   P0-D2B synthetic Finding은 CHAIN-002 validation authority가 아니다.
+- CHAIN-003은 exact `string/uri` MCP argument와 `x-pajin-internal-api: true` OpenAPI operation만 결박한다.
+  실제 prompt-to-argument influence, URL dispatch·resolution·reachability, Internal API access나 data
+  exposure를 관찰하지 않는다. demo `inspect_url`은 invocation allowlist 밖에 있다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.

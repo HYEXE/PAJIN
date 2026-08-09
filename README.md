@@ -388,6 +388,15 @@ evidence, Capability, execution, Replay, or Finding authority is admitted. See t
 [CHAIN-002 contract](docs/orchestration/CHAIN-002-file-upload-rag-tool-abuse.md) and
 [ADR-0143](docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md).
 
+CHAIN-003 adds bounded URL Tool and Internal API discovery semantics before linking them. MCP Tool
+inputs qualify only through exact top-level `string/uri` JSON Schema declarations, and OpenAPI
+operations qualify only through `x-pajin-internal-api: true`. The compiler re-verifies two sealed
+Surface Snapshots and binds a same-server, same-target MCP prompt and URL Tool to a same-Campaign
+Internal API as a hypothesis only. It retains no runtime URL or raw schema and proves no prompt
+influence, reachability, execution, API access, Replay, or Finding. See the
+[CHAIN-003 contract](docs/orchestration/CHAIN-003-prompt-url-tool-internal-api.md) and
+[ADR-0144](docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

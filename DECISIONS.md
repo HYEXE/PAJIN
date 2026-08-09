@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0144: Bind URL Tool Chains to Explicit Surface Authority](docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md)
 - [ADR-0143: Bind Walking Lineage to an Ordered Mode-neutral Chain](docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md)
 - [ADR-0142: Bind Mode-neutral Attack Chains to Sealed Surface Snapshots](docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md)
 - [ADR-0141: Compose the Approved General Attack Profile](docs/adr/0141-compose-approved-general-attack-profile.md)
