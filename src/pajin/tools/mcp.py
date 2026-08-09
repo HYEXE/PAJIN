@@ -61,6 +61,13 @@ class MCPDiscoveryRegistration(StrictModel):
     description: str = Field(min_length=1, max_length=5_000)
 
 
+class _MCPDiscoveredURLArgument(StrictModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
+
+    name: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
+    required: StrictBool
+
+
 class _MCPDiscoveredTool(StrictModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
 
@@ -74,6 +81,20 @@ class _MCPDiscoveredTool(StrictModel):
         alias="outputSchemaDigest",
         pattern=r"^[a-f0-9]{64}$",
     )
+    url_arguments: list[_MCPDiscoveredURLArgument] | None = Field(
+        default=None,
+        alias="urlArguments",
+        max_length=32,
+    )
+
+    @model_validator(mode="after")
+    def validate_url_arguments(self) -> _MCPDiscoveredTool:
+        if self.url_arguments is None:
+            return self
+        names = [argument.name for argument in self.url_arguments]
+        if not names or names != sorted(set(names)):
+            raise ValueError("MCP URL Tool arguments must be non-empty, unique, and sorted")
+        return self
 
 
 class _MCPDiscoveredResource(StrictModel):
@@ -436,6 +457,7 @@ class RegisteredMCPDiscoveryTool(Tool):
                 "maxPromptArguments": _MAX_MCP_PROMPT_ARGUMENTS,
                 "retainsRawResourceUris": False,
                 "retainsRawSchemas": False,
+                "retainsURLArgumentNames": True,
                 "retainsDescriptions": False,
                 "retainsPromptValues": False,
             },

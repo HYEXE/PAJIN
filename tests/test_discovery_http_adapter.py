@@ -16,6 +16,7 @@ from pajin.discovery import (
     HTTPAndOpenAPISurfaceAdapter,
     HTTPAuthenticationSurfaceLocator,
     HTTPFileUploadSurfaceLocator,
+    HTTPInternalAPISurfaceLocator,
     HTTPRAGSurfaceLocator,
     HTTPRouteSurfaceLocator,
     SurfaceAdmissionError,
@@ -214,6 +215,39 @@ def test_http_route_locator_rejects_noncanonical_templates_and_content_types() -
     assert wildcard.response_content_types == ("*/*",)
 
 
+def test_openapi_adapter_admits_only_explicit_internal_api_declaration() -> None:
+    document = _openapi_document()
+    operation = document["paths"]["/users/{user_id}"]["get"]  # type: ignore[index]
+    operation["x-pajin-internal-api"] = True  # type: ignore[index]
+
+    candidates = _adapter().extract_surfaces(
+        _request(),
+        _result(json.dumps(document).encode("utf-8")),
+    )
+    internal = [
+        candidate.locator
+        for candidate in candidates
+        if isinstance(candidate.locator, HTTPInternalAPISurfaceLocator)
+    ]
+
+    assert len(internal) == 1
+    assert internal[0].route.path_template == "/users/{user_id}"
+    assert internal[0].route.method == "GET"
+    assert internal[0].declaration == "openapi-x-pajin-internal-api"
+
+
+def test_openapi_adapter_rejects_non_boolean_internal_api_declaration() -> None:
+    document = _openapi_document()
+    operation = document["paths"]["/users/{user_id}"]["get"]  # type: ignore[index]
+    operation["x-pajin-internal-api"] = "true"  # type: ignore[index]
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        _adapter().extract_surfaces(
+            _request(),
+            _result(json.dumps(document).encode("utf-8")),
+        )
+
+
 @pytest.mark.parametrize(
     ("content_type", "body"),
     [
@@ -395,11 +429,19 @@ def test_http_openapi_adapter_registers_exact_surface_kinds_and_context() -> Non
 
     definition = registry.definitions()[0]
 
-    assert definition.supported_surface_kinds == ("http-endpoint", "http-route")
+    assert definition.supported_surface_kinds == (
+        "http-endpoint",
+        "http-internal-api",
+        "http-route",
+    )
     assert definition.requires_trusted_network_receipt is True
     assert definition.tool.tool_id == "http.get"
     assert registry.resolve(definition.reference()).adapter is adapter
     assert adapter.stable_execution_context()["allowedMethods"] == ["GET", "POST"]
+    assert (
+        adapter.stable_execution_context()["internalAPIOperationExtension"]
+        == "x-pajin-internal-api"
+    )
     assert adapter.stable_execution_context()["externalRefResolution"] is False
 
 

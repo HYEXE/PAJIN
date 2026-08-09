@@ -121,6 +121,8 @@ def test_registered_mcp_discovery_interprets_only_digest_boundary() -> None:
     assert result.success
     assert result.data["mcpServerId"] == "demo-security"
     assert result.data["capabilities"] == ["prompts", "resources", "tools"]
+    assert result.data["tools"][1]["name"] == "inspect_url"
+    assert result.data["tools"][1]["urlArguments"] == [{"name": "url", "required": True}]
     assert "pajin://policy" not in serialized
     assert "pajin://guidance/{topic}" not in serialized
     assert "description" not in serialized.lower()
@@ -147,6 +149,7 @@ def test_registered_mcp_discovery_rejects_agent_selected_arguments() -> None:
     [
         ("unknown-server", "inspect_text", "server-not-registered"),
         ("demo-security", "unknown_tool", "tool-not-registered"),
+        ("demo-security", "inspect_url", "tool-not-registered"),
     ],
 )
 def test_simulated_mcp_catalog_rejections_use_typed_response_codes(

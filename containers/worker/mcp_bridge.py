@@ -15,6 +15,7 @@ MAX_BRIDGE_INPUT_BYTES = 1_000_000
 MAX_DISCOVERY_ITEMS = 64
 MAX_DISCOVERY_PAGES = 8
 MAX_PROMPT_ARGUMENTS = 32
+MAX_URL_ARGUMENTS = 32
 MAX_DISCOVERY_VALUE_BYTES = 64 * 1024
 _MCP_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 _MCP_SCHEME = re.compile(r"^[a-z][a-z0-9+.-]{0,31}$")
@@ -233,14 +234,18 @@ async def discover_registered_server(payload: dict[str, Any]) -> dict[str, Any]:
 
     tools: list[dict[str, Any]] = []
     for item in raw_tools:
+        input_schema = getattr(item, "inputSchema", None)
         output_schema = getattr(item, "outputSchema", None)
         normalized = {
             "name": _bounded_name(getattr(item, "name", None), label="MCP tool name"),
             "inputSchemaDigest": _canonical_digest(
-                getattr(item, "inputSchema", None),
+                input_schema,
                 label="MCP tool input schema",
             ),
         }
+        url_arguments = _top_level_url_arguments(input_schema)
+        if url_arguments:
+            normalized["urlArguments"] = url_arguments
         if output_schema is not None:
             normalized["outputSchemaDigest"] = _canonical_digest(
                 output_schema,
@@ -316,6 +321,35 @@ async def discover_registered_server(payload: dict[str, Any]) -> dict[str, Any]:
             label="prompts",
         ),
     }
+
+
+def _top_level_url_arguments(input_schema: object) -> list[dict[str, object]]:
+    """Retain only explicit top-level JSON Schema URI inputs, never values or descriptions."""
+
+    if not isinstance(input_schema, dict):
+        return []
+    properties = input_schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+    raw_required = input_schema.get("required", [])
+    if not isinstance(raw_required, list) or any(
+        not isinstance(item, str) for item in raw_required
+    ):
+        raise ValueError("MCP tool required arguments are invalid")
+    if len(raw_required) != len(set(raw_required)):
+        raise ValueError("MCP tool required arguments are repeated")
+    required = set(raw_required)
+    arguments: list[dict[str, object]] = []
+    for raw_name, property_schema in properties.items():
+        if not isinstance(property_schema, dict):
+            continue
+        if property_schema.get("type") != "string" or property_schema.get("format") != "uri":
+            continue
+        name = _bounded_name(raw_name, label="MCP URL Tool argument name")
+        arguments.append({"name": name, "required": name in required})
+        if len(arguments) > MAX_URL_ARGUMENTS:
+            raise ValueError("MCP URL Tool arguments exceeded their shape limit")
+    return sorted(arguments, key=lambda argument: str(argument["name"]))
 
 
 async def call_registered_tool(payload: dict[str, Any]) -> dict[str, Any]:

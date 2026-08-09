@@ -245,6 +245,14 @@ class HTTPRouteSurfaceLocator(StrictModel):
         return tuple(normalized)
 
 
+class HTTPInternalAPISurfaceLocator(StrictModel):
+    """Non-executable Internal API boundary explicitly declared by one OpenAPI operation."""
+
+    kind: Literal["http-internal-api"] = "http-internal-api"
+    route: HTTPRouteSurfaceLocator
+    declaration: Literal["openapi-x-pajin-internal-api"] = "openapi-x-pajin-internal-api"
+
+
 class HTTPAuthenticationScheme(StrictModel):
     """Non-secret identity of one referenced OpenAPI authentication scheme."""
 
@@ -656,6 +664,41 @@ class MCPToolSurfaceLocator(StrictModel):
     output_schema_digest: _Sha256 | None = None
 
 
+class MCPURLArgument(StrictModel):
+    """One URL-bearing top-level MCP Tool argument without a runtime value."""
+
+    name: str = Field(min_length=1, max_length=128, pattern=_MCP_NAME_PATTERN)
+    required: bool
+
+    @field_validator("required", mode="before")
+    @classmethod
+    def require_boolean(cls, value: object) -> object:
+        if not isinstance(value, bool):
+            raise ValueError("MCP URL Tool argument required flag must be a boolean")
+        return value
+
+
+class MCPURLToolSurfaceLocator(StrictModel):
+    """Non-executable MCP Tool boundary with explicit JSON Schema URI inputs."""
+
+    kind: Literal["mcp-url-tool"] = "mcp-url-tool"
+    server_id: _MCPServerIdentifier
+    tool_name: str = Field(min_length=1, max_length=128, pattern=_MCP_NAME_PATTERN)
+    input_schema_digest: _Sha256
+    url_arguments: tuple[MCPURLArgument, ...] = Field(min_length=1, max_length=32)
+
+    @field_validator("url_arguments")
+    @classmethod
+    def validate_url_arguments(
+        cls,
+        value: tuple[MCPURLArgument, ...],
+    ) -> tuple[MCPURLArgument, ...]:
+        names = [argument.name for argument in value]
+        if names != sorted(set(names)):
+            raise ValueError("MCP URL Tool arguments must be unique and sorted")
+        return value
+
+
 class ToolInterfaceSurfaceLocator(StrictModel):
     """Canonical identity of one registered, versioned Tool interface."""
 
@@ -674,6 +717,7 @@ class ToolInterfaceSurfaceLocator(StrictModel):
 SurfaceLocator = Annotated[
     HTTPSurfaceLocator
     | HTTPRouteSurfaceLocator
+    | HTTPInternalAPISurfaceLocator
     | HTTPAuthenticationSurfaceLocator
     | HTTPFileUploadSurfaceLocator
     | HTTPRAGSurfaceLocator
@@ -682,6 +726,7 @@ SurfaceLocator = Annotated[
     | MCPResourceTemplateSurfaceLocator
     | MCPServerSurfaceLocator
     | MCPToolSurfaceLocator
+    | MCPURLToolSurfaceLocator
     | ToolInterfaceSurfaceLocator,
     Field(discriminator="kind"),
 ]
@@ -968,6 +1013,15 @@ def http_authentication_surface_locator(
     )
 
 
+def http_internal_api_surface_locator(
+    *,
+    route: HTTPRouteSurfaceLocator,
+) -> HTTPInternalAPISurfaceLocator:
+    """Build one target-declared, non-executable Internal API boundary."""
+
+    return HTTPInternalAPISurfaceLocator(route=route)
+
+
 def http_file_upload_surface_locator(
     *,
     route: HTTPRouteSurfaceLocator,
@@ -1074,6 +1128,23 @@ def mcp_tool_surface_locator(
         tool_name=tool_name,
         input_schema_digest=input_schema_digest,
         output_schema_digest=output_schema_digest,
+    )
+
+
+def mcp_url_tool_surface_locator(
+    *,
+    server_id: str,
+    tool_name: str,
+    input_schema_digest: str,
+    url_arguments: tuple[MCPURLArgument, ...],
+) -> MCPURLToolSurfaceLocator:
+    """Build one digest-bound MCP URL Tool boundary without retaining its schema."""
+
+    return MCPURLToolSurfaceLocator(
+        server_id=server_id,
+        tool_name=tool_name,
+        input_schema_digest=input_schema_digest,
+        url_arguments=url_arguments,
     )
 
 

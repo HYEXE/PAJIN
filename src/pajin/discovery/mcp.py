@@ -11,12 +11,14 @@ from pajin.discovery.adapters import DiscoverySurfaceKind
 from pajin.discovery.admission import SurfaceCandidate
 from pajin.discovery.models import (
     MCPPromptArgument,
+    MCPURLArgument,
     SurfaceLocator,
     mcp_prompt_surface_locator,
     mcp_resource_surface_locator,
     mcp_resource_template_surface_locator,
     mcp_server_surface_locator,
     mcp_tool_surface_locator,
+    mcp_url_tool_surface_locator,
 )
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult
 from pajin.tools.mcp import RegisteredMCPDiscoveryTool
@@ -26,6 +28,13 @@ _MAX_PROMPT_ARGUMENTS = 32
 _NAME_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
 _SCHEME_PATTERN = r"^[a-z][a-z0-9+.-]{0,31}$"
 _SHA256_PATTERN = r"^[a-f0-9]{64}$"
+
+
+class _MCPURLArgumentBoundary(StrictModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, strict=True)
+
+    name: str = Field(min_length=1, max_length=128, pattern=_NAME_PATTERN)
+    required: StrictBool
 
 
 class _MCPToolBoundary(StrictModel):
@@ -41,6 +50,20 @@ class _MCPToolBoundary(StrictModel):
         alias="outputSchemaDigest",
         pattern=_SHA256_PATTERN,
     )
+    url_arguments: list[_MCPURLArgumentBoundary] | None = Field(
+        default=None,
+        alias="urlArguments",
+        max_length=32,
+    )
+
+    @model_validator(mode="after")
+    def validate_url_arguments(self) -> _MCPToolBoundary:
+        if self.url_arguments is None:
+            return self
+        names = [argument.name for argument in self.url_arguments]
+        if not names or names != sorted(set(names)):
+            raise ValueError("MCP URL Tool arguments must be non-empty, unique, and sorted")
+        return self
 
 
 class _MCPResourceBoundary(StrictModel):
@@ -160,6 +183,7 @@ class MCPBoundarySurfaceAdapter:
             "mcp-resource-template",
             "mcp-server",
             "mcp-tool",
+            "mcp-url-tool",
         )
         self.requires_trusted_network_receipt = False
         self._tool_version = tool.spec.version
@@ -176,6 +200,7 @@ class MCPBoundarySurfaceAdapter:
             "maxPromptArguments": _MAX_PROMPT_ARGUMENTS,
             "retainsRawResourceUris": False,
             "retainsRawSchemas": False,
+            "retainsURLArgumentNames": True,
             "retainsDescriptions": False,
             "retainsPromptValues": False,
         }
@@ -213,6 +238,22 @@ class MCPBoundarySurfaceAdapter:
                     output_schema_digest=item.output_schema_digest,
                 )
                 for item in boundary.tools
+            ),
+            *(
+                mcp_url_tool_surface_locator(
+                    server_id=self._server_id,
+                    tool_name=item.name,
+                    input_schema_digest=item.input_schema_digest,
+                    url_arguments=tuple(
+                        MCPURLArgument(
+                            name=argument.name,
+                            required=argument.required,
+                        )
+                        for argument in item.url_arguments or ()
+                    ),
+                )
+                for item in boundary.tools
+                if item.url_arguments
             ),
             *(
                 mcp_resource_surface_locator(

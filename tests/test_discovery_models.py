@@ -6,10 +6,16 @@ from pydantic import ValidationError
 from pajin.discovery import (
     AttackSurface,
     AttackSurfaceSet,
+    HTTPInternalAPISurfaceLocator,
+    MCPURLArgument,
+    MCPURLToolSurfaceLocator,
     SurfaceObservation,
     attack_surface,
     attack_surface_set,
+    http_internal_api_surface_locator,
+    http_route_surface_locator,
     http_surface_locator,
+    mcp_url_tool_surface_locator,
     surface_observation,
     tool_interface_surface_locator,
 )
@@ -18,6 +24,57 @@ NOW = datetime(2026, 7, 23, 1, 0, tzinfo=UTC)
 ROOT_DIGEST = "a" * 64
 REQUEST_DIGEST = "b" * 64
 RESULT_DIGEST = "c" * 64
+
+
+def test_chain003_foundation_locators_are_explicit_non_value_contracts() -> None:
+    route = http_route_surface_locator(
+        base_url="https://api.example.test",
+        path_template="/internal/status",
+        method="GET",
+    )
+    internal_api = http_internal_api_surface_locator(route=route)
+    url_tool = mcp_url_tool_surface_locator(
+        server_id="demo-security",
+        tool_name="inspect_url",
+        input_schema_digest=ROOT_DIGEST,
+        url_arguments=(MCPURLArgument(name="url", required=True),),
+    )
+
+    assert internal_api.declaration == "openapi-x-pajin-internal-api"
+    assert internal_api.route == route
+    assert url_tool.url_arguments == (MCPURLArgument(name="url", required=True),)
+    assert (
+        HTTPInternalAPISurfaceLocator.model_validate(internal_api.model_dump(mode="json"))
+        == internal_api
+    )
+    assert MCPURLToolSurfaceLocator.model_validate(url_tool.model_dump(mode="json")) == url_tool
+
+
+def test_chain003_foundation_locators_reject_forged_declaration_and_arguments() -> None:
+    route = http_route_surface_locator(
+        base_url="https://api.example.test",
+        path_template="/internal/status",
+        method="GET",
+    )
+    with pytest.raises(ValidationError):
+        HTTPInternalAPISurfaceLocator.model_validate(
+            {
+                "route": route.model_dump(mode="json"),
+                "declaration": "description-inference",
+            }
+        )
+    with pytest.raises(ValidationError, match="unique and sorted"):
+        MCPURLToolSurfaceLocator(
+            server_id="demo-security",
+            tool_name="inspect_url",
+            input_schema_digest=ROOT_DIGEST,
+            url_arguments=(
+                MCPURLArgument(name="url", required=True),
+                MCPURLArgument(name="callback", required=False),
+            ),
+        )
+    with pytest.raises(ValidationError, match="must be a boolean"):
+        MCPURLArgument.model_validate({"name": "url", "required": 1})
 
 
 def _observation(

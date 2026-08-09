@@ -13,7 +13,10 @@ from pajin.discovery.adapters import DiscoverySurfaceKind
 from pajin.discovery.admission import SurfaceCandidate
 from pajin.discovery.canonicalization import canonical_json_bytes
 from pajin.discovery.models import (
+    HTTPInternalAPISurfaceLocator,
     HTTPRouteSurfaceLocator,
+    SurfaceLocator,
+    http_internal_api_surface_locator,
     http_route_surface_locator,
     http_surface_locator,
 )
@@ -59,6 +62,7 @@ class HTTPAndOpenAPISurfaceAdapter:
     adapter_version = "1.0.0"
     supported_surface_kinds: tuple[DiscoverySurfaceKind, ...] = (
         "http-endpoint",
+        "http-internal-api",
         "http-route",
     )
     requires_trusted_network_receipt = True
@@ -101,6 +105,7 @@ class HTTPAndOpenAPISurfaceAdapter:
             "maxOpenAPIPaths": _MAX_OPENAPI_PATHS,
             "supportedOpenAPIVersions": ["3.0", "3.1"],
             "sameOriginServersOnly": True,
+            "internalAPIOperationExtension": "x-pajin-internal-api",
             "externalRefResolution": False,
             "yamlParsing": False,
         }
@@ -181,6 +186,7 @@ class HTTPAndOpenAPISurfaceAdapter:
             raise ValueError("OpenAPI paths are invalid or exceed the path limit")
         servers = _openapi_servers(request_target, document.get("servers"))
         routes: dict[bytes, HTTPRouteSurfaceLocator] = {}
+        internal_apis: dict[bytes, HTTPInternalAPISurfaceLocator] = {}
         for path_template, raw_path_item in raw_paths.items():
             if not isinstance(path_template, str):
                 raise ValueError("OpenAPI path key must be text")
@@ -201,6 +207,7 @@ class HTTPAndOpenAPISurfaceAdapter:
                     continue
                 request_content_types = _operation_request_content_types(operation)
                 response_content_types = _operation_response_content_types(operation)
+                internal_api_declared = _operation_internal_api_declared(operation)
                 for server in servers:
                     locator = http_route_surface_locator(
                         base_url=server,
@@ -214,9 +221,19 @@ class HTTPAndOpenAPISurfaceAdapter:
                         label="HTTP/OpenAPI route locator",
                     )
                     routes[key] = locator
+                    if internal_api_declared:
+                        internal_api = http_internal_api_surface_locator(route=locator)
+                        internal_key = canonical_json_bytes(
+                            internal_api.model_dump(mode="json"),
+                            label="HTTP/OpenAPI Internal API locator",
+                        )
+                        internal_apis[internal_key] = internal_api
                     if len(routes) > self._max_openapi_routes:
                         raise ValueError("OpenAPI response exceeded the route limit")
-        return [SurfaceCandidate(locator=routes[key], confidence=0.95) for key in sorted(routes)]
+        locators: dict[bytes, SurfaceLocator] = {**routes, **internal_apis}
+        return [
+            SurfaceCandidate(locator=locators[key], confidence=0.95) for key in sorted(locators)
+        ]
 
 
 def _canonical_method(value: str) -> str:
@@ -309,6 +326,15 @@ def _operation_response_content_types(operation: dict[str, object]) -> tuple[str
         if len(values) > _MAX_OPENAPI_CONTENT_TYPES:
             raise ValueError("OpenAPI response content types exceed the limit")
     return tuple(sorted(values))
+
+
+def _operation_internal_api_declared(operation: dict[str, object]) -> bool:
+    value = operation.get("x-pajin-internal-api")
+    if value is None:
+        return False
+    if type(value) is not bool:
+        raise ValueError("OpenAPI Internal API declaration must be a boolean")
+    return value
 
 
 def _content_types(value: object, *, label: str) -> tuple[str, ...]:

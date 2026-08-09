@@ -3,6 +3,7 @@
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
+from pydantic import AnyHttpUrl
 
 mcp = FastMCP("PAJIN Demo Security Server")
 
@@ -40,6 +41,17 @@ def inspect_text(text: str) -> dict[str, Any]:
             if suspicious
             else "no instruction-hijacking pattern detected"
         ),
+    }
+
+
+@mcp.tool()
+def inspect_url(url: AnyHttpUrl) -> dict[str, Any]:
+    """Inspect a typed URL without making a network request."""
+
+    return {
+        "scheme": url.scheme,
+        "host": url.host,
+        "networkRequestPerformed": False,
     }
 
 

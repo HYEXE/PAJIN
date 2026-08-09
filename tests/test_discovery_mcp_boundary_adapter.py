@@ -56,6 +56,8 @@ def test_mcp_boundary_adapter_emits_only_non_executable_locators(
     assert [payload["kind"] for payload in locator_payloads] == [
         "mcp-server",
         "mcp-tool",
+        "mcp-tool",
+        "mcp-url-tool",
         "mcp-resource",
         "mcp-resource-template",
         "mcp-prompt",
@@ -66,6 +68,8 @@ def test_mcp_boundary_adapter_emits_only_non_executable_locators(
         "protocol_version": "2025-06-18",
         "capabilities": ["prompts", "resources", "tools"],
     }
+    assert locator_payloads[3]["tool_name"] == "inspect_url"
+    assert locator_payloads[3]["url_arguments"] == [{"name": "url", "required": True}]
     assert locator_payloads[-1]["arguments"] == [{"name": "text", "required": True}]
     assert "pajin://policy" not in serialized
     assert "pajin://guidance/{topic}" not in serialized
@@ -83,6 +87,8 @@ def test_mcp_boundary_adapter_emits_only_non_executable_locators(
         "unsorted-capabilities",
         "duplicate-tool",
         "capability-contradiction",
+        "url-value",
+        "url-argument-coercion",
     ],
 )
 def test_mcp_boundary_adapter_rejects_forged_or_noncanonical_data(
@@ -103,6 +109,10 @@ def test_mcp_boundary_adapter_rejects_forged_or_noncanonical_data(
         data["capabilities"] = ["tools", "resources", "prompts"]
     elif mutation == "duplicate-tool":
         data["tools"].append(dict(data["tools"][0]))
+    elif mutation == "url-value":
+        data["tools"][1]["urlArguments"][0]["value"] = "http://internal.invalid"  # type: ignore[index]
+    elif mutation == "url-argument-coercion":
+        data["tools"][1]["urlArguments"][0]["required"] = 1  # type: ignore[index]
     else:
         data["capabilities"] = ["prompts", "resources"]
     now = datetime.now(UTC)
@@ -137,11 +147,13 @@ def test_mcp_boundary_adapter_registration_binds_all_surface_kinds(
         "mcp-resource-template",
         "mcp-server",
         "mcp-tool",
+        "mcp-url-tool",
     )
     context = adapter.stable_execution_context()
     assert context["serverId"] == "demo-security"
     assert context["retainsRawResourceUris"] is False
     assert context["retainsRawSchemas"] is False
+    assert context["retainsURLArgumentNames"] is True
     assert context["retainsDescriptions"] is False
     assert context["retainsPromptValues"] is False
 
@@ -184,6 +196,8 @@ def test_mcp_boundary_recon_seals_admits_and_projects_all_interfaces(
         "mcp-resource-template",
         "mcp-server",
         "mcp-tool",
+        "mcp-tool",
+        "mcp-url-tool",
     ]
     evidence = json.loads(
         next((outcome.source_run_path / "evidence").glob("*.json")).read_text(encoding="utf-8")

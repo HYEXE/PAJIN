@@ -139,15 +139,20 @@ def mcp_registered_discovery_matches(result: WorkerResult) -> bool:
         label="MCP discovery resource templates",
     )
     prompts = cli_json_object_list(payload.get("prompts"), label="MCP discovery prompts")
-    if len(tools) != 1 or len(resources) != 1 or len(templates) != 1 or len(prompts) != 1:
+    if len(tools) != 2 or len(resources) != 1 or len(templates) != 1 or len(prompts) != 1:
         return False
-    tool_digest = tools[0].get("inputSchemaDigest")
+    text_tool, url_tool = tools
+    text_tool_digest = text_tool.get("inputSchemaDigest")
+    url_tool_digest = url_tool.get("inputSchemaDigest")
     resource_digest = resources[0].get("uriSha256")
     template_digest = templates[0].get("templateSha256")
-    digests = (tool_digest, resource_digest, template_digest)
+    digests = (text_tool_digest, url_tool_digest, resource_digest, template_digest)
     return (
-        set(tools[0]) <= {"name", "inputSchemaDigest", "outputSchemaDigest"}
-        and tools[0].get("name") == "inspect_text"
+        set(text_tool) <= {"name", "inputSchemaDigest", "outputSchemaDigest"}
+        and text_tool.get("name") == "inspect_text"
+        and set(url_tool) <= {"name", "inputSchemaDigest", "outputSchemaDigest", "urlArguments"}
+        and url_tool.get("name") == "inspect_url"
+        and url_tool.get("urlArguments") == [{"name": "url", "required": True}]
         and resources[0].get("uriScheme") == "pajin"
         and set(resources[0]) == {"uriScheme", "uriSha256"}
         and templates[0].get("uriScheme") == "pajin"

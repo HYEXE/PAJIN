@@ -25,6 +25,7 @@ DiscoverySurfaceKind = Literal[
     "http-authentication",
     "http-endpoint",
     "http-file-upload",
+    "http-internal-api",
     "http-rag",
     "http-route",
     "mcp-prompt",
@@ -32,6 +33,7 @@ DiscoverySurfaceKind = Literal[
     "mcp-resource-template",
     "mcp-server",
     "mcp-tool",
+    "mcp-url-tool",
     "tool-interface",
 ]
 

@@ -434,6 +434,17 @@ class SimulatedWorkerBackend:
             "required": ["text"],
             "type": "object",
         }
+        url_input_schema = {
+            "properties": {
+                "url": {
+                    "format": "uri",
+                    "minLength": 1,
+                    "type": "string",
+                }
+            },
+            "required": ["url"],
+            "type": "object",
+        }
         return {
             "protocolVersion": "2025-06-18",
             "capabilities": ["prompts", "resources", "tools"],
@@ -441,7 +452,12 @@ class SimulatedWorkerBackend:
                 {
                     "name": "inspect_text",
                     "inputSchemaDigest": digest(input_schema),
-                }
+                },
+                {
+                    "name": "inspect_url",
+                    "inputSchemaDigest": digest(url_input_schema),
+                    "urlArguments": [{"name": "url", "required": True}],
+                },
             ],
             "resources": [
                 {

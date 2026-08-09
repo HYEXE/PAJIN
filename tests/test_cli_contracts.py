@@ -358,7 +358,12 @@ def test_mcp_check_requires_exact_typed_catalog_rejections(
                                 {
                                     "name": "inspect_text",
                                     "inputSchemaDigest": "a" * 64,
-                                }
+                                },
+                                {
+                                    "name": "inspect_url",
+                                    "inputSchemaDigest": "d" * 64,
+                                    "urlArguments": [{"name": "url", "required": True}],
+                                },
                             ],
                             "resources": [{"uriScheme": "pajin", "uriSha256": "b" * 64}],
                             "resourceTemplates": [
