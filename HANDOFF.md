@@ -1,9 +1,9 @@
 # PAJIN 개발 인수인계
 
-- 기록일: 2026-08-09
+- 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `ac021a8a6eb314f9797a4c53ec93710731756a25`
-- 현재 코드 체크포인트: Phase 7 완료 — `SUP-007A/B` T0/T1과 `SUP-008` 사전 승인 T2 no-write Control Plane profile
+- 현재 기능 HEAD: `4c19ca81437a37e203fad71b0d97d4c4f586dec2`
+- 현재 코드 체크포인트: Phase 8 `CHAIN-001` 완료 — Auth Bypass에서 AI Admin Surface까지의 mode-neutral 비실행 계약
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -13,9 +13,10 @@
 - SUP-007A 구현 커밋: `16fe8d1f44e5524cfe0f9a68b86d9126848ef091`
 - SUP-007B 구현 커밋: `2434e83dd80df1dface1f0e68fab41d0b4ecfd1b`
 - SUP-008 구현 커밋: `ac021a8a6eb314f9797a4c53ec93710731756a25`
-- 현재 구현 체크포인트: 기존 Approval·Permit·receipt·Gateway·managed Run·Outcome 권한을 재사용하는 approval-free/approved General Attack profile
-- 다음 로드맵: Phase 8 `CHAIN-001` Auth Bypass에서 AI Admin Surface까지의 mode-neutral attack chain 계약
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 8 commits ahead
+- CHAIN-001 구현 커밋: `4c19ca81437a37e203fad71b0d97d4c4f586dec2`
+- 현재 구현 체크포인트: exact sealed Surface Snapshot에 결박된 mode-neutral Auth Bypass → AI Admin coverage hypothesis
+- 다음 로드맵: Phase 8 `CHAIN-002` File Upload → RAG Injection → Tool Abuse mode-neutral attack chain 계약
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 10 commits ahead
 
 ## 재개 전 확인
 
@@ -27,14 +28,22 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`에
-보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 8 commits ahead이고 working tree는
-clean이어야 한다.
+문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
+CHAIN-001은 `4c19ca8`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
+`origin/main@021a1f4`보다 10 commits ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
+
+`CHAIN-001`은 exact sealed Recon source·projection Run과 ORCH-001 `SurfaceSnapshotAuthority`를 다시
+검증한다. non-anonymous `http-authentication`과 같은 Campaign Target·exact route의 명시적
+`http-rag/index-management` Surface만 `chain-001:auth-bypass-to-ai-admin-surface@1.0.0`으로 결박한다.
+Campaign mode에 따라 분기하지 않지만 exact Campaign digest는 보존한다. 결과는
+`hypothesized-not-validated`, `surfaceEvidenceOnly=true`이고 Capability·execution·Claim Replay·Finding
+confirmation은 모두 false다. URL·설명·이름으로 admin 의미를 추론하거나 ToolRequest·Grant·Permit·Replay·
+Validation authority를 생성하지 않는다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
 operator approval, 기존 consumed `ActionPermit`, non-reusable consumption receipt를 원자적으로
@@ -119,6 +128,8 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `src/pajin/control_plane/capability_deployment.py`
 - `src/pajin/control_plane/executors.py`
 - `src/pajin/workflow/engine_execution_gate.py`
+- `src/pajin/discovery/attack_chain.py`
+- `tests/test_mode_neutral_attack_chain.py`
 - `docs/orchestration/APPROVAL-001A-single-action-approval.md`
 - `docs/orchestration/APPROVAL-001B-approved-reversible-cleanup-hold.md`
 - `docs/orchestration/APPROVAL-001C1-bounded-async-approval-batch.md`
@@ -127,6 +138,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/SUP-007A-opt-in-general-attack-execution.md`
 - `docs/orchestration/SUP-007B-control-plane-general-attack-profile.md`
 - `docs/orchestration/SUP-008-approved-general-attack-control-plane-profile.md`
+- `docs/orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -135,8 +147,22 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0139-compose-general-attack-through-managed-gateway.md`
 - `docs/adr/0140-expose-general-attack-through-control-plane.md`
 - `docs/adr/0141-compose-approved-general-attack-profile.md`
+- `docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md`
 
 ## 현재 검증
+
+### 2026-08-10 CHAIN-001 mode-neutral 공격 체인 계약 검증
+
+- CHAIN-001 구현 커밋: `4c19ca8`
+- CHAIN-001·RAG adapter·Surface Snapshot·Discovery model 인접 회귀: 77 passed
+- Discovery 전 범위 회귀: 172 passed
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 strict mypy: 259 source files 통과
+- 변경 Python format check: 통과
+- 변경 Markdown 7개 상대 링크 검사: 통과
+- staged credential pattern scan과 `git diff --cached --check`: 통과
+- 전체 pytest는 기존 Artifact admission 오류 메시지 불일치가 미해결이므로 같은 원인의 전 범위 실행을
+  반복하지 않았다. CHAIN-001 관련·Discovery 전 범위 묶음은 위와 같이 통과했다.
 
 ### 2026-08-09 SUP-008 사전 승인 T2 profile 집중·통합 검증
 
@@ -277,20 +303,20 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-APPROVAL-001C3는 `6134253`에 보존됐다. 현재 working tree의 SUP-007A는 `GeneralAttackActionExecutionGate`를
-추가해 deployment-owned 실행 입력, managed Run anchor, 기존 GRAPH Permit, Capability Gateway, Worker와
-PERMIT-004A outcome을 하나의 명시적 direct-call T0/T1 no-write 경로로 조합한다. 새 Permit·Grant·store·record
-type은 추가하지 않으며 T2/T3+, write, cleanup-required, 자동 redispatch와 기존 default workflow는 닫혀 있다.
+CHAIN-001은 `4c19ca8`에 보존됐다. 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시
+승인 전까지 수행하지 않는다.
 
-1. SUP-007A 집중 11 tests와 Proposal·Permit·Outcome·rollout 인접 통합 147 tests가 통과했다.
-2. 전체 Linux 대상 strict mypy는 258 source files에서 통과했다.
-3. 현재 변경은 미커밋이다. 사용자가 로컬 커밋을 승인하면 SUP-007A 코드·테스트·문서만 명시적으로 stage하고
-   한글 Conventional Commit으로 보존한다.
-4. push는 별도 명시 승인 전까지 수행하지 않는다. 다음 수직 슬라이스는 SUP-007B의 구체 제품 노출과 T2
-   사전 승인 정책이다.
+다음 수직 슬라이스는 `CHAIN-002`다. 먼저 `src/pajin/discovery/walking.py`,
+`walking_mcp.py`, `walking_validation.py`와 P0-D2B runnable fixture를 대조한다. 기존 WALK-001~005의
+File Upload → RAG Injection → Tool Abuse lineage를 이름만 바꾸거나 새 실행 권위로 복제하지 말고,
+CHAIN-001 contract/authority를 재사용·일반화할 최소 additive step·edge 표현을 정의한다. exact Campaign·
+Surface Snapshot·WALK authority 결박, stage 누락·재정렬·cross-Campaign/Target/Run substitution, 실행·validation
+authority false를 완료 조건으로 둔다.
 
 ## 알려진 경계
 
+- CHAIN-001은 DISC-003C의 explicit `x-pajin-rag/index-management`만 AI admin Surface로 해석한다. 실제
+  authentication bypass나 admin access를 관찰하지 않으며 UI·MCP·provider admin은 미지원이다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.
