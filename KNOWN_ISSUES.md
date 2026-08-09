@@ -3,29 +3,30 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## SUP-007B Control Plane profile의 input TCB·T2·pricing 경계
+## SUP-008 approved profile의 verifier TCB·network·pricing 경계
 
-- 상태: T0/T1 `none`·`read-only` General Attack의 direct-call 조합과 Control Plane
-  `general-attack-v1` 제품 profile은 구현됐고 T2·network·priced action은 닫힘
+- 상태: approval-free T0/T1 `general-attack-v1`과 deployment-approved T2 no-write
+  `general-attack-approved-v1`은 구현됐고 T3+·write·network·priced action은 닫힘
 - 현재 보장: SHA-256-pinned Capability Graph deployment가 Campaign·Envelope·activation·Graph store,
-  managed Run root·Tool registry·Worker를 소유한다. strict Campaign Job의 Hypothesis Set·Plan·Task·Definition·
-  code-backed Capability에서 Proposal과 intent를 executor가 다시 빌드하고 exact Decision·Grant와 교차 검증한다.
-  deployment·Campaign·Envelope·release·activation·compiler에 결박된 Run anchor를 첫 event로 seal한 뒤 기존
-  GRAPH Permit, Capability Gateway와 PERMIT-004A outcome gate만 재사용한다. exact retry와 callback 실패는
-  Worker를 자동 재호출하지 않는다. 비표준 Run ID, T2/T3+, write, approval-required, networked, non-zero-cost와
-  cross-authority substitution은 Permit 또는 Worker 전에 fail closed한다.
-- 제한: leased Job admission, Envelope·Decision actor provenance, Grant의 출처와 deployment-selected
-  Tool/Policy/Worker는 process-local Control Plane/deployment TCB다. Job source exact-rebuild가 잘못된 외부
-  provenance 인증을 암호학적으로 보정하지는 않는다. `costMicrousd=0`은 Campaign max cost가 0이고 Definition이
-  network를 금지한 profile에서만 사용한다. production inventory는 no-write이고 T2 approval provider,
-  reversible-write cleanup composition과 cross-host fencing은 활성화하지 않았다.
-- 영향: Job이 Campaign·Envelope·Run root·activation·Gateway code를 선택할 수 없고 exact retry로 Worker를
-  재호출할 수 없다. 반대로 운영 deployment가 Job admission·Decision·Grant provenance를 잘못 신뢰하면 이
-  profile 자체가 별도 서명 권위를 만들어 보정한다고 주장할 수 없다.
-- 해소 조건: T2를 열 경우 기존 APPROVAL-001A provider·issuer verifier·ApprovalEnvelope·receipt를 exact source와
-  결박하는 별도 profile과 negative coverage를 추가한다. network 또는 priced action을 열기 전에는 trusted
-  fixed-point pricing과 egress observation authority를 deployment 계약으로 고정한다. T3+와 write는 계속 별도
-  승인 전까지 닫는다.
+  managed Run root·Tool registry·Worker와 exact Approval inventory를 소유한다. executor는 strict Job source에서
+  Proposal과 intent를 다시 만들고 Job approval을 deployment inventory와 exact-match한 뒤 기존 verifier를
+  재사용한다. APPROVAL-001A가 Approval·GRAPH Permit·non-reusable receipt를 원자 소비하고 PERMIT-004A가 durable
+  receipt를 authenticated outcome에 결박한다. exact retry, callback 실패와 cancellation은 Worker를 자동
+  재호출하지 않는다. missing·forged·expired·cross-authority approval, 비표준 Run ID, T3+, write,
+  cleanup-required, networked와 non-zero-cost action은 Permit 또는 Worker 전에 fail closed한다.
+- 제한: leased Job admission, Envelope·Decision actor provenance, Grant의 출처, approval verifier code pin과
+  deployment-selected Tool/Policy/Worker는 process-local Control Plane/deployment TCB다. durable Approval·receipt가
+  future process의 verifier 동일성을 증명하지 않는다. `costMicrousd=0`은 Campaign max cost가 0이고 Definition이
+  network를 금지한 profile에서만 사용한다. production inventory는 no-write이고 reversible-write product
+  composition, trusted pricing·egress observation과 cross-host fencing은 활성화하지 않았다.
+- 영향: Job이 Campaign·Envelope·Run root·activation·Gateway·verifier code를 선택하거나 approval digest만으로
+  issuer 권위를 주장할 수 없고 exact retry로 Worker를 재호출할 수 없다. 반대로 운영 deployment가 Job
+  admission·Decision·Grant provenance 또는 verifier code를 잘못 신뢰하면 이 profile이 별도 서명 권위를 만들어
+  보정한다고 주장할 수 없다.
+- 해소 조건: network 또는 priced action을 열기 전에 trusted fixed-point pricing과 egress observation authority를
+  deployment 계약으로 고정한다. write를 열기 전에는 production Capability·cleanup Grant/mapping·restored-state
+  verifier와 운영 복구 계약을 제품 surface에 결박한다. cross-host 재개에는 durable verifier pin과 fencing이
+  필요하며 T3+는 별도 정책 승인 전까지 닫는다.
 
 ## APPROVAL-001C3 이후 process-local verifier·host-local journal 제한
 

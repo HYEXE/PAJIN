@@ -96,6 +96,7 @@ from pajin.supervision import (
     GeneralAttackActionPermitInputs,
     GeneralAttackActionProposal,
     GeneralAttackActionProposalError,
+    GeneralAttackApprovalClaim,
     GeneralAttackCompiledIntent,
     build_general_attack_action_proposal,
     compile_general_attack_action_intent,
@@ -243,7 +244,7 @@ class CapabilityGraphBatchCampaignJobInput(StrictModel):
 class GeneralAttackCampaignJobInput(StrictModel):
     """Exact General Attack source selected by the explicit Control Plane profile."""
 
-    profile: Literal["general-attack-v1"]
+    profile: Literal["general-attack-v1", "general-attack-approved-v1"]
     hypothesis_set: AttackHypothesisSet = Field(alias="hypothesisSet")
     plan: SurfaceBoundPlan
     task_digest: str = Field(alias="taskDigest", pattern=r"^[a-f0-9]{64}$")
@@ -251,11 +252,15 @@ class GeneralAttackCampaignJobInput(StrictModel):
     code_backed_capability: CodeBackedCapabilityRef = Field(alias="codeBackedCapability")
     decision: GraphDecision
     grant: CapabilityGrant
+    approval: ActionApprovalEnvelope | None = None
 
     @model_validator(mode="after")
     def bind_capability_reference(self) -> GeneralAttackCampaignJobInput:
         if self.code_backed_capability.capability != self.action_definition:
             raise ValueError("General Attack Job Capability references differ")
+        approved_profile = self.profile == "general-attack-approved-v1"
+        if approved_profile != (self.approval is not None):
+            raise ValueError("General Attack Job approval differs from its execution profile")
         return self
 
 
@@ -297,6 +302,26 @@ class _ControlPlaneGeneralAttackInputs:
             grant=self.grant.model_copy(deep=True),
             used_calls=self.used_calls,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class _ControlPlaneGeneralAttackApproval:
+    approval: ActionApprovalEnvelope
+
+    def bind_for_action(
+        self,
+        *,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        proposal: ActionProposal,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        envelope: MissionEnvelope,
+        decision: GraphDecision,
+        evaluated_at: datetime,
+    ) -> GeneralAttackApprovalClaim:
+        del intent, prepared, proposal, campaign, definition, envelope, decision, evaluated_at
+        return GeneralAttackApprovalClaim(envelope=self.approval.model_copy(deep=True))
 
 
 class _CapabilityGraphBatchPermitDispatcher:
@@ -537,7 +562,10 @@ class CampaignJobExecutor:
         cancellation: ExecutionCancellationContext | None = None,
     ) -> CompletedExecution:
         raw_input = self._input(job)
-        if raw_input.get("profile") == "general-attack-v1":
+        if raw_input.get("profile") in {
+            "general-attack-v1",
+            "general-attack-approved-v1",
+        }:
             return await self._execute_general_attack(
                 job,
                 raw_input,
@@ -617,6 +645,16 @@ class CampaignJobExecutor:
         campaign = deployment.campaign
         definitions = runtime.activation.rollout.bundle.definitions
         authorities = runtime.activation.rollout.bundle.authorities
+        approved_profile = job_input.profile == "general-attack-approved-v1"
+        approval = job_input.approval
+        if approved_profile and (
+            approval is None
+            or runtime.approval_input_authority is None
+            or approval not in deployment.action_approvals
+        ):
+            raise PermanentExecutionError(
+                "general-attack-approved-v1 requires a deployment-pinned approval"
+            )
         try:
             proposal = build_general_attack_action_proposal(
                 campaign,
@@ -638,7 +676,11 @@ class CampaignJobExecutor:
                 authorities,
             )
             definition = definitions.resolve(job_input.action_definition)
-            self._require_general_attack_profile_policy(campaign, definition)
+            self._require_general_attack_profile_policy(
+                campaign,
+                definition,
+                approved=approved_profile,
+            )
             envelope = deployment.mission_envelope
             used_calls = sum(
                 permit.run_id == envelope.run_id
@@ -660,6 +702,13 @@ class CampaignJobExecutor:
                 tools=runtime.tools,
                 worker=self._worker,
                 policy=PolicyEngine(),
+                approval=(
+                    _ControlPlaneGeneralAttackApproval(approval) if approval is not None else None
+                ),
+                approval_input_authority=(
+                    runtime.approval_input_authority if approved_profile else None
+                ),
+                approval_issuer=approval.issuer if approval is not None else None,
                 clock=runtime.clock,
                 permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
             )
@@ -688,31 +737,44 @@ class CampaignJobExecutor:
             TypeError,
             ValueError,
         ) as exc:
-            raise PermanentExecutionError("general-attack-v1 execution failed closed") from exc
+            raise PermanentExecutionError(f"{job_input.profile} execution failed closed") from exc
         permit = execution.permit.dispatch.permit
         outcome = execution.outcome
-        return CompletedExecution(
-            result={
-                "engine": "general-attack-gateway",
-                "executionProfile": job_input.profile,
-                "deploymentId": deployment.deployment_id,
-                "releaseSetDigest": deployment.release_set_digest,
-                "activationSetDigest": deployment.activation_set_digest,
-                "controlPlaneRunId": job.run_id,
-                "graphRunId": permit.run_id,
-                "permitId": permit.permit_id,
-                "permitDigest": permit.permit_digest,
-                "dispatchId": permit.dispatch_id,
-                "dispatched": execution.permit.dispatch.dispatched,
-                "outcomeAssessmentId": outcome.assessment_id,
-                "outcomeAssessmentDigest": outcome.assessment_digest,
-                "oracleDecision": outcome.oracle_decision.value,
-                "executionContext": worker_execution_context(self._worker).model_dump(
-                    mode="json",
-                    by_alias=True,
-                ),
-            }
-        )
+        approval_receipt = execution.permit.approval_receipt
+        if approved_profile and approval_receipt is None:
+            raise PermanentExecutionError(
+                "general-attack-approved-v1 produced no durable approval receipt"
+            )
+        result: dict[str, object] = {
+            "engine": "general-attack-gateway",
+            "executionProfile": job_input.profile,
+            "deploymentId": deployment.deployment_id,
+            "releaseSetDigest": deployment.release_set_digest,
+            "activationSetDigest": deployment.activation_set_digest,
+            "controlPlaneRunId": job.run_id,
+            "graphRunId": permit.run_id,
+            "permitId": permit.permit_id,
+            "permitDigest": permit.permit_digest,
+            "dispatchId": permit.dispatch_id,
+            "dispatched": execution.permit.dispatch.dispatched,
+            "outcomeAssessmentId": outcome.assessment_id,
+            "outcomeAssessmentDigest": outcome.assessment_digest,
+            "oracleDecision": outcome.oracle_decision.value,
+            "executionContext": worker_execution_context(self._worker).model_dump(
+                mode="json",
+                by_alias=True,
+            ),
+        }
+        if approval_receipt is not None:
+            result.update(
+                {
+                    "approvalId": approval_receipt.approval.approval_id,
+                    "approvalDigest": approval_receipt.approval.approval_digest,
+                    "approvalReceiptId": approval_receipt.receipt_id,
+                    "approvalReceiptDigest": approval_receipt.receipt_digest,
+                }
+            )
+        return CompletedExecution(result=result)
 
     async def _execute_capability_graph(
         self,
@@ -858,16 +920,28 @@ class CampaignJobExecutor:
     def _require_general_attack_profile_policy(
         campaign: CampaignManifest,
         definition: CapabilityDefinition,
+        *,
+        approved: bool = False,
     ) -> None:
         if (
-            definition.risk_tier > ToolRiskTier.T1
-            or definition.approval_required
-            or definition.network_access
+            definition.network_access
             or definition.cleanup_required
             or definition.side_effect_class
             not in {CapabilitySideEffectClass.NONE, CapabilitySideEffectClass.READ_ONLY}
             or campaign.spec.budgets.max_cost_usd != 0
         ):
+            raise PermanentExecutionError(
+                "General Attack Control Plane profiles permit only non-networked, zero-cost "
+                "no-write actions"
+            )
+        requires_approval = definition.risk_tier is ToolRiskTier.T2 or definition.approval_required
+        if approved:
+            if definition.risk_tier >= ToolRiskTier.T3 or not requires_approval:
+                raise PermanentExecutionError(
+                    "general-attack-approved-v1 permits only approval-required T0/T1 or T2 actions"
+                )
+            return
+        if definition.risk_tier > ToolRiskTier.T1 or requires_approval:
             raise PermanentExecutionError(
                 "general-attack-v1 permits only approval-free, non-networked, zero-cost "
                 "T0/T1 no-write actions"

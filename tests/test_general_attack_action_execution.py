@@ -372,7 +372,7 @@ async def test_opt_in_rejects_t2_before_runtime_inputs_and_permit(
     worker = _CountingWorker()
     gate = _gate(tmp_path, context, worker, execution_inputs)
 
-    with pytest.raises(GeneralAttackActionExecutionError, match="T0/T1"):
+    with pytest.raises(GeneralAttackActionExecutionError, match="requires a complete approval"):
         await _execute(gate, context)
 
     assert worker.calls == 0
@@ -559,10 +559,17 @@ async def test_opt_in_rejects_substituted_run_anchor_before_permit(
     assert context.graph.permit_store.permits() == ()
 
 
-@pytest.mark.parametrize("risk_tier", [ToolRiskTier.T2, ToolRiskTier.T3])
-def test_product_ceiling_rejects_t2_and_t3_sources(
+@pytest.mark.parametrize(
+    ("risk_tier", "message"),
+    [
+        (ToolRiskTier.T2, "requires a complete approval"),
+        (ToolRiskTier.T3, "T3 or higher"),
+    ],
+)
+def test_product_ceiling_rejects_unconfigured_t2_and_all_t3_sources(
     low_risk_context: _PermitContext,
     risk_tier: ToolRiskTier,
+    message: str,
 ) -> None:
     raw = low_risk_context.source_proposal.model_dump(mode="json", by_alias=True)
     raw.pop("proposalId")
@@ -572,8 +579,8 @@ def test_product_ceiling_rejects_t2_and_t3_sources(
     elevated = GeneralAttackActionProposal.model_validate(raw)
     intent = low_risk_context.intent.model_copy(update={"source_proposal": elevated})
 
-    with pytest.raises(GeneralAttackActionExecutionError, match="T0/T1"):
-        GeneralAttackActionExecutionGate._require_t0_t1_no_write(intent, elevated)
+    with pytest.raises(GeneralAttackActionExecutionError, match=message):
+        GeneralAttackActionExecutionGate._require_no_write_execution_ceiling(intent, elevated)
 
 
 def test_product_ceiling_rejects_cleanup_required_write(
@@ -589,4 +596,4 @@ def test_product_ceiling_rejects_cleanup_required_write(
     intent = low_risk_context.intent.model_copy(update={"source_proposal": write})
 
     with pytest.raises(GeneralAttackActionExecutionError, match="no-write"):
-        GeneralAttackActionExecutionGate._require_t0_t1_no_write(intent, write)
+        GeneralAttackActionExecutionGate._require_no_write_execution_ceiling(intent, write)

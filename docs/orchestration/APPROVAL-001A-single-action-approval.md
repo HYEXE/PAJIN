@@ -65,6 +65,9 @@ never invokes the Worker again. A callback failure or unknown outcome does not r
 - `capability-graph-v1` loads deployment-pinned approvals and issuer verification, requires an
   approval for T2 or definition-required actions, and exposes approval and receipt IDs/digests in
   the completed Job result. Release and activation bindings are rechecked before Permit claim.
+- `general-attack-approved-v1` exact-rebuilds PERMIT-001/002 source lineage, requires the Job
+  approval to match the same deployment inventory and verifier, and exposes the durable approval
+  and receipt IDs/digests with the authenticated outcome. `general-attack-v1` remains approval-free.
 - Common Engine and legacy `deterministic-local` have no approval-aware composition and therefore
   reject T2 before Permit or Worker dispatch. The Web Console default remains a bounded T0
   `mock-sleep` request.
@@ -131,5 +134,7 @@ binding, Common Engine rejection, and Worker non-redispatch.
 - APPROVAL-001C2 now binds reversible batch items to the existing approval plus cleanup-hold
   transaction and authenticated restored-state evidence.
 - APPROVAL-001C3 remains responsible for opt-in runtime workflow/retention.
+- SUP-008 exposes the single approved no-write authority through the Control Plane General Attack
+  profile without adding a second approval or result wire.
 - A future deployment-security slice may durably bind policy/verifier inventory across process or
   host restart. It must not reinterpret existing process-local pins as durable authority.

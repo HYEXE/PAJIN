@@ -166,7 +166,8 @@ SUP-007A composes the existing PERMIT-003 callback, Grant, RunStore, Gateway, Wo
 post-dispatch gate without adding another execution authority. Its deployment ID, managed Run root,
 Permit inputs, execution inputs, Gateway dependencies, and current activation remain explicit
 deployment TCBs. SUP-007B exposes the zero-cost, non-networked, approval-free subset through the
-Control Plane while leaving T2 closed.
+Control Plane. SUP-008 adds the distinct approved profile and binds the durable APPROVAL-001A
+receipt into the same outcome assessment while leaving T3+ and write closed.
 
 ## Related documents
 
@@ -177,4 +178,5 @@ Control Plane while leaving T2 closed.
 - [PERMIT-004B1 contract](PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md)
 - [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
 - [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
+- [SUP-008 contract](SUP-008-approved-general-attack-control-plane-profile.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

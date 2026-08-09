@@ -684,6 +684,13 @@ approval-free, non-networked, and zero-cost. T2, T3+, write, cleanup-required, c
 caller-priced execution, and automatic redispatch remain closed, and the current production
 inventory remains no-write.
 
+SUP-008 adds `general-attack-approved-v1` for zero-cost, non-networked T2 no-write and
+Definition-required T0/T1 actions. The Job approval must exact-match the SHA-256-pinned deployment
+inventory and pass the same verifier as `capability-graph-v1`. APPROVAL-001A atomically consumes the
+approval, existing Permit, and non-reusable receipt before dispatch, and the outcome plus Control
+Plane result bind the durable receipt identities. T3+, write, cleanup-required, generic pricing,
+and automatic redispatch remain closed.
+
 APPROVAL-001A adds one deployment-authenticated operator approval before Permit consumption
 without introducing another execution wire. A single `ActionApprovalEnvelope` exact-binds issuer,
 principals, Campaign, Run, MissionEnvelope, source intent, activation, release, Decision, Proposal,

@@ -3,19 +3,21 @@
 ## Purpose
 
 Compose the existing General Attack intent, ActionPermit, Capability Gateway, managed Run audit,
-and authenticated outcome gates into one explicit product entry point for T0/T1 no-write actions.
-The composition does not introduce another Permit, execution store, Grant type, or result authority.
+and authenticated outcome gates into one explicit product entry point for bounded no-write actions.
+The original SUP-007A activation is T0/T1; SUP-008 reuses the existing optional APPROVAL-001A hooks
+for approved T2. The composition does not introduce another Permit, execution store, Grant type, or
+result authority.
 
 ## Scope
 
-`GeneralAttackActionExecutionGate.execute_once()` is an additive direct-call opt-in. It admits only
-actions whose source proposal is T0 or T1, whose side-effect class is `none` or `read-only`, and
-whose cleanup metadata is false. A T0/T1 Definition that requires operator approval can use the
-existing APPROVAL-001A provider, verifier, issuer binding, receipt, and atomic Permit transaction.
+`GeneralAttackActionExecutionGate.execute_once()` is an additive direct-call opt-in. Without an
+approval composition it admits only T0/T1. With the existing APPROVAL-001A provider, verifier, and
+issuer binding it also admits T2 no-write and T0/T1 Definitions that require operator approval.
+Every admitted action must be `none` or `read-only` with cleanup metadata false.
 
-T2 and T3+ actions, reversible or irreversible writes, cleanup-required actions, batch execution,
-and automatic redispatch remain outside this slice. The existing single-action, batch, Common
-Engine, Control Plane, and legacy execution entry points are unchanged.
+T3+ actions, reversible or irreversible writes, cleanup-required actions, batch execution, and
+automatic redispatch remain outside this gate. SUP-007B/SUP-008 own the two explicit Control Plane
+profiles; Common Engine and legacy execution entry points remain unchanged.
 
 ## Authority intersection
 
@@ -92,10 +94,11 @@ assessment as immutable audit evidence.
 ## Remaining boundary
 
 SUP-007B exposes the composition through the Control Plane `general-attack-v1` profile for
-approval-free, non-networked, zero-cost T0/T1 actions. T2 still requires a separate profile that
-composes APPROVAL-001A end to end while preserving the T3+ default deny. Reversible-write product
-activation still requires a production Capability, cleanup Grant and mapping, restored-state
-verifier, and operational hold-recovery contract.
+approval-free, non-networked, zero-cost T0/T1 actions. SUP-008 adds the separate
+`general-attack-approved-v1` profile and composes APPROVAL-001A end to end for T2 no-write while
+preserving the T3+ default deny. Reversible-write product activation still requires a production
+Capability, cleanup Grant and mapping, restored-state verifier, and operational hold-recovery
+contract.
 
 ## Related documents
 
@@ -103,4 +106,5 @@ verifier, and operational hold-recovery contract.
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [APPROVAL-001A contract](APPROVAL-001A-single-action-approval.md)
 - [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
+- [SUP-008 contract](SUP-008-approved-general-attack-control-plane-profile.md)
 - [ADR-0139](../adr/0139-compose-general-attack-through-managed-gateway.md)

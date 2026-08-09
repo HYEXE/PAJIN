@@ -90,6 +90,12 @@ SUP-007B later adds `general-attack-v1` to the same Campaign executor and pinned
 rebuilds the Proposal and intent before dispatch. The profile accepts only approval-free,
 non-networked, zero-cost T0/T1 no-write actions; see ADR-0140.
 
+SUP-008 adds the distinct `general-attack-approved-v1` profile. Its Job carries one complete
+approval that must exact-match the pinned deployment inventory; the executor reuses the same
+deployment verifier as `capability-graph-v1`. APPROVAL-001A atomically consumes the approval,
+Permit, and receipt for T2 no-write or Definition-required T0/T1 execution; T3+ and write remain
+closed. See ADR-0141.
+
 The profile consumes the SQLite `ActionPermit` before entering `ToolGateway`, records
 `claimed` plus one terminal `completed`/`failed`/`cancelled`/`expired` event in the matching
 hash-chained Run, and seals that Run mutation. A retry resolves the already-consumed Permit and

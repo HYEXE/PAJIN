@@ -45,6 +45,7 @@ from pajin.graph import (
     ActionApprovalCapabilityPolicyRegistry,
     ActionApprovalEnvelope,
     ActionApprovalError,
+    ActionApprovalInputAuthority,
     ActionProposal,
     GraphActionPermitAuthority,
     GraphActionPermitDispatcher,
@@ -369,6 +370,7 @@ class CapabilityGraphDeploymentRuntime:
     graph_store: SQLiteGraphStore
     permits: GraphActionPermitDispatcher
     approved_permits: GraphApprovedActionPermitDispatcher | None
+    approval_input_authority: ActionApprovalInputAuthority | None
     approval_batch_journal: SQLiteActionApprovalBatchJournal | None
     approval_batch_dispatcher: GraphApprovedActionBatchDispatcher | None
     clock: Callable[[], datetime]
@@ -690,6 +692,11 @@ def load_capability_graph_deployment(
             clock=selected_clock,
             permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
         )
+        approval_input_authority = (
+            _DeploymentActionApprovalInputAuthority(deployment.action_approvals)
+            if deployment.action_approvals
+            else None
+        )
         approved_authority = (
             GraphApprovedActionPermitAuthority(
                 campaign_id=deployment.campaign.metadata.name,
@@ -699,13 +706,11 @@ def load_capability_graph_deployment(
                 capabilities=activation.action_registry(),
                 policies=approval_policies,
                 permit_store=graph_store.permit_store,
-                input_authority=_DeploymentActionApprovalInputAuthority(
-                    deployment.action_approvals
-                ),
+                input_authority=approval_input_authority,
                 clock=selected_clock,
                 permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
             )
-            if deployment.action_approvals
+            if approval_input_authority is not None
             else None
         )
         approved_dispatcher = (
@@ -745,6 +750,7 @@ def load_capability_graph_deployment(
         graph_store=graph_store,
         permits=GraphActionPermitDispatcher(authority),
         approved_permits=approved_dispatcher,
+        approval_input_authority=approval_input_authority,
         approval_batch_journal=approval_batch_journal,
         approval_batch_dispatcher=approval_batch_dispatcher,
         clock=selected_clock,

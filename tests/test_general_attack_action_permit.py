@@ -49,6 +49,7 @@ from pajin.graph import (
     TrustedGraphLineageRegistry,
     action_permit_attempt_id,
 )
+from pajin.runtime.store import RunStore
 from pajin.supervision import (
     GeneralAttackActionPermitError,
     GeneralAttackActionPermitGate,
@@ -223,7 +224,7 @@ def permit_context(
         request=intent.request,
         parameters=intent.request.arguments,
     )
-    run_id = "general-attack-permit-run"
+    run_id = RunStore.new_run_id()
     graph, seeded_decision = _seed_worker_graph(
         tmp_path / "graph" / "canonical.sqlite3",
         campaign=sample_campaign,

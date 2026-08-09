@@ -75,13 +75,14 @@ Tests cover the real T0 CTF path plus:
 
 ## Remaining boundary
 
-The next Phase 7 checkpoint may add a distinct T2 profile only if the deployment pins a complete
-APPROVAL-001A provider, issuer verifier, ApprovalEnvelope, and receipt path for the exact General
-Attack source. T3+ and write remain default denied. Generic pricing, networked execution, verified
-Decision actor provenance, and cross-host coordination remain separate deployment contracts.
+SUP-008 adds the distinct `general-attack-approved-v1` profile by reusing the deployment-pinned
+APPROVAL-001A inventory and verifier for the exact General Attack source. T3+ and write remain
+default denied. Generic pricing, networked execution, verified Decision actor provenance, and
+cross-host coordination remain separate deployment contracts.
 
 ## Related documents
 
 - [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
 - [APPROVAL-001A contract](APPROVAL-001A-single-action-approval.md)
 - [ADR-0140](../adr/0140-expose-general-attack-through-control-plane.md)
+- [SUP-008 contract](SUP-008-approved-general-attack-control-plane-profile.md)

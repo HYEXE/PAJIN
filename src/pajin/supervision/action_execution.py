@@ -34,6 +34,7 @@ from pajin.domain.models import (
     campaign_manifest_digest,
 )
 from pajin.graph import (
+    ActionApprovalError,
     ActionApprovalInputAuthority,
     ActionApprovalIssuerAuthorityBinding,
     ActionDispatchResult,
@@ -202,7 +203,7 @@ class _BoundPermitInputAuthority:
 
 
 class GeneralAttackActionExecutionGate:
-    """Compose existing Permit, Gateway, Run audit, and outcome authorities for T0/T1."""
+    """Compose existing Permit, Gateway, Run audit, approval, and outcome authorities."""
 
     def __init__(
         self,
@@ -293,14 +294,18 @@ class GeneralAttackActionExecutionGate:
         code_backed_capability: CodeBackedCapabilityRef,
         authorities: CapabilityAuthorityRegistry,
     ) -> GeneralAttackActionExecutionResult:
-        """Execute and authenticate one explicit T0/T1 no-write General Attack action."""
+        """Execute and authenticate one explicit bounded no-write General Attack action."""
 
         canonical_intent, canonical_proposal, canonical_campaign = self._canonical_sources(
             intent,
             proposal,
             campaign,
         )
-        self._require_t0_t1_no_write(canonical_intent, canonical_proposal)
+        self._require_no_write_execution_ceiling(
+            canonical_intent,
+            canonical_proposal,
+            approval_configured=self._approval is not None,
+        )
         evaluated_at = self._evaluated_at()
         runtime_inputs = self._resolve_execution_inputs(
             canonical_intent,
@@ -389,7 +394,7 @@ class GeneralAttackActionExecutionGate:
             )
         except GeneralAttackActionExecutionError:
             raise
-        except GeneralAttackActionPermitError as exc:
+        except (ActionApprovalError, GeneralAttackActionPermitError) as exc:
             raise GeneralAttackActionExecutionError(
                 "General attack execution Permit path failed closed"
             ) from exc
@@ -480,18 +485,24 @@ class GeneralAttackActionExecutionGate:
             ) from exc
 
     @staticmethod
-    def _require_t0_t1_no_write(
+    def _require_no_write_execution_ceiling(
         intent: GeneralAttackCompiledIntent,
         proposal: GeneralAttackActionProposal,
+        *,
+        approval_configured: bool = False,
     ) -> None:
         cleanup = proposal.cleanup
         if intent.source_proposal != proposal:
             raise GeneralAttackActionExecutionError(
                 "General attack execution intent differs from its source proposal"
             )
-        if proposal.risk_tier > ToolRiskTier.T1:
+        if proposal.risk_tier >= ToolRiskTier.T3:
             raise GeneralAttackActionExecutionError(
-                "General attack opt-in execution is restricted to T0/T1"
+                "General attack opt-in execution does not execute T3 or higher actions"
+            )
+        if proposal.risk_tier is ToolRiskTier.T2 and not approval_configured:
+            raise GeneralAttackActionExecutionError(
+                "General attack T2 execution requires a complete approval authority"
             )
         if (
             cleanup.side_effect_class
@@ -668,16 +679,18 @@ class GeneralAttackActionExecutionGate:
             )
         return store, anchor
 
-    @staticmethod
     def _validate_consumed_authority(
+        self,
         permit: ActionPermit,
         prepared: PreparedCapabilityAction,
         proposal: ActionProposal,
         inputs: GeneralAttackActionExecutionInputs,
     ) -> None:
-        if prepared.capability.risk_tier > ToolRiskTier.T1:
+        if prepared.capability.risk_tier >= ToolRiskTier.T3 or (
+            prepared.capability.risk_tier is ToolRiskTier.T2 and self._approval is None
+        ):
             raise GeneralAttackActionExecutionError(
-                "Consumed General attack action exceeds the T0/T1 product ceiling"
+                "Consumed General attack action exceeds the configured product ceiling"
             )
         if (
             permit.campaign_id != inputs.envelope.campaign_id

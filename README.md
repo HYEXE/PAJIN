@@ -360,6 +360,16 @@ Campaign execution remain closed. See the
 [SUP-007B contract](docs/orchestration/SUP-007B-control-plane-general-attack-profile.md) and
 [ADR-0140](docs/adr/0140-expose-general-attack-through-control-plane.md).
 
+SUP-008 adds the separate `general-attack-approved-v1` profile for zero-cost, non-networked T2
+no-write actions and T0/T1 Definitions that explicitly require approval. The Job approval must
+exact-match the startup-pinned deployment inventory and is authenticated by the same verifier used
+by `capability-graph-v1`. APPROVAL-001A atomically consumes that approval with the unchanged Permit
+and durable non-reusable receipt; the authenticated outcome and Control Plane result bind the
+receipt identities. T3+, write, cleanup-required, generic pricing, and exact-retry redispatch remain
+closed. See the
+[SUP-008 contract](docs/orchestration/SUP-008-approved-general-attack-control-plane-profile.md) and
+[ADR-0141](docs/adr/0141-compose-approved-general-attack-profile.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
@@ -1674,7 +1684,10 @@ The Campaign executor also recognizes two deployment-gated families that are una
 the SHA-256-pinned Capability Graph Worker deployment: `capability-graph-v1` and
 `capability-graph-batch-v1` for existing Graph proposals, and `general-attack-v1` for exact-rebuilt
 PERMIT-001/002 source lineage. The General Attack profile is zero-cost, non-networked, approval-free,
-and T0/T1 only.
+and T0/T1 only. `general-attack-approved-v1` accepts the same exact-rebuilt lineage plus one
+deployment-pinned approval for zero-cost, non-networked T2 no-write or Definition-required T0/T1
+execution. It returns the existing durable approval-receipt identities and does not admit T3+ or
+write actions.
 
 No Job field can name a command, Python module, class, executable, or arbitrary manifest path.
 Unknown kinds and invalid payloads fail closed. The Docker Tool Loop uses a no-network deterministic

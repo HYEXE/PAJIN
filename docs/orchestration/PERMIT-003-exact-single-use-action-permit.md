@@ -147,7 +147,9 @@ separate typed cleanup request, one-shot cleanup Permit, and restored-state boun
 production inventory remains no-write. SUP-007A provides an explicit direct-call T0/T1 product
 composition with a deployment-managed Run root, current Grant, Run audit, Gateway, Worker, and
 outcome-gate authorities. SUP-007B exposes the approval-free, non-networked, zero-cost subset through
-Control Plane `general-attack-v1`; T2 and the existing default execution paths remain unchanged.
+Control Plane `general-attack-v1`. SUP-008 exposes the deployment-approved T2 no-write subset through
+the distinct `general-attack-approved-v1` profile; T3+, write, and the existing default execution
+paths remain unchanged.
 
 ## Related documents
 
@@ -155,6 +157,7 @@ Control Plane `general-attack-v1`; T2 and the existing default execution paths r
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
 - [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
+- [SUP-008 contract](SUP-008-approved-general-attack-control-plane-profile.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [CAP-004 contract](../capability/CAP-004-maturity-signing-review-deprecation.md)
 - [CAP-005 contract](../capability/CAP-005-existing-mode-tool-replay-adapters.md)
