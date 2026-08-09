@@ -3,6 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## CHAIN-001 Surface-only AI admin 해석 경계
+
+- 상태: Auth Bypass → AI Admin Surface의 mode-neutral 비실행 계약은 구현됐고 실제 bypass·access·validation은 닫힘
+- 현재 보장: exact sealed Recon과 ORCH-001 Surface Snapshot을 다시 검증하고, non-anonymous
+  `http-authentication`과 같은 Campaign Target·exact route의 명시적 `http-rag/index-management`만
+  content-addressed chain authority로 결박한다. Campaign mode에 따라 분기하지 않지만 exact Campaign digest는
+  보존한다. 익명 대안, 다른 route·Target, 비관리 RAG, forged contract·digest, in-memory Recon 변경과 다른
+  publication 재생은 fail closed한다. Capability·execution·Claim Replay·Finding confirmation은 모두 false다.
+- 제한: DISC-003C의 target-declared `x-pajin-rag` 의미와 sealed discovery producer를 신뢰하며 실제 인증 우회나
+  관리 기능 접근을 관찰하지 않는다. UI-only admin, MCP admin, provider console과 일반 HTTP admin은 typed AI
+  admin Surface가 아니며 URL·설명·이름으로 추론하지 않는다. mode-neutral은 Campaign authority 제거가 아니고
+  cross-Campaign replay를 허용하지 않는다.
+- 영향: CHAIN-001은 coverage hypothesis로만 사용할 수 있고 Finding, Report, Replay 성공 또는 실행 승인 근거가
+  될 수 없다.
+- 해소 조건: 다른 AI admin family는 별도 bounded typed locator와 trusted admission을 먼저 추가한다. validation
+  상태를 올리려면 VAL-001 이후 exact Claim, fresh independent execution, negative control과 Replay authority를
+  chain·Snapshot lineage에 결박한다.
+
 ## SUP-008 approved profile의 verifier TCB·network·pricing 경계
 
 - 상태: approval-free T0/T1 `general-attack-v1`과 deployment-approved T2 no-write

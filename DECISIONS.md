@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0142: Bind Mode-neutral Attack Chains to Sealed Surface Snapshots](docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md)
 - [ADR-0141: Compose the Approved General Attack Profile](docs/adr/0141-compose-approved-general-attack-profile.md)
 - [ADR-0140: Expose General Attack Through the Control Plane](docs/adr/0140-expose-general-attack-through-control-plane.md)
 - [ADR-0139: Compose General Attack Through the Managed Gateway](docs/adr/0139-compose-general-attack-through-managed-gateway.md)

@@ -18,6 +18,16 @@ from pajin.discovery.admission import (
     TrustedSurfaceAdmission,
     TrustedSurfaceProducer,
 )
+from pajin.discovery.attack_chain import (
+    MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION,
+    AttackChainSurfaceReference,
+    ModeNeutralAttackChainAuthority,
+    ModeNeutralAttackChainContract,
+    ModeNeutralAttackChainError,
+    compile_auth_bypass_ai_admin_chain,
+    registered_auth_bypass_ai_admin_chain_contract,
+    verify_auth_bypass_ai_admin_chain,
+)
 from pajin.discovery.authentication import HTTPAndOpenAPIAuthenticationSurfaceAdapter
 from pajin.discovery.file_upload import HTTPAndOpenAPIFileUploadSurfaceAdapter
 from pajin.discovery.http import HTTPAndOpenAPISurfaceAdapter
@@ -223,6 +233,7 @@ __all__ = [
     "DISCOVERY_ADAPTER_API_VERSION",
     "DISCOVERY_API_VERSION",
     "HYPOTHESIS_API_VERSION",
+    "MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION",
     "MULTI_WAVE_API_VERSION",
     "ORCHESTRATION_API_VERSION",
     "RECON_API_VERSION",
@@ -237,6 +248,7 @@ __all__ = [
     "WALKING_OBSERVATION_REPLAN_API_VERSION",
     "WALKING_SHADOW_SUPERVISOR_API_VERSION",
     "AdmittedMCPAuthorizationObservation",
+    "AttackChainSurfaceReference",
     "AttackHypothesis",
     "AttackHypothesisSet",
     "AttackSurface",
@@ -294,6 +306,9 @@ __all__ = [
     "MCPToolAuthorizationHypothesisRunner",
     "MCPToolAuthorizationReconPlanner",
     "MCPToolSurfaceLocator",
+    "ModeNeutralAttackChainAuthority",
+    "ModeNeutralAttackChainContract",
+    "ModeNeutralAttackChainError",
     "ObservationGraphSnapshot",
     "ObservationRelationship",
     "RAGInjectionHypothesisAuthority",
@@ -378,6 +393,7 @@ __all__ = [
     "WalkingShadowTaskProposal",
     "attack_surface",
     "attack_surface_set",
+    "compile_auth_bypass_ai_admin_chain",
     "default_rag_injection_hypothesis_rule",
     "http_authentication_surface_locator",
     "http_file_upload_surface_locator",
@@ -402,8 +418,10 @@ __all__ = [
     "mcp_tool_authorization_rule",
     "mcp_tool_surface_locator",
     "publish_surface_projection",
+    "registered_auth_bypass_ai_admin_chain_contract",
     "surface_observation",
     "tool_interface_surface_locator",
+    "verify_auth_bypass_ai_admin_chain",
     "walking_campaign_digest",
     "walking_candidate_from_execution",
     "walking_independent_approval_receipt",

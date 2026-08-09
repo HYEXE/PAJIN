@@ -370,6 +370,15 @@ closed. See the
 [SUP-008 contract](docs/orchestration/SUP-008-approved-general-attack-control-plane-profile.md) and
 [ADR-0141](docs/adr/0141-compose-approved-general-attack-profile.md).
 
+CHAIN-001 adds the first mode-neutral, non-executable attack-chain contract. It re-verifies one
+sealed DISC-003/ORCH-001 Surface Snapshot and links a non-anonymous authentication boundary only to
+an explicit same-target, same-route RAG index-management boundary. The result is fixed to
+`hypothesized-not-validated`; it grants no Capability, execution, Claim Replay, or Finding
+confirmation. Campaign mode changes neither the contract nor its invariants, while the exact
+Campaign digest prevents cross-authority reuse. See the
+[CHAIN-001 contract](docs/orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md) and
+[ADR-0142](docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

@@ -691,6 +691,15 @@ approval, existing Permit, and non-reusable receipt before dispatch, and the out
 Plane result bind the durable receipt identities. T3+, write, cleanup-required, generic pricing,
 and automatic redispatch remain closed.
 
+CHAIN-001 begins Phase 8 with a mode-neutral, non-executable Auth Bypass to AI Admin Surface
+contract. It reopens one exact sealed DISC-003/ORCH-001 Surface Snapshot and links a non-anonymous
+`http-authentication` boundary only to an explicit same-target, same-route
+`http-rag/index-management` boundary. It never infers administration from route text or target
+description. The output remains `hypothesized-not-validated`; Capability, execution, Claim Replay,
+and Finding confirmation authority are false. See the
+[CHAIN-001 contract](../orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md) and
+[ADR-0142](../adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md).
+
 APPROVAL-001A adds one deployment-authenticated operator approval before Permit consumption
 without introducing another execution wire. A single `ActionApprovalEnvelope` exact-binds issuer,
 principals, Campaign, Run, MissionEnvelope, source intent, activation, release, Decision, Proposal,
