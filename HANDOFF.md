@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `296c9a82ed7170f13082aed19e365d3331ef0c0e`
-- 현재 코드 체크포인트: Phase 8 `CHAIN-002` 완료 — File Upload에서 RAG Injection과 Tool Abuse까지의 mode-neutral ordered chain 계약
+- 현재 기능 HEAD: `c01814c`
+- 현재 코드 체크포인트: Phase 8 `CHAIN-002` 완료 후 원격 전 승인 배치 신뢰 경계 안정화
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -15,9 +15,10 @@
 - SUP-008 구현 커밋: `ac021a8a6eb314f9797a4c53ec93710731756a25`
 - CHAIN-001 구현 커밋: `4c19ca81437a37e203fad71b0d97d4c4f586dec2`
 - CHAIN-002 구현 커밋: `296c9a82ed7170f13082aed19e365d3331ef0c0e`
-- 현재 구현 체크포인트: exact sealed WALK-002/003 계보에 결박된 mode-neutral File Upload → RAG Injection → Tool Abuse coverage hypothesis
+- 승인 배치 신뢰 경계 수정 커밋: `c01814c`
+- 현재 구현 체크포인트: CHAIN-002 coverage hypothesis와 current-authority 재검증을 포함한 APPROVAL-001C journal 복구 경계
 - 다음 로드맵: Phase 8 `CHAIN-003` Prompt Injection → URL Tool Control → Internal API mode-neutral attack chain 계약
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 12 commits ahead
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 14 commits ahead
 
 ## 재개 전 확인
 
@@ -30,8 +31,9 @@ git status --porcelain=v2 --branch
 ```
 
 문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
-CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
-`origin/main@021a1f4`보다 12 commits ahead이고 working tree는 clean이어야 한다.
+CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`에 보존됐다.
+이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 14 commits ahead이고 working tree는
+clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -164,6 +166,22 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md`
 
 ## 현재 검증
+
+### 2026-08-10 원격 전 승인 배치 신뢰 경계 점검
+
+- 구현 커밋: `c01814c`
+- journal은 canonical authorization 증거를 함께 보존하고 terminal/cancelled 조회·백업·복구 때 현재
+  input/completion/cancellation authority를 다시 검증한다.
+- Graph database와 batch journal의 Run audit root 하위 배치 및 SQLite sidecar 충돌을 거부하고,
+  `itemOrdinal`의 문자열·실수·boolean 강제 변환을 거부한다.
+- 직접 관련 회귀: 64 passed
+- 원격 미반영 승인 배치·General Attack·Control Plane·체인 결합 회귀: 216 passed
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 strict mypy: 259 source files 통과
+- 변경 Python format check: 통과
+- staged credential pattern scan과 `git diff --cached --check`: 통과
+- 전체 pytest는 기존 Artifact admission 오류 메시지 불일치가 미해결이므로 같은 원인의 전 범위 실행을
+  반복하지 않았다.
 
 ### 2026-08-10 CHAIN-002 mode-neutral WALK chain 계약 검증
 

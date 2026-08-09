@@ -34,7 +34,8 @@ Backup and retention must preserve that ambiguity rather than manufacture non-ex
    authority.
 7. Create local journal backups only after every logical record re-verifies under the current
    deployment authorities. Bind database bytes and the complete logical-state digest in a canonical
-   content-addressed manifest.
+   content-addressed manifest. Retain each consumed canonical authorization as immutable journal
+   evidence so terminal completion can be re-verified; retained evidence never grants redispatch.
 8. Restore only into a new path and require the caller to supply the batch input, completion, and
    cancellation authorities again. A backup never contains durable verifier-code identity.
 9. Expose retention as a verified assessment, not a delete operation. Pending or manual-review
