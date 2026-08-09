@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-09
 - 브랜치: `main`
-- 현재 기능 HEAD: `2434e83dd80df1dface1f0e68fab41d0b4ecfd1b`
-- 현재 코드 체크포인트: `SUP-007A/B` T0/T1 no-write 실행 조합과 Control Plane `general-attack-v1` profile 완료
+- 현재 기능 HEAD: `ac021a8a6eb314f9797a4c53ec93710731756a25`
+- 현재 코드 체크포인트: Phase 7 완료 — `SUP-007A/B` T0/T1과 `SUP-008` 사전 승인 T2 no-write Control Plane profile
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@021a1f4ee327fd04ee5413ee3ef3618c2d08f766`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -12,9 +12,10 @@
 - APPROVAL-001C3 구현 커밋: `613425367ef7a8f2e881812559efb48e4dc9d73d`
 - SUP-007A 구현 커밋: `16fe8d1f44e5524cfe0f9a68b86d9126848ef091`
 - SUP-007B 구현 커밋: `2434e83dd80df1dface1f0e68fab41d0b4ecfd1b`
-- 현재 구현 체크포인트: 기존 Permit·Gateway·managed Run·Outcome 권한을 재사용하는 direct-call gate와 SHA-256-pinned Control Plane 제품 profile
-- 다음 로드맵: 기존 APPROVAL-001A provider·issuer verifier·ApprovalEnvelope·receipt를 exact source에 결박하는 별도 T2 사전 승인 profile
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 6 commits ahead
+- SUP-008 구현 커밋: `ac021a8a6eb314f9797a4c53ec93710731756a25`
+- 현재 구현 체크포인트: 기존 Approval·Permit·receipt·Gateway·managed Run·Outcome 권한을 재사용하는 approval-free/approved General Attack profile
+- 다음 로드맵: Phase 8 `CHAIN-001` Auth Bypass에서 AI Admin Surface까지의 mode-neutral attack chain 계약
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 8 commits ahead
 
 ## 재개 전 확인
 
@@ -26,8 +27,9 @@ git rev-parse origin/main
 git status --porcelain=v2 --branch
 ```
 
-문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`에 보존됐다. 이 문서
-동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 6 commits ahead이고 working tree는 clean이어야 한다.
+문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`에
+보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@021a1f4`보다 8 commits ahead이고 working tree는
+clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -64,6 +66,12 @@ startup SHA-256-pinned Capability Graph deployment가 Campaign·Envelope·activa
 Tool registry·Worker를 소유하고, executor는 strict Job source에서 Proposal과 intent를 다시 만든다. 첫 profile은
 approval-free, non-networked, zero-cost T0/T1 no-write로 제한된다. T2, T3+, write, caller pricing과 기존 default
 Campaign workflow는 계속 닫혀 있다.
+
+`SUP-008`은 별도 `general-attack-approved-v1` profile에서 deployment가 이미 pin한 Approval inventory와
+`ActionApprovalInputAuthority`를 `capability-graph-v1`과 동일한 인스턴스로 재사용한다. strict Job approval은
+deployment inventory와 exact-match해야 하며 APPROVAL-001A가 Approval·Permit·non-reusable receipt를 원자
+소비한다. 완료 결과와 PERMIT-004A assessment는 durable approval/receipt ID·digest를 결박한다. 승인 대상 T2
+no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, priced action은 닫혀 있다.
 
 - `ActionApprovalEnvelope`는 `mode=single`, JSON integer `maxActions=1`로 고정하고 issuer·requester·
   approver, Campaign·Run·MissionEnvelope, source intent·activation set, signed release·Capability,
@@ -118,6 +126,7 @@ Campaign workflow는 계속 닫혀 있다.
 - `docs/orchestration/APPROVAL-001C3-opt-in-batch-runtime-and-retention.md`
 - `docs/orchestration/SUP-007A-opt-in-general-attack-execution.md`
 - `docs/orchestration/SUP-007B-control-plane-general-attack-profile.md`
+- `docs/orchestration/SUP-008-approved-general-attack-control-plane-profile.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -125,8 +134,25 @@ Campaign workflow는 계속 닫혀 있다.
 - `docs/adr/0138-compose-opt-in-batch-runtime-and-journal-retention.md`
 - `docs/adr/0139-compose-general-attack-through-managed-gateway.md`
 - `docs/adr/0140-expose-general-attack-through-control-plane.md`
+- `docs/adr/0141-compose-approved-general-attack-profile.md`
 
 ## 현재 검증
+
+### 2026-08-09 SUP-008 사전 승인 T2 profile 집중·통합 검증
+
+- SUP-008 구현 커밋: `ac021a8`
+- General Attack approval·execution·Permit 집중 회귀: 55 passed
+- Capability Graph approval store·rollout·outcome 인접 회귀: 77 passed
+- General Attack Proposal·Permit·execution·outcome·Control Plane·rollout 통합 회귀: 161 passed
+- Control Plane 인접 회귀: 116 passed, 1 skipped
+  - skip: 격리된 `PAJIN_TEST_CONTROL_PLANE_URL` 미설정
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 strict mypy: 258 source files 통과
+- 변경 Python format check: 통과
+- 변경 Markdown 13개 상대 링크 검사: 통과
+- `git diff --cached --check`: 통과
+- 전체 pytest는 SUP-007B 체크포인트에서 15분 상한과 기존 Artifact admission 메시지 불일치를 이미
+  재현했으므로 동일 원인의 전 범위 실행을 반복하지 않았다. SUP-008 관련·인접 묶음은 위와 같이 통과했다.
 
 ### 2026-08-09 SUP-007A/B 집중·통합 검증
 
