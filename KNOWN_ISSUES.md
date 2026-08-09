@@ -3,6 +3,22 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## CHAIN-002 WALK Hypothesis-only chain 경계
+
+- 상태: File Upload → RAG Injection → Tool Abuse의 mode-neutral ordered chain 계약은 구현됐고 실제 upload·retrieval·Tool abuse·validation은 닫힘
+- 현재 보장: sealed WALK-003 Run·artifact·publication과 그 안의 exact WALK-002 Run root·artifact SHA-256·
+  Surface Snapshot·RAG Hypothesis를 다시 결박한다. 3개 stage와 2개 edge의 누락·재정렬, Campaign·Target·
+  Snapshot·Surface·Run·Hypothesis 치환은 fail closed한다. P0-D2B는 profile identity 의미 대조만 기록하며
+  fixture evidence admission, Capability·execution·Claim Replay·Finding confirmation은 모두 false다.
+- 제한: CHAIN-002가 WALK-002의 원본 Run 경로를 별도로 소유하거나 다시 실행하지는 않는다. WALK-003가
+  봉인할 때 검증해 포함한 nested root·artifact authority를 신뢰하며, 실제 문서 업로드·검색·MCP argument
+  influence·승인 누락·내부 데이터 접근을 관찰하지 않는다. P0-D2B의 synthetic confirmed Finding은 다른
+  Campaign에 일반화되지 않는다.
+- 영향: CHAIN-002는 coverage hypothesis로만 사용할 수 있고 Capability Grant, Permit, dispatch, Report,
+  benchmark completion 또는 validated Finding의 근거가 될 수 없다.
+- 해소 조건: validation 상태를 올리려면 VAL-001 이후 exact Claim, fresh independent execution, negative
+  control과 Replay authority를 CHAIN-002 Campaign·WALK Run·Snapshot lineage에 결박한다.
+
 ## CHAIN-001 Surface-only AI admin 해석 경계
 
 - 상태: Auth Bypass → AI Admin Surface의 mode-neutral 비실행 계약은 구현됐고 실제 bypass·access·validation은 닫힘

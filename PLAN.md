@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `CHAIN-002` — File Upload에서 RAG Injection과 Tool Abuse까지의 mode-neutral attack chain 계약
+- 현재 우선순위: Phase 8 `CHAIN-003` — Prompt Injection에서 URL Tool Control과 Internal API까지의 mode-neutral attack chain 계약
 
 ## 제품 목표
 
@@ -693,7 +693,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 ### Phase 8 — Coverage·Validation 일반화
 
 - [x] `CHAIN-001` Auth Bypass → AI Admin Surface
-- [ ] `CHAIN-002` File Upload → RAG Injection → Tool Abuse
+- [x] `CHAIN-002` File Upload → RAG Injection → Tool Abuse
 - [ ] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
 - [ ] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
 - [ ] `CHAIN-005` MCP Authorization Failure → Privileged Action
@@ -705,9 +705,15 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 `CHAIN-001`은 기존 DISC-003C·ORCH-001 권위를 다시 열어 non-anonymous
 `http-authentication`과 같은 Campaign Target·exact route의 `http-rag/index-management` Surface를
 mode-neutral 계약으로 결박한다. 결과는 `hypothesized-not-validated`이고 Capability·execution·Claim
-Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-002`는 기존 WALK-001~005와 runnable
-P0-D2B 증거를 대조해 File Upload → RAG Injection → Tool Abuse를 동일한 비실행 계약 계층으로
-일반화한다.
+Replay·Finding confirmation은 모두 false다.
+
+`CHAIN-002`는 기존 WALK-003 sealed authority와 그 안의 exact WALK-002 Run·Surface Snapshot·RAG
+Hypothesis 계보를 다시 열어 File Upload → RAG Injection → Tool Abuse를 3개 ordered stage와 2개
+`enables` edge로 결박한다. P0-D2B는 의미·순서 대조에만 사용하고 provider·matcher·measurement
+증거는 admission하지 않는다. 결과는 동일하게 `hypothesized-not-validated`이며 Capability·execution·
+Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-003`은 기존 URL Tool·내부 API typed
+Surface와 실행 권위를 조사한 뒤 Prompt Injection → URL Tool Control → Internal API를 같은 비실행
+계약 계층으로 추가한다.
 
 ### Phase 9 — Product UX·Operations
 

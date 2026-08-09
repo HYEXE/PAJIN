@@ -18,7 +18,26 @@ from pajin.discovery.models import (
     HTTPRAGSurfaceLocator,
 )
 from pajin.discovery.recon import ReconWaveOutcome
-from pajin.domain.models import CampaignManifest, StrictModel
+from pajin.discovery.walking import (
+    RAGInjectionHypothesisAuthority,
+    default_rag_injection_hypothesis_rule,
+    walking_campaign_digest,
+)
+from pajin.discovery.walking_mcp import (
+    MCPToolAuthorizationHypothesisAuthority,
+    MCPToolAuthorizationHypothesisOutcome,
+    mcp_tool_authorization_rule,
+)
+from pajin.discovery.walking_replanning import (
+    SealedMCPAuthorizationHypothesisDependency,
+    WalkingObservationReplanError,
+    load_sealed_mcp_authorization_hypothesis_dependency,
+)
+from pajin.domain.models import (
+    CampaignManifest,
+    StrictModel,
+    campaign_manifest_digest,
+)
 
 MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION: Literal["pajin.dev/mode-neutral-attack-chain/v1alpha1"] = (
     "pajin.dev/mode-neutral-attack-chain/v1alpha1"
@@ -169,6 +188,376 @@ class AttackChainSurfaceReference(StrictModel):
         return self
 
 
+class AttackChainStageContract(StrictModel):
+    """Reusable code-owned meaning and predecessor state for one chain stage."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    ordinal: int = Field(ge=1, le=8)
+    stage_id: str = Field(
+        alias="stageId",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    semantic: str = Field(
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    required_authority_kind: str = Field(
+        alias="requiredAuthorityKind",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[A-Za-z][A-Za-z0-9]+$",
+    )
+    required_execution_state: str = Field(
+        alias="requiredExecutionState",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+
+
+class AttackChainEdgeContract(StrictModel):
+    """Reusable ordered relationship between two exact chain stages."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    ordinal: int = Field(ge=1, le=7)
+    edge_id: str = Field(
+        alias="edgeId",
+        min_length=1,
+        max_length=160,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    source_stage_id: str = Field(
+        alias="sourceStageId",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    target_stage_id: str = Field(
+        alias="targetStageId",
+        min_length=1,
+        max_length=100,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    relationship: Literal["enables"] = "enables"
+
+    @model_validator(mode="after")
+    def reject_self_edge(self) -> Self:
+        if self.source_stage_id == self.target_stage_id:
+            raise ValueError("Attack Chain Edge cannot reference one stage twice")
+        return self
+
+
+def _chain002_stage_contracts() -> tuple[AttackChainStageContract, ...]:
+    return (
+        AttackChainStageContract(
+            ordinal=1,
+            stageId="file-upload",
+            semantic="untrusted-document-admission",
+            requiredAuthorityKind="RAGInjectionHypothesisAuthority",
+            requiredExecutionState="not-authorized",
+        ),
+        AttackChainStageContract(
+            ordinal=2,
+            stageId="rag-injection",
+            semantic="indirect-prompt-injection",
+            requiredAuthorityKind="RAGInjectionHypothesisAuthority",
+            requiredExecutionState="not-authorized",
+        ),
+        AttackChainStageContract(
+            ordinal=3,
+            stageId="tool-abuse",
+            semantic="mcp-tool-authorization-failure",
+            requiredAuthorityKind="MCPToolAuthorizationHypothesisAuthority",
+            requiredExecutionState="registered-not-authorized",
+        ),
+    )
+
+
+def _chain002_edge_contracts() -> tuple[AttackChainEdgeContract, ...]:
+    return (
+        AttackChainEdgeContract(
+            ordinal=1,
+            edgeId="file-upload-enables-rag-injection",
+            sourceStageId="file-upload",
+            targetStageId="rag-injection",
+        ),
+        AttackChainEdgeContract(
+            ordinal=2,
+            edgeId="rag-injection-enables-tool-abuse",
+            sourceStageId="rag-injection",
+            targetStageId="tool-abuse",
+        ),
+    )
+
+
+class ModeNeutralWalkingAttackChainContract(StrictModel):
+    """Code-owned CHAIN-002 stage topology without Campaign or execution authority."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/mode-neutral-attack-chain/v1alpha1"] = Field(
+        default=MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["ModeNeutralWalkingAttackChainContract"] = "ModeNeutralWalkingAttackChainContract"
+    chain_id: Literal["chain-002:file-upload-rag-injection-tool-abuse"] = Field(
+        default="chain-002:file-upload-rag-injection-tool-abuse",
+        alias="chainId",
+    )
+    chain_version: Literal["1.0.0"] = Field(default="1.0.0", alias="chainVersion")
+    contract_digest: str = Field(default="", alias="contractDigest", max_length=64)
+    stages: tuple[AttackChainStageContract, ...] = Field(
+        default_factory=_chain002_stage_contracts,
+        min_length=3,
+        max_length=3,
+    )
+    edges: tuple[AttackChainEdgeContract, ...] = Field(
+        default_factory=_chain002_edge_contracts,
+        min_length=2,
+        max_length=2,
+    )
+    lineage_source: Literal["walk-002-walk-003"] = Field(
+        default="walk-002-walk-003",
+        alias="lineageSource",
+    )
+    semantic_cross_check: Literal[
+        "p0-d2b:ai-rag-mcp.docker.file-upload-rag-tool-authorization@1.0.0"
+    ] = Field(
+        default=("p0-d2b:ai-rag-mcp.docker.file-upload-rag-tool-authorization@1.0.0"),
+        alias="semanticCrossCheck",
+    )
+    campaign_mode_constraint: Literal["none"] = Field(
+        default="none",
+        alias="campaignModeConstraint",
+    )
+    chain_state: Literal["hypothesized-not-validated"] = Field(
+        default="hypothesized-not-validated",
+        alias="chainState",
+    )
+    fixture_evidence_admitted: Literal[False] = Field(
+        default=False,
+        alias="fixtureEvidenceAdmitted",
+    )
+    capability_granted: Literal[False] = Field(default=False, alias="capabilityGranted")
+    execution_authorized: Literal[False] = Field(
+        default=False,
+        alias="executionAuthorized",
+    )
+    claim_replay_authorized: Literal[False] = Field(
+        default=False,
+        alias="claimReplayAuthorized",
+    )
+    finding_confirmed: Literal[False] = Field(default=False, alias="findingConfirmed")
+
+    @field_validator(
+        "fixture_evidence_admitted",
+        "capability_granted",
+        "execution_authorized",
+        "claim_replay_authorized",
+        "finding_confirmed",
+        mode="before",
+    )
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        if type(value) is not bool or value is not False:
+            raise ValueError("Walking Attack Chain authority markers must be boolean false")
+        return value
+
+    @model_validator(mode="after")
+    def bind_contract_identity(self) -> Self:
+        if self.stages != _chain002_stage_contracts():
+            raise ValueError("CHAIN-002 Stage order or semantics differ from code authority")
+        if self.edges != _chain002_edge_contracts():
+            raise ValueError("CHAIN-002 Edge topology differs from code authority")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"contract_digest"},
+        )
+        digest = discovery_digest(
+            "pajin.discovery.mode-neutral-walking-attack-chain-contract/v1",
+            material,
+        )
+        if self.contract_digest and self.contract_digest != digest:
+            raise ValueError("Mode-neutral Walking Attack Chain Contract Digest differs")
+        object.__setattr__(self, "contract_digest", digest)
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Mode-neutral Walking Attack Chain Contract",
+            max_bytes=_MAX_CONTRACT_BYTES,
+        )
+        return self
+
+
+class AttackChainStageReference(StrictModel):
+    """Exact sealed predecessor coordinates for one ordered chain stage."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    ordinal: int = Field(ge=1, le=8)
+    stage_id: str = Field(alias="stageId", pattern=r"^[a-z0-9][a-z0-9-]*$")
+    semantic: str = Field(pattern=r"^[a-z0-9][a-z0-9-]*$")
+    authority_kind: str = Field(
+        alias="authorityKind",
+        pattern=r"^[A-Za-z][A-Za-z0-9]+$",
+    )
+    authority_id: str = Field(alias="authorityId", min_length=1, max_length=200)
+    authority_digest: _Sha256 = Field(alias="authorityDigest")
+    source_run_id: str = Field(alias="sourceRunId", min_length=1, max_length=200)
+    source_root_digest: _Sha256 = Field(alias="sourceRootDigest")
+    source_artifact_path: str = Field(
+        alias="sourceArtifactPath",
+        min_length=1,
+        max_length=2_000,
+    )
+    source_artifact_sha256: _Sha256 = Field(alias="sourceArtifactSha256")
+    target_id: str = Field(
+        alias="targetId",
+        min_length=1,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$",
+    )
+    surface_snapshot_id: str = Field(
+        alias="surfaceSnapshotId",
+        min_length=1,
+        max_length=200,
+    )
+    surface_snapshot_digest: _Sha256 = Field(alias="surfaceSnapshotDigest")
+    surface_ids: tuple[str, ...] = Field(alias="surfaceIds", min_length=1, max_length=2)
+    execution_state: str = Field(
+        alias="executionState",
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+
+    @field_validator("surface_ids")
+    @classmethod
+    def require_distinct_surface_ids(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(set(value)) != len(value) or any(
+            not item.startswith("attack-surface_") for item in value
+        ):
+            raise ValueError("Attack Chain Stage Surface identities are invalid or repeated")
+        return value
+
+
+class ModeNeutralWalkingAttackChainAuthority(StrictModel):
+    """Exact WALK-bound CHAIN-002 hypothesis with no execution or validation authority."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/mode-neutral-attack-chain/v1alpha1"] = Field(
+        default=MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["ModeNeutralWalkingAttackChainAuthority"] = (
+        "ModeNeutralWalkingAttackChainAuthority"
+    )
+    authority_id: str = Field(default="", alias="authorityId", max_length=110)
+    authority_digest: str = Field(default="", alias="authorityDigest", max_length=64)
+    contract: ModeNeutralWalkingAttackChainContract
+    campaign_id: str = Field(
+        alias="campaignId",
+        min_length=3,
+        max_length=80,
+        pattern=r"^[a-z0-9][a-z0-9-]*$",
+    )
+    campaign_digest: _Sha256 = Field(alias="campaignDigest")
+    source_campaign_digest: _Sha256 = Field(alias="sourceCampaignDigest")
+    source: SealedMCPAuthorizationHypothesisDependency
+    stages: tuple[AttackChainStageReference, ...] = Field(min_length=3, max_length=3)
+    edges: tuple[AttackChainEdgeContract, ...] = Field(min_length=2, max_length=2)
+    campaign_mode_constraint: Literal["none"] = Field(
+        default="none",
+        alias="campaignModeConstraint",
+    )
+    chain_state: Literal["hypothesized-not-validated"] = Field(
+        default="hypothesized-not-validated",
+        alias="chainState",
+    )
+    hypothesis_evidence_only: Literal[True] = Field(
+        default=True,
+        alias="hypothesisEvidenceOnly",
+    )
+    fixture_evidence_admitted: Literal[False] = Field(
+        default=False,
+        alias="fixtureEvidenceAdmitted",
+    )
+    capability_granted: Literal[False] = Field(default=False, alias="capabilityGranted")
+    execution_authorized: Literal[False] = Field(
+        default=False,
+        alias="executionAuthorized",
+    )
+    claim_replay_authorized: Literal[False] = Field(
+        default=False,
+        alias="claimReplayAuthorized",
+    )
+    finding_confirmed: Literal[False] = Field(default=False, alias="findingConfirmed")
+
+    @field_validator("hypothesis_evidence_only", mode="before")
+    @classmethod
+    def require_literal_true(cls, value: object) -> object:
+        if type(value) is not bool or value is not True:
+            raise ValueError("Walking Attack Chain hypothesis marker must be boolean true")
+        return value
+
+    @field_validator(
+        "fixture_evidence_admitted",
+        "capability_granted",
+        "execution_authorized",
+        "claim_replay_authorized",
+        "finding_confirmed",
+        mode="before",
+    )
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        if type(value) is not bool or value is not False:
+            raise ValueError("Walking Attack Chain authority markers must be boolean false")
+        return value
+
+    @model_validator(mode="after")
+    def bind_authority_identity(self) -> Self:
+        registered = registered_file_upload_rag_tool_abuse_chain_contract()
+        hypothesis = self.source.hypothesis
+        if self.contract != registered:
+            raise ValueError("CHAIN-002 Contract differs from code authority")
+        if (
+            self.campaign_id != hypothesis.campaign
+            or self.campaign_digest != hypothesis.campaign_digest
+            or self.source_campaign_digest != hypothesis.source_campaign_digest
+        ):
+            raise ValueError("CHAIN-002 belongs to another Campaign authority")
+        if self.stages != _chain002_stage_references(self.source):
+            raise ValueError("CHAIN-002 Stage lineage is missing, reordered, or substituted")
+        if self.edges != registered.edges:
+            raise ValueError("CHAIN-002 Edge topology differs from code authority")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"authority_id", "authority_digest"},
+        )
+        digest = discovery_digest(
+            "pajin.discovery.mode-neutral-walking-attack-chain-authority/v1",
+            material,
+        )
+        authority_id = f"mode-neutral-walking-attack-chain_{digest}"
+        if self.authority_digest and self.authority_digest != digest:
+            raise ValueError("Mode-neutral Walking Attack Chain Authority Digest differs")
+        if self.authority_id and self.authority_id != authority_id:
+            raise ValueError("Mode-neutral Walking Attack Chain Authority ID differs")
+        object.__setattr__(self, "authority_digest", digest)
+        object.__setattr__(self, "authority_id", authority_id)
+        canonical_json_bytes(
+            self.model_dump(mode="json", by_alias=True),
+            label="Mode-neutral Walking Attack Chain Authority",
+            max_bytes=_MAX_AUTHORITY_BYTES,
+        )
+        return self
+
+
 class ModeNeutralAttackChainAuthority(StrictModel):
     """Snapshot-bound CHAIN-001 hypothesis that grants no validation or execution."""
 
@@ -301,6 +690,110 @@ def registered_auth_bypass_ai_admin_chain_contract() -> ModeNeutralAttackChainCo
     return ModeNeutralAttackChainContract()
 
 
+def registered_file_upload_rag_tool_abuse_chain_contract() -> ModeNeutralWalkingAttackChainContract:
+    """Return the exact code-owned CHAIN-002 stage and edge topology."""
+
+    return ModeNeutralWalkingAttackChainContract()
+
+
+def compile_file_upload_rag_tool_abuse_chain(
+    campaign: CampaignManifest,
+    outcome: MCPToolAuthorizationHypothesisOutcome,
+) -> ModeNeutralWalkingAttackChainAuthority:
+    """Derive CHAIN-002 from the exact sealed WALK-002/003 lineage without executing it."""
+
+    try:
+        authoritative_campaign = CampaignManifest.model_validate(
+            campaign.model_dump(mode="json", by_alias=True)
+        )
+        source = load_sealed_mcp_authorization_hypothesis_dependency(
+            authoritative_campaign,
+            outcome,
+        )
+        hypothesis = source.hypothesis
+        rag = hypothesis.rag_dependency.hypothesis
+        if not isinstance(hypothesis, MCPToolAuthorizationHypothesisAuthority) or not isinstance(
+            rag,
+            RAGInjectionHypothesisAuthority,
+        ):
+            raise ValueError("CHAIN-002 predecessor authority kinds differ")
+        expected_campaign_digest = walking_campaign_digest(authoritative_campaign)
+        expected_source_campaign_digest = campaign_manifest_digest(authoritative_campaign)
+        if (
+            hypothesis.campaign != authoritative_campaign.metadata.name
+            or hypothesis.campaign_digest != expected_campaign_digest
+            or hypothesis.source_campaign_digest != expected_source_campaign_digest
+            or rag.campaign != hypothesis.campaign
+            or rag.campaign_digest != expected_campaign_digest
+            or rag.source_campaign_digest != expected_source_campaign_digest
+        ):
+            raise ValueError("CHAIN-002 predecessor Campaign authority differs")
+        _require_declared_chain_target(authoritative_campaign, rag.target_id)
+        _require_declared_chain_target(authoritative_campaign, hypothesis.mcp_target_id)
+
+        rag_rule = default_rag_injection_hypothesis_rule()
+        if rag.rule_id != rag_rule.rule_id or rag.rule_digest != rag_rule.rule_digest:
+            raise ValueError("CHAIN-002 RAG stage differs from the registered WALK-002 rule")
+        mcp_rule = mcp_tool_authorization_rule(
+            server_id=hypothesis.tool_locator.server_id,
+            tool_name=hypothesis.tool_locator.tool_name,
+            capability=hypothesis.capability.reference(),
+        )
+        if hypothesis.rule_id != mcp_rule.rule_id or hypothesis.rule_digest != mcp_rule.rule_digest:
+            raise ValueError("CHAIN-002 Tool stage differs from the registered WALK-003 rule")
+        if (
+            rag.execution_state != "not-authorized"
+            or hypothesis.execution_state != "registered-not-authorized"
+        ):
+            raise ValueError("CHAIN-002 predecessor execution state is not closed")
+
+        contract = registered_file_upload_rag_tool_abuse_chain_contract()
+        return ModeNeutralWalkingAttackChainAuthority(
+            contract=contract,
+            campaignId=authoritative_campaign.metadata.name,
+            campaignDigest=expected_campaign_digest,
+            sourceCampaignDigest=expected_source_campaign_digest,
+            source=source,
+            stages=_chain002_stage_references(source),
+            edges=contract.edges,
+        )
+    except ModeNeutralAttackChainError:
+        raise
+    except (
+        AttributeError,
+        TypeError,
+        ValidationError,
+        ValueError,
+        WalkingObservationReplanError,
+    ) as exc:
+        raise ModeNeutralAttackChainError(
+            "CHAIN-002 could not be compiled from sealed WALK authority"
+        ) from exc
+
+
+def verify_file_upload_rag_tool_abuse_chain(
+    authority: ModeNeutralWalkingAttackChainAuthority,
+    campaign: CampaignManifest,
+    outcome: MCPToolAuthorizationHypothesisOutcome,
+) -> ModeNeutralWalkingAttackChainAuthority:
+    """Rebuild and exact-match CHAIN-002 against its sealed WALK predecessor authority."""
+
+    try:
+        canonical = ModeNeutralWalkingAttackChainAuthority.model_validate(
+            authority.model_dump(mode="json", by_alias=True)
+        )
+        expected = compile_file_upload_rag_tool_abuse_chain(campaign, outcome)
+        if canonical != expected:
+            raise ValueError("CHAIN-002 differs from sealed WALK authority")
+        return canonical
+    except ModeNeutralAttackChainError:
+        raise
+    except (AttributeError, TypeError, ValidationError, ValueError) as exc:
+        raise ModeNeutralAttackChainError(
+            "CHAIN-002 could not be verified against sealed WALK authority"
+        ) from exc
+
+
 def compile_auth_bypass_ai_admin_chain(
     campaign: CampaignManifest,
     recon: ReconWaveOutcome,
@@ -414,3 +907,71 @@ def _surface_reference(surface: AttackSurface) -> AttackChainSurfaceReference:
         ),
         observationCount=len(surface.observation_ids),
     )
+
+
+def _chain002_stage_references(
+    source: SealedMCPAuthorizationHypothesisDependency,
+) -> tuple[AttackChainStageReference, ...]:
+    hypothesis = source.hypothesis
+    rag_dependency = hypothesis.rag_dependency
+    rag = rag_dependency.hypothesis
+    rag_snapshot = rag.surface_snapshot
+    mcp_snapshot = hypothesis.mcp_surface_snapshot
+    return (
+        AttackChainStageReference(
+            ordinal=1,
+            stageId="file-upload",
+            semantic="untrusted-document-admission",
+            authorityKind=rag.kind,
+            authorityId=rag.hypothesis_id,
+            authorityDigest=rag.hypothesis_digest,
+            sourceRunId=rag_dependency.run_id,
+            sourceRootDigest=rag_dependency.root_digest,
+            sourceArtifactPath=rag_dependency.artifact_path,
+            sourceArtifactSha256=rag_dependency.artifact_sha256,
+            targetId=rag.target_id,
+            surfaceSnapshotId=rag_snapshot.snapshot_id,
+            surfaceSnapshotDigest=rag_snapshot.snapshot_digest,
+            surfaceIds=(rag.upload_surface_id,),
+            executionState=rag.execution_state,
+        ),
+        AttackChainStageReference(
+            ordinal=2,
+            stageId="rag-injection",
+            semantic="indirect-prompt-injection",
+            authorityKind=rag.kind,
+            authorityId=rag.hypothesis_id,
+            authorityDigest=rag.hypothesis_digest,
+            sourceRunId=rag_dependency.run_id,
+            sourceRootDigest=rag_dependency.root_digest,
+            sourceArtifactPath=rag_dependency.artifact_path,
+            sourceArtifactSha256=rag_dependency.artifact_sha256,
+            targetId=rag.target_id,
+            surfaceSnapshotId=rag_snapshot.snapshot_id,
+            surfaceSnapshotDigest=rag_snapshot.snapshot_digest,
+            surfaceIds=(rag.rag_surface_id,),
+            executionState=rag.execution_state,
+        ),
+        AttackChainStageReference(
+            ordinal=3,
+            stageId="tool-abuse",
+            semantic="mcp-tool-authorization-failure",
+            authorityKind=hypothesis.kind,
+            authorityId=hypothesis.hypothesis_id,
+            authorityDigest=hypothesis.hypothesis_digest,
+            sourceRunId=source.run_id,
+            sourceRootDigest=source.root_digest,
+            sourceArtifactPath=source.artifact_path,
+            sourceArtifactSha256=source.artifact_sha256,
+            targetId=hypothesis.mcp_target_id,
+            surfaceSnapshotId=mcp_snapshot.snapshot_id,
+            surfaceSnapshotDigest=mcp_snapshot.snapshot_digest,
+            surfaceIds=(hypothesis.server_surface_id, hypothesis.tool_surface_id),
+            executionState=hypothesis.execution_state,
+        ),
+    )
+
+
+def _require_declared_chain_target(campaign: CampaignManifest, target_id: str) -> None:
+    if len([target for target in campaign.spec.targets if target.id == target_id]) != 1:
+        raise ValueError("CHAIN-002 target is not declared exactly once by the Campaign")

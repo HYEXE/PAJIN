@@ -700,6 +700,15 @@ and Finding confirmation authority are false. See the
 [CHAIN-001 contract](../orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md) and
 [ADR-0142](../adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md).
 
+CHAIN-002 adds reusable ordered stage, edge, and sealed stage-reference primitives without changing
+CHAIN-001. It reopens one exact sealed WALK-003 authority and binds the nested WALK-002 File Upload
+and RAG Hypothesis lineage to the registered MCP Tool authorization Hypothesis. Campaign, target,
+Snapshot, Surface, Run, artifact, and Hypothesis substitution fail closed. P0-D2B supplies only a
+semantic cross-check; benchmark evidence admission, Capability, execution, Claim Replay, and
+Finding confirmation remain false. See the
+[CHAIN-002 contract](../orchestration/CHAIN-002-file-upload-rag-tool-abuse.md) and
+[ADR-0143](../adr/0143-bind-walking-lineage-to-mode-neutral-chain.md).
+
 APPROVAL-001A adds one deployment-authenticated operator approval before Permit consumption
 without introducing another execution wire. A single `ActionApprovalEnvelope` exact-binds issuer,
 principals, Campaign, Run, MissionEnvelope, source intent, activation, release, Decision, Proposal,

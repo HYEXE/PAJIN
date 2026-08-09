@@ -604,6 +604,21 @@ def _dependency(
     )
 
 
+def load_sealed_mcp_authorization_hypothesis_dependency(
+    campaign: CampaignManifest,
+    outcome: MCPToolAuthorizationHypothesisOutcome,
+) -> SealedMCPAuthorizationHypothesisDependency:
+    """Reopen one exact sealed WALK-003 authority for additive consumers."""
+
+    authoritative_campaign = CampaignManifest.model_validate(
+        campaign.model_dump(mode="json", by_alias=True)
+    )
+    return _dependency(
+        outcome,
+        _load_mcp_dependency(authoritative_campaign, outcome),
+    )
+
+
 def _baseline_state_digest(
     campaign: CampaignManifest,
     source: SealedMCPAuthorizationHypothesisDependency,

@@ -379,6 +379,15 @@ Campaign digest prevents cross-authority reuse. See the
 [CHAIN-001 contract](docs/orchestration/CHAIN-001-mode-neutral-auth-bypass-ai-admin.md) and
 [ADR-0142](docs/adr/0142-bind-mode-neutral-chain-to-surface-snapshot.md).
 
+CHAIN-002 generalizes that non-executable layer with reusable ordered stage and edge references. It
+re-verifies one sealed WALK-003 authority and binds its nested WALK-002 File Upload and RAG
+Hypothesis coordinates to the registered MCP Tool authorization Hypothesis. The three stages and
+two edges are exact and mode-neutral, while Campaign, target, Snapshot, Surface, Run, artifact, and
+Hypothesis identities remain sealed. P0-D2B is recorded only as a semantic cross-check; no Docker
+evidence, Capability, execution, Replay, or Finding authority is admitted. See the
+[CHAIN-002 contract](docs/orchestration/CHAIN-002-file-upload-rag-tool-abuse.md) and
+[ADR-0143](docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

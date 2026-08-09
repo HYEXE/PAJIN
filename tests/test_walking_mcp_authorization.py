@@ -57,6 +57,8 @@ from pajin.discovery import (
     MCPToolAuthorizationHypothesisRunner,
     MCPToolAuthorizationReconPlanner,
     MCPToolSurfaceLocator,
+    ModeNeutralAttackChainError,
+    ModeNeutralWalkingAttackChainAuthority,
     RAGInjectionHypothesisAuthority,
     RAGInjectionHypothesisRunner,
     SealedRAGHypothesisDependency,
@@ -86,6 +88,7 @@ from pajin.discovery import (
     WalkingShadowSupervisorError,
     WalkingShadowSupervisorRunner,
     WalkingShadowTaskProposal,
+    compile_file_upload_rag_tool_abuse_chain,
     load_walking_candidate_admission_authority,
     load_walking_mcp_claim_replay_authority,
     load_walking_mcp_confirmation_authority,
@@ -94,12 +97,15 @@ from pajin.discovery import (
     load_walking_observation_replan_authority,
     load_walking_shadow_supervisor_authority,
     mcp_tool_authorization_rule,
+    registered_file_upload_rag_tool_abuse_chain_contract,
+    verify_file_upload_rag_tool_abuse_chain,
     walking_independent_approval_receipt,
     walking_mcp_replay_approval_receipt,
     walking_observation_replan_rule,
 )
 from pajin.domain.models import (
     CampaignManifest,
+    CampaignMode,
     CapabilityGrant,
     ToolRequest,
     ToolResult,
@@ -389,6 +395,138 @@ def _mcp_outcome(
         compiler=_compiler(mcp),
         output_root=tmp_path,
     ).run(campaign, rag, mcp)
+
+
+def test_chain002_contract_is_deterministic_mode_neutral_and_non_executable() -> None:
+    first = registered_file_upload_rag_tool_abuse_chain_contract()
+    second = registered_file_upload_rag_tool_abuse_chain_contract()
+
+    assert first == second
+    assert first.chain_id == "chain-002:file-upload-rag-injection-tool-abuse"
+    assert [stage.stage_id for stage in first.stages] == [
+        "file-upload",
+        "rag-injection",
+        "tool-abuse",
+    ]
+    assert [(edge.source_stage_id, edge.target_stage_id) for edge in first.edges] == [
+        ("file-upload", "rag-injection"),
+        ("rag-injection", "tool-abuse"),
+    ]
+    assert first.semantic_cross_check.startswith("p0-d2b:")
+    assert first.campaign_mode_constraint == "none"
+    assert first.fixture_evidence_admitted is False
+    assert first.capability_granted is False
+    assert first.execution_authorized is False
+    assert first.claim_replay_authorized is False
+    assert first.finding_confirmed is False
+
+
+@pytest.mark.parametrize("mode", list(CampaignMode))
+def test_chain002_compiles_the_same_contract_for_every_campaign_mode(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: CampaignMode,
+) -> None:
+    payload = _campaign(sample_campaign).model_dump(mode="json", by_alias=True)
+    payload["spec"]["mode"] = mode.value
+    campaign = CampaignManifest.model_validate(payload)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+
+    authority = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+
+    assert authority.contract == registered_file_upload_rag_tool_abuse_chain_contract()
+    assert [stage.stage_id for stage in authority.stages] == [
+        "file-upload",
+        "rag-injection",
+        "tool-abuse",
+    ]
+    assert authority.stages[0].source_run_id == source.hypotheses[0].rag_dependency.run_id
+    assert (
+        authority.stages[1].authority_id
+        == source.hypotheses[0].rag_dependency.hypothesis.hypothesis_id
+    )
+    assert authority.stages[2].source_run_id == source.run_id
+    assert authority.campaign_mode_constraint == "none"
+    assert authority.hypothesis_evidence_only is True
+    assert authority.fixture_evidence_admitted is False
+    assert authority.execution_authorized is False
+    assert verify_file_upload_rag_tool_abuse_chain(authority, campaign, source) == authority
+
+
+def test_chain002_rejects_missing_reordered_and_authority_escalated_stages(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    authority = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["stages"] = raw["stages"][:2]
+    with pytest.raises(ValidationError):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["stages"] = list(reversed(raw["stages"]))
+    with pytest.raises(ValidationError, match="missing, reordered, or substituted"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["edges"] = list(reversed(raw["edges"]))
+    with pytest.raises(ValidationError, match="Edge topology"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["executionAuthorized"] = True
+    with pytest.raises(ValidationError, match="must be boolean false"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+
+def test_chain002_rejects_cross_campaign_target_snapshot_and_run_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    authority = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["campaignId"] = "foreign-campaign"
+    with pytest.raises(ValidationError, match="another Campaign"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["stages"][0]["targetId"] = "target:foreign"
+    with pytest.raises(ValidationError, match="missing, reordered, or substituted"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["stages"][1]["surfaceSnapshotDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="missing, reordered, or substituted"):
+        ModeNeutralWalkingAttackChainAuthority.model_validate(raw)
+
+    foreign_source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    with pytest.raises(ModeNeutralAttackChainError, match="verified"):
+        verify_file_upload_rag_tool_abuse_chain(
+            authority,
+            campaign,
+            foreign_source,
+        )
 
 
 def _replan_compiler(source) -> DeterministicWalkingObservationReplanCompiler:
