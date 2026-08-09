@@ -91,14 +91,16 @@ assessment as immutable audit evidence.
 
 ## Remaining boundary
 
-SUP-007B must decide whether and where to expose the composition through a concrete CLI, API, or
-Control Plane deployment profile and must require a pre-approved Envelope for T2 while preserving
-the T3+ default deny. Reversible-write product activation still requires a production Capability,
-cleanup Grant and mapping, restored-state verifier, and operational hold-recovery contract.
+SUP-007B exposes the composition through the Control Plane `general-attack-v1` profile for
+approval-free, non-networked, zero-cost T0/T1 actions. T2 still requires a separate profile that
+composes APPROVAL-001A end to end while preserving the T3+ default deny. Reversible-write product
+activation still requires a production Capability, cleanup Grant and mapping, restored-state
+verifier, and operational hold-recovery contract.
 
 ## Related documents
 
 - [PERMIT-003 contract](PERMIT-003-exact-single-use-action-permit.md)
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [APPROVAL-001A contract](APPROVAL-001A-single-action-approval.md)
+- [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
 - [ADR-0139](../adr/0139-compose-general-attack-through-managed-gateway.md)

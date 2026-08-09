@@ -146,14 +146,15 @@ Cleanup Handler to a completed Permit-bound sealed no-write result. PERMIT-004B 
 separate typed cleanup request, one-shot cleanup Permit, and restored-state boundary, but the
 production inventory remains no-write. SUP-007A provides an explicit direct-call T0/T1 product
 composition with a deployment-managed Run root, current Grant, Run audit, Gateway, Worker, and
-outcome-gate authorities. SUP-007B must decide any concrete CLI/API/Control Plane exposure and T2
-policy; the existing default execution paths remain unchanged.
+outcome-gate authorities. SUP-007B exposes the approval-free, non-networked, zero-cost subset through
+Control Plane `general-attack-v1`; T2 and the existing default execution paths remain unchanged.
 
 ## Related documents
 
 - [PERMIT-002 contract](PERMIT-002-deterministic-action-compiler.md)
 - [PERMIT-004A contract](PERMIT-004A-authenticated-action-outcome-gate.md)
 - [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
+- [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [CAP-004 contract](../capability/CAP-004-maturity-signing-review-deprecation.md)
 - [CAP-005 contract](../capability/CAP-005-existing-mode-tool-replay-adapters.md)

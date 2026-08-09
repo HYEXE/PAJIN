@@ -446,6 +446,31 @@ async def test_opt_in_rejects_cross_run_substitution_before_worker(
 
 
 @pytest.mark.asyncio
+async def test_opt_in_rejects_non_generated_run_id_before_permit(
+    tmp_path: Path,
+    low_risk_context: _PermitContext,
+) -> None:
+    context = low_risk_context
+    _, grant = _prepared_and_grant(context)
+    raw = context.envelope.model_dump(mode="json", by_alias=True)
+    raw.pop("envelopeId")
+    raw.pop("envelopeDigest")
+    raw["runId"] = "general-attack-caller-selected"
+    substituted = MissionEnvelope.model_validate(raw)
+    execution_inputs = _StaticExecutionInputAuthority(
+        _execution_inputs(context, grant, envelope=substituted)
+    )
+    worker = _CountingWorker()
+    gate = _gate(tmp_path, context, worker, execution_inputs)
+
+    with pytest.raises(GeneralAttackActionExecutionError, match="not generated"):
+        await _execute(gate, context)
+
+    assert worker.calls == 0
+    assert context.graph.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
 async def test_opt_in_rejects_activation_reference_substitution_before_worker(
     tmp_path: Path,
     low_risk_context: _PermitContext,

@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 7 — 제한된 Supervisor 활성화
-- 현재 우선순위: `SUP-007A` opt-in T0/T1 no-write 실행 — 기존 Permit·Gateway·managed Run·Outcome 권한의 direct-call 제품 조합 구현 및 통합 검증
+- 현재 우선순위: Phase 7 T2 사전 승인 실행 — `general-attack-v1` T0/T1 완료 뒤 APPROVAL-001A 제품 profile 범위 결정
 
 ## 제품 목표
 
@@ -682,9 +682,9 @@ retention 적격성만 제공하고 삭제·remote authenticity·cross-host redi
     - [x] `APPROVAL-001C1` 2~8개 no-write approval host-local async coordinator·pending cancellation·manual reconciliation
     - [x] `APPROVAL-001C2` reversible-write batch item·cleanup reservation·restored-state 결합
     - [x] `APPROVAL-001C3` General Attack/Control Plane opt-in workflow·journal retention
-- [ ] `SUP-007` opt-in T0/T1 실행
+- [x] `SUP-007` opt-in T0/T1 실행
   - [x] `SUP-007A` deployment-owned direct-call T0/T1 no-write 실행 조합
-  - [ ] `SUP-007B` 구체 CLI/API/Control Plane 노출 위치와 T2 사전 승인 정책 결정
+  - [x] `SUP-007B` Control Plane `general-attack-v1` zero-cost·non-network T0/T1 profile
 - [ ] T2는 사전 승인 Envelope를 요구하고 T3+는 기본 거부
 
 Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확한 Permit, Receipt, Evidence를

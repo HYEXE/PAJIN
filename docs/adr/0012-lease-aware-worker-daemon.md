@@ -85,6 +85,11 @@ typed Proposal, Decision, request, release reference, and attenuating Gateway Gr
 deployed Envelope; it cannot choose a module, class, command, executable, plugin, Tool path, or
 MissionEnvelope. Runtime Tools remain the closed CAP-005 inventory.
 
+SUP-007B later adds `general-attack-v1` to the same Campaign executor and pinned deployment. Unlike
+`capability-graph-v1`, the Job carries complete PERMIT-001/002 source lineage and the executor
+rebuilds the Proposal and intent before dispatch. The profile accepts only approval-free,
+non-networked, zero-cost T0/T1 no-write actions; see ADR-0140.
+
 The profile consumes the SQLite `ActionPermit` before entering `ToolGateway`, records
 `claimed` plus one terminal `completed`/`failed`/`cancelled`/`expired` event in the matching
 hash-chained Run, and seals that Run mutation. A retry resolves the already-consumed Permit and

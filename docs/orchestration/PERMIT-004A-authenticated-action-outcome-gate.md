@@ -165,7 +165,8 @@ exact pre-action hold, dispatches a distinct cleanup Capability, and authenticat
 SUP-007A composes the existing PERMIT-003 callback, Grant, RunStore, Gateway, Worker, and this
 post-dispatch gate without adding another execution authority. Its deployment ID, managed Run root,
 Permit inputs, execution inputs, Gateway dependencies, and current activation remain explicit
-deployment TCBs. SUP-007B still owns concrete product exposure and T2 policy.
+deployment TCBs. SUP-007B exposes the zero-cost, non-networked, approval-free subset through the
+Control Plane while leaving T2 closed.
 
 ## Related documents
 
@@ -175,4 +176,5 @@ deployment TCBs. SUP-007B still owns concrete product exposure and T2 policy.
 - [GRAPH-006 contract](../graph/GRAPH-006-atomic-action-permit-authority.md)
 - [PERMIT-004B1 contract](PERMIT-004B1-pre-reserved-one-shot-cleanup-permit.md)
 - [SUP-007A contract](SUP-007A-opt-in-general-attack-execution.md)
+- [SUP-007B contract](SUP-007B-control-plane-general-attack-profile.md)
 - [Architecture v2 RFC](../rfc/0001-pajin-architecture-v2.md)

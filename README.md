@@ -346,10 +346,19 @@ Attack actions. A deployment-owned input authority supplies the exact Envelope, 
 and used-call count; the gate derives the managed Run from a pinned root, seals its deployment-bound
 anchor before claiming the existing Permit, dispatches through the unchanged Capability Gateway,
 and authenticates the sealed result through PERMIT-004A. Exact retries never call the Worker twice.
-T2, T3+, write, cleanup-required, default workflow, and concrete CLI/API/Control Plane exposure
-remain closed for SUP-007B. See the
+T2, T3+, write, cleanup-required, and existing default workflows remain closed. See the
 [SUP-007A contract](docs/orchestration/SUP-007A-opt-in-general-attack-execution.md) and
 [ADR-0139](docs/adr/0139-compose-general-attack-through-managed-gateway.md).
+
+SUP-007B exposes that composition through the existing Control Plane Campaign Job as the explicit
+`general-attack-v1` profile. The startup SHA-256-pinned Capability Graph deployment continues to own
+the Campaign, Envelope, activation, Graph store, managed Run root, Tool registry, and Worker. The
+strict Job supplies only exact General Attack source lineage, Decision, and Grant; the executor
+rebuilds Proposal and intent before calling SUP-007A. This first profile is limited to approval-free,
+non-networked, zero-cost T0/T1 no-write actions. T2, T3+, write, caller-provided pricing, and default
+Campaign execution remain closed. See the
+[SUP-007B contract](docs/orchestration/SUP-007B-control-plane-general-attack-profile.md) and
+[ADR-0140](docs/adr/0140-expose-general-attack-through-control-plane.md).
 
 ## B2.8g resumable multipart portable Artifact transport
 
@@ -1660,6 +1669,12 @@ The initial trusted registry contains:
 
 - `campaign`: strict embedded Campaign manifest → deterministic `LocalCampaignRunner`
 - `tool-loop`: strict embedded Campaign and prompt → real `PolicyToolLoopRunner`
+
+The Campaign executor also recognizes two deployment-gated families that are unavailable without
+the SHA-256-pinned Capability Graph Worker deployment: `capability-graph-v1` and
+`capability-graph-batch-v1` for existing Graph proposals, and `general-attack-v1` for exact-rebuilt
+PERMIT-001/002 source lineage. The General Attack profile is zero-cost, non-networked, approval-free,
+and T0/T1 only.
 
 No Job field can name a command, Python module, class, executable, or arbitrary manifest path.
 Unknown kinds and invalid payloads fail closed. The Docker Tool Loop uses a no-network deterministic

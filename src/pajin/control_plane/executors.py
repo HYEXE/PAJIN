@@ -7,6 +7,7 @@ import json
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from inspect import Parameter, signature
 from pathlib import Path
@@ -19,12 +20,14 @@ from pajin.agents.deterministic import DeterministicAgentRuntime
 from pajin.capabilities import (
     CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
     CapabilityDefinition,
+    CapabilityDefinitionRef,
     CapabilityDispatchAuditEvent,
     CapabilityDispatchReconciliationError,
     CapabilityDispatchReconciliationObservation,
     CapabilityDispatchStage,
     CapabilityReleaseRef,
     CapabilitySideEffectClass,
+    CodeBackedCapabilityRef,
     ExistingModeCapabilityActivationError,
     ExistingModeCapabilityGatewayDispatcher,
     PreparedCapabilityAction,
@@ -35,6 +38,7 @@ from pajin.control_plane.capability_deployment import (
     CapabilityGraphDeploymentRuntime,
 )
 from pajin.control_plane.models import ApprovalIntent, JobKind, JobView
+from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import (
     CampaignManifest,
     CapabilityGrant,
@@ -83,6 +87,18 @@ from pajin.runtime.worker import (
     WorkerJob,
     WorkerResult,
     WorkerStatus,
+)
+from pajin.supervision import (
+    GeneralAttackActionCompilerError,
+    GeneralAttackActionExecutionError,
+    GeneralAttackActionExecutionGate,
+    GeneralAttackActionExecutionInputs,
+    GeneralAttackActionPermitInputs,
+    GeneralAttackActionProposal,
+    GeneralAttackActionProposalError,
+    GeneralAttackCompiledIntent,
+    build_general_attack_action_proposal,
+    compile_general_attack_action_intent,
 )
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
@@ -222,6 +238,65 @@ class CapabilityGraphBatchCampaignJobInput(StrictModel):
                 "Capability Graph batch Job authority belongs to another Campaign or Run"
             )
         return self
+
+
+class GeneralAttackCampaignJobInput(StrictModel):
+    """Exact General Attack source selected by the explicit Control Plane profile."""
+
+    profile: Literal["general-attack-v1"]
+    hypothesis_set: AttackHypothesisSet = Field(alias="hypothesisSet")
+    plan: SurfaceBoundPlan
+    task_digest: str = Field(alias="taskDigest", pattern=r"^[a-f0-9]{64}$")
+    action_definition: CapabilityDefinitionRef = Field(alias="actionDefinition")
+    code_backed_capability: CodeBackedCapabilityRef = Field(alias="codeBackedCapability")
+    decision: GraphDecision
+    grant: CapabilityGrant
+
+    @model_validator(mode="after")
+    def bind_capability_reference(self) -> GeneralAttackCampaignJobInput:
+        if self.code_backed_capability.capability != self.action_definition:
+            raise ValueError("General Attack Job Capability references differ")
+        return self
+
+
+@dataclass(frozen=True, slots=True)
+class _ControlPlaneGeneralAttackInputs:
+    envelope: MissionEnvelope
+    decision: GraphDecision
+    grant: CapabilityGrant
+    used_calls: int
+
+    def resolve_for_action(
+        self,
+        *,
+        intent: GeneralAttackCompiledIntent,
+        prepared: PreparedCapabilityAction,
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+        evaluated_at: datetime,
+    ) -> GeneralAttackActionPermitInputs:
+        del intent, prepared, campaign, definition, evaluated_at
+        return GeneralAttackActionPermitInputs(
+            envelope=self.envelope.model_copy(deep=True),
+            decision=self.decision.model_copy(deep=True),
+            cost_microusd=0,
+        )
+
+    def resolve_for_execution(
+        self,
+        *,
+        intent: GeneralAttackCompiledIntent,
+        proposal: GeneralAttackActionProposal,
+        campaign: CampaignManifest,
+        evaluated_at: datetime,
+    ) -> GeneralAttackActionExecutionInputs:
+        del intent, proposal, campaign, evaluated_at
+        return GeneralAttackActionExecutionInputs(
+            envelope=self.envelope.model_copy(deep=True),
+            decision=self.decision.model_copy(deep=True),
+            grant=self.grant.model_copy(deep=True),
+            used_calls=self.used_calls,
+        )
 
 
 class _CapabilityGraphBatchPermitDispatcher:
@@ -462,6 +537,12 @@ class CampaignJobExecutor:
         cancellation: ExecutionCancellationContext | None = None,
     ) -> CompletedExecution:
         raw_input = self._input(job)
+        if raw_input.get("profile") == "general-attack-v1":
+            return await self._execute_general_attack(
+                job,
+                raw_input,
+                cancellation=cancellation,
+            )
         if raw_input.get("profile") in {
             "capability-graph-v1",
             "capability-graph-batch-v1",
@@ -513,6 +594,123 @@ class CampaignJobExecutor:
                 "validatedFindings": len(outcome.findings),
                 "confirmedFindings": len(outcome.findings),
                 "needsReviewCandidates": needs_review,
+            }
+        )
+
+    async def _execute_general_attack(
+        self,
+        job: JobView,
+        raw_input: dict[str, Any],
+        *,
+        cancellation: ExecutionCancellationContext | None,
+    ) -> CompletedExecution:
+        runtime = self._capability_deployment
+        if runtime is None:
+            raise PermanentExecutionError(
+                "general-attack-v1 requires a startup-pinned Worker deployment"
+            )
+        try:
+            job_input = GeneralAttackCampaignJobInput.model_validate(raw_input)
+        except ValidationError as exc:
+            raise PermanentExecutionError("general-attack-v1 Job input is invalid") from exc
+        deployment = runtime.deployment
+        campaign = deployment.campaign
+        definitions = runtime.activation.rollout.bundle.definitions
+        authorities = runtime.activation.rollout.bundle.authorities
+        try:
+            proposal = build_general_attack_action_proposal(
+                campaign,
+                job_input.hypothesis_set,
+                job_input.plan,
+                job_input.task_digest,
+                job_input.action_definition,
+                definitions,
+            )
+            intent = compile_general_attack_action_intent(
+                proposal,
+                campaign,
+                job_input.hypothesis_set,
+                job_input.plan,
+                job_input.task_digest,
+                job_input.action_definition,
+                definitions,
+                job_input.code_backed_capability,
+                authorities,
+            )
+            definition = definitions.resolve(job_input.action_definition)
+            self._require_general_attack_profile_policy(campaign, definition)
+            envelope = deployment.mission_envelope
+            used_calls = sum(
+                permit.run_id == envelope.run_id
+                for permit in runtime.graph_store.permit_store.permits()
+            )
+            inputs = _ControlPlaneGeneralAttackInputs(
+                envelope=envelope,
+                decision=job_input.decision,
+                grant=job_input.grant,
+                used_calls=used_calls,
+            )
+            gate = GeneralAttackActionExecutionGate(
+                deployment_id=deployment.deployment_id,
+                run_root=Path(deployment.run_root),
+                activation=runtime.activation,
+                permit_store=runtime.graph_store.permit_store,
+                permit_inputs=inputs,
+                execution_inputs=inputs,
+                tools=runtime.tools,
+                worker=self._worker,
+                policy=PolicyEngine(),
+                clock=runtime.clock,
+                permit_ttl=timedelta(seconds=deployment.permit_ttl_seconds),
+            )
+            execution = await gate.execute_once(
+                intent,
+                proposal,
+                campaign,
+                job_input.hypothesis_set,
+                job_input.plan,
+                job_input.task_digest,
+                job_input.action_definition,
+                definitions,
+                job_input.code_backed_capability,
+                authorities,
+            )
+        except asyncio.CancelledError:
+            if cancellation is not None and cancellation.active:
+                seal_executor_quiescence(cancellation)
+            raise
+        except PermanentExecutionError:
+            raise
+        except (
+            GeneralAttackActionCompilerError,
+            GeneralAttackActionExecutionError,
+            GeneralAttackActionProposalError,
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise PermanentExecutionError("general-attack-v1 execution failed closed") from exc
+        permit = execution.permit.dispatch.permit
+        outcome = execution.outcome
+        return CompletedExecution(
+            result={
+                "engine": "general-attack-gateway",
+                "executionProfile": job_input.profile,
+                "deploymentId": deployment.deployment_id,
+                "releaseSetDigest": deployment.release_set_digest,
+                "activationSetDigest": deployment.activation_set_digest,
+                "controlPlaneRunId": job.run_id,
+                "graphRunId": permit.run_id,
+                "permitId": permit.permit_id,
+                "permitDigest": permit.permit_digest,
+                "dispatchId": permit.dispatch_id,
+                "dispatched": execution.permit.dispatch.dispatched,
+                "outcomeAssessmentId": outcome.assessment_id,
+                "outcomeAssessmentDigest": outcome.assessment_digest,
+                "oracleDecision": outcome.oracle_decision.value,
+                "executionContext": worker_execution_context(self._worker).model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
             }
         )
 
@@ -655,6 +853,25 @@ class CampaignJobExecutor:
                 else None
             ),
         )
+
+    @staticmethod
+    def _require_general_attack_profile_policy(
+        campaign: CampaignManifest,
+        definition: CapabilityDefinition,
+    ) -> None:
+        if (
+            definition.risk_tier > ToolRiskTier.T1
+            or definition.approval_required
+            or definition.network_access
+            or definition.cleanup_required
+            or definition.side_effect_class
+            not in {CapabilitySideEffectClass.NONE, CapabilitySideEffectClass.READ_ONLY}
+            or campaign.spec.budgets.max_cost_usd != 0
+        ):
+            raise PermanentExecutionError(
+                "general-attack-v1 permits only approval-free, non-networked, zero-cost "
+                "T0/T1 no-write actions"
+            )
 
     @staticmethod
     def _capability_graph_permits(
