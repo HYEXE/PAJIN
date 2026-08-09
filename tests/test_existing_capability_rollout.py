@@ -76,7 +76,11 @@ from pajin.control_plane.capability_deployment import (
     capability_graph_campaign_digest,
     load_capability_graph_deployment,
 )
-from pajin.control_plane.executors import CampaignJobExecutor, PermanentExecutionError
+from pajin.control_plane.executors import (
+    CampaignJobExecutor,
+    CapabilityGraphBatchCampaignJobInput,
+    PermanentExecutionError,
+)
 from pajin.control_plane.models import JobState, JobView
 from pajin.domain.ctf import CTFScenario
 from pajin.domain.models import (
@@ -1617,6 +1621,60 @@ def _capability_worker_job(job_input: dict[str, object]) -> JobView:
         created_at=NOW,
         updated_at=NOW,
     )
+
+
+@pytest.mark.parametrize("item_ordinal", ["1", 1.0, True])
+def test_worker_batch_job_rejects_coerced_item_ordinal(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    item_ordinal: object,
+) -> None:
+    _, job_input = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    job_input["itemOrdinal"] = item_ordinal
+
+    with pytest.raises(ValidationError, match="itemOrdinal"):
+        CapabilityGraphBatchCampaignJobInput.model_validate(job_input)
+
+
+@pytest.mark.parametrize(
+    ("field", "relative_path"),
+    [
+        ("graphDatabase", Path("nested") / "graph.sqlite3"),
+        (
+            "actionApprovalBatchJournal",
+            Path("nested") / ".." / "approval-batch.sqlite3",
+        ),
+    ],
+)
+def test_batch_deployment_rejects_state_paths_inside_run_root(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    field: str,
+    relative_path: Path,
+) -> None:
+    runtime, _ = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    deployment_raw = runtime.deployment.model_dump(mode="json", by_alias=True)
+    deployment_raw[field] = str(Path(runtime.deployment.run_root) / relative_path)
+
+    with pytest.raises(ValidationError, match="separated"):
+        CapabilityGraphWorkerDeployment.model_validate(deployment_raw)
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["graphDatabase", "runRoot", "actionApprovalBatchJournal"],
+)
+def test_batch_deployment_rejects_relative_state_paths(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    field: str,
+) -> None:
+    runtime, _ = _capability_worker_batch_fixture(tmp_path, sample_campaign)
+    deployment_raw = runtime.deployment.model_dump(mode="json", by_alias=True)
+    deployment_raw[field] = "relative/state.sqlite3"
+
+    with pytest.raises(ValidationError, match="bounded absolute path"):
+        CapabilityGraphWorkerDeployment.model_validate(deployment_raw)
 
 
 @pytest.mark.asyncio

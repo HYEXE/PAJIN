@@ -380,6 +380,7 @@ async def test_async_batch_success_is_terminal_and_never_redispatches(tmp_path: 
         1,
         consumer,
     )
+    completion_verifications_after_dispatch = completion_authority.calls
     retry = await dispatcher.dispatch_item_once(
         batch,
         1,
@@ -392,7 +393,8 @@ async def test_async_batch_success_is_terminal_and_never_redispatches(tmp_path: 
     assert retry.dispatched is False
     assert retry.authorization is None
     assert retry.item == first.item
-    assert completion_authority.calls == 2
+    assert completion_verifications_after_dispatch >= 2
+    assert completion_authority.calls > completion_verifications_after_dispatch
 
 
 @pytest.mark.asyncio
@@ -634,6 +636,7 @@ async def test_reversible_batch_binds_cleanup_hold_and_restored_state_once(
         )
 
     first = await dispatcher.dispatch_reversible_item_once(batch, 1, consumer)
+    completion_verifications_after_dispatch = completion_authority.calls
     retry = await dispatcher.dispatch_reversible_item_once(batch, 1, consumer)
 
     assert first.dispatched is True
@@ -644,7 +647,8 @@ async def test_reversible_batch_binds_cleanup_hold_and_restored_state_once(
     assert retry.dispatched is False
     assert retry.item == first.item
     assert calls == 1
-    assert completion_authority.calls == 2
+    assert completion_verifications_after_dispatch >= 2
+    assert completion_authority.calls > completion_verifications_after_dispatch
     assert store.permit_store.cleanup_reservations() == (first.item.cleanup_reservation,)
     reopened = SQLiteActionApprovalBatchJournal(
         journal.path,
@@ -775,7 +779,7 @@ def test_partial_cancellation_is_atomic_and_cannot_cancel_claimed_item(tmp_path:
     )
     assert publication.state is ActionApprovalBatchState.MANUAL_REVIEW_REQUIRED
     assert publication.items[1].state is ActionApprovalBatchItemState.CANCELLED_BEFORE_DISPATCH
-    assert authority.calls == 3
+    assert authority.calls == 4
 
 
 def test_journal_schema_and_authority_rows_resist_direct_mutation(tmp_path: Path) -> None:
@@ -795,6 +799,14 @@ def test_journal_schema_and_authority_rows_resist_direct_mutation(tmp_path: Path
                 WHERE batch_id = ? AND item_ordinal = 1
                 """,
                 (batch.batch_id,),
+            )
+        with pytest.raises(sqlite3.IntegrityError, match="authorization is immutable"):
+            connection.execute(
+                """
+                UPDATE action_approval_batch_items SET authorization_json = ?
+                WHERE batch_id = ? AND item_ordinal = 1
+                """,
+                (sqlite3.Binary(b"{}"), batch.batch_id),
             )
 
 
@@ -854,6 +866,103 @@ async def test_journal_backup_restore_preserves_exact_terminal_and_pending_state
     ).dispatch_item_once(batch, 1, consumer)
     assert retry.dispatched is False
     assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_journal_backup_and_restore_revalidate_current_authorities(
+    tmp_path: Path,
+) -> None:
+    source_input = _BatchInputAuthority()
+    source_completion = _CompletionAuthority()
+    source_cancellation = _CancellationAuthority()
+    store, capability, batch, journal = _batch(
+        tmp_path,
+        input_authority=source_input,
+        completion_authority=source_completion,
+        cancellation_authority=source_cancellation,
+    )
+    dispatcher = GraphApprovedActionBatchDispatcher(
+        _approved_authority(store, capability),
+        journal,
+    )
+
+    async def consumer(
+        permit: ActionPermit,
+        receipt: ActionApprovalConsumptionReceipt,
+    ) -> ActionApprovalBatchCompletion:
+        return _completion(batch, 1, permit, receipt)
+
+    await dispatcher.dispatch_item_once(batch, 1, consumer)
+    journal.cancel_pending(batch, _cancellation(batch, 2))
+    expected = journal.publications()
+
+    rejected_backup = tmp_path / "rejected-backup" / "approval-batch.sqlite3"
+    source_completion.reject = True
+    with pytest.raises(ActionApprovalBatchError, match="completion authority"):
+        journal.create_backup(
+            rejected_backup,
+            created_at=NOW + timedelta(seconds=10),
+            minimum_retain_until=NOW + timedelta(days=30),
+        )
+    source_completion.reject = False
+    assert not rejected_backup.exists()
+    assert not action_approval_batch_journal_backup_manifest_path(rejected_backup).exists()
+
+    backup = tmp_path / "verified-backup" / "approval-batch.sqlite3"
+    journal.create_backup(
+        backup,
+        created_at=NOW + timedelta(seconds=10),
+        minimum_retain_until=NOW + timedelta(days=30),
+    )
+    restored_input = _BatchInputAuthority()
+    restored_completion = _CompletionAuthority()
+    restored_cancellation = _CancellationAuthority()
+    restored = SQLiteActionApprovalBatchJournal.restore_backup(
+        backup,
+        destination=tmp_path / "restored-current" / "approval-batch.sqlite3",
+        input_authority=restored_input,
+        completion_authority=restored_completion,
+        cancellation_authority=restored_cancellation,
+    )
+    assert restored.publications() == expected
+    assert restored_input.calls > 0
+    assert restored_completion.calls > 0
+    assert restored_cancellation.calls > 0
+
+    rejecting_authorities = (
+        (
+            _BatchInputAuthority(fail_on_call=1),
+            _CompletionAuthority(),
+            _CancellationAuthority(),
+            "input authority",
+        ),
+        (
+            _BatchInputAuthority(),
+            _CompletionAuthority(reject=True),
+            _CancellationAuthority(),
+            "completion authority",
+        ),
+        (
+            _BatchInputAuthority(),
+            _CompletionAuthority(),
+            _CancellationAuthority(reject=True),
+            "cancellation authority",
+        ),
+    )
+    for index, (input_authority, completion_authority, cancellation_authority, match) in enumerate(
+        rejecting_authorities,
+        start=1,
+    ):
+        destination = tmp_path / f"rejected-restore-{index}" / "approval-batch.sqlite3"
+        with pytest.raises(ActionApprovalBatchError, match=match):
+            SQLiteActionApprovalBatchJournal.restore_backup(
+                backup,
+                destination=destination,
+                input_authority=input_authority,
+                completion_authority=completion_authority,
+                cancellation_authority=cancellation_authority,
+            )
+        assert not destination.exists()
 
 
 def test_journal_retention_never_eligibles_pending_or_unknown_batches(

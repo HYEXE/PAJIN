@@ -225,7 +225,7 @@ class CapabilityGraphBatchCampaignJobInput(StrictModel):
         pattern=r"^action-approval-batch_[a-f0-9]{64}$",
     )
     batch_digest: str = Field(alias="batchDigest", pattern=r"^[a-f0-9]{64}$")
-    item_ordinal: int = Field(alias="itemOrdinal", ge=1, le=8)
+    item_ordinal: int = Field(alias="itemOrdinal", strict=True, ge=1, le=8)
     proposal: ActionProposal
     decision: GraphDecision
     release: CapabilityReleaseRef

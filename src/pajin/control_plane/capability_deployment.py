@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import os
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
@@ -182,8 +183,13 @@ class CapabilityGraphWorkerDeployment(StrictModel):
     @field_validator("graph_database", "run_root")
     @classmethod
     def require_absolute_state_path(cls, value: str) -> str:
-        path = Path(value)
-        if not path.is_absolute() or path == Path(path.anchor):
+        supplied = Path(value)
+        if not supplied.is_absolute():
+            raise ValueError(
+                "Capability Graph deployment state paths must be bounded absolute paths"
+            )
+        path = Path(os.path.abspath(supplied))
+        if path == Path(path.anchor):
             raise ValueError(
                 "Capability Graph deployment state paths must be bounded absolute paths"
             )
@@ -194,8 +200,11 @@ class CapabilityGraphWorkerDeployment(StrictModel):
     def require_absolute_batch_journal_path(cls, value: str | None) -> str | None:
         if value is None:
             return None
-        path = Path(value)
-        if not path.is_absolute() or path == Path(path.anchor):
+        supplied = Path(value)
+        if not supplied.is_absolute():
+            raise ValueError("Capability Graph batch journal must be a bounded absolute path")
+        path = Path(os.path.abspath(supplied))
+        if path == Path(path.anchor):
             raise ValueError("Capability Graph batch journal must be a bounded absolute path")
         return str(path)
 
@@ -275,7 +284,7 @@ class CapabilityGraphWorkerDeployment(StrictModel):
         _validate_capability_graph_batch_inventory(self)
         graph_database = Path(self.graph_database)
         run_root = Path(self.run_root)
-        if graph_database == run_root or graph_database.parent == run_root:
+        if _path_is_within(graph_database, run_root):
             raise ValueError("Capability Graph database must be separated from the Run audit root")
         _validate_capability_graph_batch_state_paths(self, graph_database, run_root)
         release_keys = [(item.release_id, item.release_digest) for item in self.activated_releases]
@@ -354,10 +363,23 @@ def _validate_capability_graph_batch_state_paths(
     if deployment.action_approval_batch_journal is None:
         return
     batch_journal = Path(deployment.action_approval_batch_journal)
-    if batch_journal in (graph_database, run_root) or batch_journal.parent == run_root:
+    graph_sidecars = {Path(f"{graph_database}{suffix}") for suffix in ("-journal", "-shm", "-wal")}
+    if (
+        batch_journal == graph_database
+        or batch_journal in graph_sidecars
+        or _path_is_within(batch_journal, run_root)
+    ):
         raise ValueError(
             "Capability Graph batch journal must be separated from Graph and Run state"
         )
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 @dataclass(frozen=True, slots=True)

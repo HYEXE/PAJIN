@@ -681,6 +681,7 @@ CREATE TABLE action_approval_batch_items (
     permit_digest TEXT,
     receipt_id TEXT UNIQUE,
     receipt_digest TEXT,
+    authorization_json BLOB,
     cleanup_request_digest TEXT,
     cleanup_reservation_id TEXT UNIQUE,
     cleanup_reservation_digest TEXT,
@@ -689,9 +690,11 @@ CREATE TABLE action_approval_batch_items (
     cancellation_json BLOB,
     PRIMARY KEY (batch_id, item_ordinal),
     CHECK ((permit_id IS NULL AND permit_digest IS NULL
-            AND receipt_id IS NULL AND receipt_digest IS NULL)
+            AND receipt_id IS NULL AND receipt_digest IS NULL
+            AND authorization_json IS NULL)
         OR (permit_id IS NOT NULL AND permit_digest IS NOT NULL
-            AND receipt_id IS NOT NULL AND receipt_digest IS NOT NULL)),
+            AND receipt_id IS NOT NULL AND receipt_digest IS NOT NULL
+            AND authorization_json IS NOT NULL)),
     CHECK ((cleanup_reservation_id IS NULL AND cleanup_reservation_digest IS NULL
             AND cleanup_reservation_json IS NULL)
         OR (cleanup_reservation_id IS NOT NULL AND cleanup_reservation_digest IS NOT NULL
@@ -774,6 +777,7 @@ END
 _ITEMS_AUTHORIZATION_ONCE_SQL = """
 CREATE TRIGGER action_approval_batch_items_authorization_once
 BEFORE UPDATE OF permit_id, permit_digest, receipt_id, receipt_digest,
+                 authorization_json,
                  cleanup_reservation_id, cleanup_reservation_digest,
                  cleanup_reservation_json
 ON action_approval_batch_items
@@ -782,8 +786,10 @@ WHEN NOT (
     AND NEW.state = 'dispatch-started-outcome-unknown'
     AND OLD.permit_id IS NULL AND OLD.permit_digest IS NULL
     AND OLD.receipt_id IS NULL AND OLD.receipt_digest IS NULL
+    AND OLD.authorization_json IS NULL
     AND NEW.permit_id IS NOT NULL AND NEW.permit_digest IS NOT NULL
     AND NEW.receipt_id IS NOT NULL AND NEW.receipt_digest IS NOT NULL
+    AND NEW.authorization_json IS NOT NULL
     AND OLD.cleanup_reservation_id IS NULL
     AND OLD.cleanup_reservation_digest IS NULL
     AND OLD.cleanup_reservation_json IS NULL
@@ -1143,6 +1149,7 @@ class SQLiteActionApprovalBatchJournal:
                         UPDATE action_approval_batch_items
                         SET state = ?, permit_id = ?, permit_digest = ?,
                             receipt_id = ?, receipt_digest = ?,
+                            authorization_json = ?,
                             cleanup_reservation_id = ?, cleanup_reservation_digest = ?,
                             cleanup_reservation_json = ?
                         WHERE batch_id = ? AND item_ordinal = ?
@@ -1153,6 +1160,7 @@ class SQLiteActionApprovalBatchJournal:
                             permit.permit_digest,
                             receipt.receipt_id,
                             receipt.receipt_digest,
+                            sqlite3.Binary(_authorization_bytes(authorization)),
                             (
                                 cleanup_reservation.cleanup_reservation_id
                                 if cleanup_reservation is not None
@@ -1392,7 +1400,8 @@ class SQLiteActionApprovalBatchJournal:
             with _readonly_connection(self.path) as connection:
                 _validate_schema(connection)
                 batch = _load_batch(connection, batch_id)
-                return _item_record(
+                self._verify_batch(batch)
+                return self._verified_item_record(
                     connection,
                     batch,
                     _item_row(connection, batch_id, ordinal),
@@ -1420,8 +1429,14 @@ class SQLiteActionApprovalBatchJournal:
                     raise ActionApprovalBatchError(
                         "Action approval batch durable item set is incomplete"
                     )
+                self._verify_batch(batch)
                 items = tuple(
-                    _item_record(connection, batch, cast(sqlite3.Row, row)) for row in rows
+                    self._verified_item_record(
+                        connection,
+                        batch,
+                        cast(sqlite3.Row, row),
+                    )
+                    for row in rows
                 )
                 states = tuple(item.state for item in items)
                 derived = _batch_state(states)
@@ -1433,6 +1448,37 @@ class SQLiteActionApprovalBatchJournal:
                 )
         except sqlite3.Error as exc:
             raise ActionApprovalBatchError("Action approval batch publication read failed") from exc
+
+    def _verified_item_record(
+        self,
+        connection: sqlite3.Connection,
+        batch: ActionApprovalBatchEnvelope,
+        row: sqlite3.Row,
+    ) -> ActionApprovalBatchItemRecord:
+        record = _item_record(connection, batch, row)
+        authorization_raw = _optional_bytes(row, "authorization_json")
+        authorization = (
+            _authorization_from_bytes(authorization_raw) if authorization_raw is not None else None
+        )
+        if record.completion is not None:
+            if authorization is None:
+                raise ActionApprovalBatchError(
+                    "Action approval batch terminal item lacks stored authorization"
+                )
+            _verify_completion(
+                self._completion_authority,
+                batch,
+                batch.approval_at(record.item_ordinal),
+                authorization,
+                record.completion,
+            )
+        if record.cancellation is not None:
+            _verify_cancellation(
+                self._cancellation_authority,
+                batch,
+                record.cancellation,
+            )
+        return record
 
     def _verify_batch(self, batch: ActionApprovalBatchEnvelope) -> None:
         try:
@@ -1954,6 +2000,7 @@ def _item_record(
     state = ActionApprovalBatchItemState(_required_text(row, "state"))
     completion_raw = _optional_bytes(row, "completion_json")
     cancellation_raw = _optional_bytes(row, "cancellation_json")
+    authorization_raw = _optional_bytes(row, "authorization_json")
     cleanup_reservation_raw = _optional_bytes(row, "cleanup_reservation_json")
     completion = _completion_from_bytes(completion_raw) if completion_raw is not None else None
     cancellation = (
@@ -1963,6 +2010,9 @@ def _item_record(
         _cleanup_reservation_from_bytes(cleanup_reservation_raw)
         if cleanup_reservation_raw is not None
         else None
+    )
+    authorization = (
+        _authorization_from_bytes(authorization_raw) if authorization_raw is not None else None
     )
     event_rows = connection.execute(
         """
@@ -2038,6 +2088,19 @@ def _item_record(
     )
     if _optional_text(row, "cleanup_request_digest") != expected_cleanup_digest:
         raise ActionApprovalBatchError("Action approval batch cleanup request identity differs")
+    if (authorization is not None) is not (record.permit_id is not None):
+        raise ActionApprovalBatchError("Action approval batch stored authorization is partial")
+    if authorization is not None:
+        _require_authorization_binding(batch, ordinal, approval, authorization)
+        permit, receipt, stored_cleanup_reservation = _authorization_evidence(authorization)
+        if (
+            record.permit_id != permit.permit_id
+            or record.permit_digest != permit.permit_digest
+            or record.receipt_id != receipt.receipt_id
+            or record.receipt_digest != receipt.receipt_digest
+            or cleanup_reservation != stored_cleanup_reservation
+        ):
+            raise ActionApprovalBatchError("Action approval batch stored authorization differs")
     _require_cleanup_record_binding(
         approval,
         cleanup_request,
@@ -2186,6 +2249,41 @@ def _cleanup_reservation_bytes(reservation: ActionCleanupReservation) -> bytes:
         label="ActionCleanupReservation",
         max_bytes=_MAX_BATCH_BYTES,
     )
+
+
+def _authorization_bytes(authorization: ActionApprovalBatchAuthorization) -> bytes:
+    return canonical_graph_json(
+        authorization.model_dump(mode="json", by_alias=True),
+        label="Action approval batch authorization",
+        max_bytes=_MAX_BATCH_BYTES,
+    )
+
+
+def _authorization_from_bytes(raw: bytes) -> ActionApprovalBatchAuthorization:
+    import json
+
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+        if type(parsed) is not dict:
+            raise ValueError("authorization must be a JSON object")
+        has_action = "action" in parsed
+        has_reversible = "reversible" in parsed
+        if has_action == has_reversible:
+            raise ValueError("authorization shape is ambiguous")
+        authorization: ActionApprovalBatchAuthorization
+        if has_action:
+            authorization = ActionApprovalAuthorization.model_validate(parsed)
+        else:
+            authorization = ApprovedReversibleActionPermitAuthorization.model_validate(parsed)
+    except (UnicodeDecodeError, ValueError, ValidationError) as exc:
+        raise ActionApprovalBatchError(
+            "Stored Action approval batch authorization is invalid"
+        ) from exc
+    if raw != _authorization_bytes(authorization):
+        raise ActionApprovalBatchError(
+            "Stored Action approval batch authorization is not canonical"
+        )
+    return authorization
 
 
 def _batch_from_bytes(raw: bytes) -> ActionApprovalBatchEnvelope:
