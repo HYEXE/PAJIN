@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `6312215a8860e4a451de1af4d9d1f41d745f5817`
-- 현재 코드 체크포인트: Phase 9 `UX-001A` 비실행 Campaign·Profile·Scope Builder draft 완료
+- 현재 기능 HEAD: `1c5f68e1c84c62a2099add5fe825937688ee7b7d`
+- 현재 코드 체크포인트: Phase 9 `UX-001B1` local Campaign Builder draft artifact·CLI 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -29,9 +29,10 @@
 - Replay 격리·HTTP Surface 등록 정합성 수정 커밋: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
 - VAL-004C 구현 커밋: `56f5dcf2301b34d2cf8aa039da3809035515e4d7`
 - UX-001A 구현 커밋: `6312215a8860e4a451de1af4d9d1f41d745f5817`
-- 현재 구현 체크포인트: Bug Bounty·CTF typed source 기반 exact Profile·Scope 비실행 draft
-- 다음 로드맵: Phase 9 `UX-001B` draft 저장·조회와 명시적 기존 compiler handoff
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 24 commits ahead
+- UX-001B1 구현 커밋: `1c5f68e1c84c62a2099add5fe825937688ee7b7d`
+- 현재 구현 체크포인트: content-addressed local draft artifact와 CLI 생성·검증 조회
+- 다음 로드맵: Phase 9 `UX-001B2` Control Plane read-only draft 조회
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 26 commits ahead
 
 ## 재개 전 확인
 
@@ -48,20 +49,23 @@ CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수�
 typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
 `653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
-`d5bd2e4`, VAL-004C는 `56f5dcf`, UX-001A는 `6312215`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬
-`main`은 `origin/main@0ed5ac7`보다 24 commits ahead이고 working tree는 clean이어야 한다.
+`d5bd2e4`, VAL-004C는 `56f5dcf`, UX-001A는 `6312215`, UX-001B1은 `1c5f68e`에 보존됐다. 이 문서
+동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 26 commits ahead이고 working tree는
+clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
 
-`UX-001A`는 complete `BugBountyProgramManifest` 또는 단일 `CTFChallengeManifest`를 exact PROF-001
-`bug-hunt`·`ctf` Profile, code-owned catalog, source digest와 source-derived Scope·Target preview에
-결박한다. Bug Bounty approval digest는 exact draft source digest와 분리해 preview에 노출하고
-`generic-http`·entry point 없는 asset은 review-only로 유지한다. draft는 existing compiler entrypoint와
-남은 approval·authorization gate만 기록하며 Campaign·Job·MissionEnvelope·Capability·Permit를 만들거나
-compiler를 호출하지 않는다. Scope·Target·Campaign·Capability·Permit·execution authority는 모두 false다.
+`UX-001B1`은 UX-001A draft를 `<output>/<draftDigest>/campaign-profile-scope-draft.json`에 canonical
+strict JSON으로 저장하고 같은 public verifier로 post-write reload한다. reader는 4 MiB·depth 64·50,000
+node, duplicate key·non-finite number, no-follow parent·leaf, single hardlink와 stable revision을 요구한 뒤
+complete source·Profile·preview·compiler·gate·digest를 다시 도출한다. `campaign-draft-create`와
+`campaign-draft-inspect`는 source text·target endpoint를 출력하거나 기존 compiler를 호출하지 않는다.
+RunStore·Control Plane managed artifact·Graph에는 admission하지 않으며 boolean `false` 대신 숫자 `0`을
+넣는 authority wire 위조도 거부한다. Scope·Target·Campaign·Capability·Permit·execution authority는
+계속 모두 false다.
 
 `CHAIN-001`은 exact sealed Recon source·projection Run과 ORCH-001 `SurfaceSnapshotAuthority`를 다시
 검증한다. non-anonymous `http-authentication`과 같은 Campaign Target·exact route의 명시적
@@ -237,9 +241,13 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 핵심 위치:
 
 - `src/pajin/workflow/campaign_builder.py`
+- `src/pajin/cli.py`
 - `tests/test_campaign_builder.py`
+- `tests/test_campaign_builder_artifacts.py`
 - `docs/orchestration/UX-001A-campaign-profile-scope-builder-draft.md`
+- `docs/orchestration/UX-001B1-local-campaign-draft-artifact.md`
 - `docs/adr/0153-build-campaign-drafts-without-compilation-authority.md`
+- `docs/adr/0154-store-campaign-drafts-outside-run-authority.md`
 - `src/pajin/graph/approval.py`
 - `src/pajin/graph/approved_cleanup.py`
 - `src/pajin/graph/approval_batch.py`
@@ -310,21 +318,24 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 
 ## 현재 검증
 
-### 2026-08-10 UX-001A Campaign·Profile·Scope Builder draft 검증
+### 2026-08-10 UX-001B1 local Campaign Builder draft artifact 검증
 
-- 구현 커밋: `6312215`
-- Bug Bounty·CTF Web·Crypto exact source/Profile/Scope preview, content address, detached round trip,
-  review-only target와 기존 approval·authorization compiler gate 보존 집중 테스트: 27 passed
-- source·ordered input·Profile·catalog·preview·compiler·gate·digest 치환, cross-Profile·Pentest 선택과
-  boolean·Scope·Target·Campaign·Capability·Permit·execution 권위 상승 음성 회귀 포함
-- Profile·legacy compatibility·Bug Bounty·CTF·문서 인접 회귀: 112 passed, 5 skipped
-- Ruff 전체와 변경 Python 포맷 검사: 통과
+- 구현 커밋: `1c5f68e`
+- Bug Bounty·CTF local artifact canonical write·reload, CLI create·inspect, compiler 미호출과 문서 집중
+  검증: 45 passed, 1 skipped
+- source·digest·authority 치환, duplicate JSON key, symlink parent·leaf, hardlink alias와 boolean 대신 숫자
+  `0`인 Scope·Target·Campaign·Capability·Permit·execution marker를 fail closed하는 음성 회귀 포함
+- CLI·Bug Bounty·CTF 인접 회귀: 66 passed, 6 skipped
+- Windows skip은 developer mode가 없어 test symlink를 만들 수 없는 `WinError 1314`이며 hardlink 음성
+  테스트는 통과
+- Ruff 전체 `src tests containers`와 변경 Python 포맷 검사: 통과
 - Linux 대상 strict mypy: 270 source files 통과
-- Windows strict mypy: POSIX 전용 API 분석 한계 33건/6파일로 실패하며 새 Builder 집중 mypy는 통과
-- 문서 정책과 루트 상태 문서 크기 검사: 2 passed
-- 전체 `python -m pytest -q -x`: 661 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+- 변경 source 집중 mypy: 통과
+- 문서 정책과 루트 상태 문서 크기 검사: 2 passed; `PLAN.md` 65,211 bytes
+- staged diff check와 추가 line credential-like assignment scan: 통과
+- 전체 `python -m pytest -q -x`: 677 passed, 12 skipped 뒤 기존 Artifact admission 오류 메시지
   불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
-  `staged source Artifact failed managed admission`의 차이이며 UX-001A 변경 파일 밖이다.
+  `staged source Artifact failed managed admission`의 차이이며 UX-001B1 변경 파일 밖이다.
 
 ### 2026-08-10 VAL-004C mode-neutral repeated WALK Profile Validation Evidence 검증
 
@@ -670,17 +681,20 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A 비실행 Builder draft는 `6312215`에 보존됐다.
+Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A draft는 `6312215`, UX-001B1 local artifact·CLI는
+`1c5f68e`에 보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `UX-001B`다. 먼저 draft persistence가 기존 RunStore·Control Plane artifact와 다른
-새 원장을 필요로 하는지 대조하고 최소 저장·조회 경계를 정한다. 이후 operator가 original typed source와
-별도 approval을 기존 compiler에 명시적으로 전달하는 handoff를 추가하되 Scope preview·Profile 선택·draft
-digest를 approval, Campaign compilation 또는 실행 권위로 사용하지 않는다.
+다음 수직 슬라이스는 `UX-001B2`다. Control Plane의 기존 설정·operator 인증·read-only route 패턴을 먼저
+대조하고, caller path가 아니라 configured draft root와 exact digest로만 artifact를 찾은 뒤 B1 verified
+reader를 재사용한다. 응답에 complete embedded source를 노출할지 bounded preview projection만 노출할지는
+기존 operator 권한과 data-exposure 경계를 확인해 결정한다. compiler 호출·approval·Campaign·Run admission은
+추가하지 않는다. 그 다음 `UX-001B3`에서만 original typed source와 별도 approval을 기존 compiler에
+명시적으로 전달한다.
 
 ## 알려진 경계
 
-- UX-001A는 direct-call 비실행 draft뿐이다. CLI·Control Plane route·persistence·편집·compiler 호출,
+- UX-001B1은 local artifact·CLI만 지원한다. Control Plane route·편집·retention·compiler handoff,
   Pentest·AI Assessment·CTF Suite source는 없으며 approval·authorization 충족이나 실행 준비를 뜻하지 않는다.
 - CHAIN-001은 DISC-003C의 explicit `x-pajin-rag/index-management`만 AI admin Surface로 해석한다. 실제
   authentication bypass나 admin access를 관찰하지 않으며 UI·MCP·provider admin은 미지원이다.
