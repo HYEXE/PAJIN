@@ -896,6 +896,7 @@ python -m venv .venv
 | Core | `validate`, `run`, `multi-run`, `multi-cancel-check` |
 | Provider and agent loop | `provider-check`, `provider-agent-run`, `tool-loop-run`, `tool-loop-approval-check` |
 | KISA AI Red Team | `kisa-run`, `kisa-plan-remediation`, `kisa-retest` |
+| Campaign Builder | `campaign-draft-create`, `campaign-draft-inspect` |
 | Bug Bounty | `bug-bounty-review`, `bug-bounty-compile`, `bug-bounty-report`, `bug-bounty-run` |
 | CTF | `ctf-run`, `ctf-web-run` (compatibility alias), `ctf-suite-run` |
 | Evidence and infrastructure | `evidence-verify`, `replay-verify`, `worker-check`, `egress-check`, `mcp-check` |
@@ -920,6 +921,26 @@ boundary and does not produce real-target evidence. Every Local and Multi-Agent 
 actual backend identity in `execution-context.json`, duplicates it in `run.json` and the start
 event, and renders it in the report. Simulated CLI output and reports carry an explicit
 `SIMULATED / NOT REAL TARGET EVIDENCE` warning.
+
+## Local Campaign Builder drafts
+
+Create a non-executable Profile and Scope preview from one existing typed Bug Bounty or CTF source,
+then inspect the verified local artifact:
+
+```powershell
+.venv\Scripts\pajin campaign-draft-create `
+  examples\bug-bounty-lab-program.yaml `
+  --profile-id pajin.profile.bug-hunt
+
+.venv\Scripts\pajin campaign-draft-inspect `
+  .pajin\drafts\<draft-digest>\campaign-profile-scope-draft.json
+```
+
+The artifact embeds the complete typed source and is stored under its draft digest. Every read
+revalidates the source, registered Profile, derived preview, remaining gates, digests, and false
+authority markers through bounded strict JSON and no-follow file handling. These commands do not
+compile a Campaign or create an approval, Capability, Permit, Run, or execution authority. The
+Control Plane read path and explicit handoff to the existing compilers remain later Phase 9 work.
 
 ## Bug Bounty Scope Parser
 

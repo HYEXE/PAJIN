@@ -175,6 +175,14 @@ from pajin.runtime.worker import (
 from pajin.tools.base import ToolRegistry, decode_strict_worker_json_object
 from pajin.tools.gateway import RequestRateLimitLedger
 from pajin.tools.mock import SleepCheckTool
+from pajin.workflow.campaign_builder import (
+    CampaignBuilderError,
+    CampaignBuilderSource,
+    CampaignProfileScopeDraft,
+    build_campaign_profile_scope_draft,
+    load_campaign_profile_scope_draft,
+    write_campaign_profile_scope_draft,
+)
 from pajin.workflow.confirmation import apply_confirmed_gate
 from pajin.workflow.local import LocalCampaignRunner, RunOutcome
 from pajin.workflow.multi_agent import MultiAgentCampaignRunner, MultiAgentRunOutcome
@@ -1342,6 +1350,74 @@ def plan_kisa_remediation(
         )
     console.print(table)
     _print_cli_field("Remediation plan", outcome.path.resolve())
+
+
+def _load_campaign_builder_source(
+    source_path: Path,
+    *,
+    profile_id: str,
+) -> CampaignBuilderSource:
+    if profile_id == "pajin.profile.bug-hunt":
+        return load_bug_bounty_program(source_path)
+    if profile_id == "pajin.profile.ctf":
+        return load_ctf_challenge(source_path)
+    raise CampaignBuilderError(
+        "Campaign draft CLI supports only pajin.profile.bug-hunt or pajin.profile.ctf"
+    )
+
+
+def _print_campaign_builder_draft(draft: CampaignProfileScopeDraft) -> None:
+    table = Table(title="PAJIN Campaign Builder Draft")
+    table.add_column("Field")
+    table.add_column("Value")
+    table.add_row("Draft ID", _plain_cli_value(draft.draft_id))
+    table.add_row("Source kind", draft.source_kind.value)
+    table.add_row(
+        "Profile",
+        _plain_cli_value(
+            f"{draft.selected_profile.profile_id}@{draft.selected_profile.profile_version}"
+        ),
+    )
+    table.add_row("Target inputs", str(len(draft.scope_preview.target_inputs)))
+    table.add_row("Review-only sources", str(len(draft.scope_preview.review_only_source_ids)))
+    table.add_row("Draft state", draft.draft_state)
+    table.add_row("Execution authorized", "false")
+    console.print(table)
+
+
+@app.command("campaign-draft-create")
+def create_campaign_builder_draft(
+    source_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    profile_id: Annotated[str, typer.Option("--profile-id")],
+    profile_version: Annotated[str, typer.Option("--profile-version")] = "1.0.0",
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/drafts"),
+) -> None:
+    """Create a content-addressed local draft without compiling a Campaign."""
+
+    with _cli_error_boundary("Cannot create Campaign Builder draft", exit_code=2):
+        source = _load_campaign_builder_source(source_path, profile_id=profile_id)
+        draft = build_campaign_profile_scope_draft(
+            source,
+            profile_id=profile_id,
+            profile_version=profile_version,
+        )
+        artifact = write_campaign_profile_scope_draft(draft, output)
+    _print_campaign_builder_draft(artifact.draft)
+    _print_cli_field("Draft artifact", artifact.path.resolve())
+    console.print("No Campaign, approval, Capability, Permit, or execution authority was created.")
+
+
+@app.command("campaign-draft-inspect")
+def inspect_campaign_builder_draft(
+    draft_path: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+) -> None:
+    """Inspect a fully revalidated local Campaign Builder draft artifact."""
+
+    with _cli_error_boundary("Cannot inspect Campaign Builder draft", exit_code=2):
+        draft = load_campaign_profile_scope_draft(draft_path)
+    _print_campaign_builder_draft(draft)
+    _print_cli_field("Draft artifact", draft_path.resolve())
+    console.print("This draft is not a compiler input or execution authorization.")
 
 
 @app.command("bug-bounty-review")

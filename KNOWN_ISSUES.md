@@ -3,21 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## UX-001A Campaign·Profile·Scope Builder draft 경계
+## UX-001B1 Campaign Builder local draft artifact 경계
 
-- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed 비실행 draft는 구현됨
+- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed 비실행 draft와 local artifact·
+  CLI 생성·조회는 구현됨
 - 현재 보장: exact PROF-001 catalog·Profile, complete typed source·digest, source-derived Scope·Target
   preview, 기존 compiler entrypoint·남은 gate와 false authority marker를 결박한다. Bug Bounty
   `generic-http`·entry point 없는 asset은 review-only로 표시하며 wire reload에서 source·Profile·preview·
   compiler·gate·digest 치환과 Scope·Target·Campaign·Capability·Permit·execution 권위 상승을 fail closed한다.
-- 제한: CLI·Control Plane route·draft persistence·편집 workflow·compiler 호출은 없다. Pentest·AI Assessment·
-  CTF Suite source는 지원하지 않으며 draft는 approval·authorization 충족, Campaign compilation 또는 실행
-  준비 상태를 뜻하지 않는다.
-- 영향: 제품 화면은 기존 typed source의 안전한 preview를 사용할 수 있지만 실행하려면 기존 Bug Bounty
-  scope digest approval 또는 CTF authorization window를 compiler가 다시 검증해야 한다.
-- 해소 조건: `UX-001B`에서 durable draft identity와 저장·조회 경계를 정하고, 명시적 operator handoff가
-  원 typed source와 별도 approval을 기존 compiler에 전달하도록 구현한다. preview 자체는 compiler 입력이나
-  승인 권위로 승격하지 않는다.
+  artifact reader는 bounded strict JSON, no-follow 경로, single hardlink와 complete draft 재구성을 요구한다.
+- 제한: Control Plane route·편집·retention·compiler handoff는 없다. Pentest·AI Assessment·CTF Suite source는
+  지원하지 않으며 local 파일의 접근 통제와 보존 수명은 host와 operator가 관리한다. draft는 approval·
+  authorization 충족, Campaign compilation 또는 실행 준비 상태를 뜻하지 않는다.
+- 영향: CLI에서 deterministic draft를 저장·조회할 수 있지만 실행하려면 기존 Bug Bounty scope digest approval
+  또는 CTF authorization window를 compiler가 독립적으로 다시 검증해야 한다. draft는 Run evidence나 managed
+  Control Plane artifact로 admission되지 않는다.
+- 해소 조건: `UX-001B2`에서 verified reader 기반 Control Plane read-only 경로를 추가하고 `UX-001B3`에서
+  명시적 operator handoff가 원 typed source와 별도 approval을 기존 compiler에 전달하도록 구현한다. preview나
+  draft digest 자체는 compiler 입력이나 승인 권위로 승격하지 않는다.
 
 ## VAL-004B/004C mode-neutral WALK evidence 경계
 

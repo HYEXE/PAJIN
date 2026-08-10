@@ -2,6 +2,9 @@
 
 from pajin.workflow.campaign_builder import (
     CAMPAIGN_BUILDER_DRAFT_API_VERSION,
+    CAMPAIGN_BUILDER_DRAFT_ARTIFACT_FILENAME,
+    CampaignBuilderArtifactError,
+    CampaignBuilderDraftArtifact,
     CampaignBuilderError,
     CampaignBuilderGate,
     CampaignBuilderScopePreview,
@@ -9,6 +12,8 @@ from pajin.workflow.campaign_builder import (
     CampaignBuilderTargetInput,
     CampaignProfileScopeDraft,
     build_campaign_profile_scope_draft,
+    load_campaign_profile_scope_draft,
+    write_campaign_profile_scope_draft,
 )
 from pajin.workflow.campaign_profile import (
     CAMPAIGN_PROFILE_API_VERSION,
@@ -98,6 +103,7 @@ from pajin.workflow.profile_compatibility import (
 
 __all__ = [
     "CAMPAIGN_BUILDER_DRAFT_API_VERSION",
+    "CAMPAIGN_BUILDER_DRAFT_ARTIFACT_FILENAME",
     "CAMPAIGN_PROFILE_API_VERSION",
     "CAMPAIGN_PROFILE_CATALOG_API_VERSION",
     "COMMON_CAMPAIGN_ENGINE_CONTRACT_API_VERSION",
@@ -118,6 +124,8 @@ __all__ = [
     "LEGACY_CAMPAIGN_PROFILE_COMPILATION_API_VERSION",
     "LEGACY_CAMPAIGN_PROFILE_PROJECTION_API_VERSION",
     "LEGACY_MODE_PROFILE_COMPILER_API_VERSION",
+    "CampaignBuilderArtifactError",
+    "CampaignBuilderDraftArtifact",
     "CampaignBuilderError",
     "CampaignBuilderGate",
     "CampaignBuilderScopePreview",
@@ -168,6 +176,7 @@ __all__ = [
     "build_campaign_profile_scope_draft",
     "compile_legacy_campaign_profile",
     "execute_common_engine_dual_runtime_fixture",
+    "load_campaign_profile_scope_draft",
     "measure_common_engine_behavioral_parity",
     "measure_common_engine_planner_parity",
     "plan_legacy_campaign_common_execution",
@@ -177,4 +186,5 @@ __all__ = [
     "registered_legacy_mode_profile_compiler",
     "resolve_registered_campaign_profile",
     "select_common_engine_adapter",
+    "write_campaign_profile_scope_draft",
 ]

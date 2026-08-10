@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0154: Store Campaign Drafts outside Run Authority](docs/adr/0154-store-campaign-drafts-outside-run-authority.md)
 - [ADR-0153: Build Campaign Drafts without Compilation Authority](docs/adr/0153-build-campaign-drafts-without-compilation-authority.md)
 - [ADR-0152: Bind Repeated WALK Replays without New Execution Authority](docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md)
 - [ADR-0151: Bind Stateless WALK Controls to VAL-001](docs/adr/0151-bind-stateless-walking-controls-to-val001.md)

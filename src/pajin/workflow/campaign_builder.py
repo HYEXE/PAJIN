@@ -1,12 +1,22 @@
-"""UX-001A non-executable Campaign, Profile, and Scope builder draft."""
+"""UX-001A/B1 non-executable Campaign, Profile, and Scope builder draft."""
 
 from __future__ import annotations
 
+import json
+from dataclasses import dataclass
 from enum import StrEnum
 from hmac import compare_digest
+from pathlib import Path
 from typing import Annotated, Literal, Self
 
-from pydantic import ConfigDict, Field, StrictBool, model_validator
+from pydantic import (
+    ConfigDict,
+    Field,
+    StrictBool,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from pajin.domain.models import StrictModel
 from pajin.modes.bug_bounty.models import (
@@ -15,8 +25,10 @@ from pajin.modes.bug_bounty.models import (
 )
 from pajin.modes.bug_bounty.service import BugBountyScopeService
 from pajin.modes.ctf.models import CTFCategory, CTFChallengeManifest
+from pajin.runtime.safe_files import atomic_write_text_no_follow, load_bounded_strict_json
 from pajin.tools.ctf import crypto_artifact_target
 from pajin.workflow.campaign_profile import (
+    CampaignProfileError,
     RegisteredCampaignProfile,
     registered_campaign_profile_catalog,
     resolve_registered_campaign_profile,
@@ -26,10 +38,13 @@ from pajin.workflow.common_engine import _common_engine_digest
 CAMPAIGN_BUILDER_DRAFT_API_VERSION: Literal["pajin.dev/campaign-builder-draft/v1alpha1"] = (
     "pajin.dev/campaign-builder-draft/v1alpha1"
 )
+CAMPAIGN_BUILDER_DRAFT_ARTIFACT_FILENAME = "campaign-profile-scope-draft.json"
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _MAX_SOURCE_BYTES = 2 * 1024 * 1024
 _MAX_DRAFT_BYTES = 512 * 1024
+_MAX_DRAFT_ARTIFACT_BYTES = 4 * 1024 * 1024
+_MAX_DRAFT_ARTIFACT_NODES = 50_000
 
 _BUG_HUNT_PROFILE_ID = "pajin.profile.bug-hunt"
 _CTF_PROFILE_ID = "pajin.profile.ctf"
@@ -37,6 +52,10 @@ _CTF_PROFILE_ID = "pajin.profile.ctf"
 
 class CampaignBuilderError(RuntimeError):
     """Raised when a typed builder source and selected Profile do not match."""
+
+
+class CampaignBuilderArtifactError(CampaignBuilderError):
+    """Raised when a local builder draft artifact cannot be stored or verified."""
 
 
 class CampaignBuilderSourceKind(StrEnum):
@@ -47,6 +66,12 @@ class CampaignBuilderSourceKind(StrEnum):
 class CampaignBuilderGate(StrEnum):
     SCOPE_DIGEST_APPROVAL = "scope-digest-approval"
     AUTHORIZATION_WINDOW_RECHECK = "authorization-window-recheck"
+
+
+def _require_literal_false(value: object) -> object:
+    if type(value) is not bool or value is not False:
+        raise ValueError("Campaign Builder authority markers must be boolean false")
+    return value
 
 
 class CampaignBuilderTargetInput(StrictModel):
@@ -70,6 +95,11 @@ class CampaignBuilderTargetInput(StrictModel):
         alias="targetExecutionAuthorized",
     )
 
+    @field_validator("target_execution_authorized", mode="before")
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        return _require_literal_false(value)
+
 
 class CampaignBuilderScopePreview(StrictModel):
     """Derived Scope and target preview; never an approved Campaign Scope."""
@@ -90,6 +120,11 @@ class CampaignBuilderScopePreview(StrictModel):
     )
     approval_digest: _Sha256 | None = Field(default=None, alias="approvalDigest")
     scope_authorized: Literal[False] = Field(default=False, alias="scopeAuthorized")
+
+    @field_validator("scope_authorized", mode="before")
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        return _require_literal_false(value)
 
 
 type CampaignBuilderSource = BugBountyProgramManifest | CTFChallengeManifest
@@ -134,6 +169,17 @@ class CampaignProfileScopeDraft(StrictModel):
     permit_granted: Literal[False] = Field(default=False, alias="permitGranted")
     execution_authorized: Literal[False] = Field(default=False, alias="executionAuthorized")
 
+    @field_validator(
+        "campaign_manifest_compiled",
+        "capability_granted",
+        "permit_granted",
+        "execution_authorized",
+        mode="before",
+    )
+    @classmethod
+    def require_literal_false(cls, value: object) -> object:
+        return _require_literal_false(value)
+
     @model_validator(mode="after")
     def bind_draft(self) -> Self:
         catalog = registered_campaign_profile_catalog()
@@ -176,6 +222,14 @@ class CampaignProfileScopeDraft(StrictModel):
         return self
 
 
+@dataclass(frozen=True, slots=True)
+class CampaignBuilderDraftArtifact:
+    """One verified local artifact for a non-executable builder draft."""
+
+    path: Path
+    draft: CampaignProfileScopeDraft
+
+
 class _CampaignBuilderProjection(StrictModel):
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
@@ -214,6 +268,111 @@ def build_campaign_profile_scope_draft(
         compilerEntrypoint=projection.compiler_entrypoint,
         requiredGates=projection.required_gates,
     )
+
+
+def write_campaign_profile_scope_draft(
+    draft: CampaignProfileScopeDraft,
+    output_root: Path,
+) -> CampaignBuilderDraftArtifact:
+    """Write one canonical draft to its content-addressed local artifact path."""
+
+    try:
+        canonical = CampaignProfileScopeDraft.model_validate(
+            draft.model_dump(mode="json", by_alias=True)
+        )
+        payload = _canonical_draft_artifact_payload(canonical)
+        content = (
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
+        if len(content.encode("utf-8")) > _MAX_DRAFT_ARTIFACT_BYTES:
+            raise ValueError("Campaign Builder draft exceeds its artifact byte limit")
+        path = output_root / canonical.draft_digest / CAMPAIGN_BUILDER_DRAFT_ARTIFACT_FILENAME
+        atomic_write_text_no_follow(
+            path,
+            content,
+            label="Campaign Builder draft artifact",
+        )
+        persisted = load_campaign_profile_scope_draft(path)
+    except (
+        AttributeError,
+        CampaignBuilderError,
+        CampaignProfileError,
+        OSError,
+        TypeError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        if isinstance(exc, CampaignBuilderArtifactError):
+            raise
+        raise CampaignBuilderArtifactError("Campaign Builder draft artifact write failed") from exc
+    if persisted != canonical:
+        raise CampaignBuilderArtifactError(
+            "Campaign Builder draft artifact differs after write verification"
+        )
+    return CampaignBuilderDraftArtifact(path=path, draft=persisted)
+
+
+def load_campaign_profile_scope_draft(path: Path) -> CampaignProfileScopeDraft:
+    """Load and fully revalidate one bounded, no-follow local draft artifact."""
+
+    try:
+        decoded = load_bounded_strict_json(
+            path,
+            max_bytes=_MAX_DRAFT_ARTIFACT_BYTES,
+            label="Campaign Builder draft artifact",
+            require_single_link=True,
+            max_depth=64,
+            max_nodes=_MAX_DRAFT_ARTIFACT_NODES,
+        )
+        return CampaignProfileScopeDraft.model_validate(decoded)
+    except (
+        CampaignBuilderError,
+        CampaignProfileError,
+        OSError,
+        TypeError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        raise CampaignBuilderArtifactError("Campaign Builder draft artifact is invalid") from exc
+
+
+def _canonical_draft_artifact_payload(draft: CampaignProfileScopeDraft) -> dict[str, object]:
+    payload = draft.model_dump(mode="json", by_alias=True)
+    if draft.source_kind is CampaignBuilderSourceKind.BUG_BOUNTY_PROGRAM:
+        source = payload["source"]
+        assert isinstance(source, dict)
+        spec = source["spec"]
+        assert isinstance(spec, dict)
+        rules = spec["rules"]
+        assert isinstance(rules, dict)
+        for field_name in (
+            "allowedMethods",
+            "allowedToolCategories",
+            "prohibitedTechniques",
+            "stopOn",
+        ):
+            values = rules[field_name]
+            assert isinstance(values, list)
+            rules[field_name] = sorted(values)
+        windows = rules["testingWindows"]
+        assert isinstance(windows, list)
+        for window in windows:
+            assert isinstance(window, dict)
+            days = window["days"]
+            assert isinstance(days, list)
+            window["days"] = sorted(days)
+        reporting = spec["reporting"]
+        assert isinstance(reporting, dict)
+        required_fields = reporting["requiredFields"]
+        assert isinstance(required_fields, list)
+        reporting["requiredFields"] = sorted(required_fields)
+    return payload
 
 
 def _detached_source(source: CampaignBuilderSource) -> CampaignBuilderSource:

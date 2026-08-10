@@ -76,8 +76,9 @@ Validation rejects:
 - unknown Profile identity or version;
 - source mutation under a retained source digest;
 - catalog, Profile, source kind, preview, compiler, gate, ID, or digest substitution;
-- Scope or target execution markers changed to true; and
-- Campaign compilation, Capability, Permit, or execution markers changed to true.
+- Scope or target execution markers changed to true or a non-boolean value; and
+- Campaign compilation, Capability, Permit, or execution markers changed to true or a non-boolean
+  value.
 
 ## Compatibility, migration, and rollback
 
