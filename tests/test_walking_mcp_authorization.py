@@ -58,6 +58,8 @@ from pajin.discovery import (
     MCPToolAuthorizationReconPlanner,
     MCPToolSurfaceLocator,
     ModeNeutralAttackChainError,
+    ModeNeutralClaimReplayAuthority,
+    ModeNeutralClaimReplayError,
     ModeNeutralMCPPrivilegeAttackChainAuthority,
     ModeNeutralMCPPrivilegeAttackChainError,
     ModeNeutralWalkingAttackChainAuthority,
@@ -92,6 +94,7 @@ from pajin.discovery import (
     WalkingShadowTaskProposal,
     compile_file_upload_rag_tool_abuse_chain,
     compile_mcp_authorization_privileged_action_chain,
+    compile_mode_neutral_claim_replay,
     load_walking_candidate_admission_authority,
     load_walking_mcp_claim_replay_authority,
     load_walking_mcp_confirmation_authority,
@@ -102,8 +105,10 @@ from pajin.discovery import (
     mcp_tool_authorization_rule,
     registered_file_upload_rag_tool_abuse_chain_contract,
     registered_mcp_authorization_privileged_action_chain_contract,
+    registered_mode_neutral_claim_replay_contract,
     verify_file_upload_rag_tool_abuse_chain,
     verify_mcp_authorization_privileged_action_chain,
+    verify_mode_neutral_claim_replay,
     walking_independent_approval_receipt,
     walking_mcp_replay_approval_receipt,
     walking_observation_replan_rule,
@@ -694,17 +699,21 @@ def _replan_outcome(
     tmp_path: Path,
     campaign: CampaignManifest,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    mcp_source=None,
 ):
-    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
-    compiler = _replan_compiler(source)
-    evidence = compiler.evidence(campaign, source)
-    baseline = compiler.baseline_state_digest(campaign, source)
+    mcp_source = (
+        mcp_source if mcp_source is not None else _mcp_outcome(tmp_path, campaign, monkeypatch)
+    )
+    compiler = _replan_compiler(mcp_source)
+    evidence = compiler.evidence(campaign, mcp_source)
+    baseline = compiler.baseline_state_digest(campaign, mcp_source)
     return WalkingObservationReplanRunner(
         compiler=compiler,
         output_root=tmp_path,
     ).run(
         campaign,
-        source,
+        mcp_source,
         evidence,
         expected_previous_state_digest=baseline,
     )
@@ -1794,13 +1803,15 @@ def _walking_mcp_claim_replay_outcome(
     tmp_path: Path,
     campaign: CampaignManifest,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    mcp_source=None,
 ) -> WalkingMCPClaimReplayOutcome:
-    replan = _replan_outcome(tmp_path, campaign, monkeypatch)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch, mcp_source=mcp_source)
     original = _walking_execution_evidence(tmp_path, campaign, replan)
-    source = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+    candidate = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
         campaign, replan, original
     )
-    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, source)
+    plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "plan").run(campaign, candidate)
     replay = _walking_execution_evidence(
         tmp_path,
         campaign,
@@ -1811,6 +1822,178 @@ def _walking_mcp_claim_replay_outcome(
     return WalkingMCPClaimReplayRunner(output_root=tmp_path / "projection").run(
         campaign, plan, replay
     )
+
+
+def test_val001_contract_is_deterministic_bounded_and_non_authorizing() -> None:
+    first = registered_mode_neutral_claim_replay_contract()
+    second = registered_mode_neutral_claim_replay_contract()
+
+    assert first == second
+    assert first.contract_id == "val-001:mode-neutral-claim-replay"
+    assert first.supported_chain_ids == (
+        "chain-002:file-upload-rag-injection-tool-abuse",
+        "chain-005:mcp-authorization-failure-privileged-action",
+    )
+    assert first.claim_type == "validity"
+    assert first.campaign_mode_constraint == "none"
+    assert first.requires_verified_claim_replay is True
+    assert first.additional_execution_authorized is False
+    assert first.additional_replay_authorized is False
+    assert first.confirmation_eligible is False
+    assert first.finding_confirmed is False
+
+
+@pytest.mark.parametrize("mode", list(CampaignMode))
+def test_val001_binds_chain002_to_sealed_fresh_claim_replay_in_every_mode(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: CampaignMode,
+) -> None:
+    payload = _campaign(sample_campaign).model_dump(mode="json", by_alias=True)
+    payload["spec"]["mode"] = mode.value
+    campaign = CampaignManifest.model_validate(payload)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    chain = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+    replay = _walking_mcp_claim_replay_outcome(
+        tmp_path,
+        campaign,
+        monkeypatch,
+        mcp_source=source,
+    )
+
+    authority = compile_mode_neutral_claim_replay(campaign, chain, source, replay)
+
+    assert authority.contract == registered_mode_neutral_claim_replay_contract()
+    assert authority.chain_id == chain.contract.chain_id
+    assert authority.chain == chain
+    assert authority.claim == replay.authority.plan.claim
+    assert authority.replay.authority == replay.authority
+    assert authority.validation_state == "validity-reproduced-not-confirmed"
+    assert authority.campaign_mode_constraint == "none"
+    assert authority.claim_replay_verified is True
+    assert authority.freshness_verified is True
+    assert authority.independent_execution_attested is True
+    assert authority.additional_execution_authorized is False
+    assert authority.additional_replay_authorized is False
+    assert authority.confirmation_eligible is False
+    assert authority.finding_confirmed is False
+    assert verify_mode_neutral_claim_replay(authority, campaign, source, replay) == authority
+
+
+def test_val001_supports_chain005_only_with_the_same_exact_walk003_lineage(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    chain = compile_mcp_authorization_privileged_action_chain(campaign, source)
+    replay = _walking_mcp_claim_replay_outcome(
+        tmp_path,
+        campaign,
+        monkeypatch,
+        mcp_source=source,
+    )
+
+    authority = compile_mode_neutral_claim_replay(campaign, chain, source, replay)
+
+    assert authority.chain_id == "chain-005:mcp-authorization-failure-privileged-action"
+    assert authority.chain.kind == "ModeNeutralMCPPrivilegeAttackChainAuthority"
+    assert authority.replay.authority.plan.source.replan.source == chain.source
+
+
+def test_val001_rejects_chain_claim_binding_and_authority_marker_forgery(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    chain002 = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+    chain005 = compile_mcp_authorization_privileged_action_chain(campaign, source)
+    replay = _walking_mcp_claim_replay_outcome(
+        tmp_path,
+        campaign,
+        monkeypatch,
+        mcp_source=source,
+    )
+    authority = compile_mode_neutral_claim_replay(campaign, chain002, source, replay)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["chain"] = chain005.model_dump(mode="json", by_alias=True)
+    with pytest.raises(ValidationError, match="Chain identity differs"):
+        ModeNeutralClaimReplayAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["claim"] = replay.authority.plan.source.atomic_claims[1].model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    with pytest.raises(ValidationError, match="exact Chain-bound validity Claim"):
+        ModeNeutralClaimReplayAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["replayBindingDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="binding Digest differs"):
+        ModeNeutralClaimReplayAuthority.model_validate(raw)
+
+    for marker in (
+        "claimReplayVerified",
+        "freshnessVerified",
+        "independentExecutionAttested",
+    ):
+        raw = authority.model_dump(mode="json", by_alias=True)
+        raw[marker] = False
+        with pytest.raises(ValidationError, match="must be boolean true"):
+            ModeNeutralClaimReplayAuthority.model_validate(raw)
+
+    for marker in (
+        "additionalExecutionAuthorized",
+        "additionalReplayAuthorized",
+        "confirmationEligible",
+        "findingConfirmed",
+    ):
+        raw = authority.model_dump(mode="json", by_alias=True)
+        raw[marker] = True
+        with pytest.raises(ValidationError, match="must be boolean false"):
+            ModeNeutralClaimReplayAuthority.model_validate(raw)
+
+
+def test_val001_rejects_cross_lineage_stale_source_and_mutated_replay_artifact(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    chain = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+    replay = _walking_mcp_claim_replay_outcome(
+        tmp_path,
+        campaign,
+        monkeypatch,
+        mcp_source=source,
+    )
+    authority = compile_mode_neutral_claim_replay(campaign, chain, source, replay)
+
+    foreign_replay = _walking_mcp_claim_replay_outcome(tmp_path, campaign, monkeypatch)
+    with pytest.raises(ModeNeutralClaimReplayError, match="could not be compiled"):
+        compile_mode_neutral_claim_replay(campaign, chain, source, foreign_replay)
+
+    foreign_source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    with pytest.raises(ModeNeutralClaimReplayError, match="could not be compiled"):
+        verify_mode_neutral_claim_replay(authority, campaign, foreign_source, replay)
+
+    artifact = replay.run_path / replay.artifact_path
+    artifact.write_bytes(artifact.read_bytes() + b"\n")
+    with pytest.raises(ModeNeutralClaimReplayError, match="could not be compiled"):
+        verify_mode_neutral_claim_replay(authority, campaign, source, replay)
 
 
 def test_walking_mcp_confirmation_seals_report_and_remediation_baseline(

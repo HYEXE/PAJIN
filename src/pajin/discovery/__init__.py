@@ -37,6 +37,16 @@ from pajin.discovery.attack_chain import (
     verify_file_upload_rag_tool_abuse_chain,
 )
 from pajin.discovery.authentication import HTTPAndOpenAPIAuthenticationSurfaceAdapter
+from pajin.discovery.claim_replay import (
+    MODE_NEUTRAL_CLAIM_REPLAY_API_VERSION,
+    ModeNeutralClaimReplayAuthority,
+    ModeNeutralClaimReplayContract,
+    ModeNeutralClaimReplayError,
+    SealedWalkingMCPClaimReplayDependency,
+    compile_mode_neutral_claim_replay,
+    registered_mode_neutral_claim_replay_contract,
+    verify_mode_neutral_claim_replay,
+)
 from pajin.discovery.file_upload import HTTPAndOpenAPIFileUploadSurfaceAdapter
 from pajin.discovery.http import HTTPAndOpenAPISurfaceAdapter
 from pajin.discovery.hypothesis import (
@@ -289,6 +299,7 @@ __all__ = [
     "DISCOVERY_API_VERSION",
     "HYPOTHESIS_API_VERSION",
     "MODE_NEUTRAL_ATTACK_CHAIN_API_VERSION",
+    "MODE_NEUTRAL_CLAIM_REPLAY_API_VERSION",
     "MODE_NEUTRAL_MCP_PRIVILEGE_ATTACK_CHAIN_API_VERSION",
     "MODE_NEUTRAL_TENANT_ATTACK_CHAIN_API_VERSION",
     "MODE_NEUTRAL_URL_ATTACK_CHAIN_API_VERSION",
@@ -381,6 +392,9 @@ __all__ = [
     "ModeNeutralAttackChainAuthority",
     "ModeNeutralAttackChainContract",
     "ModeNeutralAttackChainError",
+    "ModeNeutralClaimReplayAuthority",
+    "ModeNeutralClaimReplayContract",
+    "ModeNeutralClaimReplayError",
     "ModeNeutralMCPPrivilegeAttackChainAuthority",
     "ModeNeutralMCPPrivilegeAttackChainContract",
     "ModeNeutralMCPPrivilegeAttackChainError",
@@ -417,6 +431,7 @@ __all__ = [
     "SealedMCPAuthorizationHypothesisDependency",
     "SealedRAGHypothesisDependency",
     "SealedWalkingCapabilityExecution",
+    "SealedWalkingMCPClaimReplayDependency",
     "SingleReconWaveRunner",
     "SurfaceAdmissionError",
     "SurfaceBoundPlan",
@@ -484,6 +499,7 @@ __all__ = [
     "compile_cross_tenant_data_exposure_chain",
     "compile_file_upload_rag_tool_abuse_chain",
     "compile_mcp_authorization_privileged_action_chain",
+    "compile_mode_neutral_claim_replay",
     "compile_prompt_url_internal_api_chain",
     "default_rag_injection_hypothesis_rule",
     "http_authentication_surface_locator",
@@ -518,6 +534,7 @@ __all__ = [
     "registered_cross_tenant_data_exposure_chain_contract",
     "registered_file_upload_rag_tool_abuse_chain_contract",
     "registered_mcp_authorization_privileged_action_chain_contract",
+    "registered_mode_neutral_claim_replay_contract",
     "registered_prompt_url_internal_api_chain_contract",
     "surface_observation",
     "tool_interface_surface_locator",
@@ -525,6 +542,7 @@ __all__ = [
     "verify_cross_tenant_data_exposure_chain",
     "verify_file_upload_rag_tool_abuse_chain",
     "verify_mcp_authorization_privileged_action_chain",
+    "verify_mode_neutral_claim_replay",
     "verify_prompt_url_internal_api_chain",
     "walking_campaign_digest",
     "walking_candidate_from_execution",
