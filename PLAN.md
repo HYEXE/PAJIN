@@ -736,6 +736,8 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
   - [x] `UX-001B2` Control Plane read-only draft 조회 경로
   - [x] `UX-001B3` 원 typed source·별도 approval 기반 기존 compiler handoff
 - [ ] Attack Surface·Graph·Wave Timeline UI
+  - [x] `UX-002A` sealed Discovery Attack Surface·Recon→Hypothesis Wave read-only view
+  - [ ] `UX-002B` 기존 canonical Graph Snapshot 기반 Graph projection
 - [ ] Hypothesis Ranking·Decision Audit
 - [ ] Original·Replay·Control·Retest Diff
 - [ ] Human Review·Approval·Kill Switch Queue
@@ -748,6 +750,13 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 CTF는 source 내 기존 authorization을 server current time에 각 기존 compiler로 전달한다. 결과는 canonical
 Campaign 값이지만 persistence·Capability·Permit·Run·execution authority는 만들지 않는다. 이로써 첫
 Campaign·Profile·Scope Builder 단위를 마치며 다음 제품 단위는 Attack Surface·Graph·Wave Timeline UI다.
+
+`UX-002A`는 `PAJIN_CP_DISCOVERY_RUN_ROOT` 아래 exact Campaign·Hypothesis Run만 받아 Hypothesis,
+Recon source, Surface projection 세 sealed Run의 digest·artifact·event authority를 다시 검증한다. 응답과
+Web Console은 bounded Attack Surface와 Recon→Hypothesis timeline만 표시하며 canonical Graph,
+Capability, Permit, execution authority는 명시적으로 포함하지 않는다. 상위 제품 단위는 아직 미완료이며
+다음 `UX-002B`는 새 store나 inferred edge를 만들지 않고 기존 canonical Graph Snapshot/admission
+authority를 재검증해 투영할 수 있는지 먼저 확정한다.
 
 ## 미결정 제품 사항
 

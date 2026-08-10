@@ -117,3 +117,91 @@ export function createEventNodes(documentRef, events) {
     return item;
   });
 }
+
+function locatorLabel(locator) {
+  if (locator.kind === "tool-interface") {
+    return `${locator.registry_id} / ${locator.tool_id}@${locator.tool_version}`;
+  }
+  if (locator.kind === "http-endpoint") {
+    return `${locator.method} ${locator.url}`;
+  }
+  if (locator.kind === "http-route") {
+    return `${locator.method} ${locator.base_url}${locator.path_template}`;
+  }
+  if (locator.route && typeof locator.route === "object") {
+    return locatorLabel(locator.route);
+  }
+  if (locator.kind === "mcp-server") {
+    return `${locator.server_id} / MCP ${locator.protocol_version}`;
+  }
+  if (typeof locator.server_id === "string") {
+    const member = locator.tool_name || locator.prompt_name || locator.uri_scheme || locator.kind;
+    return `${locator.server_id} / ${member}`;
+  }
+  return locator.kind;
+}
+
+export function createSurfaceNodes(documentRef, surfaces) {
+  return surfaces.map((surface) => {
+    const item = documentRef.createElement("li");
+    item.className = "surface-card";
+    const heading = documentRef.createElement("div");
+    heading.className = "surface-card-head";
+    const title = documentRef.createElement("strong");
+    title.textContent = surface.targetId;
+    const kind = documentRef.createElement("span");
+    kind.className = "surface-kind";
+    kind.textContent = surface.locator.kind;
+    heading.append(title, kind);
+    const locator = documentRef.createElement("p");
+    locator.className = "surface-locator";
+    locator.textContent = locatorLabel(surface.locator);
+    const metadata = documentRef.createElement("p");
+    metadata.className = "surface-meta";
+    metadata.textContent = [
+      shortId(surface.surfaceId),
+      `${surface.observationCount} observation(s)`,
+      `${Math.round(surface.confidence * 100)}% confidence`,
+      `last ${formatTime(surface.lastObservedAt)}`,
+    ].join(" / ");
+    item.append(heading, locator, metadata);
+    return item;
+  });
+}
+
+export function createWaveNodes(documentRef, waves) {
+  return waves.map((wave) => {
+    const item = documentRef.createElement("li");
+    item.className = "wave-card";
+    const heading = documentRef.createElement("div");
+    heading.className = "wave-card-head";
+    const title = documentRef.createElement("strong");
+    title.textContent = wave.kind === "recon" ? "Recon wave" : "Hypothesis wave";
+    const state = documentRef.createElement("span");
+    state.className = "state-badge state-completed";
+    state.textContent = wave.state;
+    heading.append(title, state);
+    const metadata = documentRef.createElement("p");
+    metadata.className = "wave-meta";
+    metadata.textContent = [shortId(wave.runId), wave.stopCondition, `${wave.taskCount} task(s)`]
+      .join(" / ");
+    item.append(heading, metadata);
+    if (wave.kind === "hypothesis") {
+      const tasks = documentRef.createElement("ol");
+      tasks.className = "wave-task-list";
+      for (const task of wave.tasks) {
+        const taskItem = documentRef.createElement("li");
+        taskItem.className = "wave-task";
+        taskItem.textContent = [
+          task.threatClass,
+          shortId(task.hypothesisId),
+          shortId(task.surfaceId),
+          task.specialistId,
+        ].join(" / ");
+        tasks.append(taskItem);
+      }
+      item.append(tasks);
+    }
+    return item;
+  });
+}

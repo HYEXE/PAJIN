@@ -42,6 +42,7 @@ from pajin.control_plane.campaign_drafts import (
     ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
+from pajin.control_plane.discovery_views import VerifiedDiscoveryViewReader
 from pajin.control_plane.errors import (
     ControlPlaneError,
     LeaseRejected,
@@ -561,6 +562,7 @@ class ControlPlaneSettings:
     artifact_staging_root: Path | None = None
     artifact_repository_root: Path | None = None
     campaign_draft_root: Path | None = None
+    discovery_run_root: Path | None = None
     replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
     replay_attestation_key_id: str | None = None
     replay_attestation_private_key: bytes | None = field(default=None, repr=False)
@@ -680,6 +682,7 @@ class ControlPlaneSettings:
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
         campaign_draft_root = os.environ.get("PAJIN_CP_CAMPAIGN_DRAFT_ROOT")
+        discovery_run_root = os.environ.get("PAJIN_CP_DISCOVERY_RUN_ROOT")
         missing = [
             name
             for name, value in (
@@ -807,6 +810,8 @@ class ControlPlaneSettings:
             )
         if campaign_draft_root is not None and not campaign_draft_root.strip():
             raise RuntimeError("PAJIN_CP_CAMPAIGN_DRAFT_ROOT must not be blank")
+        if discovery_run_root is not None and not discovery_run_root.strip():
+            raise RuntimeError("PAJIN_CP_DISCOVERY_RUN_ROOT must not be blank")
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         operator_subject = os.environ.get("PAJIN_CP_OPERATOR_SUBJECT", "operator")
         approver_subject = os.environ.get(
@@ -876,6 +881,9 @@ class ControlPlaneSettings:
             campaign_draft_root=(
                 Path(campaign_draft_root) if campaign_draft_root is not None else None
             ),
+            discovery_run_root=(
+                Path(discovery_run_root) if discovery_run_root is not None else None
+            ),
             replay_executor_profiles=replay_executor_profiles,
             replay_attestation_key_id=replay_attestation_key_id,
             replay_attestation_private_key=parsed_attestation_private_key,
@@ -905,6 +913,7 @@ class _ControlPlaneApplicationContext:
     artifact_repository: ManagedArtifactRepository | None
     campaign_draft_reader: ControlPlaneCampaignDraftReader
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler
+    discovery_view_reader: VerifiedDiscoveryViewReader
     service: ControlPlaneService
     authenticator: TokenAuthenticator
 
@@ -972,6 +981,7 @@ def _build_application_context(
         campaign_draft_compiler=ControlPlaneCampaignDraftCompiler(
             reader=campaign_draft_reader
         ),
+        discovery_view_reader=VerifiedDiscoveryViewReader(settings.discovery_run_root),
         service=service,
         authenticator=TokenAuthenticator(dict(settings.credentials)),
     )
@@ -1272,6 +1282,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         service=context.service,
         campaign_draft_reader=context.campaign_draft_reader,
         campaign_draft_compiler=context.campaign_draft_compiler,
+        discovery_view_reader=context.discovery_view_reader,
         dependencies=dependencies,
     )
     return app

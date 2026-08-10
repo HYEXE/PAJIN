@@ -14,6 +14,7 @@ import {
   validateApproval,
   validateApprovalDecision,
   validateCancellation,
+  validateDiscoveryView,
   validateEvents,
   validatePrincipal,
   validateResume,
@@ -24,6 +25,8 @@ import {
 import {
   createEventNodes,
   createRunRows,
+  createSurfaceNodes,
+  createWaveNodes,
   eventCountLabel,
   formatTime,
   shortId,
@@ -64,6 +67,8 @@ const session = {
   actionSequence: 0,
   submissionBusy: false,
   submissionSequence: 0,
+  discoveryRequestId: 0,
+  discoveryLoading: false,
   roles: new Set(),
   subject: null,
   currentRun: null,
@@ -121,6 +126,20 @@ const elements = {
   eventList: document.querySelector("#event-list"),
   latestEventsButton: document.querySelector("#latest-events-button"),
   olderEventsButton: document.querySelector("#older-events-button"),
+  discoveryPanel: document.querySelector("#discovery-panel"),
+  discoveryForm: document.querySelector("#discovery-form"),
+  discoveryCampaign: document.querySelector("#discovery-campaign"),
+  discoveryRunId: document.querySelector("#discovery-run-id"),
+  discoveryLoadButton: document.querySelector("#discovery-load-button"),
+  discoveryEmpty: document.querySelector("#discovery-empty"),
+  discoveryResult: document.querySelector("#discovery-result"),
+  discoveryCampaignValue: document.querySelector("#discovery-campaign-value"),
+  discoveryRunValue: document.querySelector("#discovery-run-value"),
+  discoverySurfaceSetValue: document.querySelector("#discovery-surface-set-value"),
+  discoverySnapshotValue: document.querySelector("#discovery-snapshot-value"),
+  surfaceCount: document.querySelector("#surface-count"),
+  surfaceList: document.querySelector("#surface-list"),
+  waveTimeline: document.querySelector("#wave-timeline"),
 };
 
 function setBusy(element, busy) {
@@ -134,6 +153,8 @@ function resetBusyIndicators() {
   setBusy(elements.detailPanel, false);
   setBusy(elements.workflowControl, false);
   setBusy(elements.eventList, false);
+  setBusy(elements.discoveryForm, false);
+  setBusy(elements.discoveryPanel, false);
 }
 
 function announce(message, tone = "neutral") {
@@ -167,6 +188,18 @@ function setConnected(connected, roles = [], subject = null) {
   elements.refreshButton.disabled = !connected;
   elements.stateFilter.disabled = !connected;
   elements.autoRefresh.disabled = !connected;
+  elements.discoveryCampaign.disabled = !session.canOperate;
+  elements.discoveryRunId.disabled = !session.canOperate;
+  elements.discoveryLoadButton.disabled = !session.canOperate || session.discoveryLoading;
+  if (!connected) {
+    elements.discoveryEmpty.textContent = (
+      "Connect with an Operator credential to inspect a verified Discovery Run."
+    );
+  } else if (!session.canOperate) {
+    elements.discoveryEmpty.textContent = (
+      "This projection requires an Operator credential; Approver and Auditor roles are read-denied."
+    );
+  }
   updateWorkflowControls();
   updateEventPaginationControls();
 }
@@ -211,6 +244,40 @@ function clearDetail() {
   empty.className = "empty-event";
   empty.textContent = "No events loaded.";
   elements.eventList.replaceChildren(empty);
+}
+
+function clearDiscovery({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.discoveryCampaign.value = "";
+    elements.discoveryRunId.value = "";
+  }
+  elements.discoveryResult.hidden = true;
+  elements.discoveryEmpty.hidden = false;
+  if (message !== null) {
+    elements.discoveryEmpty.textContent = message;
+  }
+  elements.discoveryCampaignValue.textContent = "--";
+  elements.discoveryRunValue.textContent = "--";
+  elements.discoverySurfaceSetValue.textContent = "--";
+  elements.discoverySnapshotValue.textContent = "--";
+  elements.surfaceCount.textContent = "0 surfaces";
+  elements.surfaceList.replaceChildren();
+  elements.waveTimeline.replaceChildren();
+}
+
+function renderDiscovery(view) {
+  const surfaceCount = view.surfaceSet.surfaceCount;
+  elements.discoveryCampaignValue.textContent = view.campaign.name;
+  elements.discoveryRunValue.textContent = view.hypothesisRun.runId;
+  elements.discoverySurfaceSetValue.textContent = view.surfaceSet.surfaceSetId;
+  elements.discoverySnapshotValue.textContent = String(view.surfaceSnapshot.revision);
+  elements.surfaceCount.textContent = `${surfaceCount} ${surfaceCount === 1 ? "surface" : "surfaces"}`;
+  elements.surfaceList.replaceChildren(
+    ...createSurfaceNodes(document, view.surfaceSet.surfaces),
+  );
+  elements.waveTimeline.replaceChildren(...createWaveNodes(document, view.waves));
+  elements.discoveryEmpty.hidden = true;
+  elements.discoveryResult.hidden = false;
 }
 
 function prepareDetailLoading(runId) {
@@ -303,6 +370,8 @@ function replaceCredential(token) {
   session.actionBusy = false;
   session.submissionSequence += 1;
   session.submissionBusy = false;
+  session.discoveryRequestId += 1;
+  session.discoveryLoading = false;
   session.refreshTask = null;
   resetBusyIndicators();
 }
@@ -318,6 +387,7 @@ function lockConsole(
   setConnected(false);
   clearRuns();
   clearDetail();
+  clearDiscovery({ clearInputs: true });
   announce(message, tone);
   if (focusToken) {
     elements.tokenInput.focus();
@@ -893,6 +963,7 @@ elements.tokenForm.addEventListener("submit", async (event) => {
   setConnected(false);
   clearRuns();
   clearDetail();
+  clearDiscovery({ clearInputs: true });
   elements.tokenInput.value = "";
   announce("Authenticating and loading Runs…");
   try {
@@ -1064,6 +1135,61 @@ elements.stateFilter.addEventListener("change", () => {
   session.offset = 0;
   refreshCurrent();
 });
+
+elements.discoveryForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.discoveryLoading) {
+    return;
+  }
+  const campaign = elements.discoveryCampaign.value.trim();
+  const runId = elements.discoveryRunId.value.trim();
+  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(campaign)) {
+    announce("Discovery Campaign ID must be canonical lowercase text.", "error");
+    elements.discoveryCampaign.focus();
+    return;
+  }
+  if (!/^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$/.test(runId)) {
+    announce("Enter one exact generated Hypothesis Run ID.", "error");
+    elements.discoveryRunId.focus();
+    return;
+  }
+  const requestId = ++session.discoveryRequestId;
+  const authEpoch = session.authEpoch;
+  session.discoveryLoading = true;
+  setBusy(elements.discoveryForm, true);
+  setBusy(elements.discoveryPanel, true);
+  elements.discoveryLoadButton.disabled = true;
+  clearDiscovery({ message: "Verifying sealed Discovery authorities..." });
+  announce("Verifying the sealed Discovery Surface and wave authority...");
+  try {
+    const path = `/v1/discovery/campaigns/${encodeURIComponent(campaign)}`
+      + `/hypothesis-runs/${encodeURIComponent(runId)}`;
+    const view = validateDiscoveryView(await apiRequest(path), campaign, runId);
+    if (session.discoveryRequestId !== requestId || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderDiscovery(view);
+    announce(
+      `Verified ${view.surfaceSet.surfaceCount} Attack Surface(s) across two sealed waves.`,
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.discoveryRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error ? error.message : "Unable to load Discovery view.";
+      clearDiscovery({ message: `Discovery view unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.discoveryRequestId === requestId && session.authEpoch === authEpoch) {
+      session.discoveryLoading = false;
+      setBusy(elements.discoveryForm, false);
+      setBusy(elements.discoveryPanel, false);
+      elements.discoveryLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
 elements.previousPage.addEventListener("click", () => {
   session.offset = Math.max(0, session.offset - PAGE_SIZE);
   refreshCurrent();
@@ -1090,4 +1216,5 @@ globalThis.addEventListener("pagehide", () => {
 
 newIdempotencyKey();
 setConnected(false);
+clearDiscovery({ clearInputs: true });
 updatePagination();

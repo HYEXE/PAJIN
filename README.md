@@ -1633,6 +1633,8 @@ $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 # Optional UX-001B2/B3 verified read and compiler-handoff root for local Campaign Builder drafts:
 $env:PAJIN_CP_CAMPAIGN_DRAFT_ROOT='C:\private\pajin-campaign-drafts'
+# Optional UX-002A verified Discovery Surface/Wave read root:
+$env:PAJIN_CP_DISCOVERY_RUN_ROOT='C:\private\pajin-discovery-runs'
 .venv\Scripts\pajin-control-plane
 ```
 
@@ -1651,6 +1653,13 @@ source and source-specific existing authority to the existing compiler at server
 does not persist or submit the resulting Campaign. Neither route accepts a caller-selected path or
 admits a draft as Run evidence. If the root is omitted, both routes remain authenticated but fail
 closed without reading the process working directory.
+
+The Discovery Run root is separate from both Campaign drafts and managed Artifacts. UX-002A accepts
+only one canonical Campaign ID and exact generated Hypothesis Run ID, then re-verifies that Run and
+its sealed Recon source and Surface projection references. The response is a bounded Operator-only
+Attack Surface and Recon-to-Hypothesis wave view. It excludes raw evidence, Tool arguments, grants,
+permits, and paths, and explicitly reports that no canonical Graph or execution authority is
+included. If the root is omitted, this authenticated route fails closed with `503`.
 
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is
@@ -1767,14 +1776,17 @@ The first Console slice supports:
 - minimized current-approval intent review without exposing checkpoint execution state;
 - Approver-only approval or denial, with denial terminating the Run as `cancelled`;
 - Operator-only one-time checkpoint resume and idempotent Run cancellation;
+- Operator-only verified Attack Surface cards and sealed Recon-to-Hypothesis wave inspection for
+  one exact Discovery Run;
 - optional five-second polling without WebSocket or SSE state.
 
 Run lists return a summary DTO and never bulk-load or expose submitted input. The selected Run
 detail remains authorized and includes that input. Browser credentials live only in JavaScript
 memory: there is no cookie, local/session storage, IndexedDB, credential URL, or external asset.
-Lock, refresh, tab close, and HTTP 401 clear the in-memory value. A restrictive CSP, no-store cache
-policy, no-referrer policy, same-origin isolation headers, and text-only DOM rendering reduce the
-browser attack surface.
+Lock, refresh, tab close, and HTTP 401 clear the in-memory value. Discovery rendering additionally
+requires verified cross-Run digests and strict `canonicalGraphIncluded=false`, capability=false,
+permit=false, and execution=false markers. A restrictive CSP, no-store cache policy, no-referrer
+policy, same-origin isolation headers, and text-only DOM rendering reduce the browser attack surface.
 
 Cancellation atomically fences queued or leased Jobs, clears active lease material, revokes a
 pending or approved decision, and records bounded actor/reason events. While an executor is active,
@@ -1788,11 +1800,13 @@ cancellation receipt. Neither receipt is a Control Plane acknowledgement: they d
 external side effects or prove physical quiescence outside that local process.
 
 This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
-front of the API before remote use. Report download, Agent Graph, user accounts, tenant isolation,
+front of the API before remote use. Report download, canonical Agent Graph visualization, user
+accounts, tenant isolation,
 and a fleet-wide approval queue remain unimplemented. See
 [`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md),
-[`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md), and
-[`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md).
+[`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md),
+[`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md), and
+[`ADR 0157`](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md).
 
 ### Lease-aware Worker daemon
 

@@ -131,6 +131,20 @@ const selectors = [
   "#event-list",
   "#latest-events-button",
   "#older-events-button",
+  "#discovery-panel",
+  "#discovery-form",
+  "#discovery-campaign",
+  "#discovery-run-id",
+  "#discovery-load-button",
+  "#discovery-empty",
+  "#discovery-result",
+  "#discovery-campaign-value",
+  "#discovery-run-value",
+  "#discovery-surface-set-value",
+  "#discovery-snapshot-value",
+  "#surface-count",
+  "#surface-list",
+  "#wave-timeline",
 ];
 const elements = new Map(selectors.map((selector) => [selector, new FakeElement()]));
 elements.get("#campaign-name").value = "web-console-test";
@@ -138,6 +152,8 @@ elements.get("#job-kind").value = "campaign";
 elements.get("#idempotency-key").value = "runtime-idempotency-key";
 elements.get("#max-attempts").value = "3";
 elements.get("#run-input").value = "{}";
+elements.get("#discovery-campaign").value = "runtime-campaign";
+elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
 
 globalThis.document = {
   querySelector(selector) {
@@ -217,6 +233,78 @@ function runSummary(id, campaignName, state = "queued") {
 
 function runList(items, total = items.length, offset = 0) {
   return { items, total, limit: 25, offset };
+}
+
+function discoveryView() {
+  const sourceRunId = "run_20260810T000001Z_11111111";
+  const hypothesisRunId = "run_20260810T010203Z_1234abcd";
+  const surfaceSetId = `attack-surface-set_${"4".repeat(64)}`;
+  const surfaceId = `attack-surface_${"5".repeat(64)}`;
+  return {
+    apiVersion: "pajin.control-plane/verified-discovery-surface-wave-view/v1alpha1",
+    kind: "VerifiedDiscoverySurfaceWaveView",
+    campaign: { name: "runtime-campaign", digest: "1".repeat(64) },
+    hypothesisRun: { runId: hypothesisRunId, rootDigest: "2".repeat(64), state: "completed" },
+    surfaceSnapshot: {
+      snapshotId: `surface-snapshot_${"3".repeat(64)}`,
+      snapshotDigest: "3".repeat(64),
+      revision: 1,
+      surfaceSetId,
+      sourceRunId,
+      sourceRootDigest: "6".repeat(64),
+      projectionRunId: "run_20260810T000002Z_22222222",
+      projectionRootDigest: "7".repeat(64),
+      artifactSha256: "8".repeat(64),
+    },
+    surfaceSet: {
+      surfaceSetId,
+      generatedAt: timestamp,
+      surfaceCount: 1,
+      observationCount: 1,
+      surfaces: [{
+        surfaceId,
+        targetId: "runtime-target",
+        locator: {
+          kind: "tool-interface",
+          registry_id: "runtime.registry",
+          tool_id: "runtime.tool",
+          tool_version: "1.0.0",
+          input_schema_digest: "9".repeat(64),
+        },
+        confidence: 1,
+        observationCount: 1,
+        firstObservedAt: timestamp,
+        lastObservedAt: timestamp,
+      }],
+    },
+    waves: [{
+      kind: "recon",
+      runId: sourceRunId,
+      state: "completed",
+      stopCondition: "single-wave-complete",
+      taskCount: 1,
+    }, {
+      kind: "hypothesis",
+      runId: hypothesisRunId,
+      state: "completed",
+      wavePlanId: `hypothesis-wave-plan_${"a".repeat(64)}`,
+      stopCondition: "hypothesis-wave-complete",
+      taskCount: 1,
+      tasks: [{
+        hypothesisId: `attack-hypothesis_${"b".repeat(64)}`,
+        surfaceId,
+        specialistId: "hypothesis-specialist:runtime",
+        threatClass: "A02",
+      }],
+    }],
+    authorityBoundary: {
+      surfaceSnapshotVerified: true,
+      canonicalGraphIncluded: false,
+      viewGrantsCapability: false,
+      viewGrantsPermit: false,
+      viewAuthorizesExecution: false,
+    },
+  };
 }
 
 function jobView(run, { state = "queued", kind = "campaign" } = {}) {
@@ -316,6 +404,29 @@ assert.throws(
   () => protocol.validatePrincipal({ subject: "worker-only", roles: ["worker"] }),
   protocol.ApiProtocolError,
 );
+const validDiscoveryView = discoveryView();
+assert.equal(
+  protocol.validateDiscoveryView(
+    validDiscoveryView,
+    "runtime-campaign",
+    "run_20260810T010203Z_1234abcd",
+  ),
+  validDiscoveryView,
+);
+assert.throws(
+  () => protocol.validateDiscoveryView(
+    {
+      ...discoveryView(),
+      authorityBoundary: {
+        ...discoveryView().authorityBoundary,
+        canonicalGraphIncluded: true,
+      },
+    },
+    "runtime-campaign",
+    "run_20260810T010203Z_1234abcd",
+  ),
+  protocol.ApiProtocolError,
+);
 assert.equal(rendering.eventCountLabel([]), "0 events");
 assert.equal(
   rendering.eventCountLabel([{ sequence: 7 }]),
@@ -332,6 +443,21 @@ assert.equal(elements.get("#connection-label").textContent, "operator");
 assert.equal(elements.get("#submit-button").disabled, false);
 assert.equal(elements.get("#token-form").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#runs-panel").attributes.get("aria-busy"), "false");
+assert.equal(elements.get("#discovery-load-button").disabled, false);
+
+elements.get("#discovery-campaign").value = "runtime-campaign";
+elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
+enqueueFetch(
+  "/v1/discovery/campaigns/runtime-campaign/hypothesis-runs/run_20260810T010203Z_1234abcd",
+  () => jsonResponse(discoveryView()),
+);
+await elements.get("#discovery-form").dispatch("submit");
+assert.equal(elements.get("#discovery-result").hidden, false);
+assert.equal(elements.get("#discovery-empty").hidden, true);
+assert.equal(elements.get("#surface-count").textContent, "1 surface");
+assert.equal(elements.get("#surface-list").children.length, 1);
+assert.equal(elements.get("#wave-timeline").children.length, 2);
+assert.equal(elements.get("#discovery-form").attributes.get("aria-busy"), "false");
 
 enqueueFetch(
   "/v1/runs?limit=25&offset=0",

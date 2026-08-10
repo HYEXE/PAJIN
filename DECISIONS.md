@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0157: Project Verified Discovery Surface Waves without Graph Authority](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md)
 - [ADR-0156: Handoff Verified Campaign Drafts to Existing Compilers](docs/adr/0156-handoff-verified-campaign-drafts-to-existing-compilers.md)
 - [ADR-0155: Expose Campaign Drafts as Redacted Operator Views](docs/adr/0155-expose-campaign-drafts-as-redacted-operator-views.md)
 - [ADR-0154: Store Campaign Drafts outside Run Authority](docs/adr/0154-store-campaign-drafts-outside-run-authority.md)

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
 from fastapi import Path as FastAPIPath
 from sqlalchemy import text
 
@@ -32,6 +32,13 @@ from pajin.control_plane.campaign_drafts import (
     ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
+from pajin.control_plane.discovery_views import (
+    DiscoveryViewIntegrityError,
+    DiscoveryViewNotFound,
+    DiscoveryViewUnavailable,
+    VerifiedDiscoverySurfaceWaveView,
+    VerifiedDiscoveryViewReader,
+)
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
     ApprovalView,
@@ -322,6 +329,48 @@ def register_campaign_draft_routes(
         ],
     ) -> CampaignDraftCompilationView:
         return compiler.compile(draft_digest, request)
+
+
+def register_discovery_view_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedDiscoveryViewReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the Operator-only sealed Discovery Surface/Wave projection."""
+
+    @app.get(
+        "/v1/discovery/campaigns/{campaign}/hypothesis-runs/{hypothesis_run_id}",
+        response_model=VerifiedDiscoverySurfaceWaveView,
+    )
+    def get_verified_discovery_surface_wave_view(
+        campaign: Annotated[
+            str,
+            FastAPIPath(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$"),
+        ],
+        hypothesis_run_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedDiscoverySurfaceWaveView:
+        try:
+            return reader.read(
+                campaign=campaign,
+                hypothesis_run_id=hypothesis_run_id,
+            )
+        except DiscoveryViewUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except DiscoveryViewNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except DiscoveryViewIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Discovery Surface/Wave authority is not integrity-valid",
+            ) from exc
 
 
 def register_generic_worker_claim_route(
@@ -658,6 +707,7 @@ def register_control_plane_routes(
     service: ControlPlaneService,
     campaign_draft_reader: ControlPlaneCampaignDraftReader,
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler,
+    discovery_view_reader: VerifiedDiscoveryViewReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -672,6 +722,11 @@ def register_control_plane_routes(
         app,
         reader=campaign_draft_reader,
         compiler=campaign_draft_compiler,
+        dependencies=dependencies,
+    )
+    register_discovery_view_routes(
+        app,
+        reader=discovery_view_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

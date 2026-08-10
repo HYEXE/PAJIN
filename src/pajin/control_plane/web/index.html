@@ -343,6 +343,92 @@
           </div>
         </div>
       </section>
+
+      <section
+        id="discovery-panel"
+        class="panel discovery-panel"
+        aria-labelledby="discovery-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">05 / VERIFIED DISCOVERY</p>
+            <h2 id="discovery-heading">Attack Surface and wave trace</h2>
+          </div>
+          <span id="graph-boundary" class="boundary-badge">Graph not included</span>
+        </div>
+        <p class="panel-intro">
+          Load one exact sealed Hypothesis Run. The server re-verifies its Campaign, Recon source,
+          Surface projection, and Surface-bound Plan before returning this read-only view.
+        </p>
+        <form id="discovery-form" class="discovery-form" aria-busy="false">
+          <div class="field field-grow">
+            <label for="discovery-campaign">Campaign ID</label>
+            <input
+              id="discovery-campaign"
+              name="discovery-campaign"
+              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              maxlength="80"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="authorized-campaign"
+              required
+              disabled
+            >
+          </div>
+          <div class="field field-grow discovery-run-field">
+            <label for="discovery-run-id">Hypothesis Run ID</label>
+            <input
+              id="discovery-run-id"
+              name="discovery-run-id"
+              pattern="run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}"
+              maxlength="29"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="run_20260810T010203Z_1234abcd"
+              required
+              disabled
+            >
+          </div>
+          <button id="discovery-load-button" class="button button-primary" type="submit" disabled>
+            Verify and load
+          </button>
+        </form>
+        <p id="discovery-empty" class="discovery-empty">
+          Connect with an Operator credential to inspect a verified Discovery Run.
+        </p>
+        <div id="discovery-result" class="discovery-result" hidden>
+          <div class="authority-strip" aria-label="Discovery view authority boundary">
+            <span class="verified-badge">Surface Snapshot verified</span>
+            <span>Read only</span>
+            <span>No capability</span>
+            <span>No permit</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="discovery-facts">
+            <div><dt>Campaign</dt><dd id="discovery-campaign-value">--</dd></div>
+            <div><dt>Hypothesis Run</dt><dd id="discovery-run-value">--</dd></div>
+            <div><dt>Surface Set</dt><dd id="discovery-surface-set-value">--</dd></div>
+            <div><dt>Snapshot revision</dt><dd id="discovery-snapshot-value">--</dd></div>
+          </dl>
+          <div class="discovery-grid">
+            <section aria-labelledby="surface-list-heading">
+              <div class="event-heading">
+                <h3 id="surface-list-heading">Verified Attack Surfaces</h3>
+                <span id="surface-count">0 surfaces</span>
+              </div>
+              <ol id="surface-list" class="surface-list"></ol>
+            </section>
+            <section aria-labelledby="wave-timeline-heading">
+              <div class="event-heading">
+                <h3 id="wave-timeline-heading">Bounded wave timeline</h3>
+                <span>Recon to Hypothesis</span>
+              </div>
+              <ol id="wave-timeline" class="wave-timeline"></ol>
+            </section>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer>

@@ -286,11 +286,21 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
     assert re.search(r'id="token-input"[^>]+type="password"', markup) is not None
     assert re.search(r'id="token-input"[^>]+maxlength="4096"', markup) is not None
     assert re.search(r'id="run-input"[^>]+maxlength="1000000"', markup) is not None
+    assert re.search(r'id="discovery-campaign"[^>]+maxlength="80"', markup) is not None
+    assert re.search(r'id="discovery-run-id"[^>]+maxlength="29"', markup) is not None
     assert re.search(r'id="main-content"[^>]+tabindex="-1"', markup) is not None
     assert re.search(r'id="detail-panel"[^>]+aria-busy="false"[^>]+tabindex="-1"', markup)
     assert re.search(r'id="status-message"[^>]+aria-atomic="true"', markup)
     assert '<div class="status-bar">' in markup
-    for busy_id in ("token-form", "run-form", "runs-panel", "workflow-control", "event-list"):
+    for busy_id in (
+        "token-form",
+        "run-form",
+        "runs-panel",
+        "workflow-control",
+        "event-list",
+        "discovery-panel",
+        "discovery-form",
+    ):
         assert re.search(rf'id="{busy_id}"[^>]+aria-busy="false"', markup) is not None
     for action_id in (
         "approve-button",
@@ -299,6 +309,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "cancel-button",
         "latest-events-button",
         "older-events-button",
+        "discovery-load-button",
     ):
         assert re.search(rf'id="{action_id}"[^>]+disabled', markup) is not None
     assert OPERATOR_TOKEN not in markup
@@ -335,12 +346,16 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "resetBusyIndicators",
         "renderDetailFailure",
         "validateJob",
+        "validateDiscoveryView",
         "runSubmissionBody",
         "eventPagePath",
         'params.set("before"',
         "encodeURIComponent(approval.approval_id)",
         "encodeURIComponent(approval.checkpoint_id)",
         "encodeURIComponent(run.run_id)",
+        "encodeURIComponent(campaign)",
+        "encodeURIComponent(runId)",
+        "/v1/discovery/campaigns/",
         "/approval`)",
         "/decision`",
         "/resume`",

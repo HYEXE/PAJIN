@@ -3,6 +3,23 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## UX-002A verified Discovery Surface·Wave view 경계
+
+- 상태: exact sealed Hypothesis Run에서 Attack Surface와 Recon→Hypothesis wave를 재구성하는
+  Operator-only Control Plane API와 same-origin Web Console panel을 구현함
+- 현재 보장: server-owned `PAJIN_CP_DISCOVERY_RUN_ROOT` 아래 canonical Campaign·generated Run ID만
+  허용한다. Hypothesis Run, referenced Recon source Run, Surface projection Run의 전체 seal과 root digest,
+  Campaign·Snapshot·Surface Set·Plan·Task·artifact identity, 완료 상태와 unique audit event를 대조한다.
+  link/junction·path escape, stale/cross-Campaign projection, artifact 변조와 event equivocation은 fail closed한다.
+- 제한: canonical Graph Snapshot·node·edge는 포함하지 않고 generic Control Plane Run input/event에서
+  추론하지 않는다. raw observation·evidence·Tool result/argument, Capability·Permit·path도 반환하지 않는다.
+  local sealed Run과 service-account filesystem 통제를 신뢰하며 off-host attestation이나 tenant isolation을
+  주장하지 않는다. Windows에서는 symlink 생성 권한이 없어 link 회귀가 skip될 수 있다.
+- 영향: Operator는 실제 sealed Surface와 두 wave를 읽을 수 있지만 view 자체는 Capability·Permit·execution
+  authority를 만들지 않는다. Approver·Auditor·Worker는 이 projection을 읽을 수 없다.
+- 해소 조건: `UX-002B`에서 기존 canonical Graph Snapshot/admission authority를 exact하게 resolve하고
+  재검증하는 read model을 정의한다. 새 Graph store나 inferred edge를 UI 편의를 위해 추가하지 않는다.
+
 ## UX-001B3 Campaign Builder compiler handoff 경계
 
 - 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed draft의 local CLI 생성·조회,

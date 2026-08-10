@@ -30,6 +30,25 @@ const APPROVAL_STATES = new Set([
   "expired",
   "revoked",
 ]);
+const SURFACE_LOCATOR_KINDS = new Set([
+  "http-endpoint",
+  "http-route",
+  "http-internal-api",
+  "http-authentication",
+  "http-file-upload",
+  "http-rag",
+  "http-tenant-retrieval",
+  "http-data-response",
+  "mcp-server",
+  "mcp-resource",
+  "mcp-resource-template",
+  "mcp-prompt",
+  "mcp-tool",
+  "mcp-url-tool",
+  "tool-interface",
+]);
+const DISCOVERY_RUN_PATTERN = /^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$/;
+const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export class ApiProtocolError extends Error {
   constructor(message) {
@@ -151,6 +170,184 @@ function expectTimestamp(value, label) {
     protocolFailure(label);
   }
   return timestamp;
+}
+
+function boundedJsonShape(value, label, depth = 0, budget = { nodes: 0 }) {
+  budget.nodes += 1;
+  if (budget.nodes > 1_000 || depth > 8) {
+    protocolFailure(label);
+  }
+  if (value instanceof LosslessJsonNumber || typeof value === "bigint") {
+    return;
+  }
+  if (value === null || typeof value === "boolean") {
+    return;
+  }
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) {
+      protocolFailure(label);
+    }
+    return;
+  }
+  if (typeof value === "string") {
+    if (value.length > 2_000) {
+      protocolFailure(label);
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    if (value.length > 100) {
+      protocolFailure(label);
+    }
+    value.forEach((item) => boundedJsonShape(item, label, depth + 1, budget));
+    return;
+  }
+  const record = expectRecord(value, label);
+  const entries = Object.entries(record);
+  if (entries.length > 100 || entries.some(([key]) => key.length > 128)) {
+    protocolFailure(label);
+  }
+  entries.forEach(([, item]) => boundedJsonShape(item, label, depth + 1, budget));
+}
+
+function boundedNumber(value, label, minimum, maximum) {
+  const normalized = value instanceof LosslessJsonNumber ? Number(value.source) : value;
+  if (typeof normalized !== "number"
+    || !Number.isFinite(normalized)
+    || normalized < minimum
+    || normalized > maximum) {
+    protocolFailure(label);
+  }
+  return normalized;
+}
+
+function validateDiscoveryRun(value, label) {
+  const run = expectRecord(value, label);
+  if (!DISCOVERY_RUN_PATTERN.test(run.runId)
+    || !SHA256_PATTERN.test(run.rootDigest)
+    || run.state !== "completed") {
+    protocolFailure(label);
+  }
+  return run;
+}
+
+function validateSurface(value, surfaceSetId) {
+  const surface = expectRecord(value, "Discovery Surface view");
+  const locator = expectRecord(surface.locator, "Discovery Surface view");
+  if (typeof surface.surfaceId !== "string"
+    || !/^attack-surface_[a-f0-9]{64}$/.test(surface.surfaceId)
+    || typeof surface.targetId !== "string"
+    || surface.targetId.length === 0
+    || surface.targetId.length > 200
+    || !SURFACE_LOCATOR_KINDS.has(locator.kind)
+    || !Number.isSafeInteger(surface.observationCount)
+    || surface.observationCount < 1) {
+    protocolFailure("Discovery Surface view");
+  }
+  boundedJsonShape(locator, "Discovery Surface view");
+  surface.confidence = boundedNumber(
+    surface.confidence,
+    "Discovery Surface view",
+    0,
+    1,
+  );
+  const first = expectTimestamp(surface.firstObservedAt, "Discovery Surface view");
+  const last = expectTimestamp(surface.lastObservedAt, "Discovery Surface view");
+  if (new Date(first).getTime() > new Date(last).getTime()
+    || !/^attack-surface-set_[a-f0-9]{64}$/.test(surfaceSetId)) {
+    protocolFailure("Discovery Surface view");
+  }
+  return surface;
+}
+
+export function validateDiscoveryView(value, campaignName, hypothesisRunId) {
+  const view = expectRecord(value, "Discovery Surface/Wave view");
+  if (view.apiVersion
+      !== "pajin.control-plane/verified-discovery-surface-wave-view/v1alpha1"
+    || view.kind !== "VerifiedDiscoverySurfaceWaveView") {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  const campaign = expectRecord(view.campaign, "Discovery Surface/Wave view");
+  const hypothesisRun = validateDiscoveryRun(
+    view.hypothesisRun,
+    "Discovery Surface/Wave view",
+  );
+  const snapshot = expectRecord(view.surfaceSnapshot, "Discovery Surface/Wave view");
+  const surfaceSet = expectRecord(view.surfaceSet, "Discovery Surface/Wave view");
+  if (campaign.name !== campaignName
+    || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(campaign.name)
+    || !SHA256_PATTERN.test(campaign.digest)
+    || hypothesisRun.runId !== hypothesisRunId
+    || !/^surface-snapshot_[a-f0-9]{64}$/.test(snapshot.snapshotId)
+    || !SHA256_PATTERN.test(snapshot.snapshotDigest)
+    || snapshot.revision !== 1
+    || !/^attack-surface-set_[a-f0-9]{64}$/.test(snapshot.surfaceSetId)
+    || !DISCOVERY_RUN_PATTERN.test(snapshot.sourceRunId)
+    || !SHA256_PATTERN.test(snapshot.sourceRootDigest)
+    || !DISCOVERY_RUN_PATTERN.test(snapshot.projectionRunId)
+    || !SHA256_PATTERN.test(snapshot.projectionRootDigest)
+    || !SHA256_PATTERN.test(snapshot.artifactSha256)
+    || surfaceSet.surfaceSetId !== snapshot.surfaceSetId
+    || !Array.isArray(surfaceSet.surfaces)
+    || surfaceSet.surfaces.length > 500
+    || !Number.isSafeInteger(surfaceSet.surfaceCount)
+    || surfaceSet.surfaceCount !== surfaceSet.surfaces.length
+    || !Number.isSafeInteger(surfaceSet.observationCount)
+    || surfaceSet.observationCount < surfaceSet.surfaceCount) {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  expectTimestamp(surfaceSet.generatedAt, "Discovery Surface/Wave view");
+  surfaceSet.surfaces.forEach((surface) => validateSurface(surface, surfaceSet.surfaceSetId));
+  const surfaceIds = surfaceSet.surfaces.map((surface) => surface.surfaceId);
+  if (new Set(surfaceIds).size !== surfaceIds.length
+    || !Array.isArray(view.waves)
+    || view.waves.length !== 2) {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  const [recon, hypothesis] = view.waves.map((wave) => (
+    expectRecord(wave, "Discovery Surface/Wave view")
+  ));
+  if (recon.kind !== "recon"
+    || recon.runId !== snapshot.sourceRunId
+    || recon.state !== "completed"
+    || recon.stopCondition !== "single-wave-complete"
+    || recon.taskCount !== 1
+    || hypothesis.kind !== "hypothesis"
+    || hypothesis.runId !== hypothesisRunId
+    || hypothesis.state !== "completed"
+    || typeof hypothesis.wavePlanId !== "string"
+    || !/^hypothesis-wave-plan_[a-f0-9]{64}$/.test(hypothesis.wavePlanId)
+    || hypothesis.stopCondition !== "hypothesis-wave-complete"
+    || !Array.isArray(hypothesis.tasks)
+    || hypothesis.tasks.length < 1
+    || hypothesis.tasks.length > 100
+    || hypothesis.taskCount !== hypothesis.tasks.length) {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  for (const taskValue of hypothesis.tasks) {
+    const task = expectRecord(taskValue, "Discovery Surface/Wave view");
+    if (!/^attack-hypothesis_[a-f0-9]{64}$/.test(task.hypothesisId)
+      || !surfaceIds.includes(task.surfaceId)
+      || typeof task.specialistId !== "string"
+      || task.specialistId.length === 0
+      || typeof task.threatClass !== "string"
+      || !/^[DMAS][0-9]+$/.test(task.threatClass)) {
+      protocolFailure("Discovery Surface/Wave view");
+    }
+  }
+  if (new Set(hypothesis.tasks.map((task) => task.hypothesisId)).size
+      !== hypothesis.tasks.length) {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  const boundary = expectRecord(view.authorityBoundary, "Discovery Surface/Wave view");
+  if (boundary.surfaceSnapshotVerified !== true
+    || boundary.canonicalGraphIncluded !== false
+    || boundary.viewGrantsCapability !== false
+    || boundary.viewGrantsPermit !== false
+    || boundary.viewAuthorizesExecution !== false) {
+    protocolFailure("Discovery Surface/Wave view");
+  }
+  return view;
 }
 
 export function validatePrincipal(value) {
