@@ -81,7 +81,8 @@ Parsing and resolution reject:
 
 ## Compatibility and rollback
 
-The policy, resolver, ordinal comparison, and workflow exports are additive. Existing PROF-001,
+The policy, resolver, ordinal comparison, and `pajin.workflow.profile_assurance` module APIs are
+additive. Existing PROF-001,
 PROF-002, VAL-002, Campaign, Replay, Control, Validation Decision, and Finding artifacts keep their
 wire meanings. Rollback removes the VAL-003 additions without rewriting predecessor catalogs.
 

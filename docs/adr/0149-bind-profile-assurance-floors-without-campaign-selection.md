@@ -88,7 +88,7 @@ registered requirements without making them mandatory for every product workflow
 
 The change is additive. Existing Profile, legacy compatibility, Validation depth, Replay, Control,
 Campaign, and Finding wires remain unchanged. Rollback removes the VAL-003 policy, resolver,
-comparison helper, exports, tests, contract, and this ADR without changing either predecessor
+comparison helper, module APIs, tests, contract, and this ADR without changing either predecessor
 catalog.
 
 ## Related documents

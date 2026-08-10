@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from copy import deepcopy
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
 from pajin.discovery import ValidationDepth, resolve_validation_depth_requirement
-from pajin.workflow import (
+from pajin.workflow.campaign_profile import registered_campaign_profile_catalog
+from pajin.workflow.profile_assurance import (
     PROFILE_ASSURANCE_FLOOR_API_VERSION,
     PROFILE_ASSURANCE_FLOOR_POLICY_API_VERSION,
     ProfileAssuranceFloor,
     ProfileAssuranceFloorError,
     ProfileAssuranceFloorPolicy,
-    registered_campaign_profile_catalog,
     registered_profile_assurance_floor_policy,
     resolve_profile_assurance_floor,
     validation_depth_requirement_meets_profile_floor,
@@ -249,3 +253,34 @@ def test_profile_floor_comparison_rejects_unknown_depth(depth: str) -> None:
             "1.0.0",
             depth,
         )
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        ("import pajin.modes.ai_redteam.replay; import pajin.workflow.profile_assurance"),
+        ("import pajin.workflow.profile_assurance; import pajin.modes.ai_redteam.replay"),
+    ),
+)
+def test_profile_assurance_import_orders_do_not_cycle(script: str) -> None:
+    repository_root = Path(__file__).resolve().parents[1]
+    environment = dict(os.environ)
+    existing_pythonpath = environment.get("PYTHONPATH")
+    source_root = str(repository_root / "src")
+    environment["PYTHONPATH"] = (
+        source_root
+        if not existing_pythonpath
+        else f"{source_root}{os.pathsep}{existing_pythonpath}"
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=repository_root,
+        env=environment,
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+    assert completed.returncode == 0, completed.stderr
