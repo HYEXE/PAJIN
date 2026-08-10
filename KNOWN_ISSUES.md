@@ -42,9 +42,10 @@
 - 상태: 단일 validity Replay, 세 Control 결박, 최소 2회 repeated controlled Replay의 mode-neutral depth
   catalog·Profile floor, KISA 충족 판정과 VAL-001 WALK single·controlled 판정은 구현됐고 WALK repeated
   판정은 닫힘
-- 현재 보장: exact 세 depth·ordinal·Claim/Control 요구·최소 반복·fresh lineage와 false authority marker를
-  content-addressed policy로 고정한다. unknown alias, 순서·요구·digest 치환과 boolean 권위 상승은 fail
-  closed한다.
+- 현재 보장: exact 세 depth·ordinal·Claim/Control 요구·최소 반복·fresh lineage, exact ordered
+  `fresh-session`·`stateless` 격리 정책과 false authority marker를 content-addressed policy로 고정한다.
+  `preserve-scenario-session`, 부분·역순·추가 session policy, unknown alias, 순서·요구·digest 치환과
+  boolean 권위 상승은 fail closed한다.
 - 제한: v1 Claim ceiling은 validity다. `VAL-004A` KISA evidence는 explicit fresh session을 사용하고
   `VAL-004B` WALK evidence는 exact stateless Tool schema를 사용한다. 최소 2회는 별도 fresh Replay여야 하며
   Control 실행으로 대체할 수 없다. impact·severity, 실행·confirmation·Finding authority는 없다.

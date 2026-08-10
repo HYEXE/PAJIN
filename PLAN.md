@@ -703,6 +703,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [ ] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
   - [x] `VAL-004A` sealed KISA Profile Validation Evidence
   - [x] `VAL-004B` VAL-001 Claim용 mode-neutral Control·session evidence
+  - [x] VAL-002 Replay 격리 정책과 상속 HTTP Surface 등록 정합성 안정화
   - [ ] `VAL-004C` VAL-001 Claim용 repeated fresh Replay evidence
 
 `CHAIN-001~005`는 각각 sealed Surface·WALK predecessor를 다시 검증해 Auth/RAG, Upload/RAG/Tool,

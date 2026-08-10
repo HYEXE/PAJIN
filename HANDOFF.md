@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `abfb167236831bfa113f41f97de6227b16a524cb`
-- 현재 코드 체크포인트: Phase 8 `VAL-004B` mode-neutral WALK Profile Validation Evidence 완료
+- 현재 기능 HEAD: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
+- 현재 코드 체크포인트: Phase 8 `VAL-004B` 완료 후 Replay 격리·HTTP Surface 등록 정합성 안정화
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -26,9 +26,10 @@
 - VAL-003 순환 import 수정 커밋: `653f07caf898e8d5f2a707489f7c329f8836a2d4`
 - VAL-004A 구현 커밋: `dfbd967cd4d88f866d8e7692a4c398b692fe69a8`
 - VAL-004B 구현 커밋: `abfb167236831bfa113f41f97de6227b16a524cb`
-- 현재 구현 체크포인트: VAL-001 stateless WALK Replay·세 Control 기반 single·controlled Profile floor 충족 평가
+- Replay 격리·HTTP Surface 등록 정합성 수정 커밋: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
+- 현재 구현 체크포인트: VAL-001 stateless WALK Replay·세 Control 기반 single·controlled Profile floor 충족 평가와 VAL-002 session policy 교차검증
 - 다음 로드맵: Phase 8 `VAL-004C` VAL-001 Claim용 repeated fresh Replay evidence 결박
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 18 commits ahead
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 20 commits ahead
 
 ## 재개 전 확인
 
@@ -44,8 +45,9 @@ git status --porcelain=v2 --branch
 CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`, CHAIN-003
 typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
-`653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬
-`main`은 `origin/main@0ed5ac7`보다 18 commits ahead이고 working tree는 clean이어야 한다.
+`653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
+`d5bd2e4`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 20 commits
+ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -283,6 +285,30 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0151-bind-stateless-walking-controls-to-val001.md`
 
 ## 현재 검증
+
+### 2026-08-10 Replay 격리·HTTP Surface 등록 정합성 수정 검증
+
+- 수정 커밋: `d5bd2e4`
+- VAL-002는 `fresh-session`과 `stateless`만 exact ordered allowlist로 허용하고
+  `preserve-scenario-session`·순서 변경·부분 allowlist를 fail closed한다.
+- VAL-004A는 fresh-session, VAL-004B는 exact one-field text schema의 stateless Replay만 등록 요구와
+  교차검증한다. source와 Replay arguments가 다르거나 session argument가 있으면 VAL-004B floor를
+  충족하지 못한다.
+- authentication·file-upload·RAG·tenant-data HTTP 어댑터가 상속된 `http-internal-api` 후보를
+  `supportedSurfaceKinds`에 등록하며, 방출 종류가 선언 집합을 벗어나지 않는 회귀 테스트를 추가했다.
+- 변경 직접·인접 회귀: 346 passed, 1 skipped
+  - skip은 Windows 개발자 모드 부재의 `WinError 1314` symlink 환경 제한이다.
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 strict mypy: 268 source files 통과
+- 문서 정책과 링크 검사: 2 passed
+- `git diff --check`: 통과
+- 전체 `python -m pytest -q -x`: 634 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+  불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
+  `staged source Artifact failed managed admission`의 차이이며 이번 변경 파일 밖이다.
+- 위 1건을 제외한 전체 실행은 30분 제한에 걸려 79%에서 중단됐고 여러 실패가 있어 전체 통과로
+  기록하지 않는다. `-x`로 추출한 첫 추가 실패는 Windows에서 POSIX directory fsync를 지원하지 않아
+  `test_exact_concurrent_artifact_admission_creates_one_record_and_event`가 managed admission에 실패한
+  환경 제한이었다.
 
 ### 2026-08-10 VAL-004B mode-neutral WALK Profile Validation Evidence 검증
 
@@ -586,7 +612,8 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-VAL-004B mode-neutral WALK Profile Validation Evidence는 `abfb167`에 보존됐다.
+VAL-004B mode-neutral WALK Profile Validation Evidence는 `abfb167`, 후속 정합성 수정은 `d5bd2e4`에
+보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
 다음 수직 슬라이스는 `VAL-004C`다. VAL-001에는 exact fresh WALK-005B2 Replay가 1회만 있어 현재 Control
@@ -615,7 +642,9 @@ Replay·세 Control의 Run/request/Grant/Permit/approval/Worker/evidence 독립�
 - VAL-001은 CHAIN-002/005의 validity Claim과 existing WALK-005B2 fresh Replay만 결박한다. impact·severity·
   negative control·counterfactual·N-run·full confirmation은 포함하지 않으며 CHAIN-001/003/004에는 대응
   Replay predecessor가 없다. local sealed freshness는 별도 off-host 조직의 cryptographic attestation이 아니다.
-- VAL-002는 validity-only 요구 catalog이고 VAL-003은 exact Profile별 최소 registered depth만 결박한다.
+- VAL-002는 validity-only 요구 catalog이고 exact ordered `fresh-session`·`stateless` 격리 정책만
+  허용하며 `preserve-scenario-session`은 거부한다. VAL-003은 exact Profile별 최소 registered depth만
+  결박한다.
   VAL-004A는 KISA M03·M06·A04의 세 depth, VAL-004B는 VAL-001 stateless WALK MCP의 single·controlled
   evidence만 실제 충족 판정에 연결한다. 두 adapter의 Claim·request·Tool·session 의미는 혼합하지 않는다.
   WALK repeated-controlled, impact·severity, Profile 선택, Campaign 변경, execution·confirmation·Finding
