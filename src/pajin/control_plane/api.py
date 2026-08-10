@@ -37,7 +37,10 @@ from pajin.control_plane.attestation import (
     parse_replay_attestation_trust_anchor,
     private_key_bytes_from_base64url,
 )
-from pajin.control_plane.campaign_drafts import ControlPlaneCampaignDraftReader
+from pajin.control_plane.campaign_drafts import (
+    ControlPlaneCampaignDraftCompiler,
+    ControlPlaneCampaignDraftReader,
+)
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.errors import (
     ControlPlaneError,
@@ -901,6 +904,7 @@ class _ControlPlaneApplicationContext:
     repository: ControlPlaneRepository
     artifact_repository: ManagedArtifactRepository | None
     campaign_draft_reader: ControlPlaneCampaignDraftReader
+    campaign_draft_compiler: ControlPlaneCampaignDraftCompiler
     service: ControlPlaneService
     authenticator: TokenAuthenticator
 
@@ -957,12 +961,16 @@ def _build_application_context(
             settings.target_attestation_registry_trust_anchor
         ),
     )
+    campaign_draft_reader = ControlPlaneCampaignDraftReader(
+        root=settings.campaign_draft_root
+    )
     return _ControlPlaneApplicationContext(
         settings=settings,
         repository=repository,
         artifact_repository=artifact_repository,
-        campaign_draft_reader=ControlPlaneCampaignDraftReader(
-            root=settings.campaign_draft_root
+        campaign_draft_reader=campaign_draft_reader,
+        campaign_draft_compiler=ControlPlaneCampaignDraftCompiler(
+            reader=campaign_draft_reader
         ),
         service=service,
         authenticator=TokenAuthenticator(dict(settings.credentials)),
@@ -1263,6 +1271,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         repository=context.repository,
         service=context.service,
         campaign_draft_reader=context.campaign_draft_reader,
+        campaign_draft_compiler=context.campaign_draft_compiler,
         dependencies=dependencies,
     )
     return app

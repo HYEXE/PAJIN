@@ -25,7 +25,10 @@ from pajin.control_plane.attestation import (
 )
 from pajin.control_plane.campaign_drafts import (
     CAMPAIGN_DRAFT_DIGEST_PATTERN,
+    CampaignDraftCompilationRequest,
+    CampaignDraftCompilationView,
     CampaignDraftView,
+    ControlPlaneCampaignDraftCompiler,
     ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
@@ -277,9 +280,10 @@ def register_campaign_draft_routes(
     app: FastAPI,
     *,
     reader: ControlPlaneCampaignDraftReader,
+    compiler: ControlPlaneCampaignDraftCompiler,
     dependencies: ControlPlaneDependencies,
 ) -> None:
-    """Register the operator-only, non-authoritative Campaign draft projection."""
+    """Register operator-only Campaign draft reads and exact compiler handoff."""
 
     @app.get("/v1/campaign-drafts/{draft_digest}", response_model=CampaignDraftView)
     def get_campaign_draft(
@@ -297,6 +301,27 @@ def register_campaign_draft_routes(
         ],
     ) -> CampaignDraftView:
         return reader.get(draft_digest)
+
+    @app.post(
+        "/v1/campaign-drafts/{draft_digest}/compile",
+        response_model=CampaignDraftCompilationView,
+    )
+    def compile_campaign_draft(
+        draft_digest: Annotated[
+            str,
+            FastAPIPath(
+                min_length=64,
+                max_length=64,
+                pattern=CAMPAIGN_DRAFT_DIGEST_PATTERN,
+            ),
+        ],
+        request: CampaignDraftCompilationRequest,
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> CampaignDraftCompilationView:
+        return compiler.compile(draft_digest, request)
 
 
 def register_generic_worker_claim_route(
@@ -632,6 +657,7 @@ def register_control_plane_routes(
     repository: ControlPlaneRepository,
     service: ControlPlaneService,
     campaign_draft_reader: ControlPlaneCampaignDraftReader,
+    campaign_draft_compiler: ControlPlaneCampaignDraftCompiler,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -645,6 +671,7 @@ def register_control_plane_routes(
     register_campaign_draft_routes(
         app,
         reader=campaign_draft_reader,
+        compiler=campaign_draft_compiler,
         dependencies=dependencies,
     )
     register_public_replay_routes(

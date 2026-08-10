@@ -946,8 +946,20 @@ optional Control Plane lookup reads the same artifact only from its configured s
 
 Only an Operator credential may use this route. It returns identity, Profile, counts, remaining
 gates, and false authority markers without the embedded source, policy text, target endpoints,
-allow/deny values, compiler entrypoint, or local path. Explicit handoff to the existing compilers
-remains later Phase 9 work.
+allow/deny values, compiler entrypoint, or local path.
+
+The same Operator can explicitly compile the verified original source without persisting or
+submitting it:
+
+`POST /v1/campaign-drafts/<draft-digest>/compile`
+
+Bug Bounty requests use `sourceKind: bug-bounty-program` and one separate existing
+`BugBountyScopeApproval` under `scopeApproval`; CTF requests use only
+`sourceKind: ctf-challenge`. The strict request forbids caller-selected evaluation time. The server
+uses its current time and delegates to the existing source-specific compiler, which rechecks the
+exact Scope Approval or embedded CTF authorization. The response contains the compiled Campaign
+and canonical digest with explicit false markers for persistence, Capability, Permit, Run
+submission, and execution authority. It does not write a Campaign or create a Run.
 
 ## Bug Bounty Scope Parser
 
@@ -1619,7 +1631,7 @@ $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE='<one-line-signed-registr
 # $env:PAJIN_TARGET_TLS_SESSION_BINDING='tls-unique-sha256'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
-# Optional UX-001B2 read-only root for local Campaign Builder drafts:
+# Optional UX-001B2/B3 verified read and compiler-handoff root for local Campaign Builder drafts:
 $env:PAJIN_CP_CAMPAIGN_DRAFT_ROOT='C:\private\pajin-campaign-drafts'
 .venv\Scripts\pajin-control-plane
 ```
@@ -1633,9 +1645,11 @@ requires a POSIX filesystem/runtime with directory `fsync` support; unsupported 
 closed.
 
 The Campaign Builder draft root is independent of the managed Artifact root pair. Keep it private
-to the Control Plane service account. The API accepts only an exact draft digest, reuses the local
-verified reader, and returns a redacted Operator projection; it never accepts a caller-selected
-path or admits a draft as Run evidence. If omitted, the route remains authenticated but fails
+to the Control Plane service account. The API accepts only an exact draft digest and reuses the
+local verified reader. GET returns a redacted Operator projection. POST hands the verified original
+source and source-specific existing authority to the existing compiler at server current time, but
+does not persist or submit the resulting Campaign. Neither route accepts a caller-selected path or
+admits a draft as Run evidence. If the root is omitted, both routes remain authenticated but fail
 closed without reading the process working directory.
 
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries

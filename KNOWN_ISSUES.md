@@ -3,22 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## UX-001B2 Campaign Builder Control Plane 조회 경계
+## UX-001B3 Campaign Builder compiler handoff 경계
 
-- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed 비실행 draft, local CLI 생성·조회와
-  configured root·exact digest 기반 operator-only Control Plane 조회를 구현함
-- 현재 보장: API는 B1 verified reader로 complete typed source·Profile·preview·compiler·gate·digest·false
-  authority marker를 다시 검증하고 요청 digest와 재구성 digest도 대조한다. 응답은 식별자·Profile·source kind·
-  bounded count·남은 gate·false authority만 반환하며 source·정책 문구·target endpoint·allow/deny 값·path는
-  노출하지 않는다. non-Operator 역할, path-shaped digest, 디렉터리 digest 치환과 source·권위 변조는 fail closed한다.
-- 제한: draft listing·편집·삭제·retention·compiler handoff는 없다. Pentest·AI Assessment·CTF Suite source는
-  지원하지 않으며 local 파일의 접근 통제와 보존 수명은 host와 operator가 관리한다. draft 조회는 approval·
-  authorization 충족, Campaign compilation 또는 실행 준비 상태를 뜻하지 않는다.
-- 영향: operator는 Control Plane에서 비민감 projection을 확인할 수 있지만 실행하려면 기존 Bug Bounty scope
-  digest approval 또는 CTF authorization window를 compiler가 독립적으로 다시 검증해야 한다. draft는 Run
-  evidence나 managed Control Plane artifact로 admission되지 않는다.
-- 해소 조건: `UX-001B3`에서 명시적 operator handoff가 원 typed source와 별도 approval을 기존 compiler에
-  전달하도록 구현한다. projection이나 draft digest 자체는 compiler 입력 또는 승인 권위로 승격하지 않는다.
+- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed draft의 local CLI 생성·조회,
+  operator-only redacted 조회와 기존 source-specific compiler handoff를 구현함
+- 현재 보장: POST handoff는 B1 verified reader와 exact digest로 원 typed source를 다시 검증한다. Bug Bounty는
+  별도 기존 `BugBountyScopeApproval`, CTF는 source에 결박된 기존 authorization을 server current time에
+  각 기존 compiler로 전달한다. source kind 치환, caller-controlled evaluation time, stale·foreign approval,
+  inactive CTF authorization, digest/source 변조는 fail closed한다. 응답 Campaign digest와 false authority
+  marker도 다시 검증한다.
+- 제한: draft listing·편집·삭제·retention, Campaign 파일·DB persistence, durable compilation audit event,
+  Pentest·AI Assessment·CTF Suite source는 지원하지 않는다. 기존 Bug Bounty approval wire의 서명·발급자
+  인증을 새로 추가하지 않으며 local 파일 접근 통제와 보존 수명은 host와 operator가 관리한다.
+- 영향: operator는 검증된 draft를 기존 compiler로 명시적으로 넘겨 Campaign 값을 받을 수 있다. 이 결과는
+  managed Artifact·Graph·Run evidence로 admission되지 않고 Capability·Permit·Run submission·execution
+  authority를 만들지 않는다. 실행에는 이후 정상 Campaign admission과 기존 실행 권위가 별도로 필요하다.
+- 해소 조건: Campaign을 지속·실행 흐름에 연결할 때 새 우회 경로가 아니라 기존 admission·approval·Capability·
+  Permit·Run 경계를 재사용하고, approval provenance나 compilation audit를 강화하면 별도 버전형 authority로
+  정의한다.
 
 ## VAL-004B/004C mode-neutral WALK evidence 경계
 
