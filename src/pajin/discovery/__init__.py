@@ -190,6 +190,15 @@ from pajin.discovery.url_attack_chain import (
     registered_prompt_url_internal_api_chain_contract,
     verify_prompt_url_internal_api_chain,
 )
+from pajin.discovery.validation_depth import (
+    VALIDATION_DEPTH_POLICY_API_VERSION,
+    ValidationDepth,
+    ValidationDepthPolicy,
+    ValidationDepthPolicyError,
+    ValidationDepthRequirement,
+    registered_validation_depth_policy,
+    resolve_validation_depth_requirement,
+)
 from pajin.discovery.walking import (
     WALKING_HYPOTHESIS_API_VERSION,
     DeterministicRAGInjectionHypothesisCompiler,
@@ -307,6 +316,7 @@ __all__ = [
     "ORCHESTRATION_API_VERSION",
     "RECON_API_VERSION",
     "REPLANNING_API_VERSION",
+    "VALIDATION_DEPTH_POLICY_API_VERSION",
     "WALKING_CANDIDATE_ADMISSION_API_VERSION",
     "WALKING_HYPOTHESIS_API_VERSION",
     "WALKING_MCP_AUTHORIZATION_API_VERSION",
@@ -451,6 +461,10 @@ __all__ = [
     "TrustedSurfaceProducer",
     "URLAttackChainStageReference",
     "URLAttackChainSurfaceReference",
+    "ValidationDepth",
+    "ValidationDepthPolicy",
+    "ValidationDepthPolicyError",
+    "ValidationDepthRequirement",
     "WalkingCandidateAdmissionAuthority",
     "WalkingCandidateAdmissionError",
     "WalkingCandidateAdmissionOutcome",
@@ -536,6 +550,8 @@ __all__ = [
     "registered_mcp_authorization_privileged_action_chain_contract",
     "registered_mode_neutral_claim_replay_contract",
     "registered_prompt_url_internal_api_chain_contract",
+    "registered_validation_depth_policy",
+    "resolve_validation_depth_requirement",
     "surface_observation",
     "tool_interface_surface_locator",
     "verify_auth_bypass_ai_admin_chain",

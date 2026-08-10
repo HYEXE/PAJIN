@@ -424,6 +424,14 @@ until they have their own executed Claim Replay predecessors. See the
 [VAL-001 contract](docs/orchestration/VAL-001-mode-neutral-claim-replay.md) and
 [ADR-0147](docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md).
 
+VAL-002 registers three exact mode-neutral evidence requirement depths: one validity Replay, one
+validity Replay with the complete Baseline/Negative Control/Counterfactual contrast, and the same
+controlled requirement with at least two Replay repetitions. The v1 policy supports only validity,
+retains the existing 20-repetition ceiling, and grants no Profile-floor, evidence-evaluation,
+execution, confirmation, or Finding authority. See the
+[VAL-002 contract](docs/orchestration/VAL-002-validation-depth-policy.md) and
+[ADR-0148](docs/adr/0148-register-validation-depth-requirements-without-evidence-authority.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
