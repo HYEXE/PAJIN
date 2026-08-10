@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `VAL-003` — Profile별 Assurance Floor 결박
+- 현재 우선순위: Phase 8 `VAL-004` — Baseline·Negative Control·Counterfactual·N-run evidence 결박
 
 ## 제품 목표
 
@@ -699,7 +699,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `CHAIN-005` MCP Authorization Failure → Privileged Action
 - [x] `VAL-001` Mode-neutral Claim Replay
 - [x] `VAL-002` ValidationDepthPolicy
-- [ ] `VAL-003` Profile별 Assurance Floor
+- [x] `VAL-003` Profile별 Assurance Floor
 - [ ] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
 
 `CHAIN-001~005`는 각각 sealed Surface·WALK predecessor를 다시 검증해 Auth/RAG, Upload/RAG/Tool,
@@ -710,8 +710,11 @@ Prompt/URL/Internal API, Tenant Retrieval/Data, MCP Authorization/Privileged Act
 `VAL-001`은 같은 exact WALK-003 publication의 CHAIN-002/005와 sealed WALK-005B2 validity Replay만
 결박하고 `validity-reproduced-not-confirmed`로 제한한다. `VAL-002`는 단일 validity Replay, exact 세 Control,
 최소 2회 repeated controlled Replay의 세 요구 depth를 mode-neutral catalog로 고정한다. v1 Claim ceiling은
-validity이고 Profile floor·증거 판정·실행·confirmation은 false다. 다음 `VAL-003`은 exact PROF-001 Profile을
-최소 depth에 결박하되 Campaign 선택이나 권한 확대를 허용하지 않는다.
+validity다. `VAL-003`은 exact PROF-001 Profile과 VAL-002 requirement를 content-addressed floor로 결박한다.
+`ai-assessment`는 repeated controlled, `bug-hunt`·`pentest`는 controlled, `ctf`는 single validity Replay를
+최소로 요구하고 더 높은 registered depth는 ordinal로만 판정한다. Profile 선택·Campaign 변경·실제 evidence
+충족 판정·실행·confirmation 권위는 없다. 다음 `VAL-004`는 기존 Replay·Control authority에서 Baseline·
+Negative Control·Counterfactual·N-run evidence를 검증해 이 요구를 실제 증거에 결박한다.
 
 ### Phase 9 — Product UX·Operations
 

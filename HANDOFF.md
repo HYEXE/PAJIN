@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `fadeed787ceab317fb81962d7ac7bc7736903f55`
-- 현재 코드 체크포인트: Phase 8 `VAL-002` ValidationDepthPolicy 완료
+- 현재 기능 HEAD: `653f07caf898e8d5f2a707489f7c329f8836a2d4`
+- 현재 코드 체크포인트: Phase 8 `VAL-003` Profile별 Assurance Floor 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -22,9 +22,11 @@
 - CHAIN-005 구현 커밋: `03d2c0a106794011c9f314668f6fa644a21f333a`
 - VAL-001 구현 커밋: `a9949bcb13faed629d82558a40245272bf92c9a2`
 - VAL-002 구현 커밋: `fadeed787ceab317fb81962d7ac7bc7736903f55`
-- 현재 구현 체크포인트: VAL-002 mode-neutral validity-only Validation depth requirement catalog
-- 다음 로드맵: Phase 8 `VAL-003` Profile별 Assurance Floor 결박
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 11 commits ahead
+- VAL-003 구현 커밋: `9b8cafff1138a596b85d8d9b0c7ea1861090b17d`
+- VAL-003 순환 import 수정 커밋: `653f07caf898e8d5f2a707489f7c329f8836a2d4`
+- 현재 구현 체크포인트: VAL-003 exact Profile별 mode-neutral validity-only Assurance Floor
+- 다음 로드맵: Phase 8 `VAL-004` Baseline·Negative Control·Counterfactual·N-run evidence 결박
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 14 commits ahead
 
 ## 재개 전 확인
 
@@ -39,8 +41,9 @@ git status --porcelain=v2 --branch
 문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
 CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`, CHAIN-003
 typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
-`03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬
-`main`은 `origin/main@0ed5ac7`보다 11 commits ahead이고 working tree는 clean이어야 한다.
+`03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
+`653f07c`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 14 commits
+ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -112,6 +115,14 @@ Run·request·Grant·Permit·dispatch·Worker·evidence·Replay publication 좌�
 `repeated-controlled-validity-replay` 순서와 exact Claim/Control 요구, 최소 1/1/2 Replay 반복, 최대 20회,
 fresh session·Capability·request·evidence lineage를 content-addressed catalog에 고정한다. v1은 validity만
 지원하며 Profile floor·evidence evaluation·execution·confirmation·Finding authority는 모두 false다.
+
+`VAL-003`은 exact PROF-001 catalog와 VAL-002 policy를 다시 내장해 complete registered Profile·Profile
+digest를 complete registered depth requirement·ordinal·digest에 결박한다. `ai-assessment`는
+`repeated-controlled-validity-replay`, `bug-hunt`·`pentest`는 `controlled-validity-replay`, `ctf`는
+`single-validity-replay`를 최소 floor로 요구한다. 더 높은 registered depth는 ordinal로만 충족하며 unknown·
+stale·cross-catalog·mapping·digest·boolean marker 치환은 fail closed한다. Profile 선택, Campaign 변경,
+evidence evaluation, 실행·confirmation·Finding authority는 모두 false다. API는 순환 import를 피하기 위해
+eager `pajin.workflow` export가 아니라 `pajin.workflow.profile_assurance` 명시적 모듈로 제공한다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
 operator approval, 기존 consumed `ActionPermit`, non-reusable consumption receipt를 원자적으로
@@ -225,6 +236,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/CHAIN-005-mcp-authorization-privileged-action.md`
 - `docs/orchestration/VAL-001-mode-neutral-claim-replay.md`
 - `docs/orchestration/VAL-002-validation-depth-policy.md`
+- `docs/orchestration/VAL-003-profile-assurance-floor.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -240,8 +252,25 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md`
 - `docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md`
 - `docs/adr/0148-register-validation-depth-requirements-without-evidence-authority.md`
+- `docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md`
 
 ## 현재 검증
+
+### 2026-08-10 VAL-003 Profile별 Assurance Floor 검증
+
+- 구현 커밋: `9b8caff`
+- 순환 import 수정 커밋: `653f07c`
+- exact Profile/floor policy·resolver·digest·ordinal·mapping·authority marker 음성 회귀와 clean interpreter
+  양방향 import 순서: 45 passed
+- Profile·legacy compatibility·Validation depth/model/control·Replay 인접 회귀: 201 passed
+- `pajin.modes.ai_redteam.replay`와 VAL-003 import 및 AI Chat 인접 수집 회귀: 64 passed
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 Python 3.12 strict mypy: 266 source files 통과
+- 문서 정책과 링크 검사: 2 passed
+- staged diff check: 통과
+- 전체 `python -m pytest -q -x`: 634 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+  불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
+  `staged source Artifact failed managed admission`의 차이이며 VAL-003 변경 파일 밖이다.
 
 ### 2026-08-10 VAL-002 Validation depth policy 검증
 
@@ -500,13 +529,15 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-VAL-002 mode-neutral Validation depth requirement catalog는 `fadeed7`에 보존됐다.
+VAL-003 Profile별 Assurance Floor는 `9b8caff`에, eager package export 순환 import 수정은 `653f07c`에
+보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `VAL-003` Profile별 Assurance Floor다. 첫 작업은 exact PROF-001 catalog의 purpose,
-reporting semantics, benchmark expectation과 required operating controls를 VAL-002 depth 요구에 대조하는
-것이다. Profile별 최소 depth를 content-addressed mapping으로 결박하되 Profile 선택, Campaign scope·risk·
-budget 변경, evidence 만족 판정, 실행·confirmation 권위를 만들지 않는다.
+다음 수직 슬라이스는 `VAL-004` Baseline·Negative Control·Counterfactual·N-run evidence 결박이다. 첫 작업은
+exact sealed VAL-001 Claim Replay, 기존 `ValidationControlPlan`·receipt·reconciliation과 KISA repetition
+artifact가 실제로 제공하는 증거 필드를 대조하는 것이다. 새 실행·Control·Replay·Decision·Finding authority를
+만들지 않고 기존 authority를 다시 검증해 exact Profile floor의 요구 항목과 반복 수를 만족하는 evidence
+admission·evaluation만 최소 수직 슬라이스로 추가한다.
 
 ## 알려진 경계
 
@@ -528,8 +559,9 @@ budget 변경, evidence 만족 판정, 실행·confirmation 권위를 만들지 
 - VAL-001은 CHAIN-002/005의 validity Claim과 existing WALK-005B2 fresh Replay만 결박한다. impact·severity·
   negative control·counterfactual·N-run·full confirmation은 포함하지 않으며 CHAIN-001/003/004에는 대응
   Replay predecessor가 없다. local sealed freshness는 별도 off-host 조직의 cryptographic attestation이 아니다.
-- VAL-002는 validity-only 요구 catalog다. registered depth는 evidence 충족 증명이 아니며 Profile floor,
-  impact·severity, 실제 Control·N-run admission, execution·confirmation·Finding authority가 없다.
+- VAL-002는 validity-only 요구 catalog이고 VAL-003은 exact Profile별 최소 registered depth만 결박한다.
+  둘 다 실제 Replay·Control·N-run evidence 충족, impact·severity, execution·confirmation·Finding authority를
+  증명하지 않는다. VAL-003의 ordinal helper는 evidence를 읽지 않는다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.
