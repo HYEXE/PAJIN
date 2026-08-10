@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-11
 - 브랜치: `main`
-- 현재 기능 HEAD: `c6c673474429f9b127227e4a9fa6f2d21b87bedb`
-- 현재 코드 체크포인트: Phase 9 `UX-002B` current Canonical Graph view 완료
+- 현재 기능 HEAD: `9458edd71788ce17eb96b9369ef05907cbf9d83c`
+- 현재 코드 체크포인트: Phase 9 `UX-003A` canonical Hypothesis attention ranking 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -34,9 +34,10 @@
 - UX-001B3 구현 커밋: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
 - UX-002A 구현 커밋: `cb1490e11f042a37fd128b0a661d0f04af5afe77`
 - UX-002B 구현 커밋: `c6c673474429f9b127227e4a9fa6f2d21b87bedb`
-- 현재 구현 체크포인트: existing SQLite Graph authority 기반 exact current Snapshot read model
-- 다음 로드맵: Phase 9 Hypothesis Ranking·Decision Audit 제품 단위
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 34 commits ahead
+- UX-003A 구현 커밋: `9458edd71788ce17eb96b9369ef05907cbf9d83c`
+- 현재 구현 체크포인트: current Snapshot Hypothesis consistency 기반 read-only review attention ranking
+- 다음 로드맵: Phase 9 `UX-003B` durable complete GraphDecision audit authority·operator view
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 36 commits ahead
 
 ## 재개 전 확인
 
@@ -54,14 +55,22 @@ typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
 `653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
 `d5bd2e4`, VAL-004C는 `56f5dcf`, UX-001A는 `6312215`, UX-001B1은 `1c5f68e`, UX-001B2는
-`1c03188`, UX-001B3는 `f5f96ef`, UX-002A는 `cb1490e`, UX-002B는 `c6c6734`에 보존됐다. 이 문서
-동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 34 commits
+`1c03188`, UX-001B3는 `f5f96ef`, UX-002A는 `cb1490e`, UX-002B는 `c6c6734`, UX-003A는 `9458edd`에
+보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 36 commits
 ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
+
+`UX-003A`는 existing `PAJIN_CP_GRAPH_DATABASE`의 exact current Snapshot과 complete Admission Event Log를
+query-only로 재검증한 뒤 기존 `GraphConsistencyAnalyzer`가 산출한 Hypothesis state를 Operator-only
+`GET /v1/hypotheses/campaigns/{campaign}/snapshots/{snapshot_id}/attention-ranking`으로 표시한다.
+`contested`→`supported`→`open`→`contradicted`, producer confidence 내림차순, node ID 오름차순으로 최대
+500개를 결정적으로 정렬하고 statement·expected observable·Observation ID/content를 redaction한다. Web
+Console은 rank·state/count·attention band·authority marker를 검증하고 desktop·390 px mobile에서 수평
+overflow와 console error 없이 렌더링했다. selection·Decision 기록·schedule·execution authority는 모두 false다.
 
 `UX-002B`는 `PAJIN_CP_GRAPH_DATABASE`로 설정한 existing single-Campaign SQLite Graph Store에서 exact
 Campaign·current Snapshot을 입력받는 Operator-only
@@ -807,15 +816,19 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A draft는 `6312215`, UX-001B1 local artifact·CLI는
 `1c5f68e`, UX-001B2 Control Plane verified read는 `1c03188`, UX-001B3 existing compiler handoff는
 `f5f96ef`, UX-002A verified Discovery Surface·Wave view는 `cb1490e`, UX-002B current Canonical Graph view는
-`c6c6734`에 보존됐다. Campaign·Profile·Scope Builder와 Attack Surface·Graph·Wave Timeline 제품 단위는
-완료됐다. 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
+`c6c6734`, UX-003A canonical Hypothesis attention ranking은 `9458edd`에 보존됐다. Campaign·Profile·Scope
+Builder와 Attack Surface·Graph·Wave Timeline, Hypothesis Ranking 절반이 완료됐다. 이 문서 커밋 뒤 working
+tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 한 단계는 Hypothesis Ranking·Decision Audit 제품 단위다. 기존 Hypothesis·Graph·Validation authority와
-operator decision 기록을 먼저 대조하고, ranking이나 audit 표시가 새 validation·approval·execution authority를
-만들지 않는 가장 작은 read-only 수직 슬라이스와 완료 기준을 ADR·계약으로 고정한다.
+다음 한 단계는 `UX-003B` durable complete `GraphDecision` audit authority와 redacted Operator view다. Permit
+table의 Decision ID/digest reference를 complete Decision으로 추정하지 말고, append/read·current Snapshot
+freshness·retention·redaction authority를 먼저 ADR·계약으로 고정한다.
 
 ## 알려진 경계
 
+- UX-003A의 confidence는 producer metadata이며 validation truth나 risk score가 아니다. ranking은 검토 순서일
+  뿐 Hypothesis selection·Task/Plan·Decision·Capability·Permit·execution authority가 아니다. complete
+  GraphDecision durable store가 없어 Decision Audit은 UX-003B까지 제공하지 않는다.
 - UX-002B는 한 Control Plane process에 server-owned single-Campaign Graph database 하나만 설정하고 exact
   current Snapshot만 읽는다. historical/listing·multi-Campaign routing·automatic reconciliation·full content
   export는 없으며 500 node·1,000 edge를 넘으면 자르지 않고 거부한다. local filesystem과 service account를
