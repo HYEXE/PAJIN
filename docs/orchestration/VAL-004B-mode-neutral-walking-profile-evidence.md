@@ -78,6 +78,10 @@ All five requests must retain the exact stateless text schema. The three copied 
 artifacts are sealed again in the Control publication Run and must byte-match their source execution
 artifacts. The publication Run must differ from all execution Runs.
 
+VAL-004B exact-matches `ReplaySessionPolicy.STATELESS` against VAL-002's isolated Replay session
+allowlist. Both the source and Replay requests must retain the same exact one-field `text` arguments;
+any session argument or state-preserving session policy fails closed.
+
 ## Depth evaluation
 
 VAL-001 contains one fresh WALK-005B2 validity Replay. Therefore VAL-004B can derive only:

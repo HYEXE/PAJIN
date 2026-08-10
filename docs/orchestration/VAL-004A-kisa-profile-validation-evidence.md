@@ -80,6 +80,10 @@ deterministic KISA compiler output and the original Replay semantics.
 Replay and Control request IDs, Capability IDs, session digests and evidence references must be
 disjoint. Source, Replay and Control sessions must also be distinct.
 
+The evaluator exact-matches `ReplaySessionPolicy.FRESH_SESSION` against VAL-002's isolated Replay
+session allowlist before reporting an achieved depth. A state-preserving Replay cannot satisfy a
+Profile floor.
+
 ## Depth evaluation
 
 | Verified evidence | Achieved VAL-002 depth |

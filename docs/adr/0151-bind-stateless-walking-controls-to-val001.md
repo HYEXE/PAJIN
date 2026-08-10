@@ -35,7 +35,8 @@ independence coordinate entirely would make source, Replay and Control reuse dif
 7. Require the Permit Capability to exact-match the registered WALK Capability and the Grant to
    retain the exact Campaign.
 8. Record `sessionPolicy=stateless` and require all source, Replay and Control requests to have the
-   exact one-field text schema. Do not mint a synthetic session.
+   exact one-field text schema. Do not mint a synthetic session. Count that evidence toward VAL-002
+   only when the registered depth requirement explicitly accepts `ReplaySessionPolicy.STATELESS`.
 9. Prove independence with five pairwise-distinct Run/root, execution, request, Grant, Permit,
    approval, Worker and Run-qualified evidence identities. Copy and reseal each Control evidence
    artifact in a distinct publication Run.

@@ -292,6 +292,13 @@ async def test_val004a_evaluates_exact_kisa_replay_and_control_evidence(
     )
     assert repeated.api_version == PROFILE_VALIDATION_EVIDENCE_API_VERSION
     assert repeated.achieved_depth is ValidationDepth.REPEATED_CONTROLLED_VALIDITY_REPLAY
+    assert tuple(
+        item.value for item in repeated.achieved_requirement.allowed_replay_session_policies
+    ) == (
+        "fresh-session",
+        "stateless",
+    )
+    assert repeated.achieved_requirement.replay_session_isolation_required is True
     assert repeated.replay_evidence.repetition_count == 2
     assert repeated.control_evidence is not None
     assert repeated.control_evidence.reconciliation.contrast.value == "contrast-observed"

@@ -514,6 +514,7 @@ def test_file_upload_adapter_registry_binds_exact_domain_contract() -> None:
         "http-authentication",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-route",
     )
     assert definition.requires_trusted_network_receipt is True

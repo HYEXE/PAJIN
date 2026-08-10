@@ -9,6 +9,7 @@ from pydantic import ConfigDict, Field, ValidationError, field_validator, model_
 
 from pajin.discovery.canonicalization import canonical_json_bytes, discovery_digest
 from pajin.domain.models import StrictModel
+from pajin.domain.replay import ReplaySessionPolicy
 from pajin.domain.validation import AtomicClaimType, ClaimReplayStatus
 from pajin.domain.validation_controls import (
     ValidationControlContrast,
@@ -21,6 +22,10 @@ VALIDATION_DEPTH_POLICY_API_VERSION: Literal["pajin.dev/validation-depth-policy/
 
 _CONTROL_KINDS = tuple(ValidationControlKind)
 _SUPPORTED_CLAIM_TYPES = (AtomicClaimType.VALIDITY,)
+_ISOLATED_REPLAY_SESSION_POLICIES = (
+    ReplaySessionPolicy.FRESH_SESSION,
+    ReplaySessionPolicy.STATELESS,
+)
 _MAX_POLICY_BYTES = 128 * 1024
 
 
@@ -74,9 +79,15 @@ class ValidationDepthRequirement(StrictModel):
         default="fresh-execution-lineage",
         alias="independenceScope",
     )
-    fresh_session_per_replay_required: Literal[True] = Field(
+    allowed_replay_session_policies: tuple[ReplaySessionPolicy, ...] = Field(
+        default=_ISOLATED_REPLAY_SESSION_POLICIES,
+        alias="allowedReplaySessionPolicies",
+        min_length=2,
+        max_length=2,
+    )
+    replay_session_isolation_required: Literal[True] = Field(
         default=True,
-        alias="freshSessionPerReplayRequired",
+        alias="replaySessionIsolationRequired",
     )
     fresh_capability_per_execution_required: Literal[True] = Field(
         default=True,
@@ -106,7 +117,7 @@ class ValidationDepthRequirement(StrictModel):
     finding_confirmed: Literal[False] = Field(default=False, alias="findingConfirmed")
 
     @field_validator(
-        "fresh_session_per_replay_required",
+        "replay_session_isolation_required",
         "fresh_capability_per_execution_required",
         "distinct_request_per_execution_required",
         "evidence_lineage_required",
@@ -136,6 +147,10 @@ class ValidationDepthRequirement(StrictModel):
     def bind_requirement_identity(self) -> Self:
         if self.required_claim_types != _SUPPORTED_CLAIM_TYPES:
             raise ValueError("VAL-002 v1 supports only the validity Claim type")
+        if self.allowed_replay_session_policies != _ISOLATED_REPLAY_SESSION_POLICIES:
+            raise ValueError(
+                "VAL-002 requires an isolated fresh-session or stateless Replay policy"
+            )
         if not self.required_control_kinds:
             if (
                 self.minimum_control_executions_per_kind != 0

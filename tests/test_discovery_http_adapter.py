@@ -14,6 +14,7 @@ from pajin.discovery import (
     HTTPAndOpenAPIFileUploadSurfaceAdapter,
     HTTPAndOpenAPIRAGSurfaceAdapter,
     HTTPAndOpenAPISurfaceAdapter,
+    HTTPAndOpenAPITenantDataSurfaceAdapter,
     HTTPAuthenticationSurfaceLocator,
     HTTPFileUploadSurfaceLocator,
     HTTPInternalAPISurfaceLocator,
@@ -234,6 +235,39 @@ def test_openapi_adapter_admits_only_explicit_internal_api_declaration() -> None
     assert internal[0].route.path_template == "/users/{user_id}"
     assert internal[0].route.method == "GET"
     assert internal[0].declaration == "openapi-x-pajin-internal-api"
+
+
+def test_inherited_openapi_adapters_declare_internal_api_surface_kind() -> None:
+    document = _openapi_document()
+    operation = document["paths"]["/users/{user_id}"]["get"]  # type: ignore[index]
+    operation["x-pajin-internal-api"] = True  # type: ignore[index]
+    request = _request()
+    result = _result(json.dumps(document).encode("utf-8"))
+    adapters = (
+        HTTPAndOpenAPIAuthenticationSurfaceAdapter(
+            tool=HTTPGetTool(),
+            allowed_methods=("GET", "POST"),
+        ),
+        HTTPAndOpenAPIFileUploadSurfaceAdapter(
+            tool=HTTPGetTool(),
+            allowed_methods=("GET", "POST"),
+        ),
+        HTTPAndOpenAPIRAGSurfaceAdapter(
+            tool=HTTPGetTool(),
+            allowed_methods=("GET", "POST"),
+        ),
+        HTTPAndOpenAPITenantDataSurfaceAdapter(
+            tool=HTTPGetTool(),
+            allowed_methods=("GET", "POST"),
+        ),
+    )
+
+    for adapter in adapters:
+        emitted_kinds = {
+            candidate.locator.kind for candidate in adapter.extract_surfaces(request, result)
+        }
+        assert "http-internal-api" in emitted_kinds
+        assert emitted_kinds <= set(adapter.supported_surface_kinds)
 
 
 def test_openapi_adapter_rejects_non_boolean_internal_api_declaration() -> None:

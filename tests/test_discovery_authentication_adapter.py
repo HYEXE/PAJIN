@@ -381,6 +381,7 @@ def test_authentication_adapter_registry_binds_exact_domain_contract() -> None:
     assert definition.supported_surface_kinds == (
         "http-authentication",
         "http-endpoint",
+        "http-internal-api",
         "http-route",
     )
     assert definition.requires_trusted_network_receipt is True

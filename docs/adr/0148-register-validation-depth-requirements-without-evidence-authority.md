@@ -22,8 +22,11 @@ look like proof that its requirements were satisfied.
    `repeated-controlled-validity-replay`.
 2. Keep the v1 Claim ceiling at `validity`. Existing generic Control reconciliation is validity-only,
    so impact or severity requirements remain unsupported instead of being inferred.
-3. Require `REPRODUCED`, fresh execution lineage, a fresh session per Replay, a fresh Capability and
-   distinct request per execution, and exact evidence lineage at every depth.
+3. Require `REPRODUCED`, fresh execution lineage, an isolated Replay session policy, a fresh
+   Capability and distinct request per execution, and exact evidence lineage at every depth. The
+   exact accepted session policies are `fresh-session` and `stateless`; the former requires a
+   distinct materialized session per repetition, while the latter requires a schema-proven absence
+   of session state. `preserve-scenario-session` is not accepted.
 4. The controlled depths additionally require the exact ordered Baseline, Negative Control, and
    Counterfactual set, at least one execution of each, and `contrast-observed`.
 5. The repeated controlled depth requires at least two Replay repetitions. The policy retains the
@@ -38,8 +41,8 @@ look like proof that its requirements were satisfied.
 - VAL-003 can reference stable depth identities without rewriting Validation or Replay semantics.
 - VAL-004 can build evidence satisfaction against explicit minimums while reusing existing Replay
   and Control authorities.
-- Reordering, weakening, widening Claim types, omitting Controls, reducing repetitions, changing a
-  digest, or escalating a boolean authority marker fails closed.
+- Reordering, weakening, widening Claim types or session policies, omitting Controls, reducing
+  repetitions, changing a digest, or escalating a boolean authority marker fails closed.
 - A higher depth never upgrades VAL-001 evidence by declaration. Until a separate verifier binds
   actual evidence, every depth remains an unsatisfied policy requirement.
 - Local fresh-execution lineage is not cryptographic proof of a separate off-host organization.

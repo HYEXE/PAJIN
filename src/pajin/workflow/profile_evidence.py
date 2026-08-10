@@ -500,6 +500,7 @@ class ProfileValidationEvidenceAssessment(StrictModel):
         if (
             self.achieved_depth is not achieved.depth
             or self.achieved_requirement != achieved
+            or ReplaySessionPolicy.FRESH_SESSION not in achieved.allowed_replay_session_policies
             or achieved.depth_ordinal < floor.minimum_depth_ordinal
         ):
             raise ValueError("Profile evidence does not satisfy the registered Floor")

@@ -71,6 +71,7 @@ class HTTPAndOpenAPIRAGSurfaceAdapter:
         "http-authentication",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-rag",
         "http-route",
     )

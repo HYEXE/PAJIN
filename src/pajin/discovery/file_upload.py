@@ -46,6 +46,7 @@ class HTTPAndOpenAPIFileUploadSurfaceAdapter:
         "http-authentication",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-route",
     )
     requires_trusted_network_receipt = True

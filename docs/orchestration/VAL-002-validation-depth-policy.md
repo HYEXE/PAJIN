@@ -23,9 +23,13 @@ Validation Decision, or Finding is accepted as policy input.
 | `controlled-validity-replay` | 2 | `validity` | 1 | Baseline, Negative Control, Counterfactual | 1 | `contrast-observed` |
 | `repeated-controlled-validity-replay` | 3 | `validity` | 2 | Baseline, Negative Control, Counterfactual | 1 | `contrast-observed` |
 
-All depths require `ClaimReplayStatus.REPRODUCED`, `fresh-execution-lineage`, a fresh session per
-Replay, a fresh Capability and distinct request per execution, and exact evidence lineage. Replay
-repetitions remain bounded by the existing maximum of twenty.
+All depths require `ClaimReplayStatus.REPRODUCED`, `fresh-execution-lineage`, an isolated Replay
+session policy, a fresh Capability and distinct request per execution, and exact evidence lineage.
+The exact `allowedReplaySessionPolicies` are `fresh-session` and `stateless`. A fresh-session Replay
+must prove a distinct materialized session for each repetition; a stateless Replay must prove that
+its registered request schema and every admitted request contain no session argument. The
+state-preserving `preserve-scenario-session` policy cannot satisfy VAL-002. Replay repetitions remain
+bounded by the existing maximum of twenty.
 
 The v1 Claim ceiling is intentionally `validity`. Impact and severity remain information-only until
 their own independent Replay and Control evidence requirements are implemented.
@@ -51,10 +55,10 @@ approval, Grant, Permit, dispatch, Control Plan, receipt, Validation Decision, F
 wire string. It does not accept aliases, `latest`, partial identifiers, caller-defined requirements,
 or version fallback.
 
-Each requirement digest covers its depth, ordinal, Claim and Replay prerequisites, Control set,
-minimum counts, independence scope, and authority markers. The policy digest covers all
-requirements in canonical order. A standalone structurally valid requirement cannot replace a
-code-owned catalog entry.
+Each requirement digest covers its depth, ordinal, Claim and Replay prerequisites, exact allowed
+session-isolation policies, Control set, minimum counts, independence scope, and authority markers.
+The policy digest covers all requirements in canonical order. A standalone structurally valid
+requirement cannot replace a code-owned catalog entry.
 
 ## Fail-closed boundaries
 
@@ -65,6 +69,7 @@ Parsing or resolution rejects:
 - impact or severity Claim substitution;
 - a partial, reordered, or extra Control set;
 - a missing `contrast-observed` requirement on a controlled depth;
+- a missing, reordered, widened, or state-preserving Replay session policy;
 - a forged requirement or policy digest;
 - string or integer coercion of security-relevant boolean markers; and
 - any Profile-floor, evidence-evaluation, execution, confirmation, or Finding marker set true.

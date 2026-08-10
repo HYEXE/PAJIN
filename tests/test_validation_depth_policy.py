@@ -15,6 +15,7 @@ from pajin.discovery import (
     registered_validation_depth_policy,
     resolve_validation_depth_requirement,
 )
+from pajin.domain.replay import ReplaySessionPolicy
 from pajin.domain.validation import AtomicClaimType, ClaimReplayStatus
 from pajin.domain.validation_controls import (
     ValidationControlContrast,
@@ -41,6 +42,8 @@ def test_registered_validation_depth_policy_is_bounded_and_monotonic() -> None:
         item.required_claim_types == (AtomicClaimType.VALIDITY,)
         and item.required_claim_replay_status is ClaimReplayStatus.REPRODUCED
         and item.independence_scope == "fresh-execution-lineage"
+        and item.allowed_replay_session_policies
+        == (ReplaySessionPolicy.FRESH_SESSION, ReplaySessionPolicy.STATELESS)
         for item in policy.requirements
     )
 
@@ -78,7 +81,7 @@ def test_validation_depth_policy_grants_no_evidence_or_execution_authority() -> 
     assert policy.confirmation_authorized is False
     assert policy.finding_confirmed is False
     assert all(
-        item.fresh_session_per_replay_required
+        item.replay_session_isolation_required
         and item.fresh_capability_per_execution_required
         and item.distinct_request_per_execution_required
         and item.evidence_lineage_required
@@ -109,6 +112,7 @@ def test_validation_depth_policy_grants_no_evidence_or_execution_authority() -> 
         (("requirements", 0, "requirementDigest"), "1" * 64),
         (("requirements", 0, "depthOrdinal"), 2),
         (("requirements", 0, "minimumReplayRepetitions"), 2),
+        (("requirements", 0, "allowedReplaySessionPolicies"), ["fresh-session"]),
         (("requirements", 0, "requiredControlKinds"), ["baseline"]),
         (("requirements", 1, "requiredControlKinds"), []),
         (("requirements", 1, "requiredControlContrast"), None),
@@ -139,7 +143,7 @@ def test_validation_depth_policy_rejects_substitution_or_escalation(
 @pytest.mark.parametrize(
     ("field", "replacement"),
     [
-        ("freshSessionPerReplayRequired", 1),
+        ("replaySessionIsolationRequired", 1),
         ("freshCapabilityPerExecutionRequired", "true"),
         ("distinctRequestPerExecutionRequired", 1),
         ("evidenceLineageRequired", "true"),
@@ -175,6 +179,26 @@ def test_standalone_requirement_cannot_rewrite_code_owned_policy() -> None:
 
     with pytest.raises(ValidationError, match="differ from code authority"):
         ValidationDepthPolicy.model_validate(policy_payload)
+
+
+@pytest.mark.parametrize(
+    "session_policies",
+    (
+        ["fresh-session", "preserve-scenario-session"],
+        ["stateless", "fresh-session"],
+    ),
+)
+def test_validation_depth_requirement_rejects_non_isolated_or_reordered_session_policy(
+    session_policies: list[str],
+) -> None:
+    payload = resolve_validation_depth_requirement(
+        ValidationDepth.SINGLE_VALIDITY_REPLAY
+    ).model_dump(mode="json", by_alias=True)
+    payload["allowedReplaySessionPolicies"] = session_policies
+    payload["requirementDigest"] = ""
+
+    with pytest.raises(ValidationError, match="isolated fresh-session or stateless"):
+        ValidationDepthRequirement.model_validate(payload)
 
 
 @pytest.mark.parametrize(

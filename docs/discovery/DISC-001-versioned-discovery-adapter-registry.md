@@ -22,9 +22,10 @@ A `DiscoveryAdapter` declares:
 
 - stable adapter ID and version;
 - producer ID and one registered Tool ID;
-- a sorted, unique set of supported `http-authentication`, `http-endpoint`,
-  `http-file-upload`, `http-rag`, `http-route`, `mcp-prompt`, `mcp-resource`,
-  `mcp-resource-template`, `mcp-server`, `mcp-tool`, or `tool-interface` Surface kinds;
+- a sorted, unique set of supported `http-authentication`, `http-data-response`, `http-endpoint`,
+  `http-file-upload`, `http-internal-api`, `http-rag`, `http-route`,
+  `http-tenant-retrieval`, `mcp-prompt`, `mcp-resource`, `mcp-resource-template`, `mcp-server`,
+  `mcp-tool`, `mcp-url-tool`, or `tool-interface` Surface kinds;
 - whether successful extraction requires replay of a host-trusted network execution receipt;
 - an explicit non-secret `stable_execution_context()`; and
 - `extract_surfaces(request, result)`, which returns non-authoritative `SurfaceCandidate` values.

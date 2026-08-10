@@ -81,6 +81,7 @@ class HTTPAndOpenAPITenantDataSurfaceAdapter:
         "http-data-response",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-rag",
         "http-route",
         "http-tenant-retrieval",

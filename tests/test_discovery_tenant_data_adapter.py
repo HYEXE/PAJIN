@@ -345,6 +345,7 @@ def test_tenant_data_adapter_registry_binds_exact_contract() -> None:
         "http-data-response",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-rag",
         "http-route",
         "http-tenant-retrieval",

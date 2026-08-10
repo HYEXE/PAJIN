@@ -469,6 +469,7 @@ def test_rag_adapter_registry_binds_exact_domain_contract() -> None:
         "http-authentication",
         "http-endpoint",
         "http-file-upload",
+        "http-internal-api",
         "http-rag",
         "http-route",
     )

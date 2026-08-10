@@ -44,6 +44,7 @@ class HTTPAndOpenAPIAuthenticationSurfaceAdapter:
     supported_surface_kinds: tuple[DiscoverySurfaceKind, ...] = (
         "http-authentication",
         "http-endpoint",
+        "http-internal-api",
         "http-route",
     )
     requires_trusted_network_receipt = True

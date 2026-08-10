@@ -2168,6 +2168,13 @@ def test_val004b_materializes_stateless_controls_and_satisfies_controlled_floors
         == outcome.authority
     )
     assert assessment.achieved_depth.value == "controlled-validity-replay"
+    assert tuple(
+        item.value for item in assessment.achieved_requirement.allowed_replay_session_policies
+    ) == (
+        "fresh-session",
+        "stateless",
+    )
+    assert assessment.achieved_requirement.replay_session_isolation_required is True
     assert assessment.profile_selection_attested is False
     assert assessment.execution_authorized is False
     assert assessment.confirmation_authorized is False
@@ -2198,6 +2205,9 @@ def test_val004b_materializes_stateless_controls_and_satisfies_controlled_floors
         replay,
     )
     assert ctf.achieved_depth.value == "single-validity-replay"
+    assert "stateless" in tuple(
+        item.value for item in ctf.achieved_requirement.allowed_replay_session_policies
+    )
     assert ctf.control_evidence is None
     with pytest.raises(ModeNeutralProfileEvidenceError, match="registered Profile floor"):
         evaluate_mode_neutral_profile_validation_evidence(

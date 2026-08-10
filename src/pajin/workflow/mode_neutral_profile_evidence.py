@@ -33,6 +33,7 @@ from pajin.discovery.walking_validation import (
     walking_independent_approval_receipt,
 )
 from pajin.domain.models import CampaignManifest, CapabilityGrant, StrictModel, ToolRequest
+from pajin.domain.replay import ReplaySessionPolicy
 from pajin.domain.validation import AtomicClaim, AtomicClaimType
 from pajin.domain.validation_controls import (
     ValidationControlContrast,
@@ -187,7 +188,10 @@ class ModeNeutralClaimControlContract(StrictModel):
         min_length=3,
         max_length=3,
     )
-    session_policy: Literal["stateless"] = Field(default="stateless", alias="sessionPolicy")
+    session_policy: Literal[ReplaySessionPolicy.STATELESS] = Field(
+        default=ReplaySessionPolicy.STATELESS,
+        alias="sessionPolicy",
+    )
     independence_scope: Literal["source-replay-control-execution-lineage"] = Field(
         default="source-replay-control-execution-lineage",
         alias="independenceScope",
@@ -429,7 +433,10 @@ class StatelessControlIndependenceEvidence(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    session_policy: Literal["stateless"] = Field(default="stateless", alias="sessionPolicy")
+    session_policy: Literal[ReplaySessionPolicy.STATELESS] = Field(
+        default=ReplaySessionPolicy.STATELESS,
+        alias="sessionPolicy",
+    )
     session_argument_absent: Literal[True] = Field(
         default=True,
         alias="sessionArgumentAbsent",
@@ -672,11 +679,13 @@ class ModeNeutralProfileValidationEvidenceAssessment(StrictModel):
             else ValidationDepth.CONTROLLED_VALIDITY_REPLAY
         )
         requirement = resolve_validation_depth_requirement(depth)
+        _validate_stateless_claim_replay(self.claim_replay)
         if (
             self.profile_floor != floor
             or self.claim != self.claim_replay.claim
             or self.achieved_depth is not depth
             or self.achieved_requirement != requirement
+            or ReplaySessionPolicy.STATELESS not in requirement.allowed_replay_session_policies
             or requirement.depth_ordinal < floor.minimum_depth_ordinal
         ):
             raise ValueError("Mode-neutral WALK evidence does not satisfy the registered Floor")
@@ -1053,6 +1062,9 @@ def evaluate_mode_neutral_profile_validation_evidence(
         )
         floor = resolve_profile_assurance_floor(profile_id, profile_version)
         requirement = resolve_validation_depth_requirement(depth)
+        _validate_stateless_claim_replay(verified_claim)
+        if ReplaySessionPolicy.STATELESS not in requirement.allowed_replay_session_policies:
+            raise ValueError("VAL-002 does not accept stateless Replay isolation")
         if requirement.depth_ordinal < floor.minimum_depth_ordinal:
             raise ValueError("VAL-001 WALK evidence is below the registered Profile floor")
         return ModeNeutralProfileValidationEvidenceAssessment(
@@ -1348,3 +1360,12 @@ def _require_stateless_text_request(request: ToolRequest) -> None:
     arguments = cast(dict[str, object], request.arguments)
     if set(arguments) != {"text"} or not isinstance(arguments.get("text"), str):
         raise ValueError("VAL-004B WALK request must use the exact stateless text schema")
+
+
+def _validate_stateless_claim_replay(authority: ModeNeutralClaimReplayAuthority) -> None:
+    replay = authority.replay.authority
+    source_execution = replay.plan.source.execution
+    _require_stateless_text_request(source_execution.request)
+    _require_stateless_text_request(replay.execution.request)
+    if source_execution.request.arguments != replay.execution.request.arguments:
+        raise ValueError("VAL-004B source and Replay stateless arguments differ")
