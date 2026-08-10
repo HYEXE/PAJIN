@@ -407,6 +407,15 @@ Replay, or Finding. See the
 [CHAIN-004 contract](docs/orchestration/CHAIN-004-cross-tenant-retrieval-data-exposure.md) and
 [ADR-0145](docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md).
 
+CHAIN-005 reopens the exact sealed WALK-003 MCP authorization hypothesis and projects its
+registered, independently approval-gated `CapabilityDefinition` as a privileged-action coverage
+stage. Here, privileged means only `approvalRequired=true` under the exact
+`independent-user-approval` control; risk labels, side-effect labels, Tool metadata, arguments, and
+synthetic Findings cannot substitute for that authority. The chain grants no approval, Capability,
+execution, Replay, or Finding authority. See the
+[CHAIN-005 contract](docs/orchestration/CHAIN-005-mcp-authorization-privileged-action.md) and
+[ADR-0146](docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

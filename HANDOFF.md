@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `b1dfa44fb2ffc2aa7750670ad506c10a6c863ce2`
-- 현재 코드 체크포인트: Phase 8 `CHAIN-004` Cross-tenant Retrieval → Data Exposure coverage hypothesis 완료
+- 현재 기능 HEAD: `03d2c0a106794011c9f314668f6fa644a21f333a`
+- 현재 코드 체크포인트: Phase 8 `CHAIN-005` MCP Authorization Failure → Privileged Action coverage hypothesis 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -19,9 +19,10 @@
 - CHAIN-003 typed Surface 구현 커밋: `9a2ad103a8f64ddb5289909f461b9d2e217b3dfe`
 - CHAIN-003 chain 구현 커밋: `886236d053131697a674d67179ff1941959b6aed`
 - CHAIN-004 구현 커밋: `b1dfa44fb2ffc2aa7750670ad506c10a6c863ce2`
-- 현재 구현 체크포인트: CHAIN-004 explicit tenant retrieval·data response discovery와 sealed Snapshot-bound coverage hypothesis
-- 다음 로드맵: Phase 8 `CHAIN-005` MCP Authorization Failure → Privileged Action mode-neutral attack chain 계약
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 5 commits ahead
+- CHAIN-005 구현 커밋: `03d2c0a106794011c9f314668f6fa644a21f333a`
+- 현재 구현 체크포인트: CHAIN-005 sealed WALK-003 authorization hypothesis·approval-gated Capability coverage chain
+- 다음 로드맵: Phase 8 `VAL-001` mode-neutral Claim Replay 계약과 선행 authority 경계 조사
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 7 commits ahead
 
 ## 재개 전 확인
 
@@ -35,9 +36,9 @@ git status --porcelain=v2 --branch
 
 문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
 CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`, CHAIN-003
-typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`에 보존됐다. 이 문서
-동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 5 commits ahead이고 working tree는
-clean이어야 한다.
+typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
+`03d2c0a`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 7 commits
+ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -86,6 +87,15 @@ sealed Recon source·projection Run과 `SurfaceSnapshotAuthority`에서 다시 �
 `cross-tenant-retrieval-hypothesis`와 `declared-data-response-surface`이며 실제 selector control·retrieval·
 access·exposure를 주장하지 않는다. 결과는 `hypothesized-not-validated`, `surfaceEvidenceOnly=true`이고
 cross-tenant access·data exposure·Capability·execution·Claim Replay·Finding confirmation은 모두 false다.
+
+`CHAIN-005`는 exact sealed WALK-003 Run·artifact·publication과 code-owned MCP authorization rule을 다시
+검증한다. Authorization Failure stage는 WALK-003 hypothesis를, Privileged Action stage는 그 안의 exact
+`CapabilityDefinition`을 참조한다. privileged는 `approvalRequired=true`이고
+`independent-user-approval` control 아래 등록된 MCP Capability라는 bounded 의미뿐이다. full Capability,
+MCP server·tool Surface와 locator, invocation, Campaign lineage를 action digest에 결박하며 risk tier·side
+effect·Tool 이름·설명·argument·synthetic Finding으로 권위를 추론하지 않는다. 결과는
+`hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이고 실제 authorization failure confirmation·
+approval·Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
 operator approval, 기존 consumed `ActionPermit`, non-reusable consumption receipt를 원자적으로
@@ -171,6 +181,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `src/pajin/control_plane/executors.py`
 - `src/pajin/workflow/engine_execution_gate.py`
 - `src/pajin/discovery/attack_chain.py`
+- `src/pajin/discovery/mcp_privilege_attack_chain.py`
 - `src/pajin/discovery/tenant_attack_chain.py`
 - `src/pajin/discovery/tenant_data.py`
 - `src/pajin/discovery/url_attack_chain.py`
@@ -192,6 +203,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/CHAIN-002-file-upload-rag-tool-abuse.md`
 - `docs/orchestration/CHAIN-003-prompt-url-tool-internal-api.md`
 - `docs/orchestration/CHAIN-004-cross-tenant-retrieval-data-exposure.md`
+- `docs/orchestration/CHAIN-005-mcp-authorization-privileged-action.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -204,8 +216,24 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md`
 - `docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md`
 - `docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md`
+- `docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md`
 
 ## 현재 검증
+
+### 2026-08-10 CHAIN-005 MCP authorization·privileged action chain 검증
+
+- 구현 커밋: `03d2c0a`
+- CHAIN-005 집중 mode-neutral·위조·Capability substitution·stale publication 회귀: 7 passed
+- WALK-003·CHAIN-001/002 및 MCP·URL·tenant chain 결합 관련 회귀: 110 passed
+- non-approval Capability, reordered stage, forged action digest·authority marker, stale equivalent
+  publication과 artifact mutation 음성 경계: 통과
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 Python 3.12 strict mypy: 263 source files 통과
+- 변경 Python 3개 format check와 public import smoke: 통과
+- changed-file credential pattern scan과 `git diff --cached --check`: 통과
+- 전체 `python -m pytest -q -x`: 634 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+  불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
+  `staged source Artifact failed managed admission`의 차이이며 CHAIN-005 변경 파일 밖이다.
 
 ### 2026-08-10 CHAIN-004 explicit tenant retrieval·data response chain 검증
 
@@ -420,15 +448,14 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-CHAIN-004 typed Surface와 sealed Snapshot-bound chain authority는 `b1dfa44`에 보존됐다.
+CHAIN-005 sealed WALK-003-bound chain authority는 `03d2c0a`에 보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `CHAIN-005` MCP Authorization Failure → Privileged Action이다. 첫 작업은 기존
-`src/pajin/discovery/hypothesis.py`, `walking_replanning.py`, MCP authorization Surface와 privileged action을
-나타내는 typed authority가 실제로 있는지 조사하는 것이다. Tool 이름·설명, capability-like 문자열이나
-synthetic benchmark Finding을 일반 authority로 추론하지 않는다. predecessor가 없으면 가장 작은 bounded
-locator·trusted admission을 먼저 제안하고, 실제 authorization failure·privileged execution·impact·Finding
-confirmation과 execution 권위는 계속 분리한다.
+다음 수직 슬라이스는 `VAL-001` Mode-neutral Claim Replay다. 첫 작업은 기존 WALK-005B1/B2와 다른
+Claim·Replay authority가 CHAIN-001~005의 서로 다른 predecessor 유형을 어떤 exact 좌표로 수용하는지
+조사하는 것이다. 기존 Replay 권위를 일반화할 수 있으면 재사용하고, coverage chain만으로 Claim이나 Replay
+실행 권위를 만들지 않는다. mode-neutral 계약은 fresh Run·request·approval·Grant·Permit·dispatch·Worker와
+negative control을 어떤 최소 공통 predecessor로 결박할지 먼저 정의한다.
 
 ## 알려진 경계
 
@@ -444,6 +471,9 @@ confirmation과 execution 권위는 계속 분리한다.
   header·query·body selector를 parameter/schema에 해석하지 않고 path placeholder만 추가 검증한다. 실제
   tenant 값·selector control·retrieval success·cross-tenant access·response body·data exposure는 관찰하지
   않는다.
+- CHAIN-005의 privileged는 exact WALK-003 `approvalRequired=true` Capability의 독립 승인 경계만 뜻한다.
+  실제 승인 거부·우회, operating-system privilege, admin·data access, Grant·Permit·dispatch·Worker outcome·
+  impact는 관찰하지 않는다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.

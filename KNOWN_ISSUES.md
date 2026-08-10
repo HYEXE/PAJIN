@@ -3,6 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## CHAIN-005 approval-gated Capability 의미 경계
+
+- 상태: MCP Authorization Failure → Privileged Action의 mode-neutral ordered coverage 계약은 구현됐고
+  실제 authorization failure·approval·Capability Grant·privileged execution·validation은 닫힘
+- 현재 보장: exact sealed WALK-003 Run·artifact·publication과 code-owned authorization rule을 다시
+  검증한다. `approvalRequired=true`, `mcp-tool` Surface support, exact threat class와
+  `independent-user-approval` control을 가진 full `CapabilityDefinition`만 privileged-action stage로
+  결박한다. stale publication, artifact mutation, non-approval Capability, stage·digest·boolean marker 위조는
+  fail closed한다. execution·Claim Replay·Finding confirmation은 모두 false다.
+- 제한: 여기서 privileged는 독립 승인 요구가 등록됐다는 뜻뿐이다. risk tier·side effect는 Capability
+  digest에 보존되지만 운영체제 권한, admin access, 데이터 접근, 실제 영향이나 성공한 실행을 증명하지 않는다.
+  WALK-003도 실제 승인 거부나 우회가 아니라 authorization-failure hypothesis다.
+- 영향: CHAIN-005는 coverage hypothesis로만 사용할 수 있고 approval denial·bypass, Grant, Permit, dispatch,
+  Worker outcome, Replay 성공, Finding 또는 Report의 근거가 될 수 없다.
+- 해소 조건: validation 상태를 올리려면 `VAL-001`에서 exact Claim, fresh independent Replay, 승인 경계의
+  negative control과 authenticated request·decision·outcome evidence를 같은 Campaign·WALK-003 lineage에
+  결박한다.
+
 ## CHAIN-004 Target-declared tenant·data Surface 경계
 
 - 상태: Cross-tenant Retrieval → Data Exposure의 mode-neutral ordered coverage 계약은 구현됐고 실제

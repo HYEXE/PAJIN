@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `CHAIN-005` — MCP Authorization Failure에서 Privileged Action까지의 mode-neutral attack chain 계약
+- 현재 우선순위: Phase 8 `VAL-001` — mode-neutral Claim Replay 계약과 선행 authority 경계 조사
 
 ## 제품 목표
 
@@ -696,7 +696,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `CHAIN-002` File Upload → RAG Injection → Tool Abuse
 - [x] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
 - [x] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
-- [ ] `CHAIN-005` MCP Authorization Failure → Privileged Action
+- [x] `CHAIN-005` MCP Authorization Failure → Privileged Action
 - [ ] `VAL-001` Mode-neutral Claim Replay
 - [ ] `VAL-002` ValidationDepthPolicy
 - [ ] `VAL-003` Profile별 Assurance Floor
@@ -726,9 +726,17 @@ execution·Claim Replay·Finding confirmation은 모두 false다.
 response content는 보존하지 않는다. 같은 Campaign Target·exact route의 두 Surface를 sealed
 `SurfaceSnapshotAuthority`에서 다시 검증해 2개 ordered stage와 1개 `enables` edge로 결박한다. 결과는
 `hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 cross-tenant access·data exposure·Capability·
-execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-005`는 기존 MCP authorization
-hypothesis와 privileged action을 나타내는 typed authority를 먼저 조사하고, Tool 이름·설명이나 synthetic
-Finding으로 실행 권위를 추론하지 않는다.
+execution·Claim Replay·Finding confirmation은 모두 false다.
+
+`CHAIN-005`는 기존 sealed WALK-003 MCP authorization hypothesis와 그 안의 exact
+`CapabilityDefinition`을 다시 검증해 Authorization Failure → Privileged Action을 2개 ordered stage와
+1개 `enables` edge로 결박한다. privileged action은 `approvalRequired=true`이고 exact
+`independent-user-approval` control 아래 등록된 MCP Capability로만 한정한다. risk tier·side effect·Tool
+이름·설명·argument·synthetic Finding으로 권위를 추론하지 않는다. 결과는
+`hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이며 authorization failure confirmation·approval·
+Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `VAL-001`은 기존 Claim·
+Replay authority를 조사해 mode-neutral chain이 coverage hypothesis를 벗어나는 데 필요한 최소 fresh evidence
+계약을 먼저 정의한다.
 
 ### Phase 9 — Product UX·Operations
 

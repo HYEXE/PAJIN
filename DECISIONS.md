@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0146: Bind MCP Privilege Chains to Approval-gated Capabilities](docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md)
 - [ADR-0145: Bind Tenant Data Chains to Explicit Retrieval Authority](docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md)
 - [ADR-0144: Bind URL Tool Chains to Explicit Surface Authority](docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md)
 - [ADR-0143: Bind Walking Lineage to an Ordered Mode-neutral Chain](docs/adr/0143-bind-walking-lineage-to-mode-neutral-chain.md)
