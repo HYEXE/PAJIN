@@ -3,6 +3,25 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## CHAIN-004 Target-declared tenant·data Surface 경계
+
+- 상태: Cross-tenant Retrieval → Data Exposure의 mode-neutral ordered coverage 계약은 구현됐고 실제
+  selector control·cross-tenant access·retrieval success·data exposure·validation은 닫힘
+- 현재 보장: exact version-1 `x-pajin-tenant-retrieval`과 `x-pajin-data-response`만 typed Surface로
+  admission한다. tenant retrieval은 같은 operation의 exact `http-rag/retrieval`을 요구하고, data response는
+  code-owned data class와 하나 이상의 response content type을 요구한다. 같은 Campaign Target·exact route의
+  두 Surface를 sealed Recon·Surface Snapshot에서 다시 검증한다. generic RAG·route, cross-route, 다른
+  publication, 변조 projection, forged digest·boolean marker 치환은 fail closed한다. Capability·execution·
+  Claim Replay·Finding confirmation은 모두 false다.
+- 제한: OpenAPI 확장은 Target이 제공한 선언이다. header·query·body selector 이름은 실제 parameter·schema
+  reference에 해석하지 않고, path selector만 exact placeholder 존재를 추가 확인한다. response status code를
+  결박하지 않으며 실제 response body나 tenant 값을 관찰·보존하지 않는다.
+- 영향: CHAIN-004는 coverage hypothesis로만 사용할 수 있고 tenant isolation failure, 데이터 노출, Finding,
+  Report, Permit, dispatch 또는 Replay 성공의 근거가 될 수 없다.
+- 해소 조건: validation 상태를 올리려면 VAL-001 이후 exact Claim, 독립 fresh Replay, tenant selector control,
+  authenticated request·response evidence와 negative control을 같은 Campaign·Snapshot·Surface lineage에
+  결박한다.
+
 ## CHAIN-003 Surface-only URL Tool·Internal API 경계
 
 - 상태: Prompt Injection → URL Tool Control → Internal API의 mode-neutral ordered coverage 계약은

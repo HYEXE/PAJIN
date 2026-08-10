@@ -397,6 +397,16 @@ influence, reachability, execution, API access, Replay, or Finding. See the
 [CHAIN-003 contract](docs/orchestration/CHAIN-003-prompt-url-tool-internal-api.md) and
 [ADR-0144](docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md).
 
+CHAIN-004 adds a separately selected cumulative OpenAPI adapter for explicit tenant-selectable
+RAG retrieval and declared data-bearing responses. Only exact version-1
+`x-pajin-tenant-retrieval` and `x-pajin-data-response` declarations qualify. The compiler
+re-verifies the sealed Surface Snapshot and binds the two exact Surfaces only when they share one
+Campaign target and one exact route. It retains no tenant value, query, response example, or
+response body and proves no cross-tenant access, retrieval success, data exposure, execution,
+Replay, or Finding. See the
+[CHAIN-004 contract](docs/orchestration/CHAIN-004-cross-tenant-retrieval-data-exposure.md) and
+[ADR-0145](docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

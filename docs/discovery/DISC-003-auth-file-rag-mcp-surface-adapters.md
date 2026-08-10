@@ -1,12 +1,12 @@
 # DISC-003: Auth, File Upload, RAG, and MCP Surface Adapters
 
-- Status: implemented (`DISC-003A` through `DISC-003D`)
-- Date: 2026-07-29
+- Status: implemented (`DISC-003A` through `DISC-003E`)
+- Date: 2026-07-29 (updated 2026-08-10)
 - Prerequisites: DISC-001, DISC-002, trusted Surface admission
 
 ## Purpose
 
-Extend versioned Discovery across the authentication, file-upload, RAG, and MCP trust
+Extend versioned Discovery across the authentication, file-upload, RAG, MCP, and tenant/data trust
 boundaries without allowing target-controlled descriptions to become execution authority. Each
 sub-slice must introduce its own bounded locator, exact adapter identity, negative authority
 tests, compatibility boundary, and rollback path.
@@ -107,11 +107,31 @@ contents, and prompt values are not retained or performed.
 at most 257 Surfaces. `RegisteredMCPBoundaryReconPlanner` supplies the argument-free request to the
 existing single-call sealed Recon/admission/projection pipeline.
 
+## DISC-003E: Explicit tenant retrieval and data response boundary
+
+`HTTPAndOpenAPITenantDataSurfaceAdapter` is a separately selected cumulative exact-version
+interpreter. It preserves HTTP, authentication, file-upload, and RAG Surfaces without changing the
+DISC-003C adapter identity, then reads only operation-level version-1
+`x-pajin-tenant-retrieval` and `x-pajin-data-response` objects.
+
+The non-executable `http-tenant-retrieval` locator nests one exact co-located
+`http-rag/retrieval` locator and retains only a selector location and field name. It never retains a
+tenant value or retrieval query. A path selector must match an exact route placeholder; header,
+query, and body selector names remain explicit Target metadata and are not inferred from ordinary
+parameters or schemas.
+
+The non-executable `http-data-response` locator nests the exact route and retains a sorted unique
+subset of six code-owned data classes. The route must declare at least one response content type,
+but no response status, example, schema content, or body is retained. Names, descriptions, schemas,
+examples, tenant-like strings, and synthetic Findings cannot imply either locator. Unknown fields,
+unsupported versions, arbitrary data classes, missing RAG retrieval declarations, malformed path
+selectors, and declaration overflow fail closed.
+
 ## Authority and admission
 
 The adapter remains bound to the exact DISC-001 ID, version, implementation digest, stable
 context, and `HTTPGetTool` contract. It requires the same sealed Worker result and host-trusted
-HTTP proxy receipt as DISC-002. Every authentication, file-upload, and RAG locator nests a
+HTTP proxy receipt as DISC-002. Every authentication, file-upload, RAG, and tenant/data locator nests a
 previously parsed route, so trusted admission reuses the existing Campaign method, allow, deny,
 wildcard-template, and possible-deny-overlap checks before publication.
 
@@ -149,6 +169,11 @@ does not alter the cumulative HTTP/OpenAPI adapter chain.
   prompt-value retention;
 - malformed, duplicate, unsorted, contradictory, overflow, and forged-identity rejection; and
 - exact Registry binding plus sealed single-Recon-wave admission/projection integration.
+- exact tenant selector and bounded data-class declarations with deterministic ordering;
+- no inference from route, parameter, description, schema, example, or tenant-like value;
+- generic RAG, missing declaration, arbitrary data class, path mismatch, runtime-field, and
+  publication substitution rejection; and
+- separate cumulative Registry identity plus sealed Snapshot-bound CHAIN-004 integration.
 
 ## Orchestration boundary
 
@@ -159,14 +184,16 @@ multi-adapter scheduling and bounded multi-wave orchestration.
 ## Compatibility and rollback
 
 The existing DISC-002 and DISC-003A/B/C adapters and their exact references remain unchanged. The
-RAG adapter remains a separate cumulative exact-version definition. MCP boundary discovery uses a
-separate registered Tool and exact adapter definition that must be selected explicitly.
+RAG adapter and tenant/data adapter remain separate cumulative exact-version definitions. MCP
+boundary discovery uses a separate registered Tool and exact adapter definition that must be
+selected explicitly.
 Existing `http-endpoint`, `http-route`, `http-authentication`, `http-file-upload`, and
 `tool-interface` artifacts keep their wire shape and identity.
 
-Rollback removes the MCP boundary adapter reference and discovery Tool registration without
-changing registered MCP invocation or the HTTP/OpenAPI chain. Already sealed authentication,
-file-upload, RAG, and MCP Surfaces remain readable and must not be rewritten.
+Rollback removes the tenant/data adapter and MCP boundary adapter reference and discovery Tool
+registration without changing registered MCP invocation or the preceding HTTP/OpenAPI chain.
+Already sealed authentication, file-upload, RAG, tenant/data, and MCP Surfaces remain readable and
+must not be rewritten.
 
 ## Related documents
 
@@ -176,5 +203,6 @@ file-upload, RAG, and MCP Surfaces remain readable and must not be rewritten.
 - [ADR-0062: Bounded OpenAPI File Upload Boundary Discovery](../adr/0062-bounded-openapi-file-upload-boundary-discovery.md)
 - [ADR-0063: Bounded Explicit RAG Boundary Discovery](../adr/0063-bounded-explicit-rag-boundary-discovery.md)
 - [ADR-0064: Bounded Registered MCP Boundary Discovery](../adr/0064-bounded-registered-mcp-boundary-discovery.md)
+- [ADR-0145: Bind Tenant Data Chains to Explicit Retrieval Authority](../adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md)
 - [ORCH-001: Surface Snapshot to Plan and Task Binding](../orchestration/ORCH-001-surface-snapshot-plan-task-binding.md)
 - [ARCH-001: PAJIN Architecture v2](../rfc/0001-pajin-architecture-v2.md)

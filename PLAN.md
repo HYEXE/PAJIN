@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `CHAIN-004` — Cross-tenant Retrieval에서 Data Exposure까지의 mode-neutral attack chain 계약
+- 현재 우선순위: Phase 8 `CHAIN-005` — MCP Authorization Failure에서 Privileged Action까지의 mode-neutral attack chain 계약
 
 ## 제품 목표
 
@@ -695,7 +695,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `CHAIN-001` Auth Bypass → AI Admin Surface
 - [x] `CHAIN-002` File Upload → RAG Injection → Tool Abuse
 - [x] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
-- [ ] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
+- [x] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
 - [ ] `CHAIN-005` MCP Authorization Failure → Privileged Action
 - [ ] `VAL-001` Mode-neutral Claim Replay
 - [ ] `VAL-002` ValidationDepthPolicy
@@ -718,9 +718,17 @@ boolean `x-pajin-internal-api: true`만 `http-internal-api`로 admission한다. 
 prompt와 URL Tool, 같은 Campaign의 명시적 Internal API를 두 sealed Surface Snapshot에서 다시 검증해
 3개 ordered stage와 2개 `enables` edge로 결박한다. URL 값·설명·raw schema·private address·route 이름은
 권위로 사용하지 않는다. 결과는 `hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 Capability·
-execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-004`는 cross-tenant와 data
-exposure를 나타내는 기존 typed authority가 실제로 있는지 먼저 조사하고, 문자열·tenant 이름·응답 설명으로
-의미를 추론하지 않는다.
+execution·Claim Replay·Finding confirmation은 모두 false다.
+
+`CHAIN-004`는 OpenAPI operation의 exact version-1 `x-pajin-tenant-retrieval`과
+`x-pajin-data-response` 선언만 별도 cumulative adapter에서 typed Surface로 admission한다. 기존 exact
+`http-rag/retrieval`과 결박된 tenant selector shape와 code-owned data class만 보존하고 tenant 값·query·
+response content는 보존하지 않는다. 같은 Campaign Target·exact route의 두 Surface를 sealed
+`SurfaceSnapshotAuthority`에서 다시 검증해 2개 ordered stage와 1개 `enables` edge로 결박한다. 결과는
+`hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 cross-tenant access·data exposure·Capability·
+execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `CHAIN-005`는 기존 MCP authorization
+hypothesis와 privileged action을 나타내는 typed authority를 먼저 조사하고, Tool 이름·설명이나 synthetic
+Finding으로 실행 권위를 추론하지 않는다.
 
 ### Phase 9 — Product UX·Operations
 
