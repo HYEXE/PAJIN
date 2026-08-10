@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `1c03188d10e4bc60de9f6449201f83c1e26b707e`
-- 현재 코드 체크포인트: Phase 9 `UX-001B2` Control Plane Campaign draft 검증 조회 완료
+- 현재 기능 HEAD: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
+- 현재 코드 체크포인트: Phase 9 `UX-001B3` Campaign draft 기존 compiler handoff 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -31,9 +31,10 @@
 - UX-001A 구현 커밋: `6312215a8860e4a451de1af4d9d1f41d745f5817`
 - UX-001B1 구현 커밋: `1c5f68e1c84c62a2099add5fe825937688ee7b7d`
 - UX-001B2 구현 커밋: `1c03188d10e4bc60de9f6449201f83c1e26b707e`
-- 현재 구현 체크포인트: configured root·exact digest 기반 operator-only redacted draft 조회
-- 다음 로드맵: Phase 9 `UX-001B3` 원 typed source·별도 approval 기반 기존 compiler handoff
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 28 commits ahead
+- UX-001B3 구현 커밋: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
+- 현재 구현 체크포인트: verified original typed source·기존 authority 기반 Campaign value compilation
+- 다음 로드맵: Phase 9 `Attack Surface·Graph·Wave Timeline UI`
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 30 commits ahead
 
 ## 재개 전 확인
 
@@ -51,13 +52,22 @@ typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
 `653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
 `d5bd2e4`, VAL-004C는 `56f5dcf`, UX-001A는 `6312215`, UX-001B1은 `1c5f68e`, UX-001B2는
-`1c03188`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 28 commits
+`1c03188`, UX-001B3는 `f5f96ef`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
+`origin/main@0ed5ac7`보다 30 commits
 ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
+
+`UX-001B3`는 operator-only `POST /v1/campaign-drafts/{draft_digest}/compile`에서 B2 exact reader로
+complete draft와 원 typed source를 다시 검증한다. Bug Bounty는 요청의 별도 기존
+`BugBountyScopeApproval`, CTF는 source 내 기존 authorization을 server current time에 각 기존 compiler로
+전달한다. caller-controlled evaluation time, source kind·digest·source 치환, stale·foreign approval과
+inactive authorization은 fail closed한다. 응답은 canonical Campaign과 digest를 반환하지만
+Campaign persistence·Capability·Permit·Run submission·execution authority는 모두 strict false이며
+compiler `write_campaign`, RunStore, managed Artifact, Graph를 호출하지 않는다.
 
 `UX-001B2`는 `PAJIN_CP_CAMPAIGN_DRAFT_ROOT`와 exact lowercase SHA-256 digest로만 B1 artifact를 찾는
 operator-only `GET /v1/campaign-drafts/{draft_digest}`를 추가했다. API는 B1 verified reader로 complete
@@ -257,12 +267,15 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `tests/test_campaign_builder.py`
 - `tests/test_campaign_builder_artifacts.py`
 - `tests/test_control_plane_campaign_drafts.py`
+- `tests/test_control_plane_campaign_compilation.py`
 - `docs/orchestration/UX-001A-campaign-profile-scope-builder-draft.md`
 - `docs/orchestration/UX-001B1-local-campaign-draft-artifact.md`
 - `docs/orchestration/UX-001B2-control-plane-campaign-draft-read.md`
+- `docs/orchestration/UX-001B3-campaign-draft-compiler-handoff.md`
 - `docs/adr/0153-build-campaign-drafts-without-compilation-authority.md`
 - `docs/adr/0154-store-campaign-drafts-outside-run-authority.md`
 - `docs/adr/0155-expose-campaign-drafts-as-redacted-operator-views.md`
+- `docs/adr/0156-handoff-verified-campaign-drafts-to-existing-compilers.md`
 - `src/pajin/graph/approval.py`
 - `src/pajin/graph/approved_cleanup.py`
 - `src/pajin/graph/approval_batch.py`
@@ -332,6 +345,24 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md`
 
 ## 현재 검증
+
+### 2026-08-10 UX-001B3 Campaign draft 기존 compiler handoff
+
+- 구현 커밋: `f5f96ef`
+- Bug Bounty·CTF 성공, operator-only 역할 분리, missing·foreign·stale approval, expired CTF authorization,
+  caller evaluation time, source kind·digest·source 치환, invalid compiler output·server clock, Campaign digest와
+  strict authority marker 위조, Campaign 미저장·Run 미생성을 포함한 신규 테스트: 17 passed
+- B1/B2·Bug Bounty·CTF·문서 집중 회귀: 83 passed, 5 skipped. Windows skip은 developer mode 부재에 따른
+  symlink `WinError 1314`이며 이번 compiler handoff 경로 실패가 아니다.
+- 저장소 전체 Ruff `src tests containers`: 통과
+- Linux 대상 strict mypy `--no-incremental --platform linux`: 271 source files 통과
+- Windows 네이티브 mypy는 기존 POSIX 전용 `O_NOFOLLOW`·`O_DIRECTORY`·`geteuid`·`fchmod`·`fcntl`
+  33건만 보고했으며 변경 파일 오류는 없다.
+- `tests/test_documentation.py`, `git diff --check`, staged 파일·전체 staged diff·credential-like 문자열 검토:
+  통과. 탐지된 token 문자열은 신규 테스트의 고정 자격증명뿐이다.
+- 전체 `python -m pytest -q -x`: 677 passed, 12 skipped 뒤 기존 Artifact admission 진단 문자열 불일치
+  1건에서 중단. 기대값 `not admission-bound`와 실제 `staged source Artifact failed managed admission`의
+  차이이며 UX-001B3 변경 파일 밖이다.
 
 ### 2026-08-10 UX-001B2 Control Plane Campaign draft 검증 조회
 
@@ -714,21 +745,20 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 ## 현재 상태와 다음 한 단계
 
 Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A draft는 `6312215`, UX-001B1 local artifact·CLI는
-`1c5f68e`, UX-001B2 Control Plane verified read는 `1c03188`에 보존됐다.
+`1c5f68e`, UX-001B2 Control Plane verified read는 `1c03188`, UX-001B3 existing compiler handoff는
+`f5f96ef`에 보존됐다. Campaign·Profile·Scope Builder 제품 단위는 완료됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `UX-001B3`다. B2 exact locator 규칙과 B1 verifier로 exact draft·original typed source를
-다시 검증한 뒤 Bug Bounty는 별도 scope-digest approval, CTF는 독립적인 authorization-window evaluation을
-각 기존 compiler에 명시적으로 전달하는 operator handoff를 추가한다. preview·draft digest를 approval이나
-compiler 입력으로 대체하지 않고, stale·foreign·missing approval과 source 치환은 compiler 호출 전에 fail
-closed해야 한다. Campaign 생성 이외의 Capability·Permit·Run admission이나 새 compiler·approval authority는
-추가하지 않는다.
+다음 제품 단위는 `Attack Surface·Graph·Wave Timeline UI`다. 첫 작업은 현재 web console의 읽기 모델과
+기존 Surface Snapshot·Graph·ORCH wave authority 및 Control Plane API를 대조해, 새 execution·Graph authority나
+중복 store 없이 표시할 수 있는 가장 작은 read-only 수직 슬라이스와 완료 기준을 ADR·계약으로 고정하는 것이다.
 
 ## 알려진 경계
 
-- UX-001B2는 exact digest 단건 redacted 조회만 지원한다. listing·편집·삭제·retention·compiler handoff,
-  Pentest·AI Assessment·CTF Suite source는 없으며 조회 결과는 approval·authorization 충족이나 실행 준비를
-  뜻하지 않는다.
+- UX-001B3는 exact digest 단건 compilation만 지원한다. draft listing·편집·삭제·retention, Campaign
+  persistence·durable compilation audit, Pentest·AI Assessment·CTF Suite source는 없고 기존 Bug Bounty
+  approval wire의 signed provenance를 추가하지 않는다. 반환 Campaign은 managed Artifact·Graph·Run evidence나
+  Capability·Permit·execution authority가 아니다.
 - CHAIN-001은 DISC-003C의 explicit `x-pajin-rag/index-management`만 AI admin Surface로 해석한다. 실제
   authentication bypass나 admin access를 관찰하지 않으며 UI·MCP·provider admin은 미지원이다.
 - CHAIN-002는 WALK-003가 봉인할 때 검증해 포함한 WALK-002 nested root·artifact authority를 신뢰하며
