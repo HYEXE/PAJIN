@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
-- 현재 코드 체크포인트: Phase 8 `VAL-004B` 완료 후 Replay 격리·HTTP Surface 등록 정합성 안정화
+- 현재 기능 HEAD: `56f5dcf2301b34d2cf8aa039da3809035515e4d7`
+- 현재 코드 체크포인트: Phase 8 `VAL-004` mode-neutral repeated Replay·Control evidence 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -27,9 +27,10 @@
 - VAL-004A 구현 커밋: `dfbd967cd4d88f866d8e7692a4c398b692fe69a8`
 - VAL-004B 구현 커밋: `abfb167236831bfa113f41f97de6227b16a524cb`
 - Replay 격리·HTTP Surface 등록 정합성 수정 커밋: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
-- 현재 구현 체크포인트: VAL-001 stateless WALK Replay·세 Control 기반 single·controlled Profile floor 충족 평가와 VAL-002 session policy 교차검증
-- 다음 로드맵: Phase 8 `VAL-004C` VAL-001 Claim용 repeated fresh Replay evidence 결박
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 20 commits ahead
+- VAL-004C 구현 커밋: `56f5dcf2301b34d2cf8aa039da3809035515e4d7`
+- 현재 구현 체크포인트: 두 exact WALK Replay·세 stateless Control 기반 repeated-controlled Profile floor 충족 평가
+- 다음 로드맵: Phase 9 Campaign·Profile·Scope Builder
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 22 commits ahead
 
 ## 재개 전 확인
 
@@ -46,8 +47,8 @@ CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수�
 typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
 `653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
-`d5bd2e4`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 20 commits
-ahead이고 working tree는 clean이어야 한다.
+`d5bd2e4`, VAL-004C는 `56f5dcf`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
+`origin/main@0ed5ac7`보다 22 commits ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -117,8 +118,9 @@ Run·request·Grant·Permit·dispatch·Worker·evidence·Replay publication 좌�
 `VAL-002`는 기존 validity Claim Replay·Validation Control·KISA repetition 경계를 실행하지 않고 세
 `ValidationDepthRequirement`로 정규화한다. `single-validity-replay`, `controlled-validity-replay`,
 `repeated-controlled-validity-replay` 순서와 exact Claim/Control 요구, 최소 1/1/2 Replay 반복, 최대 20회,
-fresh session·Capability·request·evidence lineage를 content-addressed catalog에 고정한다. v1은 validity만
-지원하며 Profile floor·evidence evaluation·execution·confirmation·Finding authority는 모두 false다.
+exact ordered `fresh-session`·`stateless` 격리 정책, fresh Capability·request·evidence lineage를
+content-addressed catalog에 고정한다. v1은 validity만 지원하며 Profile floor·evidence evaluation·execution·
+confirmation·Finding authority는 모두 false다.
 
 `VAL-003`은 exact PROF-001 catalog와 VAL-002 policy를 다시 내장해 complete registered Profile·Profile
 digest를 complete registered depth requirement·ordinal·digest에 결박한다. `ai-assessment`는
@@ -145,8 +147,16 @@ benign text로 바뀐다. 각 Control은 기존 independent approval·`maxCalls=
 seal을 통과해야 하고 exact Plan receipt가 dispatch claim 전에 봉인돼야 한다. source·Replay·세 Control의
 Run/root·execution·request·Grant·Permit·approval·Worker·Run-qualified evidence 5세트는 모두 달라야 하며,
 session 필드를 만들지 않고 `sessionPolicy=stateless`를 고정한다. VAL-001의 Replay가 1회이므로 CTF single,
-Bug Hunt·Pentest controlled floor만 충족하고 AI Assessment repeated-controlled floor는 fail closed한다.
-Profile 선택·Campaign 변경·추가 실행·confirmation·Finding 권위는 모두 false다.
+Bug Hunt·Pentest controlled floor까지만 이 wire에서 충족한다. Profile 선택·Campaign 변경·추가 실행·
+confirmation·Finding 권위는 모두 false다.
+
+`VAL-004C`는 VAL-004B wire를 바꾸지 않고 기존 VAL-001 primary Replay와 같은 exact WALK-005B1 Plan으로
+완료된 두 번째 WALK-005B2 authority를 별도 repeated authority에 결박한다. 두 Replay는 각각 독립 approval·
+Grant·Permit·dispatch·Worker·execution/publication Run을 가져야 한다. source·두 Replay·세 Control의
+Run/root·execution·request·Grant·Permit·dispatch·approval·Worker·Run-qualified evidence 6세트와 두 Replay
+publication은 pairwise-disjoint해야 한다. 첫 Replay는 VAL-004B Control anchor로 고정된다. 이 evidence는
+AI Assessment repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·추가 execution·Replay·
+confirmation·Finding 권위는 모두 false다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
 operator approval, 기존 consumed `ActionPermit`, non-reusable consumption receipt를 원자적으로
@@ -265,6 +275,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/VAL-003-profile-assurance-floor.md`
 - `docs/orchestration/VAL-004A-kisa-profile-validation-evidence.md`
 - `docs/orchestration/VAL-004B-mode-neutral-walking-profile-evidence.md`
+- `docs/orchestration/VAL-004C-mode-neutral-repeated-walking-profile-evidence.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -283,8 +294,27 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md`
 - `docs/adr/0150-evaluate-kisa-profile-floors-from-sealed-evidence.md`
 - `docs/adr/0151-bind-stateless-walking-controls-to-val001.md`
+- `docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md`
 
 ## 현재 검증
+
+### 2026-08-10 VAL-004C mode-neutral repeated WALK Profile Validation Evidence 검증
+
+- 구현 커밋: `56f5dcf`
+- all CampaignMode에서 같은 exact WALK-005B1 Plan과 서로 다른 approval·Grant·Permit·dispatch·Worker·
+  execution/publication Run을 가진 두 WALK-005B2 Replay를 검증하고 AI Assessment
+  `repeated-controlled-validity-replay` floor를 충족했다.
+- primary Replay 재사용, foreign Chain Replay, predecessor 순서 치환, Contract·authority boolean 권위 상승,
+  Replay publication·6-way request lineage 중복을 fail closed하는 집중 테스트: 4 passed
+- WALK·VAL-002/003·KISA VAL-004A·VAL-004B 인접 회귀: 167 passed
+- Ruff 전체 `src tests containers`: 통과
+- 변경 Python 포맷 검사: 통과
+- Linux 대상 strict mypy: 269 source files 통과
+- 문서 정책과 링크 검사: 2 passed
+- staged diff check와 credential pattern scan: 통과
+- 전체 `python -m pytest -q -x`: 634 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+  불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
+  `staged source Artifact failed managed admission`의 차이이며 VAL-004C 변경 파일 밖이다.
 
 ### 2026-08-10 Replay 격리·HTTP Surface 등록 정합성 수정 검증
 
@@ -612,15 +642,14 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-VAL-004B mode-neutral WALK Profile Validation Evidence는 `abfb167`, 후속 정합성 수정은 `d5bd2e4`에
-보존됐다.
+VAL-004B mode-neutral WALK Profile Validation Evidence는 `abfb167`, 후속 정합성 수정은 `d5bd2e4`,
+VAL-004C repeated WALK Profile Validation Evidence는 `56f5dcf`에 보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `VAL-004C`다. VAL-001에는 exact fresh WALK-005B2 Replay가 1회만 있어 현재 Control
-authority를 결합해도 repeated-controlled floor가 되지 않는다. 첫 작업은 기존 WALK-005B1 Plan이 한 Claim에
-두 번째 fresh Replay를 안전하게 표현할 수 있는지, 아니면 별도 N-run Plan/authority가 필요한지 계약과 실제
-freshness 좌표를 대조하는 것이다. Control 실행을 Replay repetition으로 세지 않고 source·기존 Replay·추가
-Replay·세 Control의 Run/request/Grant/Permit/approval/Worker/evidence 독립성을 fail closed해야 한다.
+다음 수직 슬라이스는 Phase 9 `Campaign·Profile·Scope Builder`다. 첫 작업은 현재 `CampaignManifest`,
+PROF-001 `RegisteredCampaignProfile`, Bug Bounty Scope·CTF Target 입력과 기존 CLI/Control Plane compiler를
+대조해 builder가 표현할 최소 draft 계약을 정하는 것이다. Builder는 Profile 선택이나 Scope 편집을 실행·
+Capability·Permit 권위로 바꾸지 않고, 기존 compiler와 policy gate에 전달할 비실행 입력만 만들어야 한다.
 
 ## 알려진 경계
 
@@ -645,10 +674,10 @@ Replay·세 Control의 Run/request/Grant/Permit/approval/Worker/evidence 독립�
 - VAL-002는 validity-only 요구 catalog이고 exact ordered `fresh-session`·`stateless` 격리 정책만
   허용하며 `preserve-scenario-session`은 거부한다. VAL-003은 exact Profile별 최소 registered depth만
   결박한다.
-  VAL-004A는 KISA M03·M06·A04의 세 depth, VAL-004B는 VAL-001 stateless WALK MCP의 single·controlled
-  evidence만 실제 충족 판정에 연결한다. 두 adapter의 Claim·request·Tool·session 의미는 혼합하지 않는다.
-  WALK repeated-controlled, impact·severity, Profile 선택, Campaign 변경, execution·confirmation·Finding
-  authority는 여전히 증명하지 않는다.
+  VAL-004A는 KISA M03·M06·A04의 세 depth, VAL-004B/004C는 VAL-001 stateless WALK MCP의 single·controlled·
+  repeated-controlled evidence를 실제 충족 판정에 연결한다. 두 adapter의 Claim·request·Tool·session 의미는
+  혼합하지 않는다. impact·severity, Profile 선택, Campaign 변경, execution·confirmation·Finding authority는
+  여전히 증명하지 않는다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.
