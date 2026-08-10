@@ -23,11 +23,13 @@ DISCOVERY_ADAPTER_API_VERSION: Literal["pajin.dev/discovery-adapter/v1alpha1"] =
 
 DiscoverySurfaceKind = Literal[
     "http-authentication",
+    "http-data-response",
     "http-endpoint",
     "http-file-upload",
     "http-internal-api",
     "http-rag",
     "http-route",
+    "http-tenant-retrieval",
     "mcp-prompt",
     "mcp-resource",
     "mcp-resource-template",

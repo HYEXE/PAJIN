@@ -42,6 +42,14 @@ _MCPServerIdentifier = Annotated[
 ]
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _Confidence = Annotated[float, Field(ge=0, le=1, allow_inf_nan=False)]
+HTTPDataClass = Literal[
+    "authentication-data",
+    "customer-content",
+    "financial-record",
+    "personal-data",
+    "regulated-data",
+    "support-record",
+]
 
 _OBSERVATION_ID_PATTERN = r"^surface-observation_[a-f0-9]{64}$"
 _SURFACE_ID_PATTERN = r"^attack-surface_[a-f0-9]{64}$"
@@ -568,6 +576,60 @@ class HTTPRAGSurfaceLocator(StrictModel):
         return self
 
 
+class HTTPTenantSelector(StrictModel):
+    """One declared tenant selector shape without a tenant value."""
+
+    location: Literal["body", "header", "path", "query"]
+    name: str = Field(
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z][A-Za-z0-9_.-]{0,127}$",
+    )
+
+
+class HTTPTenantRetrievalSurfaceLocator(StrictModel):
+    """Non-executable tenant-selectable RAG retrieval boundary."""
+
+    kind: Literal["http-tenant-retrieval"] = "http-tenant-retrieval"
+    retrieval: HTTPRAGSurfaceLocator
+    tenant_selector: HTTPTenantSelector
+
+    @model_validator(mode="after")
+    def validate_tenant_retrieval_contract(self) -> HTTPTenantRetrievalSurfaceLocator:
+        if self.retrieval.boundary != "retrieval":
+            raise ValueError("Tenant retrieval requires a RAG retrieval boundary")
+        selector = self.tenant_selector
+        if (
+            selector.location == "path"
+            and f"{{{selector.name}}}" not in self.retrieval.route.path_template
+        ):
+            raise ValueError("Tenant path selector is absent from the bound route")
+        return self
+
+
+class HTTPDataResponseSurfaceLocator(StrictModel):
+    """Target-declared data-bearing response without response content."""
+
+    kind: Literal["http-data-response"] = "http-data-response"
+    route: HTTPRouteSurfaceLocator
+    data_classes: tuple[HTTPDataClass, ...] = Field(min_length=1, max_length=6)
+
+    @field_validator("data_classes", mode="before")
+    @classmethod
+    def require_data_class_sequence(cls, value: object) -> object:
+        if not isinstance(value, (list, tuple)):
+            raise ValueError("Data response classes must be a list or tuple")
+        return tuple(value)
+
+    @model_validator(mode="after")
+    def validate_data_response_contract(self) -> HTTPDataResponseSurfaceLocator:
+        if self.data_classes != tuple(sorted(set(self.data_classes))):
+            raise ValueError("Data response classes must be unique and sorted")
+        if not self.route.response_content_types:
+            raise ValueError("Data response requires a declared response content type")
+        return self
+
+
 class MCPServerSurfaceLocator(StrictModel):
     """Non-executable identity and advertised domains of one registered MCP server."""
 
@@ -719,8 +781,10 @@ SurfaceLocator = Annotated[
     | HTTPRouteSurfaceLocator
     | HTTPInternalAPISurfaceLocator
     | HTTPAuthenticationSurfaceLocator
+    | HTTPDataResponseSurfaceLocator
     | HTTPFileUploadSurfaceLocator
     | HTTPRAGSurfaceLocator
+    | HTTPTenantRetrievalSurfaceLocator
     | MCPPromptSurfaceLocator
     | MCPResourceSurfaceLocator
     | MCPResourceTemplateSurfaceLocator
@@ -1051,6 +1115,32 @@ def http_rag_surface_locator(
         boundary=boundary,
         corpus_ids=corpus_ids,
         index_ids=index_ids,
+    )
+
+
+def http_tenant_retrieval_surface_locator(
+    *,
+    retrieval: HTTPRAGSurfaceLocator,
+    tenant_selector: HTTPTenantSelector,
+) -> HTTPTenantRetrievalSurfaceLocator:
+    """Build one target-declared tenant-selectable retrieval boundary."""
+
+    return HTTPTenantRetrievalSurfaceLocator(
+        retrieval=retrieval.model_copy(deep=True),
+        tenant_selector=tenant_selector.model_copy(deep=True),
+    )
+
+
+def http_data_response_surface_locator(
+    *,
+    route: HTTPRouteSurfaceLocator,
+    data_classes: tuple[HTTPDataClass, ...],
+) -> HTTPDataResponseSurfaceLocator:
+    """Build one target-declared data-bearing response boundary."""
+
+    return HTTPDataResponseSurfaceLocator(
+        route=route.model_copy(deep=True),
+        data_classes=data_classes,
     )
 
 

@@ -175,6 +175,81 @@ class HTTPInternalAPIReconPlanner:
         )
 
 
+class HTTPTenantDataRetrievalReconPlanner:
+    """Plan one HTTP GET requiring explicit tenant retrieval and data response Surfaces."""
+
+    planner_id = "pajin.chain.tenant-data-recon.v1"
+
+    def __init__(
+        self,
+        *,
+        tool: HTTPGetTool,
+        target_id: str,
+        adapter_reference: DiscoveryAdapterReference,
+    ) -> None:
+        if not isinstance(tool, HTTPGetTool):
+            raise TypeError("tenant data Recon planner requires an HTTPGetTool")
+        if not isinstance(target_id, str) or not target_id:
+            raise ValueError("tenant data Recon planner requires a target ID")
+        try:
+            reference = DiscoveryAdapterReference.model_validate(
+                adapter_reference.model_dump(mode="python", by_alias=True)
+            )
+        except (AttributeError, ValueError) as exc:
+            raise ValueError(
+                "tenant data Recon planner requires an exact adapter reference"
+            ) from exc
+        expected_adapter_id = f"pajin.discovery.http-openapi-tenant-data:{tool.spec.tool_id}"
+        if reference.adapter_id != expected_adapter_id or reference.adapter_version != "1.0.0":
+            raise ValueError("tenant data Recon planner requires the tenant data adapter")
+        self._tool_id = tool.spec.tool_id
+        self._tool_version = tool.spec.version
+        self._target_id = target_id
+        self._adapter_reference = reference
+
+    def plan(self, campaign: CampaignManifest) -> ReconWavePlan:
+        targets = [target for target in campaign.spec.targets if target.id == self._target_id]
+        if len(targets) != 1:
+            raise ReconWaveError("tenant data Recon planner target is not declared exactly once")
+        target = targets[0]
+        required_surface_kinds: tuple[DiscoverySurfaceKind, ...] = (
+            "http-data-response",
+            "http-rag",
+            "http-tenant-retrieval",
+        )
+        request_digest = discovery_digest(
+            "pajin.discovery.recon-request/v1",
+            {
+                "campaign": campaign.metadata.name,
+                "targetId": target.id,
+                "target": target.endpoint,
+                "toolId": self._tool_id,
+                "toolVersion": self._tool_version,
+                "method": "GET",
+                "arguments": {},
+                "adapterReference": self._adapter_reference.model_dump(
+                    mode="json",
+                    by_alias=True,
+                ),
+                "requiredSurfaceKinds": list(required_surface_kinds),
+            },
+        )
+        return ReconWavePlan(
+            plannerId=self.planner_id,
+            targetId=target.id,
+            request=ToolRequest(
+                request_id=f"recon_{request_digest[:32]}",
+                agent_id=f"recon-specialist:{self.planner_id}",
+                tool_id=self._tool_id,
+                target=target.endpoint,
+                method="GET",
+                arguments={},
+            ),
+            adapterReference=self._adapter_reference.model_copy(deep=True),
+            requiredSurfaceKinds=required_surface_kinds,
+        )
+
+
 class HTTPFileUploadReconPlanner:
     """Plan one exact HTTP GET that must publish a file-upload Surface."""
 
