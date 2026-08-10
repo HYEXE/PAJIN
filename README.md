@@ -416,6 +416,14 @@ execution, Replay, or Finding authority. See the
 [CHAIN-005 contract](docs/orchestration/CHAIN-005-mcp-authorization-privileged-action.md) and
 [ADR-0146](docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md).
 
+VAL-001 binds CHAIN-002 or CHAIN-005 to an exact sealed WALK-005B2 validity Claim Replay only when
+both share the same WALK-003 Run, artifact, and hypothesis authority. It retains the fresh approval,
+Grant, Permit, dispatch, Worker, evidence, Claim, and Replay publication coordinates, but grants no
+additional execution, Replay, confirmation, or Finding authority. CHAIN-001/003/004 remain closed
+until they have their own executed Claim Replay predecessors. See the
+[VAL-001 contract](docs/orchestration/VAL-001-mode-neutral-claim-replay.md) and
+[ADR-0147](docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

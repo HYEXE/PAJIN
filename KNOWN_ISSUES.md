@@ -3,6 +3,24 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## VAL-001 CHAIN-002/005 전용 fresh validity Replay 경계
+
+- 상태: exact sealed WALK-005B2 validity Claim Replay를 CHAIN-002/005에 mode-neutral하게 결박하는 첫
+  수직 슬라이스는 구현됐고 추가 실행·재실행·Finding confirmation은 닫힘
+- 현재 보장: Chain과 Replay를 각 기존 verifier/loader로 다시 검증하고, 동일한 WALK-003 Run root·artifact·
+  hypothesis authority를 공유해야 한다. exact validity Atomic Claim과 fresh approval·Grant·Permit·dispatch·
+  Worker·evidence·Replay publication 좌표를 content-addressed binding으로 고정한다. stale/cross-lineage source,
+  mutated Replay artifact, Chain·Claim·digest·boolean marker 치환은 fail closed한다.
+- 제한: 지원 Chain은 CHAIN-002와 CHAIN-005뿐이다. CHAIN-001/003/004는 executed Candidate·Replay
+  predecessor가 없다. reproduced validity Claim은 impact·severity·negative control·counterfactual·N-run 결과나
+  full Finding confirmation을 증명하지 않는다. local WALK-005B2 freshness는 별도 off-host 조직의 암호학적
+  독립 실행 증명이 아니다.
+- 영향: VAL-001 authority는 완료된 Replay 증거 projection이며 재사용 가능한 ticket, approval, Grant, Permit,
+  dispatch, Validation Decision, Finding 또는 Report가 아니다.
+- 해소 조건: CHAIN-001/003/004는 각 exact Candidate·fresh Replay 경계를 별도로 구현한다. `VAL-002` 이후
+  Validation depth별 impact·severity·negative control·counterfactual·N-run 요구와 confirmation gate를
+  별도 authority로 결박한다.
+
 ## CHAIN-005 approval-gated Capability 의미 경계
 
 - 상태: MCP Authorization Failure → Privileged Action의 mode-neutral ordered coverage 계약은 구현됐고
@@ -17,9 +35,8 @@
   WALK-003도 실제 승인 거부나 우회가 아니라 authorization-failure hypothesis다.
 - 영향: CHAIN-005는 coverage hypothesis로만 사용할 수 있고 approval denial·bypass, Grant, Permit, dispatch,
   Worker outcome, Replay 성공, Finding 또는 Report의 근거가 될 수 없다.
-- 해소 조건: validation 상태를 올리려면 `VAL-001`에서 exact Claim, fresh independent Replay, 승인 경계의
-  negative control과 authenticated request·decision·outcome evidence를 같은 Campaign·WALK-003 lineage에
-  결박한다.
+- 후속 조건: `VAL-001`은 exact validity Claim과 fresh Replay 계보만 결박한다. Finding confirmation에는
+  `VAL-002` 이후 승인 경계 negative control과 impact·severity evidence가 추가로 필요하다.
 
 ## CHAIN-004 Target-declared tenant·data Surface 경계
 

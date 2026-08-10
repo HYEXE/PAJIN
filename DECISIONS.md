@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0147: Bind Mode-neutral Claim Replay to Sealed Walking Evidence](docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md)
 - [ADR-0146: Bind MCP Privilege Chains to Approval-gated Capabilities](docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md)
 - [ADR-0145: Bind Tenant Data Chains to Explicit Retrieval Authority](docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md)
 - [ADR-0144: Bind URL Tool Chains to Explicit Surface Authority](docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md)

@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `03d2c0a106794011c9f314668f6fa644a21f333a`
-- 현재 코드 체크포인트: Phase 8 `CHAIN-005` MCP Authorization Failure → Privileged Action coverage hypothesis 완료
+- 현재 기능 HEAD: `a9949bcb13faed629d82558a40245272bf92c9a2`
+- 현재 코드 체크포인트: Phase 8 `VAL-001` Mode-neutral Claim Replay 첫 수직 슬라이스 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -20,9 +20,10 @@
 - CHAIN-003 chain 구현 커밋: `886236d053131697a674d67179ff1941959b6aed`
 - CHAIN-004 구현 커밋: `b1dfa44fb2ffc2aa7750670ad506c10a6c863ce2`
 - CHAIN-005 구현 커밋: `03d2c0a106794011c9f314668f6fa644a21f333a`
-- 현재 구현 체크포인트: CHAIN-005 sealed WALK-003 authorization hypothesis·approval-gated Capability coverage chain
-- 다음 로드맵: Phase 8 `VAL-001` mode-neutral Claim Replay 계약과 선행 authority 경계 조사
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 7 commits ahead
+- VAL-001 구현 커밋: `a9949bcb13faed629d82558a40245272bf92c9a2`
+- 현재 구현 체크포인트: VAL-001 CHAIN-002/005 exact WALK-003-bound sealed validity Claim Replay projection
+- 다음 로드맵: Phase 8 `VAL-002` ValidationDepthPolicy와 증거 요구 수준 계약
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 9 commits ahead
 
 ## 재개 전 확인
 
@@ -37,8 +38,8 @@ git status --porcelain=v2 --branch
 문서보다 실제 저장소를 우선한다. SUP-007A는 `16fe8d1`, SUP-007B는 `2434e83`, SUP-008은 `ac021a8`,
 CHAIN-001은 `4c19ca8`, CHAIN-002는 `296c9a8`, 승인 배치 신뢰 경계 수정은 `c01814c`, CHAIN-003
 typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`, CHAIN-005는
-`03d2c0a`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 7 commits
-ahead이고 working tree는 clean이어야 한다.
+`03d2c0a`, VAL-001은 `a9949bc`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
+`origin/main@0ed5ac7`보다 9 commits ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
@@ -96,6 +97,14 @@ MCP server·tool Surface와 locator, invocation, Campaign lineage를 action dige
 effect·Tool 이름·설명·argument·synthetic Finding으로 권위를 추론하지 않는다. 결과는
 `hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이고 실제 authorization failure confirmation·
 approval·Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다.
+
+`VAL-001`은 기존 WALK-005B2 `WalkingMCPClaimReplayAuthority`를 새 실행 없이 재사용한다. CHAIN-002와
+CHAIN-005만 지원하며, Chain과 Replay가 exact 같은 WALK-003 Run root·artifact SHA-256·hypothesis를
+포함할 때만 validity `AtomicClaim`의 `REPRODUCED` 상태를 결박한다. Chain과 WALK-005B2 sealed
+publication을 각각 기존 verifier/loader로 다시 열고, Candidate·Claim·Plan·approval receipt·fresh
+Run·request·Grant·Permit·dispatch·Worker·evidence·Replay publication 좌표를 binding digest에 포함한다.
+결과는 `validity-reproduced-not-confirmed`이고 추가 execution·Replay·confirmation·Finding authority는
+모두 false다. executed Candidate·Replay predecessor가 없는 CHAIN-001/003/004는 지원하지 않는다.
 
 `APPROVAL-001A`는 기존 GRAPH-006 최종 transaction을 재사용해 deployment-authenticated 단일
 operator approval, 기존 consumed `ActionPermit`, non-reusable consumption receipt를 원자적으로
@@ -181,6 +190,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `src/pajin/control_plane/executors.py`
 - `src/pajin/workflow/engine_execution_gate.py`
 - `src/pajin/discovery/attack_chain.py`
+- `src/pajin/discovery/claim_replay.py`
 - `src/pajin/discovery/mcp_privilege_attack_chain.py`
 - `src/pajin/discovery/tenant_attack_chain.py`
 - `src/pajin/discovery/tenant_data.py`
@@ -204,6 +214,7 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/orchestration/CHAIN-003-prompt-url-tool-internal-api.md`
 - `docs/orchestration/CHAIN-004-cross-tenant-retrieval-data-exposure.md`
 - `docs/orchestration/CHAIN-005-mcp-authorization-privileged-action.md`
+- `docs/orchestration/VAL-001-mode-neutral-claim-replay.md`
 - `docs/adr/0134-consume-single-approval-with-action-permit.md`
 - `docs/adr/0135-atomically-bind-approval-and-cleanup-hold.md`
 - `docs/adr/0136-coordinate-bounded-async-approval-batches.md`
@@ -217,8 +228,24 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0144-bind-url-tool-chain-to-explicit-surface-authority.md`
 - `docs/adr/0145-bind-tenant-data-chain-to-explicit-retrieval-authority.md`
 - `docs/adr/0146-bind-mcp-privilege-chain-to-approval-gated-capability.md`
+- `docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md`
 
 ## 현재 검증
+
+### 2026-08-10 VAL-001 mode-neutral Claim Replay 검증
+
+- 구현 커밋: `a9949bc`
+- VAL-001 집중 mode-neutral·Chain/Claim/digest/marker 위조·cross-lineage·stale source·artifact mutation
+  회귀: 7 passed
+- CHAIN-001~005·WALK-003~005B2·공통 Replay/Validation 모델 결합 회귀: 145 passed
+- CHAIN-002/005 동일 WALK-003 결박과 CHAIN-001/003/004 미지원 경계: 통과
+- Ruff 전체 `src tests containers`: 통과
+- Linux 대상 Python 3.12 strict mypy: 264 source files 통과
+- 변경 Python 3개 format check와 public import smoke: 통과
+- changed-file credential pattern scan과 `git diff --cached --check`: 통과
+- 전체 `python -m pytest -q -x`: 634 passed, 11 skipped 뒤 기존 Artifact admission 오류 메시지
+  불일치 1건에서 중단. 기대값 `not admission-bound`와 실제 상위 오류
+  `staged source Artifact failed managed admission`의 차이이며 VAL-001 변경 파일 밖이다.
 
 ### 2026-08-10 CHAIN-005 MCP authorization·privileged action chain 검증
 
@@ -448,14 +475,14 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 ## 현재 상태와 다음 한 단계
 
-CHAIN-005 sealed WALK-003-bound chain authority는 `03d2c0a`에 보존됐다.
+VAL-001 mode-neutral Claim Replay 첫 수직 슬라이스는 `a9949bc`에 보존됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 수직 슬라이스는 `VAL-001` Mode-neutral Claim Replay다. 첫 작업은 기존 WALK-005B1/B2와 다른
-Claim·Replay authority가 CHAIN-001~005의 서로 다른 predecessor 유형을 어떤 exact 좌표로 수용하는지
-조사하는 것이다. 기존 Replay 권위를 일반화할 수 있으면 재사용하고, coverage chain만으로 Claim이나 Replay
-실행 권위를 만들지 않는다. mode-neutral 계약은 fresh Run·request·approval·Grant·Permit·dispatch·Worker와
-negative control을 어떤 최소 공통 predecessor로 결박할지 먼저 정의한다.
+다음 수직 슬라이스는 `VAL-002` ValidationDepthPolicy다. 첫 작업은 기존 ValidationDepth,
+Validation Control, Mode replay contract와 profile assurance 설정을 대조해 depth가 어떤 Claim 유형,
+negative control, counterfactual, 반복 횟수와 독립성 증거를 요구하는지 확인하는 것이다. VAL-001의 단일
+fresh validity reproduction만으로 더 높은 depth나 Finding confirmation을 추론하지 않고, 기존 KISA·Control
+Plane policy와 중복되지 않는 code-owned 최소 정책 계약을 먼저 정의한다.
 
 ## 알려진 경계
 
@@ -474,6 +501,9 @@ negative control을 어떤 최소 공통 predecessor로 결박할지 먼저 정�
 - CHAIN-005의 privileged는 exact WALK-003 `approvalRequired=true` Capability의 독립 승인 경계만 뜻한다.
   실제 승인 거부·우회, operating-system privilege, admin·data access, Grant·Permit·dispatch·Worker outcome·
   impact는 관찰하지 않는다.
+- VAL-001은 CHAIN-002/005의 validity Claim과 existing WALK-005B2 fresh Replay만 결박한다. impact·severity·
+  negative control·counterfactual·N-run·full confirmation은 포함하지 않으며 CHAIN-001/003/004에는 대응
+  Replay predecessor가 없다. local sealed freshness는 별도 off-host 조직의 cryptographic attestation이 아니다.
 - policy registry, writer token, approval verifier와 cleanup verifier는 process-local deployment TCB다.
   approval·Permit·receipt·cleanup hold 소비는 durable하지만 verifier code identity는 SQLite에 pin되지
   않는다.

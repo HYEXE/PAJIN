@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `VAL-001` — mode-neutral Claim Replay 계약과 선행 authority 경계 조사
+- 현재 우선순위: Phase 8 `VAL-002` — ValidationDepthPolicy와 증거 요구 수준 계약
 
 ## 제품 목표
 
@@ -697,7 +697,7 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `CHAIN-003` Prompt Injection → URL Tool Control → Internal API
 - [x] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
 - [x] `CHAIN-005` MCP Authorization Failure → Privileged Action
-- [ ] `VAL-001` Mode-neutral Claim Replay
+- [x] `VAL-001` Mode-neutral Claim Replay
 - [ ] `VAL-002` ValidationDepthPolicy
 - [ ] `VAL-003` Profile별 Assurance Floor
 - [ ] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
@@ -734,9 +734,12 @@ execution·Claim Replay·Finding confirmation은 모두 false다.
 `independent-user-approval` control 아래 등록된 MCP Capability로만 한정한다. risk tier·side effect·Tool
 이름·설명·argument·synthetic Finding으로 권위를 추론하지 않는다. 결과는
 `hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이며 authorization failure confirmation·approval·
-Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다. 다음 `VAL-001`은 기존 Claim·
-Replay authority를 조사해 mode-neutral chain이 coverage hypothesis를 벗어나는 데 필요한 최소 fresh evidence
-계약을 먼저 정의한다.
+Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다.
+
+`VAL-001`은 기존 sealed WALK-005B2 fresh validity Replay를 같은 exact WALK-003 publication의
+CHAIN-002/005에만 결박한다. Claim·approval·Grant·Permit·dispatch·Worker·evidence 좌표를 고정하고 결과를
+`validity-reproduced-not-confirmed`로 제한한다. 추가 실행·Replay·confirmation·Finding authority와
+CHAIN-001/003/004는 계속 닫힌다. 다음 `VAL-002`는 Validation depth별 추가 증거 요구를 정의한다.
 
 ### Phase 9 — Product UX·Operations
 
