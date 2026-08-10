@@ -44,8 +44,14 @@ from pajin.control_plane.graph_views import (
     CanonicalGraphViewNotFound,
     CanonicalGraphViewTooLarge,
     CanonicalGraphViewUnavailable,
+    HypothesisAttentionRankingIntegrityError,
+    HypothesisAttentionRankingNotFound,
+    HypothesisAttentionRankingTooLarge,
+    HypothesisAttentionRankingUnavailable,
     VerifiedCanonicalGraphView,
     VerifiedCanonicalGraphViewReader,
+    VerifiedHypothesisAttentionRankingReader,
+    VerifiedHypothesisAttentionRankingView,
 )
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
@@ -385,9 +391,10 @@ def register_graph_view_routes(
     app: FastAPI,
     *,
     reader: VerifiedCanonicalGraphViewReader,
+    ranking_reader: VerifiedHypothesisAttentionRankingReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
-    """Register the Operator-only current Canonical Graph projection."""
+    """Register Operator-only current Graph and Hypothesis review views."""
 
     @app.get(
         "/v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}",
@@ -419,6 +426,38 @@ def register_graph_view_routes(
             raise HTTPException(
                 status_code=409,
                 detail="Canonical Graph authority is not integrity-valid",
+            ) from exc
+
+    @app.get(
+        ("/v1/hypotheses/campaigns/{campaign}/snapshots/{snapshot_id}/attention-ranking"),
+        response_model=VerifiedHypothesisAttentionRankingView,
+    )
+    def get_verified_hypothesis_attention_ranking(
+        campaign: Annotated[
+            str,
+            FastAPIPath(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$"),
+        ],
+        snapshot_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^graph-snapshot_[a-f0-9]{64}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedHypothesisAttentionRankingView:
+        try:
+            return ranking_reader.read(campaign=campaign, snapshot_id=snapshot_id)
+        except HypothesisAttentionRankingUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except HypothesisAttentionRankingNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except HypothesisAttentionRankingTooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except HypothesisAttentionRankingIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Hypothesis attention ranking authority is not integrity-valid",
             ) from exc
 
 
@@ -758,6 +797,7 @@ def register_control_plane_routes(
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler,
     discovery_view_reader: VerifiedDiscoveryViewReader,
     graph_view_reader: VerifiedCanonicalGraphViewReader,
+    hypothesis_attention_ranking_reader: VerifiedHypothesisAttentionRankingReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -782,6 +822,7 @@ def register_control_plane_routes(
     register_graph_view_routes(
         app,
         reader=graph_view_reader,
+        ranking_reader=hypothesis_attention_ranking_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

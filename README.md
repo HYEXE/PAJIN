@@ -1670,6 +1670,14 @@ chain in a query-only transaction. It returns at most 500 redacted nodes and 1,0
 The GET path never initializes, migrates, reconciles, snapshots, or admits Graph state. If the
 database is omitted, the authenticated route fails closed with `503`.
 
+UX-003A reuses that same verified current Snapshot and complete Event Log to derive the existing
+GRAPH-004 Hypothesis consistency states. The Operator-only
+`GET /v1/hypotheses/campaigns/{campaign}/snapshots/{snapshot_id}/attention-ranking` route orders
+`contested`, `supported`, `open`, then `contradicted` items, with producer confidence and node ID as
+deterministic tie-breakers. It returns redacted review metadata only and cannot select a
+Hypothesis, record a Decision, schedule work, or authorize execution. Full Decision Audit remains
+separate UX-003B work because Permit references are not complete durable `GraphDecision` records.
+
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is
 bounded to 2 MiB raw total, 1 MiB per file, 256 files, and depth 24. The Control Plane verifies the

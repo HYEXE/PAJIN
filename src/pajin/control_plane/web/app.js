@@ -17,6 +17,7 @@ import {
   validateCanonicalGraphView,
   validateDiscoveryView,
   validateEvents,
+  validateHypothesisAttentionRanking,
   validatePrincipal,
   validateResume,
   validateRun,
@@ -27,6 +28,7 @@ import {
   createEventNodes,
   createGraphEdgeNodes,
   createGraphNodeNodes,
+  createHypothesisAttentionNodes,
   createRunRows,
   createSurfaceNodes,
   createWaveNodes,
@@ -74,6 +76,8 @@ const session = {
   discoveryLoading: false,
   graphRequestId: 0,
   graphLoading: false,
+  hypothesisRankingRequestId: 0,
+  hypothesisRankingLoading: false,
   roles: new Set(),
   subject: null,
   currentRun: null,
@@ -160,6 +164,23 @@ const elements = {
   graphProjectionValue: document.querySelector("#graph-projection-value"),
   graphNodeList: document.querySelector("#graph-node-list"),
   graphEdgeList: document.querySelector("#graph-edge-list"),
+  hypothesisRankingPanel: document.querySelector("#hypothesis-ranking-panel"),
+  hypothesisRankingForm: document.querySelector("#hypothesis-ranking-form"),
+  hypothesisRankingCampaign: document.querySelector("#hypothesis-ranking-campaign"),
+  hypothesisRankingSnapshotId: document.querySelector("#hypothesis-ranking-snapshot-id"),
+  hypothesisRankingLoadButton: document.querySelector("#hypothesis-ranking-load-button"),
+  hypothesisRankingEmpty: document.querySelector("#hypothesis-ranking-empty"),
+  hypothesisRankingResult: document.querySelector("#hypothesis-ranking-result"),
+  hypothesisRankingCampaignValue: document.querySelector(
+    "#hypothesis-ranking-campaign-value",
+  ),
+  hypothesisRankingCountValue: document.querySelector("#hypothesis-ranking-count-value"),
+  hypothesisRankingViewValue: document.querySelector("#hypothesis-ranking-view-value"),
+  hypothesisRankingMethodValue: document.querySelector("#hypothesis-ranking-method-value"),
+  hypothesisRankingSnapshotValue: document.querySelector(
+    "#hypothesis-ranking-snapshot-value",
+  ),
+  hypothesisRankingList: document.querySelector("#hypothesis-ranking-list"),
 };
 
 function setBusy(element, busy) {
@@ -177,6 +198,8 @@ function resetBusyIndicators() {
   setBusy(elements.discoveryPanel, false);
   setBusy(elements.graphForm, false);
   setBusy(elements.graphPanel, false);
+  setBusy(elements.hypothesisRankingForm, false);
+  setBusy(elements.hypothesisRankingPanel, false);
 }
 
 function announce(message, tone = "neutral") {
@@ -216,6 +239,11 @@ function setConnected(connected, roles = [], subject = null) {
   elements.graphCampaign.disabled = !session.canOperate;
   elements.graphSnapshotId.disabled = !session.canOperate;
   elements.graphLoadButton.disabled = !session.canOperate || session.graphLoading;
+  elements.hypothesisRankingCampaign.disabled = !session.canOperate;
+  elements.hypothesisRankingSnapshotId.disabled = !session.canOperate;
+  elements.hypothesisRankingLoadButton.disabled = (
+    !session.canOperate || session.hypothesisRankingLoading
+  );
   if (!connected) {
     elements.discoveryEmpty.textContent = (
       "Connect with an Operator credential to inspect a verified Discovery Run."
@@ -232,6 +260,15 @@ function setConnected(connected, roles = [], subject = null) {
   } else if (!session.canOperate) {
     elements.graphEmpty.textContent = (
       "This Graph projection requires an Operator credential; other roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.hypothesisRankingEmpty.textContent = (
+      "Connect with an Operator credential to rank current Snapshot hypotheses."
+    );
+  } else if (!session.canOperate) {
+    elements.hypothesisRankingEmpty.textContent = (
+      "Hypothesis attention ranking requires an Operator credential; other roles are read-denied."
     );
   }
   updateWorkflowControls();
@@ -347,6 +384,37 @@ function renderGraph(view) {
   elements.graphResult.hidden = false;
 }
 
+function clearHypothesisRanking({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.hypothesisRankingCampaign.value = "";
+    elements.hypothesisRankingSnapshotId.value = "";
+  }
+  elements.hypothesisRankingResult.hidden = true;
+  elements.hypothesisRankingEmpty.hidden = false;
+  if (message !== null) {
+    elements.hypothesisRankingEmpty.textContent = message;
+  }
+  elements.hypothesisRankingCampaignValue.textContent = "--";
+  elements.hypothesisRankingCountValue.textContent = "0";
+  elements.hypothesisRankingViewValue.textContent = "--";
+  elements.hypothesisRankingMethodValue.textContent = "--";
+  elements.hypothesisRankingSnapshotValue.textContent = "--";
+  elements.hypothesisRankingList.replaceChildren();
+}
+
+function renderHypothesisRanking(view) {
+  elements.hypothesisRankingCampaignValue.textContent = view.campaignId;
+  elements.hypothesisRankingCountValue.textContent = String(view.hypothesisCount);
+  elements.hypothesisRankingViewValue.textContent = shortId(view.consistencyViewId);
+  elements.hypothesisRankingMethodValue.textContent = view.rankingMethod;
+  elements.hypothesisRankingSnapshotValue.textContent = shortId(view.snapshotId);
+  elements.hypothesisRankingList.replaceChildren(
+    ...createHypothesisAttentionNodes(document, view.hypotheses),
+  );
+  elements.hypothesisRankingEmpty.hidden = true;
+  elements.hypothesisRankingResult.hidden = false;
+}
+
 function prepareDetailLoading(runId) {
   session.currentRun = null;
   session.currentApproval = null;
@@ -441,6 +509,8 @@ function replaceCredential(token) {
   session.discoveryLoading = false;
   session.graphRequestId += 1;
   session.graphLoading = false;
+  session.hypothesisRankingRequestId += 1;
+  session.hypothesisRankingLoading = false;
   session.refreshTask = null;
   resetBusyIndicators();
 }
@@ -458,6 +528,7 @@ function lockConsole(
   clearDetail();
   clearDiscovery({ clearInputs: true });
   clearGraph({ clearInputs: true });
+  clearHypothesisRanking({ clearInputs: true });
   announce(message, tone);
   if (focusToken) {
     elements.tokenInput.focus();
@@ -1322,6 +1393,71 @@ elements.graphForm.addEventListener("submit", async (event) => {
   }
 });
 
+elements.hypothesisRankingForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.hypothesisRankingLoading) {
+    return;
+  }
+  const campaign = elements.hypothesisRankingCampaign.value.trim();
+  const snapshotId = elements.hypothesisRankingSnapshotId.value.trim();
+  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(campaign)) {
+    announce("Hypothesis Campaign ID must be canonical lowercase text.", "error");
+    elements.hypothesisRankingCampaign.focus();
+    return;
+  }
+  if (!/^graph-snapshot_[a-f0-9]{64}$/.test(snapshotId)) {
+    announce("Enter one exact current Graph Snapshot ID for ranking.", "error");
+    elements.hypothesisRankingSnapshotId.focus();
+    return;
+  }
+  const requestId = ++session.hypothesisRankingRequestId;
+  const authEpoch = session.authEpoch;
+  session.hypothesisRankingLoading = true;
+  setBusy(elements.hypothesisRankingForm, true);
+  setBusy(elements.hypothesisRankingPanel, true);
+  elements.hypothesisRankingLoadButton.disabled = true;
+  clearHypothesisRanking({
+    message: "Replaying canonical Hypothesis consistency for review attention...",
+  });
+  announce("Verifying current Snapshot Hypothesis attention order...");
+  try {
+    const path = `/v1/hypotheses/campaigns/${encodeURIComponent(campaign)}`
+      + `/snapshots/${encodeURIComponent(snapshotId)}/attention-ranking`;
+    const view = validateHypothesisAttentionRanking(
+      await apiRequest(path),
+      campaign,
+      snapshotId,
+    );
+    if (session.hypothesisRankingRequestId !== requestId
+      || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderHypothesisRanking(view);
+    announce(
+      `Verified ${view.hypothesisCount} Hypothesis review item(s); no decision recorded.`,
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.hypothesisRankingRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error
+        ? error.message
+        : "Unable to load Hypothesis attention ranking.";
+      clearHypothesisRanking({ message: `Hypothesis ranking unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.hypothesisRankingRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      session.hypothesisRankingLoading = false;
+      setBusy(elements.hypothesisRankingForm, false);
+      setBusy(elements.hypothesisRankingPanel, false);
+      elements.hypothesisRankingLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
+
 elements.previousPage.addEventListener("click", () => {
   session.offset = Math.max(0, session.offset - PAGE_SIZE);
   refreshCurrent();
@@ -1350,4 +1486,5 @@ newIdempotencyKey();
 setConnected(false);
 clearDiscovery({ clearInputs: true });
 clearGraph({ clearInputs: true });
+clearHypothesisRanking({ clearInputs: true });
 updatePagination();

@@ -10,19 +10,25 @@ from fastapi.testclient import TestClient
 
 import pajin.control_plane.graph_views as graph_views
 from pajin.control_plane.api import ControlPlaneSettings, create_app
+from pajin.control_plane.graph_views import _build_hypothesis_attention_ranking
 from pajin.control_plane.models import Principal, PrincipalRole
 from pajin.graph import (
     GraphAction,
     GraphActionStatus,
     GraphAdmissionAuthority,
     GraphAuthorityKind,
+    GraphConsistencyView,
     GraphContentOrigin,
     GraphEdge,
     GraphEvidence,
     GraphEvidenceBinding,
+    GraphHypothesis,
+    GraphHypothesisAssessment,
+    GraphHypothesisState,
     GraphObservation,
     GraphProducerRegistration,
     GraphProducerRegistry,
+    GraphProjection,
     GraphProjectionCoordinator,
     GraphProposalKind,
     GraphProposalLineage,
@@ -211,6 +217,89 @@ def _endpoint(campaign: str, snapshot_id: str) -> str:
     return f"/v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}"
 
 
+def _ranking_endpoint(campaign: str, snapshot_id: str) -> str:
+    return f"/v1/hypotheses/campaigns/{campaign}/snapshots/{snapshot_id}/attention-ranking"
+
+
+def _hypothesis(tag: str, confidence: float) -> GraphHypothesis:
+    return GraphHypothesis(
+        campaignId=CAMPAIGN,
+        hypothesisType=f"attention-{tag}",
+        statement=f"Sensitive hypothesis statement {tag}.",
+        expectedObservable=f"Sensitive expected observable {tag}.",
+        producerId="pajin.graph.ranking-producer",
+        producerVersion="1.0.0",
+        producerDigest=DIGEST_F,
+        origin=GraphContentOrigin.AGENT_DERIVED,
+        confidence=confidence,
+    )
+
+
+def _ranking_fixture() -> tuple[GraphSnapshot, GraphConsistencyView]:
+    state_hypotheses = [
+        (GraphHypothesisState.CONTESTED, _hypothesis("contested", 0.9)),
+        (GraphHypothesisState.SUPPORTED, _hypothesis("supported", 0.2)),
+        (GraphHypothesisState.OPEN, _hypothesis("open", 0.99)),
+        (GraphHypothesisState.CONTRADICTED, _hypothesis("contradicted", 1.0)),
+    ]
+    projection = GraphProjection(
+        campaignId=CAMPAIGN,
+        revision=0,
+        eventLogHeadDigest=None,
+        nodes=tuple(sorted((item[1] for item in state_hypotheses), key=lambda node: node.node_id)),
+        edges=(),
+    )
+    snapshot = GraphSnapshot(
+        campaignId=CAMPAIGN,
+        revision=projection.revision,
+        eventLogHeadDigest=projection.event_log_head_digest,
+        projectionId=projection.projection_id,
+        projectionDigest=projection.projection_digest,
+        nodeProjectionDigest=projection.node_projection_digest,
+        edgeProjectionDigest=projection.edge_projection_digest,
+        reason=GraphSnapshotReason.CHECKPOINT,
+        createdAt=NOW,
+        creatorId="pajin.graph.ranking-snapshot-authority",
+        creatorDigest=DIGEST_A,
+        projection=projection,
+    )
+    support_id = "graph-node_" + "1" * 64
+    contradiction_id = "graph-node_" + "2" * 64
+    assessments = []
+    for state, hypothesis in state_hypotheses:
+        assessments.append(
+            GraphHypothesisAssessment(
+                hypothesis=graph_node_ref(hypothesis),
+                supportingObservationIds=(
+                    (support_id,)
+                    if state in {GraphHypothesisState.CONTESTED, GraphHypothesisState.SUPPORTED}
+                    else ()
+                ),
+                contradictingObservationIds=(
+                    (contradiction_id,)
+                    if state
+                    in {
+                        GraphHypothesisState.CONTESTED,
+                        GraphHypothesisState.CONTRADICTED,
+                    }
+                    else ()
+                ),
+                state=state,
+            )
+        )
+    consistency = GraphConsistencyView(
+        campaignId=CAMPAIGN,
+        revision=projection.revision,
+        eventLogHeadDigest=projection.event_log_head_digest,
+        projectionId=projection.projection_id,
+        projectionDigest=projection.projection_digest,
+        duplicateNodeOccurrenceCount=0,
+        duplicateEdgeOccurrenceCount=0,
+        hypotheses=tuple(sorted(assessments, key=lambda item: item.hypothesis.node_id)),
+    )
+    return snapshot, consistency
+
+
 def test_verified_canonical_graph_view_is_operator_only_redacted_and_read_only(
     tmp_path: Path,
 ) -> None:
@@ -257,6 +346,153 @@ def test_verified_canonical_graph_view_is_operator_only_redacted_and_read_only(
     assert '"summary"' not in serialized
     assert '"reference"' not in serialized
     assert (graph_database.read_bytes(), graph_database.stat().st_mtime_ns) == before
+
+
+def test_hypothesis_attention_ranking_is_operator_only_bounded_and_read_only(
+    tmp_path: Path,
+) -> None:
+    graph_database = tmp_path / "graph" / "canonical.sqlite3"
+    _store, _snapshots, snapshot = _current_snapshot(graph_database)
+    before = (graph_database.read_bytes(), graph_database.stat().st_mtime_ns)
+    app = create_app(_settings(tmp_path / "control-plane.db", graph_database=graph_database))
+    path = _ranking_endpoint(CAMPAIGN, snapshot.snapshot_id)
+
+    with TestClient(app) as client:
+        assert client.get(path).status_code == 401
+        assert client.get(path, headers=_auth(APPROVER_TOKEN)).status_code == 403
+        assert client.get(path, headers=_auth(AUDITOR_TOKEN)).status_code == 403
+        assert client.get(path, headers=_auth(WORKER_TOKEN)).status_code == 403
+        response = client.get(path, headers=_auth(OPERATOR_TOKEN))
+
+    assert response.status_code == 200, response.text
+    assert "no-store" in response.headers["cache-control"]
+    body = response.json()
+    assert body["kind"] == "VerifiedHypothesisAttentionRankingView"
+    assert body["campaignId"] == CAMPAIGN
+    assert body["snapshotId"] == snapshot.snapshot_id
+    assert body["projectionId"] == snapshot.projection_id
+    assert body["consistencyViewId"].startswith("graph-consistency-view_")
+    assert body["rankingMethod"] == "canonical-state-confidence-review-attention/v1"
+    assert body["hypothesisCount"] == 0
+    assert body["hypotheses"] == []
+    assert body["authorityBoundary"] == {
+        "canonicalGraphSnapshotVerified": True,
+        "currentSnapshotVerified": True,
+        "consistencyViewVerified": True,
+        "deterministicReviewOrder": True,
+        "contentRedacted": True,
+        "viewSelectsHypothesis": False,
+        "viewRecordsDecision": False,
+        "viewSchedulesWork": False,
+        "viewAuthorizesExecution": False,
+    }
+    assert (graph_database.read_bytes(), graph_database.stat().st_mtime_ns) == before
+
+
+def test_hypothesis_attention_ranking_orders_canonical_states_without_deciding() -> None:
+    snapshot, consistency = _ranking_fixture()
+
+    view = _build_hypothesis_attention_ranking(snapshot, consistency)
+    body = view.model_dump(mode="json", by_alias=True)
+
+    assert [item["state"] for item in body["hypotheses"]] == [
+        "contested",
+        "supported",
+        "open",
+        "contradicted",
+    ]
+    assert [item["rank"] for item in body["hypotheses"]] == [1, 2, 3, 4]
+    assert [item["attentionBand"] for item in body["hypotheses"]] == [
+        "conflict-review",
+        "evidence-supported",
+        "evidence-needed",
+        "contradicted-review",
+    ]
+    assert body["hypotheses"][0]["supportingObservationCount"] == 1
+    assert body["hypotheses"][0]["contradictingObservationCount"] == 1
+    serialized = json.dumps(body)
+    assert "Sensitive hypothesis statement" not in serialized
+    assert "Sensitive expected observable" not in serialized
+    assert support_id_not_exposed(body)
+    assert body["authorityBoundary"]["viewSelectsHypothesis"] is False
+    assert body["authorityBoundary"]["viewRecordsDecision"] is False
+    assert body["authorityBoundary"]["viewSchedulesWork"] is False
+    assert body["authorityBoundary"]["viewAuthorizesExecution"] is False
+
+
+def support_id_not_exposed(body: dict[str, object]) -> bool:
+    serialized = json.dumps(body)
+    return "graph-node_" + "1" * 64 not in serialized and "graph-node_" + "2" * 64 not in serialized
+
+
+def test_hypothesis_attention_ranking_fails_closed_for_missing_stale_and_foreign(
+    tmp_path: Path,
+) -> None:
+    plausible_snapshot = "graph-snapshot_" + "0" * 64
+    missing_app = create_app(_settings(tmp_path / "missing-control-plane.db", graph_database=None))
+    with TestClient(missing_app) as client:
+        unavailable = client.get(
+            _ranking_endpoint(CAMPAIGN, plausible_snapshot),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+    assert unavailable.status_code == 503
+
+    graph_database = tmp_path / "graph" / "canonical.sqlite3"
+    _store, snapshots, first = _current_snapshot(graph_database)
+    app = create_app(_settings(tmp_path / "control-plane.db", graph_database=graph_database))
+    with TestClient(app) as client:
+        absent = client.get(
+            _ranking_endpoint(CAMPAIGN, plausible_snapshot),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+        foreign = client.get(
+            _ranking_endpoint("foreign-campaign", first.snapshot_id),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+    assert absent.status_code == 404
+    assert foreign.status_code == 409
+    assert (
+        foreign.json()["detail"] == "Hypothesis attention ranking authority is not integrity-valid"
+    )
+
+    second = snapshots.capture(GraphSnapshotReason.HANDOFF)
+    with TestClient(app) as client:
+        stale = client.get(
+            _ranking_endpoint(CAMPAIGN, first.snapshot_id),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+        current = client.get(
+            _ranking_endpoint(CAMPAIGN, second.snapshot_id),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+    assert stale.status_code == 409
+    assert current.status_code == 200
+
+
+def test_hypothesis_attention_ranking_rejects_oversized_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    graph_database = tmp_path / "graph" / "canonical.sqlite3"
+    _store, _snapshots, snapshot = _current_snapshot(graph_database)
+    app = create_app(_settings(tmp_path / "control-plane.db", graph_database=graph_database))
+    oversized = SimpleNamespace(
+        projection=SimpleNamespace(nodes=[_hypothesis("oversized", 0.5)] * 501),
+    )
+    monkeypatch.setattr(
+        graph_views,
+        "load_verified_current_graph_snapshot_consistency",
+        lambda *args, **kwargs: (oversized, SimpleNamespace()),
+    )
+
+    with TestClient(app) as client:
+        response = client.get(
+            _ranking_endpoint(CAMPAIGN, snapshot.snapshot_id),
+            headers=_auth(OPERATOR_TOKEN),
+        )
+
+    assert response.status_code == 413
+    assert response.json()["detail"] == "Canonical Hypothesis ranking exceeds view limits"
 
 
 def test_canonical_graph_view_fails_closed_for_missing_stale_and_foreign_authority(

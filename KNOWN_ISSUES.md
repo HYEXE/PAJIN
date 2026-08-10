@@ -3,6 +3,18 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## UX-003A Hypothesis attention ranking 경계
+
+- 상태: exact current Canonical Graph Snapshot과 complete Event Log를 재검증하고 기존 GRAPH-004
+  consistency state를 사용해 최대 500개 Hypothesis의 Operator 검토 순서를 제공한다.
+- 현재 보장: `contested` → `supported` → `open` → `contradicted`, confidence 내림차순, node ID
+  오름차순으로 결정적 정렬한다. statement·expected observable·Observation ID/content는 반환하지 않으며
+  selection·Decision 기록·schedule·execution authority는 모두 false다.
+- 제한: confidence는 producer metadata이지 validation truth나 risk score가 아니다. complete `GraphDecision`
+  durable store가 없어 Permit table의 Decision reference로 Decision Audit을 재구성하지 않는다.
+- 해소 조건: `UX-003B`에서 complete GraphDecision의 durable append/read authority, current Snapshot freshness,
+  redaction, 보존 및 operator audit 계약을 별도로 정의한다.
+
 ## UX-002B current Canonical Graph view 경계
 
 - 상태: 기존 single-Campaign SQLite Graph Store의 exact current Snapshot을 검증하는 Operator-only API와

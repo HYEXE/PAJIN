@@ -78,7 +78,11 @@ from pajin.graph.cleanup import (
     validate_cleanup_authority,
     validate_reversible_action_policy,
 )
-from pajin.graph.consistency import GraphDecision
+from pajin.graph.consistency import (
+    GraphConsistencyAnalyzer,
+    GraphConsistencyView,
+    GraphDecision,
+)
 from pajin.graph.models import (
     GraphNode,
     GraphNodeKind,
@@ -1106,6 +1110,44 @@ def load_verified_current_graph_snapshot(
 ) -> GraphSnapshot | None:
     """Read one exact current Graph Snapshot without initializing or mutating its store."""
 
+    snapshot, _events = _load_verified_current_graph_snapshot_state(
+        path,
+        campaign_id=campaign_id,
+        snapshot_id=snapshot_id,
+    )
+    return snapshot
+
+
+def load_verified_current_graph_snapshot_consistency(
+    path: Path,
+    *,
+    campaign_id: str,
+    snapshot_id: str,
+) -> tuple[GraphSnapshot, GraphConsistencyView] | None:
+    """Read and analyze one exact current Snapshot against its complete Event Log."""
+
+    snapshot, events = _load_verified_current_graph_snapshot_state(
+        path,
+        campaign_id=campaign_id,
+        snapshot_id=snapshot_id,
+    )
+    if snapshot is None:
+        return None
+    consistency = GraphConsistencyAnalyzer.analyze(
+        projection=snapshot.projection,
+        events=events,
+    )
+    return snapshot, consistency
+
+
+def _load_verified_current_graph_snapshot_state(
+    path: Path,
+    *,
+    campaign_id: str,
+    snapshot_id: str,
+) -> tuple[GraphSnapshot | None, tuple[GraphAdmissionEvent, ...]]:
+    """Verify the exact current Snapshot and retain its immutable Event Log input."""
+
     if fullmatch(r"^[a-z0-9][a-z0-9-]{2,79}$", campaign_id) is None:
         raise ValueError("SQLite Graph Store campaign ID is invalid")
     if fullmatch(r"^graph-snapshot_[a-f0-9]{64}$", snapshot_id) is None:
@@ -1142,7 +1184,8 @@ def load_verified_current_graph_snapshot(
             raise GraphSnapshotError("Graph Snapshot is not the current canonical head")
     if _file_identity(database) != identity:
         raise SQLiteGraphStoreError("SQLite Graph Store changed during Snapshot verification")
-    return _canonical_snapshot(snapshot) if snapshot is not None else None
+    canonical_snapshot = _canonical_snapshot(snapshot) if snapshot is not None else None
+    return canonical_snapshot, tuple(events)
 
 
 class SQLiteGraphEventLog:

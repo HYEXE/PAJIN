@@ -55,7 +55,10 @@ from pajin.control_plane.execution_attestation import (
     ExecutorAttestationTrustAnchor,
     parse_executor_attestation_trust_anchor,
 )
-from pajin.control_plane.graph_views import VerifiedCanonicalGraphViewReader
+from pajin.control_plane.graph_views import (
+    VerifiedCanonicalGraphViewReader,
+    VerifiedHypothesisAttentionRankingReader,
+)
 from pajin.control_plane.models import (
     ControlPlaneConflictCode,
     ControlPlaneConflictResponse,
@@ -921,6 +924,7 @@ class _ControlPlaneApplicationContext:
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler
     discovery_view_reader: VerifiedDiscoveryViewReader
     graph_view_reader: VerifiedCanonicalGraphViewReader
+    hypothesis_attention_ranking_reader: VerifiedHypothesisAttentionRankingReader
     service: ControlPlaneService
     authenticator: TokenAuthenticator
 
@@ -990,6 +994,9 @@ def _build_application_context(
         ),
         discovery_view_reader=VerifiedDiscoveryViewReader(settings.discovery_run_root),
         graph_view_reader=VerifiedCanonicalGraphViewReader(settings.graph_database),
+        hypothesis_attention_ranking_reader=VerifiedHypothesisAttentionRankingReader(
+            settings.graph_database
+        ),
         service=service,
         authenticator=TokenAuthenticator(dict(settings.credentials)),
     )
@@ -1292,6 +1299,9 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         campaign_draft_compiler=context.campaign_draft_compiler,
         discovery_view_reader=context.discovery_view_reader,
         graph_view_reader=context.graph_view_reader,
+        hypothesis_attention_ranking_reader=(
+            context.hypothesis_attention_ranking_reader
+        ),
         dependencies=dependencies,
     )
     return app

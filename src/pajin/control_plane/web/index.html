@@ -515,6 +515,87 @@
           </div>
         </div>
       </section>
+
+      <section
+        id="hypothesis-ranking-panel"
+        class="panel hypothesis-ranking-panel"
+        aria-labelledby="hypothesis-ranking-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">07 / HYPOTHESIS ATTENTION</p>
+            <h2 id="hypothesis-ranking-heading">Canonical review priority</h2>
+          </div>
+          <span class="boundary-badge">Advisory only</span>
+        </div>
+        <p class="panel-intro">
+          Rank the hypotheses in one exact current Graph Snapshot for operator review. Canonical
+          contradiction state comes first, then producer confidence and stable node identity.
+        </p>
+        <form id="hypothesis-ranking-form" class="hypothesis-ranking-form" aria-busy="false">
+          <div class="field field-grow">
+            <label for="hypothesis-ranking-campaign">Campaign ID</label>
+            <input
+              id="hypothesis-ranking-campaign"
+              name="hypothesis-ranking-campaign"
+              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              maxlength="80"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="authorized-campaign"
+              required
+              disabled
+            >
+          </div>
+          <div class="field field-grow hypothesis-ranking-snapshot-field">
+            <label for="hypothesis-ranking-snapshot-id">Current Graph Snapshot ID</label>
+            <input
+              id="hypothesis-ranking-snapshot-id"
+              name="hypothesis-ranking-snapshot-id"
+              pattern="graph-snapshot_[a-f0-9]{64}"
+              maxlength="79"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="graph-snapshot_..."
+              required
+              disabled
+            >
+          </div>
+          <button
+            id="hypothesis-ranking-load-button"
+            class="button button-primary"
+            type="submit"
+            disabled
+          >
+            Rank hypotheses
+          </button>
+        </form>
+        <p id="hypothesis-ranking-empty" class="hypothesis-ranking-empty">
+          Connect with an Operator credential to rank current Snapshot hypotheses.
+        </p>
+        <div id="hypothesis-ranking-result" class="hypothesis-ranking-result" hidden>
+          <div class="authority-strip" aria-label="Hypothesis ranking authority boundary">
+            <span class="verified-badge">Current Snapshot verified</span>
+            <span>Review attention only</span>
+            <span>No selection</span>
+            <span>No decision</span>
+            <span>No scheduling</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="hypothesis-ranking-facts">
+            <div><dt>Campaign</dt><dd id="hypothesis-ranking-campaign-value">--</dd></div>
+            <div><dt>Hypotheses</dt><dd id="hypothesis-ranking-count-value">0</dd></div>
+            <div><dt>Consistency view</dt><dd id="hypothesis-ranking-view-value">--</dd></div>
+            <div><dt>Method</dt><dd id="hypothesis-ranking-method-value">--</dd></div>
+          </dl>
+          <div class="event-heading">
+            <h3>Review queue</h3>
+            <span id="hypothesis-ranking-snapshot-value">--</span>
+          </div>
+          <ol id="hypothesis-ranking-list" class="hypothesis-ranking-list"></ol>
+        </div>
+      </section>
     </main>
 
     <footer>

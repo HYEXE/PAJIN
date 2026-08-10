@@ -51,6 +51,7 @@ const DISCOVERY_RUN_PATTERN = /^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const GRAPH_SNAPSHOT_PATTERN = /^graph-snapshot_[a-f0-9]{64}$/;
 const GRAPH_PROJECTION_PATTERN = /^graph-projection_[a-f0-9]{64}$/;
+const GRAPH_CONSISTENCY_VIEW_PATTERN = /^graph-consistency-view_[a-f0-9]{64}$/;
 const GRAPH_NODE_PATTERN = /^graph-node_[a-f0-9]{64}$/;
 const GRAPH_EDGE_PATTERN = /^graph-edge_[a-f0-9]{64}$/;
 const GRAPH_NODE_KINDS = new Set([
@@ -62,6 +63,18 @@ const GRAPH_NODE_KINDS = new Set([
   "CampaignFact",
 ]);
 const GRAPH_ORIGINS = new Set(["trusted-core", "operator", "agent-derived", "target-derived"]);
+const HYPOTHESIS_STATE_PRIORITY = new Map([
+  ["contested", 0],
+  ["supported", 1],
+  ["open", 2],
+  ["contradicted", 3],
+]);
+const HYPOTHESIS_ATTENTION_BANDS = new Map([
+  ["contested", "conflict-review"],
+  ["supported", "evidence-supported"],
+  ["open", "evidence-needed"],
+  ["contradicted", "contradicted-review"],
+]);
 const GRAPH_RELATION_ENDPOINTS = new Map([
   ["motivates", ["Surface", "Hypothesis"]],
   ["tested-by", ["Hypothesis", "Action"]],
@@ -495,6 +508,95 @@ export function validateCanonicalGraphView(value, campaignName, snapshotId) {
     || boundary.viewGrantsPermit !== false
     || boundary.viewAuthorizesExecution !== false) {
     protocolFailure("Canonical Graph view");
+  }
+  return view;
+}
+
+export function validateHypothesisAttentionRanking(value, campaignName, snapshotId) {
+  const view = expectRecord(value, "Hypothesis attention ranking");
+  if (view.apiVersion
+      !== "pajin.control-plane/verified-hypothesis-attention-ranking-view/v1alpha1"
+    || view.kind !== "VerifiedHypothesisAttentionRankingView"
+    || view.campaignId !== campaignName
+    || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(view.campaignId)
+    || view.snapshotId !== snapshotId
+    || !GRAPH_SNAPSHOT_PATTERN.test(view.snapshotId)
+    || !SHA256_PATTERN.test(view.snapshotDigest)
+    || view.snapshotId !== `graph-snapshot_${view.snapshotDigest}`
+    || !GRAPH_PROJECTION_PATTERN.test(view.projectionId)
+    || !SHA256_PATTERN.test(view.projectionDigest)
+    || view.projectionId !== `graph-projection_${view.projectionDigest}`
+    || !GRAPH_CONSISTENCY_VIEW_PATTERN.test(view.consistencyViewId)
+    || !SHA256_PATTERN.test(view.consistencyViewDigest)
+    || view.consistencyViewId
+      !== `graph-consistency-view_${view.consistencyViewDigest}`
+    || view.rankingMethod !== "canonical-state-confidence-review-attention/v1"
+    || !Number.isSafeInteger(view.hypothesisCount)
+    || view.hypothesisCount < 0
+    || view.hypothesisCount > 500
+    || !Array.isArray(view.hypotheses)
+    || view.hypotheses.length !== view.hypothesisCount) {
+    protocolFailure("Hypothesis attention ranking");
+  }
+
+  const nodeIds = new Set();
+  let previous = null;
+  for (const [index, hypothesisValue] of view.hypotheses.entries()) {
+    const hypothesis = expectRecord(hypothesisValue, "Hypothesis attention ranking");
+    const priority = HYPOTHESIS_STATE_PRIORITY.get(hypothesis.state);
+    const expectedBand = HYPOTHESIS_ATTENTION_BANDS.get(hypothesis.state);
+    if (hypothesis.rank !== index + 1
+      || !GRAPH_NODE_PATTERN.test(hypothesis.nodeId)
+      || nodeIds.has(hypothesis.nodeId)
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(hypothesis.hypothesisType)
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(hypothesis.producerId)
+      || !GRAPH_ORIGINS.has(hypothesis.origin)
+      || priority === undefined
+      || hypothesis.attentionBand !== expectedBand
+      || !Number.isSafeInteger(hypothesis.supportingObservationCount)
+      || hypothesis.supportingObservationCount < 0
+      || !Number.isSafeInteger(hypothesis.contradictingObservationCount)
+      || hypothesis.contradictingObservationCount < 0) {
+      protocolFailure("Hypothesis attention ranking");
+    }
+    hypothesis.confidence = boundedNumber(
+      hypothesis.confidence,
+      "Hypothesis attention ranking",
+      0,
+      1,
+    );
+    const supports = hypothesis.supportingObservationCount;
+    const contradictions = hypothesis.contradictingObservationCount;
+    if ((hypothesis.state === "contested" && (supports === 0 || contradictions === 0))
+      || (hypothesis.state === "supported" && (supports === 0 || contradictions !== 0))
+      || (hypothesis.state === "open" && (supports !== 0 || contradictions !== 0))
+      || (hypothesis.state === "contradicted" && (supports !== 0 || contradictions === 0))) {
+      protocolFailure("Hypothesis attention ranking");
+    }
+    if (previous !== null
+      && (priority < previous.priority
+        || (priority === previous.priority
+          && hypothesis.confidence > previous.confidence)
+        || (priority === previous.priority
+          && hypothesis.confidence === previous.confidence
+          && hypothesis.nodeId <= previous.nodeId))) {
+      protocolFailure("Hypothesis attention ranking");
+    }
+    nodeIds.add(hypothesis.nodeId);
+    previous = { priority, confidence: hypothesis.confidence, nodeId: hypothesis.nodeId };
+  }
+
+  const boundary = expectRecord(view.authorityBoundary, "Hypothesis attention ranking");
+  if (boundary.canonicalGraphSnapshotVerified !== true
+    || boundary.currentSnapshotVerified !== true
+    || boundary.consistencyViewVerified !== true
+    || boundary.deterministicReviewOrder !== true
+    || boundary.contentRedacted !== true
+    || boundary.viewSelectsHypothesis !== false
+    || boundary.viewRecordsDecision !== false
+    || boundary.viewSchedulesWork !== false
+    || boundary.viewAuthorizesExecution !== false) {
+    protocolFailure("Hypothesis attention ranking");
   }
   return view;
 }

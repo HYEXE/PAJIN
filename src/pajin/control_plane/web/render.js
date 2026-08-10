@@ -271,3 +271,51 @@ export function createGraphEdgeNodes(documentRef, edges) {
     return item;
   });
 }
+
+export function createHypothesisAttentionNodes(documentRef, hypotheses) {
+  if (hypotheses.length === 0) {
+    return emptyGraphItem(
+      documentRef,
+      "This current Snapshot has no canonical Hypotheses to rank.",
+      "hypothesis-ranking-card",
+    );
+  }
+  return hypotheses.map((hypothesis) => {
+    const item = documentRef.createElement("li");
+    item.className = "hypothesis-ranking-card";
+
+    const rank = documentRef.createElement("span");
+    rank.className = "hypothesis-ranking-rank";
+    rank.textContent = String(hypothesis.rank).padStart(2, "0");
+
+    const content = documentRef.createElement("div");
+    content.className = "hypothesis-ranking-content";
+    const heading = documentRef.createElement("div");
+    heading.className = "hypothesis-ranking-card-head";
+    const title = documentRef.createElement("strong");
+    title.textContent = hypothesis.hypothesisType;
+    const state = stateBadge(documentRef, hypothesis.state);
+    heading.append(title, state);
+
+    const band = documentRef.createElement("p");
+    band.className = "hypothesis-ranking-band";
+    band.textContent = hypothesis.attentionBand;
+    const metadata = documentRef.createElement("p");
+    metadata.className = "hypothesis-ranking-meta";
+    metadata.textContent = [
+      hypothesis.producerId,
+      hypothesis.origin,
+      `${Math.round(hypothesis.confidence * 100)}% producer confidence`,
+    ].join(" / ");
+    const evidence = documentRef.createElement("p");
+    evidence.className = "hypothesis-ranking-evidence";
+    evidence.textContent = [
+      `${hypothesis.supportingObservationCount} supporting observation(s)`,
+      `${hypothesis.contradictingObservationCount} contradicting observation(s)`,
+      shortId(hypothesis.nodeId),
+    ].join(" / ");
+    content.append(heading, band, metadata, evidence);
+    item.append(rank, content);
+    return item;
+  });
+}

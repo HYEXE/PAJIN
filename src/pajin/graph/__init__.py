@@ -252,6 +252,7 @@ from pajin.graph.sqlite_store import (
     SQLiteGraphStore,
     SQLiteGraphStoreError,
     load_verified_current_graph_snapshot,
+    load_verified_current_graph_snapshot_consistency,
     sqlite_graph_backup_manifest_path,
 )
 
@@ -468,6 +469,7 @@ __all__ = [
     "graph_node_ref",
     "graph_snapshot_ref",
     "load_verified_current_graph_snapshot",
+    "load_verified_current_graph_snapshot_consistency",
     "parse_graph_node",
     "parse_graph_proposal",
     "publish_retained_sqlite_graph_backup",

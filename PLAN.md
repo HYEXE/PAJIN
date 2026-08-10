@@ -720,6 +720,8 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
   - [x] `UX-002A` sealed Discovery Attack Surface·Recon→Hypothesis Wave read-only view
   - [x] `UX-002B` 기존 current canonical Graph Snapshot 기반 bounded Graph projection
 - [ ] Hypothesis Ranking·Decision Audit
+  - [x] `UX-003A` current Snapshot Hypothesis attention ranking (review-only, no Decision authority)
+  - [ ] `UX-003B` durable complete GraphDecision audit authority and redacted operator view
 - [ ] Original·Replay·Control·Retest Diff
 - [ ] Human Review·Approval·Kill Switch Queue
 - [ ] SARIF·Issue Tracker·SIEM/SOAR Export

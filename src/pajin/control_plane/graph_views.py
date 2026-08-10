@@ -15,11 +15,15 @@ from pajin.domain.models import StrictModel
 from pajin.graph import (
     GraphAction,
     GraphCampaignFact,
+    GraphConsistencyError,
+    GraphConsistencyView,
     GraphContentOrigin,
     GraphEdge,
     GraphEventLogError,
     GraphEvidence,
     GraphHypothesis,
+    GraphHypothesisAssessment,
+    GraphHypothesisState,
     GraphNode,
     GraphNodeKind,
     GraphObservation,
@@ -29,7 +33,9 @@ from pajin.graph import (
     GraphSnapshotReason,
     GraphSurface,
     SQLiteGraphStoreError,
+    graph_node_ref,
     load_verified_current_graph_snapshot,
+    load_verified_current_graph_snapshot_consistency,
 )
 
 _CAMPAIGN_PATTERN = r"^[a-z0-9][a-z0-9-]{2,79}$"
@@ -38,8 +44,10 @@ _SHA256_PATTERN = r"^[a-f0-9]{64}$"
 _PROJECTION_ID_PATTERN = r"^graph-projection_[a-f0-9]{64}$"
 _NODE_ID_PATTERN = r"^graph-node_[a-f0-9]{64}$"
 _EDGE_ID_PATTERN = r"^graph-edge_[a-f0-9]{64}$"
+_CONSISTENCY_VIEW_ID_PATTERN = r"^graph-consistency-view_[a-f0-9]{64}$"
 _MAX_VIEW_NODES = 500
 _MAX_VIEW_EDGES = 1_000
+_MAX_RANKED_HYPOTHESES = 500
 
 
 class CanonicalGraphViewUnavailable(RuntimeError):
@@ -56,6 +64,22 @@ class CanonicalGraphViewIntegrityError(RuntimeError):
 
 class CanonicalGraphViewTooLarge(RuntimeError):
     """Raised when the exact Snapshot cannot fit the bounded operator view."""
+
+
+class HypothesisAttentionRankingUnavailable(RuntimeError):
+    """Raised when no server-owned Graph database is configured."""
+
+
+class HypothesisAttentionRankingNotFound(RuntimeError):
+    """Raised when the exact current Graph Snapshot does not exist."""
+
+
+class HypothesisAttentionRankingIntegrityError(RuntimeError):
+    """Raised when Snapshot, Event Log, projection, and consistency differ."""
+
+
+class HypothesisAttentionRankingTooLarge(RuntimeError):
+    """Raised when the exact ranking exceeds the bounded operator view."""
 
 
 class CanonicalGraphSnapshotView(StrictModel):
@@ -163,11 +187,112 @@ class VerifiedCanonicalGraphView(StrictModel):
     authority_boundary: CanonicalGraphViewAuthorityBoundary = Field(alias="authorityBoundary")
 
 
+HypothesisAttentionBand = Literal[
+    "conflict-review",
+    "evidence-supported",
+    "evidence-needed",
+    "contradicted-review",
+]
+
+
+class RankedHypothesisView(StrictModel):
+    rank: int = Field(ge=1, le=_MAX_RANKED_HYPOTHESES)
+    node_id: str = Field(alias="nodeId", pattern=_NODE_ID_PATTERN)
+    hypothesis_type: str = Field(alias="hypothesisType", min_length=1, max_length=200)
+    producer_id: str = Field(alias="producerId", min_length=1, max_length=200)
+    origin: GraphContentOrigin
+    confidence: float = Field(ge=0, le=1)
+    state: GraphHypothesisState
+    supporting_observation_count: int = Field(
+        alias="supportingObservationCount",
+        ge=0,
+    )
+    contradicting_observation_count: int = Field(
+        alias="contradictingObservationCount",
+        ge=0,
+    )
+    attention_band: HypothesisAttentionBand = Field(alias="attentionBand")
+
+
+class HypothesisAttentionRankingAuthorityBoundary(StrictModel):
+    canonical_graph_snapshot_verified: Literal[True] = Field(
+        default=True,
+        alias="canonicalGraphSnapshotVerified",
+    )
+    current_snapshot_verified: Literal[True] = Field(
+        default=True,
+        alias="currentSnapshotVerified",
+    )
+    consistency_view_verified: Literal[True] = Field(
+        default=True,
+        alias="consistencyViewVerified",
+    )
+    deterministic_review_order: Literal[True] = Field(
+        default=True,
+        alias="deterministicReviewOrder",
+    )
+    content_redacted: Literal[True] = Field(default=True, alias="contentRedacted")
+    view_selects_hypothesis: Literal[False] = Field(
+        default=False,
+        alias="viewSelectsHypothesis",
+    )
+    view_records_decision: Literal[False] = Field(
+        default=False,
+        alias="viewRecordsDecision",
+    )
+    view_schedules_work: Literal[False] = Field(
+        default=False,
+        alias="viewSchedulesWork",
+    )
+    view_authorizes_execution: Literal[False] = Field(
+        default=False,
+        alias="viewAuthorizesExecution",
+    )
+
+
+class VerifiedHypothesisAttentionRankingView(StrictModel):
+    api_version: Literal[
+        "pajin.control-plane/verified-hypothesis-attention-ranking-view/v1alpha1"
+    ] = Field(
+        default=("pajin.control-plane/verified-hypothesis-attention-ranking-view/v1alpha1"),
+        alias="apiVersion",
+    )
+    kind: Literal["VerifiedHypothesisAttentionRankingView"] = (
+        "VerifiedHypothesisAttentionRankingView"
+    )
+    campaign_id: str = Field(alias="campaignId", pattern=_CAMPAIGN_PATTERN)
+    snapshot_id: str = Field(alias="snapshotId", pattern=_SNAPSHOT_ID_PATTERN)
+    snapshot_digest: str = Field(alias="snapshotDigest", pattern=_SHA256_PATTERN)
+    projection_id: str = Field(alias="projectionId", pattern=_PROJECTION_ID_PATTERN)
+    projection_digest: str = Field(alias="projectionDigest", pattern=_SHA256_PATTERN)
+    consistency_view_id: str = Field(
+        alias="consistencyViewId",
+        pattern=_CONSISTENCY_VIEW_ID_PATTERN,
+    )
+    consistency_view_digest: str = Field(
+        alias="consistencyViewDigest",
+        pattern=_SHA256_PATTERN,
+    )
+    ranking_method: Literal["canonical-state-confidence-review-attention/v1"] = Field(
+        default="canonical-state-confidence-review-attention/v1",
+        alias="rankingMethod",
+    )
+    hypothesis_count: int = Field(
+        alias="hypothesisCount",
+        ge=0,
+        le=_MAX_RANKED_HYPOTHESES,
+    )
+    hypotheses: list[RankedHypothesisView] = Field(max_length=_MAX_RANKED_HYPOTHESES)
+    authority_boundary: HypothesisAttentionRankingAuthorityBoundary = Field(
+        alias="authorityBoundary"
+    )
+
+
 class VerifiedCanonicalGraphViewReader:
     """Project one current durable Graph Snapshot without Graph write authority."""
 
     def __init__(self, database: Path | None) -> None:
-        self._database = self._validated_database(database) if database is not None else None
+        self._database = _validated_graph_database(database) if database is not None else None
 
     def read(self, *, campaign: str, snapshot_id: str) -> VerifiedCanonicalGraphView:
         if self._database is None:
@@ -200,25 +325,74 @@ class VerifiedCanonicalGraphViewReader:
             raise CanonicalGraphViewTooLarge("Canonical Graph Snapshot exceeds view limits")
         return _build_view(snapshot)
 
-    @staticmethod
-    def _validated_database(database: Path) -> Path:
-        path = Path(os.path.abspath(os.fspath(database.expanduser())))
+
+class VerifiedHypothesisAttentionRankingReader:
+    """Derive a bounded review order without creating decision authority."""
+
+    def __init__(self, database: Path | None) -> None:
+        self._database = _validated_graph_database(database) if database is not None else None
+
+    def read(
+        self,
+        *,
+        campaign: str,
+        snapshot_id: str,
+    ) -> VerifiedHypothesisAttentionRankingView:
+        if self._database is None:
+            raise HypothesisAttentionRankingUnavailable(
+                "Hypothesis attention rankings are not configured"
+            )
+        _require_identifier(campaign, _CAMPAIGN_PATTERN, label="Campaign")
+        _require_identifier(snapshot_id, _SNAPSHOT_ID_PATTERN, label="Graph Snapshot")
         try:
-            parent_stat = path.parent.lstat()
-            file_stat = path.lstat()
-        except OSError as exc:
-            raise ValueError("Canonical Graph database is unavailable") from exc
-        if (
-            path.parent.is_symlink()
-            or path.parent.is_junction()
-            or path.is_symlink()
-            or path.is_junction()
-            or not stat.S_ISDIR(parent_stat.st_mode)
-            or not stat.S_ISREG(file_stat.st_mode)
-            or file_stat.st_nlink != 1
-        ):
-            raise ValueError("Canonical Graph database path identity is invalid")
-        return path
+            verified = load_verified_current_graph_snapshot_consistency(
+                self._database,
+                campaign_id=campaign,
+                snapshot_id=snapshot_id,
+            )
+        except (
+            GraphConsistencyError,
+            GraphEventLogError,
+            GraphProjectionError,
+            GraphSnapshotError,
+            SQLiteGraphStoreError,
+            OSError,
+            ValueError,
+        ) as exc:
+            raise HypothesisAttentionRankingIntegrityError(
+                "Hypothesis attention ranking authority is not integrity-valid"
+            ) from exc
+        if verified is None:
+            raise HypothesisAttentionRankingNotFound("Canonical Graph Snapshot was not found")
+        snapshot, consistency = verified
+        hypothesis_count = sum(
+            isinstance(node, GraphHypothesis) for node in snapshot.projection.nodes
+        )
+        if hypothesis_count > _MAX_RANKED_HYPOTHESES:
+            raise HypothesisAttentionRankingTooLarge(
+                "Canonical Hypothesis ranking exceeds view limits"
+            )
+        return _build_hypothesis_attention_ranking(snapshot, consistency)
+
+
+def _validated_graph_database(database: Path) -> Path:
+    path = Path(os.path.abspath(os.fspath(database.expanduser())))
+    try:
+        parent_stat = path.parent.lstat()
+        file_stat = path.lstat()
+    except OSError as exc:
+        raise ValueError("Canonical Graph database is unavailable") from exc
+    if (
+        path.parent.is_symlink()
+        or path.parent.is_junction()
+        or path.is_symlink()
+        or path.is_junction()
+        or not stat.S_ISDIR(parent_stat.st_mode)
+        or not stat.S_ISREG(file_stat.st_mode)
+        or file_stat.st_nlink != 1
+    ):
+        raise ValueError("Canonical Graph database path identity is invalid")
+    return path
 
 
 def _build_view(snapshot: GraphSnapshot) -> VerifiedCanonicalGraphView:
@@ -249,6 +423,92 @@ def _build_view(snapshot: GraphSnapshot) -> VerifiedCanonicalGraphView:
         edges=[_edge_view(edge) for edge in projection.edges],
         authorityBoundary=CanonicalGraphViewAuthorityBoundary(),
     )
+
+
+_HYPOTHESIS_STATE_PRIORITY = {
+    GraphHypothesisState.CONTESTED: 0,
+    GraphHypothesisState.SUPPORTED: 1,
+    GraphHypothesisState.OPEN: 2,
+    GraphHypothesisState.CONTRADICTED: 3,
+}
+_HYPOTHESIS_ATTENTION_BAND: dict[GraphHypothesisState, HypothesisAttentionBand] = {
+    GraphHypothesisState.CONTESTED: "conflict-review",
+    GraphHypothesisState.SUPPORTED: "evidence-supported",
+    GraphHypothesisState.OPEN: "evidence-needed",
+    GraphHypothesisState.CONTRADICTED: "contradicted-review",
+}
+
+
+def _build_hypothesis_attention_ranking(
+    snapshot: GraphSnapshot,
+    consistency: GraphConsistencyView,
+) -> VerifiedHypothesisAttentionRankingView:
+    projection = snapshot.projection
+    if (
+        consistency.campaign_id != snapshot.campaign_id
+        or consistency.revision != snapshot.revision
+        or consistency.event_log_head_digest != snapshot.event_log_head_digest
+        or consistency.projection_id != snapshot.projection_id
+        or consistency.projection_digest != snapshot.projection_digest
+    ):
+        raise HypothesisAttentionRankingIntegrityError(
+            "Hypothesis consistency view differs from the current Graph Snapshot"
+        )
+    hypotheses = {
+        node.node_id: node for node in projection.nodes if isinstance(node, GraphHypothesis)
+    }
+    assessments = {item.hypothesis.node_id: item for item in consistency.hypotheses}
+    if len(assessments) != len(consistency.hypotheses) or set(assessments) != set(hypotheses):
+        raise HypothesisAttentionRankingIntegrityError(
+            "Hypothesis consistency coverage differs from the current Graph Snapshot"
+        )
+    ranked = sorted(
+        ((hypotheses[node_id], assessment) for node_id, assessment in assessments.items()),
+        key=lambda item: (
+            _HYPOTHESIS_STATE_PRIORITY[item[1].state],
+            -item[0].confidence,
+            item[0].node_id,
+        ),
+    )
+    views: list[RankedHypothesisView] = []
+    for rank, (hypothesis, assessment) in enumerate(ranked, start=1):
+        _require_hypothesis_assessment_binding(hypothesis, assessment)
+        views.append(
+            RankedHypothesisView(
+                rank=rank,
+                nodeId=hypothesis.node_id,
+                hypothesisType=hypothesis.hypothesis_type,
+                producerId=hypothesis.producer_id,
+                origin=hypothesis.origin,
+                confidence=hypothesis.confidence,
+                state=assessment.state,
+                supportingObservationCount=len(assessment.supporting_observation_ids),
+                contradictingObservationCount=len(assessment.contradicting_observation_ids),
+                attentionBand=_HYPOTHESIS_ATTENTION_BAND[assessment.state],
+            )
+        )
+    return VerifiedHypothesisAttentionRankingView(
+        campaignId=snapshot.campaign_id,
+        snapshotId=snapshot.snapshot_id,
+        snapshotDigest=snapshot.snapshot_digest,
+        projectionId=snapshot.projection_id,
+        projectionDigest=snapshot.projection_digest,
+        consistencyViewId=consistency.view_id,
+        consistencyViewDigest=consistency.view_digest,
+        hypothesisCount=len(views),
+        hypotheses=views,
+        authorityBoundary=HypothesisAttentionRankingAuthorityBoundary(),
+    )
+
+
+def _require_hypothesis_assessment_binding(
+    hypothesis: GraphHypothesis,
+    assessment: GraphHypothesisAssessment,
+) -> None:
+    if assessment.hypothesis != graph_node_ref(hypothesis):
+        raise HypothesisAttentionRankingIntegrityError(
+            "Hypothesis consistency assessment is not bound to its canonical node"
+        )
 
 
 def _node_view(node: GraphNode) -> CanonicalGraphNodeView:

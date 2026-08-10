@@ -160,6 +160,19 @@ const selectors = [
   "#graph-projection-value",
   "#graph-node-list",
   "#graph-edge-list",
+  "#hypothesis-ranking-panel",
+  "#hypothesis-ranking-form",
+  "#hypothesis-ranking-campaign",
+  "#hypothesis-ranking-snapshot-id",
+  "#hypothesis-ranking-load-button",
+  "#hypothesis-ranking-empty",
+  "#hypothesis-ranking-result",
+  "#hypothesis-ranking-campaign-value",
+  "#hypothesis-ranking-count-value",
+  "#hypothesis-ranking-view-value",
+  "#hypothesis-ranking-method-value",
+  "#hypothesis-ranking-snapshot-value",
+  "#hypothesis-ranking-list",
 ];
 const elements = new Map(selectors.map((selector) => [selector, new FakeElement()]));
 elements.get("#campaign-name").value = "web-console-test";
@@ -171,6 +184,8 @@ elements.get("#discovery-campaign").value = "runtime-campaign";
 elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
 elements.get("#graph-campaign").value = "runtime-campaign";
 elements.get("#graph-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+elements.get("#hypothesis-ranking-campaign").value = "runtime-campaign";
+elements.get("#hypothesis-ranking-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
 
 globalThis.document = {
   querySelector(selector) {
@@ -408,6 +423,56 @@ function canonicalGraphView() {
   };
 }
 
+function hypothesisAttentionRanking() {
+  return {
+    apiVersion: "pajin.control-plane/verified-hypothesis-attention-ranking-view/v1alpha1",
+    kind: "VerifiedHypothesisAttentionRankingView",
+    campaignId: "runtime-campaign",
+    snapshotId: `graph-snapshot_${"c".repeat(64)}`,
+    snapshotDigest: "c".repeat(64),
+    projectionId: `graph-projection_${"f".repeat(64)}`,
+    projectionDigest: "f".repeat(64),
+    consistencyViewId: `graph-consistency-view_${"b".repeat(64)}`,
+    consistencyViewDigest: "b".repeat(64),
+    rankingMethod: "canonical-state-confidence-review-attention/v1",
+    hypothesisCount: 2,
+    hypotheses: [{
+      rank: 1,
+      nodeId: `graph-node_${"1".repeat(64)}`,
+      hypothesisType: "contested-runtime",
+      producerId: "pajin.graph.runtime-producer",
+      origin: "agent-derived",
+      confidence: 0.7,
+      state: "contested",
+      supportingObservationCount: 1,
+      contradictingObservationCount: 1,
+      attentionBand: "conflict-review",
+    }, {
+      rank: 2,
+      nodeId: `graph-node_${"2".repeat(64)}`,
+      hypothesisType: "supported-runtime",
+      producerId: "pajin.graph.runtime-producer",
+      origin: "agent-derived",
+      confidence: 0.8,
+      state: "supported",
+      supportingObservationCount: 2,
+      contradictingObservationCount: 0,
+      attentionBand: "evidence-supported",
+    }],
+    authorityBoundary: {
+      canonicalGraphSnapshotVerified: true,
+      currentSnapshotVerified: true,
+      consistencyViewVerified: true,
+      deterministicReviewOrder: true,
+      contentRedacted: true,
+      viewSelectsHypothesis: false,
+      viewRecordsDecision: false,
+      viewSchedulesWork: false,
+      viewAuthorizesExecution: false,
+    },
+  };
+}
+
 function jobView(run, { state = "queued", kind = "campaign" } = {}) {
   return {
     job_id: `job_${"a".repeat(32)}`,
@@ -528,6 +593,52 @@ assert.throws(
   ),
   protocol.ApiProtocolError,
 );
+const validHypothesisAttentionRanking = hypothesisAttentionRanking();
+assert.equal(
+  protocol.validateHypothesisAttentionRanking(
+    validHypothesisAttentionRanking,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  validHypothesisAttentionRanking,
+);
+assert.throws(
+  () => protocol.validateHypothesisAttentionRanking(
+    {
+      ...hypothesisAttentionRanking(),
+      authorityBoundary: {
+        ...hypothesisAttentionRanking().authorityBoundary,
+        viewRecordsDecision: true,
+      },
+    },
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const wronglyOrderedRanking = hypothesisAttentionRanking();
+wronglyOrderedRanking.hypotheses = [
+  { ...wronglyOrderedRanking.hypotheses[1], rank: 1 },
+  { ...wronglyOrderedRanking.hypotheses[0], rank: 2 },
+];
+assert.throws(
+  () => protocol.validateHypothesisAttentionRanking(
+    wronglyOrderedRanking,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const rankingWithGap = hypothesisAttentionRanking();
+rankingWithGap.hypotheses[1].rank = 3;
+assert.throws(
+  () => protocol.validateHypothesisAttentionRanking(
+    rankingWithGap,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
 const validDiscoveryView = discoveryView();
 assert.equal(
   protocol.validateDiscoveryView(
@@ -569,6 +680,7 @@ assert.equal(elements.get("#token-form").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#runs-panel").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#discovery-load-button").disabled, false);
 assert.equal(elements.get("#graph-load-button").disabled, false);
+assert.equal(elements.get("#hypothesis-ranking-load-button").disabled, false);
 
 elements.get("#discovery-campaign").value = "runtime-campaign";
 elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
@@ -598,6 +710,20 @@ assert.equal(elements.get("#graph-edge-count-value").textContent, "2");
 assert.equal(elements.get("#graph-node-list").children.length, 3);
 assert.equal(elements.get("#graph-edge-list").children.length, 2);
 assert.equal(elements.get("#graph-form").attributes.get("aria-busy"), "false");
+
+elements.get("#hypothesis-ranking-campaign").value = "runtime-campaign";
+elements.get("#hypothesis-ranking-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+enqueueFetch(
+  `/v1/hypotheses/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}/attention-ranking`,
+  () => jsonResponse(hypothesisAttentionRanking()),
+);
+await elements.get("#hypothesis-ranking-form").dispatch("submit");
+assert.equal(elements.get("#hypothesis-ranking-result").hidden, false);
+assert.equal(elements.get("#hypothesis-ranking-empty").hidden, true);
+assert.equal(elements.get("#hypothesis-ranking-count-value").textContent, "2");
+assert.equal(elements.get("#hypothesis-ranking-list").children.length, 2);
+assert.equal(elements.get("#hypothesis-ranking-form").attributes.get("aria-busy"), "false");
+assert.match(elements.get("#status-message").textContent, /no decision recorded/);
 
 enqueueFetch(
   "/v1/runs?limit=25&offset=0",
