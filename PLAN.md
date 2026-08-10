@@ -731,6 +731,8 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 ### Phase 9 — Product UX·Operations
 
 - [ ] Campaign·Profile·Scope Builder
+  - [x] `UX-001A` Bug Bounty·CTF typed source 기반 비실행 Profile·Scope draft
+  - [ ] `UX-001B` draft 저장·CLI/Control Plane 읽기 경로와 명시적 compiler handoff
 - [ ] Attack Surface·Graph·Wave Timeline UI
 - [ ] Hypothesis Ranking·Decision Audit
 - [ ] Original·Replay·Control·Retest Diff
@@ -739,6 +741,9 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [ ] OIDC·MFA·ABAC·Worker Identity·mTLS
 - [ ] Object Storage·Distributed Worker·KMS/HSM
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
+
+`UX-001A`는 기존 Bug Bounty·CTF typed source와 exact Profile의 비실행 draft만 만든다. 다음
+`UX-001B`는 preview를 승인 권위로 쓰지 않고 저장·조회와 기존 compiler handoff를 연결한다.
 
 ## 미결정 제품 사항
 

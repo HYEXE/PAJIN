@@ -1,5 +1,15 @@
 """Campaign workflow backends."""
 
+from pajin.workflow.campaign_builder import (
+    CAMPAIGN_BUILDER_DRAFT_API_VERSION,
+    CampaignBuilderError,
+    CampaignBuilderGate,
+    CampaignBuilderScopePreview,
+    CampaignBuilderSourceKind,
+    CampaignBuilderTargetInput,
+    CampaignProfileScopeDraft,
+    build_campaign_profile_scope_draft,
+)
 from pajin.workflow.campaign_profile import (
     CAMPAIGN_PROFILE_API_VERSION,
     CAMPAIGN_PROFILE_CATALOG_API_VERSION,
@@ -87,6 +97,7 @@ from pajin.workflow.profile_compatibility import (
 )
 
 __all__ = [
+    "CAMPAIGN_BUILDER_DRAFT_API_VERSION",
     "CAMPAIGN_PROFILE_API_VERSION",
     "CAMPAIGN_PROFILE_CATALOG_API_VERSION",
     "COMMON_CAMPAIGN_ENGINE_CONTRACT_API_VERSION",
@@ -107,12 +118,18 @@ __all__ = [
     "LEGACY_CAMPAIGN_PROFILE_COMPILATION_API_VERSION",
     "LEGACY_CAMPAIGN_PROFILE_PROJECTION_API_VERSION",
     "LEGACY_MODE_PROFILE_COMPILER_API_VERSION",
+    "CampaignBuilderError",
+    "CampaignBuilderGate",
+    "CampaignBuilderScopePreview",
+    "CampaignBuilderSourceKind",
+    "CampaignBuilderTargetInput",
     "CampaignProfileBenchmarkExpectation",
     "CampaignProfileCatalog",
     "CampaignProfileCompatibilityError",
     "CampaignProfileError",
     "CampaignProfilePurpose",
     "CampaignProfileReportingSemantics",
+    "CampaignProfileScopeDraft",
     "CommonCampaignEngineContract",
     "CommonCampaignExecutionPlanAuthority",
     "CommonEngineAIPlannerThresholds",
@@ -148,6 +165,7 @@ __all__ = [
     "RegisteredCampaignProfile",
     "RegisteredCommonEngineImplementation",
     "RunOutcome",
+    "build_campaign_profile_scope_draft",
     "compile_legacy_campaign_profile",
     "execute_common_engine_dual_runtime_fixture",
     "measure_common_engine_behavioral_parity",
