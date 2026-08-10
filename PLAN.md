@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `VAL-002` — ValidationDepthPolicy와 증거 요구 수준 계약
+- 현재 우선순위: Phase 8 `VAL-003` — Profile별 Assurance Floor 결박
 
 ## 제품 목표
 
@@ -698,48 +698,20 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `CHAIN-004` Cross-tenant Retrieval → Data Exposure
 - [x] `CHAIN-005` MCP Authorization Failure → Privileged Action
 - [x] `VAL-001` Mode-neutral Claim Replay
-- [ ] `VAL-002` ValidationDepthPolicy
+- [x] `VAL-002` ValidationDepthPolicy
 - [ ] `VAL-003` Profile별 Assurance Floor
 - [ ] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
 
-`CHAIN-001`은 기존 DISC-003C·ORCH-001 권위를 다시 열어 non-anonymous
-`http-authentication`과 같은 Campaign Target·exact route의 `http-rag/index-management` Surface를
-mode-neutral 계약으로 결박한다. 결과는 `hypothesized-not-validated`이고 Capability·execution·Claim
-Replay·Finding confirmation은 모두 false다.
+`CHAIN-001~005`는 각각 sealed Surface·WALK predecessor를 다시 검증해 Auth/RAG, Upload/RAG/Tool,
+Prompt/URL/Internal API, Tenant Retrieval/Data, MCP Authorization/Privileged Action 순서를 결박한다.
+모두 `hypothesized-not-validated`이며 metadata나 topology에서 Capability·execution·Replay·Finding 권위를
+추론하지 않는다. 상세 locator·lineage 경계는 각 CHAIN 계약이 소유한다.
 
-`CHAIN-002`는 기존 WALK-003 sealed authority와 그 안의 exact WALK-002 Run·Surface Snapshot·RAG
-Hypothesis 계보를 다시 열어 File Upload → RAG Injection → Tool Abuse를 3개 ordered stage와 2개
-`enables` edge로 결박한다. P0-D2B는 의미·순서 대조에만 사용하고 provider·matcher·measurement
-증거는 admission하지 않는다. 결과는 동일하게 `hypothesized-not-validated`이며 Capability·execution·
-Claim Replay·Finding confirmation은 모두 false다.
-
-`CHAIN-003`은 MCP discovery의 top-level `string/uri` argument만 `mcp-url-tool`로, OpenAPI의 exact
-boolean `x-pajin-internal-api: true`만 `http-internal-api`로 admission한다. 같은 MCP Target·server의
-prompt와 URL Tool, 같은 Campaign의 명시적 Internal API를 두 sealed Surface Snapshot에서 다시 검증해
-3개 ordered stage와 2개 `enables` edge로 결박한다. URL 값·설명·raw schema·private address·route 이름은
-권위로 사용하지 않는다. 결과는 `hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 Capability·
-execution·Claim Replay·Finding confirmation은 모두 false다.
-
-`CHAIN-004`는 OpenAPI operation의 exact version-1 `x-pajin-tenant-retrieval`과
-`x-pajin-data-response` 선언만 별도 cumulative adapter에서 typed Surface로 admission한다. 기존 exact
-`http-rag/retrieval`과 결박된 tenant selector shape와 code-owned data class만 보존하고 tenant 값·query·
-response content는 보존하지 않는다. 같은 Campaign Target·exact route의 두 Surface를 sealed
-`SurfaceSnapshotAuthority`에서 다시 검증해 2개 ordered stage와 1개 `enables` edge로 결박한다. 결과는
-`hypothesized-not-validated`, `surfaceEvidenceOnly=true`이며 cross-tenant access·data exposure·Capability·
-execution·Claim Replay·Finding confirmation은 모두 false다.
-
-`CHAIN-005`는 기존 sealed WALK-003 MCP authorization hypothesis와 그 안의 exact
-`CapabilityDefinition`을 다시 검증해 Authorization Failure → Privileged Action을 2개 ordered stage와
-1개 `enables` edge로 결박한다. privileged action은 `approvalRequired=true`이고 exact
-`independent-user-approval` control 아래 등록된 MCP Capability로만 한정한다. risk tier·side effect·Tool
-이름·설명·argument·synthetic Finding으로 권위를 추론하지 않는다. 결과는
-`hypothesized-not-validated`, `hypothesisEvidenceOnly=true`이며 authorization failure confirmation·approval·
-Capability Grant·execution·Claim Replay·Finding confirmation은 모두 false다.
-
-`VAL-001`은 기존 sealed WALK-005B2 fresh validity Replay를 같은 exact WALK-003 publication의
-CHAIN-002/005에만 결박한다. Claim·approval·Grant·Permit·dispatch·Worker·evidence 좌표를 고정하고 결과를
-`validity-reproduced-not-confirmed`로 제한한다. 추가 실행·Replay·confirmation·Finding authority와
-CHAIN-001/003/004는 계속 닫힌다. 다음 `VAL-002`는 Validation depth별 추가 증거 요구를 정의한다.
+`VAL-001`은 같은 exact WALK-003 publication의 CHAIN-002/005와 sealed WALK-005B2 validity Replay만
+결박하고 `validity-reproduced-not-confirmed`로 제한한다. `VAL-002`는 단일 validity Replay, exact 세 Control,
+최소 2회 repeated controlled Replay의 세 요구 depth를 mode-neutral catalog로 고정한다. v1 Claim ceiling은
+validity이고 Profile floor·증거 판정·실행·confirmation은 false다. 다음 `VAL-003`은 exact PROF-001 Profile을
+최소 depth에 결박하되 Campaign 선택이나 권한 확대를 허용하지 않는다.
 
 ### Phase 9 — Product UX·Operations
 

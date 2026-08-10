@@ -3,6 +3,20 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## VAL-002 validity-only 요구 정책 경계
+
+- 상태: 단일 validity Replay, 세 Control 결박, 최소 2회 repeated controlled Replay의 mode-neutral depth
+  catalog는 구현됐고 Profile floor와 실제 증거 충족 판정은 닫힘
+- 현재 보장: exact 세 depth·ordinal·Claim/Control 요구·최소 반복·fresh lineage와 false authority marker를
+  content-addressed policy로 고정한다. unknown alias, 순서·요구·digest 치환과 boolean 권위 상승은 fail
+  closed한다.
+- 제한: v1 Claim ceiling은 validity다. impact·severity 요구, exact Profile mapping, 실제 Replay·Control
+  receipt admission, depth 만족 판정, 실행·confirmation·Finding authority가 없다. 최소 2회 요구는 실행
+  schedule이나 aggregate outcome이 아니며 local freshness는 off-host 조직 attestation이 아니다.
+- 영향: 등록된 depth는 충족해야 할 조건일 뿐 Campaign이나 evidence가 그 depth에 도달했다는 증명이 아니다.
+- 해소 조건: `VAL-003`에서 exact PROF-001 Profile을 최소 depth에 비실행적으로 결박하고, `VAL-004`에서
+  Baseline·Negative Control·Counterfactual·N-run evidence를 기존 authority로 검증한다.
+
 ## VAL-001 CHAIN-002/005 전용 fresh validity Replay 경계
 
 - 상태: exact sealed WALK-005B2 validity Claim Replay를 CHAIN-002/005에 mode-neutral하게 결박하는 첫
@@ -17,9 +31,9 @@
   독립 실행 증명이 아니다.
 - 영향: VAL-001 authority는 완료된 Replay 증거 projection이며 재사용 가능한 ticket, approval, Grant, Permit,
   dispatch, Validation Decision, Finding 또는 Report가 아니다.
-- 해소 조건: CHAIN-001/003/004는 각 exact Candidate·fresh Replay 경계를 별도로 구현한다. `VAL-002` 이후
-  Validation depth별 impact·severity·negative control·counterfactual·N-run 요구와 confirmation gate를
-  별도 authority로 결박한다.
+- 해소 조건: CHAIN-001/003/004는 각 exact Candidate·fresh Replay 경계를 별도로 구현한다. `VAL-002`는
+  validity-only 요구를 정의했으며 실제 Control·N-run evidence와 confirmation gate는 `VAL-004` 이후 별도
+  authority가 결박해야 한다.
 
 ## CHAIN-005 approval-gated Capability 의미 경계
 
