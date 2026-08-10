@@ -40,30 +40,11 @@ File Upload
 Phase 4 Exit Gate: 하나의 Cross-surface Chain이 Recon부터 Retest까지 닫히고, 동일
 Benchmark에서 결정론적 Baseline과 Shadow Decision을 비교할 수 있어야 한다.
 
-### WALK-004 완료 결과
+### WALK-004/005 완료 경계
 
-- [x] `pajin.dev/walking-observation-replan/v1alpha1` content-addressed authority를 추가했다.
-- [x] 봉인된 WALK-003 `registered-not-authorized` 상태만 Observation으로 Admission한다.
-- [x] admitted Observation이 baseline과 다른 `request-independent-approval` Plan을 선택한다.
-- [x] Graph에 `supports`, `enables`, `depends-on` 관계를 기록하고 `contradicts` 어휘를
-  예약했다. 불일치 증거는 Graph 생성 전에 거부한다.
-- [x] forged evidence, Run·Hypothesis 치환, stale·repeated·cyclic state 및
-  Scope·Snapshot·Capability 확대를 fail closed한다.
-- [x] 봉인된 artifact와 exact audit event에서 전체 권위를 재구성하는 reader를 제공한다.
-- [x] 실행 상태는 `proposed-not-authorized`이며 Grant, Permit, ToolRequest, MCP argument,
-  Worker dispatch를 생성하지 않는다.
-- [x] 기존 A4/A5, ORCH-001/002, WALK-001/002/003 wire shape과 reader를 변경하지 않았다.
-
-### WALK-005 목표
-
-WALK-004의 비실행 승인 요청 Plan 뒤에 별도로 승인되고 허가된 실행 결과만 Candidate로
-Admission하며, 기존 Atomic Validation·Restricted Replay·Report·Retest 권위를 재사용해 첫
-Hybrid Chain의 검증 폐루프를 닫는다.
-
-먼저 기존 Candidate, Claim, Replay, Report, Retest 계약과 WALK-004 사이에서 이미 충족된
-부분과 실제 누락된 연결을 조사한다. 승인 receipt, CapabilityGrant, ActionPermit, Gateway,
-Budget, Policy 경계를 새 Plan이 우회하거나 암묵적으로 생성하지 않도록 최소 additive
-bridge를 설계한다.
+WALK-004는 sealed `registered-not-authorized` Observation과 bounded replan만 admission하고 실행 권위를
+만들지 않는다. WALK-005는 별도로 승인·Permit된 결과만 기존 Candidate·Validation·Replay·Report·Retest
+authority에 연결한다. 상세 wire와 음성 경계는 각 WALK 계약이 소유한다.
 
 `WALK-005A`는 완료됐다. WALK-004 authority와 별도 실행 Run을 다시 열고, 정확한 승인
 receipt가 canonical CapabilityGrant digest에 결박된 채 consumed ActionPermit dispatch보다 먼저
@@ -746,24 +727,11 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [ ] Object Storage·Distributed Worker·KMS/HSM
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
 
-`UX-001B3`는 B2 exact reader로 원 typed source를 다시 검증한 뒤 Bug Bounty는 별도 기존 Scope Approval,
-CTF는 source 내 기존 authorization을 server current time에 각 기존 compiler로 전달한다. 결과는 canonical
-Campaign 값이지만 persistence·Capability·Permit·Run·execution authority는 만들지 않는다. 이로써 첫
-Campaign·Profile·Scope Builder 단위를 마쳤고 후속 Attack Surface·Graph·Wave Timeline UI의 입력 경계를
-보존했다.
-
-`UX-002A`는 `PAJIN_CP_DISCOVERY_RUN_ROOT` 아래 exact Campaign·Hypothesis Run만 받아 Hypothesis,
-Recon source, Surface projection 세 sealed Run의 digest·artifact·event authority를 다시 검증한다. 응답과
-Web Console은 bounded Attack Surface와 Recon→Hypothesis timeline만 표시하며 canonical Graph,
-Capability, Permit, execution authority는 명시적으로 포함하지 않는다. 후속 `UX-002B`는 이 경계를
-유지한 채 새 store나 inferred edge 없이 기존 canonical Graph Snapshot/admission authority를 재검증한다.
-
-`UX-002B`는 `PAJIN_CP_GRAPH_DATABASE`로 지정된 기존 single-Campaign SQLite Graph Store를 read-only로
-열어 schema·Event Log·node index·Projection history·Snapshot chain 전체를 다시 검증한다. complete latest
-Event prefix와 current Projection이 일치하고 요청 Snapshot이 exact head일 때만 최대 500 node·1,000 edge의
-redacted view를 Web Console에 표시한다. GET은 initialize·migration·reconciliation·Snapshot capture·admission을
-수행하지 않으며 content·Capability·Permit·execution authority를 반환하지 않는다. 이로써 Attack Surface·
-Graph·Wave Timeline UI의 첫 제품 단위를 마치며 다음 제품 단위는 Hypothesis Ranking·Decision Audit이다.
+`UX-001B3`는 exact typed source와 기존 authorization을 기존 compiler에 전달하되 persistence·실행 권위를
+만들지 않아 Builder 단위를 닫았다. `UX-002A`는 sealed Discovery authority의 Surface·Wave만, `UX-002B`는
+existing SQLite Graph authority의 exact current Snapshot을 최대 500 node·1,000 edge redacted view로 표시한다.
+두 GET은 새 Graph·admission·Capability·Permit·execution authority를 만들지 않는다. 다음 제품 단위는
+Hypothesis Ranking·Decision Audit이다. 세부 검증 경계는 각 UX 계약과 ADR이 소유한다.
 
 ## 미결정 제품 사항
 
