@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0152: Bind Repeated WALK Replays without New Execution Authority](docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md)
 - [ADR-0151: Bind Stateless WALK Controls to VAL-001](docs/adr/0151-bind-stateless-walking-controls-to-val001.md)
 - [ADR-0150: Evaluate KISA Profile Floors from Sealed Evidence](docs/adr/0150-evaluate-kisa-profile-floors-from-sealed-evidence.md)
 - [ADR-0149: Bind Profile Assurance Floors without Campaign Selection](docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md)

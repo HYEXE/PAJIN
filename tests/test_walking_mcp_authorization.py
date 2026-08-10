@@ -164,6 +164,16 @@ from pajin.workflow.mode_neutral_profile_evidence import (
     verify_mode_neutral_profile_validation_evidence,
     walking_claim_control_approval_receipt,
 )
+from pajin.workflow.mode_neutral_repeated_profile_evidence import (
+    ModeNeutralRepeatedClaimReplayAuthority,
+    ModeNeutralRepeatedProfileEvidenceError,
+    ModeNeutralRepeatedProfileValidationEvidenceAssessment,
+    compile_mode_neutral_repeated_claim_replay,
+    evaluate_mode_neutral_repeated_profile_validation_evidence,
+    registered_mode_neutral_repeated_claim_replay_contract,
+    verify_mode_neutral_repeated_claim_replay,
+    verify_mode_neutral_repeated_profile_validation_evidence,
+)
 from pajin.workflow.tool_loop import PendingToolIntent, ToolLoopApproval
 
 HTTP_TARGET = "https://staging.example.invalid/api/openapi.json"
@@ -2071,6 +2081,52 @@ def _val004b_claim_context(
     return source, replan, replay, claim
 
 
+def _val004c_repeated_claim_context(
+    tmp_path: Path,
+    campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    replan = _replan_outcome(tmp_path, campaign, monkeypatch, mcp_source=source)
+    original = _walking_execution_evidence(tmp_path, campaign, replan)
+    candidate = WalkingCandidateAdmissionRunner(output_root=tmp_path / "candidate").run(
+        campaign,
+        replan,
+        original,
+    )
+    replay_plan = WalkingMCPReplayPlanRunner(output_root=tmp_path / "replay-plan").run(
+        campaign,
+        candidate,
+    )
+    primary_execution = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_val004c_primary_replay",
+        replay_plan=replay_plan.plan,
+    )
+    primary = WalkingMCPClaimReplayRunner(output_root=tmp_path / "primary-replay").run(
+        campaign,
+        replay_plan,
+        primary_execution,
+    )
+    additional_execution = _walking_execution_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        identity_suffix="_val004c_additional_replay",
+        replay_plan=replay_plan.plan,
+    )
+    additional = WalkingMCPClaimReplayRunner(output_root=tmp_path / "additional-replay").run(
+        campaign,
+        replay_plan,
+        additional_execution,
+    )
+    chain = compile_file_upload_rag_tool_abuse_chain(campaign, source)
+    claim = compile_mode_neutral_claim_replay(campaign, chain, source, primary)
+    return source, replan, primary, additional, claim
+
+
 def _val004b_control_evidence(
     tmp_path: Path,
     campaign: CampaignManifest,
@@ -2290,6 +2346,200 @@ def test_val004b_rejects_cross_execution_reuse_forgery_and_mutated_seal(
     copied.write_bytes(copied.read_bytes() + b"\n")
     with pytest.raises(ModeNeutralProfileEvidenceError, match="sealed predecessors"):
         load_mode_neutral_claim_control_authority(campaign, source, replay, outcome)
+
+
+@pytest.mark.parametrize("mode", list(CampaignMode))
+def test_val004c_binds_two_replays_and_satisfies_repeated_controlled_floor(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: CampaignMode,
+) -> None:
+    payload = _campaign(sample_campaign).model_dump(mode="json", by_alias=True)
+    payload["spec"]["mode"] = mode.value
+    campaign = CampaignManifest.model_validate(payload)
+    source, replan, primary, additional, claim = _val004c_repeated_claim_context(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+    control_plan = compile_mode_neutral_claim_control_plan(claim)
+    control_evidence = _val004b_control_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        control_plan,
+    )
+    controls = ModeNeutralClaimControlRunner(output_root=tmp_path / "controls").run(
+        campaign,
+        control_plan,
+        source,
+        primary,
+        control_evidence,
+    )
+    repeated = compile_mode_neutral_repeated_claim_replay(
+        campaign,
+        claim,
+        source,
+        primary,
+        additional,
+    )
+    assessment = evaluate_mode_neutral_repeated_profile_validation_evidence(
+        "pajin.profile.ai-assessment",
+        "1.0.0",
+        campaign,
+        repeated,
+        source,
+        primary,
+        additional,
+        controls,
+    )
+
+    contract = registered_mode_neutral_repeated_claim_replay_contract()
+    assert contract.replay_repetition_count == 2
+    assert contract.session_policy.value == "stateless"
+    assert contract.campaign_mode_constraint == "none"
+    assert contract.additional_execution_authorized is False
+    assert primary.authority.plan == additional.authority.plan
+    assert repeated.replay_repetition_count == 2
+    assert len(set(repeated.independence.execution_run_ids)) == 3
+    assert len(set(repeated.independence.replay_publication_run_ids)) == 2
+    assert assessment.achieved_depth.value == "repeated-controlled-validity-replay"
+    assert assessment.achieved_requirement.minimum_replay_repetitions == 2
+    assert len(set(assessment.independence.execution_run_ids)) == 6
+    assert assessment.profile_selection_attested is False
+    assert assessment.execution_authorized is False
+    assert assessment.confirmation_authorized is False
+    assert assessment.finding_confirmed is False
+    assert (
+        ModeNeutralRepeatedProfileValidationEvidenceAssessment.model_validate(
+            assessment.model_dump(mode="json", by_alias=True)
+        )
+        == assessment
+    )
+    assert (
+        verify_mode_neutral_repeated_claim_replay(
+            repeated,
+            campaign,
+            source,
+            primary,
+            additional,
+        )
+        == repeated
+    )
+    assert (
+        verify_mode_neutral_repeated_profile_validation_evidence(
+            assessment,
+            campaign,
+            source,
+            primary,
+            additional,
+            controls,
+        )
+        == assessment
+    )
+
+
+def test_val004c_rejects_replay_reuse_predecessor_swap_and_authority_escalation(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source, replan, primary, additional, claim = _val004c_repeated_claim_context(
+        tmp_path,
+        campaign,
+        monkeypatch,
+    )
+
+    with pytest.raises(ModeNeutralRepeatedProfileEvidenceError, match="independent"):
+        compile_mode_neutral_repeated_claim_replay(
+            campaign,
+            claim,
+            source,
+            primary,
+            primary,
+        )
+
+    foreign = _walking_mcp_claim_replay_outcome(tmp_path, campaign, monkeypatch)
+    with pytest.raises(ModeNeutralRepeatedProfileEvidenceError, match="could not bind"):
+        compile_mode_neutral_repeated_claim_replay(
+            campaign,
+            claim,
+            source,
+            primary,
+            foreign,
+        )
+
+    contract = registered_mode_neutral_repeated_claim_replay_contract()
+    raw_contract = contract.model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    raw_contract["additionalExecutionAuthorized"] = 1
+    with pytest.raises(ValidationError, match="boolean false"):
+        type(contract).model_validate(raw_contract)
+
+    repeated = compile_mode_neutral_repeated_claim_replay(
+        campaign,
+        claim,
+        source,
+        primary,
+        additional,
+    )
+    with pytest.raises(ModeNeutralRepeatedProfileEvidenceError, match="could not"):
+        verify_mode_neutral_repeated_claim_replay(
+            repeated,
+            campaign,
+            source,
+            additional,
+            primary,
+        )
+
+    raw = repeated.model_dump(mode="json", by_alias=True)
+    raw["additionalReplayAuthorized"] = True
+    with pytest.raises(ValidationError, match="boolean false"):
+        ModeNeutralRepeatedClaimReplayAuthority.model_validate(raw)
+
+    raw = repeated.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["claimReplays"][1] = raw["claimReplays"][0]
+    with pytest.raises(ValidationError, match="disjoint"):
+        ModeNeutralRepeatedClaimReplayAuthority.model_validate(raw)
+
+    control_plan = compile_mode_neutral_claim_control_plan(claim)
+    control_evidence = _val004b_control_evidence(
+        tmp_path,
+        campaign,
+        replan,
+        control_plan,
+    )
+    controls = ModeNeutralClaimControlRunner(output_root=tmp_path / "controls").run(
+        campaign,
+        control_plan,
+        source,
+        primary,
+        control_evidence,
+    )
+    assessment = evaluate_mode_neutral_repeated_profile_validation_evidence(
+        "pajin.profile.ai-assessment",
+        "1.0.0",
+        campaign,
+        repeated,
+        source,
+        primary,
+        additional,
+        controls,
+    )
+    raw_assessment = assessment.model_dump(mode="json", by_alias=True)
+    raw_assessment["assessmentId"] = ""
+    raw_assessment["assessmentDigest"] = ""
+    raw_assessment["independence"]["requestIds"][2] = raw_assessment["independence"]["requestIds"][
+        3
+    ]
+    with pytest.raises(ValidationError, match="disjoint"):
+        ModeNeutralRepeatedProfileValidationEvidenceAssessment.model_validate(raw_assessment)
 
 
 def test_walking_mcp_confirmation_seals_report_and_remediation_baseline(

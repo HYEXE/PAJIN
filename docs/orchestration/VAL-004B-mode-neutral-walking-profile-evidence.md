@@ -116,9 +116,10 @@ non-boolean authority markers, unknown Profiles and insufficient floors.
 
 VAL-004B supports only VAL-001 CHAIN-002 and CHAIN-005 because they share the exact WALK-003 and
 WALK-005B2 predecessor. It supports only the registered stateless MCP text schema. A second fresh
-Replay authority does not exist yet, so mode-neutral repeated-controlled evidence remains a future
-VAL-004C slice. All evidence remains PAJIN-local sealed-Run evidence, not off-host organizational or
-public cryptographic attestation. The v1 Claim ceiling remains validity.
+Replay remains outside this wire, so VAL-004B alone cannot produce mode-neutral repeated-controlled
+evidence. VAL-004C composes a separate additive repeated authority without changing this assessment.
+All evidence remains PAJIN-local sealed-Run evidence, not off-host organizational or public
+cryptographic attestation. The v1 Claim ceiling remains validity.
 
 ## Compatibility and rollback
 
@@ -129,6 +130,7 @@ VAL-004B module, tests, contract and ADR-0151 without rewriting sealed predecess
 ## Related documents
 
 - [VAL-004A contract](VAL-004A-kisa-profile-validation-evidence.md)
+- [VAL-004C contract](VAL-004C-mode-neutral-repeated-walking-profile-evidence.md)
 - [VAL-003 contract](VAL-003-profile-assurance-floor.md)
 - [VAL-002 contract](VAL-002-validation-depth-policy.md)
 - [VAL-001 contract](VAL-001-mode-neutral-claim-replay.md)

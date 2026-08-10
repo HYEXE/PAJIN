@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 8 — Coverage·Validation 일반화
-- 현재 우선순위: Phase 8 `VAL-004C` — VAL-001 Claim용 repeated fresh Replay evidence 결박
+- 현재 단계: Phase 9 — Product UX·Operations
+- 현재 우선순위: Campaign·Profile·Scope Builder
 
 ## 제품 목표
 
@@ -700,11 +700,11 @@ Exit Gate: Supervisor가 권한을 확대할 수 없고 모든 실행이 정확�
 - [x] `VAL-001` Mode-neutral Claim Replay
 - [x] `VAL-002` ValidationDepthPolicy
 - [x] `VAL-003` Profile별 Assurance Floor
-- [ ] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
+- [x] `VAL-004` Baseline·Negative Control·Counterfactual·N-run Replay
   - [x] `VAL-004A` sealed KISA Profile Validation Evidence
   - [x] `VAL-004B` VAL-001 Claim용 mode-neutral Control·session evidence
   - [x] VAL-002 Replay 격리 정책과 상속 HTTP Surface 등록 정합성 안정화
-  - [ ] `VAL-004C` VAL-001 Claim용 repeated fresh Replay evidence
+  - [x] `VAL-004C` VAL-001 Claim용 repeated fresh Replay evidence
 
 `CHAIN-001~005`는 각각 sealed Surface·WALK predecessor를 다시 검증해 Auth/RAG, Upload/RAG/Tool,
 Prompt/URL/Internal API, Tenant Retrieval/Data, MCP Authorization/Privileged Action 순서를 결박한다.
@@ -723,8 +723,10 @@ Replay와 exact 세 Control을 다시 검증해 이 요구를 실제 증거에 �
 Control을 재사용하지 않고 VAL-001 WALK Claim과 exact-match하는 stateless MCP text Control materializer,
 pre-dispatch Plan receipt, source·Replay·세 Control의 disjoint Run/request/Grant/Permit/approval/Worker/evidence
 좌표를 추가한다. VAL-001은 fresh Replay가 1회뿐이므로 single·controlled depth만 증명하고
-`ai-assessment`의 repeated-controlled floor는 fail closed한다. 다음 `VAL-004C`는 Control 실행을 Replay로
-오인하지 않고 두 번째 exact fresh Replay와 그 독립성 증거를 별도 authority로 결박한다.
+`VAL-004C`는 같은 exact WALK-005B1 Plan을 유지하되 별도 WALK-005B2 approval·Grant·Permit·dispatch·Run을
+가진 두 번째 Replay를 추가한다. source·두 Replay·세 Control의 6개 실행 계보를 pairwise-disjoint하게
+검증하며 Control 실행을 Replay repetition으로 세지 않는다. 이 증거가 있으면 `ai-assessment`의
+repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·confirmation·Finding 권위는 계속 false다.
 
 ### Phase 9 — Product UX·Operations
 
