@@ -432,6 +432,14 @@ execution, confirmation, or Finding authority. See the
 [VAL-002 contract](docs/orchestration/VAL-002-validation-depth-policy.md) and
 [ADR-0148](docs/adr/0148-register-validation-depth-requirements-without-evidence-authority.md).
 
+VAL-003 binds every exact PROF-001 Profile to a minimum VAL-002 requirement: repeated controlled
+validity Replay for AI Assessment, controlled validity Replay for Bug Hunt and Pentest, and one
+validity Replay for CTF. The mapping embeds both code-owned catalogs and accepts higher registered
+depth requirements by ordinal, but it cannot select a Profile, inspect evidence, mutate a Campaign,
+execute work, confirm a Finding, or infer impact or severity assurance. See the
+[VAL-003 contract](docs/orchestration/VAL-003-profile-assurance-floor.md) and
+[ADR-0149](docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.
