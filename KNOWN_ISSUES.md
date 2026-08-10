@@ -3,51 +3,54 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## VAL-004A KISA evidence adapter 경계
+## VAL-004B mode-neutral WALK evidence 경계
 
-- 상태: existing KISA M03·M06·A04의 sealed validity Replay·세 Control을 exact Profile floor에 결박하는 첫
-  evidence evaluation adapter는 구현됐고 VAL-001 WALK Claim용 mode-neutral adapter는 닫힘
-- 현재 보장: source·Replay·Control Run seal과 exact validity Claim, 1~20회 supporting fresh-session Replay,
-  canonical Baseline·Negative Control·Counterfactual Plan·request·attempt·receipt·reconciliation, root/child
-  Capability accounting을 다시 검증한다. source·Claim·scenario·original request는 같고 request·session·
-  Capability·evidence lineage는 독립적이어야 한다. set 순서와 무관한 content-addressed assessment만
-  `profile-floor-satisfied-not-confirmed`로 발행한다.
-- 제한: current adapter는 KISA-specific이다. VAL-001 WALK MCP Replay와 KISA Control은 Candidate·Claim·
-  original request·Tool·session 의미가 달라 결합할 수 없다. 모든 증거는 PAJIN-local sealed Run이며 Profile
-  선택, Campaign 변경, impact·severity, 실행·confirmation·Finding authority는 없다.
-- 영향: existing KISA evidence는 registered Profile floor 충족을 증명할 수 있지만 VAL-001 Chain evidence나
-  임의 Campaign·Mode의 충족 증명으로 일반화할 수 없다.
-- 해소 조건: `VAL-004B`에서 VAL-001 exact Claim과 호환되는 mode-neutral Control materializer와 explicit
-  stateless/session·independence evidence를 별도 authority로 구현한다.
+- 상태: VAL-001 CHAIN-002/005 exact validity Claim에 stateless Baseline·Negative Control·Counterfactual과
+  Profile floor 평가를 결박하는 adapter는 구현됐고 repeated fresh Replay는 닫힘
+- 현재 보장: code-owned exact text Control materializer, pre-dispatch Plan receipt, 기존 approval·단일 호출
+  Grant·Permit·Gateway·Worker·Run seal을 검증한다. source·Replay·세 Control의 Run/root·execution·request·
+  Grant·Permit·approval·Worker·Run-qualified evidence 좌표는 모두 독립적이어야 한다. session 필드를 만들지
+  않고 exact one-field text schema와 `sessionPolicy=stateless`를 명시한다. Control publication은 원 execution
+  evidence를 byte-exact하게 다시 봉인한다.
+- 제한: VAL-001은 fresh Replay가 1회뿐이므로 `single-validity-replay`와
+  `controlled-validity-replay`만 증명한다. `repeated-controlled-validity-replay`와 `ai-assessment` floor,
+  CHAIN-001/003/004, sessionful Tool, impact·severity, Profile 선택, Campaign 변경, 실행·confirmation·Finding
+  authority는 지원하지 않는다. 모든 증거는 PAJIN-local sealed Run이다.
+- 영향: `ctf`, `bug-hunt`, `pentest` floor는 VAL-001 WALK evidence로 평가할 수 있지만 `ai-assessment`는
+  증거 부족으로 fail closed한다. KISA VAL-004A evidence와 혼합하지 않는다.
+- 해소 조건: `VAL-004C`에서 두 번째 exact fresh WALK Replay와 source·기존 Replay·추가 Replay·Control 간
+  독립성 증거를 별도 authority로 구현한다.
 
 ## VAL-003 Profile별 assurance floor 경계
 
-- 상태: exact PROF-001 Profile별 최소 VAL-002 validation depth와 KISA-specific evidence 충족 판정은
-  구현됐고 mode-neutral VAL-001 evidence admission은 닫힘
+- 상태: exact PROF-001 Profile별 최소 VAL-002 validation depth, KISA evidence와 VAL-001 WALK single·
+  controlled evidence 충족 판정은 구현됐고 WALK repeated-controlled admission은 닫힘
 - 현재 보장: complete registered Profile·Profile digest와 complete registered Validation depth
   requirement·ordinal·digest를 하나의 content-addressed policy로 고정한다. `ai-assessment`는
   `repeated-controlled-validity-replay`, `bug-hunt`·`pentest`는 `controlled-validity-replay`, `ctf`는
   `single-validity-replay`를 최소로 요구한다. unknown Profile·depth, stale catalog, mapping·ordinal·digest
   치환과 boolean 권위 상승은 fail closed한다.
 - 제한: floor mapping 자체는 code-owned 제품 정책이며 Profile 설명 문구에서 추론한 validation 증명이 아니다.
-  `VAL-004A`가 읽는 evidence는 KISA M03·M06·A04뿐이다. Profile 선택, Campaign 변경, impact·severity,
-  실행·confirmation·Finding authority는 없다. v1 Claim ceiling은 validity다.
-- 영향: KISA evidence는 floor 충족을 증명할 수 있지만 VAL-001 WALK Claim이나 임의 Campaign evidence에는
-  적용할 수 없다.
-- 해소 조건: `VAL-004B`에서 VAL-001 Claim용 exact Control·session evidence adapter를 추가한다.
+  `VAL-004A`는 KISA M03·M06·A04, `VAL-004B`는 VAL-001 stateless WALK MCP evidence만 읽는다. Profile 선택,
+  Campaign 변경, impact·severity, 실행·confirmation·Finding authority는 없다. v1 Claim ceiling은 validity다.
+- 영향: KISA evidence는 세 depth를 평가할 수 있지만 현재 VAL-001 WALK evidence는 single·controlled만
+  평가할 수 있다.
+- 해소 조건: `VAL-004C`에서 WALK repeated-controlled evidence admission을 추가한다.
 
 ## VAL-002 validity-only 요구 정책 경계
 
 - 상태: 단일 validity Replay, 세 Control 결박, 최소 2회 repeated controlled Replay의 mode-neutral depth
-  catalog·Profile floor와 KISA-specific 충족 판정은 구현됐고 VAL-001 mode-neutral 충족 판정은 닫힘
+  catalog·Profile floor, KISA 충족 판정과 VAL-001 WALK single·controlled 판정은 구현됐고 WALK repeated
+  판정은 닫힘
 - 현재 보장: exact 세 depth·ordinal·Claim/Control 요구·최소 반복·fresh lineage와 false authority marker를
   content-addressed policy로 고정한다. unknown alias, 순서·요구·digest 치환과 boolean 권위 상승은 fail
   closed한다.
-- 제한: v1 Claim ceiling은 validity다. `VAL-004A`는 existing KISA authority만 admit하며 impact·severity,
-  실행·confirmation·Finding authority는 없다. 최소 2회는 PAJIN-local fresh-session Replay attempt이며
-  off-host 조직 attestation이 아니다.
-- 영향: KISA evidence는 registered depth 도달을 증명할 수 있지만 VAL-001 WALK evidence는 아직 증명할 수 없다.
-- 해소 조건: `VAL-004B`에서 mode-neutral VAL-001 Claim과 exact-match하는 Control·session evidence를 검증한다.
+- 제한: v1 Claim ceiling은 validity다. `VAL-004A` KISA evidence는 explicit fresh session을 사용하고
+  `VAL-004B` WALK evidence는 exact stateless Tool schema를 사용한다. 최소 2회는 별도 fresh Replay여야 하며
+  Control 실행으로 대체할 수 없다. impact·severity, 실행·confirmation·Finding authority는 없다.
+- 영향: VAL-001 WALK evidence는 registered single·controlled depth를 증명하지만 repeated depth는 증명하지
+  못한다.
+- 해소 조건: `VAL-004C`에서 mode-neutral VAL-001 repeated fresh Replay evidence를 검증한다.
 
 ## VAL-001 CHAIN-002/005 전용 fresh validity Replay 경계
 
