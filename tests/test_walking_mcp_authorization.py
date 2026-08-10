@@ -58,6 +58,8 @@ from pajin.discovery import (
     MCPToolAuthorizationReconPlanner,
     MCPToolSurfaceLocator,
     ModeNeutralAttackChainError,
+    ModeNeutralMCPPrivilegeAttackChainAuthority,
+    ModeNeutralMCPPrivilegeAttackChainError,
     ModeNeutralWalkingAttackChainAuthority,
     RAGInjectionHypothesisAuthority,
     RAGInjectionHypothesisRunner,
@@ -89,6 +91,7 @@ from pajin.discovery import (
     WalkingShadowSupervisorRunner,
     WalkingShadowTaskProposal,
     compile_file_upload_rag_tool_abuse_chain,
+    compile_mcp_authorization_privileged_action_chain,
     load_walking_candidate_admission_authority,
     load_walking_mcp_claim_replay_authority,
     load_walking_mcp_confirmation_authority,
@@ -98,7 +101,9 @@ from pajin.discovery import (
     load_walking_shadow_supervisor_authority,
     mcp_tool_authorization_rule,
     registered_file_upload_rag_tool_abuse_chain_contract,
+    registered_mcp_authorization_privileged_action_chain_contract,
     verify_file_upload_rag_tool_abuse_chain,
+    verify_mcp_authorization_privileged_action_chain,
     walking_independent_approval_receipt,
     walking_mcp_replay_approval_receipt,
     walking_observation_replan_rule,
@@ -526,6 +531,154 @@ def test_chain002_rejects_cross_campaign_target_snapshot_and_run_substitution(
             authority,
             campaign,
             foreign_source,
+        )
+
+
+def test_chain005_contract_is_deterministic_mode_neutral_and_non_executable() -> None:
+    first = registered_mcp_authorization_privileged_action_chain_contract()
+    second = registered_mcp_authorization_privileged_action_chain_contract()
+
+    assert first == second
+    assert first.chain_id == "chain-005:mcp-authorization-failure-privileged-action"
+    assert [stage.stage_id for stage in first.stages] == [
+        "mcp-authorization-failure",
+        "privileged-action",
+    ]
+    assert first.privileged_action_basis == ("registered-capability-requiring-independent-approval")
+    assert first.campaign_mode_constraint == "none"
+    assert first.authorization_failure_confirmed is False
+    assert first.approval_granted is False
+    assert first.capability_granted is False
+    assert first.privileged_action_executed is False
+    assert first.execution_authorized is False
+    assert first.claim_replay_authorized is False
+    assert first.finding_confirmed is False
+
+
+@pytest.mark.parametrize("mode", list(CampaignMode))
+def test_chain005_compiles_the_same_closed_contract_for_every_campaign_mode(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+    mode: CampaignMode,
+) -> None:
+    payload = _campaign(sample_campaign).model_dump(mode="json", by_alias=True)
+    payload["spec"]["mode"] = mode.value
+    campaign = CampaignManifest.model_validate(payload)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+
+    authority = compile_mcp_authorization_privileged_action_chain(campaign, source)
+
+    assert authority.contract == registered_mcp_authorization_privileged_action_chain_contract()
+    assert [stage.authority_kind for stage in authority.stages] == [
+        "MCPToolAuthorizationHypothesisAuthority",
+        "CapabilityDefinition",
+    ]
+    assert authority.stages[0].subject_id == source.hypotheses[0].hypothesis_id
+    assert authority.stages[1].subject_digest == source.hypotheses[0].capability.capability_digest
+    assert authority.privileged_action_state == "registered-not-activated"
+    assert authority.hypothesis_evidence_only is True
+    assert authority.authorization_failure_confirmed is False
+    assert authority.approval_granted is False
+    assert authority.capability_granted is False
+    assert authority.privileged_action_executed is False
+    assert authority.execution_authorized is False
+    assert (
+        verify_mcp_authorization_privileged_action_chain(
+            authority,
+            campaign,
+            source,
+        )
+        == authority
+    )
+
+
+def test_chain005_rejects_stage_action_and_authority_forgery(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    authority = compile_mcp_authorization_privileged_action_chain(campaign, source)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["stages"] = list(reversed(raw["stages"]))
+    with pytest.raises(ValidationError, match="missing, reordered, or substituted"):
+        ModeNeutralMCPPrivilegeAttackChainAuthority.model_validate(raw)
+
+    raw = authority.model_dump(mode="json", by_alias=True)
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+    raw["privilegedActionDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="privileged action Digest differs"):
+        ModeNeutralMCPPrivilegeAttackChainAuthority.model_validate(raw)
+
+    for marker in (
+        "authorizationFailureConfirmed",
+        "approvalGranted",
+        "capabilityGranted",
+        "privilegedActionExecuted",
+        "executionAuthorized",
+        "claimReplayAuthorized",
+        "findingConfirmed",
+    ):
+        raw = authority.model_dump(mode="json", by_alias=True)
+        raw[marker] = True
+        with pytest.raises(ValidationError, match="must be boolean false"):
+            ModeNeutralMCPPrivilegeAttackChainAuthority.model_validate(raw)
+
+
+def test_chain005_rejects_non_approval_capability_substitution(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    authority = compile_mcp_authorization_privileged_action_chain(campaign, source)
+    raw = authority.model_dump(mode="json", by_alias=True)
+    hypothesis = raw["source"]["hypothesis"]
+    hypothesis["hypothesisId"] = ""
+    hypothesis["hypothesisDigest"] = ""
+    hypothesis["capability"]["capabilityDigest"] = ""
+    hypothesis["capability"]["approvalRequired"] = False
+    raw["authorityId"] = ""
+    raw["authorityDigest"] = ""
+
+    with pytest.raises(ValidationError, match="does not satisfy"):
+        ModeNeutralMCPPrivilegeAttackChainAuthority.model_validate(raw)
+
+
+def test_chain005_rejects_stale_publication_and_mutated_artifact(
+    tmp_path: Path,
+    sample_campaign: CampaignManifest,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    campaign = _campaign(sample_campaign)
+    source = _mcp_outcome(tmp_path, campaign, monkeypatch)
+    authority = compile_mcp_authorization_privileged_action_chain(campaign, source)
+    substituted = _mcp_outcome(tmp_path, campaign, monkeypatch)
+
+    with pytest.raises(ModeNeutralMCPPrivilegeAttackChainError, match="verified"):
+        verify_mcp_authorization_privileged_action_chain(
+            authority,
+            campaign,
+            substituted,
+        )
+
+    artifact = source.run_path / source.artifact_path
+    artifact.write_bytes(artifact.read_bytes() + b"\n")
+    with pytest.raises(
+        ModeNeutralMCPPrivilegeAttackChainError,
+        match="compiled from sealed WALK-003 authority",
+    ):
+        verify_mcp_authorization_privileged_action_chain(
+            authority,
+            campaign,
+            source,
         )
 
 
