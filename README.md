@@ -940,7 +940,14 @@ The artifact embeds the complete typed source and is stored under its draft dige
 revalidates the source, registered Profile, derived preview, remaining gates, digests, and false
 authority markers through bounded strict JSON and no-follow file handling. These commands do not
 compile a Campaign or create an approval, Capability, Permit, Run, or execution authority. The
-Control Plane read path and explicit handoff to the existing compilers remain later Phase 9 work.
+optional Control Plane lookup reads the same artifact only from its configured server root:
+
+`GET /v1/campaign-drafts/<draft-digest>`
+
+Only an Operator credential may use this route. It returns identity, Profile, counts, remaining
+gates, and false authority markers without the embedded source, policy text, target endpoints,
+allow/deny values, compiler entrypoint, or local path. Explicit handoff to the existing compilers
+remains later Phase 9 work.
 
 ## Bug Bounty Scope Parser
 
@@ -1612,6 +1619,8 @@ $env:PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE='<one-line-signed-registr
 # $env:PAJIN_TARGET_TLS_SESSION_BINDING='tls-unique-sha256'
 $env:PAJIN_CP_ARTIFACT_STAGING_ROOT='C:\private\pajin-artifact-staging'
 $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
+# Optional UX-001B2 read-only root for local Campaign Builder drafts:
+$env:PAJIN_CP_CAMPAIGN_DRAFT_ROOT='C:\private\pajin-campaign-drafts'
 .venv\Scripts\pajin-control-plane
 ```
 
@@ -1622,6 +1631,12 @@ never accepted from an Artifact consumer. If the pair is omitted, managed Artifa
 Replay-batch source resolution remain unavailable and fail closed. Current durable admission also
 requires a POSIX filesystem/runtime with directory `fsync` support; unsupported environments fail
 closed.
+
+The Campaign Builder draft root is independent of the managed Artifact root pair. Keep it private
+to the Control Plane service account. The API accepts only an exact draft digest, reuses the local
+verified reader, and returns a redacted Operator projection; it never accepts a caller-selected
+path or admits a draft as Run evidence. If omitted, the route remains authenticated but fails
+closed without reading the process working directory.
 
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is

@@ -12,6 +12,7 @@ from functools import partial
 from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Query, Response, status
+from fastapi import Path as FastAPIPath
 from sqlalchemy import text
 
 from pajin.control_plane.artifact_transfer import (
@@ -21,6 +22,11 @@ from pajin.control_plane.artifact_transfer import (
 from pajin.control_plane.attestation import (
     PortableReplayAttestationBundle,
     ReplayAttestationTrustAnchor,
+)
+from pajin.control_plane.campaign_drafts import (
+    CAMPAIGN_DRAFT_DIGEST_PATTERN,
+    CampaignDraftView,
+    ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.models import (
@@ -265,6 +271,32 @@ def register_session_and_run_routes(
         ],
     ) -> JobView:
         return service.get_job(job_id)
+
+
+def register_campaign_draft_routes(
+    app: FastAPI,
+    *,
+    reader: ControlPlaneCampaignDraftReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the operator-only, non-authoritative Campaign draft projection."""
+
+    @app.get("/v1/campaign-drafts/{draft_digest}", response_model=CampaignDraftView)
+    def get_campaign_draft(
+        draft_digest: Annotated[
+            str,
+            FastAPIPath(
+                min_length=64,
+                max_length=64,
+                pattern=CAMPAIGN_DRAFT_DIGEST_PATTERN,
+            ),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> CampaignDraftView:
+        return reader.get(draft_digest)
 
 
 def register_generic_worker_claim_route(
@@ -599,6 +631,7 @@ def register_control_plane_routes(
     *,
     repository: ControlPlaneRepository,
     service: ControlPlaneService,
+    campaign_draft_reader: ControlPlaneCampaignDraftReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -607,6 +640,11 @@ def register_control_plane_routes(
     register_session_and_run_routes(
         app,
         service=service,
+        dependencies=dependencies,
+    )
+    register_campaign_draft_routes(
+        app,
+        reader=campaign_draft_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

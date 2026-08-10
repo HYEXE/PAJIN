@@ -733,7 +733,7 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [ ] Campaign·Profile·Scope Builder
   - [x] `UX-001A` Bug Bounty·CTF typed source 기반 비실행 Profile·Scope draft
   - [x] `UX-001B1` content-addressed local draft artifact와 CLI 생성·조회
-  - [ ] `UX-001B2` Control Plane read-only draft 조회 경로
+  - [x] `UX-001B2` Control Plane read-only draft 조회 경로
   - [ ] `UX-001B3` 원 typed source·별도 approval 기반 기존 compiler handoff
 - [ ] Attack Surface·Graph·Wave Timeline UI
 - [ ] Hypothesis Ranking·Decision Audit
@@ -744,8 +744,9 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [ ] Object Storage·Distributed Worker·KMS/HSM
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
 
-`UX-001B1`은 Run 권위와 분리된 local strict-JSON artifact·CLI 생성·조회를 추가했다. 다음
-`UX-001B2`는 verified reader 기반 Control Plane 조회, `UX-001B3`는 원 source·별도 approval handoff다.
+`UX-001B2`는 configured root·exact digest·B1 verified reader를 재사용하는 operator-only Control Plane
+조회와 source·endpoint를 제외한 bounded projection을 추가했다. 다음 `UX-001B3`는 원 typed source와 별도
+approval을 기존 compiler에 전달하는 명시적 handoff다.
 
 ## 미결정 제품 사항
 

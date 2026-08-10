@@ -37,6 +37,7 @@ from pajin.control_plane.attestation import (
     parse_replay_attestation_trust_anchor,
     private_key_bytes_from_base64url,
 )
+from pajin.control_plane.campaign_drafts import ControlPlaneCampaignDraftReader
 from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.errors import (
     ControlPlaneError,
@@ -556,6 +557,7 @@ class ControlPlaneSettings:
     database_echo: bool = False
     artifact_staging_root: Path | None = None
     artifact_repository_root: Path | None = None
+    campaign_draft_root: Path | None = None
     replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
     replay_attestation_key_id: str | None = None
     replay_attestation_private_key: bytes | None = field(default=None, repr=False)
@@ -674,6 +676,7 @@ class ControlPlaneSettings:
         checkpoint_key = os.environ.get("PAJIN_CP_CHECKPOINT_KEY")
         artifact_staging_root = os.environ.get("PAJIN_CP_ARTIFACT_STAGING_ROOT")
         artifact_repository_root = os.environ.get("PAJIN_CP_ARTIFACT_REPOSITORY_ROOT")
+        campaign_draft_root = os.environ.get("PAJIN_CP_CAMPAIGN_DRAFT_ROOT")
         missing = [
             name
             for name, value in (
@@ -799,6 +802,8 @@ class ControlPlaneSettings:
                 "PAJIN_CP_ARTIFACT_STAGING_ROOT and "
                 "PAJIN_CP_ARTIFACT_REPOSITORY_ROOT must be configured together"
             )
+        if campaign_draft_root is not None and not campaign_draft_root.strip():
+            raise RuntimeError("PAJIN_CP_CAMPAIGN_DRAFT_ROOT must not be blank")
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         operator_subject = os.environ.get("PAJIN_CP_OPERATOR_SUBJECT", "operator")
         approver_subject = os.environ.get(
@@ -865,6 +870,9 @@ class ControlPlaneSettings:
             artifact_repository_root=(
                 Path(artifact_repository_root) if artifact_repository_root is not None else None
             ),
+            campaign_draft_root=(
+                Path(campaign_draft_root) if campaign_draft_root is not None else None
+            ),
             replay_executor_profiles=replay_executor_profiles,
             replay_attestation_key_id=replay_attestation_key_id,
             replay_attestation_private_key=parsed_attestation_private_key,
@@ -892,6 +900,7 @@ class _ControlPlaneApplicationContext:
     settings: ControlPlaneSettings
     repository: ControlPlaneRepository
     artifact_repository: ManagedArtifactRepository | None
+    campaign_draft_reader: ControlPlaneCampaignDraftReader
     service: ControlPlaneService
     authenticator: TokenAuthenticator
 
@@ -952,6 +961,9 @@ def _build_application_context(
         settings=settings,
         repository=repository,
         artifact_repository=artifact_repository,
+        campaign_draft_reader=ControlPlaneCampaignDraftReader(
+            root=settings.campaign_draft_root
+        ),
         service=service,
         authenticator=TokenAuthenticator(dict(settings.credentials)),
     )
@@ -1250,6 +1262,7 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         app,
         repository=context.repository,
         service=context.service,
+        campaign_draft_reader=context.campaign_draft_reader,
         dependencies=dependencies,
     )
     return app

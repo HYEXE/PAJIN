@@ -3,24 +3,22 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## UX-001B1 Campaign Builder local draft artifact 경계
+## UX-001B2 Campaign Builder Control Plane 조회 경계
 
-- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed 비실행 draft와 local artifact·
-  CLI 생성·조회는 구현됨
-- 현재 보장: exact PROF-001 catalog·Profile, complete typed source·digest, source-derived Scope·Target
-  preview, 기존 compiler entrypoint·남은 gate와 false authority marker를 결박한다. Bug Bounty
-  `generic-http`·entry point 없는 asset은 review-only로 표시하며 wire reload에서 source·Profile·preview·
-  compiler·gate·digest 치환과 Scope·Target·Campaign·Capability·Permit·execution 권위 상승을 fail closed한다.
-  artifact reader는 bounded strict JSON, no-follow 경로, single hardlink와 complete draft 재구성을 요구한다.
-- 제한: Control Plane route·편집·retention·compiler handoff는 없다. Pentest·AI Assessment·CTF Suite source는
-  지원하지 않으며 local 파일의 접근 통제와 보존 수명은 host와 operator가 관리한다. draft는 approval·
+- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed 비실행 draft, local CLI 생성·조회와
+  configured root·exact digest 기반 operator-only Control Plane 조회를 구현함
+- 현재 보장: API는 B1 verified reader로 complete typed source·Profile·preview·compiler·gate·digest·false
+  authority marker를 다시 검증하고 요청 digest와 재구성 digest도 대조한다. 응답은 식별자·Profile·source kind·
+  bounded count·남은 gate·false authority만 반환하며 source·정책 문구·target endpoint·allow/deny 값·path는
+  노출하지 않는다. non-Operator 역할, path-shaped digest, 디렉터리 digest 치환과 source·권위 변조는 fail closed한다.
+- 제한: draft listing·편집·삭제·retention·compiler handoff는 없다. Pentest·AI Assessment·CTF Suite source는
+  지원하지 않으며 local 파일의 접근 통제와 보존 수명은 host와 operator가 관리한다. draft 조회는 approval·
   authorization 충족, Campaign compilation 또는 실행 준비 상태를 뜻하지 않는다.
-- 영향: CLI에서 deterministic draft를 저장·조회할 수 있지만 실행하려면 기존 Bug Bounty scope digest approval
-  또는 CTF authorization window를 compiler가 독립적으로 다시 검증해야 한다. draft는 Run evidence나 managed
-  Control Plane artifact로 admission되지 않는다.
-- 해소 조건: `UX-001B2`에서 verified reader 기반 Control Plane read-only 경로를 추가하고 `UX-001B3`에서
-  명시적 operator handoff가 원 typed source와 별도 approval을 기존 compiler에 전달하도록 구현한다. preview나
-  draft digest 자체는 compiler 입력이나 승인 권위로 승격하지 않는다.
+- 영향: operator는 Control Plane에서 비민감 projection을 확인할 수 있지만 실행하려면 기존 Bug Bounty scope
+  digest approval 또는 CTF authorization window를 compiler가 독립적으로 다시 검증해야 한다. draft는 Run
+  evidence나 managed Control Plane artifact로 admission되지 않는다.
+- 해소 조건: `UX-001B3`에서 명시적 operator handoff가 원 typed source와 별도 approval을 기존 compiler에
+  전달하도록 구현한다. projection이나 draft digest 자체는 compiler 입력 또는 승인 권위로 승격하지 않는다.
 
 ## VAL-004B/004C mode-neutral WALK evidence 경계
 
