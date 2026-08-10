@@ -3,37 +3,51 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## VAL-004A KISA evidence adapter 경계
+
+- 상태: existing KISA M03·M06·A04의 sealed validity Replay·세 Control을 exact Profile floor에 결박하는 첫
+  evidence evaluation adapter는 구현됐고 VAL-001 WALK Claim용 mode-neutral adapter는 닫힘
+- 현재 보장: source·Replay·Control Run seal과 exact validity Claim, 1~20회 supporting fresh-session Replay,
+  canonical Baseline·Negative Control·Counterfactual Plan·request·attempt·receipt·reconciliation, root/child
+  Capability accounting을 다시 검증한다. source·Claim·scenario·original request는 같고 request·session·
+  Capability·evidence lineage는 독립적이어야 한다. set 순서와 무관한 content-addressed assessment만
+  `profile-floor-satisfied-not-confirmed`로 발행한다.
+- 제한: current adapter는 KISA-specific이다. VAL-001 WALK MCP Replay와 KISA Control은 Candidate·Claim·
+  original request·Tool·session 의미가 달라 결합할 수 없다. 모든 증거는 PAJIN-local sealed Run이며 Profile
+  선택, Campaign 변경, impact·severity, 실행·confirmation·Finding authority는 없다.
+- 영향: existing KISA evidence는 registered Profile floor 충족을 증명할 수 있지만 VAL-001 Chain evidence나
+  임의 Campaign·Mode의 충족 증명으로 일반화할 수 없다.
+- 해소 조건: `VAL-004B`에서 VAL-001 exact Claim과 호환되는 mode-neutral Control materializer와 explicit
+  stateless/session·independence evidence를 별도 authority로 구현한다.
+
 ## VAL-003 Profile별 assurance floor 경계
 
-- 상태: exact PROF-001 Profile별 최소 VAL-002 validation depth를 결박하는 policy·resolver·ordinal 비교는
-  구현됐고 실제 evidence admission과 충족 판정은 닫힘
+- 상태: exact PROF-001 Profile별 최소 VAL-002 validation depth와 KISA-specific evidence 충족 판정은
+  구현됐고 mode-neutral VAL-001 evidence admission은 닫힘
 - 현재 보장: complete registered Profile·Profile digest와 complete registered Validation depth
   requirement·ordinal·digest를 하나의 content-addressed policy로 고정한다. `ai-assessment`는
   `repeated-controlled-validity-replay`, `bug-hunt`·`pentest`는 `controlled-validity-replay`, `ctf`는
   `single-validity-replay`를 최소로 요구한다. unknown Profile·depth, stale catalog, mapping·ordinal·digest
   치환과 boolean 권위 상승은 fail closed한다.
-- 제한: 이 mapping은 code-owned 제품 정책이며 Profile의 설명 문구에서 추론한 validation 증명이 아니다.
-  helper는 registered depth의 ordinal만 floor와 비교하고 Replay·Control receipt, Baseline·Negative Control·
-  Counterfactual·N-run 결과를 읽지 않는다. Profile 선택, Campaign 변경, 실행·confirmation·Finding authority도
-  없다. v1 Claim ceiling은 validity다.
-- 영향: Profile에 필요한 최소 validation depth는 결정할 수 있지만 어느 Campaign이나 evidence가 그 floor를
-  실제 충족했다고 주장할 수 없다.
-- 해소 조건: `VAL-004`에서 기존 sealed Replay·Control authority를 재검증하고 Baseline·Negative Control·
-  Counterfactual·N-run evidence를 exact Profile floor에 결박한다.
+- 제한: floor mapping 자체는 code-owned 제품 정책이며 Profile 설명 문구에서 추론한 validation 증명이 아니다.
+  `VAL-004A`가 읽는 evidence는 KISA M03·M06·A04뿐이다. Profile 선택, Campaign 변경, impact·severity,
+  실행·confirmation·Finding authority는 없다. v1 Claim ceiling은 validity다.
+- 영향: KISA evidence는 floor 충족을 증명할 수 있지만 VAL-001 WALK Claim이나 임의 Campaign evidence에는
+  적용할 수 없다.
+- 해소 조건: `VAL-004B`에서 VAL-001 Claim용 exact Control·session evidence adapter를 추가한다.
 
 ## VAL-002 validity-only 요구 정책 경계
 
 - 상태: 단일 validity Replay, 세 Control 결박, 최소 2회 repeated controlled Replay의 mode-neutral depth
-  catalog와 Profile floor는 구현됐고 실제 증거 충족 판정은 닫힘
+  catalog·Profile floor와 KISA-specific 충족 판정은 구현됐고 VAL-001 mode-neutral 충족 판정은 닫힘
 - 현재 보장: exact 세 depth·ordinal·Claim/Control 요구·최소 반복·fresh lineage와 false authority marker를
   content-addressed policy로 고정한다. unknown alias, 순서·요구·digest 치환과 boolean 권위 상승은 fail
   closed한다.
-- 제한: v1 Claim ceiling은 validity다. impact·severity 요구, 실제 Replay·Control receipt admission,
-  evidence 기반 depth 만족 판정, 실행·confirmation·Finding authority가 없다. 최소 2회 요구는 실행
-  schedule이나 aggregate outcome이 아니며 local freshness는 off-host 조직 attestation이 아니다.
-- 영향: 등록된 depth는 충족해야 할 조건일 뿐 Campaign이나 evidence가 그 depth에 도달했다는 증명이 아니다.
-- 해소 조건: `VAL-003`은 exact PROF-001 Profile을 최소 depth에 비실행적으로 결박했다. `VAL-004`에서
-  Baseline·Negative Control·Counterfactual·N-run evidence를 기존 authority로 검증한다.
+- 제한: v1 Claim ceiling은 validity다. `VAL-004A`는 existing KISA authority만 admit하며 impact·severity,
+  실행·confirmation·Finding authority는 없다. 최소 2회는 PAJIN-local fresh-session Replay attempt이며
+  off-host 조직 attestation이 아니다.
+- 영향: KISA evidence는 registered depth 도달을 증명할 수 있지만 VAL-001 WALK evidence는 아직 증명할 수 없다.
+- 해소 조건: `VAL-004B`에서 mode-neutral VAL-001 Claim과 exact-match하는 Control·session evidence를 검증한다.
 
 ## VAL-001 CHAIN-002/005 전용 fresh validity Replay 경계
 
