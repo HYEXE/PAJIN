@@ -3,6 +3,23 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## UX-002B current Canonical Graph view 경계
+
+- 상태: 기존 single-Campaign SQLite Graph Store의 exact current Snapshot을 검증하는 Operator-only API와
+  same-origin Web Console node/relationship inspector를 구현함
+- 현재 보장: schema·Campaign metadata·SQLite integrity, complete Admission Event chain·node index,
+  Projection history와 immutable Snapshot chain을 한 read-only transaction에서 검증한다. latest Event prefix와
+  current Projection, 요청 Snapshot head가 모두 일치해야 하며 historical/stale/foreign/tampered authority는
+  fail closed한다. 500 node·1,000 edge를 넘으면 자르지 않고 거부한다.
+- 제한: 한 Control Plane process에 server-owned Graph database 하나만 설정한다. Snapshot listing·historical
+  browsing·multi-Campaign registry·automatic reconciliation·full node content/export는 없다. node view는 statement,
+  observation value, Evidence reference와 content digest, request/target digest를 redaction한다. local filesystem과
+  service account를 신뢰하며 off-host attestation·tenant isolation을 주장하지 않는다.
+- 영향: view는 Canonical Graph membership과 relation을 표시하지만 Graph admission·Projection refresh·Snapshot
+  capture·Capability·Permit·execution authority를 만들지 않는다.
+- 해소 조건: multi-Campaign 운영이 필요하면 caller path가 아닌 별도 signed/durable Graph deployment registry를
+  정의한다. content 조회나 historical audit는 독립 authorization·redaction 계약으로 분리한다.
+
 ## UX-002A verified Discovery Surface·Wave view 경계
 
 - 상태: exact sealed Hypothesis Run에서 Attack Surface와 Recon→Hypothesis wave를 재구성하는

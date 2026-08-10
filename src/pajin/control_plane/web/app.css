@@ -225,7 +225,8 @@ button {
 .submit-panel,
 .runs-panel,
 .detail-panel,
-.discovery-panel {
+.discovery-panel,
+.graph-panel {
   padding: clamp(1.15rem, 2.5vw, 2rem);
 }
 
@@ -269,7 +270,8 @@ button {
   scroll-margin-top: 152px;
 }
 
-.discovery-panel {
+.discovery-panel,
+.graph-panel {
   margin-top: 1.25rem;
 }
 
@@ -796,7 +798,8 @@ pre {
   background: rgba(28, 102, 72, 0.24);
 }
 
-.discovery-form {
+.discovery-form,
+.graph-form {
   display: flex;
   gap: 0.8rem;
   align-items: end;
@@ -806,7 +809,8 @@ pre {
   flex-grow: 1.5;
 }
 
-.discovery-empty {
+.discovery-empty,
+.graph-empty {
   margin: 1.25rem 0 0;
   padding: 1.1rem;
   color: var(--muted);
@@ -816,7 +820,8 @@ pre {
   border-radius: 10px;
 }
 
-.discovery-result {
+.discovery-result,
+.graph-result {
   margin-top: 1.25rem;
 }
 
@@ -842,14 +847,16 @@ pre {
   content: "-";
 }
 
-.discovery-facts {
+.discovery-facts,
+.graph-facts {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
   margin: 0.85rem 0 1.2rem;
 }
 
-.discovery-facts div {
+.discovery-facts div,
+.graph-facts div {
   min-width: 0;
   padding: 0.75rem;
   border: 1px solid var(--line-soft);
@@ -857,7 +864,8 @@ pre {
   border-radius: 9px;
 }
 
-.discovery-facts dt {
+.discovery-facts dt,
+.graph-facts dt {
   margin-bottom: 0.35rem;
   color: var(--muted);
   font-size: 0.66rem;
@@ -865,21 +873,25 @@ pre {
   letter-spacing: 0.07em;
 }
 
-.discovery-facts dd {
+.discovery-facts dd,
+.graph-facts dd {
   overflow-wrap: anywhere;
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
   font-size: 0.7rem;
 }
 
-.discovery-grid {
+.discovery-grid,
+.graph-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr);
   gap: 1rem;
 }
 
 .surface-list,
-.wave-timeline {
+.wave-timeline,
+.graph-node-list,
+.graph-edge-list {
   display: grid;
   gap: 0.65rem;
   margin: 0;
@@ -888,7 +900,9 @@ pre {
 }
 
 .surface-card,
-.wave-card {
+.wave-card,
+.graph-node-card,
+.graph-edge-card {
   padding: 0.85rem;
   border: 1px solid var(--line-soft);
   background: rgba(7, 17, 15, 0.34);
@@ -896,7 +910,8 @@ pre {
 }
 
 .surface-card-head,
-.wave-card-head {
+.wave-card-head,
+.graph-node-card-head {
   display: flex;
   gap: 0.65rem;
   align-items: flex-start;
@@ -904,7 +919,9 @@ pre {
 }
 
 .surface-card strong,
-.wave-card strong {
+.wave-card strong,
+.graph-node-card strong,
+.graph-edge-card strong {
   font-size: 0.8rem;
 }
 
@@ -923,6 +940,49 @@ pre {
   color: var(--muted);
   font-size: 0.68rem;
   line-height: 1.5;
+}
+
+.graph-snapshot-field {
+  flex-grow: 1.5;
+}
+
+.graph-node-card,
+.graph-edge-card {
+  min-width: 0;
+}
+
+.graph-node-kind {
+  flex: 0 0 auto;
+  color: var(--info);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.65rem;
+}
+
+.graph-node-value,
+.graph-node-meta,
+.graph-edge-endpoints,
+.graph-edge-authority {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.graph-node-value,
+.graph-edge-endpoints {
+  margin: 0.55rem 0 0.25rem;
+  color: #dcebe5;
+}
+
+.graph-node-meta,
+.graph-edge-authority {
+  margin: 0;
+}
+
+.graph-edge-card strong {
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
 }
 
 .surface-locator {
@@ -994,7 +1054,8 @@ footer {
 @media (max-width: 1080px) {
   .workspace-grid,
   .detail-grid,
-  .discovery-grid {
+  .discovery-grid,
+  .graph-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1018,6 +1079,7 @@ footer {
   .field-row,
   .runs-toolbar,
   .discovery-form,
+  .graph-form,
   footer {
     align-items: stretch;
     flex-direction: column;
@@ -1027,7 +1089,8 @@ footer {
     flex-basis: auto;
   }
 
-  .discovery-facts {
+  .discovery-facts,
+  .graph-facts {
     grid-template-columns: 1fr 1fr;
   }
 

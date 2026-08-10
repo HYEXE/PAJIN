@@ -49,6 +49,29 @@ const SURFACE_LOCATOR_KINDS = new Set([
 ]);
 const DISCOVERY_RUN_PATTERN = /^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$/;
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
+const GRAPH_SNAPSHOT_PATTERN = /^graph-snapshot_[a-f0-9]{64}$/;
+const GRAPH_PROJECTION_PATTERN = /^graph-projection_[a-f0-9]{64}$/;
+const GRAPH_NODE_PATTERN = /^graph-node_[a-f0-9]{64}$/;
+const GRAPH_EDGE_PATTERN = /^graph-edge_[a-f0-9]{64}$/;
+const GRAPH_NODE_KINDS = new Set([
+  "Surface",
+  "Hypothesis",
+  "Action",
+  "Observation",
+  "Evidence",
+  "CampaignFact",
+]);
+const GRAPH_ORIGINS = new Set(["trusted-core", "operator", "agent-derived", "target-derived"]);
+const GRAPH_RELATION_ENDPOINTS = new Map([
+  ["motivates", ["Surface", "Hypothesis"]],
+  ["tested-by", ["Hypothesis", "Action"]],
+  ["produces", ["Action", "Observation"]],
+  ["supported-by", ["Observation", "Evidence"]],
+  ["supports", ["Observation", "Hypothesis"]],
+  ["contradicts", ["Observation", "Hypothesis"]],
+  ["discovers", ["Observation", "Surface"]],
+  ["enables", ["Observation", "Hypothesis"]],
+]);
 
 export class ApiProtocolError extends Error {
   constructor(message) {
@@ -346,6 +369,132 @@ export function validateDiscoveryView(value, campaignName, hypothesisRunId) {
     || boundary.viewGrantsPermit !== false
     || boundary.viewAuthorizesExecution !== false) {
     protocolFailure("Discovery Surface/Wave view");
+  }
+  return view;
+}
+
+function boundedDisplayString(value, label, maximum, { nullable = false } = {}) {
+  if (nullable && value === null) {
+    return null;
+  }
+  if (typeof value !== "string"
+    || value.length === 0
+    || value.length > maximum
+    || /[\u0000-\u001f\u007f]/.test(value)) {
+    protocolFailure(label);
+  }
+  return value;
+}
+
+function validateGraphNode(value) {
+  const node = expectRecord(value, "Canonical Graph view");
+  if (!GRAPH_NODE_PATTERN.test(node.nodeId)
+    || !GRAPH_NODE_KINDS.has(node.kind)) {
+    protocolFailure("Canonical Graph view");
+  }
+  boundedDisplayString(node.displayKey, "Canonical Graph view", 200);
+  boundedDisplayString(node.displayValue, "Canonical Graph view", 200, { nullable: true });
+  if (node.origin !== null && !GRAPH_ORIGINS.has(node.origin)) {
+    protocolFailure("Canonical Graph view");
+  }
+  boundedDisplayString(node.state, "Canonical Graph view", 100, { nullable: true });
+  if (node.confidence !== null) {
+    node.confidence = boundedNumber(node.confidence, "Canonical Graph view", 0, 1);
+  }
+  if (node.occurredAt !== null) {
+    expectTimestamp(node.occurredAt, "Canonical Graph view");
+  }
+  return node;
+}
+
+function validateGraphEndpoint(value, nodes) {
+  const endpoint = expectRecord(value, "Canonical Graph view");
+  const node = nodes.get(endpoint.nodeId);
+  if (!GRAPH_NODE_PATTERN.test(endpoint.nodeId)
+    || !GRAPH_NODE_KINDS.has(endpoint.kind)
+    || node === undefined
+    || node.kind !== endpoint.kind) {
+    protocolFailure("Canonical Graph view");
+  }
+  return endpoint;
+}
+
+export function validateCanonicalGraphView(value, campaignName, snapshotId) {
+  const view = expectRecord(value, "Canonical Graph view");
+  if (view.apiVersion !== "pajin.control-plane/verified-canonical-graph-view/v1alpha1"
+    || view.kind !== "VerifiedCanonicalGraphView"
+    || view.campaignId !== campaignName
+    || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(view.campaignId)) {
+    protocolFailure("Canonical Graph view");
+  }
+  const snapshot = expectRecord(view.snapshot, "Canonical Graph view");
+  const projection = expectRecord(view.projection, "Canonical Graph view");
+  if (snapshot.snapshotId !== snapshotId
+    || !GRAPH_SNAPSHOT_PATTERN.test(snapshot.snapshotId)
+    || !SHA256_PATTERN.test(snapshot.snapshotDigest)
+    || (snapshot.previousSnapshotDigest !== null
+      && !SHA256_PATTERN.test(snapshot.previousSnapshotDigest))
+    || !new Set(["checkpoint", "handoff", "replan", "recovery"]).has(snapshot.reason)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(snapshot.creatorId)
+    || !SHA256_PATTERN.test(snapshot.creatorDigest)
+    || projection.graphSchemaVersion !== "pajin.dev/canonical-graph/v1alpha1"
+    || !Number.isSafeInteger(projection.revision)
+    || projection.revision < 0
+    || (projection.revision === 0) !== (projection.eventLogHeadDigest === null)
+    || (projection.eventLogHeadDigest !== null
+      && !SHA256_PATTERN.test(projection.eventLogHeadDigest))
+    || !GRAPH_PROJECTION_PATTERN.test(projection.projectionId)
+    || !SHA256_PATTERN.test(projection.projectionDigest)
+    || !SHA256_PATTERN.test(projection.nodeProjectionDigest)
+    || !SHA256_PATTERN.test(projection.edgeProjectionDigest)) {
+    protocolFailure("Canonical Graph view");
+  }
+  expectTimestamp(snapshot.createdAt, "Canonical Graph view");
+  if (!Array.isArray(view.nodes)
+    || view.nodes.length > 500
+    || !Array.isArray(view.edges)
+    || view.edges.length > 1_000
+    || !Number.isSafeInteger(view.nodeCount)
+    || view.nodeCount !== view.nodes.length
+    || !Number.isSafeInteger(view.edgeCount)
+    || view.edgeCount !== view.edges.length) {
+    protocolFailure("Canonical Graph view");
+  }
+  const nodes = new Map();
+  for (const nodeValue of view.nodes) {
+    const node = validateGraphNode(nodeValue);
+    if (nodes.has(node.nodeId)) {
+      protocolFailure("Canonical Graph view");
+    }
+    nodes.set(node.nodeId, node);
+  }
+  const edgeIds = new Set();
+  for (const edgeValue of view.edges) {
+    const edge = expectRecord(edgeValue, "Canonical Graph view");
+    const expectedKinds = GRAPH_RELATION_ENDPOINTS.get(edge.relation);
+    const source = validateGraphEndpoint(edge.source, nodes);
+    const target = validateGraphEndpoint(edge.target, nodes);
+    if (!GRAPH_EDGE_PATTERN.test(edge.edgeId)
+      || edgeIds.has(edge.edgeId)
+      || expectedKinds === undefined
+      || source.kind !== expectedKinds[0]
+      || target.kind !== expectedKinds[1]
+      || source.nodeId === target.nodeId
+      || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(edge.authorityId)
+      || !SHA256_PATTERN.test(edge.authorityDigest)) {
+      protocolFailure("Canonical Graph view");
+    }
+    edgeIds.add(edge.edgeId);
+  }
+  const boundary = expectRecord(view.authorityBoundary, "Canonical Graph view");
+  if (boundary.canonicalGraphSnapshotVerified !== true
+    || boundary.currentSnapshotVerified !== true
+    || boundary.contentRedacted !== true
+    || boundary.viewAuthorizesAdmission !== false
+    || boundary.viewGrantsCapability !== false
+    || boundary.viewGrantsPermit !== false
+    || boundary.viewAuthorizesExecution !== false) {
+    protocolFailure("Canonical Graph view");
   }
   return view;
 }

@@ -42,6 +42,7 @@ from pajin.graph import (
     SurfaceProposal,
     TrustedGraphLineageRegistry,
     graph_snapshot_ref,
+    load_verified_current_graph_snapshot,
     sqlite_graph_backup_manifest_path,
     sqlite_graph_backup_public_key,
     sqlite_graph_retained_backup_manifest_path,
@@ -226,6 +227,79 @@ def test_sqlite_store_reopens_event_projection_and_snapshot_state(tmp_path: Path
     assert retry.idempotent is True
     assert retry.event == store.event_log.events()[0]
     assert len(reopened.event_log.events()) == 2
+
+
+def test_verified_current_snapshot_read_is_exact_and_read_only(tmp_path: Path) -> None:
+    path = tmp_path / "graph-state" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(path)
+    projection = GraphProjectionCoordinator(
+        event_log=store.event_log,
+        projection_store=store.projection_store,
+    ).refresh().projection
+    snapshot = GraphSnapshotAuthority(
+        creator_id=SNAPSHOT_CREATOR_ID,
+        creator_digest=DIGEST_B,
+        projection_store=store.projection_store,
+        snapshot_store=store.snapshot_store,
+        clock=lambda: NOW + timedelta(seconds=4),
+    ).capture(GraphSnapshotReason.CHECKPOINT)
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    resolved = load_verified_current_graph_snapshot(
+        path,
+        campaign_id=CAMPAIGN,
+        snapshot_id=snapshot.snapshot_id,
+    )
+
+    assert resolved == snapshot
+    assert resolved is not None and resolved.projection == projection
+    assert load_verified_current_graph_snapshot(
+        path,
+        campaign_id=CAMPAIGN,
+        snapshot_id="graph-snapshot_" + "0" * 64,
+    ) is None
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+
+
+def test_verified_current_snapshot_read_rejects_projection_lag_and_old_head(
+    tmp_path: Path,
+) -> None:
+    lagging_path = tmp_path / "lagging" / "canonical-graph.sqlite3"
+    _lagging, _ = _seeded_store(lagging_path)
+    with pytest.raises(SQLiteGraphStoreError, match="recovery is required"):
+        load_verified_current_graph_snapshot(
+            lagging_path,
+            campaign_id=CAMPAIGN,
+            snapshot_id="graph-snapshot_" + "0" * 64,
+        )
+
+    path = tmp_path / "current" / "canonical-graph.sqlite3"
+    store, _ = _seeded_store(path)
+    GraphProjectionCoordinator(
+        event_log=store.event_log,
+        projection_store=store.projection_store,
+    ).refresh()
+    authority = GraphSnapshotAuthority(
+        creator_id=SNAPSHOT_CREATOR_ID,
+        creator_digest=DIGEST_B,
+        projection_store=store.projection_store,
+        snapshot_store=store.snapshot_store,
+        clock=lambda: NOW + timedelta(seconds=4),
+    )
+    first = authority.capture(GraphSnapshotReason.CHECKPOINT)
+    second = authority.capture(GraphSnapshotReason.HANDOFF)
+
+    with pytest.raises(GraphSnapshotError, match="not the current canonical head"):
+        load_verified_current_graph_snapshot(
+            path,
+            campaign_id=CAMPAIGN,
+            snapshot_id=first.snapshot_id,
+        )
+    assert load_verified_current_graph_snapshot(
+        path,
+        campaign_id=CAMPAIGN,
+        snapshot_id=second.snapshot_id,
+    ) == second
 
 
 def test_event_commit_survives_projection_lag_and_reconciles_after_reopen(

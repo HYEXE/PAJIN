@@ -1098,6 +1098,53 @@ class SQLiteGraphStore:
         )
 
 
+def load_verified_current_graph_snapshot(
+    path: Path,
+    *,
+    campaign_id: str,
+    snapshot_id: str,
+) -> GraphSnapshot | None:
+    """Read one exact current Graph Snapshot without initializing or mutating its store."""
+
+    if fullmatch(r"^[a-z0-9][a-z0-9-]{2,79}$", campaign_id) is None:
+        raise ValueError("SQLite Graph Store campaign ID is invalid")
+    if fullmatch(r"^graph-snapshot_[a-f0-9]{64}$", snapshot_id) is None:
+        raise ValueError("Graph Snapshot ID is invalid")
+    database = _absolute_path(path)
+    identity = _file_identity(database)
+    with _readonly_connection(database) as connection:
+        _validate_schema(connection, campaign_id=campaign_id)
+        events = _events_from_connection(connection, campaign_id=campaign_id)
+        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+        projections = _verified_projections(
+            connection,
+            campaign_id=campaign_id,
+            events=events,
+        )
+        snapshots, snapshot_head = _verified_snapshots(
+            connection,
+            campaign_id=campaign_id,
+            projections=projections,
+        )
+        current = projections[max(projections)]
+        expected_event_head = events[-1].event_digest if events else None
+        if (
+            current.revision != len(events)
+            or current.event_log_head_digest != expected_event_head
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph projection recovery is required before current Snapshot reads"
+            )
+        snapshot = snapshots.get(snapshot_id)
+        if snapshot is not None and (
+            snapshot_head != snapshot.snapshot_digest or snapshot.projection != current
+        ):
+            raise GraphSnapshotError("Graph Snapshot is not the current canonical head")
+    if _file_identity(database) != identity:
+        raise SQLiteGraphStoreError("SQLite Graph Store changed during Snapshot verification")
+    return _canonical_snapshot(snapshot) if snapshot is not None else None
+
+
 class SQLiteGraphEventLog:
     """SQLite-backed append-only Graph Event Log with a pinned writer identity."""
 

@@ -145,6 +145,21 @@ const selectors = [
   "#surface-count",
   "#surface-list",
   "#wave-timeline",
+  "#graph-panel",
+  "#graph-form",
+  "#graph-campaign",
+  "#graph-snapshot-id",
+  "#graph-load-button",
+  "#graph-empty",
+  "#graph-result",
+  "#graph-campaign-value",
+  "#graph-revision-value",
+  "#graph-node-count-value",
+  "#graph-edge-count-value",
+  "#graph-snapshot-value",
+  "#graph-projection-value",
+  "#graph-node-list",
+  "#graph-edge-list",
 ];
 const elements = new Map(selectors.map((selector) => [selector, new FakeElement()]));
 elements.get("#campaign-name").value = "web-console-test";
@@ -154,6 +169,8 @@ elements.get("#max-attempts").value = "3";
 elements.get("#run-input").value = "{}";
 elements.get("#discovery-campaign").value = "runtime-campaign";
 elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
+elements.get("#graph-campaign").value = "runtime-campaign";
+elements.get("#graph-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
 
 globalThis.document = {
   querySelector(selector) {
@@ -307,6 +324,90 @@ function discoveryView() {
   };
 }
 
+function canonicalGraphView() {
+  const snapshotId = `graph-snapshot_${"c".repeat(64)}`;
+  const actionId = `graph-node_${"1".repeat(64)}`;
+  const observationId = `graph-node_${"2".repeat(64)}`;
+  const evidenceId = `graph-node_${"3".repeat(64)}`;
+  return {
+    apiVersion: "pajin.control-plane/verified-canonical-graph-view/v1alpha1",
+    kind: "VerifiedCanonicalGraphView",
+    campaignId: "runtime-campaign",
+    snapshot: {
+      snapshotId,
+      snapshotDigest: "c".repeat(64),
+      previousSnapshotDigest: null,
+      reason: "checkpoint",
+      createdAt: timestamp,
+      creatorId: "pajin.graph.runtime-snapshot-authority",
+      creatorDigest: "d".repeat(64),
+    },
+    projection: {
+      graphSchemaVersion: "pajin.dev/canonical-graph/v1alpha1",
+      revision: 1,
+      eventLogHeadDigest: "e".repeat(64),
+      projectionId: `graph-projection_${"f".repeat(64)}`,
+      projectionDigest: "f".repeat(64),
+      nodeProjectionDigest: "4".repeat(64),
+      edgeProjectionDigest: "5".repeat(64),
+    },
+    nodeCount: 3,
+    edgeCount: 2,
+    nodes: [{
+      nodeId: actionId,
+      kind: "Action",
+      displayKey: "graph.observe",
+      displayValue: "capability:graph-observe",
+      origin: null,
+      state: "succeeded",
+      confidence: null,
+      occurredAt: timestamp,
+    }, {
+      nodeId: observationId,
+      kind: "Observation",
+      displayKey: "surface-confirmed",
+      displayValue: "pajin.graph.runtime-producer",
+      origin: "target-derived",
+      state: null,
+      confidence: 0.9,
+      occurredAt: timestamp,
+    }, {
+      nodeId: evidenceId,
+      kind: "Evidence",
+      displayKey: "application/json",
+      displayValue: "internal",
+      origin: null,
+      state: null,
+      confidence: null,
+      occurredAt: null,
+    }],
+    edges: [{
+      edgeId: `graph-edge_${"6".repeat(64)}`,
+      relation: "produces",
+      source: { nodeId: actionId, kind: "Action" },
+      target: { nodeId: observationId, kind: "Observation" },
+      authorityId: "pajin.graph.admission-authority",
+      authorityDigest: "a".repeat(64),
+    }, {
+      edgeId: `graph-edge_${"7".repeat(64)}`,
+      relation: "supported-by",
+      source: { nodeId: observationId, kind: "Observation" },
+      target: { nodeId: evidenceId, kind: "Evidence" },
+      authorityId: "pajin.graph.admission-authority",
+      authorityDigest: "a".repeat(64),
+    }],
+    authorityBoundary: {
+      canonicalGraphSnapshotVerified: true,
+      currentSnapshotVerified: true,
+      contentRedacted: true,
+      viewAuthorizesAdmission: false,
+      viewGrantsCapability: false,
+      viewGrantsPermit: false,
+      viewAuthorizesExecution: false,
+    },
+  };
+}
+
 function jobView(run, { state = "queued", kind = "campaign" } = {}) {
   return {
     job_id: `job_${"a".repeat(32)}`,
@@ -404,6 +505,29 @@ assert.throws(
   () => protocol.validatePrincipal({ subject: "worker-only", roles: ["worker"] }),
   protocol.ApiProtocolError,
 );
+const validCanonicalGraphView = canonicalGraphView();
+assert.equal(
+  protocol.validateCanonicalGraphView(
+    validCanonicalGraphView,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  validCanonicalGraphView,
+);
+assert.throws(
+  () => protocol.validateCanonicalGraphView(
+    {
+      ...canonicalGraphView(),
+      authorityBoundary: {
+        ...canonicalGraphView().authorityBoundary,
+        currentSnapshotVerified: false,
+      },
+    },
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
 const validDiscoveryView = discoveryView();
 assert.equal(
   protocol.validateDiscoveryView(
@@ -444,6 +568,7 @@ assert.equal(elements.get("#submit-button").disabled, false);
 assert.equal(elements.get("#token-form").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#runs-panel").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#discovery-load-button").disabled, false);
+assert.equal(elements.get("#graph-load-button").disabled, false);
 
 elements.get("#discovery-campaign").value = "runtime-campaign";
 elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
@@ -458,6 +583,21 @@ assert.equal(elements.get("#surface-count").textContent, "1 surface");
 assert.equal(elements.get("#surface-list").children.length, 1);
 assert.equal(elements.get("#wave-timeline").children.length, 2);
 assert.equal(elements.get("#discovery-form").attributes.get("aria-busy"), "false");
+
+elements.get("#graph-campaign").value = "runtime-campaign";
+elements.get("#graph-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+enqueueFetch(
+  `/v1/graphs/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}`,
+  () => jsonResponse(canonicalGraphView()),
+);
+await elements.get("#graph-form").dispatch("submit");
+assert.equal(elements.get("#graph-result").hidden, false);
+assert.equal(elements.get("#graph-empty").hidden, true);
+assert.equal(elements.get("#graph-node-count-value").textContent, "3");
+assert.equal(elements.get("#graph-edge-count-value").textContent, "2");
+assert.equal(elements.get("#graph-node-list").children.length, 3);
+assert.equal(elements.get("#graph-edge-list").children.length, 2);
+assert.equal(elements.get("#graph-form").attributes.get("aria-busy"), "false");
 
 enqueueFetch(
   "/v1/runs?limit=25&offset=0",

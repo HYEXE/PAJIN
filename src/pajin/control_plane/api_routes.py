@@ -39,6 +39,14 @@ from pajin.control_plane.discovery_views import (
     VerifiedDiscoverySurfaceWaveView,
     VerifiedDiscoveryViewReader,
 )
+from pajin.control_plane.graph_views import (
+    CanonicalGraphViewIntegrityError,
+    CanonicalGraphViewNotFound,
+    CanonicalGraphViewTooLarge,
+    CanonicalGraphViewUnavailable,
+    VerifiedCanonicalGraphView,
+    VerifiedCanonicalGraphViewReader,
+)
 from pajin.control_plane.models import (
     AdmitSourceArtifactRequest,
     ApprovalView,
@@ -370,6 +378,47 @@ def register_discovery_view_routes(
             raise HTTPException(
                 status_code=409,
                 detail="Discovery Surface/Wave authority is not integrity-valid",
+            ) from exc
+
+
+def register_graph_view_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedCanonicalGraphViewReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the Operator-only current Canonical Graph projection."""
+
+    @app.get(
+        "/v1/graphs/campaigns/{campaign}/snapshots/{snapshot_id}",
+        response_model=VerifiedCanonicalGraphView,
+    )
+    def get_verified_canonical_graph_view(
+        campaign: Annotated[
+            str,
+            FastAPIPath(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$"),
+        ],
+        snapshot_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^graph-snapshot_[a-f0-9]{64}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedCanonicalGraphView:
+        try:
+            return reader.read(campaign=campaign, snapshot_id=snapshot_id)
+        except CanonicalGraphViewUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except CanonicalGraphViewNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except CanonicalGraphViewTooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except CanonicalGraphViewIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Canonical Graph authority is not integrity-valid",
             ) from exc
 
 
@@ -708,6 +757,7 @@ def register_control_plane_routes(
     campaign_draft_reader: ControlPlaneCampaignDraftReader,
     campaign_draft_compiler: ControlPlaneCampaignDraftCompiler,
     discovery_view_reader: VerifiedDiscoveryViewReader,
+    graph_view_reader: VerifiedCanonicalGraphViewReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -727,6 +777,11 @@ def register_control_plane_routes(
     register_discovery_view_routes(
         app,
         reader=discovery_view_reader,
+        dependencies=dependencies,
+    )
+    register_graph_view_routes(
+        app,
+        reader=graph_view_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

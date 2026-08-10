@@ -205,3 +205,69 @@ export function createWaveNodes(documentRef, waves) {
     return item;
   });
 }
+
+function emptyGraphItem(documentRef, text, className) {
+  const item = documentRef.createElement("li");
+  item.className = className;
+  item.textContent = text;
+  return [item];
+}
+
+export function createGraphNodeNodes(documentRef, nodes) {
+  if (nodes.length === 0) {
+    return emptyGraphItem(documentRef, "This current Snapshot has no admitted nodes.", "graph-node-card");
+  }
+  return nodes.map((node) => {
+    const item = documentRef.createElement("li");
+    item.className = "graph-node-card";
+    const heading = documentRef.createElement("div");
+    heading.className = "graph-node-card-head";
+    const title = documentRef.createElement("strong");
+    title.textContent = node.displayKey;
+    const kind = documentRef.createElement("span");
+    kind.className = "graph-node-kind";
+    kind.textContent = node.kind;
+    heading.append(title, kind);
+    const value = documentRef.createElement("p");
+    value.className = "graph-node-value";
+    value.textContent = node.displayValue || "Redacted canonical member";
+    const metadata = documentRef.createElement("p");
+    metadata.className = "graph-node-meta";
+    const parts = [shortId(node.nodeId)];
+    if (node.origin) parts.push(node.origin);
+    if (node.state) parts.push(node.state);
+    if (node.confidence !== null) parts.push(`${Math.round(node.confidence * 100)}% confidence`);
+    if (node.occurredAt) parts.push(formatTime(node.occurredAt));
+    metadata.textContent = parts.join(" / ");
+    item.append(heading, value, metadata);
+    return item;
+  });
+}
+
+export function createGraphEdgeNodes(documentRef, edges) {
+  if (edges.length === 0) {
+    return emptyGraphItem(
+      documentRef,
+      "This current Snapshot has no admitted relationships.",
+      "graph-edge-card",
+    );
+  }
+  return edges.map((edge) => {
+    const item = documentRef.createElement("li");
+    item.className = "graph-edge-card";
+    const relation = documentRef.createElement("strong");
+    relation.textContent = edge.relation;
+    const endpoints = documentRef.createElement("p");
+    endpoints.className = "graph-edge-endpoints";
+    endpoints.textContent = [
+      `${edge.source.kind} ${shortId(edge.source.nodeId)}`,
+      "->",
+      `${edge.target.kind} ${shortId(edge.target.nodeId)}`,
+    ].join(" ");
+    const authority = documentRef.createElement("p");
+    authority.className = "graph-edge-authority";
+    authority.textContent = `${shortId(edge.edgeId)} / ${edge.authorityId}`;
+    item.append(relation, endpoints, authority);
+    return item;
+  });
+}

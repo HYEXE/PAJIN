@@ -429,6 +429,92 @@
           </div>
         </div>
       </section>
+
+      <section
+        id="graph-panel"
+        class="panel graph-panel"
+        aria-labelledby="graph-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">06 / CANONICAL GRAPH</p>
+            <h2 id="graph-heading">Current Snapshot relationships</h2>
+          </div>
+          <span class="verified-badge">Canonical Graph</span>
+        </div>
+        <p class="panel-intro">
+          Load one exact current Graph Snapshot. The server replays its complete admission log,
+          verifies the durable projection and Snapshot head, then returns a bounded redacted view.
+        </p>
+        <form id="graph-form" class="graph-form" aria-busy="false">
+          <div class="field field-grow">
+            <label for="graph-campaign">Campaign ID</label>
+            <input
+              id="graph-campaign"
+              name="graph-campaign"
+              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              maxlength="80"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="authorized-campaign"
+              required
+              disabled
+            >
+          </div>
+          <div class="field field-grow graph-snapshot-field">
+            <label for="graph-snapshot-id">Current Graph Snapshot ID</label>
+            <input
+              id="graph-snapshot-id"
+              name="graph-snapshot-id"
+              pattern="graph-snapshot_[a-f0-9]{64}"
+              maxlength="79"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="graph-snapshot_…"
+              required
+              disabled
+            >
+          </div>
+          <button id="graph-load-button" class="button button-primary" type="submit" disabled>
+            Verify Graph
+          </button>
+        </form>
+        <p id="graph-empty" class="graph-empty">
+          Connect with an Operator credential to inspect the current Canonical Graph.
+        </p>
+        <div id="graph-result" class="graph-result" hidden>
+          <div class="authority-strip" aria-label="Canonical Graph view authority boundary">
+            <span class="verified-badge">Current Snapshot verified</span>
+            <span>Content redacted</span>
+            <span>Read only</span>
+            <span>No admission</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="graph-facts">
+            <div><dt>Campaign</dt><dd id="graph-campaign-value">--</dd></div>
+            <div><dt>Revision</dt><dd id="graph-revision-value">--</dd></div>
+            <div><dt>Nodes</dt><dd id="graph-node-count-value">0</dd></div>
+            <div><dt>Edges</dt><dd id="graph-edge-count-value">0</dd></div>
+          </dl>
+          <div class="graph-grid">
+            <section aria-labelledby="graph-node-heading">
+              <div class="event-heading">
+                <h3 id="graph-node-heading">Canonical nodes</h3>
+                <span id="graph-snapshot-value">--</span>
+              </div>
+              <ol id="graph-node-list" class="graph-node-list"></ol>
+            </section>
+            <section aria-labelledby="graph-edge-heading">
+              <div class="event-heading">
+                <h3 id="graph-edge-heading">Admitted relationships</h3>
+                <span id="graph-projection-value">--</span>
+              </div>
+              <ol id="graph-edge-list" class="graph-edge-list"></ol>
+            </section>
+          </div>
+        </div>
+      </section>
     </main>
 
     <footer>

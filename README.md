@@ -1635,6 +1635,8 @@ $env:PAJIN_CP_ARTIFACT_REPOSITORY_ROOT='C:\private\pajin-artifact-repository'
 $env:PAJIN_CP_CAMPAIGN_DRAFT_ROOT='C:\private\pajin-campaign-drafts'
 # Optional UX-002A verified Discovery Surface/Wave read root:
 $env:PAJIN_CP_DISCOVERY_RUN_ROOT='C:\private\pajin-discovery-runs'
+# Optional UX-002B verified current Canonical Graph database:
+$env:PAJIN_CP_GRAPH_DATABASE='C:\private\pajin-graph\canonical.sqlite3'
 .venv\Scripts\pajin-control-plane
 ```
 
@@ -1660,6 +1662,13 @@ its sealed Recon source and Surface projection references. The response is a bou
 Attack Surface and Recon-to-Hypothesis wave view. It excludes raw evidence, Tool arguments, grants,
 permits, and paths, and explicitly reports that no canonical Graph or execution authority is
 included. If the root is omitted, this authenticated route fails closed with `503`.
+
+The Canonical Graph database remains the existing single-Campaign `SQLiteGraphStore`; the Control
+Plane does not copy it. UX-002B accepts one exact Campaign and current Snapshot ID, then verifies
+the complete Admission Event Log, admitted-node index, Projection history, and immutable Snapshot
+chain in a query-only transaction. It returns at most 500 redacted nodes and 1,000 exact relations.
+The GET path never initializes, migrates, reconciles, snapshots, or admits Graph state. If the
+database is omitted, the authenticated route fails closed with `503`.
 
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is
@@ -1778,6 +1787,8 @@ The first Console slice supports:
 - Operator-only one-time checkpoint resume and idempotent Run cancellation;
 - Operator-only verified Attack Surface cards and sealed Recon-to-Hypothesis wave inspection for
   one exact Discovery Run;
+- Operator-only current Canonical Graph node and admitted-relationship inspection for one exact
+  Snapshot;
 - optional five-second polling without WebSocket or SSE state.
 
 Run lists return a summary DTO and never bulk-load or expose submitted input. The selected Run
@@ -1800,13 +1811,14 @@ cancellation receipt. Neither receipt is a Control Plane acknowledgement: they d
 external side effects or prove physical quiescence outside that local process.
 
 This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
-front of the API before remote use. Report download, canonical Agent Graph visualization, user
-accounts, tenant isolation,
-and a fleet-wide approval queue remain unimplemented. See
+front of the API before remote use. Report download, historical or full Canonical Graph browsing,
+user accounts, tenant isolation, and a fleet-wide approval queue remain unimplemented. See
 [`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md),
 [`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md),
-[`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md), and
-[`ADR 0157`](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md).
+[`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md),
+[`ADR 0157`](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md),
+and
+[`ADR 0158`](docs/adr/0158-project-current-canonical-graph-without-read-authority-expansion.md).
 
 ### Lease-aware Worker daemon
 

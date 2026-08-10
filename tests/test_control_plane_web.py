@@ -288,6 +288,8 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
     assert re.search(r'id="run-input"[^>]+maxlength="1000000"', markup) is not None
     assert re.search(r'id="discovery-campaign"[^>]+maxlength="80"', markup) is not None
     assert re.search(r'id="discovery-run-id"[^>]+maxlength="29"', markup) is not None
+    assert re.search(r'id="graph-campaign"[^>]+maxlength="80"', markup) is not None
+    assert re.search(r'id="graph-snapshot-id"[^>]+maxlength="79"', markup) is not None
     assert re.search(r'id="main-content"[^>]+tabindex="-1"', markup) is not None
     assert re.search(r'id="detail-panel"[^>]+aria-busy="false"[^>]+tabindex="-1"', markup)
     assert re.search(r'id="status-message"[^>]+aria-atomic="true"', markup)
@@ -300,6 +302,8 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "event-list",
         "discovery-panel",
         "discovery-form",
+        "graph-panel",
+        "graph-form",
     ):
         assert re.search(rf'id="{busy_id}"[^>]+aria-busy="false"', markup) is not None
     for action_id in (
@@ -310,6 +314,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "latest-events-button",
         "older-events-button",
         "discovery-load-button",
+        "graph-load-button",
     ):
         assert re.search(rf'id="{action_id}"[^>]+disabled', markup) is not None
     assert OPERATOR_TOKEN not in markup
@@ -347,6 +352,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "renderDetailFailure",
         "validateJob",
         "validateDiscoveryView",
+        "validateCanonicalGraphView",
         "runSubmissionBody",
         "eventPagePath",
         'params.set("before"',
@@ -356,6 +362,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "encodeURIComponent(campaign)",
         "encodeURIComponent(runId)",
         "/v1/discovery/campaigns/",
+        "/v1/graphs/campaigns/",
         "/approval`)",
         "/decision`",
         "/resume`",

@@ -14,6 +14,7 @@ import {
   validateApproval,
   validateApprovalDecision,
   validateCancellation,
+  validateCanonicalGraphView,
   validateDiscoveryView,
   validateEvents,
   validatePrincipal,
@@ -24,6 +25,8 @@ import {
 } from "./protocol.js";
 import {
   createEventNodes,
+  createGraphEdgeNodes,
+  createGraphNodeNodes,
   createRunRows,
   createSurfaceNodes,
   createWaveNodes,
@@ -69,6 +72,8 @@ const session = {
   submissionSequence: 0,
   discoveryRequestId: 0,
   discoveryLoading: false,
+  graphRequestId: 0,
+  graphLoading: false,
   roles: new Set(),
   subject: null,
   currentRun: null,
@@ -140,6 +145,21 @@ const elements = {
   surfaceCount: document.querySelector("#surface-count"),
   surfaceList: document.querySelector("#surface-list"),
   waveTimeline: document.querySelector("#wave-timeline"),
+  graphPanel: document.querySelector("#graph-panel"),
+  graphForm: document.querySelector("#graph-form"),
+  graphCampaign: document.querySelector("#graph-campaign"),
+  graphSnapshotId: document.querySelector("#graph-snapshot-id"),
+  graphLoadButton: document.querySelector("#graph-load-button"),
+  graphEmpty: document.querySelector("#graph-empty"),
+  graphResult: document.querySelector("#graph-result"),
+  graphCampaignValue: document.querySelector("#graph-campaign-value"),
+  graphRevisionValue: document.querySelector("#graph-revision-value"),
+  graphNodeCountValue: document.querySelector("#graph-node-count-value"),
+  graphEdgeCountValue: document.querySelector("#graph-edge-count-value"),
+  graphSnapshotValue: document.querySelector("#graph-snapshot-value"),
+  graphProjectionValue: document.querySelector("#graph-projection-value"),
+  graphNodeList: document.querySelector("#graph-node-list"),
+  graphEdgeList: document.querySelector("#graph-edge-list"),
 };
 
 function setBusy(element, busy) {
@@ -155,6 +175,8 @@ function resetBusyIndicators() {
   setBusy(elements.eventList, false);
   setBusy(elements.discoveryForm, false);
   setBusy(elements.discoveryPanel, false);
+  setBusy(elements.graphForm, false);
+  setBusy(elements.graphPanel, false);
 }
 
 function announce(message, tone = "neutral") {
@@ -191,6 +213,9 @@ function setConnected(connected, roles = [], subject = null) {
   elements.discoveryCampaign.disabled = !session.canOperate;
   elements.discoveryRunId.disabled = !session.canOperate;
   elements.discoveryLoadButton.disabled = !session.canOperate || session.discoveryLoading;
+  elements.graphCampaign.disabled = !session.canOperate;
+  elements.graphSnapshotId.disabled = !session.canOperate;
+  elements.graphLoadButton.disabled = !session.canOperate || session.graphLoading;
   if (!connected) {
     elements.discoveryEmpty.textContent = (
       "Connect with an Operator credential to inspect a verified Discovery Run."
@@ -198,6 +223,15 @@ function setConnected(connected, roles = [], subject = null) {
   } else if (!session.canOperate) {
     elements.discoveryEmpty.textContent = (
       "This projection requires an Operator credential; Approver and Auditor roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.graphEmpty.textContent = (
+      "Connect with an Operator credential to inspect the current Canonical Graph."
+    );
+  } else if (!session.canOperate) {
+    elements.graphEmpty.textContent = (
+      "This Graph projection requires an Operator credential; other roles are read-denied."
     );
   }
   updateWorkflowControls();
@@ -278,6 +312,39 @@ function renderDiscovery(view) {
   elements.waveTimeline.replaceChildren(...createWaveNodes(document, view.waves));
   elements.discoveryEmpty.hidden = true;
   elements.discoveryResult.hidden = false;
+}
+
+function clearGraph({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.graphCampaign.value = "";
+    elements.graphSnapshotId.value = "";
+  }
+  elements.graphResult.hidden = true;
+  elements.graphEmpty.hidden = false;
+  if (message !== null) {
+    elements.graphEmpty.textContent = message;
+  }
+  elements.graphCampaignValue.textContent = "--";
+  elements.graphRevisionValue.textContent = "--";
+  elements.graphNodeCountValue.textContent = "0";
+  elements.graphEdgeCountValue.textContent = "0";
+  elements.graphSnapshotValue.textContent = "--";
+  elements.graphProjectionValue.textContent = "--";
+  elements.graphNodeList.replaceChildren();
+  elements.graphEdgeList.replaceChildren();
+}
+
+function renderGraph(view) {
+  elements.graphCampaignValue.textContent = view.campaignId;
+  elements.graphRevisionValue.textContent = String(view.projection.revision);
+  elements.graphNodeCountValue.textContent = String(view.nodeCount);
+  elements.graphEdgeCountValue.textContent = String(view.edgeCount);
+  elements.graphSnapshotValue.textContent = shortId(view.snapshot.snapshotId);
+  elements.graphProjectionValue.textContent = shortId(view.projection.projectionId);
+  elements.graphNodeList.replaceChildren(...createGraphNodeNodes(document, view.nodes));
+  elements.graphEdgeList.replaceChildren(...createGraphEdgeNodes(document, view.edges));
+  elements.graphEmpty.hidden = true;
+  elements.graphResult.hidden = false;
 }
 
 function prepareDetailLoading(runId) {
@@ -372,6 +439,8 @@ function replaceCredential(token) {
   session.submissionBusy = false;
   session.discoveryRequestId += 1;
   session.discoveryLoading = false;
+  session.graphRequestId += 1;
+  session.graphLoading = false;
   session.refreshTask = null;
   resetBusyIndicators();
 }
@@ -388,6 +457,7 @@ function lockConsole(
   clearRuns();
   clearDetail();
   clearDiscovery({ clearInputs: true });
+  clearGraph({ clearInputs: true });
   announce(message, tone);
   if (focusToken) {
     elements.tokenInput.focus();
@@ -964,6 +1034,7 @@ elements.tokenForm.addEventListener("submit", async (event) => {
   clearRuns();
   clearDetail();
   clearDiscovery({ clearInputs: true });
+  clearGraph({ clearInputs: true });
   elements.tokenInput.value = "";
   announce("Authenticating and loading Runs…");
   try {
@@ -1190,6 +1261,67 @@ elements.discoveryForm.addEventListener("submit", async (event) => {
     }
   }
 });
+
+elements.graphForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.graphLoading) {
+    return;
+  }
+  const campaign = elements.graphCampaign.value.trim();
+  const snapshotId = elements.graphSnapshotId.value.trim();
+  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(campaign)) {
+    announce("Graph Campaign ID must be canonical lowercase text.", "error");
+    elements.graphCampaign.focus();
+    return;
+  }
+  if (!/^graph-snapshot_[a-f0-9]{64}$/.test(snapshotId)) {
+    announce("Enter one exact current Graph Snapshot ID.", "error");
+    elements.graphSnapshotId.focus();
+    return;
+  }
+  const requestId = ++session.graphRequestId;
+  const authEpoch = session.authEpoch;
+  session.graphLoading = true;
+  setBusy(elements.graphForm, true);
+  setBusy(elements.graphPanel, true);
+  elements.graphLoadButton.disabled = true;
+  clearGraph({ message: "Replaying the Canonical Graph admission authority..." });
+  announce("Verifying the current Canonical Graph Snapshot...");
+  try {
+    const path = `/v1/graphs/campaigns/${encodeURIComponent(campaign)}`
+      + `/snapshots/${encodeURIComponent(snapshotId)}`;
+    const view = validateCanonicalGraphView(
+      await apiRequest(path),
+      campaign,
+      snapshotId,
+    );
+    if (session.graphRequestId !== requestId || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderGraph(view);
+    announce(
+      `Verified current Graph revision ${view.projection.revision}: `
+        + `${view.nodeCount} node(s), ${view.edgeCount} edge(s).`,
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.graphRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error ? error.message : "Unable to load Graph view.";
+      clearGraph({ message: `Canonical Graph unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.graphRequestId === requestId && session.authEpoch === authEpoch) {
+      session.graphLoading = false;
+      setBusy(elements.graphForm, false);
+      setBusy(elements.graphPanel, false);
+      elements.graphLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
+
 elements.previousPage.addEventListener("click", () => {
   session.offset = Math.max(0, session.offset - PAGE_SIZE);
   refreshCurrent();
@@ -1217,4 +1349,5 @@ globalThis.addEventListener("pagehide", () => {
 newIdempotencyKey();
 setConnected(false);
 clearDiscovery({ clearInputs: true });
+clearGraph({ clearInputs: true });
 updatePagination();
