@@ -2,8 +2,8 @@
 
 - 기록일: 2026-08-10
 - 브랜치: `main`
-- 현재 기능 HEAD: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
-- 현재 코드 체크포인트: Phase 9 `UX-001B3` Campaign draft 기존 compiler handoff 완료
+- 현재 기능 HEAD: `cb1490e11f042a37fd128b0a661d0f04af5afe77`
+- 현재 코드 체크포인트: Phase 9 `UX-002A` verified Discovery Surface·Wave view 완료
 - 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
 - APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
@@ -32,9 +32,10 @@
 - UX-001B1 구현 커밋: `1c5f68e1c84c62a2099add5fe825937688ee7b7d`
 - UX-001B2 구현 커밋: `1c03188d10e4bc60de9f6449201f83c1e26b707e`
 - UX-001B3 구현 커밋: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
-- 현재 구현 체크포인트: verified original typed source·기존 authority 기반 Campaign value compilation
-- 다음 로드맵: Phase 9 `Attack Surface·Graph·Wave Timeline UI`
-- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 30 commits ahead
+- UX-002A 구현 커밋: `cb1490e11f042a37fd128b0a661d0f04af5afe77`
+- 현재 구현 체크포인트: sealed Discovery authority 기반 Attack Surface·Recon→Hypothesis Wave read model
+- 다음 로드맵: Phase 9 `UX-002B` 기존 canonical Graph Snapshot 기반 Graph projection
+- 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 32 commits ahead
 
 ## 재개 전 확인
 
@@ -52,14 +53,22 @@ typed Surface는 `9a2ad10`, chain authority는 `886236d`, CHAIN-004는 `b1dfa44`
 `03d2c0a`, VAL-001은 `a9949bc`, VAL-002는 `fadeed7`, VAL-003은 `9b8caff`와 순환 import 수정
 `653f07c`, VAL-004A는 `dfbd967`, VAL-004B는 `abfb167`, Replay 격리·HTTP Surface 등록 정합성 수정은
 `d5bd2e4`, VAL-004C는 `56f5dcf`, UX-001A는 `6312215`, UX-001B1은 `1c5f68e`, UX-001B2는
-`1c03188`, UX-001B3는 `f5f96ef`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬 `main`은
-`origin/main@0ed5ac7`보다 30 commits
+`1c03188`, UX-001B3는 `f5f96ef`, UX-002A는 `cb1490e`에 보존됐다. 이 문서 동기화 커밋 뒤 로컬
+`main`은 `origin/main@0ed5ac7`보다 32 commits
 ahead이고 working tree는 clean이어야 한다.
 별도 detached worktree
 `C:\Users\hyeon\.codex\worktrees\6b64\PAJIN`에는 이전 중복 변경이 남아 있으므로 사용자의 명시적
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
+
+`UX-002A`는 `PAJIN_CP_DISCOVERY_RUN_ROOT` 아래 exact Campaign·Hypothesis Run을 입력받는 Operator-only
+`GET /v1/discovery/campaigns/{campaign}/hypothesis-runs/{hypothesis_run_id}`를 추가했다. Hypothesis Run,
+referenced Recon source Run, Surface projection Run의 seal·root digest·Campaign·Snapshot·Surface Set·Plan·
+Task·artifact·unique event authority를 다시 검증한 뒤 bounded Attack Surface와 Recon→Hypothesis wave만
+반환한다. raw observation·evidence·Tool result/argument·path는 제외하며 canonical Graph·Capability·Permit·
+execution authority는 모두 false다. Web Console은 strict protocol 검증 뒤 text-only DOM으로 Surface 카드와
+두 단계 timeline을 표시하고 항상 `Graph not included` 경계를 유지한다.
 
 `UX-001B3`는 operator-only `POST /v1/campaign-drafts/{draft_digest}/compile`에서 B2 exact reader로
 complete draft와 원 typed source를 다시 검증한다. Bug Bounty는 요청의 별도 기존
@@ -345,6 +354,24 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md`
 
 ## 현재 검증
+
+### 2026-08-10 UX-002A verified Discovery Surface·Wave view
+
+- 기능 커밋: `cb1490e11f042a37fd128b0a661d0f04af5afe77`
+- Discovery Surface/Wave·Web Console 집중 회귀: 20 passed, 2 skipped
+  - Windows symlink 생성 권한 1건, pytest process PATH의 Node 미발견 1건은 환경 제약으로 skip
+- Recon·Hypothesis 포함 확대 회귀: 42 passed, 2 skipped
+- bundled Node로 dependency-free Web Console runtime 직접 실행: 통과
+- 실제 browser QA: desktop·390x844 mobile에서 Operator 인증, exact Run 조회, Surface 카드,
+  Recon→Hypothesis timeline, `Graph not included` 경계와 no-overflow 확인; console error 0건
+- Ruff 전체: 통과
+- 변경 Python 3개 모듈 mypy: 통과
+- 전체 pytest first-failure: 기존 managed Artifact admission 오류에서 1 failed, 677 passed, 12 skipped
+  - 기대 `not admission-bound`, 실제 `staged source Artifact failed managed admission`; UX-002A 변경과 무관한
+    기존 실패로 구분한다.
+- Windows 전체 mypy: 기존 POSIX 전용 `os.O_NOFOLLOW`, `os.O_DIRECTORY`, `os.geteuid`, `fcntl` 등
+  33건만 실패; 변경 모듈은 통과
+- `git diff --check`, staged diff·민감정보·debug placeholder 검토: 통과
 
 ### 2026-08-10 UX-001B3 Campaign draft 기존 compiler handoff
 
@@ -746,15 +773,19 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 
 Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A draft는 `6312215`, UX-001B1 local artifact·CLI는
 `1c5f68e`, UX-001B2 Control Plane verified read는 `1c03188`, UX-001B3 existing compiler handoff는
-`f5f96ef`에 보존됐다. Campaign·Profile·Scope Builder 제품 단위는 완료됐다.
+`f5f96ef`, UX-002A verified Discovery Surface·Wave view는 `cb1490e`에 보존됐다. Campaign·Profile·Scope
+Builder 제품 단위는 완료됐고 Attack Surface·Graph·Wave Timeline 제품 단위는 Surface·Wave까지만 완료됐다.
 이 문서 커밋 뒤 working tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 제품 단위는 `Attack Surface·Graph·Wave Timeline UI`다. 첫 작업은 현재 web console의 읽기 모델과
-기존 Surface Snapshot·Graph·ORCH wave authority 및 Control Plane API를 대조해, 새 execution·Graph authority나
-중복 store 없이 표시할 수 있는 가장 작은 read-only 수직 슬라이스와 완료 기준을 ADR·계약으로 고정하는 것이다.
+다음 한 단계는 `UX-002B`다. 기존 canonical Graph Snapshot/read·admission authority를 실제 코드와 대조하고,
+새 Graph store나 inferred edge 없이 exact Snapshot을 재검증해 투영하는 가장 작은 read-only 수직 슬라이스와
+완료 기준을 ADR·계약으로 먼저 고정한다.
 
 ## 알려진 경계
 
+- UX-002A는 exact local sealed Run authority만 읽는다. canonical Graph node·edge는 포함하지 않으며 generic
+  Control Plane input/event에서 추론하지 않는다. service-account filesystem 통제를 신뢰하고 off-host
+  attestation이나 tenant isolation을 주장하지 않는다.
 - UX-001B3는 exact digest 단건 compilation만 지원한다. draft listing·편집·삭제·retention, Campaign
   persistence·durable compilation audit, Pentest·AI Assessment·CTF Suite source는 없고 기존 Bug Bounty
   approval wire의 signed provenance를 추가하지 않는다. 반환 Campaign은 managed Artifact·Graph·Run evidence나
