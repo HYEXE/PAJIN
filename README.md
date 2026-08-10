@@ -440,6 +440,16 @@ execute work, confirm a Finding, or infer impact or severity assurance. See the
 [VAL-003 contract](docs/orchestration/VAL-003-profile-assurance-floor.md) and
 [ADR-0149](docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md).
 
+VAL-004A reopens exact sealed KISA validity Replay and Validation Control evidence before it can
+satisfy one of those floors. Replay repetitions must retain distinct requests, fresh sessions and
+evidence lineage; controlled depths additionally require the exact observed Baseline, Negative
+Control and Counterfactual contrast, fresh child Capabilities and code-registered materialization.
+The resulting `profile-floor-satisfied-not-confirmed` assessment cannot select a Profile, mutate a
+Campaign, execute work or confirm a Finding. This first adapter intentionally excludes VAL-001 WALK
+Replay because current KISA Controls bind different Claim, request, Tool and session semantics. See
+the [VAL-004A contract](docs/orchestration/VAL-004A-kisa-profile-validation-evidence.md) and
+[ADR-0150](docs/adr/0150-evaluate-kisa-profile-floors-from-sealed-evidence.md).
+
 ## B2.8g resumable multipart portable Artifact transport
 
 Replay Runs above the existing 2 MiB inline ceiling now use a manifest-only multipart transport.

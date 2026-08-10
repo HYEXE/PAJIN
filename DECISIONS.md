@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0150: Evaluate KISA Profile Floors from Sealed Evidence](docs/adr/0150-evaluate-kisa-profile-floors-from-sealed-evidence.md)
 - [ADR-0149: Bind Profile Assurance Floors without Campaign Selection](docs/adr/0149-bind-profile-assurance-floors-without-campaign-selection.md)
 - [ADR-0148: Register Validation Depth Requirements without Evidence Authority](docs/adr/0148-register-validation-depth-requirements-without-evidence-authority.md)
 - [ADR-0147: Bind Mode-neutral Claim Replay to Sealed Walking Evidence](docs/adr/0147-bind-mode-neutral-claim-replay-to-sealed-walking-evidence.md)
