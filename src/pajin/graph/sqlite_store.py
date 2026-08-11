@@ -1140,6 +1140,45 @@ def load_verified_current_graph_snapshot_consistency(
     return snapshot, consistency
 
 
+def load_verified_graph_snapshot_history(
+    path: Path,
+    *,
+    campaign_id: str,
+) -> tuple[GraphSnapshot, ...]:
+    """Read the complete immutable Snapshot chain without mutating the Graph Store."""
+
+    if fullmatch(r"^[a-z0-9][a-z0-9-]{2,79}$", campaign_id) is None:
+        raise ValueError("SQLite Graph Store campaign ID is invalid")
+    database = _absolute_path(path)
+    identity = _file_identity(database)
+    with _readonly_connection(database) as connection:
+        _validate_schema(connection, campaign_id=campaign_id)
+        events = _events_from_connection(connection, campaign_id=campaign_id)
+        _require_exact_node_index(connection, campaign_id=campaign_id, events=events)
+        projections = _verified_projections(
+            connection,
+            campaign_id=campaign_id,
+            events=events,
+        )
+        snapshots, _snapshot_head = _verified_snapshots(
+            connection,
+            campaign_id=campaign_id,
+            projections=projections,
+        )
+        current = projections[max(projections)]
+        expected_event_head = events[-1].event_digest if events else None
+        if (
+            current.revision != len(events)
+            or current.event_log_head_digest != expected_event_head
+        ):
+            raise SQLiteGraphStoreError(
+                "SQLite Graph projection recovery is required before Snapshot history reads"
+            )
+    if _file_identity(database) != identity:
+        raise SQLiteGraphStoreError("SQLite Graph Store changed during Snapshot verification")
+    return tuple(_canonical_snapshot(snapshot) for snapshot in snapshots.values())
+
+
 def _load_verified_current_graph_snapshot_state(
     path: Path,
     *,

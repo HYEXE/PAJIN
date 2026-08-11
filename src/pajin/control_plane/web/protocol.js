@@ -2,6 +2,7 @@
 
 export const PAGE_SIZE = 25;
 export const MAX_RENDERED_EVENTS = 200;
+export const REVIEW_QUEUE_LIMIT = 50;
 
 const READ_ROLES = new Set(["operator", "approver", "auditor"]);
 const KNOWN_ROLES = new Set([...READ_ROLES, "worker"]);
@@ -30,6 +31,12 @@ const APPROVAL_STATES = new Set([
   "expired",
   "revoked",
 ]);
+const REVIEW_ATTENTION_PRIORITY = new Map([
+  ["approval-expired", 0],
+  ["approval-required", 1],
+  ["resume-required", 2],
+  ["execution-active", 3],
+]);
 const SURFACE_LOCATOR_KINDS = new Set([
   "http-endpoint",
   "http-route",
@@ -52,6 +59,17 @@ const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 const GRAPH_SNAPSHOT_PATTERN = /^graph-snapshot_[a-f0-9]{64}$/;
 const GRAPH_PROJECTION_PATTERN = /^graph-projection_[a-f0-9]{64}$/;
 const GRAPH_CONSISTENCY_VIEW_PATTERN = /^graph-consistency-view_[a-f0-9]{64}$/;
+const GRAPH_DECISION_PATTERN = /^graph-decision_[a-f0-9]{64}$/;
+const GRAPH_DECISION_AUDIT_RECORD_PATTERN = (
+  /^graph-decision-audit-record_[a-f0-9]{64}$/
+);
+const REPLAY_BATCH_PATTERN = /^replay-batch_[a-f0-9]{32}$/;
+const REPLAY_PROJECTION_PATTERN = /^replay-projection_[a-f0-9]{32}$/;
+const REPLAY_RUN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/;
+const WALKING_CONTROL_COMPARISON_PATTERN = (
+  /^walking-control-comparison_[a-f0-9]{64}$/
+);
+const WALKING_EXECUTION_RUN_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const GRAPH_NODE_PATTERN = /^graph-node_[a-f0-9]{64}$/;
 const GRAPH_EDGE_PATTERN = /^graph-edge_[a-f0-9]{64}$/;
 const GRAPH_NODE_KINDS = new Set([
@@ -74,6 +92,13 @@ const HYPOTHESIS_ATTENTION_BANDS = new Map([
   ["supported", "evidence-supported"],
   ["open", "evidence-needed"],
   ["contradicted", "contradicted-review"],
+]);
+const GRAPH_DECISION_KINDS = new Set([
+  "plan",
+  "task-assignment",
+  "replan",
+  "action-proposal",
+  "stop",
 ]);
 const GRAPH_RELATION_ENDPOINTS = new Map([
   ["motivates", ["Surface", "Hypothesis"]],
@@ -601,6 +626,316 @@ export function validateHypothesisAttentionRanking(value, campaignName, snapshot
   return view;
 }
 
+export function validateGraphDecisionAuditView(value, campaignName, snapshotId) {
+  const view = expectRecord(value, "Graph Decision audit view");
+  if (view.apiVersion
+      !== "pajin.control-plane/verified-graph-decision-audit-view/v1alpha1"
+    || view.kind !== "VerifiedGraphDecisionAuditView"
+    || view.campaignId !== campaignName
+    || !/^[a-z0-9][a-z0-9-]{2,79}$/.test(view.campaignId)
+    || view.snapshotId !== snapshotId
+    || !GRAPH_SNAPSHOT_PATTERN.test(view.snapshotId)
+    || !SHA256_PATTERN.test(view.snapshotDigest)
+    || view.snapshotId !== `graph-snapshot_${view.snapshotDigest}`
+    || !GRAPH_PROJECTION_PATTERN.test(view.projectionId)
+    || !SHA256_PATTERN.test(view.projectionDigest)
+    || view.projectionId !== `graph-projection_${view.projectionDigest}`
+    || view.auditSchemaVersion !== 1
+    || !SHA256_PATTERN.test(view.auditSchemaDigest)
+    || !SHA256_PATTERN.test(view.recorderDigest)
+    || !Number.isSafeInteger(view.totalRecordCount)
+    || view.totalRecordCount < 0
+    || !Number.isSafeInteger(view.currentSnapshotDecisionCount)
+    || view.currentSnapshotDecisionCount < 0
+    || view.currentSnapshotDecisionCount > 500
+    || view.currentSnapshotDecisionCount > view.totalRecordCount
+    || (view.totalRecordCount === 0) !== (view.auditHeadDigest === null)
+    || (view.auditHeadDigest !== null && !SHA256_PATTERN.test(view.auditHeadDigest))
+    || !Array.isArray(view.decisions)
+    || view.decisions.length !== view.currentSnapshotDecisionCount
+    || Object.hasOwn(view, "recorderId")) {
+    protocolFailure("Graph Decision audit view");
+  }
+
+  const sequences = new Set();
+  const recordIds = new Set();
+  const decisionIds = new Set();
+  let previousSequence = 0;
+  for (const decisionValue of view.decisions) {
+    const decision = expectRecord(decisionValue, "Graph Decision audit view");
+    if (!Number.isSafeInteger(decision.sequence)
+      || decision.sequence < 1
+      || decision.sequence > view.totalRecordCount
+      || decision.sequence <= previousSequence
+      || sequences.has(decision.sequence)
+      || !GRAPH_DECISION_AUDIT_RECORD_PATTERN.test(decision.recordId)
+      || !SHA256_PATTERN.test(decision.recordDigest)
+      || decision.recordId !== `graph-decision-audit-record_${decision.recordDigest}`
+      || recordIds.has(decision.recordId)
+      || (decision.sequence === 1) !== (decision.previousRecordDigest === null)
+      || (decision.previousRecordDigest !== null
+        && !SHA256_PATTERN.test(decision.previousRecordDigest))
+      || !GRAPH_DECISION_PATTERN.test(decision.decisionId)
+      || !SHA256_PATTERN.test(decision.decisionDigest)
+      || decision.decisionId !== `graph-decision_${decision.decisionDigest}`
+      || decisionIds.has(decision.decisionId)
+      || !GRAPH_DECISION_KINDS.has(decision.decisionKind)
+      || !SHA256_PATTERN.test(decision.decisionPayloadDigest)
+      || !SHA256_PATTERN.test(decision.actorDigest)
+      || decision.recorderDigest !== view.recorderDigest
+      || Object.hasOwn(decision, "actorId")
+      || Object.hasOwn(decision, "recorderId")
+      || Object.hasOwn(decision, "payload")) {
+      protocolFailure("Graph Decision audit view");
+    }
+    expectTimestamp(decision.decisionCreatedAt, "Graph Decision audit view");
+    expectTimestamp(decision.recordedAt, "Graph Decision audit view");
+    if (new Date(decision.recordedAt).getTime()
+      < new Date(decision.decisionCreatedAt).getTime()) {
+      protocolFailure("Graph Decision audit view");
+    }
+    sequences.add(decision.sequence);
+    recordIds.add(decision.recordId);
+    decisionIds.add(decision.decisionId);
+    previousSequence = decision.sequence;
+  }
+  if (view.decisions.length > 0
+    && view.decisions.at(-1).recordDigest !== view.auditHeadDigest) {
+    protocolFailure("Graph Decision audit view");
+  }
+
+  const boundary = expectRecord(view.authorityBoundary, "Graph Decision audit view");
+  if (boundary.canonicalGraphSnapshotVerified !== true
+    || boundary.currentSnapshotVerified !== true
+    || boundary.completeAuditChainVerified !== true
+    || boundary.historicalSnapshotBindingsVerified !== true
+    || boundary.appendOnlyHistoricalRetention !== true
+    || boundary.identifiersRedacted !== true
+    || boundary.viewSelectsHypothesis !== false
+    || boundary.viewRecordsDecision !== false
+    || boundary.viewSchedulesWork !== false
+    || boundary.viewApprovesAction !== false
+    || boundary.viewGrantsCapability !== false
+    || boundary.viewGrantsPermit !== false
+    || boundary.viewAuthorizesExecution !== false) {
+    protocolFailure("Graph Decision audit view");
+  }
+  return view;
+}
+
+export function validateReplayEvidenceComparison(value, batchId) {
+  const view = expectRecord(value, "Replay evidence comparison");
+  if (view.apiVersion
+      !== "pajin.control-plane/verified-replay-evidence-comparison-view/v1alpha1"
+    || view.kind !== "VerifiedReplayEvidenceComparisonView"
+    || view.batchId !== batchId
+    || !REPLAY_BATCH_PATTERN.test(view.batchId)
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(view.campaignName)
+    || !new Set(["confirmation", "remediation-retest"]).has(view.purpose)
+    || !REPLAY_PROJECTION_PATTERN.test(view.projectionId)
+    || !SHA256_PATTERN.test(view.inputAuthorityDigest)
+    || !SHA256_PATTERN.test(view.projectionArtifactDigest)
+    || view.comparisonMode !== "exact-coordinates-no-semantic-diff"
+    || !Array.isArray(view.lanes)
+    || view.lanes.length !== 4
+    || Object.hasOwn(view, "publishedBy")
+    || Object.hasOwn(view, "createdBy")) {
+    protocolFailure("Replay evidence comparison");
+  }
+
+  const expectedStages = ["original", "replay", "control", "retest"];
+  const expectedRoles = view.purpose === "remediation-retest"
+    ? [
+      "remediation-baseline",
+      "sealed-remediation-replay",
+      "controls-not-bound",
+      "sealed-retest-parent-and-assessment",
+    ]
+    : [
+      "original-source",
+      "sealed-confirmation-replay",
+      "controls-not-bound",
+      "retest-not-applicable",
+    ];
+  const expectedAvailability = view.purpose === "remediation-retest"
+    ? ["verified-reference", "verified-reference", "not-in-authority", "verified-reference"]
+    : ["verified-reference", "verified-reference", "not-in-authority", "not-applicable"];
+  const allRunIds = new Set();
+  const allRootDigests = new Set();
+  for (const [index, laneValue] of view.lanes.entries()) {
+    const lane = expectRecord(laneValue, "Replay evidence comparison");
+    const available = lane.availability === "verified-reference";
+    if (lane.stage !== expectedStages[index]
+      || lane.authorityRole !== expectedRoles[index]
+      || lane.availability !== expectedAvailability[index]
+      || !Number.isSafeInteger(lane.executionCount)
+      || lane.executionCount < 0
+      || lane.executionCount > 1_000
+      || !Array.isArray(lane.runIds)
+      || !Array.isArray(lane.rootDigests)
+      || !Array.isArray(lane.evidenceDigests)
+      || lane.runIds.length !== lane.executionCount
+      || lane.rootDigests.length !== lane.executionCount
+      || lane.evidenceDigests.length !== lane.executionCount
+      || available !== (lane.executionCount > 0)
+      || lane.runIds.some((runId) => !REPLAY_RUN_PATTERN.test(runId))
+      || lane.rootDigests.some((digest) => !SHA256_PATTERN.test(digest))
+      || lane.evidenceDigests.some((digest) => !SHA256_PATTERN.test(digest))
+      || new Set(lane.runIds).size !== lane.runIds.length
+      || new Set(lane.rootDigests).size !== lane.rootDigests.length
+      || new Set(lane.evidenceDigests).size !== lane.evidenceDigests.length
+      || Object.hasOwn(lane, "artifactId")
+      || Object.hasOwn(lane, "candidateId")
+      || Object.hasOwn(lane, "claim")
+      || Object.hasOwn(lane, "content")
+      || Object.hasOwn(lane, "path")) {
+      protocolFailure("Replay evidence comparison");
+    }
+    for (const runId of lane.runIds) {
+      if (allRunIds.has(runId)) protocolFailure("Replay evidence comparison");
+      allRunIds.add(runId);
+    }
+    for (const digest of lane.rootDigests) {
+      if (allRootDigests.has(digest)) protocolFailure("Replay evidence comparison");
+      allRootDigests.add(digest);
+    }
+  }
+
+  const boundary = expectRecord(view.authorityBoundary, "Replay evidence comparison");
+  if (boundary.durableProjectionBindingVerified !== true
+    || boundary.exactLineageCoordinatesVerified !== true
+    || boundary.identifiersAndContentRedacted !== true
+    || boundary.controlEvidenceIncluded !== false
+    || boundary.semanticEvidenceCompared !== false
+    || boundary.viewEvaluatesValidation !== false
+    || boundary.viewAttestsRemediation !== false
+    || boundary.viewConfirmsFinding !== false
+    || boundary.viewAuthorizesExecution !== false) {
+    protocolFailure("Replay evidence comparison");
+  }
+  return view;
+}
+
+function hasExactKeys(record, expected) {
+  const keys = Object.keys(record).sort();
+  const canonical = [...expected].sort();
+  return keys.length === canonical.length
+    && keys.every((key, index) => key === canonical[index]);
+}
+
+export function validateWalkingControlComparison(value, comparisonId) {
+  const label = "Walking Control comparison";
+  const view = expectRecord(value, label);
+  if (view.apiVersion
+      !== "pajin.control-plane/verified-walking-control-comparison-view/v1alpha1"
+    || view.kind !== "VerifiedWalkingControlComparisonView"
+    || view.comparisonId !== comparisonId
+    || !WALKING_CONTROL_COMPARISON_PATTERN.test(view.comparisonId)
+    || view.comparisonDigest !== view.comparisonId.slice(-64)
+    || !SHA256_PATTERN.test(view.comparisonDigest)
+    || !SHA256_PATTERN.test(view.assessmentDigest)
+    || !SHA256_PATTERN.test(view.campaignDigest)
+    || !SHA256_PATTERN.test(view.claimDigest)
+    || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/.test(view.profileId)
+    || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,49}$/.test(view.profileVersion)
+    || view.achievedDepth !== "repeated-controlled-validity-replay"
+    || view.validationState !== "profile-floor-satisfied-not-confirmed"
+    || view.controlContrast !== "contrast-observed"
+    || view.comparisonMode
+      !== "exact-execution-coordinates-with-verified-control-contrast"
+    || !Array.isArray(view.lanes)
+    || view.lanes.length !== 4
+    || !hasExactKeys(view, [
+      "apiVersion", "kind", "comparisonId", "comparisonDigest", "assessmentDigest",
+      "campaignDigest", "claimDigest", "profileId", "profileVersion", "achievedDepth",
+      "validationState", "controlContrast", "comparisonMode", "lanes", "authorityBoundary",
+    ])) {
+    protocolFailure(label);
+  }
+
+  const expectedStages = ["original", "replay", "control", "retest"];
+  const expectedAvailability = [
+    "verified-reference", "verified-reference", "verified-reference", "not-in-authority",
+  ];
+  const expectedRoles = [
+    "sealed-source-execution",
+    "sealed-repeated-validity-replay",
+    "sealed-baseline-negative-counterfactual",
+    "retest-not-bound",
+  ];
+  const expectedCounts = [1, 2, 3, 0];
+  const coordinateRoles = [
+    "original-source",
+    "primary-replay",
+    "additional-replay",
+    "baseline-control",
+    "negative-control",
+    "counterfactual-control",
+  ];
+  const controlKinds = [null, null, null, "baseline", "negative-control", "counterfactual"];
+  const runIds = new Set();
+  const rootDigests = new Set();
+  const executionDigests = new Set();
+  let ordinal = 0;
+  for (const [laneIndex, laneValue] of view.lanes.entries()) {
+    const lane = expectRecord(laneValue, label);
+    if (lane.stage !== expectedStages[laneIndex]
+      || lane.availability !== expectedAvailability[laneIndex]
+      || lane.authorityRole !== expectedRoles[laneIndex]
+      || lane.executionCount !== expectedCounts[laneIndex]
+      || !Array.isArray(lane.coordinates)
+      || lane.coordinates.length !== lane.executionCount
+      || !hasExactKeys(lane, [
+        "stage", "availability", "authorityRole", "executionCount", "coordinates",
+      ])) {
+      protocolFailure(label);
+    }
+    for (const coordinateValue of lane.coordinates) {
+      const coordinate = expectRecord(coordinateValue, label);
+      if (coordinate.ordinal !== ordinal
+        || coordinate.role !== coordinateRoles[ordinal]
+        || coordinate.controlKind !== controlKinds[ordinal]
+        || !WALKING_EXECUTION_RUN_PATTERN.test(coordinate.runId)
+        || !SHA256_PATTERN.test(coordinate.rootDigest)
+        || !SHA256_PATTERN.test(coordinate.executionDigest)
+        || runIds.has(coordinate.runId)
+        || rootDigests.has(coordinate.rootDigest)
+        || executionDigests.has(coordinate.executionDigest)
+        || !hasExactKeys(coordinate, [
+          "ordinal", "role", "controlKind", "runId", "rootDigest", "executionDigest",
+        ])) {
+        protocolFailure(label);
+      }
+      runIds.add(coordinate.runId);
+      rootDigests.add(coordinate.rootDigest);
+      executionDigests.add(coordinate.executionDigest);
+      ordinal += 1;
+    }
+  }
+  if (ordinal !== 6) protocolFailure(label);
+
+  const boundary = expectRecord(view.authorityBoundary, label);
+  if (boundary.val004cSealedPredecessorsVerified !== true
+    || boundary.exactExecutionLineageVerified !== true
+    || boundary.controlContrastVerified !== true
+    || boundary.identifiersAndContentRedacted !== true
+    || boundary.retestEvidenceIncluded !== false
+    || boundary.viewCreatesValidationAssessment !== false
+    || boundary.viewAttestsProfileSelection !== false
+    || boundary.viewAttestsRemediation !== false
+    || boundary.viewConfirmsFinding !== false
+    || boundary.viewAuthorizesExecution !== false
+    || !hasExactKeys(boundary, [
+      "val004cSealedPredecessorsVerified", "exactExecutionLineageVerified",
+      "controlContrastVerified", "identifiersAndContentRedacted", "retestEvidenceIncluded",
+      "viewCreatesValidationAssessment", "viewAttestsProfileSelection",
+      "viewAttestsRemediation", "viewConfirmsFinding", "viewAuthorizesExecution",
+    ])) {
+    protocolFailure(label);
+  }
+  return view;
+}
+
 export function validatePrincipal(value) {
   const principal = expectRecord(value, "session");
   const subject = expectString(principal.subject, "session");
@@ -653,6 +988,97 @@ export function validateRunList(value, expectedOffset) {
     protocolFailure("Run list");
   }
   return page;
+}
+
+export function validateHumanReviewQueue(value) {
+  const label = "Human Review queue";
+  const queue = expectRecord(value, label);
+  if (queue.api_version !== "pajin.control-plane.human-review-queue/v1"
+    || !hasExactKeys(queue, [
+      "api_version", "generated_at", "items", "limit", "has_more", "authority",
+    ])
+    || queue.limit !== REVIEW_QUEUE_LIMIT
+    || typeof queue.has_more !== "boolean"
+    || !Array.isArray(queue.items)
+    || queue.items.length > REVIEW_QUEUE_LIMIT) {
+    protocolFailure(label);
+  }
+  const generatedAt = new Date(expectTimestamp(queue.generated_at, label)).getTime();
+  let previousPriority = -1;
+  const runIds = new Set();
+  for (const rawItem of queue.items) {
+    const item = expectRecord(rawItem, label);
+    if (!hasExactKeys(item, [
+      "run_id", "campaign_name", "run_state", "updated_at", "checkpoint_id",
+      "attention", "approval", "kill_switch_candidate",
+    ])) {
+      protocolFailure(label);
+    }
+    const runId = expectString(item.run_id, label);
+    expectString(item.campaign_name, label);
+    expectTimestamp(item.updated_at, label);
+    const priority = REVIEW_ATTENTION_PRIORITY.get(item.attention);
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$/.test(runId)
+      || runIds.has(runId)
+      || priority === undefined
+      || priority < previousPriority
+      || item.kill_switch_candidate !== true) {
+      protocolFailure(label);
+    }
+    runIds.add(runId);
+    previousPriority = priority;
+
+    if (item.attention === "execution-active") {
+      if (!["queued", "running"].includes(item.run_state)
+        || item.checkpoint_id !== null
+        || item.approval !== null) {
+        protocolFailure(label);
+      }
+      continue;
+    }
+    const approval = expectRecord(item.approval, label);
+    if (item.run_state !== "awaiting-approval"
+      || typeof item.checkpoint_id !== "string"
+      || item.checkpoint_id.length === 0
+      || !hasExactKeys(approval, [
+        "approval_id", "state", "requested_by", "requested_at", "tool_id", "target",
+        "risk_tier", "expires_at",
+      ])
+      || !/^approval_[0-9a-f]{32}$/.test(expectString(approval.approval_id, label))
+      || !["pending", "approved"].includes(approval.state)
+      || !Number.isInteger(approval.risk_tier)
+      || approval.risk_tier < 3
+      || approval.risk_tier > 4) {
+      protocolFailure(label);
+    }
+    expectString(approval.requested_by, label);
+    expectTimestamp(approval.requested_at, label);
+    expectString(approval.tool_id, label);
+    expectString(approval.target, label);
+    const expiresAt = new Date(expectTimestamp(approval.expires_at, label)).getTime();
+    const expired = expiresAt <= generatedAt;
+    if (item.attention === "approval-expired") {
+      if (!expired) protocolFailure(label);
+    } else if (item.attention === "approval-required") {
+      if (expired || approval.state !== "pending") protocolFailure(label);
+    } else if (item.attention === "resume-required"
+      && (expired || approval.state !== "approved")) {
+      protocolFailure(label);
+    }
+  }
+  const authority = expectRecord(queue.authority, label);
+  if (!hasExactKeys(authority, [
+    "queue_snapshot_only", "approval_decision_authority", "checkpoint_resume_authority",
+    "cancellation_authority", "execution_authority",
+  ])
+    || authority.queue_snapshot_only !== true
+    || authority.approval_decision_authority !== false
+    || authority.checkpoint_resume_authority !== false
+    || authority.cancellation_authority !== false
+    || authority.execution_authority !== false) {
+    protocolFailure(label);
+  }
+  return queue;
 }
 
 export function validateApproval(value, runId) {

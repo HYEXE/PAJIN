@@ -42,6 +42,7 @@ from pajin.control_plane.campaign_drafts import (
     ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
+from pajin.control_plane.decision_views import VerifiedGraphDecisionAuditViewReader
 from pajin.control_plane.discovery_views import VerifiedDiscoveryViewReader
 from pajin.control_plane.errors import (
     ControlPlaneError,
@@ -65,6 +66,7 @@ from pajin.control_plane.models import (
     Principal,
     PrincipalRole,
 )
+from pajin.control_plane.replay_comparison import VerifiedReplayEvidenceComparisonReader
 from pajin.control_plane.security import (
     AuthenticationError,
     CheckpointIntegrityError,
@@ -73,6 +75,9 @@ from pajin.control_plane.security import (
     validate_bearer_token,
 )
 from pajin.control_plane.service import ControlPlaneService
+from pajin.control_plane.validation_comparison import (
+    VerifiedWalkingControlComparisonReader,
+)
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.target_attestation import (
     TargetAttestationRegistryBundle,
@@ -568,6 +573,8 @@ class ControlPlaneSettings:
     campaign_draft_root: Path | None = None
     discovery_run_root: Path | None = None
     graph_database: Path | None = None
+    graph_decision_audit_database: Path | None = None
+    validation_evidence_root: Path | None = None
     replay_executor_profiles: dict[str, frozenset[str]] = field(default_factory=dict)
     replay_attestation_key_id: str | None = None
     replay_attestation_private_key: bytes | None = field(default=None, repr=False)
@@ -689,6 +696,12 @@ class ControlPlaneSettings:
         campaign_draft_root = os.environ.get("PAJIN_CP_CAMPAIGN_DRAFT_ROOT")
         discovery_run_root = os.environ.get("PAJIN_CP_DISCOVERY_RUN_ROOT")
         graph_database = os.environ.get("PAJIN_CP_GRAPH_DATABASE")
+        graph_decision_audit_database = os.environ.get(
+            "PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE"
+        )
+        validation_evidence_root = os.environ.get(
+            "PAJIN_CP_VALIDATION_EVIDENCE_ROOT"
+        )
         missing = [
             name
             for name, value in (
@@ -820,6 +833,15 @@ class ControlPlaneSettings:
             raise RuntimeError("PAJIN_CP_DISCOVERY_RUN_ROOT must not be blank")
         if graph_database is not None and not graph_database.strip():
             raise RuntimeError("PAJIN_CP_GRAPH_DATABASE must not be blank")
+        if (
+            graph_decision_audit_database is not None
+            and not graph_decision_audit_database.strip()
+        ):
+            raise RuntimeError(
+                "PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE must not be blank"
+            )
+        if validation_evidence_root is not None and not validation_evidence_root.strip():
+            raise RuntimeError("PAJIN_CP_VALIDATION_EVIDENCE_ROOT must not be blank")
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         operator_subject = os.environ.get("PAJIN_CP_OPERATOR_SUBJECT", "operator")
         approver_subject = os.environ.get(
@@ -893,6 +915,16 @@ class ControlPlaneSettings:
                 Path(discovery_run_root) if discovery_run_root is not None else None
             ),
             graph_database=(Path(graph_database) if graph_database is not None else None),
+            graph_decision_audit_database=(
+                Path(graph_decision_audit_database)
+                if graph_decision_audit_database is not None
+                else None
+            ),
+            validation_evidence_root=(
+                Path(validation_evidence_root)
+                if validation_evidence_root is not None
+                else None
+            ),
             replay_executor_profiles=replay_executor_profiles,
             replay_attestation_key_id=replay_attestation_key_id,
             replay_attestation_private_key=parsed_attestation_private_key,
@@ -925,6 +957,9 @@ class _ControlPlaneApplicationContext:
     discovery_view_reader: VerifiedDiscoveryViewReader
     graph_view_reader: VerifiedCanonicalGraphViewReader
     hypothesis_attention_ranking_reader: VerifiedHypothesisAttentionRankingReader
+    decision_audit_reader: VerifiedGraphDecisionAuditViewReader
+    replay_comparison_reader: VerifiedReplayEvidenceComparisonReader
+    validation_comparison_reader: VerifiedWalkingControlComparisonReader
     service: ControlPlaneService
     authenticator: TokenAuthenticator
 
@@ -996,6 +1031,14 @@ def _build_application_context(
         graph_view_reader=VerifiedCanonicalGraphViewReader(settings.graph_database),
         hypothesis_attention_ranking_reader=VerifiedHypothesisAttentionRankingReader(
             settings.graph_database
+        ),
+        decision_audit_reader=VerifiedGraphDecisionAuditViewReader(
+            graph_database=settings.graph_database,
+            audit_database=settings.graph_decision_audit_database,
+        ),
+        replay_comparison_reader=VerifiedReplayEvidenceComparisonReader(service),
+        validation_comparison_reader=VerifiedWalkingControlComparisonReader(
+            settings.validation_evidence_root
         ),
         service=service,
         authenticator=TokenAuthenticator(dict(settings.credentials)),
@@ -1302,6 +1345,9 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         hypothesis_attention_ranking_reader=(
             context.hypothesis_attention_ranking_reader
         ),
+        decision_audit_reader=context.decision_audit_reader,
+        replay_comparison_reader=context.replay_comparison_reader,
+        validation_comparison_reader=context.validation_comparison_reader,
         dependencies=dependencies,
     )
     return app

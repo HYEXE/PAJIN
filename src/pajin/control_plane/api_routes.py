@@ -32,6 +32,14 @@ from pajin.control_plane.campaign_drafts import (
     ControlPlaneCampaignDraftReader,
 )
 from pajin.control_plane.database import ControlPlaneRepository
+from pajin.control_plane.decision_views import (
+    GraphDecisionAuditViewIntegrityError,
+    GraphDecisionAuditViewNotFound,
+    GraphDecisionAuditViewTooLarge,
+    GraphDecisionAuditViewUnavailable,
+    VerifiedGraphDecisionAuditView,
+    VerifiedGraphDecisionAuditViewReader,
+)
 from pajin.control_plane.discovery_views import (
     DiscoveryViewIntegrityError,
     DiscoveryViewNotFound,
@@ -69,6 +77,7 @@ from pajin.control_plane.models import (
     CreateReplayBatchRequest,
     DecideApprovalRequest,
     FailJobRequest,
+    HumanReviewQueueView,
     JobView,
     LeaseRequest,
     Principal,
@@ -94,7 +103,19 @@ from pajin.control_plane.models import (
     SubmissionView,
     SubmitRunRequest,
 )
+from pajin.control_plane.replay_comparison import (
+    ReplayComparisonIntegrityError,
+    VerifiedReplayEvidenceComparisonReader,
+    VerifiedReplayEvidenceComparisonView,
+)
 from pajin.control_plane.service import MAX_AUDIT_EVENT_PAGE_SIZE, ControlPlaneService
+from pajin.control_plane.validation_comparison import (
+    VerifiedWalkingControlComparisonReader,
+    VerifiedWalkingControlComparisonView,
+    WalkingControlComparisonIntegrityError,
+    WalkingControlComparisonNotFound,
+    WalkingControlComparisonUnavailable,
+)
 from pajin.control_plane.web_console import console_asset_response, console_index_response
 
 PrincipalDependency = Callable[[Principal], Principal]
@@ -215,6 +236,22 @@ def register_session_and_run_routes(
         offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
     ) -> RunListView:
         return service.list_runs(state=state_filter, limit=limit, offset=offset)
+
+    @app.get("/v1/review-queue", response_model=HumanReviewQueueView)
+    def list_human_review_queue(
+        _principal: Annotated[
+            Principal,
+            Depends(
+                require_roles(
+                    PrincipalRole.OPERATOR,
+                    PrincipalRole.APPROVER,
+                    PrincipalRole.AUDITOR,
+                )
+            ),
+        ],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> HumanReviewQueueView:
+        return service.list_human_review_queue(limit=limit)
 
     @app.get("/v1/runs/{run_id}", response_model=RunView)
     def get_run(
@@ -458,6 +495,113 @@ def register_graph_view_routes(
             raise HTTPException(
                 status_code=409,
                 detail="Hypothesis attention ranking authority is not integrity-valid",
+            ) from exc
+
+
+def register_decision_audit_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedGraphDecisionAuditViewReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the Operator-only complete Graph Decision audit view."""
+
+    @app.get(
+        "/v1/decisions/campaigns/{campaign}/snapshots/{snapshot_id}/audit",
+        response_model=VerifiedGraphDecisionAuditView,
+    )
+    def get_verified_graph_decision_audit(
+        campaign: Annotated[
+            str,
+            FastAPIPath(pattern=r"^[a-z0-9][a-z0-9-]{2,79}$"),
+        ],
+        snapshot_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^graph-snapshot_[a-f0-9]{64}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedGraphDecisionAuditView:
+        try:
+            return reader.read(campaign=campaign, snapshot_id=snapshot_id)
+        except GraphDecisionAuditViewUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except GraphDecisionAuditViewNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except GraphDecisionAuditViewTooLarge as exc:
+            raise HTTPException(status_code=413, detail=str(exc)) from exc
+        except GraphDecisionAuditViewIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Graph Decision audit authority is not integrity-valid",
+            ) from exc
+
+
+def register_replay_comparison_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedReplayEvidenceComparisonReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the Operator-only coordinate comparison for one Replay projection."""
+
+    @app.get(
+        "/v1/replay-comparisons/batches/{batch_id}",
+        response_model=VerifiedReplayEvidenceComparisonView,
+    )
+    def get_verified_replay_evidence_comparison(
+        batch_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^replay-batch_[0-9a-f]{32}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedReplayEvidenceComparisonView:
+        try:
+            return reader.read(batch_id=batch_id)
+        except ReplayComparisonIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Replay comparison authority is not integrity-valid",
+            ) from exc
+
+
+def register_validation_comparison_routes(
+    app: FastAPI,
+    *,
+    reader: VerifiedWalkingControlComparisonReader,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register the Operator-only exact sealed VAL-004C comparison view."""
+
+    @app.get(
+        "/v1/validation-comparisons/walking/{comparison_id}",
+        response_model=VerifiedWalkingControlComparisonView,
+    )
+    def get_verified_walking_control_comparison(
+        comparison_id: Annotated[
+            str,
+            FastAPIPath(pattern=r"^walking-control-comparison_[a-f0-9]{64}$"),
+        ],
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> VerifiedWalkingControlComparisonView:
+        try:
+            return reader.read(comparison_id=comparison_id)
+        except WalkingControlComparisonUnavailable as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        except WalkingControlComparisonNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except WalkingControlComparisonIntegrityError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="Walking Control comparison authority is not integrity-valid",
             ) from exc
 
 
@@ -798,6 +942,9 @@ def register_control_plane_routes(
     discovery_view_reader: VerifiedDiscoveryViewReader,
     graph_view_reader: VerifiedCanonicalGraphViewReader,
     hypothesis_attention_ranking_reader: VerifiedHypothesisAttentionRankingReader,
+    decision_audit_reader: VerifiedGraphDecisionAuditViewReader,
+    replay_comparison_reader: VerifiedReplayEvidenceComparisonReader,
+    validation_comparison_reader: VerifiedWalkingControlComparisonReader,
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -823,6 +970,21 @@ def register_control_plane_routes(
         app,
         reader=graph_view_reader,
         ranking_reader=hypothesis_attention_ranking_reader,
+        dependencies=dependencies,
+    )
+    register_decision_audit_routes(
+        app,
+        reader=decision_audit_reader,
+        dependencies=dependencies,
+    )
+    register_replay_comparison_routes(
+        app,
+        reader=replay_comparison_reader,
+        dependencies=dependencies,
+    )
+    register_validation_comparison_routes(
+        app,
+        reader=validation_comparison_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

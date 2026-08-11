@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select, text
+from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
@@ -124,6 +124,10 @@ from pajin.control_plane.models import (
     CreateReplayBatchRequest,
     DecideApprovalRequest,
     FailJobRequest,
+    HumanReviewApprovalSummary,
+    HumanReviewAttention,
+    HumanReviewQueueItem,
+    HumanReviewQueueView,
     InternalJobKind,
     JobKind,
     JobState,
@@ -1133,6 +1137,154 @@ class ControlPlaneService:
                 limit=limit,
                 offset=offset,
             )
+
+    def list_human_review_queue(self, *, limit: int) -> HumanReviewQueueView:
+        """Return one bounded, read-only attention snapshot over active Run authority."""
+
+        if type(limit) is not int or not 1 <= limit <= 100:
+            raise ControlPlaneError("Human Review queue limit is invalid")
+        generated_at = utc_now()
+        active_states = (
+            RunState.QUEUED.value,
+            RunState.RUNNING.value,
+            RunState.AWAITING_APPROVAL.value,
+        )
+        attention_order = case(
+            (
+                (RunRecord.state == RunState.AWAITING_APPROVAL.value)
+                & (
+                    (
+                        ApprovalRecord.state.notin_(
+                            (ApprovalState.PENDING.value, ApprovalState.APPROVED.value)
+                        )
+                    )
+                    | (ApprovalRecord.state.is_(None))
+                    | (ApprovalRecord.expires_at <= generated_at)
+                ),
+                0,
+            ),
+            (
+                (RunRecord.state == RunState.AWAITING_APPROVAL.value)
+                & (ApprovalRecord.state == ApprovalState.PENDING.value),
+                1,
+            ),
+            (
+                (RunRecord.state == RunState.AWAITING_APPROVAL.value)
+                & (ApprovalRecord.state == ApprovalState.APPROVED.value),
+                2,
+            ),
+            (RunRecord.state == RunState.RUNNING.value, 3),
+            else_=4,
+        )
+        with self.repository.read_transaction() as session:
+            rows = session.execute(
+                select(RunRecord, CheckpointRecord, ApprovalRecord)
+                .outerjoin(
+                    CheckpointRecord,
+                    CheckpointRecord.checkpoint_id == RunRecord.current_checkpoint_id,
+                )
+                .outerjoin(
+                    ApprovalRecord,
+                    ApprovalRecord.checkpoint_id == CheckpointRecord.checkpoint_id,
+                )
+                .where(RunRecord.state.in_(active_states))
+                .order_by(
+                    attention_order,
+                    ApprovalRecord.risk_tier.desc(),
+                    ApprovalRecord.expires_at.asc(),
+                    RunRecord.updated_at.desc(),
+                    RunRecord.run_id.asc(),
+                )
+                .limit(limit + 1)
+            ).all()
+            items = [
+                self._human_review_queue_item(
+                    run=row[0],
+                    checkpoint=row[1],
+                    approval=row[2],
+                    generated_at=generated_at,
+                )
+                for row in rows[:limit]
+            ]
+        return HumanReviewQueueView(
+            generated_at=generated_at,
+            items=items,
+            limit=limit,
+            has_more=len(rows) > limit,
+        )
+
+    def _human_review_queue_item(
+        self,
+        *,
+        run: RunRecord,
+        checkpoint: CheckpointRecord | None,
+        approval: ApprovalRecord | None,
+        generated_at: datetime,
+    ) -> HumanReviewQueueItem:
+        run_state = RunState(run.state)
+        if run_state is not RunState.AWAITING_APPROVAL:
+            if (
+                run.current_checkpoint_id is not None
+                or checkpoint is not None
+                or approval is not None
+            ):
+                raise StateConflict("active Run approval boundary is inconsistent")
+            return HumanReviewQueueItem(
+                run_id=run.run_id,
+                campaign_name=run.campaign_name,
+                run_state=run_state,
+                updated_at=_aware(run.updated_at),
+                checkpoint_id=None,
+                attention=HumanReviewAttention.EXECUTION_ACTIVE,
+                approval=None,
+            )
+
+        if checkpoint is None or approval is None:
+            raise StateConflict("awaiting-approval Run has incomplete approval context")
+        if (
+            run.current_checkpoint_id != checkpoint.checkpoint_id
+            or checkpoint.run_id != run.run_id
+            or approval.run_id != run.run_id
+            or approval.checkpoint_id != checkpoint.checkpoint_id
+            or checkpoint.claimed_at is not None
+            or checkpoint.claimed_by is not None
+            or checkpoint.continuation_job_id is not None
+        ):
+            raise StateConflict("awaiting-approval Run context is inconsistent")
+        self._lifecycle.verify_checkpoint(checkpoint)
+        intent = self._views.checkpoint_intent(checkpoint)
+        if not self._lifecycle.approval_matches_intent(approval, intent):
+            raise StateConflict("approval fields do not match signed checkpoint intent")
+        if approval.state not in {
+            ApprovalState.PENDING.value,
+            ApprovalState.APPROVED.value,
+        }:
+            raise StateConflict("approval state does not match the active Run lifecycle")
+        approval_view = self._views.approval(approval)
+        if approval_view.intent.expires_at <= generated_at:
+            attention = HumanReviewAttention.APPROVAL_EXPIRED
+        elif approval_view.state is ApprovalState.PENDING:
+            attention = HumanReviewAttention.APPROVAL_REQUIRED
+        else:
+            attention = HumanReviewAttention.RESUME_REQUIRED
+        return HumanReviewQueueItem(
+            run_id=run.run_id,
+            campaign_name=run.campaign_name,
+            run_state=run_state,
+            updated_at=_aware(run.updated_at),
+            checkpoint_id=checkpoint.checkpoint_id,
+            attention=attention,
+            approval=HumanReviewApprovalSummary(
+                approval_id=approval_view.approval_id,
+                state=approval_view.state,
+                requested_by=approval_view.requested_by,
+                requested_at=approval_view.requested_at,
+                tool_id=approval_view.intent.tool_id,
+                target=approval_view.intent.target,
+                risk_tier=approval_view.intent.risk_tier,
+                expires_at=approval_view.intent.expires_at,
+            ),
+        )
 
     def get_current_approval(self, run_id: str, *, actor: str) -> ApprovalView | None:
         with self.repository.transaction() as session:

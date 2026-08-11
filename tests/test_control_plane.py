@@ -27,6 +27,7 @@ from pajin.control_plane.api import (
     create_app,
 )
 from pajin.control_plane.database import (
+    ApprovalRecord,
     CheckpointRecord,
     ControlPlaneRepository,
     EventRecord,
@@ -723,6 +724,8 @@ def _checkpoint(
     lease_token: str,
     *,
     fingerprint: str = "a" * 64,
+    risk_tier: int = 3,
+    expires_at: datetime | None = None,
 ) -> dict[str, object]:
     response = client.post(
         f"/v1/worker/jobs/{job_id}/checkpoints",
@@ -735,13 +738,174 @@ def _checkpoint(
                 "call_fingerprint": fingerprint,
                 "tool_id": "mock.approval-probe",
                 "target": "lab://approval-check",
-                "risk_tier": 3,
-                "expires_at": (datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
+                "risk_tier": risk_tier,
+                "expires_at": (expires_at or datetime.now(UTC) + timedelta(minutes=5)).isoformat(),
             },
         },
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def test_human_review_queue_prioritizes_existing_active_authority_without_mutation(
+    tmp_path: Path,
+) -> None:
+    app = create_app(_settings(tmp_path / "human-review-queue.db"))
+    with TestClient(app) as client:
+        pending_run, pending_job = _submit(client, "review-pending")
+        pending_claim = _claim(client)
+        pending = _checkpoint(
+            client,
+            pending_job,
+            str(pending_claim["lease_token"]),
+            risk_tier=4,
+            expires_at=datetime.now(UTC) + timedelta(minutes=4),
+        )
+
+        approved_run, approved_job = _submit(client, "review-approved")
+        approved_claim = _claim(client)
+        approved = _checkpoint(
+            client,
+            approved_job,
+            str(approved_claim["lease_token"]),
+            expires_at=datetime.now(UTC) + timedelta(minutes=6),
+        )
+        approved_id = str(approved["approval"]["approval_id"])
+        decision = client.post(
+            f"/v1/approvals/{approved_id}/decision",
+            headers=_auth(APPROVER_TOKEN),
+            json={"approve": True, "reason": "bounded queue ordering check"},
+        )
+        assert decision.status_code == 200, decision.text
+
+        running_run, _running_job = _submit(client, "review-running")
+        _claim(client)
+        queued_run, _queued_job = _submit(client, "review-queued")
+
+        with app.state.repository.read_transaction() as session:
+            events_before = session.scalar(select(func.count()).select_from(EventRecord))
+        response = client.get(
+            "/v1/review-queue?limit=4",
+            headers=_auth(OPERATOR_TOKEN),
+        )
+        with app.state.repository.read_transaction() as session:
+            events_after = session.scalar(select(func.count()).select_from(EventRecord))
+
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["api_version"] == "pajin.control-plane.human-review-queue/v1"
+        assert body["limit"] == 4
+        assert body["has_more"] is False
+        assert [item["run_id"] for item in body["items"]] == [
+            pending_run,
+            approved_run,
+            running_run,
+            queued_run,
+        ]
+        assert [item["attention"] for item in body["items"]] == [
+            "approval-required",
+            "resume-required",
+            "execution-active",
+            "execution-active",
+        ]
+        assert body["items"][0]["approval"] == {
+            "approval_id": pending["approval"]["approval_id"],
+            "state": "pending",
+            "requested_by": "worker-service",
+            "requested_at": pending["approval"]["requested_at"],
+            "tool_id": "mock.approval-probe",
+            "target": "lab://approval-check",
+            "risk_tier": 4,
+            "expires_at": pending["approval"]["intent"]["expires_at"],
+        }
+        assert all(item["kill_switch_candidate"] is True for item in body["items"])
+        assert body["authority"] == {
+            "queue_snapshot_only": True,
+            "approval_decision_authority": False,
+            "checkpoint_resume_authority": False,
+            "cancellation_authority": False,
+            "execution_authority": False,
+        }
+        assert "call_fingerprint" not in response.text
+        assert "authorized validation" not in response.text
+        assert events_after == events_before
+
+        bounded = client.get("/v1/review-queue?limit=2", headers=_auth(APPROVER_TOKEN))
+        assert bounded.status_code == 200
+        assert bounded.json()["has_more"] is True
+        assert [item["run_id"] for item in bounded.json()["items"]] == [
+            pending_run,
+            approved_run,
+        ]
+        assert client.get("/v1/review-queue", headers=_auth(WORKER_TOKEN)).status_code == 403
+        invalid_limit = client.get(
+            "/v1/review-queue?limit=0",
+            headers=_auth(OPERATOR_TOKEN),
+        )
+        assert invalid_limit.status_code == 422
+        assert (
+            client.get("/v1/review-queue?limit=101", headers=_auth(OPERATOR_TOKEN)).status_code
+            == 422
+        )
+
+
+def test_human_review_queue_marks_expiry_without_rewriting_lifecycle(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app(_settings(tmp_path / "human-review-expiry.db"))
+    with TestClient(app) as client:
+        run_id, job_id = _submit(client, "review-expired")
+        claim = _claim(client)
+        expires_at = datetime.now(UTC) + timedelta(minutes=2)
+        created = _checkpoint(
+            client,
+            job_id,
+            str(claim["lease_token"]),
+            expires_at=expires_at,
+        )
+        approval_id = str(created["approval"]["approval_id"])
+        monkeypatch.setattr(
+            control_plane_service_module,
+            "utc_now",
+            lambda: expires_at + timedelta(seconds=1),
+        )
+        with app.state.repository.read_transaction() as session:
+            events_before = session.scalar(select(func.count()).select_from(EventRecord))
+
+        response = client.get("/v1/review-queue", headers=_auth(OPERATOR_TOKEN))
+
+        assert response.status_code == 200, response.text
+        assert response.json()["items"][0]["attention"] == "approval-expired"
+        with app.state.repository.read_transaction() as session:
+            approval_state = session.scalar(
+                select(ApprovalRecord.state).where(ApprovalRecord.approval_id == approval_id)
+            )
+            run_state = session.scalar(select(RunRecord.state).where(RunRecord.run_id == run_id))
+            events_after = session.scalar(select(func.count()).select_from(EventRecord))
+        assert approval_state == "pending"
+        assert run_state == "awaiting-approval"
+        assert events_after == events_before
+
+
+def test_human_review_queue_fails_closed_on_tampered_approval_binding(tmp_path: Path) -> None:
+    app = create_app(_settings(tmp_path / "human-review-tamper.db"))
+    with TestClient(app) as client:
+        _run_id, job_id = _submit(client, "review-tamper")
+        claim = _claim(client)
+        created = _checkpoint(client, job_id, str(claim["lease_token"]))
+        approval_id = str(created["approval"]["approval_id"])
+        with app.state.repository.transaction() as session:
+            session.execute(
+                update(ApprovalRecord)
+                .where(ApprovalRecord.approval_id == approval_id)
+                .values(tool_id="mock.substituted-tool")
+            )
+
+        response = client.get("/v1/review-queue", headers=_auth(OPERATOR_TOKEN))
+
+    assert response.status_code == 409
+    assert "approval fields" in response.json()["detail"]
 
 
 def test_audit_event_api_returns_bounded_latest_page_with_exclusive_cursor(
@@ -2367,6 +2531,7 @@ def test_replay_worker_routes_are_role_protected_typed_and_fail_closed(
     assert all(path in paths for path in replay_paths)
     assert all("409" in paths[path]["post"]["responses"] for path in replay_paths)
     assert {path for path in paths if path.startswith("/v1/replay")} == {
+        "/v1/replay-comparisons/batches/{batch_id}",
         "/v1/replay/source-artifacts",
         "/v1/replay/batches",
         "/v1/replay/batches/{batch_id}",

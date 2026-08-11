@@ -2,41 +2,13 @@
 
 - 기록일: 2026-08-11
 - 브랜치: `main`
-- 현재 기능 HEAD: `9458edd71788ce17eb96b9369ef05907cbf9d83c`
-- 현재 코드 체크포인트: Phase 9 `UX-003A` canonical Hypothesis attention ranking 완료
-- 문서 동기화: 이 파일을 포함하는 후속 `docs(handoff)` 커밋에서 현재 체크포인트를 동기화
+- 현재 저장소 HEAD: `a983c128822bdbda7c6985a4cdc08c18ee3409d1`
+- 현재 코드 체크포인트: Phase 9 `UX-003B`~`UX-006A` 구현·검증, 미커밋
+- 문서 동기화: working tree가 위 다섯 작업을 반영함
 - 원격 기준: `origin/main@0ed5ac7168e17bcec5400109307f8ff732a11a7f`
-- APPROVAL-001A 구현 커밋: `8733ccc51a00ab0efc34a2f6dfa288ca930f3e1b`
-- APPROVAL-001B 구현 커밋: `6c75896ad7a52796d9dd2193e96b2f42724c407f`
-- APPROVAL-001C1/C2 구현 커밋: `ba7274af4f96c1207b9d5dd509b659877f2a27b5`
-- APPROVAL-001C3 구현 커밋: `613425367ef7a8f2e881812559efb48e4dc9d73d`
-- SUP-007A 구현 커밋: `16fe8d1f44e5524cfe0f9a68b86d9126848ef091`
-- SUP-007B 구현 커밋: `2434e83dd80df1dface1f0e68fab41d0b4ecfd1b`
-- SUP-008 구현 커밋: `ac021a8a6eb314f9797a4c53ec93710731756a25`
-- CHAIN-001 구현 커밋: `4c19ca81437a37e203fad71b0d97d4c4f586dec2`
-- CHAIN-002 구현 커밋: `296c9a82ed7170f13082aed19e365d3331ef0c0e`
-- 승인 배치 신뢰 경계 수정 커밋: `c01814c`
-- CHAIN-003 typed Surface 구현 커밋: `9a2ad103a8f64ddb5289909f461b9d2e217b3dfe`
-- CHAIN-003 chain 구현 커밋: `886236d053131697a674d67179ff1941959b6aed`
-- CHAIN-004 구현 커밋: `b1dfa44fb2ffc2aa7750670ad506c10a6c863ce2`
-- CHAIN-005 구현 커밋: `03d2c0a106794011c9f314668f6fa644a21f333a`
-- VAL-001 구현 커밋: `a9949bcb13faed629d82558a40245272bf92c9a2`
-- VAL-002 구현 커밋: `fadeed787ceab317fb81962d7ac7bc7736903f55`
-- VAL-003 구현 커밋: `9b8cafff1138a596b85d8d9b0c7ea1861090b17d`
-- VAL-003 순환 import 수정 커밋: `653f07caf898e8d5f2a707489f7c329f8836a2d4`
-- VAL-004A 구현 커밋: `dfbd967cd4d88f866d8e7692a4c398b692fe69a8`
-- VAL-004B 구현 커밋: `abfb167236831bfa113f41f97de6227b16a524cb`
-- Replay 격리·HTTP Surface 등록 정합성 수정 커밋: `d5bd2e47bca3bcce7f4616cb220aa15a80464ebb`
-- VAL-004C 구현 커밋: `56f5dcf2301b34d2cf8aa039da3809035515e4d7`
-- UX-001A 구현 커밋: `6312215a8860e4a451de1af4d9d1f41d745f5817`
-- UX-001B1 구현 커밋: `1c5f68e1c84c62a2099add5fe825937688ee7b7d`
-- UX-001B2 구현 커밋: `1c03188d10e4bc60de9f6449201f83c1e26b707e`
-- UX-001B3 구현 커밋: `f5f96efc93a1a49fe8ab62963834f3e32cedb010`
-- UX-002A 구현 커밋: `cb1490e11f042a37fd128b0a661d0f04af5afe77`
-- UX-002B 구현 커밋: `c6c673474429f9b127227e4a9fa6f2d21b87bedb`
-- UX-003A 구현 커밋: `9458edd71788ce17eb96b9369ef05907cbf9d83c`
-- 현재 구현 체크포인트: current Snapshot Hypothesis consistency 기반 read-only review attention ranking
-- 다음 로드맵: Phase 9 `UX-003B` durable complete GraphDecision audit authority·operator view
+- 이전 구현 커밋: `git log`와 `DECISIONS.md`의 ADR 색인을 기준으로 확인
+- 현재 구현 체크포인트: exact verified Finding의 minimized local SARIF 2.1.0 export
+- 다음 로드맵: Phase 9 `UX-006B` external delivery authority
 - 원격 push: 수행하지 않음. 이 문서 동기화 커밋 뒤 로컬 `main`은 `origin/main@0ed5ac7`보다 36 commits ahead
 
 ## 재개 전 확인
@@ -63,6 +35,29 @@ ahead이고 working tree는 clean이어야 한다.
 요청 없이 정리·reset·stash·삭제하지 않는다.
 
 ## 현재 구현 상태
+
+`UX-006A`는 exact Run ID/root digest와 `verified-independent-replay` validation projection을 재검증해
+product-confirmed Finding만 deterministic SARIF 2.1.0으로 private local write한다. target·root cause·reproduction·
+evidence를 제외하고 source/Finding-set/result digest를 결박하며 Issue·SIEM·SOAR·delivery receipt authority는 false다.
+
+`UX-005A`는 Operator·Approver·Auditor용 `GET /v1/review-queue`에서 active Run·approval을 rollback-only
+재검증한 redacted priority snapshot으로 표시한다. GET은 mutation·권한을 만들지 않고 UI action은 기존
+endpoint가 재인가한다.
+
+`UX-004A/B`는 KISA durable Replay projection과 WALK sealed `VAL-004C`를 섞지 않고 각자
+Original·Replay·Control·Retest coordinate를 Operator-only API/UI로 표시한다. A의 Control과 B의 Retest는
+`not-in-authority`이며 semantic diff·validation·remediation·Finding·execution authority는 모두 false다.
+
+`UX-003B`는 complete canonical `GraphDecision`을 existing Permit reference에서 추정하지 않고 별도
+single-Campaign `SQLiteGraphDecisionAuditStore`에 append-only hash chain으로 보존한다. initial append는 complete
+Canonical Graph와 exact current Snapshot freshness를 검증하며 exact retry는 Graph가 advance한 뒤에도
+idempotent하다. Operator-only
+`GET /v1/decisions/campaigns/{campaign}/snapshots/{snapshot_id}/audit`는 complete Graph history와 모든 retained
+historical Snapshot binding, audit schema·recorder·chain을 query-only로 검증하고 requested current Snapshot을
+재확인한 뒤 최대 500개의 current-Snapshot Decision만 반환한다. actor/recorder ID와 payload content는
+redaction하며 Decision 기록·selection·schedule·approval·Capability·Permit·execution authority는 모두 false다.
+Web Console은 strict protocol validation 뒤 desktop과 390 px mobile에서 수평 overflow·console error 없이
+검증된 record와 authority marker를 렌더링했다.
 
 `UX-003A`는 existing `PAJIN_CP_GRAPH_DATABASE`의 exact current Snapshot과 complete Admission Event Log를
 query-only로 재검증한 뒤 기존 `GraphConsistencyAnalyzer`가 산출한 Hypothesis state를 Operator-only
@@ -381,6 +376,44 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 - `docs/adr/0152-bind-repeated-walking-replays-without-new-execution-authority.md`
 
 ## 현재 검증
+
+### 2026-08-11 UX-006A verified Finding SARIF export
+
+- authority·redaction·bounds·symlink·CLI와 validation·replay·report·safe-file·packaging 회귀 215 passed
+- Ruff 전체·변경 Python format·strict mypy 278 files·문서 2건·`git diff --check` 통과
+- 전체 format check는 변경 밖 기존 166개 파일을 보고했으며 범위 밖 autoformat은 수행하지 않음
+
+### 2026-08-11 UX-005A Human Review·Approval·Kill Switch queue
+
+- 직접 회귀 129 passed; 확장 회귀 434 passed, UX-004A에 기록된 unrelated alias failure 2건
+- JS runtime·Ruff·format 통과; strict mypy 277 files 통과
+- Browser 권한별 action·1280×720·390×844 no-overflow·console error 0건
+
+### 2026-08-11 UX-004B VAL-004C Control comparison
+
+- VAL-004C real fixture writer/read-back·mutation rejection, new API/Web, full Control Plane,
+  UX-004A comparison, documentation 관련 회귀: 209 passed
+- Web Console dependency-free runtime와 세 JS module syntax check: 통과
+- 실제 Browser QA: 1280×720에서 네 lane 한 행, 390×844에서 한 열; source 1·Replay 2·Control 3·Retest
+  unavailable, 수평 overflow 없음, console warning/error 0건
+- Ruff 전체: 통과
+- Linux 대상 strict mypy: 277 source files 통과
+- `git diff --check`: 통과
+
+### 2026-08-11 UX-004A Replay lineage coordinate comparison
+
+- comparison reader·API·Web Console 집중 회귀: 18 passed
+- Web Console·Graph view 인접 회귀: 41 passed
+- Replay projection·model·KISA derivation·comparison 확대 회귀: 233 passed, 2 failed
+  - 두 실패는 변경하지 않은 `view_mapper._portable_transport`가 stored snake_case
+    `artifactTransport.api_version`을 camelCase `apiVersion`으로만 읽는 기존 portable transport
+    serialization 문제다. UX-004A comparison 경로와 분리한다.
+- bundled Node syntax check와 dependency-free Web Console runtime 직접 실행: 통과
+- 실제 browser QA: desktop과 390 px mobile에서 Operator 인증, exact completed Batch 조회,
+  Original·Replay·Control `not-in-authority`·Retest 네 lane, no-overflow와 console error 0건 확인
+- Ruff 전체: 통과
+- Linux 대상 strict mypy: 276 source files 통과
+- `git diff --check`: 통과
 
 ### 2026-08-11 UX-002B current Canonical Graph view
 
@@ -731,64 +764,12 @@ no-write와 Definition-required T0/T1만 허용하며 T3+, write, network, price
 
 ### 2026-08-06 저장소 전 범위 리팩터링·안정화 재검증
 
-- APPROVAL-001B 중복 구조 정리 뒤 benchmark distribution fixture 만료, Capability 발급 wall-clock,
-  긴 환경변수, Windows `uv`·절대 경로, MCP envelope, 패키징 source tree, POSIX mode·process-group,
-  Linux container observation fixture의 실제 실패를 각각 독립 커밋으로 수정했다.
-- Windows first-failure 전체 회귀는 POSIX 전용 파일을 제외한 상태에서 1,063 passed, 78 skipped까지
-  진행한 뒤 stale MCP fixture를 찾았고, 수정 후 나머지는 파일 묶음으로 분할 검증했다.
-- error-safety부터 Graph admission: 362 passed
-- Graph backup·CampaignFact·SQLite·KISA·local replay: 195 passed, 2 skipped
-- policy·provider·replay runtime 1차: 264 passed, 1 skipped
-  - replay tickets 전체: 39 passed, 10 skipped
-  - replay verify CLI·worker process: 11 passed, 1 skipped
-- safe-files·scope·secrets·Supervisor: 206 passed, 2 skipped
-- Tool Loop 전체: 37 passed, validation artifact 묶음: 51 passed
-- Worker HTTP 전체: 35 passed, 1 skipped
-- workflow integrity 전체: 20 passed, YAML loader: 18 passed
-- 패키징은 생성 console-script 실행 smoke 1건을 제외한 16건이 통과했다. 제외한 한 건도 clean
-  wheel/sdist build·install·import·metadata까지 통과한 뒤 조직 Windows 애플리케이션 제어가 임시
-  console-script `.exe` 실행을 `WinError 4551`로 차단했다.
-- Ruff 전체: 통과
-- Linux 대상 strict mypy: 256 source files 통과
-- Windows 대상 mypy: 배포 코드의 POSIX 전용 `os` API 33건만 실패
-- `git diff --check`: 통과
-- Windows에서 단일 전체 pytest는 POSIX directory fsync·dirfd·비이식 파일명·worker daemon 경계 때문에
-  완료하지 못했다. `tests/test_control_plane_artifacts.py`, `test_control_plane_artifact_admission.py`,
-  `test_control_plane_replay.py`, `test_integrity.py`, `test_worker_daemon.py`, `test_worker_health.py`의
-  Linux 경로와 packaging console-wrapper smoke는 Linux CI 또는 허용된 환경에서 재검증해야 한다.
-
-아래 항목은 APPROVAL-001B 구현 완료 시점의 더 넓은 검증 기록이다.
-
-- APPROVAL/PERMIT/General Attack 집중 회귀: 131 passed
-- approval store·legacy backup·Graph SQLite 인접 회귀: 36 passed, 2 skipped
-- existing Capability rollout: 35 passed
-- Control Plane Web: 14 passed, 1 skipped
-  - Node.js 미제공으로 dependency-free Web Console runtime 1건 skip
-- Common Engine execution gate: 8 passed
-  - Windows 환경에서 마지막 두 테스트가 각각 약 60~70초 걸려 6+1+1로 분할 실행
-- 관련 검증 합계: 224 passed, 3 skipped
-- Ruff 전체: 통과
-- Linux 대상 strict mypy: 256 source files 통과
-- 변경 모듈 `python -B` import 검증: 통과
-- 전체 pytest: 190 passed, 3 skipped 뒤 기존 Benchmark registry fixture 만료에서 중단
-  - 오류: `Benchmark registry distribution is not currently valid`
-  - 이번 승인 변경의 회귀와 구분한다.
-- `git diff --check`: 통과
-- `compileall`은 기존 `src/**/__pycache__` 권한 때문에 `.pyc` 교체에서 실패했다. 같은 모듈의
-  no-bytecode import와 Ruff·mypy·pytest 통과로 구문 실패와 구분한다.
-
-```powershell
-.\.venv\Scripts\python.exe -m pytest -q tests\test_graph_action_approval_models.py tests\test_graph_action_permit.py tests\test_general_attack_action_permit.py tests\test_general_attack_action_outcome.py tests\test_general_attack_action_cleanup.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_graph_action_approval_store.py tests\test_graph_backup_v2_compatibility.py tests\test_graph_sqlite_store.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_existing_capability_rollout.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_control_plane_web.py
-.\.venv\Scripts\python.exe -m pytest -q tests\test_engine_execution_gate.py
-.\.venv\Scripts\python.exe -m ruff check --no-cache src tests containers
-New-Item -ItemType Directory -Path ..\.codex-tmp\pajin-mypy -Force | Out-Null
-.\.venv\Scripts\python.exe -m mypy --platform linux --cache-dir ..\.codex-tmp\pajin-mypy src
-.\.venv\Scripts\python.exe -m pytest -x -q
-git diff --check
-```
+- 분할 회귀에서 error-safety·Graph·replay·policy·provider·safe-files·Supervisor·Tool Loop·Worker HTTP·workflow
+  integrity와 YAML loader를 검증했다. Ruff 전체와 Linux 대상 strict mypy 256 source files가 통과했다.
+- Windows 단일 전체 pytest는 POSIX directory fsync·dirfd·비이식 파일명과 조직 AppControl 때문에 완료하지
+  못했다. packaging은 clean wheel/sdist build·install·import·metadata까지 통과했고 임시 console-script
+  실행 한 건만 AppControl `WinError 4551`로 차단됐다.
+- 해당 환경 제약과 Linux 재검증 대상은 `KNOWN_ISSUES.md`에서 유지한다.
 
 ## 안정화 점검
 
@@ -816,19 +797,34 @@ authority의 canonical·exact-result 검증과 General Attack dispatcher의 enve
 Phase 8 VAL-004C는 `56f5dcf`, Phase 9 UX-001A draft는 `6312215`, UX-001B1 local artifact·CLI는
 `1c5f68e`, UX-001B2 Control Plane verified read는 `1c03188`, UX-001B3 existing compiler handoff는
 `f5f96ef`, UX-002A verified Discovery Surface·Wave view는 `cb1490e`, UX-002B current Canonical Graph view는
-`c6c6734`, UX-003A canonical Hypothesis attention ranking은 `9458edd`에 보존됐다. Campaign·Profile·Scope
-Builder와 Attack Surface·Graph·Wave Timeline, Hypothesis Ranking 절반이 완료됐다. 이 문서 커밋 뒤 working
-tree는 clean이어야 하며 push는 별도 명시 승인 전까지 수행하지 않는다.
+`c6c6734`, UX-003A canonical Hypothesis attention ranking은 `9458edd`에 보존됐다. UX-003B durable complete
+GraphDecision audit, UX-004A/004B coordinate comparison, UX-005A queue와 UX-006A local SARIF export는 working tree에
+구현·검증됐고 아직 커밋하지 않았다. Phase 9 제품 단위는 external delivery 이후 항목 전까지 완료됐다.
+push는 별도 명시 승인 전까지 수행하지 않는다.
 
-다음 한 단계는 `UX-003B` durable complete `GraphDecision` audit authority와 redacted Operator view다. Permit
-table의 Decision ID/digest reference를 complete Decision으로 추정하지 말고, append/read·current Snapshot
-freshness·retention·redaction authority를 먼저 ADR·계약으로 고정한다.
+다음 한 단계는 `UX-006B`다. sink identity·secret lease·payload/idempotency key·authenticated response·durable
+delivery receipt·retry/reconciliation을 분리해 외부 side effect 전에 확정한다.
 
 ## 알려진 경계
 
+- UX-006A는 private local serialization만 수행한다. reviewed prose의 business sensitivity까지 자동 판정하지
+  않으며 Issue·SIEM·SOAR delivery, secret, idempotency, retry, receipt authority가 없다.
+- UX-005A는 current active snapshot만 제공한다. history·assignment·notification·SLA가 없고 expiry·Decision·
+  resume·cancel을 기록하지 않는다. stale UI 뒤 action은 기존 endpoint가 재검증한다.
+- UX-004A는 existing durable Replay projection database binding을 신뢰하며 요청마다 managed artifact bytes를
+  다시 열지 않는다. exact coordinate comparison일 뿐 evidence 의미나 현재 artifact content를 비교하지 않는다.
+  Control은 projection authority 밖이라 항상 unavailable이고 새 validation·remediation·confirmation·execution
+  authority를 만들지 않는다.
+- UX-004B는 local evidence root와 service-account filesystem 통제를 신뢰한다. 모든 VAL-004C predecessor를
+  다시 검증하지만 off-host authenticity·multi-root registry·Retest binding은 제공하지 않으며 KISA UX-004A와
+  Campaign 또는 Claim 표시값으로 합성하지 않는다.
+- UX-003B는 local append-only SQLite와 service-account filesystem 통제를 신뢰하며 signed off-host retention,
+  independent anti-rollback anchor, multi-Campaign routing, historical Snapshot browsing·deletion·compaction을
+  제공하지 않는다. producer가 audit store를 명시적으로 사용해야 하며 view는 Decision·Permit·execution
+  authority가 아니다.
 - UX-003A의 confidence는 producer metadata이며 validation truth나 risk score가 아니다. ranking은 검토 순서일
-  뿐 Hypothesis selection·Task/Plan·Decision·Capability·Permit·execution authority가 아니다. complete
-  GraphDecision durable store가 없어 Decision Audit은 UX-003B까지 제공하지 않는다.
+  뿐 Hypothesis selection·Task/Plan·Decision·Capability·Permit·execution authority가 아니다. UX-003B의 별도
+  complete GraphDecision audit authority를 ranking view에서 재구성하지 않는다.
 - UX-002B는 한 Control Plane process에 server-owned single-Campaign Graph database 하나만 설정하고 exact
   current Snapshot만 읽는다. historical/listing·multi-Campaign routing·automatic reconciliation·full content
   export는 없으며 500 node·1,000 edge를 넘으면 자르지 않고 거부한다. local filesystem과 service account를

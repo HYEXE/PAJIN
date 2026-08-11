@@ -155,6 +155,10 @@ from pajin.replay.sqlite_tickets import (
     SQLiteReplayExecutionAuthority,
     SQLiteReplayTicketFinalizationVerifier,
 )
+from pajin.reporting.sarif import (
+    load_verified_sarif_export,
+    write_verified_sarif_export,
+)
 from pajin.runtime.control import (
     BudgetController,
     ExecutionCancellationContext,
@@ -1766,6 +1770,36 @@ def verify_run_evidence(
     table.add_row("Integrity", "VALID")
     console.print(table)
     _print_cli_field("Root digest", verification.root_digest)
+
+
+@app.command("sarif-export")
+def export_sarif(
+    run_path: Annotated[Path, typer.Argument(exists=True, readable=True, file_okay=False)],
+    output: Annotated[Path, typer.Option("--output", "-o", dir_okay=False)],
+    expected_run_id: Annotated[str, typer.Option("--expected-run-id")],
+    expected_root_digest: Annotated[str, typer.Option("--expected-root-digest")],
+) -> None:
+    """Export replay-confirmed Findings from one exact sealed Run as local SARIF 2.1.0."""
+
+    with _cli_error_boundary("SARIF export failed", exit_code=1):
+        exported = load_verified_sarif_export(
+            run_path,
+            expected_run_id=expected_run_id,
+            expected_root_digest=expected_root_digest,
+        )
+        persisted = write_verified_sarif_export(exported, output)
+
+    table = Table(title="PAJIN Verified Finding SARIF Export")
+    table.add_column("Measure")
+    table.add_column("Value")
+    table.add_row("Source Run", _plain_cli_value(exported.source_run_id))
+    table.add_row("Confirmed Findings", str(exported.finding_count))
+    table.add_row("Source root", _plain_cli_value(exported.source_root_digest))
+    table.add_row("Finding set digest", _plain_cli_value(exported.finding_set_digest))
+    table.add_row("SARIF digest", _plain_cli_value(exported.sarif_digest))
+    table.add_row("External delivery", "NOT PERFORMED")
+    console.print(table)
+    _print_cli_field("SARIF artifact", persisted)
 
 
 @app.command("replay-verify")

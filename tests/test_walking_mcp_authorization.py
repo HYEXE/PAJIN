@@ -43,6 +43,11 @@ from pajin.capabilities.adapters import (
 )
 from pajin.capabilities.lifecycle import CapabilityReleaseRef
 from pajin.capabilities.models import CapabilityMaturity, CapabilitySideEffectClass
+from pajin.control_plane.validation_comparison import (
+    VerifiedWalkingControlComparisonReader,
+    WalkingControlComparisonIntegrityError,
+    write_walking_control_comparison_locator,
+)
 from pajin.discovery import (
     DeterministicMCPToolAuthorizationHypothesisCompiler,
     DeterministicRAGInjectionHypothesisCompiler,
@@ -2438,6 +2443,41 @@ def test_val004c_binds_two_replays_and_satisfies_repeated_controlled_floor(
         )
         == assessment
     )
+    comparison = write_walking_control_comparison_locator(
+        root=tmp_path,
+        assessment=assessment,
+        campaign=campaign,
+        chain_source=source,
+        primary_replay=primary,
+        additional_replay=additional,
+        controls=controls,
+    )
+    view = VerifiedWalkingControlComparisonReader(tmp_path).read(
+        comparison_id=comparison.locator.comparison_id
+    )
+    assert view == comparison.view
+    assert tuple(lane.stage for lane in view.lanes) == (
+        "original",
+        "replay",
+        "control",
+        "retest",
+    )
+    assert tuple(lane.execution_count for lane in view.lanes) == (1, 2, 3, 0)
+    assert tuple(
+        item.control_kind.value for item in view.lanes[2].coordinates
+    ) == (
+        "baseline",
+        "negative-control",
+        "counterfactual",
+    )
+    assert view.lanes[3].availability == "not-in-authority"
+    assert view.authority_boundary.control_contrast_verified is True
+    assert view.authority_boundary.retest_evidence_included is False
+    serialized = view.model_dump_json(by_alias=True)
+    assert assessment.claim.statement not in serialized
+    assert assessment.claim.claim_id not in serialized
+    assert assessment.independence.request_ids[0] not in serialized
+    assert assessment.independence.grant_ids[0] not in serialized
 
 
 def test_val004c_rejects_replay_reuse_predecessor_swap_and_authority_escalation(
@@ -2540,6 +2580,22 @@ def test_val004c_rejects_replay_reuse_predecessor_swap_and_authority_escalation(
     ]
     with pytest.raises(ValidationError, match="disjoint"):
         ModeNeutralRepeatedProfileValidationEvidenceAssessment.model_validate(raw_assessment)
+
+    comparison = write_walking_control_comparison_locator(
+        root=tmp_path,
+        assessment=assessment,
+        campaign=campaign,
+        chain_source=source,
+        primary_replay=primary,
+        additional_replay=additional,
+        controls=controls,
+    )
+    control_artifact = controls.run_path / controls.artifact_path
+    control_artifact.write_bytes(control_artifact.read_bytes() + b"\n")
+    with pytest.raises(WalkingControlComparisonIntegrityError, match="integrity-valid"):
+        VerifiedWalkingControlComparisonReader(tmp_path).read(
+            comparison_id=comparison.locator.comparison_id
+        )
 
 
 def test_walking_mcp_confirmation_seals_report_and_remediation_baseline(

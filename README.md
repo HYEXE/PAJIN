@@ -899,11 +899,31 @@ python -m venv .venv
 | Campaign Builder | `campaign-draft-create`, `campaign-draft-inspect` |
 | Bug Bounty | `bug-bounty-review`, `bug-bounty-compile`, `bug-bounty-report`, `bug-bounty-run` |
 | CTF | `ctf-run`, `ctf-web-run` (compatibility alias), `ctf-suite-run` |
-| Evidence and infrastructure | `evidence-verify`, `replay-verify`, `worker-check`, `egress-check`, `mcp-check` |
+| Evidence, export, and infrastructure | `evidence-verify`, `replay-verify`, `sarif-export`, `worker-check`, `egress-check`, `mcp-check` |
 
 The optional server processes are installed as `pajin-control-plane`, `pajin-worker-daemon`, and
 `pajin-replay-worker-daemon`.
 Run `pajin --help` or `pajin <command> --help` for the authoritative option list.
+
+## Local verified Finding SARIF export
+
+Export only independently replay-confirmed Findings from one exact sealed validation Run:
+
+```powershell
+.venv\Scripts\pajin evidence-verify <validation-run-directory>
+.venv\Scripts\pajin sarif-export <validation-run-directory> `
+  --expected-run-id <run-id> `
+  --expected-root-digest <64-character-root-digest> `
+  --output .pajin\exports\confirmed-findings.sarif
+```
+
+The deterministic SARIF 2.1.0 file binds the source Run/root and confirmed-Finding-set digest. It
+excludes raw target, root cause, reproduction, and evidence; writes outside the immutable source
+Run with private no-follow handling; and reports that external delivery was not performed. Legacy
+semantic confirmations and replay-evidence-only projections fail closed. Issue Tracker, SIEM, and
+SOAR delivery require a later connector with separate sink, secret, idempotency, and durable receipt
+authority. See [`UX-006A`](docs/orchestration/UX-006A-verified-finding-sarif-export.md) and
+[`ADR 0164`](docs/adr/0164-export-confirmed-findings-before-external-delivery.md).
 
 ## Run the vertical slice
 
@@ -1637,6 +1657,10 @@ $env:PAJIN_CP_CAMPAIGN_DRAFT_ROOT='C:\private\pajin-campaign-drafts'
 $env:PAJIN_CP_DISCOVERY_RUN_ROOT='C:\private\pajin-discovery-runs'
 # Optional UX-002B verified current Canonical Graph database:
 $env:PAJIN_CP_GRAPH_DATABASE='C:\private\pajin-graph\canonical.sqlite3'
+# Optional UX-003B complete GraphDecision audit database; must be distinct from the Graph database:
+$env:PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE='C:\private\pajin-graph-decision-audit\decisions.sqlite3'
+# Optional UX-004B exact sealed VAL-004C comparison evidence root:
+$env:PAJIN_CP_VALIDATION_EVIDENCE_ROOT='C:\private\pajin-validation-evidence'
 .venv\Scripts\pajin-control-plane
 ```
 
@@ -1675,8 +1699,38 @@ GRAPH-004 Hypothesis consistency states. The Operator-only
 `GET /v1/hypotheses/campaigns/{campaign}/snapshots/{snapshot_id}/attention-ranking` route orders
 `contested`, `supported`, `open`, then `contradicted` items, with producer confidence and node ID as
 deterministic tie-breakers. It returns redacted review metadata only and cannot select a
-Hypothesis, record a Decision, schedule work, or authorize execution. Full Decision Audit remains
-separate UX-003B work because Permit references are not complete durable `GraphDecision` records.
+Hypothesis, record a Decision, schedule work, or authorize execution.
+
+UX-003B keeps complete canonical `GraphDecision` records in a separate single-Campaign,
+append-only SQLite audit authority instead of reconstructing them from incomplete Permit
+references. The Operator-only
+`GET /v1/decisions/campaigns/{campaign}/snapshots/{snapshot_id}/audit` route verifies the complete
+Canonical Graph history, every retained historical Snapshot binding, the complete Decision audit
+chain, and the requested current Snapshot before returning at most 500 current-Snapshot records.
+Actor and recorder IDs and payload content are excluded. The Graph and audit database paths must
+be configured separately and must not alias each other or a SQLite sidecar; omission fails closed
+with `503`. The view cannot create a Decision, issue a Permit, approve an action, or authorize
+execution.
+
+UX-004A reads one completed durable Replay projection through the existing verified reader and
+exposes `GET /v1/replay-comparisons/batches/{batch_id}` to Operators. The response fixes four lanes
+in Original, Replay, Control, Retest order and compares opaque Run, integrity-root, and result
+coordinates only. Control is explicitly `not-in-authority`; confirmation Retest is
+`not-applicable`, while a remediation-Retest projection may carry its exact source and assessment
+coordinates. The view excludes artifact, repository, creator, publisher, Claim, Tool-argument, and
+evidence content and cannot evaluate validation, attest remediation, confirm a Finding, or
+authorize execution. See [`ADR 0161`](docs/adr/0161-compare-replay-lineage-without-cross-authority-composition.md)
+and the [`UX-004A contract`](docs/orchestration/UX-004A-replay-lineage-coordinate-comparison.md).
+
+UX-004B uses the separate server-owned validation evidence root to reopen one content-addressed
+VAL-004C locator and every sealed predecessor on each Operator-only
+`GET /v1/validation-comparisons/walking/{comparison_id}` request. The four fixed lanes contain one
+Original source, two repeated Replays, three ordered Controls, and an explicitly unavailable
+Retest. The response exposes only redacted execution coordinates and existing Profile/contrast
+state; it does not join KISA UX-004A evidence or create validation, remediation, Finding, or
+execution authority. Omission of the root fails closed with `503`. See
+[`ADR 0162`](docs/adr/0162-reopen-val004c-without-retest-authority.md) and the
+[`UX-004B contract`](docs/orchestration/UX-004B-val004c-control-comparison.md).
 
 When the executor signer and Control Plane public anchor are configured, Replay finalization carries
 a content-addressed bundle instead of depending on a shared staging volume. This first transport is
@@ -1793,10 +1847,14 @@ The first Console slice supports:
 - minimized current-approval intent review without exposing checkpoint execution state;
 - Approver-only approval or denial, with denial terminating the Run as `cancelled`;
 - Operator-only one-time checkpoint resume and idempotent Run cancellation;
+- Operator, Approver, and Auditor Human Review queue over verified active Run, Checkpoint, and
+  Approval bindings, with navigation-only kill-switch candidates and no action authority;
 - Operator-only verified Attack Surface cards and sealed Recon-to-Hypothesis wave inspection for
   one exact Discovery Run;
 - Operator-only current Canonical Graph node and admitted-relationship inspection for one exact
   Snapshot;
+- Operator-only Original, Replay, Control, and Retest coordinate comparison for one exact completed
+  durable Replay Batch;
 - optional five-second polling without WebSocket or SSE state.
 
 Run lists return a summary DTO and never bulk-load or expose submitted input. The selected Run
@@ -1806,6 +1864,15 @@ Lock, refresh, tab close, and HTTP 401 clear the in-memory value. Discovery rend
 requires verified cross-Run digests and strict `canonicalGraphIncluded=false`, capability=false,
 permit=false, and execution=false markers. A restrictive CSP, no-store cache policy, no-referrer
 policy, same-origin isolation headers, and text-only DOM rendering reduce the browser attack surface.
+
+`GET /v1/review-queue` returns at most 100 active Runs from one rollback-only database snapshot.
+It prioritizes expired approvals, pending decisions, approved checkpoints awaiting resume, running
+Runs, and queued Runs. The response omits Run input, signed Checkpoint payload, call fingerprint,
+decision reason, Job and Event payload, leases, execution evidence, and results. Queue rows only
+select the existing Run detail; approval, resume, and cancellation remain authorized and committed
+by their existing role-gated endpoints. See
+[`UX-005A`](docs/orchestration/UX-005A-human-review-approval-kill-switch-queue.md) and
+[`ADR 0163`](docs/adr/0163-project-human-attention-without-action-authority.md).
 
 Cancellation atomically fences queued or leased Jobs, clears active lease material, revokes a
 pending or approved decision, and records bounded actor/reason events. While an executor is active,
@@ -1820,13 +1887,16 @@ external side effects or prove physical quiescence outside that local process.
 
 This is a local single-tenant preview, not a production identity boundary. HTTPS must terminate in
 front of the API before remote use. Report download, historical or full Canonical Graph browsing,
-user accounts, tenant isolation, and a fleet-wide approval queue remain unimplemented. See
+user accounts, tenant isolation, queue assignment/notification, and a fleet-wide approval queue
+remain unimplemented. See
 [`ADR 0022`](docs/adr/0022-same-origin-control-plane-web-console.md),
 [`ADR 0023`](docs/adr/0023-fenced-control-plane-actions.md),
 [`ADR 0024`](docs/adr/0024-cooperative-execution-cancellation.md),
 [`ADR 0157`](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md),
 and
-[`ADR 0158`](docs/adr/0158-project-current-canonical-graph-without-read-authority-expansion.md).
+[`ADR 0158`](docs/adr/0158-project-current-canonical-graph-without-read-authority-expansion.md),
+[`ADR 0160`](docs/adr/0160-store-complete-graph-decisions-in-a-separate-audit-authority.md), and
+[`ADR 0161`](docs/adr/0161-compare-replay-lineage-without-cross-authority-composition.md).
 
 ### Lease-aware Worker daemon
 

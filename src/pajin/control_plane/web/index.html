@@ -596,6 +596,266 @@
           <ol id="hypothesis-ranking-list" class="hypothesis-ranking-list"></ol>
         </div>
       </section>
+
+      <section
+        id="decision-audit-panel"
+        class="panel decision-audit-panel"
+        aria-labelledby="decision-audit-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">08 / DECISION AUDIT</p>
+            <h2 id="decision-audit-heading">Durable Graph Decision history</h2>
+          </div>
+          <span class="boundary-badge">Query only</span>
+        </div>
+        <p class="panel-intro">
+          Inspect complete Decisions retained for one exact current Graph Snapshot. The server
+          verifies the entire append-only audit chain and every historical Snapshot binding first.
+        </p>
+        <form id="decision-audit-form" class="decision-audit-form" aria-busy="false">
+          <div class="field field-grow">
+            <label for="decision-audit-campaign">Campaign ID</label>
+            <input
+              id="decision-audit-campaign"
+              name="decision-audit-campaign"
+              pattern="[a-z0-9][a-z0-9-]{2,79}"
+              maxlength="80"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="authorized-campaign"
+              required
+              disabled
+            >
+          </div>
+          <div class="field field-grow decision-audit-snapshot-field">
+            <label for="decision-audit-snapshot-id">Current Graph Snapshot ID</label>
+            <input
+              id="decision-audit-snapshot-id"
+              name="decision-audit-snapshot-id"
+              pattern="graph-snapshot_[a-f0-9]{64}"
+              maxlength="79"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="graph-snapshot_..."
+              required
+              disabled
+            >
+          </div>
+          <button
+            id="decision-audit-load-button"
+            class="button button-primary"
+            type="submit"
+            disabled
+          >
+            Verify audit
+          </button>
+        </form>
+        <p id="decision-audit-empty" class="decision-audit-empty">
+          Connect with an Operator credential to inspect complete Graph Decisions.
+        </p>
+        <div id="decision-audit-result" class="decision-audit-result" hidden>
+          <div class="authority-strip" aria-label="Graph Decision audit authority boundary">
+            <span class="verified-badge">Complete audit chain verified</span>
+            <span>Historical Snapshot bindings verified</span>
+            <span>Identifiers redacted</span>
+            <span>No decision recording</span>
+            <span>No permit</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="decision-audit-facts">
+            <div><dt>Campaign</dt><dd id="decision-audit-campaign-value">--</dd></div>
+            <div><dt>Current Decisions</dt><dd id="decision-audit-count-value">0</dd></div>
+            <div><dt>Retained records</dt><dd id="decision-audit-total-value">0</dd></div>
+            <div><dt>Audit head</dt><dd id="decision-audit-head-value">--</dd></div>
+          </dl>
+          <div class="event-heading">
+            <h3>Complete Decision records</h3>
+            <span id="decision-audit-snapshot-value">--</span>
+          </div>
+          <ol id="decision-audit-list" class="decision-audit-list"></ol>
+        </div>
+      </section>
+
+      <section
+        id="replay-comparison-panel"
+        class="panel replay-comparison-panel"
+        aria-labelledby="replay-comparison-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">09 / REPLAY LINEAGE</p>
+            <h2 id="replay-comparison-heading">Original, Replay, Control, Retest</h2>
+          </div>
+          <span class="boundary-badge">Coordinates only</span>
+        </div>
+        <p class="panel-intro">
+          Compare the exact durable coordinates bound to one completed KISA Replay projection.
+          Content and semantic verdicts stay redacted; Control remains visibly unavailable because
+          this projection does not own VAL-004A or VAL-004C Control evidence.
+        </p>
+        <form id="replay-comparison-form" class="replay-comparison-form" aria-busy="false">
+          <div class="field field-grow">
+            <label for="replay-comparison-batch-id">Completed Replay Batch ID</label>
+            <input
+              id="replay-comparison-batch-id"
+              name="replay-comparison-batch-id"
+              pattern="replay-batch_[a-f0-9]{32}"
+              maxlength="45"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="replay-batch_..."
+              required
+              disabled
+            >
+          </div>
+          <button
+            id="replay-comparison-load-button"
+            class="button button-primary"
+            type="submit"
+            disabled
+          >
+            Compare lineage
+          </button>
+        </form>
+        <p id="replay-comparison-empty" class="replay-comparison-empty">
+          Connect with an Operator credential to compare one completed Replay projection.
+        </p>
+        <div id="replay-comparison-result" class="replay-comparison-result" hidden>
+          <div class="authority-strip" aria-label="Replay comparison authority boundary">
+            <span class="verified-badge">Projection binding verified</span>
+            <span>Exact coordinates</span>
+            <span>Content redacted</span>
+            <span>No semantic diff</span>
+            <span>No validation authority</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="replay-comparison-facts">
+            <div><dt>Campaign</dt><dd id="replay-comparison-campaign-value">--</dd></div>
+            <div><dt>Purpose</dt><dd id="replay-comparison-purpose-value">--</dd></div>
+            <div><dt>Batch</dt><dd id="replay-comparison-batch-value">--</dd></div>
+            <div><dt>Projection</dt><dd id="replay-comparison-projection-value">--</dd></div>
+          </dl>
+          <ol id="replay-comparison-lanes" class="replay-comparison-lanes"></ol>
+        </div>
+      </section>
+
+      <section
+        id="validation-comparison-panel"
+        class="panel replay-comparison-panel"
+        aria-labelledby="validation-comparison-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">10 / CONTROL CONTRAST</p>
+            <h2 id="validation-comparison-heading">Sealed VAL-004C coordinates</h2>
+          </div>
+          <span class="verified-badge">Control contrast verified</span>
+        </div>
+        <p class="panel-intro">
+          Reopen one exact sealed WALK validation authority and verify its source execution,
+          two repeated Replays, and Baseline, Negative Control, and Counterfactual executions.
+          Retest remains unavailable because VAL-004C does not bind remediation evidence.
+        </p>
+        <form
+          id="validation-comparison-form"
+          class="replay-comparison-form"
+          aria-busy="false"
+        >
+          <div class="field field-grow">
+            <label for="validation-comparison-id">Walking Control Comparison ID</label>
+            <input
+              id="validation-comparison-id"
+              name="validation-comparison-id"
+              pattern="walking-control-comparison_[a-f0-9]{64}"
+              maxlength="91"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="walking-control-comparison_..."
+              required
+              disabled
+            >
+          </div>
+          <button
+            id="validation-comparison-load-button"
+            class="button button-primary"
+            type="submit"
+            disabled
+          >
+            Verify controls
+          </button>
+        </form>
+        <p id="validation-comparison-empty" class="replay-comparison-empty">
+          Connect with an Operator credential to verify one sealed VAL-004C comparison.
+        </p>
+        <div id="validation-comparison-result" class="replay-comparison-result" hidden>
+          <div class="authority-strip" aria-label="VAL-004C comparison authority boundary">
+            <span class="verified-badge">All predecessors reopened</span>
+            <span>Exact execution coordinates</span>
+            <span>Content redacted</span>
+            <span>Control contrast verified</span>
+            <span>No Retest evidence</span>
+            <span>No finding confirmation</span>
+            <span>No execution authority</span>
+          </div>
+          <dl class="replay-comparison-facts">
+            <div><dt>Profile</dt><dd id="validation-comparison-profile-value">--</dd></div>
+            <div><dt>Depth</dt><dd id="validation-comparison-depth-value">--</dd></div>
+            <div><dt>State</dt><dd id="validation-comparison-state-value">--</dd></div>
+            <div><dt>Contrast</dt><dd id="validation-comparison-contrast-value">--</dd></div>
+          </dl>
+          <ol id="validation-comparison-lanes" class="replay-comparison-lanes"></ol>
+        </div>
+      </section>
+
+      <section
+        id="review-queue-panel"
+        class="panel review-queue-panel"
+        aria-labelledby="review-queue-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">11 / HUMAN CONTROL</p>
+            <h2 id="review-queue-heading">Review, approval, and kill switch queue</h2>
+          </div>
+          <button
+            id="review-queue-refresh-button"
+            class="button button-quiet"
+            type="button"
+            disabled
+          >
+            Refresh queue
+          </button>
+        </div>
+        <p class="panel-intro">
+          Prioritize active Runs from one read-only database snapshot. Queue rows only navigate to
+          the existing detail controls; approval, resume, and cancellation are re-authorized by
+          their existing API boundaries when an action is submitted.
+        </p>
+        <div class="authority-strip" aria-label="Human Review queue authority boundary">
+          <span class="verified-badge">Current lifecycle bindings verified</span>
+          <span>Snapshot only</span>
+          <span>No approval decision authority</span>
+          <span>No resume authority</span>
+          <span>No cancellation authority</span>
+          <span>No execution authority</span>
+        </div>
+        <div class="event-heading">
+          <h3>Priority attention</h3>
+          <span id="review-queue-summary">0 active Runs</span>
+        </div>
+        <p id="review-queue-empty" class="review-queue-empty">
+          Connect to load the Human Review queue.
+        </p>
+        <ol id="review-queue-list" class="review-queue-list" hidden></ol>
+        <p id="review-queue-more" class="review-queue-more" hidden>
+          More active Runs exist. Resolve or inspect the highest-priority rows, then refresh.
+        </p>
+      </section>
     </main>
 
     <footer>

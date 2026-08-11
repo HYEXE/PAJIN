@@ -3,17 +3,44 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
+## 저장소 전체 Ruff format 기준선
+
+- 2026-08-11 전체 `ruff format --check src tests containers`는 기존 166개 파일을 재포맷 대상으로 보고했다.
+  UX-006A 대상 Python은 통과했다. unrelated 대규모 format diff는 별도 작업 전까지 만들지 않는다.
+
+## UX-006A local SARIF export 경계
+
+- 보장: exact sealed Run/root의 independently confirmed Finding만 bounded·minimized SARIF 2.1.0으로 private
+  local write한다. target·root cause·reproduction·evidence는 제외하고 source/Finding/result digest를 결박한다.
+- 제한: reviewed prose의 business sensitivity는 자동 판정하지 않으며 외부 sink·secret·idempotency·retry·
+  authenticated response·delivery receipt가 없다. 파일 생성은 Issue·SIEM·SOAR 전송 성공이 아니다.
+
+## UX-005A queue 경계
+
+- 보장: approval을 rollback-only 재검증한 redacted queue다.
+- 제한: assignment·notification·SLA가 없고 GET은 action하지 않으며 action은 재인가한다.
+
+## UX-004A/B coordinate comparison 경계
+
+- 보장: KISA durable Replay와 exact WALK VAL-004C를 별도 Operator API/UI에서 검증한다. UX-004B는 sealed
+  predecessor를 다시 열며 각 view는 lane·cardinality·digest·redaction·false authority를 고정한다.
+- 제한: UX-004A Control과 UX-004B Retest는 `not-in-authority`다. 둘을 합성하거나 semantic diff, 새
+  validation·remediation·Finding·execution authority로 사용하지 않는다.
+
+## UX-003B durable Graph Decision audit 경계
+
+- 상태/보장: complete canonical `GraphDecision`을 별도 single-Campaign SQLite hash chain에 append한다. read는
+  complete Graph history·historical Snapshot binding·audit chain·current Snapshot을 검증하고, 500개 초과는
+  거부하며 actor/recorder와 payload를 redaction한다.
+- 제한: local SQLite·service-account 통제를 신뢰하며 signed off-host retention, independent anti-rollback,
+  multi-Campaign routing, historical browsing·compaction·deletion은 없다. producer가 명시적으로 사용해야 한다.
+- 영향/해소: query는 Decision·selection·schedule·approval·Permit·execution authority가 아니다. 외부 rollback
+  탐지는 audit head transparency anchor, multi-Campaign은 signed deployment registry가 필요하다.
+
 ## UX-003A Hypothesis attention ranking 경계
 
-- 상태: exact current Canonical Graph Snapshot과 complete Event Log를 재검증하고 기존 GRAPH-004
-  consistency state를 사용해 최대 500개 Hypothesis의 Operator 검토 순서를 제공한다.
-- 현재 보장: `contested` → `supported` → `open` → `contradicted`, confidence 내림차순, node ID
-  오름차순으로 결정적 정렬한다. statement·expected observable·Observation ID/content는 반환하지 않으며
-  selection·Decision 기록·schedule·execution authority는 모두 false다.
-- 제한: confidence는 producer metadata이지 validation truth나 risk score가 아니다. complete `GraphDecision`
-  durable store가 없어 Permit table의 Decision reference로 Decision Audit을 재구성하지 않는다.
-- 해소 조건: `UX-003B`에서 complete GraphDecision의 durable append/read authority, current Snapshot freshness,
-  redaction, 보존 및 operator audit 계약을 별도로 정의한다.
+- 보장/제한: exact current Graph에서 최대 500개를 consistency·confidence·ID로 정렬하고 내용을 redaction한다.
+  confidence는 validation truth/risk score가 아니며 selection·Decision·schedule·execution authority는 false다.
 
 ## UX-002B current Canonical Graph view 경계
 

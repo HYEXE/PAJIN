@@ -903,6 +903,102 @@ class RunListView(StrictModel):
     offset: int = Field(ge=0, le=10_000)
 
 
+class HumanReviewAttention(StrEnum):
+    APPROVAL_EXPIRED = "approval-expired"
+    APPROVAL_REQUIRED = "approval-required"
+    RESUME_REQUIRED = "resume-required"
+    EXECUTION_ACTIVE = "execution-active"
+
+
+class HumanReviewApprovalSummary(StrictModel):
+    approval_id: str = Field(pattern=r"^approval_[0-9a-f]{32}$")
+    state: ApprovalState
+    requested_by: str = Field(min_length=1, max_length=200)
+    requested_at: datetime
+    tool_id: str = Field(min_length=1, max_length=200)
+    target: str = Field(min_length=1, max_length=2_000)
+    risk_tier: ToolRiskTier
+    expires_at: datetime
+
+
+class HumanReviewQueueItem(StrictModel):
+    run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    campaign_name: str = Field(min_length=1, max_length=128)
+    run_state: RunState
+    updated_at: datetime
+    checkpoint_id: str | None
+    attention: HumanReviewAttention
+    approval: HumanReviewApprovalSummary | None
+    kill_switch_candidate: Literal[True] = True
+
+    @model_validator(mode="after")
+    def require_active_lifecycle_shape(self) -> HumanReviewQueueItem:
+        if self.run_state is RunState.AWAITING_APPROVAL:
+            if self.checkpoint_id is None or self.approval is None:
+                raise ValueError("awaiting-approval queue item requires current approval context")
+            if self.attention is HumanReviewAttention.EXECUTION_ACTIVE:
+                raise ValueError("awaiting-approval queue item requires approval attention")
+        elif self.run_state in {RunState.QUEUED, RunState.RUNNING}:
+            if (
+                self.checkpoint_id is not None
+                or self.approval is not None
+                or self.attention is not HumanReviewAttention.EXECUTION_ACTIVE
+            ):
+                raise ValueError("active execution queue item cannot include approval context")
+        else:
+            raise ValueError("review queue item must reference an active Run")
+        return self
+
+
+class HumanReviewQueueAuthorityBoundary(StrictModel):
+    queue_snapshot_only: Literal[True] = True
+    approval_decision_authority: Literal[False] = False
+    checkpoint_resume_authority: Literal[False] = False
+    cancellation_authority: Literal[False] = False
+    execution_authority: Literal[False] = False
+
+
+class HumanReviewQueueView(StrictModel):
+    api_version: Literal["pajin.control-plane.human-review-queue/v1"] = (
+        "pajin.control-plane.human-review-queue/v1"
+    )
+    generated_at: datetime
+    items: list[HumanReviewQueueItem]
+    limit: int = Field(ge=1, le=100)
+    has_more: bool
+    authority: HumanReviewQueueAuthorityBoundary = Field(
+        default_factory=HumanReviewQueueAuthorityBoundary
+    )
+
+    @model_validator(mode="after")
+    def require_exact_snapshot(self) -> HumanReviewQueueView:
+        if len(self.items) > self.limit:
+            raise ValueError("review queue exceeds its declared limit")
+        if len({item.run_id for item in self.items}) != len(self.items):
+            raise ValueError("review queue cannot repeat a Run")
+        for item in self.items:
+            approval = item.approval
+            if item.attention is HumanReviewAttention.EXECUTION_ACTIVE:
+                continue
+            if approval is None:
+                raise ValueError("approval attention requires approval context")
+            expired = approval.expires_at <= self.generated_at
+            if item.attention is HumanReviewAttention.APPROVAL_EXPIRED:
+                if not expired or approval.state not in {
+                    ApprovalState.PENDING,
+                    ApprovalState.APPROVED,
+                }:
+                    raise ValueError("expired approval attention is inconsistent")
+            elif item.attention is HumanReviewAttention.APPROVAL_REQUIRED:
+                if expired or approval.state is not ApprovalState.PENDING:
+                    raise ValueError("pending approval attention is inconsistent")
+            elif item.attention is HumanReviewAttention.RESUME_REQUIRED and (
+                expired or approval.state is not ApprovalState.APPROVED
+            ):
+                raise ValueError("resume attention is inconsistent")
+        return self
+
+
 class JobView(StrictModel):
     job_id: str = Field(pattern=r"^job_[0-9a-f]{32}$")
     run_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")

@@ -5,6 +5,11 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0164: Export Confirmed Findings before External Delivery](docs/adr/0164-export-confirmed-findings-before-external-delivery.md)
+- [ADR-0163: Project Human Attention without Action Authority](docs/adr/0163-project-human-attention-without-action-authority.md)
+- [ADR-0162: Reopen VAL-004C without Retest Authority](docs/adr/0162-reopen-val004c-without-retest-authority.md)
+- [ADR-0161: Compare Replay Lineage without Cross-Authority Composition](docs/adr/0161-compare-replay-lineage-without-cross-authority-composition.md)
+- [ADR-0160: Store Complete Graph Decisions in a Separate Audit Authority](docs/adr/0160-store-complete-graph-decisions-in-a-separate-audit-authority.md)
 - [ADR-0159: Rank Current Hypotheses without Decision Authority](docs/adr/0159-rank-current-hypotheses-without-decision-authority.md)
 - [ADR-0158: Project the Current Canonical Graph without Read-Authority Expansion](docs/adr/0158-project-current-canonical-graph-without-read-authority-expansion.md)
 - [ADR-0157: Project Verified Discovery Surface Waves without Graph Authority](docs/adr/0157-project-verified-discovery-surface-waves-without-graph-authority.md)

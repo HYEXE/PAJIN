@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 9 — Product UX·Operations
-- 현재 우선순위: Hypothesis Ranking·Decision Audit
+- 현재 우선순위: 외부 delivery authority
 
 ## 제품 목표
 
@@ -719,21 +719,27 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [x] Attack Surface·Graph·Wave Timeline UI
   - [x] `UX-002A` sealed Discovery Attack Surface·Recon→Hypothesis Wave read-only view
   - [x] `UX-002B` 기존 current canonical Graph Snapshot 기반 bounded Graph projection
-- [ ] Hypothesis Ranking·Decision Audit
+- [x] Hypothesis Ranking·Decision Audit
   - [x] `UX-003A` current Snapshot Hypothesis attention ranking (review-only, no Decision authority)
-  - [ ] `UX-003B` durable complete GraphDecision audit authority and redacted operator view
-- [ ] Original·Replay·Control·Retest Diff
-- [ ] Human Review·Approval·Kill Switch Queue
+  - [x] `UX-003B` durable complete GraphDecision audit authority and redacted operator view
+- [x] Original·Replay·Control·Retest Diff
+  - [x] `UX-004A` durable Replay projection 기반 exact Original·Replay·Retest coordinate comparison
+  - [x] `UX-004B` exact sealed VAL-004C Original·repeated Replay·Control comparison
+- [x] Human Review·Approval·Kill Switch Queue
+  - [x] `UX-005A` active Run queue와 기존 action 경계 연결
 - [ ] SARIF·Issue Tracker·SIEM/SOAR Export
+  - [x] `UX-006A` exact verified Finding의 minimized local SARIF 2.1.0 export
+  - [ ] `UX-006B` external sink·secret·idempotency·receipt·reconciliation authority
 - [ ] OIDC·MFA·ABAC·Worker Identity·mTLS
 - [ ] Object Storage·Distributed Worker·KMS/HSM
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
 
-`UX-001B3`는 exact typed source와 기존 authorization을 기존 compiler에 전달하되 persistence·실행 권위를
-만들지 않아 Builder 단위를 닫았다. `UX-002A`는 sealed Discovery authority의 Surface·Wave만, `UX-002B`는
-existing SQLite Graph authority의 exact current Snapshot을 최대 500 node·1,000 edge redacted view로 표시한다.
-두 GET은 새 Graph·admission·Capability·Permit·execution authority를 만들지 않는다. 다음 제품 단위는
-Hypothesis Ranking·Decision Audit이다. 세부 검증 경계는 각 UX 계약과 ADR이 소유한다.
+`UX-001B3`는 typed source·기존 authorization을 compiler에 전달하되 persistence·실행 권위를 만들지 않는다.
+`UX-002A/B`는 sealed Surface·Wave와 exact current Graph Snapshot, `UX-003A/B`는 Hypothesis attention과 별도
+append-only Decision audit를 표시한다. `UX-004A/B`는 서로 다른 KISA/WALK authority를 합성하지 않고
+Original·Replay·Control·Retest 좌표를 표시한다. `UX-005A` queue는 action authority가 아니다. `UX-006A`는
+independent-replay confirmed Finding만 exact Run/root에 결박한 minimized SARIF로 로컬 저장하며 외부 delivery와
+receipt authority는 모두 false다. 세부 권한·redaction·failure 경계는 각 계약과 ADR이 소유한다.
 
 ## 미결정 제품 사항
 

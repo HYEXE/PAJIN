@@ -4,6 +4,7 @@ import {
   ApiProtocolError,
   MAX_RENDERED_EVENTS,
   PAGE_SIZE,
+  REVIEW_QUEUE_LIMIT,
   errorDetail,
   formatJson,
   isJsonMediaType,
@@ -17,20 +18,28 @@ import {
   validateCanonicalGraphView,
   validateDiscoveryView,
   validateEvents,
+  validateGraphDecisionAuditView,
+  validateHumanReviewQueue,
   validateHypothesisAttentionRanking,
   validatePrincipal,
+  validateReplayEvidenceComparison,
+  validateWalkingControlComparison,
   validateResume,
   validateRun,
   validateRunList,
   validateSubmission,
 } from "./protocol.js";
 import {
+  createDecisionAuditNodes,
   createEventNodes,
   createGraphEdgeNodes,
   createGraphNodeNodes,
   createHypothesisAttentionNodes,
+  createHumanReviewQueueNodes,
+  createReplayComparisonLaneNodes,
   createRunRows,
   createSurfaceNodes,
+  createWalkingControlComparisonLaneNodes,
   createWaveNodes,
   eventCountLabel,
   formatTime,
@@ -78,6 +87,14 @@ const session = {
   graphLoading: false,
   hypothesisRankingRequestId: 0,
   hypothesisRankingLoading: false,
+  decisionAuditRequestId: 0,
+  decisionAuditLoading: false,
+  replayComparisonRequestId: 0,
+  replayComparisonLoading: false,
+  validationComparisonRequestId: 0,
+  validationComparisonLoading: false,
+  reviewQueueRequestId: 0,
+  reviewQueueLoading: false,
   roles: new Set(),
   subject: null,
   currentRun: null,
@@ -181,6 +198,61 @@ const elements = {
     "#hypothesis-ranking-snapshot-value",
   ),
   hypothesisRankingList: document.querySelector("#hypothesis-ranking-list"),
+  decisionAuditPanel: document.querySelector("#decision-audit-panel"),
+  decisionAuditForm: document.querySelector("#decision-audit-form"),
+  decisionAuditCampaign: document.querySelector("#decision-audit-campaign"),
+  decisionAuditSnapshotId: document.querySelector("#decision-audit-snapshot-id"),
+  decisionAuditLoadButton: document.querySelector("#decision-audit-load-button"),
+  decisionAuditEmpty: document.querySelector("#decision-audit-empty"),
+  decisionAuditResult: document.querySelector("#decision-audit-result"),
+  decisionAuditCampaignValue: document.querySelector("#decision-audit-campaign-value"),
+  decisionAuditCountValue: document.querySelector("#decision-audit-count-value"),
+  decisionAuditTotalValue: document.querySelector("#decision-audit-total-value"),
+  decisionAuditHeadValue: document.querySelector("#decision-audit-head-value"),
+  decisionAuditSnapshotValue: document.querySelector("#decision-audit-snapshot-value"),
+  decisionAuditList: document.querySelector("#decision-audit-list"),
+  replayComparisonPanel: document.querySelector("#replay-comparison-panel"),
+  replayComparisonForm: document.querySelector("#replay-comparison-form"),
+  replayComparisonBatchId: document.querySelector("#replay-comparison-batch-id"),
+  replayComparisonLoadButton: document.querySelector("#replay-comparison-load-button"),
+  replayComparisonEmpty: document.querySelector("#replay-comparison-empty"),
+  replayComparisonResult: document.querySelector("#replay-comparison-result"),
+  replayComparisonCampaignValue: document.querySelector(
+    "#replay-comparison-campaign-value",
+  ),
+  replayComparisonPurposeValue: document.querySelector("#replay-comparison-purpose-value"),
+  replayComparisonBatchValue: document.querySelector("#replay-comparison-batch-value"),
+  replayComparisonProjectionValue: document.querySelector(
+    "#replay-comparison-projection-value",
+  ),
+  replayComparisonLanes: document.querySelector("#replay-comparison-lanes"),
+  validationComparisonPanel: document.querySelector("#validation-comparison-panel"),
+  validationComparisonForm: document.querySelector("#validation-comparison-form"),
+  validationComparisonId: document.querySelector("#validation-comparison-id"),
+  validationComparisonLoadButton: document.querySelector(
+    "#validation-comparison-load-button",
+  ),
+  validationComparisonEmpty: document.querySelector("#validation-comparison-empty"),
+  validationComparisonResult: document.querySelector("#validation-comparison-result"),
+  validationComparisonProfileValue: document.querySelector(
+    "#validation-comparison-profile-value",
+  ),
+  validationComparisonDepthValue: document.querySelector(
+    "#validation-comparison-depth-value",
+  ),
+  validationComparisonStateValue: document.querySelector(
+    "#validation-comparison-state-value",
+  ),
+  validationComparisonContrastValue: document.querySelector(
+    "#validation-comparison-contrast-value",
+  ),
+  validationComparisonLanes: document.querySelector("#validation-comparison-lanes"),
+  reviewQueuePanel: document.querySelector("#review-queue-panel"),
+  reviewQueueRefreshButton: document.querySelector("#review-queue-refresh-button"),
+  reviewQueueSummary: document.querySelector("#review-queue-summary"),
+  reviewQueueEmpty: document.querySelector("#review-queue-empty"),
+  reviewQueueList: document.querySelector("#review-queue-list"),
+  reviewQueueMore: document.querySelector("#review-queue-more"),
 };
 
 function setBusy(element, busy) {
@@ -200,6 +272,13 @@ function resetBusyIndicators() {
   setBusy(elements.graphPanel, false);
   setBusy(elements.hypothesisRankingForm, false);
   setBusy(elements.hypothesisRankingPanel, false);
+  setBusy(elements.decisionAuditForm, false);
+  setBusy(elements.decisionAuditPanel, false);
+  setBusy(elements.replayComparisonForm, false);
+  setBusy(elements.replayComparisonPanel, false);
+  setBusy(elements.validationComparisonForm, false);
+  setBusy(elements.validationComparisonPanel, false);
+  setBusy(elements.reviewQueuePanel, false);
 }
 
 function announce(message, tone = "neutral") {
@@ -244,6 +323,20 @@ function setConnected(connected, roles = [], subject = null) {
   elements.hypothesisRankingLoadButton.disabled = (
     !session.canOperate || session.hypothesisRankingLoading
   );
+  elements.decisionAuditCampaign.disabled = !session.canOperate;
+  elements.decisionAuditSnapshotId.disabled = !session.canOperate;
+  elements.decisionAuditLoadButton.disabled = (
+    !session.canOperate || session.decisionAuditLoading
+  );
+  elements.replayComparisonBatchId.disabled = !session.canOperate;
+  elements.replayComparisonLoadButton.disabled = (
+    !session.canOperate || session.replayComparisonLoading
+  );
+  elements.validationComparisonId.disabled = !session.canOperate;
+  elements.validationComparisonLoadButton.disabled = (
+    !session.canOperate || session.validationComparisonLoading
+  );
+  elements.reviewQueueRefreshButton.disabled = !connected || session.reviewQueueLoading;
   if (!connected) {
     elements.discoveryEmpty.textContent = (
       "Connect with an Operator credential to inspect a verified Discovery Run."
@@ -270,6 +363,36 @@ function setConnected(connected, roles = [], subject = null) {
     elements.hypothesisRankingEmpty.textContent = (
       "Hypothesis attention ranking requires an Operator credential; other roles are read-denied."
     );
+  }
+  if (!connected) {
+    elements.decisionAuditEmpty.textContent = (
+      "Connect with an Operator credential to inspect complete Graph Decisions."
+    );
+  } else if (!session.canOperate) {
+    elements.decisionAuditEmpty.textContent = (
+      "Decision audit requires an Operator credential; other roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.replayComparisonEmpty.textContent = (
+      "Connect with an Operator credential to compare one completed Replay projection."
+    );
+  } else if (!session.canOperate) {
+    elements.replayComparisonEmpty.textContent = (
+      "Replay comparison requires an Operator credential; other roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.validationComparisonEmpty.textContent = (
+      "Connect with an Operator credential to verify one sealed VAL-004C comparison."
+    );
+  } else if (!session.canOperate) {
+    elements.validationComparisonEmpty.textContent = (
+      "VAL-004C comparison requires an Operator credential; other roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.reviewQueueEmpty.textContent = "Connect to load the Human Review queue.";
   }
   updateWorkflowControls();
   updateEventPaginationControls();
@@ -415,6 +538,123 @@ function renderHypothesisRanking(view) {
   elements.hypothesisRankingResult.hidden = false;
 }
 
+function clearDecisionAudit({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.decisionAuditCampaign.value = "";
+    elements.decisionAuditSnapshotId.value = "";
+  }
+  elements.decisionAuditResult.hidden = true;
+  elements.decisionAuditEmpty.hidden = false;
+  if (message !== null) {
+    elements.decisionAuditEmpty.textContent = message;
+  }
+  elements.decisionAuditCampaignValue.textContent = "--";
+  elements.decisionAuditCountValue.textContent = "0";
+  elements.decisionAuditTotalValue.textContent = "0";
+  elements.decisionAuditHeadValue.textContent = "--";
+  elements.decisionAuditSnapshotValue.textContent = "--";
+  elements.decisionAuditList.replaceChildren();
+}
+
+function renderDecisionAudit(view) {
+  elements.decisionAuditCampaignValue.textContent = view.campaignId;
+  elements.decisionAuditCountValue.textContent = String(
+    view.currentSnapshotDecisionCount,
+  );
+  elements.decisionAuditTotalValue.textContent = String(view.totalRecordCount);
+  elements.decisionAuditHeadValue.textContent = view.auditHeadDigest
+    ? shortId(view.auditHeadDigest)
+    : "Empty audit";
+  elements.decisionAuditSnapshotValue.textContent = shortId(view.snapshotId);
+  elements.decisionAuditList.replaceChildren(
+    ...createDecisionAuditNodes(document, view.decisions),
+  );
+  elements.decisionAuditEmpty.hidden = true;
+  elements.decisionAuditResult.hidden = false;
+}
+
+function clearReplayComparison({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.replayComparisonBatchId.value = "";
+  }
+  elements.replayComparisonResult.hidden = true;
+  elements.replayComparisonEmpty.hidden = false;
+  if (message !== null) {
+    elements.replayComparisonEmpty.textContent = message;
+  }
+  elements.replayComparisonCampaignValue.textContent = "--";
+  elements.replayComparisonPurposeValue.textContent = "--";
+  elements.replayComparisonBatchValue.textContent = "--";
+  elements.replayComparisonProjectionValue.textContent = "--";
+  elements.replayComparisonLanes.replaceChildren();
+}
+
+function renderReplayComparison(view) {
+  elements.replayComparisonCampaignValue.textContent = view.campaignName;
+  elements.replayComparisonPurposeValue.textContent = view.purpose;
+  elements.replayComparisonBatchValue.textContent = shortId(view.batchId);
+  elements.replayComparisonProjectionValue.textContent = shortId(view.projectionId);
+  elements.replayComparisonLanes.replaceChildren(
+    ...createReplayComparisonLaneNodes(document, view.lanes),
+  );
+  elements.replayComparisonEmpty.hidden = true;
+  elements.replayComparisonResult.hidden = false;
+}
+
+function clearValidationComparison({ clearInputs = false, message = null } = {}) {
+  if (clearInputs) {
+    elements.validationComparisonId.value = "";
+  }
+  elements.validationComparisonResult.hidden = true;
+  elements.validationComparisonEmpty.hidden = false;
+  if (message !== null) {
+    elements.validationComparisonEmpty.textContent = message;
+  }
+  elements.validationComparisonProfileValue.textContent = "--";
+  elements.validationComparisonDepthValue.textContent = "--";
+  elements.validationComparisonStateValue.textContent = "--";
+  elements.validationComparisonContrastValue.textContent = "--";
+  elements.validationComparisonLanes.replaceChildren();
+}
+
+function renderValidationComparison(view) {
+  elements.validationComparisonProfileValue.textContent = (
+    `${view.profileId}@${view.profileVersion}`
+  );
+  elements.validationComparisonDepthValue.textContent = view.achievedDepth;
+  elements.validationComparisonStateValue.textContent = view.validationState;
+  elements.validationComparisonContrastValue.textContent = view.controlContrast;
+  elements.validationComparisonLanes.replaceChildren(
+    ...createWalkingControlComparisonLaneNodes(document, view.lanes),
+  );
+  elements.validationComparisonEmpty.hidden = true;
+  elements.validationComparisonResult.hidden = false;
+}
+
+function clearReviewQueue({ message = null } = {}) {
+  elements.reviewQueueSummary.textContent = "0 active Runs";
+  elements.reviewQueueList.replaceChildren();
+  elements.reviewQueueList.hidden = true;
+  elements.reviewQueueMore.hidden = true;
+  elements.reviewQueueEmpty.hidden = false;
+  if (message !== null) {
+    elements.reviewQueueEmpty.textContent = message;
+  }
+}
+
+function renderReviewQueue(queue) {
+  const count = queue.items.length;
+  elements.reviewQueueSummary.textContent = (
+    `${count} active ${count === 1 ? "Run" : "Runs"} / ${formatTime(queue.generated_at)}`
+  );
+  elements.reviewQueueList.replaceChildren(
+    ...createHumanReviewQueueNodes(document, queue.items, selectRun),
+  );
+  elements.reviewQueueList.hidden = false;
+  elements.reviewQueueEmpty.hidden = true;
+  elements.reviewQueueMore.hidden = !queue.has_more;
+}
+
 function prepareDetailLoading(runId) {
   session.currentRun = null;
   session.currentApproval = null;
@@ -511,6 +751,14 @@ function replaceCredential(token) {
   session.graphLoading = false;
   session.hypothesisRankingRequestId += 1;
   session.hypothesisRankingLoading = false;
+  session.decisionAuditRequestId += 1;
+  session.decisionAuditLoading = false;
+  session.replayComparisonRequestId += 1;
+  session.replayComparisonLoading = false;
+  session.validationComparisonRequestId += 1;
+  session.validationComparisonLoading = false;
+  session.reviewQueueRequestId += 1;
+  session.reviewQueueLoading = false;
   session.refreshTask = null;
   resetBusyIndicators();
 }
@@ -529,6 +777,10 @@ function lockConsole(
   clearDiscovery({ clearInputs: true });
   clearGraph({ clearInputs: true });
   clearHypothesisRanking({ clearInputs: true });
+  clearDecisionAudit({ clearInputs: true });
+  clearReplayComparison({ clearInputs: true });
+  clearValidationComparison({ clearInputs: true });
+  clearReviewQueue();
   announce(message, tone);
   if (focusToken) {
     elements.tokenInput.focus();
@@ -652,6 +904,29 @@ async function loadRuns() {
   } finally {
     if (requestId === session.listRequestId) {
       setBusy(elements.runsPanel, false);
+    }
+  }
+}
+
+async function loadHumanReviewQueue() {
+  const requestId = ++session.reviewQueueRequestId;
+  session.reviewQueueLoading = true;
+  setBusy(elements.reviewQueuePanel, true);
+  elements.reviewQueueRefreshButton.disabled = true;
+  try {
+    const queue = validateHumanReviewQueue(
+      await apiRequest(`/v1/review-queue?limit=${REVIEW_QUEUE_LIMIT}`),
+    );
+    if (requestId !== session.reviewQueueRequestId) {
+      return false;
+    }
+    renderReviewQueue(queue);
+    return true;
+  } finally {
+    if (requestId === session.reviewQueueRequestId) {
+      session.reviewQueueLoading = false;
+      setBusy(elements.reviewQueuePanel, false);
+      elements.reviewQueueRefreshButton.disabled = !session.connected;
     }
   }
 }
@@ -911,6 +1186,7 @@ function refreshCurrent({ quiet = false } = {}) {
         const selectedRunId = session.selectedRunId;
         await Promise.all([
           loadRuns(),
+          loadHumanReviewQueue(),
           selectedRunId === null ? Promise.resolve() : loadDetail(selectedRunId),
         ]);
       } catch (error) {
@@ -958,6 +1234,7 @@ async function refreshActionState(runId) {
   }
   await Promise.all([
     loadRuns(),
+    loadHumanReviewQueue(),
     session.selectedRunId === runId ? loadDetail(runId) : Promise.resolve(),
   ]);
 }
@@ -1106,6 +1383,11 @@ elements.tokenForm.addEventListener("submit", async (event) => {
   clearDetail();
   clearDiscovery({ clearInputs: true });
   clearGraph({ clearInputs: true });
+  clearHypothesisRanking({ clearInputs: true });
+  clearDecisionAudit({ clearInputs: true });
+  clearReplayComparison({ clearInputs: true });
+  clearValidationComparison({ clearInputs: true });
+  clearReviewQueue();
   elements.tokenInput.value = "";
   announce("Authenticating and loading Runs…");
   try {
@@ -1121,7 +1403,7 @@ elements.tokenForm.addEventListener("submit", async (event) => {
 
     const roles = [...principal.roles].sort();
     setConnected(true, roles, principal.subject);
-    announce(`Authenticated as ${principal.subject}; loading Runs…`);
+    announce(`Authenticated as ${principal.subject}; loading Runs and human attention…`);
     try {
       await loadRuns();
     } catch (error) {
@@ -1132,11 +1414,28 @@ elements.tokenForm.addEventListener("submit", async (event) => {
       }
       return;
     }
+    let queueError = null;
+    try {
+      await loadHumanReviewQueue();
+    } catch (error) {
+      if (!isStaleRequest(error) && session.authEpoch === authEpoch && session.connected) {
+        queueError = error;
+        const message = error instanceof Error ? error.message : "Unable to load review queue.";
+        clearReviewQueue({ message: `Human Review queue unavailable: ${message}` });
+      }
+    }
     if (session.authEpoch === authEpoch) {
-      announce(
-        `Connected as ${principal.subject} (${roles.join(", ")}).`,
-        "success",
-      );
+      if (queueError === null) {
+        announce(
+          `Connected as ${principal.subject} (${roles.join(", ")}).`,
+          "success",
+        );
+      } else {
+        announce(
+          `Connected as ${principal.subject}, but the Human Review queue is unavailable.`,
+          "error",
+        );
+      }
     }
   } finally {
     if (session.authEpoch === authEpoch) {
@@ -1151,6 +1450,19 @@ elements.approveButton.addEventListener("click", () => decideCurrentApproval(tru
 elements.denyButton.addEventListener("click", () => decideCurrentApproval(false));
 elements.resumeButton.addEventListener("click", resumeCurrentCheckpoint);
 elements.cancelButton.addEventListener("click", cancelCurrentRun);
+elements.reviewQueueRefreshButton.addEventListener("click", async () => {
+  try {
+    if (await loadHumanReviewQueue()) {
+      announce("Human Review queue refreshed.", "success");
+    }
+  } catch (error) {
+    if (!isStaleRequest(error)) {
+      const message = error instanceof Error ? error.message : "Unable to load review queue.";
+      clearReviewQueue({ message: `Human Review queue unavailable: ${message}` });
+      announce(message, "error");
+    }
+  }
+});
 elements.latestEventsButton.addEventListener("click", () => loadEventPage());
 elements.olderEventsButton.addEventListener("click", () => {
   if (session.eventOldestSequence !== null) {
@@ -1240,16 +1552,17 @@ elements.runForm.addEventListener("submit", async (event) => {
     prepareDetailLoading(submission.run.run_id);
     announce(successMessage, "success");
 
-    const [listResult, detailResult] = await Promise.allSettled([
+    const [listResult, detailResult, queueResult] = await Promise.allSettled([
       loadRuns(),
       loadDetail(submission.run.run_id),
+      loadHumanReviewQueue(),
     ]);
     if (session.submissionSequence !== submissionId
       || session.selectedRunId !== submission.run.run_id
       || session.selectionEpoch !== selectionEpoch) {
       return;
     }
-    const refreshFailure = [listResult, detailResult]
+    const refreshFailure = [listResult, detailResult, queueResult]
       .find((result) => result.status === "rejected");
     if (detailResult.status === "fulfilled" && detailResult.value) {
       elements.detailPanel.focus();
@@ -1458,6 +1771,183 @@ elements.hypothesisRankingForm.addEventListener("submit", async (event) => {
   }
 });
 
+elements.decisionAuditForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.decisionAuditLoading) {
+    return;
+  }
+  const campaign = elements.decisionAuditCampaign.value.trim();
+  const snapshotId = elements.decisionAuditSnapshotId.value.trim();
+  if (!/^[a-z0-9][a-z0-9-]{2,79}$/.test(campaign)) {
+    announce("Decision audit Campaign ID must be canonical lowercase text.", "error");
+    elements.decisionAuditCampaign.focus();
+    return;
+  }
+  if (!/^graph-snapshot_[a-f0-9]{64}$/.test(snapshotId)) {
+    announce("Enter one exact current Graph Snapshot ID for Decision audit.", "error");
+    elements.decisionAuditSnapshotId.focus();
+    return;
+  }
+  const requestId = ++session.decisionAuditRequestId;
+  const authEpoch = session.authEpoch;
+  session.decisionAuditLoading = true;
+  setBusy(elements.decisionAuditForm, true);
+  setBusy(elements.decisionAuditPanel, true);
+  elements.decisionAuditLoadButton.disabled = true;
+  clearDecisionAudit({
+    message: "Verifying the complete Decision chain and historical Snapshot bindings...",
+  });
+  announce("Verifying durable Graph Decision audit authority...");
+  try {
+    const path = `/v1/decisions/campaigns/${encodeURIComponent(campaign)}`
+      + `/snapshots/${encodeURIComponent(snapshotId)}/audit`;
+    const view = validateGraphDecisionAuditView(
+      await apiRequest(path),
+      campaign,
+      snapshotId,
+    );
+    if (session.decisionAuditRequestId !== requestId
+      || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderDecisionAudit(view);
+    announce(
+      `Verified ${view.currentSnapshotDecisionCount} current Decision record(s) `
+        + `across ${view.totalRecordCount} retained audit record(s).`,
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.decisionAuditRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error
+        ? error.message
+        : "Unable to load Graph Decision audit.";
+      clearDecisionAudit({ message: `Decision audit unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.decisionAuditRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      session.decisionAuditLoading = false;
+      setBusy(elements.decisionAuditForm, false);
+      setBusy(elements.decisionAuditPanel, false);
+      elements.decisionAuditLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
+
+elements.replayComparisonForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.replayComparisonLoading) {
+    return;
+  }
+  const batchId = elements.replayComparisonBatchId.value.trim();
+  if (!/^replay-batch_[a-f0-9]{32}$/.test(batchId)) {
+    announce("Enter one exact completed Replay Batch ID.", "error");
+    elements.replayComparisonBatchId.focus();
+    return;
+  }
+  const requestId = ++session.replayComparisonRequestId;
+  const authEpoch = session.authEpoch;
+  session.replayComparisonLoading = true;
+  setBusy(elements.replayComparisonForm, true);
+  setBusy(elements.replayComparisonPanel, true);
+  elements.replayComparisonLoadButton.disabled = true;
+  clearReplayComparison({
+    message: "Verifying durable Replay projection and exact lineage coordinates...",
+  });
+  announce("Verifying Original, Replay, Control, and Retest coordinate boundaries...");
+  try {
+    const path = `/v1/replay-comparisons/batches/${encodeURIComponent(batchId)}`;
+    const view = validateReplayEvidenceComparison(await apiRequest(path), batchId);
+    if (session.replayComparisonRequestId !== requestId
+      || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderReplayComparison(view);
+    announce(
+      `Verified ${view.purpose} lineage coordinates; Control and semantic diff remain excluded.`,
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.replayComparisonRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error
+        ? error.message
+        : "Unable to load Replay evidence comparison.";
+      clearReplayComparison({ message: `Replay comparison unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.replayComparisonRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      session.replayComparisonLoading = false;
+      setBusy(elements.replayComparisonForm, false);
+      setBusy(elements.replayComparisonPanel, false);
+      elements.replayComparisonLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
+
+elements.validationComparisonForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (!session.canOperate || session.validationComparisonLoading) {
+    return;
+  }
+  const comparisonId = elements.validationComparisonId.value.trim();
+  if (!/^walking-control-comparison_[a-f0-9]{64}$/.test(comparisonId)) {
+    announce("Enter one exact Walking Control Comparison ID.", "error");
+    elements.validationComparisonId.focus();
+    return;
+  }
+  const requestId = ++session.validationComparisonRequestId;
+  const authEpoch = session.authEpoch;
+  session.validationComparisonLoading = true;
+  setBusy(elements.validationComparisonForm, true);
+  setBusy(elements.validationComparisonPanel, true);
+  elements.validationComparisonLoadButton.disabled = true;
+  clearValidationComparison({
+    message: "Reopening all sealed VAL-004C predecessors and execution lineages...",
+  });
+  announce("Verifying source, repeated Replay, and three Control coordinates...");
+  try {
+    const path = `/v1/validation-comparisons/walking/${encodeURIComponent(comparisonId)}`;
+    const view = validateWalkingControlComparison(
+      await apiRequest(path),
+      comparisonId,
+    );
+    if (session.validationComparisonRequestId !== requestId
+      || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderValidationComparison(view);
+    announce(
+      "Verified six disjoint VAL-004C coordinates and Control contrast; Retest is not bound.",
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.validationComparisonRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error
+        ? error.message
+        : "Unable to load VAL-004C comparison.";
+      clearValidationComparison({ message: `VAL-004C comparison unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.validationComparisonRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      session.validationComparisonLoading = false;
+      setBusy(elements.validationComparisonForm, false);
+      setBusy(elements.validationComparisonPanel, false);
+      elements.validationComparisonLoadButton.disabled = !session.canOperate;
+    }
+  }
+});
+
 elements.previousPage.addEventListener("click", () => {
   session.offset = Math.max(0, session.offset - PAGE_SIZE);
   refreshCurrent();
@@ -1487,4 +1977,8 @@ setConnected(false);
 clearDiscovery({ clearInputs: true });
 clearGraph({ clearInputs: true });
 clearHypothesisRanking({ clearInputs: true });
+clearDecisionAudit({ clearInputs: true });
+clearReplayComparison({ clearInputs: true });
+clearValidationComparison({ clearInputs: true });
+clearReviewQueue();
 updatePagination();

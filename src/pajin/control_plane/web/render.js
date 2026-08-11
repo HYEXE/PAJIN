@@ -81,6 +81,62 @@ export function createRunRows(documentRef, items, selectedRunId, selectRun) {
   });
 }
 
+export function createHumanReviewQueueNodes(documentRef, items, selectRun) {
+  if (items.length === 0) {
+    const empty = documentRef.createElement("li");
+    empty.className = "review-queue-card empty-review-queue";
+    empty.textContent = "No active Runs currently require human workflow attention.";
+    return [empty];
+  }
+  return items.map((item) => {
+    const node = documentRef.createElement("li");
+    node.className = "review-queue-card";
+
+    const heading = documentRef.createElement("div");
+    heading.className = "review-queue-card-head";
+    const campaign = documentRef.createElement("strong");
+    campaign.textContent = item.campaign_name;
+    const attention = documentRef.createElement("span");
+    attention.className = `review-attention attention-${item.attention}`;
+    attention.textContent = item.attention;
+    heading.append(campaign, attention);
+
+    const lifecycle = documentRef.createElement("p");
+    lifecycle.className = "review-queue-lifecycle";
+    lifecycle.textContent = [
+      item.run_state,
+      `Run ${shortId(item.run_id)}`,
+      `updated ${formatTime(item.updated_at)}`,
+    ].join(" / ");
+    node.append(heading, lifecycle);
+
+    if (item.approval !== null) {
+      const approval = documentRef.createElement("p");
+      approval.className = "review-queue-approval";
+      approval.textContent = [
+        `${item.approval.tool_id} -> ${item.approval.target}`,
+        `T${item.approval.risk_tier}`,
+        `${item.approval.state} until ${formatTime(item.approval.expires_at)}`,
+      ].join(" / ");
+      node.append(approval);
+    }
+
+    const actions = documentRef.createElement("div");
+    actions.className = "review-queue-card-actions";
+    const boundary = documentRef.createElement("span");
+    boundary.textContent = "Kill switch candidate / authority checked on action";
+    const inspect = documentRef.createElement("button");
+    inspect.type = "button";
+    inspect.className = "button button-quiet";
+    inspect.textContent = "Inspect controls";
+    inspect.setAttribute("aria-label", `Inspect controls for ${item.campaign_name}`);
+    inspect.addEventListener("click", () => selectRun(item.run_id));
+    actions.append(boundary, inspect);
+    node.append(actions);
+    return node;
+  });
+}
+
 export function eventCountLabel(events) {
   if (events.length === 0) {
     return "0 events";
@@ -316,6 +372,159 @@ export function createHypothesisAttentionNodes(documentRef, hypotheses) {
     ].join(" / ");
     content.append(heading, band, metadata, evidence);
     item.append(rank, content);
+    return item;
+  });
+}
+
+export function createDecisionAuditNodes(documentRef, decisions) {
+  if (decisions.length === 0) {
+    return emptyGraphItem(
+      documentRef,
+      "No complete Decisions were recorded for this current Snapshot.",
+      "decision-audit-card",
+    );
+  }
+  return decisions.map((decision) => {
+    const item = documentRef.createElement("li");
+    item.className = "decision-audit-card";
+
+    const sequence = documentRef.createElement("span");
+    sequence.className = "decision-audit-sequence";
+    sequence.textContent = `#${decision.sequence}`;
+
+    const content = documentRef.createElement("div");
+    content.className = "decision-audit-content";
+    const heading = documentRef.createElement("div");
+    heading.className = "decision-audit-card-head";
+    const title = documentRef.createElement("strong");
+    title.textContent = decision.decisionKind;
+    const recorded = documentRef.createElement("span");
+    recorded.className = "decision-audit-time";
+    recorded.textContent = formatTime(decision.recordedAt);
+    heading.append(title, recorded);
+
+    const identities = documentRef.createElement("p");
+    identities.className = "decision-audit-identities";
+    identities.textContent = [
+      `Decision ${shortId(decision.decisionId)}`,
+      `Record ${shortId(decision.recordId)}`,
+    ].join(" / ");
+    const digests = documentRef.createElement("p");
+    digests.className = "decision-audit-digests";
+    digests.textContent = [
+      `payload ${shortId(decision.decisionPayloadDigest)}`,
+      `actor ${shortId(decision.actorDigest)}`,
+      `recorder ${shortId(decision.recorderDigest)}`,
+    ].join(" / ");
+    const created = documentRef.createElement("p");
+    created.className = "decision-audit-created";
+    created.textContent = `Decision created ${formatTime(decision.decisionCreatedAt)}`;
+    content.append(heading, identities, digests, created);
+    item.append(sequence, content);
+    return item;
+  });
+}
+
+export function createReplayComparisonLaneNodes(documentRef, lanes) {
+  return lanes.map((lane) => {
+    const item = documentRef.createElement("li");
+    item.className = "replay-comparison-card";
+    if (lane.availability !== "verified-reference") {
+      item.classList.add("is-unavailable");
+    }
+
+    const heading = documentRef.createElement("div");
+    heading.className = "replay-comparison-card-head";
+    const stage = documentRef.createElement("strong");
+    stage.textContent = lane.stage;
+    const availability = documentRef.createElement("span");
+    availability.className = "replay-comparison-availability";
+    availability.textContent = lane.availability;
+    heading.append(stage, availability);
+
+    const role = documentRef.createElement("p");
+    role.className = "replay-comparison-role";
+    role.textContent = lane.authorityRole;
+    const coordinateSummary = documentRef.createElement("p");
+    coordinateSummary.className = "replay-comparison-coordinates";
+    if (lane.executionCount === 0) {
+      coordinateSummary.textContent = "No coordinates in this authority";
+      item.append(heading, role, coordinateSummary);
+      return item;
+    }
+
+    coordinateSummary.textContent = `${lane.executionCount} execution coordinate(s)`;
+    const coordinates = documentRef.createElement("ol");
+    coordinates.className = "validation-coordinate-list";
+    for (let index = 0; index < lane.executionCount; index += 1) {
+      const coordinate = documentRef.createElement("li");
+      coordinate.className = "validation-coordinate";
+      const coordinateLabel = documentRef.createElement("strong");
+      coordinateLabel.textContent = `Execution ${index + 1}`;
+      const identity = documentRef.createElement("span");
+      identity.textContent = [
+        `Run ${shortId(lane.runIds[index])}`,
+        `root ${shortId(lane.rootDigests[index])}`,
+        `evidence ${shortId(lane.evidenceDigests[index])}`,
+      ].join(" / ");
+      coordinate.append(coordinateLabel, identity);
+      coordinates.append(coordinate);
+    }
+    item.append(heading, role, coordinateSummary, coordinates);
+    return item;
+  });
+}
+
+export function createWalkingControlComparisonLaneNodes(documentRef, lanes) {
+  return lanes.map((lane) => {
+    const item = documentRef.createElement("li");
+    item.className = "replay-comparison-card";
+    if (lane.availability !== "verified-reference") {
+      item.classList.add("is-unavailable");
+    }
+
+    const heading = documentRef.createElement("div");
+    heading.className = "replay-comparison-card-head";
+    const stage = documentRef.createElement("strong");
+    stage.textContent = lane.stage;
+    const availability = documentRef.createElement("span");
+    availability.className = "replay-comparison-availability";
+    availability.textContent = lane.availability;
+    heading.append(stage, availability);
+
+    const role = documentRef.createElement("p");
+    role.className = "replay-comparison-role";
+    role.textContent = lane.authorityRole;
+    item.append(heading, role);
+
+    if (lane.coordinates.length === 0) {
+      const unavailable = documentRef.createElement("p");
+      unavailable.className = "replay-comparison-coordinates";
+      unavailable.textContent = "No Retest coordinate in this authority";
+      item.append(unavailable);
+      return item;
+    }
+
+    const coordinates = documentRef.createElement("ol");
+    coordinates.className = "validation-coordinate-list";
+    for (const coordinate of lane.coordinates) {
+      const coordinateItem = documentRef.createElement("li");
+      coordinateItem.className = "validation-coordinate";
+      const coordinateRole = documentRef.createElement("strong");
+      coordinateRole.textContent = coordinate.controlKind
+        ? `${coordinate.role} / ${coordinate.controlKind}`
+        : coordinate.role;
+      const identity = documentRef.createElement("span");
+      identity.textContent = [
+        `#${coordinate.ordinal}`,
+        `Run ${shortId(coordinate.runId)}`,
+        `root ${shortId(coordinate.rootDigest)}`,
+        `execution ${shortId(coordinate.executionDigest)}`,
+      ].join(" / ");
+      coordinateItem.append(coordinateRole, identity);
+      coordinates.append(coordinateItem);
+    }
+    item.append(coordinates);
     return item;
   });
 }

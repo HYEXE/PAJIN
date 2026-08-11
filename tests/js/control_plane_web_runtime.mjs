@@ -173,6 +173,47 @@ const selectors = [
   "#hypothesis-ranking-method-value",
   "#hypothesis-ranking-snapshot-value",
   "#hypothesis-ranking-list",
+  "#decision-audit-panel",
+  "#decision-audit-form",
+  "#decision-audit-campaign",
+  "#decision-audit-snapshot-id",
+  "#decision-audit-load-button",
+  "#decision-audit-empty",
+  "#decision-audit-result",
+  "#decision-audit-campaign-value",
+  "#decision-audit-count-value",
+  "#decision-audit-total-value",
+  "#decision-audit-head-value",
+  "#decision-audit-snapshot-value",
+  "#decision-audit-list",
+  "#replay-comparison-panel",
+  "#replay-comparison-form",
+  "#replay-comparison-batch-id",
+  "#replay-comparison-load-button",
+  "#replay-comparison-empty",
+  "#replay-comparison-result",
+  "#replay-comparison-campaign-value",
+  "#replay-comparison-purpose-value",
+  "#replay-comparison-batch-value",
+  "#replay-comparison-projection-value",
+  "#replay-comparison-lanes",
+  "#validation-comparison-panel",
+  "#validation-comparison-form",
+  "#validation-comparison-id",
+  "#validation-comparison-load-button",
+  "#validation-comparison-empty",
+  "#validation-comparison-result",
+  "#validation-comparison-profile-value",
+  "#validation-comparison-depth-value",
+  "#validation-comparison-state-value",
+  "#validation-comparison-contrast-value",
+  "#validation-comparison-lanes",
+  "#review-queue-panel",
+  "#review-queue-refresh-button",
+  "#review-queue-summary",
+  "#review-queue-empty",
+  "#review-queue-list",
+  "#review-queue-more",
 ];
 const elements = new Map(selectors.map((selector) => [selector, new FakeElement()]));
 elements.get("#campaign-name").value = "web-console-test";
@@ -186,6 +227,12 @@ elements.get("#graph-campaign").value = "runtime-campaign";
 elements.get("#graph-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
 elements.get("#hypothesis-ranking-campaign").value = "runtime-campaign";
 elements.get("#hypothesis-ranking-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+elements.get("#decision-audit-campaign").value = "runtime-campaign";
+elements.get("#decision-audit-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+elements.get("#replay-comparison-batch-id").value = `replay-batch_${"1".repeat(32)}`;
+elements.get("#validation-comparison-id").value = (
+  `walking-control-comparison_${"1".repeat(64)}`
+);
 
 globalThis.document = {
   querySelector(selector) {
@@ -222,6 +269,9 @@ globalThis.fetch = async (url, options) => {
   const index = fetchHandlers.findIndex(({ matcher }) => (
     typeof matcher === "string" ? matcher === normalizedUrl : matcher(normalizedUrl, options)
   ));
+  if (index === -1 && normalizedUrl === "/v1/review-queue?limit=50") {
+    return jsonResponse(reviewQueue([]));
+  }
   assert.notEqual(index, -1, `unexpected fetch: ${normalizedUrl}`);
   const [{ responder }] = fetchHandlers.splice(index, 1);
   return responder(normalizedUrl, options);
@@ -255,6 +305,48 @@ function runView(id, campaignName, state = "queued") {
     current_checkpoint_id: state === "awaiting-approval" ? `checkpoint-${id}` : null,
     created_at: timestamp,
     updated_at: timestamp,
+  };
+}
+
+function reviewQueue(items, hasMore = false) {
+  return {
+    api_version: "pajin.control-plane.human-review-queue/v1",
+    generated_at: timestamp,
+    items,
+    limit: 50,
+    has_more: hasMore,
+    authority: {
+      queue_snapshot_only: true,
+      approval_decision_authority: false,
+      checkpoint_resume_authority: false,
+      cancellation_authority: false,
+      execution_authority: false,
+    },
+  };
+}
+
+function reviewQueueItem(run, attention = "execution-active") {
+  const approval = attention === "execution-active" ? null : {
+    approval_id: `approval_${"a".repeat(32)}`,
+    state: attention === "resume-required" ? "approved" : "pending",
+    requested_by: "worker-subject",
+    requested_at: timestamp,
+    tool_id: "mock.approval-probe",
+    target: "lab://approval-check",
+    risk_tier: 3,
+    expires_at: attention === "approval-expired"
+      ? "2026-07-18T23:59:59Z"
+      : "2026-07-19T00:05:00Z",
+  };
+  return {
+    run_id: run.run_id,
+    campaign_name: run.campaign_name,
+    run_state: run.state,
+    updated_at: run.updated_at,
+    checkpoint_id: run.current_checkpoint_id,
+    attention,
+    approval,
+    kill_switch_candidate: true,
   };
 }
 
@@ -473,6 +565,194 @@ function hypothesisAttentionRanking() {
   };
 }
 
+function graphDecisionAuditView() {
+  return {
+    apiVersion: "pajin.control-plane/verified-graph-decision-audit-view/v1alpha1",
+    kind: "VerifiedGraphDecisionAuditView",
+    campaignId: "runtime-campaign",
+    snapshotId: `graph-snapshot_${"c".repeat(64)}`,
+    snapshotDigest: "c".repeat(64),
+    projectionId: `graph-projection_${"f".repeat(64)}`,
+    projectionDigest: "f".repeat(64),
+    auditSchemaVersion: 1,
+    auditSchemaDigest: "a".repeat(64),
+    recorderDigest: "b".repeat(64),
+    totalRecordCount: 3,
+    currentSnapshotDecisionCount: 2,
+    auditHeadDigest: "4".repeat(64),
+    decisions: [{
+      sequence: 2,
+      recordId: `graph-decision-audit-record_${"3".repeat(64)}`,
+      recordDigest: "3".repeat(64),
+      previousRecordDigest: "2".repeat(64),
+      decisionId: `graph-decision_${"5".repeat(64)}`,
+      decisionDigest: "5".repeat(64),
+      decisionKind: "plan",
+      decisionPayloadDigest: "6".repeat(64),
+      actorDigest: "7".repeat(64),
+      recorderDigest: "b".repeat(64),
+      decisionCreatedAt: timestamp,
+      recordedAt: timestamp,
+    }, {
+      sequence: 3,
+      recordId: `graph-decision-audit-record_${"4".repeat(64)}`,
+      recordDigest: "4".repeat(64),
+      previousRecordDigest: "3".repeat(64),
+      decisionId: `graph-decision_${"8".repeat(64)}`,
+      decisionDigest: "8".repeat(64),
+      decisionKind: "stop",
+      decisionPayloadDigest: "9".repeat(64),
+      actorDigest: "7".repeat(64),
+      recorderDigest: "b".repeat(64),
+      decisionCreatedAt: timestamp,
+      recordedAt: timestamp,
+    }],
+    authorityBoundary: {
+      canonicalGraphSnapshotVerified: true,
+      currentSnapshotVerified: true,
+      completeAuditChainVerified: true,
+      historicalSnapshotBindingsVerified: true,
+      appendOnlyHistoricalRetention: true,
+      identifiersRedacted: true,
+      viewSelectsHypothesis: false,
+      viewRecordsDecision: false,
+      viewSchedulesWork: false,
+      viewApprovesAction: false,
+      viewGrantsCapability: false,
+      viewGrantsPermit: false,
+      viewAuthorizesExecution: false,
+    },
+  };
+}
+
+function replayEvidenceComparison() {
+  return {
+    apiVersion: "pajin.control-plane/verified-replay-evidence-comparison-view/v1alpha1",
+    kind: "VerifiedReplayEvidenceComparisonView",
+    batchId: `replay-batch_${"1".repeat(32)}`,
+    campaignName: "runtime-replay-campaign",
+    purpose: "remediation-retest",
+    projectionId: `replay-projection_${"2".repeat(32)}`,
+    inputAuthorityDigest: "3".repeat(64),
+    projectionArtifactDigest: "4".repeat(64),
+    comparisonMode: "exact-coordinates-no-semantic-diff",
+    lanes: [{
+      stage: "original",
+      availability: "verified-reference",
+      authorityRole: "remediation-baseline",
+      executionCount: 1,
+      runIds: ["runtime-original-run"],
+      rootDigests: ["5".repeat(64)],
+      evidenceDigests: ["6".repeat(64)],
+    }, {
+      stage: "replay",
+      availability: "verified-reference",
+      authorityRole: "sealed-remediation-replay",
+      executionCount: 2,
+      runIds: ["runtime-replay-run", "runtime-replay-run-2"],
+      rootDigests: ["7".repeat(64), "b".repeat(64)],
+      evidenceDigests: ["8".repeat(64), "c".repeat(64)],
+    }, {
+      stage: "control",
+      availability: "not-in-authority",
+      authorityRole: "controls-not-bound",
+      executionCount: 0,
+      runIds: [],
+      rootDigests: [],
+      evidenceDigests: [],
+    }, {
+      stage: "retest",
+      availability: "verified-reference",
+      authorityRole: "sealed-retest-parent-and-assessment",
+      executionCount: 1,
+      runIds: ["runtime-retest-run"],
+      rootDigests: ["9".repeat(64)],
+      evidenceDigests: ["a".repeat(64)],
+    }],
+    authorityBoundary: {
+      durableProjectionBindingVerified: true,
+      exactLineageCoordinatesVerified: true,
+      identifiersAndContentRedacted: true,
+      controlEvidenceIncluded: false,
+      semanticEvidenceCompared: false,
+      viewEvaluatesValidation: false,
+      viewAttestsRemediation: false,
+      viewConfirmsFinding: false,
+      viewAuthorizesExecution: false,
+    },
+  };
+}
+
+function walkingControlComparison() {
+  const coordinates = [
+    ["original-source", null],
+    ["primary-replay", null],
+    ["additional-replay", null],
+    ["baseline-control", "baseline"],
+    ["negative-control", "negative-control"],
+    ["counterfactual-control", "counterfactual"],
+  ].map(([role, controlKind], ordinal) => ({
+    ordinal,
+    role,
+    controlKind,
+    runId: `runtime-walking-run-${ordinal}`,
+    rootDigest: (ordinal + 1).toString(16).repeat(64),
+    executionDigest: (ordinal + 7).toString(16).repeat(64),
+  }));
+  return {
+    apiVersion: "pajin.control-plane/verified-walking-control-comparison-view/v1alpha1",
+    kind: "VerifiedWalkingControlComparisonView",
+    comparisonId: `walking-control-comparison_${"1".repeat(64)}`,
+    comparisonDigest: "1".repeat(64),
+    assessmentDigest: "2".repeat(64),
+    campaignDigest: "3".repeat(64),
+    claimDigest: "4".repeat(64),
+    profileId: "pajin.profile.ai-assessment",
+    profileVersion: "1.0.0",
+    achievedDepth: "repeated-controlled-validity-replay",
+    validationState: "profile-floor-satisfied-not-confirmed",
+    controlContrast: "contrast-observed",
+    comparisonMode: "exact-execution-coordinates-with-verified-control-contrast",
+    lanes: [{
+      stage: "original",
+      availability: "verified-reference",
+      authorityRole: "sealed-source-execution",
+      executionCount: 1,
+      coordinates: coordinates.slice(0, 1),
+    }, {
+      stage: "replay",
+      availability: "verified-reference",
+      authorityRole: "sealed-repeated-validity-replay",
+      executionCount: 2,
+      coordinates: coordinates.slice(1, 3),
+    }, {
+      stage: "control",
+      availability: "verified-reference",
+      authorityRole: "sealed-baseline-negative-counterfactual",
+      executionCount: 3,
+      coordinates: coordinates.slice(3, 6),
+    }, {
+      stage: "retest",
+      availability: "not-in-authority",
+      authorityRole: "retest-not-bound",
+      executionCount: 0,
+      coordinates: [],
+    }],
+    authorityBoundary: {
+      val004cSealedPredecessorsVerified: true,
+      exactExecutionLineageVerified: true,
+      controlContrastVerified: true,
+      identifiersAndContentRedacted: true,
+      retestEvidenceIncluded: false,
+      viewCreatesValidationAssessment: false,
+      viewAttestsProfileSelection: false,
+      viewAttestsRemediation: false,
+      viewConfirmsFinding: false,
+      viewAuthorizesExecution: false,
+    },
+  };
+}
+
 function jobView(run, { state = "queued", kind = "campaign" } = {}) {
   return {
     job_id: `job_${"a".repeat(32)}`,
@@ -556,6 +836,7 @@ const rendering = await import(new URL("./render.js", applicationUrl).href);
 
 assert.equal(protocol.PAGE_SIZE, 25);
 assert.equal(protocol.MAX_RENDERED_EVENTS, 200);
+assert.equal(protocol.REVIEW_QUEUE_LIMIT, 50);
 assert.equal(protocol.isRunState("awaiting-approval"), true);
 assert.equal(protocol.isRunState("plausible-but-invalid"), false);
 const losslessPayload = protocol.parseJsonPayload(
@@ -568,6 +849,31 @@ assert.equal(
 );
 assert.throws(
   () => protocol.validatePrincipal({ subject: "worker-only", roles: ["worker"] }),
+  protocol.ApiProtocolError,
+);
+const queuedReviewRun = runView("run-review-queued", "review-queued");
+const pendingReviewRun = runView(
+  "run-review-pending",
+  "review-pending",
+  "awaiting-approval",
+);
+const validReviewQueue = reviewQueue([
+  reviewQueueItem(pendingReviewRun, "approval-required"),
+  reviewQueueItem(queuedReviewRun),
+]);
+assert.equal(protocol.validateHumanReviewQueue(validReviewQueue), validReviewQueue);
+assert.throws(
+  () => protocol.validateHumanReviewQueue({
+    ...validReviewQueue,
+    items: [...validReviewQueue.items].reverse(),
+  }),
+  protocol.ApiProtocolError,
+);
+assert.throws(
+  () => protocol.validateHumanReviewQueue({
+    ...validReviewQueue,
+    authority: { ...validReviewQueue.authority, cancellation_authority: true },
+  }),
   protocol.ApiProtocolError,
 );
 const validCanonicalGraphView = canonicalGraphView();
@@ -639,6 +945,112 @@ assert.throws(
   ),
   protocol.ApiProtocolError,
 );
+const validGraphDecisionAuditView = graphDecisionAuditView();
+assert.equal(
+  protocol.validateGraphDecisionAuditView(
+    validGraphDecisionAuditView,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  validGraphDecisionAuditView,
+);
+assert.throws(
+  () => protocol.validateGraphDecisionAuditView(
+    {
+      ...graphDecisionAuditView(),
+      authorityBoundary: {
+        ...graphDecisionAuditView().authorityBoundary,
+        viewGrantsPermit: true,
+      },
+    },
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const validReplayEvidenceComparison = replayEvidenceComparison();
+assert.equal(
+  protocol.validateReplayEvidenceComparison(
+    validReplayEvidenceComparison,
+    `replay-batch_${"1".repeat(32)}`,
+  ),
+  validReplayEvidenceComparison,
+);
+assert.throws(
+  () => protocol.validateReplayEvidenceComparison(
+    {
+      ...replayEvidenceComparison(),
+      authorityBoundary: {
+        ...replayEvidenceComparison().authorityBoundary,
+        semanticEvidenceCompared: true,
+      },
+    },
+    `replay-batch_${"1".repeat(32)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const replayComparisonWithControlAuthority = replayEvidenceComparison();
+replayComparisonWithControlAuthority.lanes[2] = {
+  ...replayComparisonWithControlAuthority.lanes[2],
+  availability: "verified-reference",
+  executionCount: 1,
+  runIds: ["runtime-control-run"],
+  rootDigests: ["b".repeat(64)],
+  evidenceDigests: ["c".repeat(64)],
+};
+assert.throws(
+  () => protocol.validateReplayEvidenceComparison(
+    replayComparisonWithControlAuthority,
+    `replay-batch_${"1".repeat(32)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const validWalkingControlComparison = walkingControlComparison();
+assert.equal(
+  protocol.validateWalkingControlComparison(
+    validWalkingControlComparison,
+    `walking-control-comparison_${"1".repeat(64)}`,
+  ),
+  validWalkingControlComparison,
+);
+const walkingComparisonWithRetest = walkingControlComparison();
+walkingComparisonWithRetest.authorityBoundary.retestEvidenceIncluded = true;
+assert.throws(
+  () => protocol.validateWalkingControlComparison(
+    walkingComparisonWithRetest,
+    `walking-control-comparison_${"1".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const walkingComparisonWithReorderedControl = walkingControlComparison();
+walkingComparisonWithReorderedControl.lanes[2].coordinates.reverse();
+assert.throws(
+  () => protocol.validateWalkingControlComparison(
+    walkingComparisonWithReorderedControl,
+    `walking-control-comparison_${"1".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const auditWithRawActor = graphDecisionAuditView();
+auditWithRawActor.decisions[0].actorId = "sensitive-runtime-actor";
+assert.throws(
+  () => protocol.validateGraphDecisionAuditView(
+    auditWithRawActor,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
+const auditWithReorderedSequence = graphDecisionAuditView();
+auditWithReorderedSequence.decisions.reverse();
+assert.throws(
+  () => protocol.validateGraphDecisionAuditView(
+    auditWithReorderedSequence,
+    "runtime-campaign",
+    `graph-snapshot_${"c".repeat(64)}`,
+  ),
+  protocol.ApiProtocolError,
+);
 const validDiscoveryView = discoveryView();
 assert.equal(
   protocol.validateDiscoveryView(
@@ -667,6 +1079,15 @@ assert.equal(
   rendering.eventCountLabel([{ sequence: 7 }]),
   "#7–#7 · 1 event",
 );
+let selectedReviewRunId = null;
+const reviewNodes = rendering.createHumanReviewQueueNodes(
+  globalThis.document,
+  validReviewQueue.items,
+  (runId) => { selectedReviewRunId = runId; },
+);
+assert.equal(reviewNodes.length, 2);
+await reviewNodes[0].children.at(-1).children.at(-1).dispatch("click");
+assert.equal(selectedReviewRunId, pendingReviewRun.run_id);
 
 await import(applicationUrl.href);
 
@@ -681,6 +1102,22 @@ assert.equal(elements.get("#runs-panel").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#discovery-load-button").disabled, false);
 assert.equal(elements.get("#graph-load-button").disabled, false);
 assert.equal(elements.get("#hypothesis-ranking-load-button").disabled, false);
+assert.equal(elements.get("#decision-audit-load-button").disabled, false);
+assert.equal(elements.get("#replay-comparison-load-button").disabled, false);
+assert.equal(elements.get("#validation-comparison-load-button").disabled, false);
+assert.equal(elements.get("#review-queue-refresh-button").disabled, false);
+
+enqueueFetch(
+  "/v1/review-queue?limit=50",
+  () => jsonResponse(reviewQueue(validReviewQueue.items, true)),
+);
+await elements.get("#review-queue-refresh-button").dispatch("click");
+assert.equal(elements.get("#review-queue-list").hidden, false);
+assert.equal(elements.get("#review-queue-empty").hidden, true);
+assert.equal(elements.get("#review-queue-list").children.length, 2);
+assert.equal(elements.get("#review-queue-more").hidden, false);
+assert.match(elements.get("#review-queue-summary").textContent, /2 active Runs/);
+assert.equal(elements.get("#review-queue-panel").attributes.get("aria-busy"), "false");
 
 elements.get("#discovery-campaign").value = "runtime-campaign";
 elements.get("#discovery-run-id").value = "run_20260810T010203Z_1234abcd";
@@ -724,6 +1161,59 @@ assert.equal(elements.get("#hypothesis-ranking-count-value").textContent, "2");
 assert.equal(elements.get("#hypothesis-ranking-list").children.length, 2);
 assert.equal(elements.get("#hypothesis-ranking-form").attributes.get("aria-busy"), "false");
 assert.match(elements.get("#status-message").textContent, /no decision recorded/);
+
+elements.get("#decision-audit-campaign").value = "runtime-campaign";
+elements.get("#decision-audit-snapshot-id").value = `graph-snapshot_${"c".repeat(64)}`;
+enqueueFetch(
+  `/v1/decisions/campaigns/runtime-campaign/snapshots/graph-snapshot_${"c".repeat(64)}/audit`,
+  () => jsonResponse(graphDecisionAuditView()),
+);
+await elements.get("#decision-audit-form").dispatch("submit");
+assert.equal(elements.get("#decision-audit-result").hidden, false);
+assert.equal(elements.get("#decision-audit-empty").hidden, true);
+assert.equal(elements.get("#decision-audit-count-value").textContent, "2");
+assert.equal(elements.get("#decision-audit-total-value").textContent, "3");
+assert.equal(elements.get("#decision-audit-list").children.length, 2);
+assert.equal(elements.get("#decision-audit-form").attributes.get("aria-busy"), "false");
+assert.match(elements.get("#status-message").textContent, /2 current Decision record/);
+
+elements.get("#replay-comparison-batch-id").value = `replay-batch_${"1".repeat(32)}`;
+enqueueFetch(
+  `/v1/replay-comparisons/batches/replay-batch_${"1".repeat(32)}`,
+  () => jsonResponse(replayEvidenceComparison()),
+);
+await elements.get("#replay-comparison-form").dispatch("submit");
+assert.equal(elements.get("#replay-comparison-result").hidden, false);
+assert.equal(elements.get("#replay-comparison-empty").hidden, true);
+assert.equal(elements.get("#replay-comparison-purpose-value").textContent, "remediation-retest");
+assert.equal(elements.get("#replay-comparison-lanes").children.length, 4);
+const renderedReplayLane = elements.get("#replay-comparison-lanes").children[1];
+assert.equal(renderedReplayLane.children[2].textContent, "2 execution coordinate(s)");
+assert.equal(renderedReplayLane.children[3].children.length, 2);
+assert.match(
+  renderedReplayLane.children[3].children[1].children[1].textContent,
+  /runtime-replay-run-2/,
+);
+assert.equal(elements.get("#replay-comparison-form").attributes.get("aria-busy"), "false");
+assert.match(elements.get("#status-message").textContent, /Control and semantic diff remain excluded/);
+
+elements.get("#validation-comparison-id").value = (
+  `walking-control-comparison_${"1".repeat(64)}`
+);
+enqueueFetch(
+  `/v1/validation-comparisons/walking/walking-control-comparison_${"1".repeat(64)}`,
+  () => jsonResponse(walkingControlComparison()),
+);
+await elements.get("#validation-comparison-form").dispatch("submit");
+assert.equal(elements.get("#validation-comparison-result").hidden, false);
+assert.equal(elements.get("#validation-comparison-empty").hidden, true);
+assert.equal(
+  elements.get("#validation-comparison-contrast-value").textContent,
+  "contrast-observed",
+);
+assert.equal(elements.get("#validation-comparison-lanes").children.length, 4);
+assert.equal(elements.get("#validation-comparison-form").attributes.get("aria-busy"), "false");
+assert.match(elements.get("#status-message").textContent, /six disjoint VAL-004C coordinates/);
 
 enqueueFetch(
   "/v1/runs?limit=25&offset=0",
@@ -808,6 +1298,29 @@ const runB = runView("run-b", "second-campaign");
 enqueueConnection("operator", [runSummary(runA.run_id, runA.campaign_name), runSummary(runB.run_id, runB.campaign_name)]);
 await submitToken(validToken("races"));
 
+// A manual queue refresh can finish after lock when a transport ignores AbortSignal.
+// The stale generation must not overwrite the lock announcement with false success.
+const staleLockedQueue = deferred();
+let staleLockedQueueOptions = null;
+enqueueFetch("/v1/review-queue?limit=50", (_url, options) => {
+  staleLockedQueueOptions = options;
+  assert.equal(options.signal.aborted, false);
+  return staleLockedQueue.promise;
+});
+const lockedQueueRefresh = elements.get("#review-queue-refresh-button").dispatch("click");
+await settle();
+assert.ok(staleLockedQueueOptions);
+await elements.get("#lock-button").dispatch("click");
+assert.equal(staleLockedQueueOptions.signal.aborted, true);
+staleLockedQueue.resolve(jsonResponse(reviewQueue(validReviewQueue.items)));
+await lockedQueueRefresh;
+assert.equal(elements.get("#connection-label").textContent, "Locked");
+assert.match(elements.get("#status-message").textContent, /Console locked/);
+assert.doesNotMatch(elements.get("#status-message").textContent, /queue refreshed/);
+
+enqueueConnection("operator", [runSummary(runA.run_id, runA.campaign_name), runSummary(runB.run_id, runB.campaign_name)]);
+await submitToken(validToken("run-race"));
+
 // Exercise the original disclosure timing directly. The fake fetch deliberately
 // ignores AbortSignal so the generation guard, rather than transport cooperation,
 // must prevent a successful old Run response from repopulating the locked Console.
@@ -818,7 +1331,10 @@ enqueueFetch("/v1/runs?limit=25&offset=0", (_url, options) => {
 });
 const lockedRefresh = elements.get("#refresh-button").dispatch("click");
 await settle();
-const lockedRequest = fetchCalls.at(-1);
+const lockedRequest = [...fetchCalls].reverse().find(
+  (call) => call.url === "/v1/runs?limit=25&offset=0",
+);
+assert.ok(lockedRequest);
 assert.equal(lockedRequest.url, "/v1/runs?limit=25&offset=0");
 await elements.get("#lock-button").dispatch("click");
 assert.equal(lockedRequest.options.signal.aborted, true);

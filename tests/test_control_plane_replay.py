@@ -958,6 +958,7 @@ def test_public_api_rejects_replay_job_injection_and_exposes_bounded_replay_rout
         assert generic_claim.status_code == 422
         paths = app.openapi()["paths"]
         assert {path for path in paths if path.startswith("/v1/replay")} == {
+            "/v1/replay-comparisons/batches/{batch_id}",
             "/v1/replay/source-artifacts",
             "/v1/replay/batches",
             "/v1/replay/batches/{batch_id}",

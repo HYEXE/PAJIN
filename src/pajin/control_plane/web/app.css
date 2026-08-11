@@ -226,7 +226,9 @@ button {
 .runs-panel,
 .detail-panel,
 .discovery-panel,
-.graph-panel {
+.graph-panel,
+.hypothesis-ranking-panel,
+.decision-audit-panel {
   padding: clamp(1.15rem, 2.5vw, 2rem);
 }
 
@@ -265,13 +267,19 @@ button {
   align-items: start;
 }
 
+.workspace-grid > * {
+  min-width: 0;
+}
+
 .detail-panel {
   margin-top: 1.25rem;
   scroll-margin-top: 152px;
 }
 
 .discovery-panel,
-.graph-panel {
+.graph-panel,
+.hypothesis-ranking-panel,
+.decision-audit-panel {
   margin-top: 1.25rem;
 }
 
@@ -800,7 +808,9 @@ pre {
 
 .discovery-form,
 .graph-form,
-.hypothesis-ranking-form {
+.hypothesis-ranking-form,
+.decision-audit-form,
+.replay-comparison-form {
   display: flex;
   gap: 0.8rem;
   align-items: end;
@@ -812,7 +822,9 @@ pre {
 
 .discovery-empty,
 .graph-empty,
-.hypothesis-ranking-empty {
+.hypothesis-ranking-empty,
+.decision-audit-empty,
+.replay-comparison-empty {
   margin: 1.25rem 0 0;
   padding: 1.1rem;
   color: var(--muted);
@@ -824,7 +836,9 @@ pre {
 
 .discovery-result,
 .graph-result,
-.hypothesis-ranking-result {
+.hypothesis-ranking-result,
+.decision-audit-result,
+.replay-comparison-result {
   margin-top: 1.25rem;
 }
 
@@ -852,7 +866,9 @@ pre {
 
 .discovery-facts,
 .graph-facts,
-.hypothesis-ranking-facts {
+.hypothesis-ranking-facts,
+.decision-audit-facts,
+.replay-comparison-facts {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0.75rem;
@@ -861,7 +877,9 @@ pre {
 
 .discovery-facts div,
 .graph-facts div,
-.hypothesis-ranking-facts div {
+.hypothesis-ranking-facts div,
+.decision-audit-facts div,
+.replay-comparison-facts div {
   min-width: 0;
   padding: 0.75rem;
   border: 1px solid var(--line-soft);
@@ -871,7 +889,9 @@ pre {
 
 .discovery-facts dt,
 .graph-facts dt,
-.hypothesis-ranking-facts dt {
+.hypothesis-ranking-facts dt,
+.decision-audit-facts dt,
+.replay-comparison-facts dt {
   margin-bottom: 0.35rem;
   color: var(--muted);
   font-size: 0.66rem;
@@ -881,7 +901,9 @@ pre {
 
 .discovery-facts dd,
 .graph-facts dd,
-.hypothesis-ranking-facts dd {
+.hypothesis-ranking-facts dd,
+.decision-audit-facts dd,
+.replay-comparison-facts dd {
   overflow-wrap: anywhere;
   margin: 0;
   font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
@@ -899,7 +921,9 @@ pre {
 .wave-timeline,
 .graph-node-list,
 .graph-edge-list,
-.hypothesis-ranking-list {
+.hypothesis-ranking-list,
+.decision-audit-list,
+.replay-comparison-lanes {
   display: grid;
   gap: 0.65rem;
   margin: 0;
@@ -911,7 +935,9 @@ pre {
 .wave-card,
 .graph-node-card,
 .graph-edge-card,
-.hypothesis-ranking-card {
+.hypothesis-ranking-card,
+.decision-audit-card,
+.replay-comparison-card {
   padding: 0.85rem;
   border: 1px solid var(--line-soft);
   background: rgba(7, 17, 15, 0.34);
@@ -956,6 +982,10 @@ pre {
 }
 
 .hypothesis-ranking-snapshot-field {
+  flex-grow: 1.5;
+}
+
+.decision-audit-snapshot-field {
   flex-grow: 1.5;
 }
 
@@ -1007,6 +1037,151 @@ pre {
 .hypothesis-ranking-meta,
 .hypothesis-ranking-evidence {
   margin: 0;
+}
+
+.decision-audit-card {
+  display: grid;
+  grid-template-columns: 3.2rem minmax(0, 1fr);
+  gap: 0.85rem;
+  min-width: 0;
+}
+
+.decision-audit-sequence {
+  color: var(--accent);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.85rem;
+  font-weight: 850;
+}
+
+.decision-audit-content {
+  min-width: 0;
+}
+
+.decision-audit-card-head {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.decision-audit-card-head strong {
+  color: var(--info);
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.decision-audit-time,
+.decision-audit-identities,
+.decision-audit-digests,
+.decision-audit-created {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.decision-audit-time {
+  text-align: right;
+}
+
+.decision-audit-identities {
+  margin: 0.5rem 0 0.2rem;
+  color: #dcebe5;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.decision-audit-digests,
+.decision-audit-created {
+  margin: 0;
+}
+
+.replay-comparison-lanes {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.replay-comparison-card {
+  min-width: 0;
+  border-top: 3px solid var(--accent);
+}
+
+.replay-comparison-card.is-unavailable {
+  border-top-color: var(--warning);
+}
+
+.replay-comparison-card-head {
+  display: flex;
+  gap: 0.65rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.replay-comparison-card-head strong {
+  color: #dcebe5;
+  font-size: 0.82rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.replay-comparison-availability {
+  color: var(--accent);
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.is-unavailable .replay-comparison-availability {
+  color: var(--warning);
+}
+
+.replay-comparison-role,
+.replay-comparison-coordinates {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.replay-comparison-role {
+  margin: 0.65rem 0 0.25rem;
+  color: var(--info);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.replay-comparison-coordinates {
+  margin: 0;
+}
+
+.validation-coordinate-list {
+  display: grid;
+  gap: 0.45rem;
+  margin: 0.65rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.validation-coordinate {
+  display: grid;
+  gap: 0.2rem;
+  min-width: 0;
+  padding-top: 0.45rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.validation-coordinate strong {
+  overflow-wrap: anywhere;
+  color: #dcebe5;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.validation-coordinate span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  line-height: 1.45;
 }
 
 .graph-node-card,
@@ -1093,6 +1268,102 @@ pre {
   border-top: 1px solid var(--line-soft);
 }
 
+.review-queue-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 320px), 1fr));
+  gap: 0.8rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.review-queue-card {
+  min-width: 0;
+  padding: 1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--line-soft);
+  border-top: 3px solid var(--info);
+  border-radius: var(--radius-sm);
+}
+
+.review-queue-card-head,
+.review-queue-card-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.review-queue-card-head strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: #dcebe5;
+}
+
+.review-attention {
+  flex: 0 0 auto;
+  color: var(--info);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 0.62rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.attention-approval-expired,
+.attention-approval-required {
+  color: var(--warning);
+}
+
+.attention-resume-required {
+  color: var(--accent);
+}
+
+.review-queue-lifecycle,
+.review-queue-approval,
+.review-queue-card-actions span,
+.review-queue-empty,
+.review-queue-more {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 0.68rem;
+  line-height: 1.5;
+}
+
+.review-queue-lifecycle {
+  margin: 0.65rem 0 0;
+}
+
+.review-queue-approval {
+  margin: 0.45rem 0 0;
+  color: #dcebe5;
+}
+
+.review-queue-card-actions {
+  align-items: center;
+  margin-top: 0.8rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line-soft);
+}
+
+.review-queue-card-actions span {
+  color: var(--warning);
+}
+
+.empty-review-queue {
+  grid-column: 1 / -1;
+  border-top-color: var(--line);
+}
+
+.review-queue-empty,
+.review-queue-more {
+  margin: 0;
+}
+
+.review-queue-more {
+  margin-top: 0.8rem;
+  color: var(--warning);
+}
+
 footer {
   display: flex;
   justify-content: space-between;
@@ -1144,6 +1415,8 @@ footer {
   .discovery-form,
   .graph-form,
   .hypothesis-ranking-form,
+  .decision-audit-form,
+  .replay-comparison-form,
   footer {
     align-items: stretch;
     flex-direction: column;
@@ -1155,8 +1428,14 @@ footer {
 
   .discovery-facts,
   .graph-facts,
-  .hypothesis-ranking-facts {
+  .hypothesis-ranking-facts,
+  .decision-audit-facts,
+  .replay-comparison-facts {
     grid-template-columns: 1fr 1fr;
+  }
+
+  .replay-comparison-lanes {
+    grid-template-columns: 1fr;
   }
 
   .topbar {
