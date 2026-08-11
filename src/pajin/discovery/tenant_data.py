@@ -238,7 +238,7 @@ def _tenant_data_candidates(
                 label="HTTP/OpenAPI data response locator",
             )
             data_locators[key] = data_locator
-        if len(tenant_locators) > max_boundaries or len(data_locators) > max_boundaries:
+        if len(tenant_locators) + len(data_locators) > max_boundaries:
             raise ValueError("OpenAPI tenant data declarations exceed the limit")
     return [
         *(

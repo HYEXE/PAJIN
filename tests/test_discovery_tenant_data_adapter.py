@@ -161,6 +161,14 @@ def test_tenant_data_adapter_is_deterministic_across_openapi_order() -> None:
     ]
 
 
+def test_tenant_data_adapter_bounds_combined_tenant_and_data_declarations() -> None:
+    with pytest.raises(ValueError, match="declarations exceed the limit"):
+        _adapter(max_tenant_data_boundaries=1).extract_surfaces(
+            _request(),
+            _result(_document()),
+        )
+
+
 def test_tenant_data_adapter_never_infers_from_names_or_schemas() -> None:
     document = {
         "openapi": "3.1.0",
