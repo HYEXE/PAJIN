@@ -3,7 +3,7 @@
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
 - 현재 단계: Phase 9 — Product UX·Operations
-- 현재 우선순위: 외부 delivery authority
+- 현재 우선순위: OIDC·MFA·ABAC·Worker Identity·mTLS
 
 ## 제품 목표
 
@@ -727,19 +727,18 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
   - [x] `UX-004B` exact sealed VAL-004C Original·repeated Replay·Control comparison
 - [x] Human Review·Approval·Kill Switch Queue
   - [x] `UX-005A` active Run queue와 기존 action 경계 연결
-- [ ] SARIF·Issue Tracker·SIEM/SOAR Export
+- [x] SARIF·Issue Tracker·SIEM/SOAR Export
   - [x] `UX-006A` exact verified Finding의 minimized local SARIF 2.1.0 export
-  - [ ] `UX-006B` external sink·secret·idempotency·receipt·reconciliation authority
+  - [x] `UX-006B` external sink·secret·idempotency·receipt·reconciliation authority
 - [ ] OIDC·MFA·ABAC·Worker Identity·mTLS
+  - [x] `UX-007A` deployment-pinned RFC 9068 access token과 provider-specific MFA 기반 Human Identity admission
 - [ ] Object Storage·Distributed Worker·KMS/HSM
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
 
-`UX-001B3`는 typed source·기존 authorization을 compiler에 전달하되 persistence·실행 권위를 만들지 않는다.
-`UX-002A/B`는 sealed Surface·Wave와 exact current Graph Snapshot, `UX-003A/B`는 Hypothesis attention과 별도
-append-only Decision audit를 표시한다. `UX-004A/B`는 서로 다른 KISA/WALK authority를 합성하지 않고
-Original·Replay·Control·Retest 좌표를 표시한다. `UX-005A` queue는 action authority가 아니다. `UX-006A`는
-independent-replay confirmed Finding만 exact Run/root에 결박한 minimized SARIF로 로컬 저장하며 외부 delivery와
-receipt authority는 모두 false다. 세부 권한·redaction·failure 경계는 각 계약과 ADR이 소유한다.
+`UX-001~005`는 기존 authority에 결박된 non-authoritative handoff·read projection·queue이며 exact lineage는
+각 계약이 소유한다. `UX-006A/B`는 confirmed Finding의 local SARIF와 authenticated journaled delivery를
+분리하고 unknown 자동 재전송과 downstream attestation을 금지한다. `UX-007A`는 explicit `at+jwt`를
+issuer·audience·client·MFA·key에 결박해 local Principal로 매핑하며 token role·ID Token·Worker/JWKS 권위는 없다.
 
 ## 미결정 제품 사항
 

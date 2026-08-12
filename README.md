@@ -920,10 +920,44 @@ Export only independently replay-confirmed Findings from one exact sealed valida
 The deterministic SARIF 2.1.0 file binds the source Run/root and confirmed-Finding-set digest. It
 excludes raw target, root cause, reproduction, and evidence; writes outside the immutable source
 Run with private no-follow handling; and reports that external delivery was not performed. Legacy
-semantic confirmations and replay-evidence-only projections fail closed. Issue Tracker, SIEM, and
-SOAR delivery require a later connector with separate sink, secret, idempotency, and durable receipt
-authority. See [`UX-006A`](docs/orchestration/UX-006A-verified-finding-sarif-export.md) and
+semantic confirmations and replay-evidence-only projections fail closed. See
+[`UX-006A`](docs/orchestration/UX-006A-verified-finding-sarif-export.md) and
 [`ADR 0164`](docs/adr/0164-export-confirmed-findings-before-external-delivery.md).
+
+## Authenticated external delivery
+
+`pajin.reporting.delivery` can deliver the exact reverified UX-006A bytes through a
+content-addressed deployment sink, an exact externally admitted authorization, a one-use
+`SecretBroker` lease, and a separate append-only SQLite journal. A mutating attempt is durably
+claimed before the secret is released or the network is called. Timeouts and untrusted responses
+remain `dispatch-started-outcome-unknown`; they never trigger automatic retransmission.
+
+Operators must reconcile the same deterministic idempotency key. Authenticated acceptance creates
+a durable local receipt without redispatch. Only authenticated `not-received` after attempt 1
+permits one explicit retry with the same key; the second not-received outcome is terminal. The
+receipt proves configured-endpoint acceptance, not downstream issue creation, SIEM indexing, or
+SOAR execution. This slice is programmatic only so request data cannot choose sinks, secret
+references, or journal ownership. See
+[`UX-006B`](docs/orchestration/UX-006B-authenticated-external-delivery.md) and
+[`ADR 0165`](docs/adr/0165-authenticate-and-journal-external-delivery.md).
+
+## OIDC MFA human identity admission
+
+The Control Plane can optionally verify an externally issued, RFC 9068-shaped JWT access token
+through `PAJIN_CP_OIDC_HUMAN_TRUST_POLICY`. The offline deployment policy pins one HTTPS issuer,
+one resource audience, one OIDC client, one required scope, provider-specific ACR/AMR MFA values,
+bounded token and authentication ages, RS256 public keys and lifecycle, and exact provider-subject
+to local-Principal mappings.
+
+The verifier accepts only explicitly typed `at+jwt` access tokens. ID Tokens, untyped JWTs,
+token-selected key locations, multiple audiences, stale or wrong-context tokens, revoked keys, and
+unregistered subjects fail closed. Token role, group, and entitlement claims never grant PAJIN
+authority; roles come only from the deployment mapping, which forbids Worker authority and combined
+Operator/Approver authority. Existing opaque bearer credentials remain compatible, and the Worker
+token stays required. This is resource-server admission after an external login, not an
+authorization-code/PKCE browser flow or dynamic discovery/JWKS client. See
+[`UX-007A`](docs/orchestration/UX-007A-oidc-mfa-human-identity.md) and
+[`ADR 0166`](docs/adr/0166-bind-mfa-oidc-identity-without-token-role-authority.md).
 
 ## Run the vertical slice
 

@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from pajin.control_plane.models import Principal, validate_bounded_json_object
 
@@ -20,6 +20,12 @@ class AuthenticationError(RuntimeError):
 
 class CheckpointIntegrityError(RuntimeError):
     """Raised when stored checkpoint content no longer matches its signature."""
+
+
+class BearerAuthenticator(Protocol):
+    """One authentication authority that resolves a bearer value to a principal."""
+
+    def authenticate(self, token: str) -> Principal: ...
 
 
 def token_digest(token: str) -> str:
@@ -72,6 +78,26 @@ class TokenAuthenticator:
         if matched is None:
             raise AuthenticationError("invalid bearer credential")
         return matched
+
+
+class ChainedAuthenticator:
+    """Require exactly one configured bearer authority to accept a credential."""
+
+    def __init__(self, authenticators: tuple[BearerAuthenticator, ...]) -> None:
+        if not authenticators:
+            raise ValueError("at least one bearer authenticator is required")
+        self._authenticators = authenticators
+
+    def authenticate(self, token: str) -> Principal:
+        matches: list[Principal] = []
+        for authenticator in self._authenticators:
+            try:
+                matches.append(authenticator.authenticate(token))
+            except AuthenticationError:
+                continue
+        if len(matches) != 1:
+            raise AuthenticationError("invalid bearer credential")
+        return matches[0]
 
 
 @dataclass(frozen=True)

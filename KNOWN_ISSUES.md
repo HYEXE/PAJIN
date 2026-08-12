@@ -6,14 +6,20 @@
 ## 저장소 전체 Ruff format 기준선
 
 - 2026-08-11 전체 `ruff format --check src tests containers`는 기존 166개 파일을 재포맷 대상으로 보고했다.
-  UX-006A 대상 Python은 통과했다. unrelated 대규모 format diff는 별도 작업 전까지 만들지 않는다.
+  대상 Python은 통과했다. unrelated 대규모 format diff는 별도 작업 전까지 만들지 않는다.
+
+## UX-006B authenticated external delivery 경계
+
+- 보장: exact export·registered sink·authorization·one-use lease·stable key를 dispatch 전 journal에 결박한다.
+  unknown은 자동 재전송하지 않고 authenticated `not-received` 뒤 한 번만 재시도한다.
+- 제한: process-local registry·single-host journal·shared request/response secret이다. distributed exactly-once·
+  backup·failover와 egress·expired authorization 복구는 deployment 밖 책임이다.
+- 비권위: receipt는 endpoint acceptance만 증명하며 generic CLI/API·worker·vendor adapter가 없다.
 
 ## UX-006A local SARIF export 경계
 
-- 보장: exact sealed Run/root의 independently confirmed Finding만 bounded·minimized SARIF 2.1.0으로 private
-  local write한다. target·root cause·reproduction·evidence는 제외하고 source/Finding/result digest를 결박한다.
-- 제한: reviewed prose의 business sensitivity는 자동 판정하지 않으며 외부 sink·secret·idempotency·retry·
-  authenticated response·delivery receipt가 없다. 파일 생성은 Issue·SIEM·SOAR 전송 성공이 아니다.
+- 보장: exact sealed Run/root의 independently confirmed Finding만 minimized SARIF로 private local write한다.
+- 제한: reviewed prose를 자동 판정하지 않으며 local file은 delivery/receipt가 아니다. 외부 전달은 UX-006B를 쓴다.
 
 ## UX-005A queue 경계
 
@@ -748,28 +754,19 @@
 - 해소 조건: Linux CI 또는 조직 AppControl이 빌드 산출물 실행을 허용하는 서명된 환경에서 같은
   테스트를 실행한다. 테스트 assertion이나 애플리케이션 제어 정책을 우회하지 않는다.
 
-## Windows 애플리케이션 제어에 의한 mypy 네이티브 모듈 차단
+## 동기화된 macOS `.venv`와 Windows pytest 임시 경로
 
-- 상태: 현재 재현되지 않음, 재발 가능 환경 제약
-- 마지막 확인: 2026-08-06
-- 명령: `.\.venv\Scripts\python.exe -m mypy --platform linux --cache-dir <writable-cache> src\pajin`
-- 현재 결과: 256 source files 통과
-- 과거 증상: import 단계에서 Windows 애플리케이션 제어가 네이티브 `librt.base64` 모듈을
-  차단했다.
-- 재발 시 조치: Linux CI를 사용하거나 조직의 애플리케이션 제어 정책에서 서명된 네이티브
-  모듈을 허용한다. mypy 실행을 위해 정책을 비활성화하지 않는다.
+- 상태: 활성, 마지막 재현 2026-08-12
+- 증상: 동기화 `.venv`는 macOS arm64, 새 venv는 `OPENSSL_Applink`, 기본 pytest temp는 `WinError 5`다.
+- 대안: 저장소 밖 ASCII 환경에 `uv --system-certs sync --frozen`과 required extras를 적용하고 전용
+  `--basetemp`를 쓴다. exact lock 검증은 통과했고 metadata·lock은 바뀌지 않았다.
+- 해소 조건: Windows 기본 uv 환경과 pytest temp ACL 복구. Linux·symlink 검증은 별도다.
 
 ## Git OpenSSL CA 경로
 
-- 상태: 활성 로컬 전송 제약
-- 마지막 재현: 2026-08-01
-- 증상: 기본 Git OpenSSL backend가 GitHub 원격에 대해
-  `unable to get local issuer certificate`를 보고할 수 있다.
-- 검증된 대안: TLS 검증을 끄지 않고 Windows 인증서 검증을 사용한다.
-  - `git -c http.sslBackend=schannel push origin main`
-  - `git -c http.sslBackend=schannel ls-remote origin refs/heads/main`
-- 해소 조건: 로컬 Git CA bundle을 복구하거나 schannel override를 계속 사용한다.
-
+- 상태: 활성. 기본 Git이 `unable to get local issuer certificate`를 보고하면 TLS 검증을 끄지 말고
+  `git -c http.sslBackend=schannel <command>`를 사용한다. 로컬 CA 복구 전 push와 `ls-remote`에 동일하게
+  적용한다.
 ## Docker daemon 가용성
 
 - 상태: 현재 가용, 세션 의존 환경 제약

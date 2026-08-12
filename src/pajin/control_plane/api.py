@@ -60,6 +60,11 @@ from pajin.control_plane.graph_views import (
     VerifiedCanonicalGraphViewReader,
     VerifiedHypothesisAttentionRankingReader,
 )
+from pajin.control_plane.identity import (
+    OIDCHumanAuthenticator,
+    OIDCHumanTrustPolicy,
+    parse_oidc_human_trust_policy,
+)
 from pajin.control_plane.models import (
     ControlPlaneConflictCode,
     ControlPlaneConflictResponse,
@@ -69,6 +74,8 @@ from pajin.control_plane.models import (
 from pajin.control_plane.replay_comparison import VerifiedReplayEvidenceComparisonReader
 from pajin.control_plane.security import (
     AuthenticationError,
+    BearerAuthenticator,
+    ChainedAuthenticator,
     CheckpointIntegrityError,
     CheckpointSigner,
     TokenAuthenticator,
@@ -91,6 +98,7 @@ from pajin.target_attestation import (
     verify_target_attestation_registry_bundle,
 )
 
+_OIDC_HUMAN_TRUST_POLICY_ENV = "PAJIN_CP_OIDC_HUMAN_TRUST_POLICY"
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
 _REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"
 _REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
@@ -414,6 +422,28 @@ def _validate_credential_role_separation(
         )
 
 
+def _validate_oidc_role_separation(
+    credentials: Mapping[str, Principal],
+    policy: OIDCHumanTrustPolicy | None,
+) -> None:
+    if policy is None:
+        return
+    credential_subjects = {principal.subject for principal in credentials.values()}
+    oidc_subjects = {identity.principal_subject for identity in policy.identities}
+    if credential_subjects & oidc_subjects:
+        raise ValueError("OIDC and opaque bearer authorities must not share a principal subject")
+    roles_by_subject: dict[str, set[PrincipalRole]] = {}
+    for principal in credentials.values():
+        roles_by_subject.setdefault(principal.subject, set()).update(principal.roles)
+    for identity in policy.identities:
+        roles_by_subject.setdefault(identity.principal_subject, set()).update(identity.roles)
+    for roles in roles_by_subject.values():
+        _require_separated_control_plane_roles(
+            frozenset(roles),
+            authority="authentication authorities sharing one subject",
+        )
+
+
 def _parse_replay_executor_profiles(
     raw: str | None,
     *,
@@ -566,6 +596,7 @@ class ControlPlaneSettings:
     credentials: Mapping[str, Principal]
     checkpoint_keys: dict[str, bytes]
     active_checkpoint_key_id: str = "v1"
+    oidc_human_trust_policy: OIDCHumanTrustPolicy | None = None
     initialize_schema: bool = True
     database_echo: bool = False
     artifact_staging_root: Path | None = None
@@ -641,6 +672,7 @@ class ControlPlaneSettings:
                 label="Control Plane bearer credential",
             )
         _validate_credential_role_separation(credentials)
+        _validate_oidc_role_separation(credentials, self.oidc_human_trust_policy)
         normalized = _validated_replay_executor_profiles(
             self.replay_executor_profiles,
             credentials=credentials,
@@ -674,6 +706,7 @@ class ControlPlaneSettings:
         worker_token = os.environ.get("PAJIN_CP_WORKER_TOKEN")
         replay_worker_token = os.environ.get("PAJIN_CP_REPLAY_WORKER_TOKEN")
         replay_worker_subject_setting = os.environ.get("PAJIN_CP_REPLAY_WORKER_SUBJECT")
+        raw_oidc_human_trust_policy = os.environ.get(_OIDC_HUMAN_TRUST_POLICY_ENV)
         raw_replay_profiles = os.environ.get(_REPLAY_EXECUTOR_PROFILES_ENV)
         replay_attestation_key_id = os.environ.get(_REPLAY_ATTESTATION_KEY_ID_ENV)
         replay_attestation_private_key = os.environ.get(_REPLAY_ATTESTATION_PRIVATE_KEY_ENV)
@@ -702,23 +735,35 @@ class ControlPlaneSettings:
         validation_evidence_root = os.environ.get(
             "PAJIN_CP_VALIDATION_EVIDENCE_ROOT"
         )
+        oidc_human_trust_policy: OIDCHumanTrustPolicy | None = None
+        if raw_oidc_human_trust_policy is not None:
+            if not raw_oidc_human_trust_policy.strip():
+                raise RuntimeError(f"{_OIDC_HUMAN_TRUST_POLICY_ENV} must not be blank")
+            try:
+                oidc_human_trust_policy = parse_oidc_human_trust_policy(
+                    raw_oidc_human_trust_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_OIDC_HUMAN_TRUST_POLICY_ENV} is not a valid trust policy"
+                ) from exc
+        credential_requirements = (
+            ("PAJIN_CP_OPERATOR_TOKEN", operator_token, oidc_human_trust_policy is None),
+            ("PAJIN_CP_APPROVER_TOKEN", approver_token, oidc_human_trust_policy is None),
+            ("PAJIN_CP_WORKER_TOKEN", worker_token, True),
+            ("PAJIN_CP_CHECKPOINT_KEY", checkpoint_key, True),
+        )
         missing = [
-            name
-            for name, value in (
-                ("PAJIN_CP_OPERATOR_TOKEN", operator_token),
-                ("PAJIN_CP_APPROVER_TOKEN", approver_token),
-                ("PAJIN_CP_WORKER_TOKEN", worker_token),
-                ("PAJIN_CP_CHECKPOINT_KEY", checkpoint_key),
-            )
-            if value is None
+            name for name, value, required in credential_requirements if required and value is None
         ]
         if missing:
             raise RuntimeError(f"missing required Control Plane secrets: {', '.join(missing)}")
-        assert operator_token is not None
-        assert approver_token is not None
         assert worker_token is not None
         assert checkpoint_key is not None
-        if len({operator_token, approver_token, worker_token}) != 3:
+        role_tokens = [
+            token for token in (operator_token, approver_token, worker_token) if token is not None
+        ]
+        if len(role_tokens) != len(set(role_tokens)):
             raise RuntimeError("Control Plane role credentials must be distinct")
         if replay_worker_subject_setting is not None and replay_worker_token is None:
             raise RuntimeError(
@@ -849,34 +894,51 @@ class ControlPlaneSettings:
             "security-approver",
         )
         worker_subject = os.environ.get("PAJIN_CP_WORKER_SUBJECT", "worker-service")
-        credentials = {
-            operator_token: Principal(
-                subject=operator_subject,
-                roles=frozenset({PrincipalRole.OPERATOR, PrincipalRole.AUDITOR}),
-            ),
-            approver_token: Principal(
-                subject=approver_subject,
-                roles=frozenset({PrincipalRole.APPROVER, PrincipalRole.AUDITOR}),
-            ),
+        credentials: dict[str, Principal] = {
             worker_token: Principal(
                 subject=worker_subject,
                 roles=frozenset({PrincipalRole.WORKER}),
-            ),
+            )
         }
+        if operator_token is not None:
+            credentials[operator_token] = Principal(
+                subject=operator_subject,
+                roles=frozenset({PrincipalRole.OPERATOR, PrincipalRole.AUDITOR}),
+            )
+        if approver_token is not None:
+            credentials[approver_token] = Principal(
+                subject=approver_subject,
+                roles=frozenset({PrincipalRole.APPROVER, PrincipalRole.AUDITOR}),
+            )
+        authenticated_subjects = {principal.subject for principal in credentials.values()}
+        if oidc_human_trust_policy is not None:
+            authenticated_subjects.update(
+                identity.principal_subject for identity in oidc_human_trust_policy.identities
+            )
         replay_worker_subject: str | None = None
         if replay_worker_token is not None:
             replay_worker_subject = replay_worker_subject_setting or "replay-worker-service"
-            if replay_worker_subject in {
-                operator_subject,
-                approver_subject,
-                worker_subject,
-            }:
+            if replay_worker_subject in authenticated_subjects:
                 raise RuntimeError(
                     "Replay Worker subject must be distinct from every other role subject"
                 )
             credentials[replay_worker_token] = Principal(
                 subject=replay_worker_subject,
                 roles=frozenset({PrincipalRole.WORKER}),
+            )
+        effective_human_roles: set[PrincipalRole] = {
+            role
+            for principal in credentials.values()
+            for role in principal.roles
+            if role is not PrincipalRole.WORKER
+        }
+        if oidc_human_trust_policy is not None:
+            effective_human_roles.update(
+                role for identity in oidc_human_trust_policy.identities for role in identity.roles
+            )
+        if not {PrincipalRole.OPERATOR, PrincipalRole.APPROVER} <= effective_human_roles:
+            raise RuntimeError(
+                "Control Plane environment requires separated operator and approver authorities"
             )
         replay_executor_profiles = _parse_replay_executor_profiles(
             raw_replay_profiles,
@@ -894,6 +956,7 @@ class ControlPlaneSettings:
             credentials=credentials,
             checkpoint_keys={key_id: checkpoint_key.encode()},
             active_checkpoint_key_id=key_id,
+            oidc_human_trust_policy=oidc_human_trust_policy,
             initialize_schema=_parse_strict_environment_boolean(
                 "PAJIN_CP_INITIALIZE_SCHEMA",
                 default=True,
@@ -961,7 +1024,7 @@ class _ControlPlaneApplicationContext:
     replay_comparison_reader: VerifiedReplayEvidenceComparisonReader
     validation_comparison_reader: VerifiedWalkingControlComparisonReader
     service: ControlPlaneService
-    authenticator: TokenAuthenticator
+    authenticator: BearerAuthenticator
 
 
 def _build_artifact_repository(
@@ -979,6 +1042,13 @@ def _build_artifact_repository(
         staging_root=staging_root,
         repository_root=repository_root,
     )
+
+
+def _build_bearer_authenticator(settings: ControlPlaneSettings) -> BearerAuthenticator:
+    authenticators: list[BearerAuthenticator] = [TokenAuthenticator(dict(settings.credentials))]
+    if settings.oidc_human_trust_policy is not None:
+        authenticators.append(OIDCHumanAuthenticator(settings.oidc_human_trust_policy))
+    return ChainedAuthenticator(tuple(authenticators))
 
 
 def _build_application_context(
@@ -1041,7 +1111,7 @@ def _build_application_context(
             settings.validation_evidence_root
         ),
         service=service,
-        authenticator=TokenAuthenticator(dict(settings.credentials)),
+        authenticator=_build_bearer_authenticator(settings),
     )
 
 
@@ -1092,7 +1162,7 @@ def _configure_middleware(app: FastAPI, settings: ControlPlaneSettings) -> None:
 
 
 def _build_authentication_dependency(
-    authenticator: TokenAuthenticator,
+    authenticator: BearerAuthenticator,
 ) -> Callable[..., Principal]:
     bearer = HTTPBearer(auto_error=False)
 

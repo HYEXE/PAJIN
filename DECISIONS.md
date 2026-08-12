@@ -5,6 +5,8 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0166: Bind MFA OIDC Identity without Token Role Authority](docs/adr/0166-bind-mfa-oidc-identity-without-token-role-authority.md)
+- [ADR-0165: Authenticate and Journal External Delivery](docs/adr/0165-authenticate-and-journal-external-delivery.md)
 - [ADR-0164: Export Confirmed Findings before External Delivery](docs/adr/0164-export-confirmed-findings-before-external-delivery.md)
 - [ADR-0163: Project Human Attention without Action Authority](docs/adr/0163-project-human-attention-without-action-authority.md)
 - [ADR-0162: Reopen VAL-004C without Retest Authority](docs/adr/0162-reopen-val004c-without-retest-authority.md)
