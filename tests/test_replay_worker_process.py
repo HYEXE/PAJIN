@@ -41,6 +41,7 @@ _REPLAY_WORKER_SUBJECT = "process-replay-worker"
 _CHECKPOINT_KEY = b"replay-test-signing-key-at-least-32-bytes"
 _DIGEST_PROBE = """
 import json
+import os
 import sys
 
 from pajin.control_plane.models import (
@@ -56,6 +57,7 @@ components = {
     "tool_spec": context.tool_spec,
 }
 print(json.dumps({
+    "hash_seed": {"value": os.environ["PYTHONHASHSEED"]},
     "stored": {
         "campaign": context.campaign_digest,
         "scenario": context.scenario_digest,
@@ -67,12 +69,6 @@ print(json.dumps({
     },
     "typed": {
         name: replay_context_digest(component)
-        for name, component in components.items()
-    },
-    "json_dump": {
-        name: replay_context_digest(
-            component.model_dump(mode="json", by_alias=True)
-        )
         for name, component in components.items()
     },
 }, sort_keys=True))
@@ -193,7 +189,7 @@ def _probe_component_digests(
         capture_output=True,
         text=True,
         check=False,
-        timeout=5,
+        timeout=20,
     )
     assert completed.returncode == 0, completed.stdout + completed.stderr
     result = json.loads(completed.stdout)
@@ -207,7 +203,7 @@ def _wait_for_replay_success(
     job_id: str,
     worker: subprocess.Popen[str],
 ) -> dict[str, object]:
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 60
     last_job: dict[str, object] = {}
     while time.monotonic() < deadline:
         if worker.poll() is not None:
@@ -292,13 +288,8 @@ def test_replay_worker_entrypoint_process_executes_one_exact_replay(tmp_path: Pa
     assert worker_seed_digests["stored"] == worker_seed_digests["canonical"]
     assert worker_seed_digests["stored"] == worker_seed_digests["typed"]
     assert server_seed_digests["stored"] == worker_seed_digests["stored"]
-    assert (
-        server_seed_digests["json_dump"]["campaign"] != worker_seed_digests["json_dump"]["campaign"]
-    )
-    assert (
-        server_seed_digests["json_dump"]["tool_spec"]
-        != worker_seed_digests["json_dump"]["tool_spec"]
-    )
+    assert server_seed_digests["hash_seed"]["value"] == "1"
+    assert worker_seed_digests["hash_seed"]["value"] == "2"
 
     app = create_app(settings)
     server, server_thread, base_url, server_errors = _start_server(app)
@@ -350,7 +341,7 @@ def test_replay_worker_entrypoint_process_executes_one_exact_replay(tmp_path: Pa
             check=False,
             capture_output=True,
             text=True,
-            timeout=5,
+            timeout=20,
         )
         assert health.returncode == 0, health.stdout + health.stderr
 

@@ -569,7 +569,7 @@ def test_retained_backup_rejects_untrusted_or_wrong_keys_without_destination(
     assert not wrong_key_destination.exists()
 
     existing_destination = tmp_path / "existing" / "canonical-graph.sqlite3"
-    existing_destination.parent.mkdir()
+    existing_destination.parent.mkdir(mode=0o700)
     existing_destination.write_bytes(b"do-not-replace")
     with pytest.raises(SQLiteGraphStoreError, match="already exists"):
         SQLiteGraphStore.restore_retained_backup(

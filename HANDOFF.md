@@ -225,6 +225,12 @@ Recon·Replay Worker와 daemon은 기존 atomic mTLS 기본값 `True`를 유지�
     `pythonpath = ["src", "."]`로 저장소 root만 명시했다.
   - 격리된 locked `uv run pytest --collect-only`: `4182 tests collected`, 오류 0건
   - 기존 수집 실패 12개 모듈의 격리 locked `uv run pytest`: `154 passed`
+  - 후속 run `32216486683`은 수집을 통과해 82%까지 실행한 뒤 30분 job 제한에 도달했다. 그 전에
+    Linux-only fixture 권한 순서와 Replay process E2E의 cold-start 제한 두 건이 실패했다.
+  - Graph의 기존 destination fixture는 owner-only 부모를 명시하고, Replay E2E는 서로 다른 hash seed를
+    직접 확인하면서 digest 동일성을 검증한다. cold process 상한은 20초, terminal Job 대기는 60초다.
+  - 로컬 Python 3.12 Linux 재현: 해당 Graph·Replay process 회귀 `2 passed`; 임시 Docker volume 제거 완료
+  - 전체 4,182-test 실행 시간을 수용하도록 Linux job 제한을 60분으로 조정했다. 원격 전체 CI 재검증 필요
 - 수정·신규 Python 테스트 전체 묶음: `419 passed, 2 skipped, 1 deselected`
   - skip: Node.js runtime 부재 1건, POSIX-only durable managed import 1건
   - deselect: Windows endpoint security가 간헐적으로 가로채는 실제 loopback mTLS handshake 1건
