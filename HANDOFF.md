@@ -6,16 +6,17 @@
 - 작업 체크아웃:
   `C:\\Users\\hyeon\\.codex\\visualizations\\2026\\08\\17\\01a00f73-cf28-7912-a9d0-cf9cc1ad7a95\\pajin-pentest-20260817`
 - 브랜치: `main`
-- 기준 HEAD 및 `origin/main`: `51abde576e8b5386f0c86f1fabdfe8752d86d278`
+- 통합 기능 commit: `30124f2e99afb53fcb500219bb8e248746cd4b8d`
+- branch/upstream: `main == origin/main`으로 최종 검증
 - 완료 단계: `PENTEST-004C2B1` signed durable Worker coordination and verified 004C1 handoff
 - 다음 단계: `PENTEST-004C2B2` concrete 004B/004C2A stage deployment adapters
-- working-tree 통합 감사: 완료, commit·push 전 최종 검증 통과
+- working-tree 통합 감사와 원격 반영: 완료
 - Pull Request·merge·배포: 수행하지 않음
 
 이 checkout은 검증된 recovery checkout의 비파괴 복제본이다. 원본
 `C:\\Workspace\\HYEXEN\\PAJIN`은 변경하지 않았다. 이 worktree의
-`UX-007B~R1`, `PENTEST-000~004C2B1` 통합 변경은 사용자가 전체 감사 뒤 commit·push하도록
-승인했다. `UX-007R2`는 실제 production pilot inventory가 준비될 때까지 보류한다.
+`UX-007B~R1`, `PENTEST-000~004C2B1` 통합 변경은 전체 감사 뒤 `30124f2`로 commit·push했다.
+`UX-007R2`는 실제 production pilot inventory가 준비될 때까지 보류한다.
 
 ## PENTEST-004A/B/004C2A/B1 완료 상태
 
@@ -275,6 +276,12 @@ Recon·Replay Worker와 daemon은 기존 atomic mTLS 기본값 `True`를 유지�
 - 저장소 전체 Ruff format에는 기존 기준선 차이가 있다.
 
 ## Git 재개 확인
+
+- `origin`의 기존 `https://github.com/HYEXEN/PAJIN.git` URL은 push 과정에서
+  `https://github.com/HYEXE/PAJIN.git`으로 이동했다는 GitHub 안내를 반환했지만 redirect를 통해 push는
+  성공했다. remote URL 자체는 이번 작업에서 변경하지 않았다.
+- GitHub는 push 응답에서 default branch의 high 등급 Dependabot 경고 1건을 알렸다. 경고 상세와 이번
+  dependency diff의 관련성은 이 체크포인트에서 확인하지 않았으므로 해결 또는 무관하다고 주장하지 않는다.
 
 ```powershell
 git status --short --branch
