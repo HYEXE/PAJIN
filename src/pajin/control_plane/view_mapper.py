@@ -8,8 +8,8 @@ from pydantic import ValidationError
 
 from pajin.control_plane.artifact_transfer import (
     PortableArtifactMultipartTransportReceipt,
-    PortableArtifactTransportReceipt,
     PortableArtifactTransportReceiptType,
+    parse_portable_artifact_transport_receipt,
 )
 from pajin.control_plane.database import (
     ApprovalRecord,
@@ -65,17 +65,6 @@ from pajin.target_attestation import (
     TargetExecutionVerificationSummary,
     derive_target_execution_challenge,
 )
-
-
-def _portable_transport(value: object) -> PortableArtifactTransportReceiptType:
-    if not isinstance(value, dict):
-        raise ValueError("portable Replay transport is not an object")
-    api_version = value.get("apiVersion")
-    if api_version == "pajin.control-plane.portable-artifact-transport-receipt/v1":
-        return PortableArtifactTransportReceipt.model_validate(value)
-    if api_version == "pajin.control-plane.portable-artifact-multipart-transport-receipt/v1":
-        return PortableArtifactMultipartTransportReceipt.model_validate(value)
-    raise ValueError("portable Replay transport version is unsupported")
 
 
 def _aware(value: datetime) -> datetime:
@@ -349,7 +338,9 @@ class ControlPlaneViewMapper:
             raise StateConflict("durable portable Replay finalization is incomplete")
         else:
             try:
-                artifact_transport = _portable_transport(portable_fields[0])
+                artifact_transport = parse_portable_artifact_transport_receipt(
+                    portable_fields[0]
+                )
                 executor_attestation = ExecutorExecutionAttestation.model_validate(
                     portable_fields[2]
                 )

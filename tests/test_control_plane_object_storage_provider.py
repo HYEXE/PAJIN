@@ -480,7 +480,7 @@ def test_provider_completion_metadata_cannot_become_artifact_authority(tmp_path:
 @pytest.mark.skipif(os.name != "posix", reason="durable managed import is POSIX-only")
 def test_verified_remote_tree_enters_only_through_existing_managed_import(tmp_path: Path) -> None:
     source = RunStore.create(tmp_path / "source", "remote-replay-run")
-    source.write_text("result.json", '{"status":"verified"}\n')
+    source.write_text("evidence/result.json", '{"status":"verified"}\n')
     source.append_event("remote-replay.completed")
     source.seal()
     manifest, contents = build_portable_artifact_multipart_upload(source.path)
@@ -512,7 +512,7 @@ def test_verified_remote_tree_enters_only_through_existing_managed_import(tmp_pa
 
     snapshot = repository.import_run(
         staging_id=binding.output_staging_id,
-        producer_run_id="replay-job-run",
+        producer_run_id="run_" + ("8" * 32),
         media_type="application/vnd.pajin.run.v1+json",
         schema_kind="pajin.replay.output.v1",
         created_by="control-plane",

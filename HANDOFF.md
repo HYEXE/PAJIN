@@ -230,7 +230,16 @@ Recon·Replay Worker와 daemon은 기존 atomic mTLS 기본값 `True`를 유지�
   - Graph의 기존 destination fixture는 owner-only 부모를 명시하고, Replay E2E는 서로 다른 hash seed를
     직접 확인하면서 digest 동일성을 검증한다. cold process 상한은 20초, terminal Job 대기는 60초다.
   - 로컬 Python 3.12 Linux 재현: 해당 Graph·Replay process 회귀 `2 passed`; 임시 Docker volume 제거 완료
-  - 전체 4,182-test 실행 시간을 수용하도록 Linux job 제한을 60분으로 조정했다. 원격 전체 CI 재검증 필요
+  - 전체 4,182-test 실행 시간을 수용하도록 Linux job 제한을 60분으로 조정했다. run `32219493683`
+    (`472d976`)은 timeout 없이 끝까지 실행되어 `4112 passed, 67 skipped`를 기록했고 Linux-only 3건만
+    남겼다.
+  - Object Storage 회귀 fixture는 canonical tree가 될 수 없는 빈 `evidence/`와 유효하지 않은 producer Run ID를
+    사용했다. evidence file과 `run_<32 hex>` producer를 사용하도록 고쳤다.
+  - portable Replay finalization은 transport model의 실제 durable `model_dump(mode="json", by_alias=True)`가
+    `api_version`을 저장하지만 두 reader가 `apiVersion`을 찾던 불일치를 공통 strict parser로 제거했다.
+  - 로컬 Python 3.12 Linux 재현: CI 실패 3건 `3 passed`; 관련 portable execution·Object Storage·Replay 파일
+    전체 `139 passed`; 진단용 임시 Docker volume은 제거를 확인했다.
+  - 원격 전체 CI 재검증 필요
 - 수정·신규 Python 테스트 전체 묶음: `419 passed, 2 skipped, 1 deselected`
   - skip: Node.js runtime 부재 1건, POSIX-only durable managed import 1건
   - deselect: Windows endpoint security가 간헐적으로 가로채는 실제 loopback mTLS handshake 1건

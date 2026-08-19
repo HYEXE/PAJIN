@@ -32,6 +32,7 @@ from pajin.control_plane.artifact_transfer import (
     PortableArtifactMultipartUploadView,
     PortableArtifactTransportReceipt,
     PortableArtifactTransportReceiptType,
+    parse_portable_artifact_transport_receipt,
 )
 from pajin.control_plane.artifacts import (
     ArtifactNotFound,
@@ -4575,22 +4576,7 @@ class ControlPlaneService:
         if any(value is None for value in fields):
             raise StateConflict("portable Replay finalization Job result is incomplete")
         try:
-            raw_transport = fields[0]
-            if not isinstance(raw_transport, dict):
-                raise ValueError("portable Replay transport is not an object")
-            if (
-                raw_transport.get("apiVersion")
-                == "pajin.control-plane.portable-artifact-transport-receipt/v1"
-            ):
-                transport: PortableArtifactTransportReceiptType = (
-                    PortableArtifactTransportReceipt.model_validate(raw_transport)
-                )
-            elif raw_transport.get("apiVersion") == (
-                "pajin.control-plane.portable-artifact-multipart-transport-receipt/v1"
-            ):
-                transport = PortableArtifactMultipartTransportReceipt.model_validate(raw_transport)
-            else:
-                raise ValueError("portable Replay transport version is unsupported")
+            transport = parse_portable_artifact_transport_receipt(fields[0])
             attestation = ExecutorExecutionAttestation.model_validate(fields[2])
         except ValueError as exc:
             raise StateConflict("portable Replay finalization Job result is invalid") from exc

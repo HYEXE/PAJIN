@@ -288,6 +288,21 @@ PortableArtifactTransportReceiptType = (
 )
 
 
+def parse_portable_artifact_transport_receipt(
+    value: object,
+) -> PortableArtifactTransportReceiptType:
+    """Validate one receipt serialized with the artifact transport model contract."""
+
+    if not isinstance(value, dict):
+        raise ValueError("portable Replay transport is not an object")
+    api_version = value.get("api_version")
+    if api_version == "pajin.control-plane.portable-artifact-transport-receipt/v1":
+        return PortableArtifactTransportReceipt.model_validate(value)
+    if api_version == "pajin.control-plane.portable-artifact-multipart-transport-receipt/v1":
+        return PortableArtifactMultipartTransportReceipt.model_validate(value)
+    raise ValueError("portable Replay transport version is unsupported")
+
+
 def portable_artifact_manifest_sha256(
     files: Sequence[PortableArtifactManifestFile],
 ) -> str:
