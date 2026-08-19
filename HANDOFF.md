@@ -218,6 +218,13 @@ Recon·Replay Worker와 daemon은 기존 atomic mTLS 기본값 `True`를 유지�
 
 ## 현재 검증 근거
 
+- Linux CI 수집 복구:
+  - 최신 run `32214486821`과 기준 commit run `31615548549`는 모두 `from tests...` import 12건을
+    `ModuleNotFoundError`로 중단했다. 설치·Ruff·mypy는 통과했다.
+  - 테스트에는 `tests.test_x`와 `test_x` import가 함께 있으므로 package marker 대신 pytest
+    `pythonpath = ["src", "."]`로 저장소 root만 명시했다.
+  - 격리된 locked `uv run pytest --collect-only`: `4182 tests collected`, 오류 0건
+  - 기존 수집 실패 12개 모듈의 격리 locked `uv run pytest`: `154 passed`
 - 수정·신규 Python 테스트 전체 묶음: `419 passed, 2 skipped, 1 deselected`
   - skip: Node.js runtime 부재 1건, POSIX-only durable managed import 1건
   - deselect: Windows endpoint security가 간헐적으로 가로채는 실제 loopback mTLS handshake 1건
