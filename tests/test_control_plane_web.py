@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import re
 import shutil
 import subprocess
+from collections.abc import Mapping
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +25,14 @@ from pajin.control_plane.models import (
     Principal,
     PrincipalRole,
     RunState,
+)
+from pajin.control_plane.pentest_recon import (
+    PentestReconOperatorDispatchRequest,
+    PentestReconOperatorDispatchView,
+)
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationRequest,
+    PentestWorkflowCoordinationView,
 )
 
 OPERATOR_TOKEN = "web-operator-token-that-is-long-and-distinct"
@@ -106,6 +116,191 @@ def test_run_list_requires_read_role_and_returns_empty_defaults(tmp_path: Path) 
         assert session.status_code == 200
         assert session.json()["subject"] == "web-operator"
         assert set(session.json()["roles"]) == {"operator", "auditor"}
+
+
+def test_pentest_recon_worker_route_is_fail_closed_without_pinned_runtime(
+    tmp_path: Path,
+) -> None:
+    app = create_app(_settings(tmp_path / "pentest-recon-disabled.db"))
+    payload = {
+        "apiVersion": "pajin.dev/pentest-recon-operator-dispatch-request/v1alpha1",
+        "kind": "PentestReconOperatorDispatchRequest",
+        "deploymentId": "deployment:pentest-recon-001",
+        "compilationAuthorityDigest": "a" * 64,
+        "intentDigest": "b" * 64,
+        "approvalId": "approval:pentest-recon-001",
+    }
+    with TestClient(app) as client:
+        missing = client.post("/v1/worker/pentest/recon/dispatch", json=payload)
+        human = client.post(
+            "/v1/worker/pentest/recon/dispatch",
+            headers=_auth(OPERATOR_TOKEN),
+            json=payload,
+        )
+        worker = client.post(
+            "/v1/worker/pentest/recon/dispatch",
+            headers=_auth(WORKER_TOKEN),
+            json=payload,
+        )
+
+    assert missing.status_code == 401
+    assert human.status_code == 403
+    assert worker.status_code == 503
+    assert worker.json() == {"detail": "Pentest Recon execution is not configured"}
+
+
+def test_pentest_recon_worker_route_passes_authenticated_session_to_runtime(
+    tmp_path: Path,
+) -> None:
+    observed: list[tuple[PentestReconOperatorDispatchRequest, Mapping[str, Any], Principal]] = []
+
+    class _Runtime:
+        async def dispatch_once(
+            self,
+            request: PentestReconOperatorDispatchRequest,
+            *,
+            worker_scope: Mapping[str, Any],
+            worker_principal: Principal,
+        ) -> PentestReconOperatorDispatchView:
+            observed.append((request, worker_scope, worker_principal))
+            return PentestReconOperatorDispatchView(
+                deploymentId=request.deployment_id,
+                compilationAuthorityDigest=request.compilation_authority_digest,
+                intentDigest=request.intent_digest,
+                approvalId=request.approval_id,
+                approvalReceiptId="receipt:pentest-recon-001",
+                approvalReceiptDigest="c" * 64,
+                permitId="permit:pentest-recon-001",
+                permitDigest="d" * 64,
+                runId="run:pentest-recon-001",
+                dispatched=True,
+                outcomeId="outcome:pentest-recon-001",
+                outcomeDigest="e" * 64,
+                outcomePath="outcomes/outcome:pentest-recon-001.json",
+                evidencePath="evidence/pentest-recon-001.json",
+                sealedRunRootDigest="f" * 64,
+            )
+
+    payload = {
+        "apiVersion": "pajin.dev/pentest-recon-operator-dispatch-request/v1alpha1",
+        "kind": "PentestReconOperatorDispatchRequest",
+        "deploymentId": "deployment:pentest-recon-001",
+        "compilationAuthorityDigest": "a" * 64,
+        "intentDigest": "b" * 64,
+        "approvalId": "approval:pentest-recon-001",
+    }
+    app = create_app(
+        _settings(tmp_path / "pentest-recon-enabled.db"),
+        pentest_recon_runtime=_Runtime(),
+    )
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/worker/pentest/recon/dispatch",
+            headers=_auth(WORKER_TOKEN),
+            json=payload,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["executionAuthority"] is False
+    assert len(observed) == 1
+    request, scope, principal = observed[0]
+    assert request.intent_digest == "b" * 64
+    assert isinstance(scope, dict)
+    assert scope["path"] == "/v1/worker/pentest/recon/dispatch"
+    assert principal.subject == "web-worker"
+    assert principal.roles == frozenset({PrincipalRole.WORKER})
+
+
+def test_pentest_workflow_coordination_keeps_recon_and_replay_worker_routes_separate(
+    tmp_path: Path,
+) -> None:
+    observed: list[tuple[PentestWorkflowCoordinationRequest, Mapping[str, Any], Principal]] = []
+
+    class _Runtime:
+        async def dispatch_recon_stage(
+            self,
+            request: PentestWorkflowCoordinationRequest,
+            *,
+            worker_scope: Mapping[str, Any],
+            worker_principal: Principal,
+        ) -> PentestWorkflowCoordinationView:
+            observed.append((request, worker_scope, worker_principal))
+            return PentestWorkflowCoordinationView(
+                deploymentId=request.deployment_id,
+                deploymentDigest=request.deployment_digest,
+                coordinationRunId=request.activation.statement.coordination_run_id,
+                completedStages=("source",),
+                nextStage="replay",
+                workflowPreparationEligible=False,
+                sealedCoordinationRootDigest="f" * 64,
+            )
+
+        async def dispatch_replay_stage(
+            self,
+            request: PentestWorkflowCoordinationRequest,
+            *,
+            worker_scope: Mapping[str, Any],
+            worker_principal: Principal,
+        ) -> PentestWorkflowCoordinationView:
+            raise AssertionError("generic Worker must not reach Replay coordination runtime")
+
+    signature = base64.urlsafe_b64encode(b"\0" * 64).rstrip(b"=").decode("ascii")
+    payload = {
+        "apiVersion": "pajin.dev/pentest-workflow-coordination-request/v1alpha1",
+        "kind": "PentestWorkflowCoordinationRequest",
+        "deploymentId": "pentest-coordination-test",
+        "deploymentDigest": "a" * 64,
+        "stage": "source",
+        "activation": {
+            "apiVersion": "pajin.dev/pentest-workflow-stage-activation-bundle/v1alpha1",
+            "kind": "PentestWorkflowStageActivationBundle",
+            "keyId": "pentest-stage-key-1",
+            "statement": {
+                "apiVersion": ("pajin.dev/pentest-workflow-stage-activation-statement/v1alpha1"),
+                "kind": "PentestWorkflowStageActivationStatement",
+                "issuerId": "pajin.pentest-stage-authority",
+                "issuerVersion": "1.0.0",
+                "issuerDigest": "d" * 64,
+                "coordinationDeploymentId": "pentest-coordination-test",
+                "coordinationDeploymentDigest": "a" * 64,
+                "coordinationRunId": "run_20260819T120000Z_1234abcd",
+                "stage": "source",
+                "ordinal": 1,
+                "childDeploymentId": "pentest-child-deployment-1",
+                "childDeploymentDigest": "b" * 64,
+                "workerSubject": "web-worker",
+                "issuedAt": "2026-08-19T11:59:00Z",
+                "expiresAt": "2026-08-19T12:30:00Z",
+            },
+            "signatureBase64url": signature,
+        },
+    }
+    app = create_app(
+        _settings(tmp_path / "pentest-coordination-enabled.db"),
+        pentest_workflow_coordination_runtime=_Runtime(),
+    )
+
+    with TestClient(app) as client:
+        recon = client.post(
+            "/v1/worker/pentest/workflows/stages/recon/dispatch",
+            headers=_auth(WORKER_TOKEN),
+            json=payload,
+        )
+        replay = client.post(
+            "/v1/worker/pentest/workflows/stages/replay/dispatch",
+            headers=_auth(WORKER_TOKEN),
+            json=payload,
+        )
+
+    assert recon.status_code == 200, recon.text
+    assert recon.json()["completedStages"] == ["source"]
+    assert replay.status_code == 403
+    assert len(observed) == 1
+    request, scope, principal = observed[0]
+    assert request.stage == "source"
+    assert scope["path"] == "/v1/worker/pentest/workflows/stages/recon/dispatch"
+    assert principal.subject == "web-worker"
 
 
 def test_run_list_is_safely_paginated_filtered_and_stably_sorted(tmp_path: Path) -> None:
@@ -384,6 +579,8 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "validateReplayEvidenceComparison",
         "validateWalkingControlComparison",
         "validateHumanReviewQueue",
+        "isApprovalElapsed",
+        "authorized maintenance or action",
         "runSubmissionBody",
         "eventPagePath",
         'params.set("before"',

@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Annotated, Any
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Response, status
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi import Path as FastAPIPath
 from sqlalchemy import text
 
@@ -102,6 +102,26 @@ from pajin.control_plane.models import (
     RunView,
     SubmissionView,
     SubmitRunRequest,
+)
+from pajin.control_plane.pentest_recon import (
+    PentestReconDispatchRuntime,
+    PentestReconOperatorDispatchRequest,
+    PentestReconOperatorDispatchView,
+)
+from pajin.control_plane.pentest_replay import (
+    PentestReplayDispatchRuntime,
+    PentestReplayOperatorDispatchRequest,
+    PentestReplayOperatorDispatchView,
+)
+from pajin.control_plane.pentest_workflow import (
+    PentestOperatorWorkflowRequest,
+    PentestOperatorWorkflowRuntime,
+    PentestOperatorWorkflowView,
+)
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationDispatchRuntime,
+    PentestWorkflowCoordinationRequest,
+    PentestWorkflowCoordinationView,
 )
 from pajin.control_plane.replay_comparison import (
     ReplayComparisonIntegrityError,
@@ -635,6 +655,174 @@ def register_generic_worker_claim_route(
             await asyncio.sleep(min(0.25, remaining))
 
 
+def register_pentest_recon_worker_route(
+    app: FastAPI,
+    *,
+    runtime: PentestReconDispatchRuntime | None,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Dispatch one pinned Recon only from an authenticated direct-mTLS Worker call."""
+
+    @app.post(
+        "/v1/worker/pentest/recon/dispatch",
+        response_model=PentestReconOperatorDispatchView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    async def dispatch_pentest_recon(
+        dispatch_request: PentestReconOperatorDispatchRequest,
+        http_request: Request,
+        principal: Annotated[Principal, Depends(dependencies.require_generic_worker)],
+    ) -> PentestReconOperatorDispatchView:
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pentest Recon execution is not configured",
+            )
+        try:
+            return await runtime.dispatch_once(
+                dispatch_request,
+                worker_scope=http_request.scope,
+                worker_principal=principal,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pentest Recon dispatch failed closed",
+            ) from exc
+
+
+def register_pentest_replay_worker_route(
+    app: FastAPI,
+    *,
+    runtime: PentestReplayDispatchRuntime | None,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Dispatch one pinned Replay only from its dedicated Replay Worker session."""
+
+    @app.post(
+        "/v1/worker/pentest/replay/dispatch",
+        response_model=PentestReplayOperatorDispatchView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    async def dispatch_pentest_replay(
+        dispatch_request: PentestReplayOperatorDispatchRequest,
+        http_request: Request,
+        principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
+    ) -> PentestReplayOperatorDispatchView:
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pentest Replay execution is not configured",
+            )
+        try:
+            return await runtime.dispatch_once(
+                dispatch_request,
+                worker_scope=http_request.scope,
+                worker_principal=principal,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pentest Replay dispatch failed closed",
+            ) from exc
+
+
+def register_pentest_workflow_coordination_routes(
+    app: FastAPI,
+    *,
+    runtime: PentestWorkflowCoordinationDispatchRuntime | None,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Keep generic and Replay coordination calls in separate mTLS domains."""
+
+    @app.post(
+        "/v1/worker/pentest/workflows/stages/recon/dispatch",
+        response_model=PentestWorkflowCoordinationView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    async def dispatch_pentest_workflow_recon_stage(
+        dispatch_request: PentestWorkflowCoordinationRequest,
+        http_request: Request,
+        principal: Annotated[Principal, Depends(dependencies.require_generic_worker)],
+    ) -> PentestWorkflowCoordinationView:
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pentest workflow coordination is not configured",
+            )
+        try:
+            return await runtime.dispatch_recon_stage(
+                dispatch_request,
+                worker_scope=http_request.scope,
+                worker_principal=principal,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pentest workflow Recon stage failed closed",
+            ) from exc
+
+    @app.post(
+        "/v1/worker/pentest/workflows/stages/replay/dispatch",
+        response_model=PentestWorkflowCoordinationView,
+        responses=_WORKER_CONFLICT_RESPONSES,
+    )
+    async def dispatch_pentest_workflow_replay_stage(
+        dispatch_request: PentestWorkflowCoordinationRequest,
+        http_request: Request,
+        principal: Annotated[Principal, Depends(dependencies.require_replay_worker)],
+    ) -> PentestWorkflowCoordinationView:
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pentest workflow coordination is not configured",
+            )
+        try:
+            return await runtime.dispatch_replay_stage(
+                dispatch_request,
+                worker_scope=http_request.scope,
+                worker_principal=principal,
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pentest workflow Replay stage failed closed",
+            ) from exc
+
+
+def register_pentest_operator_workflow_route(
+    app: FastAPI,
+    *,
+    runtime: PentestOperatorWorkflowRuntime | None,
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Prepare or finalize one deployment-pinned, body-free operator workflow."""
+
+    @app.post(
+        "/v1/pentest/workflows/run",
+        response_model=PentestOperatorWorkflowView,
+    )
+    def run_pentest_operator_workflow(
+        workflow_request: PentestOperatorWorkflowRequest,
+        principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> PentestOperatorWorkflowView:
+        if runtime is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Pentest operator workflow is not configured",
+            )
+        try:
+            return runtime.run(workflow_request, principal=principal)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Pentest operator workflow failed closed",
+            ) from exc
+
+
 def register_public_replay_routes(
     app: FastAPI,
     *,
@@ -945,6 +1133,10 @@ def register_control_plane_routes(
     decision_audit_reader: VerifiedGraphDecisionAuditViewReader,
     replay_comparison_reader: VerifiedReplayEvidenceComparisonReader,
     validation_comparison_reader: VerifiedWalkingControlComparisonReader,
+    pentest_recon_runtime: PentestReconDispatchRuntime | None,
+    pentest_replay_runtime: PentestReplayDispatchRuntime | None,
+    pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None,
+    pentest_workflow_coordination_runtime: (PentestWorkflowCoordinationDispatchRuntime | None),
     dependencies: ControlPlaneDependencies,
 ) -> None:
     """Register all route groups in the established public route order."""
@@ -992,6 +1184,11 @@ def register_control_plane_routes(
         service=service,
         dependencies=dependencies,
     )
+    register_pentest_operator_workflow_route(
+        app,
+        runtime=pentest_workflow_runtime,
+        dependencies=dependencies,
+    )
     # Preserve the established route/OpenAPI order while keeping the two Worker
     # security domains in separately registered groups.
     register_generic_worker_claim_route(
@@ -999,9 +1196,24 @@ def register_control_plane_routes(
         service=service,
         dependencies=dependencies,
     )
+    register_pentest_recon_worker_route(
+        app,
+        runtime=pentest_recon_runtime,
+        dependencies=dependencies,
+    )
+    register_pentest_workflow_coordination_routes(
+        app,
+        runtime=pentest_workflow_coordination_runtime,
+        dependencies=dependencies,
+    )
     register_replay_worker_routes(
         app,
         service=service,
+        dependencies=dependencies,
+    )
+    register_pentest_replay_worker_route(
+        app,
+        runtime=pentest_replay_runtime,
         dependencies=dependencies,
     )
     register_generic_worker_job_routes(

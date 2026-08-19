@@ -24,6 +24,29 @@ from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from pajin.control_plane.abac import (
+    ControlPlaneABACAuthorizer,
+    ControlPlaneABACPolicy,
+    ControlPlaneCheckpointResumeABACPolicy,
+    ControlPlaneCheckpointResumeAuthorizer,
+    ControlPlaneMaintenanceABACPolicy,
+    ControlPlaneMaintenanceAuthorizer,
+    ControlPlaneReplayBatchAdmissionABACPolicy,
+    ControlPlaneReplayBatchAdmissionAuthorizer,
+    ControlPlaneReplaySourceArtifactABACPolicy,
+    ControlPlaneReplaySourceArtifactAuthorizer,
+    ControlPlaneRunCancellationABACPolicy,
+    ControlPlaneRunCancellationAuthorizer,
+    ControlPlaneRunSubmissionABACPolicy,
+    ControlPlaneRunSubmissionAuthorizer,
+    parse_checkpoint_resume_abac_policy,
+    parse_control_plane_abac_policy,
+    parse_maintenance_abac_policy,
+    parse_replay_batch_admission_abac_policy,
+    parse_replay_source_artifact_abac_policy,
+    parse_run_cancellation_abac_policy,
+    parse_run_submission_abac_policy,
+)
 from pajin.control_plane.api_routes import (
     ControlPlaneDependencies,
     PrincipalDependency,
@@ -45,6 +68,7 @@ from pajin.control_plane.database import ControlPlaneRepository
 from pajin.control_plane.decision_views import VerifiedGraphDecisionAuditViewReader
 from pajin.control_plane.discovery_views import VerifiedDiscoveryViewReader
 from pajin.control_plane.errors import (
+    AuthorizationDenied,
     ControlPlaneError,
     LeaseRejected,
     ReplayExecutorRejected,
@@ -71,6 +95,21 @@ from pajin.control_plane.models import (
     Principal,
     PrincipalRole,
 )
+from pajin.control_plane.pentest_recon import PentestReconDispatchRuntime
+from pajin.control_plane.pentest_recon_deployment import (
+    load_pentest_recon_operator_deployment,
+)
+from pajin.control_plane.pentest_replay import PentestReplayDispatchRuntime
+from pajin.control_plane.pentest_replay_deployment import (
+    load_pentest_replay_operator_deployment,
+)
+from pajin.control_plane.pentest_workflow import PentestOperatorWorkflowRuntime
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationDispatchRuntime,
+)
+from pajin.control_plane.pentest_workflow_deployment import (
+    load_pentest_operator_workflow_deployment,
+)
 from pajin.control_plane.replay_comparison import VerifiedReplayEvidenceComparisonReader
 from pajin.control_plane.security import (
     AuthenticationError,
@@ -85,6 +124,11 @@ from pajin.control_plane.service import ControlPlaneService
 from pajin.control_plane.validation_comparison import (
     VerifiedWalkingControlComparisonReader,
 )
+from pajin.control_plane.worker_identity import (
+    WorkerMTLSAuthenticator,
+    WorkerMTLSTrustPolicy,
+    parse_worker_mtls_trust_policy,
+)
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.target_attestation import (
     TargetAttestationRegistryBundle,
@@ -98,7 +142,22 @@ from pajin.target_attestation import (
     verify_target_attestation_registry_bundle,
 )
 
+_ABAC_POLICY_ENV = "PAJIN_CP_ABAC_POLICY"
+_RUN_SUBMISSION_ABAC_POLICY_ENV = "PAJIN_CP_RUN_SUBMISSION_ABAC_POLICY"
+_RUN_CANCELLATION_ABAC_POLICY_ENV = "PAJIN_CP_RUN_CANCELLATION_ABAC_POLICY"
+_CHECKPOINT_RESUME_ABAC_POLICY_ENV = "PAJIN_CP_CHECKPOINT_RESUME_ABAC_POLICY"
+_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY_ENV = "PAJIN_CP_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY"
+_REPLAY_BATCH_ADMISSION_ABAC_POLICY_ENV = "PAJIN_CP_REPLAY_BATCH_ADMISSION_ABAC_POLICY"
+_MAINTENANCE_ABAC_POLICY_ENV = "PAJIN_CP_MAINTENANCE_ABAC_POLICY"
+
 _OIDC_HUMAN_TRUST_POLICY_ENV = "PAJIN_CP_OIDC_HUMAN_TRUST_POLICY"
+_WORKER_MTLS_TRUST_POLICY_ENV = "PAJIN_CP_WORKER_MTLS_TRUST_POLICY"
+_PENTEST_RECON_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_RECON_DEPLOYMENT_PATH"
+_PENTEST_RECON_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_RECON_DEPLOYMENT_SHA256"
+_PENTEST_REPLAY_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_PATH"
+_PENTEST_REPLAY_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_SHA256"
+_PENTEST_WORKFLOW_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_PATH"
+_PENTEST_WORKFLOW_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_SHA256"
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
 _REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"
 _REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
@@ -106,12 +165,8 @@ _REPLAY_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_REPLAY_ATTESTATION_TRUST_ANCHOR
 _EXECUTOR_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_EXECUTOR_ATTESTATION_TRUST_ANCHOR"
 _TARGET_ATTESTATION_TRUST_ANCHOR_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_ANCHOR"
 _TARGET_ATTESTATION_TRUST_REGISTRY_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY"
-_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR_ENV = (
-    "PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR"
-)
-_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_ENV = (
-    "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE"
-)
+_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR_ENV = "PAJIN_CP_TARGET_ATTESTATION_REGISTRY_TRUST_ANCHOR"
+_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_ENV = "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE"
 _TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL_ENV = (
     "PAJIN_CP_TARGET_ATTESTATION_TRUST_REGISTRY_BUNDLE_URL"
 )
@@ -444,6 +499,142 @@ def _validate_oidc_role_separation(
         )
 
 
+def _validate_run_submission_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneRunSubmissionABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError("ABAC Run submission rules must name authenticated Operator subjects")
+
+
+def _validate_run_cancellation_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneRunCancellationABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError("ABAC Run cancellation rules must name authenticated Operator subjects")
+
+
+def _validate_checkpoint_resume_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneCheckpointResumeABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError("ABAC checkpoint resume rules must name authenticated Operator subjects")
+
+
+def _validate_replay_source_artifact_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneReplaySourceArtifactABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError(
+            "ABAC Replay source Artifact rules must name authenticated Operator subjects"
+        )
+
+
+def _validate_replay_batch_admission_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneReplayBatchAdmissionABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError(
+            "ABAC Replay batch admission rules must name authenticated Operator subjects"
+        )
+
+
+def _validate_maintenance_abac_subjects(
+    credentials: Mapping[str, Principal],
+    oidc_policy: OIDCHumanTrustPolicy | None,
+    abac_policy: ControlPlaneMaintenanceABACPolicy | None,
+) -> None:
+    if abac_policy is None:
+        return
+    operator_subjects = {
+        principal.subject
+        for principal in credentials.values()
+        if PrincipalRole.OPERATOR in principal.roles
+    }
+    if oidc_policy is not None:
+        operator_subjects.update(
+            identity.principal_subject
+            for identity in oidc_policy.identities
+            if PrincipalRole.OPERATOR in identity.roles
+        )
+    if not abac_policy.principal_subjects <= operator_subjects:
+        raise ValueError("ABAC maintenance rules must name authenticated Operator subjects")
+
+
 def _parse_replay_executor_profiles(
     raw: str | None,
     *,
@@ -590,6 +781,45 @@ def _parse_target_attestation_registry_trust_anchor(
         raise RuntimeError("target attestation registry trust anchor is invalid") from exc
 
 
+def _validate_pentest_recon_deployment_settings(
+    path: Path | None,
+    digest: str | None,
+    worker_policy: WorkerMTLSTrustPolicy | None,
+) -> None:
+    if (path is None) != (digest is None):
+        raise ValueError("Pentest Recon deployment path and SHA-256 must be configured together")
+    if path is not None and worker_policy is None:
+        raise ValueError("Pentest Recon deployment requires Worker mTLS policy")
+    if digest is not None and re.fullmatch(r"^[a-f0-9]{64}$", digest) is None:
+        raise ValueError("Pentest Recon deployment SHA-256 is malformed")
+
+
+def _validate_pentest_workflow_deployment_settings(
+    path: Path | None,
+    digest: str | None,
+) -> None:
+    if (path is None) != (digest is None):
+        raise ValueError("Pentest workflow deployment path and SHA-256 must be configured together")
+    if digest is not None and re.fullmatch(r"^[a-f0-9]{64}$", digest) is None:
+        raise ValueError("Pentest workflow deployment SHA-256 is malformed")
+
+
+def _validate_pentest_replay_deployment_settings(
+    path: Path | None,
+    digest: str | None,
+    worker_policy: WorkerMTLSTrustPolicy | None,
+    replay_executor_profiles: Mapping[str, frozenset[str]],
+) -> None:
+    if (path is None) != (digest is None):
+        raise ValueError("Pentest Replay deployment path and SHA-256 must be configured together")
+    if path is not None and worker_policy is None:
+        raise ValueError("Pentest Replay deployment requires Worker mTLS policy")
+    if path is not None and not replay_executor_profiles:
+        raise ValueError("Pentest Replay deployment requires a dedicated Replay Worker")
+    if digest is not None and re.fullmatch(r"^[a-f0-9]{64}$", digest) is None:
+        raise ValueError("Pentest Replay deployment SHA-256 is malformed")
+
+
 @dataclass(frozen=True)
 class ControlPlaneSettings:
     database_url: str
@@ -597,6 +827,20 @@ class ControlPlaneSettings:
     checkpoint_keys: dict[str, bytes]
     active_checkpoint_key_id: str = "v1"
     oidc_human_trust_policy: OIDCHumanTrustPolicy | None = None
+    worker_mtls_trust_policy: WorkerMTLSTrustPolicy | None = None
+    pentest_recon_deployment_path: Path | None = None
+    pentest_recon_deployment_sha256: str | None = None
+    pentest_replay_deployment_path: Path | None = None
+    pentest_replay_deployment_sha256: str | None = None
+    pentest_workflow_deployment_path: Path | None = None
+    pentest_workflow_deployment_sha256: str | None = None
+    abac_policy: ControlPlaneABACPolicy | None = None
+    run_submission_abac_policy: ControlPlaneRunSubmissionABACPolicy | None = None
+    run_cancellation_abac_policy: ControlPlaneRunCancellationABACPolicy | None = None
+    checkpoint_resume_abac_policy: ControlPlaneCheckpointResumeABACPolicy | None = None
+    replay_source_artifact_abac_policy: ControlPlaneReplaySourceArtifactABACPolicy | None = None
+    replay_batch_admission_abac_policy: ControlPlaneReplayBatchAdmissionABACPolicy | None = None
+    maintenance_abac_policy: ControlPlaneMaintenanceABACPolicy | None = None
     initialize_schema: bool = True
     database_echo: bool = False
     artifact_staging_root: Path | None = None
@@ -614,9 +858,7 @@ class ControlPlaneSettings:
     target_attestation_trust_anchor: TargetAttestationTrustAnchor | None = None
     target_attestation_trust_registry: TargetAttestationTrustRegistry | None = None
     target_attestation_registry_bundle: TargetAttestationRegistryBundle | None = None
-    target_attestation_registry_trust_anchor: (
-        TargetAttestationRegistryTrustAnchor | None
-    ) = None
+    target_attestation_registry_trust_anchor: TargetAttestationRegistryTrustAnchor | None = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
 
     def __post_init__(self) -> None:
@@ -673,9 +915,81 @@ class ControlPlaneSettings:
             )
         _validate_credential_role_separation(credentials)
         _validate_oidc_role_separation(credentials, self.oidc_human_trust_policy)
+        if self.abac_policy is not None:
+            approver_subjects = {
+                principal.subject
+                for principal in credentials.values()
+                if PrincipalRole.APPROVER in principal.roles
+            }
+            if self.oidc_human_trust_policy is not None:
+                approver_subjects.update(
+                    identity.principal_subject
+                    for identity in self.oidc_human_trust_policy.identities
+                    if PrincipalRole.APPROVER in identity.roles
+                )
+            if not self.abac_policy.principal_subjects <= approver_subjects:
+                raise ValueError("ABAC approval rules must name authenticated Approver subjects")
+        _validate_run_submission_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.run_submission_abac_policy,
+        )
+        _validate_run_cancellation_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.run_cancellation_abac_policy,
+        )
+        _validate_checkpoint_resume_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.checkpoint_resume_abac_policy,
+        )
+        _validate_replay_source_artifact_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.replay_source_artifact_abac_policy,
+        )
+        _validate_replay_batch_admission_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.replay_batch_admission_abac_policy,
+        )
+        _validate_maintenance_abac_subjects(
+            credentials,
+            self.oidc_human_trust_policy,
+            self.maintenance_abac_policy,
+        )
+        if self.worker_mtls_trust_policy is not None:
+            worker_subjects = {
+                principal.subject
+                for principal in credentials.values()
+                if principal.roles == frozenset({PrincipalRole.WORKER})
+            }
+            bound_subjects = {
+                binding.principal_subject for binding in self.worker_mtls_trust_policy.bindings
+            }
+            if bound_subjects != worker_subjects:
+                raise ValueError(
+                    "Worker mTLS trust policy must bind every and only configured Worker subject"
+                )
+        _validate_pentest_recon_deployment_settings(
+            self.pentest_recon_deployment_path,
+            self.pentest_recon_deployment_sha256,
+            self.worker_mtls_trust_policy,
+        )
+        _validate_pentest_workflow_deployment_settings(
+            self.pentest_workflow_deployment_path,
+            self.pentest_workflow_deployment_sha256,
+        )
         normalized = _validated_replay_executor_profiles(
             self.replay_executor_profiles,
             credentials=credentials,
+        )
+        _validate_pentest_replay_deployment_settings(
+            self.pentest_replay_deployment_path,
+            self.pentest_replay_deployment_sha256,
+            self.worker_mtls_trust_policy,
+            normalized,
         )
         attestation_values = (
             self.replay_attestation_key_id,
@@ -708,6 +1022,24 @@ class ControlPlaneSettings:
         replay_worker_subject_setting = os.environ.get("PAJIN_CP_REPLAY_WORKER_SUBJECT")
         raw_oidc_human_trust_policy = os.environ.get(_OIDC_HUMAN_TRUST_POLICY_ENV)
         raw_replay_profiles = os.environ.get(_REPLAY_EXECUTOR_PROFILES_ENV)
+        raw_worker_mtls_trust_policy = os.environ.get(_WORKER_MTLS_TRUST_POLICY_ENV)
+        pentest_recon_deployment_path = os.environ.get(_PENTEST_RECON_DEPLOYMENT_PATH_ENV)
+        pentest_recon_deployment_sha256 = os.environ.get(_PENTEST_RECON_DEPLOYMENT_SHA256_ENV)
+        pentest_replay_deployment_path = os.environ.get(_PENTEST_REPLAY_DEPLOYMENT_PATH_ENV)
+        pentest_replay_deployment_sha256 = os.environ.get(_PENTEST_REPLAY_DEPLOYMENT_SHA256_ENV)
+        pentest_workflow_deployment_path = os.environ.get(_PENTEST_WORKFLOW_DEPLOYMENT_PATH_ENV)
+        pentest_workflow_deployment_sha256 = os.environ.get(_PENTEST_WORKFLOW_DEPLOYMENT_SHA256_ENV)
+        raw_abac_policy = os.environ.get(_ABAC_POLICY_ENV)
+        raw_run_submission_abac_policy = os.environ.get(_RUN_SUBMISSION_ABAC_POLICY_ENV)
+        raw_run_cancellation_abac_policy = os.environ.get(_RUN_CANCELLATION_ABAC_POLICY_ENV)
+        raw_checkpoint_resume_abac_policy = os.environ.get(_CHECKPOINT_RESUME_ABAC_POLICY_ENV)
+        raw_replay_source_artifact_abac_policy = os.environ.get(
+            _REPLAY_SOURCE_ARTIFACT_ABAC_POLICY_ENV
+        )
+        raw_replay_batch_admission_abac_policy = os.environ.get(
+            _REPLAY_BATCH_ADMISSION_ABAC_POLICY_ENV
+        )
+        raw_maintenance_abac_policy = os.environ.get(_MAINTENANCE_ABAC_POLICY_ENV)
         replay_attestation_key_id = os.environ.get(_REPLAY_ATTESTATION_KEY_ID_ENV)
         replay_attestation_private_key = os.environ.get(_REPLAY_ATTESTATION_PRIVATE_KEY_ENV)
         replay_attestation_trust_anchor = os.environ.get(_REPLAY_ATTESTATION_TRUST_ANCHOR_ENV)
@@ -729,12 +1061,8 @@ class ControlPlaneSettings:
         campaign_draft_root = os.environ.get("PAJIN_CP_CAMPAIGN_DRAFT_ROOT")
         discovery_run_root = os.environ.get("PAJIN_CP_DISCOVERY_RUN_ROOT")
         graph_database = os.environ.get("PAJIN_CP_GRAPH_DATABASE")
-        graph_decision_audit_database = os.environ.get(
-            "PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE"
-        )
-        validation_evidence_root = os.environ.get(
-            "PAJIN_CP_VALIDATION_EVIDENCE_ROOT"
-        )
+        graph_decision_audit_database = os.environ.get("PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE")
+        validation_evidence_root = os.environ.get("PAJIN_CP_VALIDATION_EVIDENCE_ROOT")
         oidc_human_trust_policy: OIDCHumanTrustPolicy | None = None
         if raw_oidc_human_trust_policy is not None:
             if not raw_oidc_human_trust_policy.strip():
@@ -746,6 +1074,100 @@ class ControlPlaneSettings:
             except (UnicodeEncodeError, ValueError) as exc:
                 raise RuntimeError(
                     f"{_OIDC_HUMAN_TRUST_POLICY_ENV} is not a valid trust policy"
+                ) from exc
+        worker_mtls_trust_policy: WorkerMTLSTrustPolicy | None = None
+        if raw_worker_mtls_trust_policy is not None:
+            if not raw_worker_mtls_trust_policy.strip():
+                raise RuntimeError(f"{_WORKER_MTLS_TRUST_POLICY_ENV} must not be blank")
+            try:
+                worker_mtls_trust_policy = parse_worker_mtls_trust_policy(
+                    raw_worker_mtls_trust_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_WORKER_MTLS_TRUST_POLICY_ENV} is not a valid trust policy"
+                ) from exc
+        abac_policy: ControlPlaneABACPolicy | None = None
+        if raw_abac_policy is not None:
+            if not raw_abac_policy.strip():
+                raise RuntimeError(f"{_ABAC_POLICY_ENV} must not be blank")
+            try:
+                abac_policy = parse_control_plane_abac_policy(raw_abac_policy.encode("utf-8"))
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        run_submission_abac_policy: ControlPlaneRunSubmissionABACPolicy | None = None
+        if raw_run_submission_abac_policy is not None:
+            if not raw_run_submission_abac_policy.strip():
+                raise RuntimeError(f"{_RUN_SUBMISSION_ABAC_POLICY_ENV} must not be blank")
+            try:
+                run_submission_abac_policy = parse_run_submission_abac_policy(
+                    raw_run_submission_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_RUN_SUBMISSION_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        run_cancellation_abac_policy: ControlPlaneRunCancellationABACPolicy | None = None
+        if raw_run_cancellation_abac_policy is not None:
+            if not raw_run_cancellation_abac_policy.strip():
+                raise RuntimeError(f"{_RUN_CANCELLATION_ABAC_POLICY_ENV} must not be blank")
+            try:
+                run_cancellation_abac_policy = parse_run_cancellation_abac_policy(
+                    raw_run_cancellation_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_RUN_CANCELLATION_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        checkpoint_resume_abac_policy: ControlPlaneCheckpointResumeABACPolicy | None = None
+        if raw_checkpoint_resume_abac_policy is not None:
+            if not raw_checkpoint_resume_abac_policy.strip():
+                raise RuntimeError(f"{_CHECKPOINT_RESUME_ABAC_POLICY_ENV} must not be blank")
+            try:
+                checkpoint_resume_abac_policy = parse_checkpoint_resume_abac_policy(
+                    raw_checkpoint_resume_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_CHECKPOINT_RESUME_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        replay_source_artifact_abac_policy: ControlPlaneReplaySourceArtifactABACPolicy | None = None
+        if raw_replay_source_artifact_abac_policy is not None:
+            if not raw_replay_source_artifact_abac_policy.strip():
+                raise RuntimeError(f"{_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY_ENV} must not be blank")
+            try:
+                replay_source_artifact_abac_policy = parse_replay_source_artifact_abac_policy(
+                    raw_replay_source_artifact_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        replay_batch_admission_abac_policy: ControlPlaneReplayBatchAdmissionABACPolicy | None = None
+        if raw_replay_batch_admission_abac_policy is not None:
+            if not raw_replay_batch_admission_abac_policy.strip():
+                raise RuntimeError(f"{_REPLAY_BATCH_ADMISSION_ABAC_POLICY_ENV} must not be blank")
+            try:
+                replay_batch_admission_abac_policy = parse_replay_batch_admission_abac_policy(
+                    raw_replay_batch_admission_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_REPLAY_BATCH_ADMISSION_ABAC_POLICY_ENV} is not a valid authorization policy"
+                ) from exc
+        maintenance_abac_policy: ControlPlaneMaintenanceABACPolicy | None = None
+        if raw_maintenance_abac_policy is not None:
+            if not raw_maintenance_abac_policy.strip():
+                raise RuntimeError(f"{_MAINTENANCE_ABAC_POLICY_ENV} must not be blank")
+            try:
+                maintenance_abac_policy = parse_maintenance_abac_policy(
+                    raw_maintenance_abac_policy.encode("utf-8")
+                )
+            except (UnicodeEncodeError, ValueError) as exc:
+                raise RuntimeError(
+                    f"{_MAINTENANCE_ABAC_POLICY_ENV} is not a valid authorization policy"
                 ) from exc
         credential_requirements = (
             ("PAJIN_CP_OPERATOR_TOKEN", operator_token, oidc_human_trust_policy is None),
@@ -765,13 +1187,14 @@ class ControlPlaneSettings:
         ]
         if len(role_tokens) != len(set(role_tokens)):
             raise RuntimeError("Control Plane role credentials must be distinct")
+        if (replay_worker_token is None) != (raw_replay_profiles is None):
+            raise RuntimeError(
+                "PAJIN_CP_REPLAY_WORKER_TOKEN and PAJIN_CP_REPLAY_EXECUTOR_PROFILES "
+                "must be configured together"
+            )
         if replay_worker_subject_setting is not None and replay_worker_token is None:
             raise RuntimeError(
                 "PAJIN_CP_REPLAY_WORKER_SUBJECT requires PAJIN_CP_REPLAY_WORKER_TOKEN"
-            )
-        if raw_replay_profiles is not None and replay_worker_token is None:
-            raise RuntimeError(
-                "PAJIN_CP_REPLAY_EXECUTOR_PROFILES requires a distinct PAJIN_CP_REPLAY_WORKER_TOKEN"
             )
         replay_attestation_values = (
             replay_attestation_key_id,
@@ -816,11 +1239,9 @@ class ControlPlaneSettings:
                 target_attestation_registry_trust_anchor
             )
         )
-        parsed_target_attestation_registry_bundle = (
-            _load_target_attestation_registry_bundle(
-                inline=target_attestation_trust_registry_bundle,
-                url=target_attestation_trust_registry_bundle_url,
-            )
+        parsed_target_attestation_registry_bundle = _load_target_attestation_registry_bundle(
+            inline=target_attestation_trust_registry_bundle,
+            url=target_attestation_trust_registry_bundle_url,
         )
         configured_target_authorities = (
             parsed_target_attestation_trust_anchor,
@@ -846,9 +1267,7 @@ class ControlPlaneSettings:
                 "pajin.replay.target-attestation-trust-registry/v4",
             }
         ):
-            raise RuntimeError(
-                "target trust registry v3-v4 requires a signed distribution bundle"
-            )
+            raise RuntimeError("target trust registry v3-v4 requires a signed distribution bundle")
         if parsed_target_attestation_registry_bundle is not None:
             assert parsed_target_attestation_registry_trust_anchor is not None
             try:
@@ -878,15 +1297,52 @@ class ControlPlaneSettings:
             raise RuntimeError("PAJIN_CP_DISCOVERY_RUN_ROOT must not be blank")
         if graph_database is not None and not graph_database.strip():
             raise RuntimeError("PAJIN_CP_GRAPH_DATABASE must not be blank")
-        if (
-            graph_decision_audit_database is not None
-            and not graph_decision_audit_database.strip()
-        ):
-            raise RuntimeError(
-                "PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE must not be blank"
-            )
+        if graph_decision_audit_database is not None and not graph_decision_audit_database.strip():
+            raise RuntimeError("PAJIN_CP_GRAPH_DECISION_AUDIT_DATABASE must not be blank")
         if validation_evidence_root is not None and not validation_evidence_root.strip():
             raise RuntimeError("PAJIN_CP_VALIDATION_EVIDENCE_ROOT must not be blank")
+        if (pentest_recon_deployment_path in {None, ""}) != (
+            pentest_recon_deployment_sha256 in {None, ""}
+        ):
+            raise RuntimeError(
+                "Pentest Recon deployment path and SHA-256 must be configured together"
+            )
+        if pentest_recon_deployment_path is not None and (
+            not pentest_recon_deployment_path
+            or pentest_recon_deployment_path != pentest_recon_deployment_path.strip()
+            or pentest_recon_deployment_sha256 is None
+            or not pentest_recon_deployment_sha256
+            or pentest_recon_deployment_sha256 != pentest_recon_deployment_sha256.strip()
+        ):
+            raise RuntimeError("Pentest Recon deployment settings must not be blank")
+        if (pentest_replay_deployment_path in {None, ""}) != (
+            pentest_replay_deployment_sha256 in {None, ""}
+        ):
+            raise RuntimeError(
+                "Pentest Replay deployment path and SHA-256 must be configured together"
+            )
+        if pentest_replay_deployment_path is not None and (
+            not pentest_replay_deployment_path
+            or pentest_replay_deployment_path != pentest_replay_deployment_path.strip()
+            or pentest_replay_deployment_sha256 is None
+            or not pentest_replay_deployment_sha256
+            or pentest_replay_deployment_sha256 != pentest_replay_deployment_sha256.strip()
+        ):
+            raise RuntimeError("Pentest Replay deployment settings must not be blank")
+        if (pentest_workflow_deployment_path in {None, ""}) != (
+            pentest_workflow_deployment_sha256 in {None, ""}
+        ):
+            raise RuntimeError(
+                "Pentest workflow deployment path and SHA-256 must be configured together"
+            )
+        if pentest_workflow_deployment_path is not None and (
+            not pentest_workflow_deployment_path
+            or pentest_workflow_deployment_path != pentest_workflow_deployment_path.strip()
+            or pentest_workflow_deployment_sha256 is None
+            or not pentest_workflow_deployment_sha256
+            or pentest_workflow_deployment_sha256 != pentest_workflow_deployment_sha256.strip()
+        ):
+            raise RuntimeError("Pentest workflow deployment settings must not be blank")
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         operator_subject = os.environ.get("PAJIN_CP_OPERATOR_SUBJECT", "operator")
         approver_subject = os.environ.get(
@@ -957,6 +1413,32 @@ class ControlPlaneSettings:
             checkpoint_keys={key_id: checkpoint_key.encode()},
             active_checkpoint_key_id=key_id,
             oidc_human_trust_policy=oidc_human_trust_policy,
+            worker_mtls_trust_policy=worker_mtls_trust_policy,
+            pentest_recon_deployment_path=(
+                Path(pentest_recon_deployment_path)
+                if pentest_recon_deployment_path is not None
+                else None
+            ),
+            pentest_recon_deployment_sha256=pentest_recon_deployment_sha256,
+            pentest_replay_deployment_path=(
+                Path(pentest_replay_deployment_path)
+                if pentest_replay_deployment_path is not None
+                else None
+            ),
+            pentest_replay_deployment_sha256=pentest_replay_deployment_sha256,
+            pentest_workflow_deployment_path=(
+                Path(pentest_workflow_deployment_path)
+                if pentest_workflow_deployment_path is not None
+                else None
+            ),
+            pentest_workflow_deployment_sha256=pentest_workflow_deployment_sha256,
+            abac_policy=abac_policy,
+            run_submission_abac_policy=run_submission_abac_policy,
+            run_cancellation_abac_policy=run_cancellation_abac_policy,
+            checkpoint_resume_abac_policy=checkpoint_resume_abac_policy,
+            replay_source_artifact_abac_policy=replay_source_artifact_abac_policy,
+            replay_batch_admission_abac_policy=replay_batch_admission_abac_policy,
+            maintenance_abac_policy=maintenance_abac_policy,
             initialize_schema=_parse_strict_environment_boolean(
                 "PAJIN_CP_INITIALIZE_SCHEMA",
                 default=True,
@@ -984,9 +1466,7 @@ class ControlPlaneSettings:
                 else None
             ),
             validation_evidence_root=(
-                Path(validation_evidence_root)
-                if validation_evidence_root is not None
-                else None
+                Path(validation_evidence_root) if validation_evidence_root is not None else None
             ),
             replay_executor_profiles=replay_executor_profiles,
             replay_attestation_key_id=replay_attestation_key_id,
@@ -995,9 +1475,7 @@ class ControlPlaneSettings:
             executor_attestation_trust_anchor=(parsed_executor_attestation_trust_anchor),
             target_attestation_trust_anchor=parsed_target_attestation_trust_anchor,
             target_attestation_trust_registry=parsed_target_attestation_trust_registry,
-            target_attestation_registry_bundle=(
-                parsed_target_attestation_registry_bundle
-            ),
+            target_attestation_registry_bundle=(parsed_target_attestation_registry_bundle),
             target_attestation_registry_trust_anchor=(
                 parsed_target_attestation_registry_trust_anchor
             ),
@@ -1023,6 +1501,9 @@ class _ControlPlaneApplicationContext:
     decision_audit_reader: VerifiedGraphDecisionAuditViewReader
     replay_comparison_reader: VerifiedReplayEvidenceComparisonReader
     validation_comparison_reader: VerifiedWalkingControlComparisonReader
+    pentest_recon_runtime: PentestReconDispatchRuntime | None
+    pentest_replay_runtime: PentestReplayDispatchRuntime | None
+    pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None
     service: ControlPlaneService
     authenticator: BearerAuthenticator
 
@@ -1085,18 +1566,75 @@ def _build_application_context(
         target_attestation_registry_trust_anchor=(
             settings.target_attestation_registry_trust_anchor
         ),
+        abac_authorizer=(
+            ControlPlaneABACAuthorizer(settings.abac_policy)
+            if settings.abac_policy is not None
+            else None
+        ),
+        run_submission_authorizer=(
+            ControlPlaneRunSubmissionAuthorizer(settings.run_submission_abac_policy)
+            if settings.run_submission_abac_policy is not None
+            else None
+        ),
+        run_cancellation_authorizer=(
+            ControlPlaneRunCancellationAuthorizer(settings.run_cancellation_abac_policy)
+            if settings.run_cancellation_abac_policy is not None
+            else None
+        ),
+        checkpoint_resume_authorizer=(
+            ControlPlaneCheckpointResumeAuthorizer(settings.checkpoint_resume_abac_policy)
+            if settings.checkpoint_resume_abac_policy is not None
+            else None
+        ),
+        replay_source_artifact_authorizer=(
+            ControlPlaneReplaySourceArtifactAuthorizer(settings.replay_source_artifact_abac_policy)
+            if settings.replay_source_artifact_abac_policy is not None
+            else None
+        ),
+        replay_batch_admission_authorizer=(
+            ControlPlaneReplayBatchAdmissionAuthorizer(settings.replay_batch_admission_abac_policy)
+            if settings.replay_batch_admission_abac_policy is not None
+            else None
+        ),
+        maintenance_authorizer=(
+            ControlPlaneMaintenanceAuthorizer(settings.maintenance_abac_policy)
+            if settings.maintenance_abac_policy is not None
+            else None
+        ),
     )
-    campaign_draft_reader = ControlPlaneCampaignDraftReader(
-        root=settings.campaign_draft_root
-    )
+    campaign_draft_reader = ControlPlaneCampaignDraftReader(root=settings.campaign_draft_root)
+    pentest_recon_runtime: PentestReconDispatchRuntime | None = None
+    if settings.pentest_recon_deployment_path is not None:
+        assert settings.pentest_recon_deployment_sha256 is not None
+        assert settings.worker_mtls_trust_policy is not None
+        pentest_recon_runtime = load_pentest_recon_operator_deployment(
+            settings.pentest_recon_deployment_path,
+            expected_sha256=settings.pentest_recon_deployment_sha256,
+            current_worker_mtls_policy=settings.worker_mtls_trust_policy,
+        )
+    pentest_replay_runtime: PentestReplayDispatchRuntime | None = None
+    if settings.pentest_replay_deployment_path is not None:
+        assert settings.pentest_replay_deployment_sha256 is not None
+        assert settings.worker_mtls_trust_policy is not None
+        pentest_replay_runtime = load_pentest_replay_operator_deployment(
+            settings.pentest_replay_deployment_path,
+            expected_sha256=settings.pentest_replay_deployment_sha256,
+            current_worker_mtls_policy=settings.worker_mtls_trust_policy,
+            allowed_replay_worker_subjects=frozenset(settings.replay_executor_profiles),
+        )
+    pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None = None
+    if settings.pentest_workflow_deployment_path is not None:
+        assert settings.pentest_workflow_deployment_sha256 is not None
+        pentest_workflow_runtime = load_pentest_operator_workflow_deployment(
+            settings.pentest_workflow_deployment_path,
+            expected_sha256=settings.pentest_workflow_deployment_sha256,
+        )
     return _ControlPlaneApplicationContext(
         settings=settings,
         repository=repository,
         artifact_repository=artifact_repository,
         campaign_draft_reader=campaign_draft_reader,
-        campaign_draft_compiler=ControlPlaneCampaignDraftCompiler(
-            reader=campaign_draft_reader
-        ),
+        campaign_draft_compiler=ControlPlaneCampaignDraftCompiler(reader=campaign_draft_reader),
         discovery_view_reader=VerifiedDiscoveryViewReader(settings.discovery_run_root),
         graph_view_reader=VerifiedCanonicalGraphViewReader(settings.graph_database),
         hypothesis_attention_ranking_reader=VerifiedHypothesisAttentionRankingReader(
@@ -1110,6 +1648,9 @@ def _build_application_context(
         validation_comparison_reader=VerifiedWalkingControlComparisonReader(
             settings.validation_evidence_root
         ),
+        pentest_recon_runtime=pentest_recon_runtime,
+        pentest_replay_runtime=pentest_replay_runtime,
+        pentest_workflow_runtime=pentest_workflow_runtime,
         service=service,
         authenticator=_build_bearer_authenticator(settings),
     )
@@ -1163,10 +1704,12 @@ def _configure_middleware(app: FastAPI, settings: ControlPlaneSettings) -> None:
 
 def _build_authentication_dependency(
     authenticator: BearerAuthenticator,
+    worker_mtls_authenticator: WorkerMTLSAuthenticator | None,
 ) -> Callable[..., Principal]:
     bearer = HTTPBearer(auto_error=False)
 
     def authenticate(
+        request: Request,
         credential: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer)],
     ) -> Principal:
         if credential is None or credential.scheme.lower() != "bearer":
@@ -1176,7 +1719,10 @@ def _build_authentication_dependency(
                 headers={"WWW-Authenticate": "Bearer"},
             )
         try:
-            return authenticator.authenticate(credential.credentials)
+            principal = authenticator.authenticate(credential.credentials)
+            if worker_mtls_authenticator is not None and PrincipalRole.WORKER in principal.roles:
+                return worker_mtls_authenticator.authenticate(request.scope, principal)
+            return principal
         except AuthenticationError as exc:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -1255,7 +1801,15 @@ def _build_replay_worker_dependency(
 def _build_dependencies(
     context: _ControlPlaneApplicationContext,
 ) -> ControlPlaneDependencies:
-    authenticate = _build_authentication_dependency(context.authenticator)
+    worker_mtls_authenticator = (
+        WorkerMTLSAuthenticator(context.settings.worker_mtls_trust_policy)
+        if context.settings.worker_mtls_trust_policy is not None
+        else None
+    )
+    authenticate = _build_authentication_dependency(
+        context.authenticator,
+        worker_mtls_authenticator,
+    )
     require_roles = _build_role_dependency_factory(authenticate)
     replay_worker_subjects = frozenset(context.settings.replay_executor_profiles)
     return ControlPlaneDependencies(
@@ -1290,6 +1844,12 @@ def _register_exception_handlers(app: FastAPI) -> None:
     async def replay_executor_rejected_handler(
         _request: object,
         exc: ReplayExecutorRejected,
+    ) -> JSONResponse:
+        return JSONResponse(status_code=403, content={"detail": str(exc)})
+
+    @app.exception_handler(AuthorizationDenied)
+    async def authorization_denied_handler(
+        _request: object, exc: AuthorizationDenied
     ) -> JSONResponse:
         return JSONResponse(status_code=403, content={"detail": str(exc)})
 
@@ -1392,9 +1952,27 @@ def _safe_request_validation_message(error: object) -> str:
     return "request validation failed"
 
 
-def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
+def create_app(
+    settings: ControlPlaneSettings | None = None,
+    *,
+    pentest_recon_runtime: PentestReconDispatchRuntime | None = None,
+    pentest_replay_runtime: PentestReplayDispatchRuntime | None = None,
+    pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None = None,
+    pentest_workflow_coordination_runtime: (
+        PentestWorkflowCoordinationDispatchRuntime | None
+    ) = None,
+) -> FastAPI:
     resolved = settings or ControlPlaneSettings.from_env()
     context = _build_application_context(resolved)
+    if pentest_recon_runtime is not None and context.pentest_recon_runtime is not None:
+        raise ValueError("Pentest Recon runtime cannot be both injected and deployment-configured")
+    selected_pentest_recon_runtime = pentest_recon_runtime or context.pentest_recon_runtime
+    if pentest_replay_runtime is not None and context.pentest_replay_runtime is not None:
+        raise ValueError("Pentest Replay runtime cannot be both injected and configured")
+    selected_pentest_replay_runtime = pentest_replay_runtime or context.pentest_replay_runtime
+    if pentest_workflow_runtime is not None and context.pentest_workflow_runtime is not None:
+        raise ValueError("Pentest workflow runtime cannot be both injected and configured")
+    selected_pentest_workflow_runtime = pentest_workflow_runtime or context.pentest_workflow_runtime
     app = FastAPI(
         title="PAJIN Control Plane",
         version="0.1.0",
@@ -1412,12 +1990,14 @@ def create_app(settings: ControlPlaneSettings | None = None) -> FastAPI:
         campaign_draft_compiler=context.campaign_draft_compiler,
         discovery_view_reader=context.discovery_view_reader,
         graph_view_reader=context.graph_view_reader,
-        hypothesis_attention_ranking_reader=(
-            context.hypothesis_attention_ranking_reader
-        ),
+        hypothesis_attention_ranking_reader=(context.hypothesis_attention_ranking_reader),
         decision_audit_reader=context.decision_audit_reader,
         replay_comparison_reader=context.replay_comparison_reader,
         validation_comparison_reader=context.validation_comparison_reader,
+        pentest_recon_runtime=selected_pentest_recon_runtime,
+        pentest_replay_runtime=selected_pentest_replay_runtime,
+        pentest_workflow_runtime=selected_pentest_workflow_runtime,
+        pentest_workflow_coordination_runtime=pentest_workflow_coordination_runtime,
         dependencies=dependencies,
     )
     return app

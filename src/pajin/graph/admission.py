@@ -82,6 +82,7 @@ class GraphAdmissionReason(StrEnum):
     LINEAGE_VERIFICATION_FAILED = "lineage-verification-failed"
     DANGLING_EDGE = "dangling-edge"
     PROPOSAL_EQUIVOCATION = "proposal-equivocation"
+    STALE_SNAPSHOT = "stale-snapshot"
 
 
 class GraphProducerRegistration(StrictModel):
@@ -249,12 +250,14 @@ class GraphAdmissionEvent(StrictModel):
         alias="lineageDigest",
         pattern=r"^[a-f0-9]{64}$",
     )
-    capability_grant_id: _Identifier = Field(
+    capability_grant_id: _Identifier | None = Field(
+        default=None,
         alias="capabilityGrantId",
         min_length=1,
         max_length=200,
     )
-    capability_grant_digest: _Sha256 = Field(
+    capability_grant_digest: _Sha256 | None = Field(
+        default=None,
         alias="capabilityGrantDigest",
         pattern=r"^[a-f0-9]{64}$",
     )
@@ -298,6 +301,16 @@ class GraphAdmissionEvent(StrictModel):
         return value.astimezone(UTC)
 
     @model_validator(mode="after")
+    def require_execution_authority_binding(self) -> Self:
+        if (self.capability_grant_id is None) is not (self.capability_grant_digest is None):
+            raise ValueError("Graph admission Capability Grant binding is incomplete")
+        if (self.action_permit_id is None) is not (self.action_permit_digest is None):
+            raise ValueError("Graph admission Action Permit binding is incomplete")
+        if self.capability_grant_id is None and self.action_permit_id is None:
+            raise ValueError("Graph admission requires a Capability Grant or Action Permit")
+        return self
+
+    @model_validator(mode="after")
     def bind_decision_material_and_identity(self) -> Self:
         admitted = self.decision is GraphAdmissionDecision.ADMITTED
         if admitted != (self.reason is GraphAdmissionReason.ADMITTED):
@@ -310,8 +323,6 @@ class GraphAdmissionEvent(StrictModel):
             raise ValueError("admitted Graph event contains a foreign Proposal Campaign")
         if self.occurred_at < self.produced_at:
             raise ValueError("Graph admission event predates its Proposal")
-        if (self.action_permit_id is None) is not (self.action_permit_digest is None):
-            raise ValueError("Graph admission Action Permit binding is incomplete")
         evidence_keys = [(item.reference, item.sha256) for item in self.evidence]
         if evidence_keys != sorted(set(evidence_keys)):
             raise ValueError("Graph admission Evidence bindings must be unique and sorted")
@@ -674,6 +685,29 @@ class GraphAdmissionAuthority:
     def submit(self, proposal: GraphProposal) -> GraphAdmissionResult:
         """Validate and append one proposal attempt under the single-writer lock."""
 
+        return self._submit(proposal, expected_event_log_head_digest=None)
+
+    def submit_if_current(
+        self,
+        proposal: GraphProposal,
+        *,
+        expected_event_log_head_digest: str,
+    ) -> GraphAdmissionResult:
+        """Submit only if the Event Log head still matches a caller-bound Snapshot."""
+
+        if fullmatch(r"^[a-f0-9]{64}$", expected_event_log_head_digest) is None:
+            raise ValueError("expected Graph Event Log head digest is invalid")
+        return self._submit(
+            proposal,
+            expected_event_log_head_digest=expected_event_log_head_digest,
+        )
+
+    def _submit(
+        self,
+        proposal: GraphProposal,
+        *,
+        expected_event_log_head_digest: str | None,
+    ) -> GraphAdmissionResult:
         proposal = parse_graph_proposal(proposal.model_dump(mode="json", by_alias=True))
         proposal_digest = proposal.digest()
         with self._lock:
@@ -687,6 +721,16 @@ class GraphAdmissionAuthority:
                     proposal,
                     proposal_digest,
                     GraphAdmissionReason.PROPOSAL_EQUIVOCATION,
+                )
+
+            if (
+                expected_event_log_head_digest is not None
+                and self._event_log.next_position()[1] != expected_event_log_head_digest
+            ):
+                return self._reject(
+                    proposal,
+                    proposal_digest,
+                    GraphAdmissionReason.STALE_SNAPSHOT,
                 )
 
             reason = self._rejection_reason(proposal)

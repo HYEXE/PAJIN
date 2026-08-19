@@ -17,6 +17,15 @@ from sqlalchemy import case, func, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, load_only
 
+from pajin.control_plane.abac import (
+    ControlPlaneABACAuthorizer,
+    ControlPlaneCheckpointResumeAuthorizer,
+    ControlPlaneMaintenanceAuthorizer,
+    ControlPlaneReplayBatchAdmissionAuthorizer,
+    ControlPlaneReplaySourceArtifactAuthorizer,
+    ControlPlaneRunCancellationAuthorizer,
+    ControlPlaneRunSubmissionAuthorizer,
+)
 from pajin.control_plane.artifact_transfer import (
     PortableArtifactMultipartPartView,
     PortableArtifactMultipartTransportReceipt,
@@ -106,6 +115,8 @@ from pajin.control_plane.lifecycle_service import (
 from pajin.control_plane.models import (
     CHECKPOINT_STATE_JSON_POLICY,
     COMPLETE_JOB_RESULT_JSON_POLICY,
+    SOURCE_ARTIFACT_MEDIA_TYPE,
+    SOURCE_ARTIFACT_SCHEMA_KIND,
     SUBMIT_RUN_INPUT_JSON_POLICY,
     AdmitSourceArtifactRequest,
     ApprovalIntent,
@@ -162,8 +173,11 @@ from pajin.control_plane.models import (
     SubmissionView,
     SubmitRunRequest,
     canonical_control_plane_json,
+    checkpoint_resume_authority_digest,
     job_submission_authority_digest,
     owned_bounded_json_object,
+    replay_batch_admission_authority_digest,
+    source_artifact_admission_authority_digest,
     submission_authority_digest,
     validate_bounded_json_object,
 )
@@ -230,8 +244,8 @@ _INTERNAL_REPLAY_KIND = InternalJobKind.REPLAY.value
 _REPLAY_TOOL_PERMIT_TTL = timedelta(seconds=30)
 _EXECUTOR_ATTESTATION_MAX_CLOCK_SKEW = timedelta(seconds=30)
 _REPLAY_RETRY_ISSUER_ACTOR = "control-plane:replay-retry"
-_SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
-_SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
+_SOURCE_ARTIFACT_MEDIA_TYPE = SOURCE_ARTIFACT_MEDIA_TYPE
+_SOURCE_ARTIFACT_SCHEMA_KIND = SOURCE_ARTIFACT_SCHEMA_KIND
 _REPLAY_OUTPUT_ARTIFACT_SCHEMA_KIND = "pajin.replay.output.sealed.v1"
 _REPLAY_PROJECTION_ARTIFACT_SCHEMA_KIND = "pajin.validation.projection.sealed.v1"
 _REPLAY_PROJECTION_ACTOR = "control-plane:replay-projection"
@@ -540,6 +554,17 @@ class ControlPlaneService:
         target_attestation_registry_trust_anchor: (
             TargetAttestationRegistryTrustAnchor | None
         ) = None,
+        abac_authorizer: ControlPlaneABACAuthorizer | None = None,
+        run_submission_authorizer: (ControlPlaneRunSubmissionAuthorizer | None) = None,
+        run_cancellation_authorizer: (ControlPlaneRunCancellationAuthorizer | None) = None,
+        checkpoint_resume_authorizer: (ControlPlaneCheckpointResumeAuthorizer | None) = None,
+        replay_source_artifact_authorizer: (
+            ControlPlaneReplaySourceArtifactAuthorizer | None
+        ) = None,
+        replay_batch_admission_authorizer: (
+            ControlPlaneReplayBatchAdmissionAuthorizer | None
+        ) = None,
+        maintenance_authorizer: ControlPlaneMaintenanceAuthorizer | None = None,
     ) -> None:
         if (target_attestation_registry_bundle is None) != (
             target_attestation_registry_trust_anchor is None
@@ -576,6 +601,12 @@ class ControlPlaneService:
             else target_attestation_trust_registry
         )
         self._target_attestation_registry_activated = target_attestation_registry_bundle is None
+        self._abac_authorizer = abac_authorizer
+        self._run_submission_authorizer = run_submission_authorizer
+        self._checkpoint_resume_authorizer = checkpoint_resume_authorizer
+        self._replay_source_artifact_authorizer = replay_source_artifact_authorizer
+        self._replay_batch_admission_authorizer = replay_batch_admission_authorizer
+        self._maintenance_authorizer = maintenance_authorizer
         self._records = ControlPlaneRecords()
         self._views = ControlPlaneViewMapper()
 
@@ -681,6 +712,7 @@ class ControlPlaneService:
             self._views,
             self._claims,
             LifecycleServiceHooks(transaction=transaction_hooks),
+            run_cancellation_authorizer=run_cancellation_authorizer,
         )
         self._replay_issuance = ReplayIssuanceService(
             repository,
@@ -697,6 +729,11 @@ class ControlPlaneService:
 
     def submit_run(self, request: SubmitRunRequest, *, actor: str) -> SubmissionView:
         authority = self._submission_authority(request, actor=actor)
+        if self._run_submission_authorizer is not None:
+            self._run_submission_authorizer.authorize_run_submission(
+                principal_subject=actor,
+                submission_authority_digest=authority.digest,
+            )
         try:
             with self.repository.transaction() as session:
                 existing = session.scalar(
@@ -800,9 +837,15 @@ class ControlPlaneService:
     ) -> ArtifactRef:
         """Import one completed public Campaign Job's sealed Run into managed storage."""
 
-        artifact_repository = self._require_artifact_repository()
         if not isinstance(actor, str) or not 1 <= len(actor) <= 200:
             raise StateConflict("Artifact admission actor is invalid")
+        authority_digest = source_artifact_admission_authority_digest(request, actor=actor)
+        if self._replay_source_artifact_authorizer is not None:
+            self._replay_source_artifact_authorizer.authorize_replay_source_artifact_admission(
+                principal_subject=actor,
+                source_artifact_admission_authority_digest=authority_digest,
+            )
+        artifact_repository = self._require_artifact_repository()
         admission_digest = self._artifact_admission_digest(request, actor=actor)
         existing_ref: ArtifactRef | None = None
         existing_storage_key: str | None = None
@@ -1002,6 +1045,12 @@ class ControlPlaneService:
         *,
         actor: str,
     ) -> ReplayBatchView:
+        authority_digest = replay_batch_admission_authority_digest(request, actor=actor)
+        if self._replay_batch_admission_authorizer is not None:
+            self._replay_batch_admission_authorizer.authorize_replay_batch_admission(
+                principal_subject=actor,
+                replay_batch_admission_authority_digest=authority_digest,
+            )
         if request.portable_attestation and self._replay_attestor is None:
             raise StateConflict("portable Replay attestation signer is not configured")
         if request.target_attestation and (
@@ -1287,7 +1336,11 @@ class ControlPlaneService:
         )
 
     def get_current_approval(self, run_id: str, *, actor: str) -> ApprovalView | None:
-        with self.repository.transaction() as session:
+        # Retain the actor parameter for direct-call compatibility, but never use a
+        # read credential as lifecycle authority. Expiry reconciliation belongs to
+        # exact-authorized maintenance or an independently authorized action path.
+        del actor
+        with self.repository.read_transaction() as session:
             run_reference = self._records.run(session, run_id)
             run_state = run_reference.state
             checkpoint_id = run_reference.current_checkpoint_id
@@ -1295,11 +1348,9 @@ class ControlPlaneService:
                 if run_state == RunState.AWAITING_APPROVAL.value:
                     raise StateConflict("awaiting-approval Run has no current checkpoint")
                 return None
-            # Match decision/resume ordering: checkpoint -> approval -> Run. The initial
-            # Run read only discovers the immutable current checkpoint identifier.
-            checkpoint = self._records.checkpoint(session, checkpoint_id, lock=True)
-            approval = self._records.approval_for_checkpoint(session, checkpoint_id, lock=True)
-            run = self._records.run(session, run_id, lock=True)
+            checkpoint = self._records.checkpoint(session, checkpoint_id)
+            approval = self._records.approval_for_checkpoint(session, checkpoint_id)
+            run = self._records.run(session, run_id)
             if run.current_checkpoint_id != checkpoint_id:
                 if (
                     run.current_checkpoint_id is None
@@ -1319,20 +1370,6 @@ class ControlPlaneService:
             intent = self._views.checkpoint_intent(checkpoint)
             if not self._lifecycle.approval_matches_intent(approval, intent):
                 raise StateConflict("approval fields do not match signed checkpoint intent")
-            now = utc_now()
-            if (
-                run_state == RunState.AWAITING_APPROVAL.value
-                and approval.state in _REVOCABLE_APPROVAL_STATES
-                and _aware(approval.expires_at) <= now
-            ):
-                self._lifecycle.expire_approval(
-                    session,
-                    approval,
-                    run,
-                    actor=actor,
-                    now=now,
-                )
-                run_state = run.state
             allowed_states = (
                 {ApprovalState.PENDING.value, ApprovalState.APPROVED.value}
                 if run_state == RunState.AWAITING_APPROVAL.value
@@ -3279,6 +3316,11 @@ class ControlPlaneService:
             intent = self._views.checkpoint_intent(checkpoint)
             if not self._lifecycle.approval_matches_intent(approval, intent):
                 raise StateConflict("approval fields do not match signed checkpoint intent")
+            if self._abac_authorizer is not None:
+                self._abac_authorizer.authorize_approval_decision(
+                    principal_subject=actor,
+                    intent=intent,
+                )
             if approval.requested_by == actor:
                 raise StateConflict("approval requester cannot decide their own request")
             now = utc_now()
@@ -3346,6 +3388,30 @@ class ControlPlaneService:
                 raise StateConflict("approval does not authorize this checkpoint")
             run = self._records.run(session, checkpoint.run_id, lock=True)
             self._lifecycle.verify_checkpoint(checkpoint)
+            intent = self._views.checkpoint_intent(checkpoint)
+            if not self._lifecycle.approval_matches_intent(approval, intent):
+                raise StateConflict("approval fields do not match signed checkpoint intent")
+            if self._checkpoint_resume_authorizer is not None:
+                self._checkpoint_resume_authorizer.authorize_checkpoint_resume(
+                    principal_subject=actor,
+                    checkpoint_resume_authority_digest=(
+                        checkpoint_resume_authority_digest(
+                            checkpoint_id=checkpoint.checkpoint_id,
+                            run_id=checkpoint.run_id,
+                            sequence=checkpoint.sequence,
+                            schema_version=checkpoint.schema_version,
+                            payload_sha256=checkpoint.payload_sha256,
+                            signature=checkpoint.signature,
+                            key_id=checkpoint.key_id,
+                            approval_id=approval.approval_id,
+                            call_fingerprint=approval.call_fingerprint,
+                            tool_id=approval.tool_id,
+                            target=approval.target,
+                            risk_tier=approval.risk_tier,
+                            expires_at=_aware(approval.expires_at),
+                        )
+                    ),
+                )
             # A claimed checkpoint is an immutable, single-use authority boundary.
             # Report that terminal fact before inspecting the Run's post-resume state;
             # otherwise a legitimate duplicate resume is misclassified as a generic
@@ -3367,9 +3433,6 @@ class ControlPlaneService:
                 )
                 expired = True
             else:
-                intent = self._views.checkpoint_intent(checkpoint)
-                if not self._lifecycle.approval_matches_intent(approval, intent):
-                    raise StateConflict("approval fields do not match signed checkpoint intent")
                 raw_job_context = checkpoint.payload.get("job", {})
                 job_context = raw_job_context if isinstance(raw_job_context, dict) else {}
                 continuation_kind = str(job_context.get("kind", "campaign"))
@@ -3457,6 +3520,8 @@ class ControlPlaneService:
         return result
 
     def requeue_expired(self, *, actor: str) -> int:
+        if self._maintenance_authorizer is not None:
+            self._maintenance_authorizer.authorize_requeue_expired(principal_subject=actor)
         return self._lifecycle.requeue_expired(actor=actor)
 
     def _expire_leases(self, session: Session, *, now: datetime, actor: str) -> int:

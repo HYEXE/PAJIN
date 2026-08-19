@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ssl
 from ipaddress import ip_address
+from pathlib import Path
 from types import TracebackType
 from typing import Any, Self
 from urllib.parse import SplitResult, urlsplit
@@ -35,6 +37,18 @@ from pajin.control_plane.models import (
     ReplayToolPermitRequest,
     ReplayToolPermitView,
 )
+from pajin.control_plane.pentest_recon import (
+    PentestReconOperatorDispatchRequest,
+    PentestReconOperatorDispatchView,
+)
+from pajin.control_plane.pentest_replay import (
+    PentestReplayOperatorDispatchRequest,
+    PentestReplayOperatorDispatchView,
+)
+from pajin.control_plane.pentest_workflow import (
+    PentestOperatorWorkflowRequest,
+    PentestOperatorWorkflowView,
+)
 from pajin.control_plane.security import validate_bearer_token
 
 # Worker responses can contain a one-megabyte bounded Job payload plus the
@@ -42,6 +56,7 @@ from pajin.control_plane.security import validate_bearer_token
 # response while placing a hard ceiling on an untrusted peer or proxy stream.
 _MAX_CONTROL_PLANE_RESPONSE_BYTES = 8 * 1024 * 1024
 _MAX_CONTROL_PLANE_BASE_URL_BYTES = 2_048
+_MAX_CONTROL_PLANE_CA_BUNDLE_BYTES = 1024 * 1024
 _PLAINTEXT_LAB_HOSTS = frozenset({"localhost", "control-plane"})
 
 
@@ -71,6 +86,18 @@ class ControlPlaneTransientError(ControlPlaneClientError):
 
 class ControlPlaneProtocolError(ControlPlaneClientError):
     pass
+
+
+class ControlPlanePentestReconRejected(ControlPlaneClientError):
+    """The pinned Pentest Recon authority intersection rejected dispatch."""
+
+
+class ControlPlanePentestReplayRejected(ControlPlaneClientError):
+    """The pinned independent Pentest Replay authority rejected dispatch."""
+
+
+class ControlPlanePentestWorkflowRejected(ControlPlaneClientError):
+    """The deployment-pinned Pentest operator workflow failed closed."""
 
 
 def _validated_control_plane_base_url(
@@ -162,6 +189,68 @@ def _is_plaintext_lab_host(host: str) -> bool:
         return False
 
 
+def _control_plane_tls_context(
+    *,
+    base_url: str,
+    ca_file: str | None,
+    certificate_file: str | None,
+    private_key_file: str | None,
+    private_key_password: str | None,
+    require_client_certificate: bool,
+) -> ssl.SSLContext | bool:
+    if type(require_client_certificate) is not bool:
+        raise ValueError("Control Plane client-certificate requirement must be a boolean")
+    configured_values = (ca_file, certificate_file, private_key_file, private_key_password)
+    if all(value is None for value in configured_values):
+        return True
+    if urlsplit(base_url).scheme != "https":
+        raise ValueError("Control Plane TLS credentials may be used only with HTTPS")
+    if ca_file is None:
+        raise ValueError("Control Plane TLS configuration requires a CA bundle")
+    if require_client_certificate and certificate_file is None and private_key_file is None:
+        raise ValueError(
+            "Worker mTLS requires CA, client certificate, and private-key files together"
+        )
+    if (certificate_file is None) != (private_key_file is None):
+        raise ValueError(
+            "Worker mTLS requires client certificate and private-key files together"
+        )
+    if private_key_password is not None and certificate_file is None:
+        raise ValueError("Worker mTLS private-key password requires a client certificate")
+    configured_files = tuple(
+        value for value in (ca_file, certificate_file, private_key_file) if value is not None
+    )
+    if any(not value for value in configured_files):
+        raise ValueError("Control Plane TLS file paths must not be blank")
+    ca_path = Path(ca_file)
+    try:
+        if not ca_path.is_file() or ca_path.stat().st_size > _MAX_CONTROL_PLANE_CA_BUNDLE_BYTES:
+            raise ValueError("Worker mTLS CA bundle must be a bounded regular file")
+        ca_bundle = ca_path.read_bytes()
+    except OSError as exc:
+        raise ValueError("Worker mTLS CA bundle cannot be read") from exc
+    if not ca_bundle or len(ca_bundle) > _MAX_CONTROL_PLANE_CA_BUNDLE_BYTES:
+        raise ValueError("Worker mTLS CA bundle must be a bounded regular file")
+    try:
+        ca_pem = ca_bundle.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Worker mTLS CA bundle must contain PEM certificates") from exc
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
+    try:
+        context.load_verify_locations(cadata=ca_pem)
+        if certificate_file is not None:
+            assert private_key_file is not None
+            context.load_cert_chain(
+                certfile=certificate_file,
+                keyfile=private_key_file,
+                password=private_key_password,
+            )
+    except (OSError, ssl.SSLError) as exc:
+        raise ValueError("Worker mTLS certificate configuration is invalid") from exc
+    return context
+
+
 class ControlPlaneClient:
     """Reuse one bounded HTTP connection pool for all daemon operations."""
 
@@ -171,6 +260,11 @@ class ControlPlaneClient:
         base_url: str,
         bearer_token: str,
         allow_plaintext_http_for_lab: bool = False,
+        tls_ca_file: str | None = None,
+        tls_client_cert_file: str | None = None,
+        tls_client_key_file: str | None = None,
+        tls_client_key_password: str | None = None,
+        require_client_certificate: bool = True,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         trusted_bearer_token = validate_bearer_token(
@@ -181,6 +275,14 @@ class ControlPlaneClient:
             base_url,
             allow_plaintext_http_for_lab=allow_plaintext_http_for_lab,
         )
+        tls_context = _control_plane_tls_context(
+            base_url=trusted_base_url,
+            ca_file=tls_ca_file,
+            certificate_file=tls_client_cert_file,
+            private_key_file=tls_client_key_file,
+            private_key_password=tls_client_key_password,
+            require_client_certificate=require_client_certificate,
+        )
         timeout = httpx.Timeout(connect=5, read=30, write=10, pool=5)
         self._client = httpx.AsyncClient(
             base_url=trusted_base_url,
@@ -189,6 +291,7 @@ class ControlPlaneClient:
                 "Accept-Encoding": "identity",
             },
             timeout=timeout,
+            verify=tls_context,
             follow_redirects=False,
             transport=transport,
             trust_env=False,
@@ -218,6 +321,63 @@ class ControlPlaneClient:
         if response.status_code == 204:
             return None
         return self._validated(response, ClaimedJob)
+
+    async def dispatch_pentest_recon(
+        self,
+        request: PentestReconOperatorDispatchRequest,
+    ) -> PentestReconOperatorDispatchView:
+        """Invoke one deployment-pinned approved Recon over the live Worker session."""
+
+        try:
+            response = await self._request(
+                "POST",
+                "/v1/worker/pentest/recon/dispatch",
+                json=request.model_dump(mode="json", by_alias=True),
+                timeout=httpx.Timeout(connect=5, read=300, write=10, pool=5),
+            )
+        except ControlPlaneLeaseLost as exc:
+            raise ControlPlanePentestReconRejected(
+                "Control Plane rejected the approved Pentest Recon dispatch"
+            ) from exc
+        return self._validated(response, PentestReconOperatorDispatchView)
+
+    async def dispatch_pentest_replay(
+        self,
+        request: PentestReplayOperatorDispatchRequest,
+    ) -> PentestReplayOperatorDispatchView:
+        """Invoke one independently authorized Replay over its dedicated Worker session."""
+
+        try:
+            response = await self._request(
+                "POST",
+                "/v1/worker/pentest/replay/dispatch",
+                json=request.model_dump(mode="json", by_alias=True),
+                timeout=httpx.Timeout(connect=5, read=300, write=10, pool=5),
+            )
+        except ControlPlaneLeaseLost as exc:
+            raise ControlPlanePentestReplayRejected(
+                "Control Plane rejected the approved Pentest Replay dispatch"
+            ) from exc
+        return self._validated(response, PentestReplayOperatorDispatchView)
+
+    async def run_pentest_operator_workflow(
+        self,
+        request: PentestOperatorWorkflowRequest,
+    ) -> PentestOperatorWorkflowView:
+        """Prepare or finalize one resumable, validity-only operator workflow."""
+
+        try:
+            response = await self._request(
+                "POST",
+                "/v1/pentest/workflows/run",
+                json=request.model_dump(mode="json", by_alias=True),
+                timeout=httpx.Timeout(connect=5, read=300, write=10, pool=5),
+            )
+        except ControlPlaneLeaseLost as exc:
+            raise ControlPlanePentestWorkflowRejected(
+                "Control Plane rejected the Pentest operator workflow"
+            ) from exc
+        return self._validated(response, PentestOperatorWorkflowView)
 
     async def heartbeat(self, job_id: str, request: LeaseRequest) -> JobView:
         response = await self._request(

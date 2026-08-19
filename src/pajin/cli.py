@@ -97,6 +97,20 @@ from pajin.control_plane.attestation import (
     load_replay_attestation_trust_anchor,
     verify_portable_replay_attestation,
 )
+from pajin.control_plane.client import ControlPlaneClient
+from pajin.control_plane.pentest_recon import (
+    PentestReconOperatorDispatchRequest,
+    PentestReconOperatorDispatchView,
+)
+from pajin.control_plane.pentest_replay import (
+    PentestReplayOperatorDispatchRequest,
+    PentestReplayOperatorDispatchView,
+)
+from pajin.control_plane.pentest_workflow import (
+    PentestOperatorWorkflowRequest,
+    PentestOperatorWorkflowView,
+    load_pentest_workflow_finalization_bundle,
+)
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
@@ -144,6 +158,10 @@ from pajin.modes.ctf import (
     CTFTriagePlannerRuntime,
     load_ctf_challenge,
 )
+from pajin.modes.pentest import (
+    compile_pentest_assessment_artifact,
+    load_pentest_campaign_compilation,
+)
 from pajin.policy.engine import PolicyEngine
 from pajin.providers import (
     OpenAICompatibleChatTool,
@@ -166,6 +184,7 @@ from pajin.runtime.control import (
 )
 from pajin.runtime.secrets import SecretBroker
 from pajin.runtime.store import (
+    RunStore,
     load_verified_run_artifacts,
     verify_run_integrity,
 )
@@ -1387,6 +1406,311 @@ def _print_campaign_builder_draft(draft: CampaignProfileScopeDraft) -> None:
     table.add_row("Draft state", draft.draft_state)
     table.add_row("Execution authorized", "false")
     console.print(table)
+
+
+@app.command("pentest-compile")
+def compile_pentest_campaign(
+    assessment: Annotated[Path, typer.Argument(exists=True, readable=True, dir_okay=False)],
+    authorization_bundle: Annotated[
+        Path,
+        typer.Option("--authorization-bundle", exists=True, readable=True, dir_okay=False),
+    ],
+    trust_anchor: Annotated[
+        Path,
+        typer.Option("--trust-anchor", exists=True, readable=True, dir_okay=False),
+    ],
+    authorization_evidence: Annotated[
+        Path,
+        typer.Option("--authorization-evidence", exists=True, readable=True, dir_okay=False),
+    ],
+    expected_subject: Annotated[str, typer.Option("--expected-subject")],
+    output: Annotated[Path, typer.Option("--output", "-o")] = Path(".pajin/pentest-compilations"),
+    run_id: Annotated[str | None, typer.Option("--run-id")] = None,
+) -> None:
+    """Verify signed Pentest scope and compile a non-executable Campaign artifact."""
+
+    with _cli_error_boundary("Cannot compile Pentest assessment", exit_code=2):
+        artifact = compile_pentest_assessment_artifact(
+            assessment,
+            authorization_bundle_path=authorization_bundle,
+            trust_anchor_path=trust_anchor,
+            authorization_evidence_path=authorization_evidence,
+            expected_subject=expected_subject,
+            evaluated_at=datetime.now(UTC),
+            run_id=run_id or RunStore.new_run_id(),
+            output_root=output,
+        )
+    authority = artifact.authority
+    _print_cli_field("Compilation authority", authority.authority_id)
+    _print_cli_field("Campaign", authority.campaign.campaign_id)
+    _print_cli_field("Run", authority.run_id)
+    _print_cli_field("Authorized subject", authority.authorization_verification.authorized_subject)
+    _print_cli_field("Targets", len(authority.campaign.compile_inputs))
+    _print_cli_field("Compilation artifact", artifact.path.resolve())
+    console.print(
+        "No Capability activation, approval, Permit, Worker, network, "
+        "or execution authority was created."
+    )
+
+
+async def _dispatch_pentest_recon_client(
+    *,
+    control_plane_url: str,
+    worker_token: str,
+    tls_ca_file: Path,
+    mtls_certificate_file: Path,
+    mtls_private_key_file: Path,
+    mtls_private_key_password: str | None,
+    request: PentestReconOperatorDispatchRequest,
+) -> PentestReconOperatorDispatchView:
+    async with ControlPlaneClient(
+        base_url=control_plane_url,
+        bearer_token=worker_token,
+        tls_ca_file=str(tls_ca_file),
+        tls_client_cert_file=str(mtls_certificate_file),
+        tls_client_key_file=str(mtls_private_key_file),
+        tls_client_key_password=mtls_private_key_password,
+    ) as client:
+        return await client.dispatch_pentest_recon(request)
+
+
+@app.command("pentest-recon-dispatch")
+def dispatch_pentest_recon(
+    compilation_artifact: Annotated[
+        Path,
+        typer.Argument(exists=True, readable=True, dir_okay=False),
+    ],
+    deployment_id: Annotated[str, typer.Option("--deployment-id")],
+    intent_digest: Annotated[str, typer.Option("--intent-digest")],
+    approval_id: Annotated[str, typer.Option("--approval-id")],
+    control_plane_url: Annotated[str, typer.Option("--control-plane-url")],
+    tls_ca_file: Annotated[
+        Path,
+        typer.Option("--tls-ca-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_certificate_file: Annotated[
+        Path,
+        typer.Option("--mtls-certificate-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_private_key_file: Annotated[
+        Path,
+        typer.Option("--mtls-private-key-file", exists=True, readable=True, dir_okay=False),
+    ],
+    worker_token_env: Annotated[
+        str,
+        typer.Option("--worker-token-env"),
+    ] = "PAJIN_CP_WORKER_TOKEN",
+    mtls_private_key_password_env: Annotated[
+        str | None,
+        typer.Option("--mtls-private-key-password-env"),
+    ] = None,
+) -> None:
+    """Dispatch one already-approved Recon through a direct-mTLS Worker route."""
+
+    with _cli_error_boundary("Cannot dispatch approved Pentest Recon", exit_code=2):
+        compilation = load_pentest_campaign_compilation(compilation_artifact)
+        worker_token = os.environ.get(worker_token_env)
+        if worker_token is None or not worker_token.strip():
+            raise ValueError("Worker bearer credential environment variable is unavailable")
+        private_key_password = (
+            os.environ.get(mtls_private_key_password_env)
+            if mtls_private_key_password_env is not None
+            else None
+        )
+        request = PentestReconOperatorDispatchRequest(
+            deploymentId=deployment_id,
+            compilationAuthorityDigest=compilation.authority_digest,
+            intentDigest=intent_digest,
+            approvalId=approval_id,
+        )
+        view = asyncio.run(
+            _dispatch_pentest_recon_client(
+                control_plane_url=control_plane_url,
+                worker_token=worker_token,
+                tls_ca_file=tls_ca_file,
+                mtls_certificate_file=mtls_certificate_file,
+                mtls_private_key_file=mtls_private_key_file,
+                mtls_private_key_password=private_key_password,
+                request=request,
+            )
+        )
+    _print_cli_field("Deployment", view.deployment_id)
+    _print_cli_field("Run", view.run_id)
+    _print_cli_field("Permit", view.permit_id)
+    _print_cli_field("Dispatched", str(view.dispatched).lower())
+    if view.outcome_id is not None:
+        _print_cli_field("Outcome", view.outcome_id)
+    _print_cli_field("Sealed Run root", view.sealed_run_root_digest)
+
+
+async def _dispatch_pentest_replay_client(
+    *,
+    control_plane_url: str,
+    worker_token: str,
+    tls_ca_file: Path,
+    mtls_certificate_file: Path,
+    mtls_private_key_file: Path,
+    mtls_private_key_password: str | None,
+    request: PentestReplayOperatorDispatchRequest,
+) -> PentestReplayOperatorDispatchView:
+    async with ControlPlaneClient(
+        base_url=control_plane_url,
+        bearer_token=worker_token,
+        tls_ca_file=str(tls_ca_file),
+        tls_client_cert_file=str(mtls_certificate_file),
+        tls_client_key_file=str(mtls_private_key_file),
+        tls_client_key_password=mtls_private_key_password,
+    ) as client:
+        return await client.dispatch_pentest_replay(request)
+
+
+@app.command("pentest-replay-dispatch")
+def dispatch_pentest_replay(
+    compilation_artifact: Annotated[
+        Path,
+        typer.Argument(exists=True, readable=True, dir_okay=False),
+    ],
+    deployment_id: Annotated[str, typer.Option("--deployment-id")],
+    intent_digest: Annotated[str, typer.Option("--intent-digest")],
+    approval_id: Annotated[str, typer.Option("--approval-id")],
+    source_admission_digest: Annotated[
+        str,
+        typer.Option("--source-admission-digest"),
+    ],
+    control_plane_url: Annotated[str, typer.Option("--control-plane-url")],
+    tls_ca_file: Annotated[
+        Path,
+        typer.Option("--tls-ca-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_certificate_file: Annotated[
+        Path,
+        typer.Option("--mtls-certificate-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_private_key_file: Annotated[
+        Path,
+        typer.Option("--mtls-private-key-file", exists=True, readable=True, dir_okay=False),
+    ],
+    worker_token_env: Annotated[
+        str,
+        typer.Option("--worker-token-env"),
+    ] = "PAJIN_CP_REPLAY_WORKER_TOKEN",
+    mtls_private_key_password_env: Annotated[
+        str | None,
+        typer.Option("--mtls-private-key-password-env"),
+    ] = None,
+) -> None:
+    """Dispatch one approved Replay through its dedicated direct-mTLS Worker route."""
+
+    with _cli_error_boundary("Cannot dispatch approved Pentest Replay", exit_code=2):
+        compilation = load_pentest_campaign_compilation(compilation_artifact)
+        worker_token = os.environ.get(worker_token_env)
+        if worker_token is None or not worker_token.strip():
+            raise ValueError("Replay Worker bearer credential environment variable is unavailable")
+        private_key_password = (
+            os.environ.get(mtls_private_key_password_env)
+            if mtls_private_key_password_env is not None
+            else None
+        )
+        request = PentestReplayOperatorDispatchRequest(
+            deploymentId=deployment_id,
+            compilationAuthorityDigest=compilation.authority_digest,
+            intentDigest=intent_digest,
+            approvalId=approval_id,
+            sourceAdmissionDigest=source_admission_digest,
+        )
+        view = asyncio.run(
+            _dispatch_pentest_replay_client(
+                control_plane_url=control_plane_url,
+                worker_token=worker_token,
+                tls_ca_file=tls_ca_file,
+                mtls_certificate_file=mtls_certificate_file,
+                mtls_private_key_file=mtls_private_key_file,
+                mtls_private_key_password=private_key_password,
+                request=request,
+            )
+        )
+    _print_cli_field("Deployment", view.deployment_id)
+    _print_cli_field("Run", view.run_id)
+    _print_cli_field("Replay plan", view.replay_plan_id)
+    _print_cli_field("Replay binding", view.replay_binding_id)
+    _print_cli_field("Permit", view.permit_id)
+    _print_cli_field("Dispatched", str(view.dispatched).lower())
+    if view.outcome_id is not None:
+        _print_cli_field("Outcome", view.outcome_id)
+    _print_cli_field("Sealed Run root", view.sealed_run_root_digest)
+
+
+async def _run_pentest_operator_workflow_client(
+    *,
+    control_plane_url: str,
+    operator_token: str,
+    tls_ca_file: Path,
+    request: PentestOperatorWorkflowRequest,
+) -> PentestOperatorWorkflowView:
+    async with ControlPlaneClient(
+        base_url=control_plane_url,
+        bearer_token=operator_token,
+        tls_ca_file=str(tls_ca_file),
+        require_client_certificate=False,
+    ) as client:
+        return await client.run_pentest_operator_workflow(request)
+
+
+@app.command("pentest-workflow-run")
+def run_pentest_operator_workflow(
+    deployment_id: Annotated[str, typer.Option("--deployment-id")],
+    replay_comparison_digest: Annotated[
+        str,
+        typer.Option("--replay-comparison-digest"),
+    ],
+    hypothesis_id: Annotated[str, typer.Option("--hypothesis-id")],
+    control_plane_url: Annotated[str, typer.Option("--control-plane-url")],
+    tls_ca_file: Annotated[
+        Path,
+        typer.Option("--tls-ca-file", exists=True, readable=True, dir_okay=False),
+    ],
+    finalization_bundle: Annotated[
+        Path | None,
+        typer.Option("--finalization-bundle", exists=True, readable=True, dir_okay=False),
+    ] = None,
+    operator_token_env: Annotated[
+        str,
+        typer.Option("--operator-token-env"),
+    ] = "PAJIN_CP_OPERATOR_TOKEN",
+) -> None:
+    """Prepare or finalize one deployment-pinned Pentest evidence workflow."""
+
+    with _cli_error_boundary("Cannot run Pentest operator workflow", exit_code=2):
+        operator_token = os.environ.get(operator_token_env)
+        if operator_token is None or not operator_token.strip():
+            raise ValueError("Operator bearer credential environment variable is unavailable")
+        finalization = (
+            load_pentest_workflow_finalization_bundle(finalization_bundle)
+            if finalization_bundle is not None
+            else None
+        )
+        view = asyncio.run(
+            _run_pentest_operator_workflow_client(
+                control_plane_url=control_plane_url,
+                operator_token=operator_token,
+                tls_ca_file=tls_ca_file,
+                request=PentestOperatorWorkflowRequest(
+                    deploymentId=deployment_id,
+                    replayComparisonDigest=replay_comparison_digest,
+                    hypothesisId=hypothesis_id,
+                    finalization=finalization,
+                ),
+            )
+        )
+    _print_cli_field("Workflow", view.workflow_id)
+    _print_cli_field("Status", view.status)
+    _print_cli_field("Confirmation Intent", view.confirmation_intent_id)
+    if view.finding_id is not None:
+        _print_cli_field("Finding", view.finding_id)
+    if view.report_id is not None:
+        _print_cli_field("Local report", view.report_id)
+    _print_cli_field("External delivery authorized", "false")
+    _print_cli_field("Additional execution authorized", "false")
 
 
 @app.command("campaign-draft-create")

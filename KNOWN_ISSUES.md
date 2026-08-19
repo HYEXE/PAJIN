@@ -8,6 +8,39 @@
 - 2026-08-11 전체 `ruff format --check src tests containers`는 기존 166개 파일을 재포맷 대상으로 보고했다.
   대상 Python은 통과했다. unrelated 대규모 format diff는 별도 작업 전까지 만들지 않는다.
 
+## Windows managed Artifact POSIX durability
+
+- Windows의 managed repository/import 회귀는 POSIX directory `fsync` 부재로 실패한다. 2026-08-18 확대
+  묶음은 같은 원인으로 `33 passed, 12 skipped, 55 failed`였다. 정책을 우회하지 않고 Linux/WSL에서 검증한다.
+
+## UX-007B-R deployment validation limits
+
+- Worker TLS는 bearer subject/SPKI에 결박하고 proxy header를 거부한다. Avast가 가로채는 Windows live
+  handshake는 보안 제품을 우회하지 않고 WSL에서 검증한다.
+- Human ABAC action은 서로 분리된 exact 정책이며 current Approval GET은 비변경 projection이다. unset은
+  RBAC compatibility이지 production narrowing 증명이 아니다. Replay Worker token/profile partial은 거부한다.
+- UX-007O unknown은 새 작업·successor를 막는다. UX-007P2의 pinned MinIO·boto3 single-node local target은
+  WSL에서 실제 TLS/S3 8-case를 통과했지만 production·multi-node 선택이 아니다. UX-007Q는 exact evidence,
+  1시간 freshness, append-only revocation/admission과 pre-call gate를 구현했다. 세 store는 단일 transaction이
+  아니며 외부 checkpoint 보관이 필요하다. UX-007R1은 AWS S3 Seoul custody 계약만 고정했다. R2 live
+  inventory·isolation·restore·cost 승인, 자동 cleanup, cross-host fence·public API는 닫혀 있다.
+
+## PENTEST-001C2~003D Recon·validity Finding 경계
+
+- 보장: signed GET, Observation, 독립 Replay, exact Oracle·세 Control, current Graph `plan` admission과
+  validity-only Finding까지 전체 sealed predecessor를 재검증한다.
+- 제한: direct-call이며 caller가 signed predecessor와 local Graph·Run authority를 공급한다. cross-host fence,
+  generic Finding/API/report와 historical Graph authority는 없다.
+- 비권위: 003D는 validity만 confirmed한다. impact·severity는 `not-evaluated-information-only`이고 Graph mutation,
+  report·external delivery, Scope 확장, Decision issuance와 추가 execution은 계속 닫혀 있다.
+
+## PENTEST-004A/B/C1 경계
+
+- 보장: compile은 signed 입력, Recon은 deployment·현재 authority·direct-mTLS를 재검증한다. workflow는 봉인된
+  source·Replay·세 Control과 외부 서명 current-Graph finalization만 validity-only local report로 조합한다.
+- 제한: local Gateway가 Docker를 직접 호스팅하며 distributed Worker·cross-host fence·live multi-Worker coordination은
+  없다. CLI는 누락 권위를 만들지 않고 LLM/Web/RAG/MCP/System 공격 Capability도 제공하지 않는다.
+
 ## UX-006B authenticated external delivery 경계
 
 - 보장: exact export·registered sink·authorization·one-use lease·stable key를 dispatch 전 journal에 결박한다.
@@ -84,22 +117,8 @@
 
 ## UX-001B3 Campaign Builder compiler handoff 경계
 
-- 상태: Bug Bounty Program·단일 CTF Challenge 기반 content-addressed draft의 local CLI 생성·조회,
-  operator-only redacted 조회와 기존 source-specific compiler handoff를 구현함
-- 현재 보장: POST handoff는 B1 verified reader와 exact digest로 원 typed source를 다시 검증한다. Bug Bounty는
-  별도 기존 `BugBountyScopeApproval`, CTF는 source에 결박된 기존 authorization을 server current time에
-  각 기존 compiler로 전달한다. source kind 치환, caller-controlled evaluation time, stale·foreign approval,
-  inactive CTF authorization, digest/source 변조는 fail closed한다. 응답 Campaign digest와 false authority
-  marker도 다시 검증한다.
-- 제한: draft listing·편집·삭제·retention, Campaign 파일·DB persistence, durable compilation audit event,
-  Pentest·AI Assessment·CTF Suite source는 지원하지 않는다. 기존 Bug Bounty approval wire의 서명·발급자
-  인증을 새로 추가하지 않으며 local 파일 접근 통제와 보존 수명은 host와 operator가 관리한다.
-- 영향: operator는 검증된 draft를 기존 compiler로 명시적으로 넘겨 Campaign 값을 받을 수 있다. 이 결과는
-  managed Artifact·Graph·Run evidence로 admission되지 않고 Capability·Permit·Run submission·execution
-  authority를 만들지 않는다. 실행에는 이후 정상 Campaign admission과 기존 실행 권위가 별도로 필요하다.
-- 해소 조건: Campaign을 지속·실행 흐름에 연결할 때 새 우회 경로가 아니라 기존 admission·approval·Capability·
-  Permit·Run 경계를 재사용하고, approval provenance나 compilation audit를 강화하면 별도 버전형 authority로
-  정의한다.
+- 보장: Bug Bounty·CTF draft의 verified source와 별도 기존 approval을 기존 compiler에 전달한다.
+- 제한: Pentest는 별도 `pentest-compile` 경로이며 두 builder 모두 실행 권위를 만들지 않는다.
 
 ## VAL-004B/004C mode-neutral WALK evidence 경계
 
@@ -742,25 +761,17 @@
 
 ## Windows 애플리케이션 제어에 의한 임시 console-script 차단
 
-- 상태: 활성 환경 제약
-- 마지막 재현: 2026-08-06
-- 명령:
-  `.\.venv\Scripts\python.exe -m pytest -q tests\test_packaging_entrypoints.py::test_distribution_artifacts_work_in_a_clean_no_dependency_install`
-- 결과: clean source에서 wheel·sdist build, wheel install, isolated import와 metadata 검증까지 통과한 뒤
-  임시 venv의 `pajin-control-plane.exe` 또는 후속 console-script 실행이 `WinError 4551`로 차단됐다.
-  비샌드박스 실행과 저장소 내부 전용 basetemp에서도 동일했다.
-- 영향: 설치된 console-wrapper의 실제 `--help`·invalid option·missing extra 동작 한 건을 이 Windows
-  정책에서 완료할 수 없다. 해당 smoke를 제외한 packaging/entrypoint 16건은 통과했다.
-- 해소 조건: Linux CI 또는 조직 AppControl이 빌드 산출물 실행을 허용하는 서명된 환경에서 같은
-  테스트를 실행한다. 테스트 assertion이나 애플리케이션 제어 정책을 우회하지 않는다.
+- 2026-08-06 clean wheel·sdist 설치와 metadata 검증 뒤 임시 venv console-script가 `WinError 4551`로
+  차단됐다. packaging/entrypoint 16건은 통과했지만 installed wrapper smoke는 Linux CI 또는 승인된
+  AppControl 환경에서 재검증해야 한다. assertion이나 정책을 우회하지 않는다.
+- 2026-08-19 현재 `.venv\Scripts\pajin.exe pentest-compile --help`도 출력 없이 정지해 중단했다.
+  `.venv\Scripts\python.exe -m pajin.cli pentest-compile --help`는 통과했다.
 
 ## 동기화된 macOS `.venv`와 Windows pytest 임시 경로
 
-- 상태: 활성, 마지막 재현 2026-08-12
-- 증상: 동기화 `.venv`는 macOS arm64, 새 venv는 `OPENSSL_Applink`, 기본 pytest temp는 `WinError 5`다.
-- 대안: 저장소 밖 ASCII 환경에 `uv --system-certs sync --frozen`과 required extras를 적용하고 전용
-  `--basetemp`를 쓴다. exact lock 검증은 통과했고 metadata·lock은 바뀌지 않았다.
-- 해소 조건: Windows 기본 uv 환경과 pytest temp ACL 복구. Linux·symlink 검증은 별도다.
+- 2026-08-12 동기화 `.venv`는 macOS arm64였고 새 venv는 `OPENSSL_Applink`, 기본 pytest temp는
+  `WinError 5`였다. 저장소 밖 ASCII 환경의 `uv --system-certs sync --frozen`과 전용 `--basetemp`로
+  exact lock을 검증했다. Windows uv/temp ACL과 Linux symlink 검증은 별도다.
 
 ## Git OpenSSL CA 경로
 
@@ -769,12 +780,11 @@
   적용한다.
 ## Docker daemon 가용성
 
-- 상태: 현재 가용, 세션 의존 환경 제약
-- 마지막 관찰: 2026-08-02
-- 현재 결과: Docker Desktop 4.78.0 / Engine 29.5.3에서 P0-C2B2B SQLi, P0-D2B AI/RAG/MCP,
-  P0-D3B2 Hybrid, P0-E2B ZAP와 P0-E3B2 local llama.cpp/Qwen governed measurement가 통과했고 종료 뒤
-  관리 대상 container와 network가 남지 않았다.
-- 영향: Docker Desktop이 다음 세션에 자동으로 가용하다는 보장은 없다. daemon이 꺼져 있으면
-  opt-in live test는 실행할 수 있지만 일반 fake-provider 검증은 계속 가능하다.
-- 필요한 조치: 실제 컨테이너 증거가 필요한 작업 전에 daemon 상태와 exact image ID를 다시
-  확인한다. 실행하지 않은 live 검증을 성공으로 보고하지 않는다.
+- 2026-08-02 Docker Desktop 4.78.0 / Engine 29.5.3에서 관련 governed live 측정과 cleanup이
+  통과했다. 다음 세션 가용성은 보장되지 않으므로 실제 컨테이너 증거가 필요할 때 daemon과 exact
+  image ID를 다시 확인한다. fake-provider 검증과 실행하지 않은 live 검증을 구분한다.
+
+## PENTEST-004C2A~B1 Worker 실행·조정 경계
+
+- B1은 signed five-stage journal·reconcile-only·004C1 handoff까지다. B2 adapter 전에는 injection-only·503이며
+  cross-host fence가 없다. Windows Run root도 create-only 경로 길이 여유가 필요하다.

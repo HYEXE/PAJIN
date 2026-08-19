@@ -235,6 +235,7 @@ def test_public_lifecycle_facade_delegates_without_changing_results() -> None:
     )
     service = object.__new__(ControlPlaneService)
     service._lifecycle = cast(ControlPlaneLifecycleService, lifecycle)
+    service._maintenance_authorizer = None
 
     cancelled = service.cancel_run(
         "run-1",

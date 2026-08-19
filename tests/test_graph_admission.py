@@ -484,3 +484,97 @@ def test_authority_revalidates_mutated_proposal_objects_before_admission() -> No
         authority.submit(proposal)
 
     assert event_log.events() == ()
+
+
+def test_permit_only_observation_lineage_is_admitted_without_fabricated_grant() -> None:
+    base = _observation_proposal()
+    lineage_payload = base.lineage.model_dump(mode="json", by_alias=True)
+    lineage_payload.pop("capabilityGrantId")
+    lineage_payload.pop("capabilityGrantDigest")
+    lineage_payload.update(
+        {
+            "actionPermitId": "action-permit:graph:1",
+            "actionPermitDigest": DIGEST_B,
+        }
+    )
+    lineage = GraphProposalLineage.model_validate(lineage_payload)
+    action = GraphAction(
+        campaignId=CAMPAIGN,
+        requestId=lineage.request_id,
+        requestDigest=lineage.request_digest,
+        authorityKind=GraphAuthorityKind.ACTION_PERMIT,
+        authorityId=lineage.action_permit_id,
+        authorityDigest=lineage.action_permit_digest,
+        capabilityId=lineage.capability_id,
+        capabilityVersion=lineage.capability_version,
+        capabilityDigest=lineage.capability_digest,
+        toolId=base.action.tool_id,
+        targetDigest=base.action.target_digest,
+        status=base.action.status,
+        executedAt=base.action.executed_at,
+    )
+    edges = [
+        GraphEdge(
+            campaignId=CAMPAIGN,
+            relation=GraphRelation.PRODUCES,
+            source=graph_node_ref(action),
+            target=graph_node_ref(base.observation),
+            authorityId="pajin.graph.admission-authority",
+            authorityDigest=DIGEST_A,
+        ),
+        GraphEdge(
+            campaignId=CAMPAIGN,
+            relation=GraphRelation.SUPPORTED_BY,
+            source=graph_node_ref(base.observation),
+            target=graph_node_ref(base.evidence_nodes[0]),
+            authorityId="pajin.graph.admission-authority",
+            authorityDigest=DIGEST_A,
+        ),
+    ]
+    proposal = ObservationProposal(
+        proposalId="proposal:observation:permit-only",
+        producerId=base.producer_id,
+        producerVersion=base.producer_version,
+        producerDigest=base.producer_digest,
+        lineage=lineage,
+        action=action,
+        observation=base.observation,
+        evidenceNodes=base.evidence_nodes,
+        edges=sorted(edges, key=lambda item: item.edge_id),
+    )
+    authority, _ = _authority([proposal])
+
+    result = authority.submit(proposal)
+
+    assert result.event.decision is GraphAdmissionDecision.ADMITTED
+    assert result.event.capability_grant_id is None
+    assert result.event.capability_grant_digest is None
+    assert result.event.action_permit_id == "action-permit:graph:1"
+
+
+def test_expected_event_head_rejects_stale_proposal_inside_writer_lock() -> None:
+    proposal = _surface_proposal(
+        proposal_id="proposal:surface:stale-snapshot",
+    )
+    authority, event_log = _authority([proposal])
+
+    result = authority.submit_if_current(
+        proposal,
+        expected_event_log_head_digest=DIGEST_A,
+    )
+
+    assert result.event.decision is GraphAdmissionDecision.REJECTED
+    assert result.event.reason is GraphAdmissionReason.STALE_SNAPSHOT
+    assert len(event_log.events()) == 1
+
+
+def test_graph_lineage_rejects_missing_or_partial_execution_authority() -> None:
+    payload = _lineage().model_dump(mode="json", by_alias=True)
+    payload.pop("capabilityGrantId")
+    payload.pop("capabilityGrantDigest")
+    with pytest.raises(ValidationError, match="Capability Grant or Action Permit"):
+        GraphProposalLineage.model_validate(payload)
+
+    payload["actionPermitId"] = "action-permit:graph:partial"
+    with pytest.raises(ValidationError, match="provided together"):
+        GraphProposalLineage.model_validate(payload)

@@ -2,8 +2,8 @@
 
 - 상태 권위: 이 파일
 - 기존 Notion 로드맵 최종 대조: 2026-08-01, `main@a94df30`
-- 현재 단계: Phase 9 — Product UX·Operations
-- 현재 우선순위: OIDC·MFA·ABAC·Worker Identity·mTLS
+- 현재 단계: Phase 11 — LLM Pentest Productization
+- 현재 우선순위: `PENTEST-004C2B2` concrete child deployment adapters
 
 ## 제품 목표
 
@@ -20,7 +20,7 @@ File Upload
 -> Internal Data Access
 ```
 
-## 현재 마일스톤: Phase 4
+## 완료된 핵심 기반: Phase 4
 
 - [x] `WALK-001` 정확한 File Upload Surface 발견
 - [x] `WALK-002` Snapshot-bound RAG Injection Hypothesis 생성
@@ -46,18 +46,8 @@ WALK-004는 sealed `registered-not-authorized` Observation과 bounded replan만 
 만들지 않는다. WALK-005는 별도로 승인·Permit된 결과만 기존 Candidate·Validation·Replay·Report·Retest
 authority에 연결한다. 상세 wire와 음성 경계는 각 WALK 계약이 소유한다.
 
-`WALK-005A`는 완료됐다. WALK-004 authority와 별도 실행 Run을 다시 열고, 정확한 승인
-receipt가 canonical CapabilityGrant digest에 결박된 채 consumed ActionPermit dispatch보다 먼저
-봉인됐으며 claimed·terminal event가 같은 Grant와 기존 reconciliation의 성공한 Gateway
-lifecycle을 증명할 때만 미확정 A02 Candidate와 validity·impact·severity Atomic Claim을 생성한다.
-의심 입력만으로 승인 실패나 내부 데이터 접근을 합성하지 않으며, 기본 demo MCP
-inspector는 해당 대상 관찰값을 내지 않으므로 이 Candidate를 만들 수 없다.
-
-`WALK-005B1`은 기존 KISA M03/M06/A04 Replay를 이름만 바꾸지 않고, WALK-005A의 exact
-validity Claim과 원 실행·요청·Tool·target·parameter digest를 content-addressed 비실행 Plan에
-결박한다. replay Run·request·approval·Grant·Permit·dispatch·Worker identity는 모두 fresh해야
-한다. 다음 `WALK-005B2`가 이 Plan digest를 dispatch 전에 봉인하고 별도 Gateway 실행과 Claim
-검증 projection을 만들기 전까지 Candidate는 `candidate-admitted-not-confirmed`를 벗어나지 않는다.
+`WALK-005A~B1`은 승인·Permit·Gateway 증거 기반 Candidate와 fresh validity Replay Plan을
+구현했다. 상세 권위와 음성 경계는 해당 버전형 계약이 소유한다.
 
 `WALK-005B2`는 B1 Plan/Claim digest와 exact approval·request·Grant를 replay receipt에 결박해
 Permit claim 전에 봉인하고, 기존 WALK-005A verifier로 별도 Gateway 실행을 재검증한다. 원 실행
@@ -124,22 +114,6 @@ ID와 단조 fence를 provider 계약에 전달하고 intent-before-call·valida
 cleanup을 복구하기 전 새 reset을 실행하지 않는다. measurement key registry/rotation과 signed
 activation은 후속 로컬 슬라이스에서 구현됐고, 실제 Docker/provider evidence·network policy는
 daemon 가용성을 전제로 하는 `P0-C2B2B`로 남긴다.
-
-`P0-C2B1`은 P0-C1 Trust Anchor를 보존한 별도 measurement key registry와
-active·retired·revoked lifecycle을 추가했다. 새 측정은 provider reset 전에 active key를 exact
-adapter definition과 대조하고, retired key는 bounded historical verification만 허용하며 revoked key는
-과거 증거도 거부한다. revision 2부터 exact predecessor registry를 sealed Admission Authority에
-포함해 rollback·gap·key substitution·resurrection을 차단한다. P0-C1/P0-C2A가 공통 runner Protocol을
-노출하므로 lifecycle을 중복 구현하지 않는다. registry distribution signature·durable latest revision은
-P0-C2B2A1, BENCH-003B mandatory admission은 P0-C2B2A2에서 구현됐고 실제 provider
-evidence·network policy는 `P0-C2B2B`로 남긴다.
-
-`P0-C2B2A1`은 measurement registry를 별도 Ed25519 distribution key로 서명하고, 7일 이하의
-bounded bundle에 현재·직전 registry와 이전 bundle digest를 함께 결박한다. host-local SQLite
-activation store는 revision 1만 bootstrap하고 이후 contiguous revision만 append-only로 수용해
-restart 뒤 rollback·gap·equivocation·predecessor substitution을 차단한다. verified activation의
-mandatory sealed Harness 결박은 P0-C2B2A2에서 구현됐고, 실제 Docker/provider evidence와 network
-policy는 `P0-C2B2B`로 남긴다.
 
 `P0-C2B2A2`는 signed activation을 provider reset 전에 필수화하고, 실행 뒤 exact Target Run,
 P0-C2B1 Admission Run, durable activation을 하나의 sealed Harness Authority로 결박한다. 전용
@@ -341,16 +315,9 @@ Proposal·Record다.
 
 ## 이전 기반 작업
 
-Phase 2 Capability Authoring(`CAP-001`~`CAP-006`)과 구조적 Phase 3 Graph, Discovery,
-Deterministic Multi-wave(`GRAPH-001`~`GRAPH-006`, `DISC-001`~`DISC-003D`, `ORCH-001/002`)는
-구현됐다. 실제 provider-backed immutable retention, 독립 anchor/KMS, 다른 host restore drill,
-organization-issued release 및 실제 isolated Web + AI Campaign은 운영 공백으로 남아 있다.
-
-기존 로드맵에서는 Phase 0 Benchmark/Target Factory와 Phase 1 Common Engine/Profile
-Compatibility 항목이 완료 표시되지 않았다. 이 작업을 선택하기 전에 실제 코드와 다시
-대조하며, 과거 체크리스트만 보고 완료를 추정하거나 작업을 재시작하지 않는다.
-
-대조가 필요한 Phase 0/1 항목:
+Phase 2 Capability Authoring과 구조적 Phase 3 Graph·Discovery·Multi-wave는 구현됐다. 아래 Phase 0/1
+항목은 저장소와 대조했으며, provider-backed retention, 독립 anchor/KMS, cross-host restore,
+organization-issued release와 실제 isolated Web+AI 운영은 여전히 별도 경계다.
 
 - `ARCH-001` Architecture v2 RFC와 기존 ADR-0046/0047/0048 결정 정합성
 - 기존 Mode, API, Artifact 호환·Deprecation 정책
@@ -730,15 +697,60 @@ repeated-controlled floor를 충족하지만 Profile 선택·Campaign 변경·co
 - [x] SARIF·Issue Tracker·SIEM/SOAR Export
   - [x] `UX-006A` exact verified Finding의 minimized local SARIF 2.1.0 export
   - [x] `UX-006B` external sink·secret·idempotency·receipt·reconciliation authority
-- [ ] OIDC·MFA·ABAC·Worker Identity·mTLS
+- [x] OIDC·MFA·ABAC·Worker Identity·mTLS
   - [x] `UX-007A` deployment-pinned RFC 9068 access token과 provider-specific MFA 기반 Human Identity admission
+  - [x] `UX-007B` bind each bearer-authenticated Worker subject to one direct-mTLS leaf SPKI pin
+  - [x] `UX-007C` exact signed approval tuple 기반 fail-closed Approver ABAC
+  - [x] `UX-007D` immutable submission authority digest 기반 fail-closed Run cancellation ABAC
+  - [x] `UX-007E` signed checkpoint·exact approval intent 기반 fail-closed resume ABAC
+  - [x] `UX-007F` canonical submission authority 기반 fail-closed Run submission ABAC
+  - [x] `UX-007G` exact opaque handoff 기반 fail-closed Replay source Artifact admission ABAC
+  - [x] `UX-007H` exact source·Retest locator와 plan option 기반 fail-closed Replay batch admission ABAC
+  - [x] `UX-007I` explicit maintenance action 기반 fail-closed requeue-expired ABAC
+  - [x] `UX-007J` current Approval GET의 숨은 expiry·Run cancellation 제거와 rollback-only projection
+  - [x] `UX-007K` Phase 9 opt-in/default 설정 matrix와 Replay Worker token/profile atomic startup
 - [ ] Object Storage·Distributed Worker·KMS/HSM
+  - [x] `UX-007L` external Object Storage transport와 Artifact admission을 분리한 비실행 deployment authority
+  - [x] `UX-007M` Object Storage durable authority head activation
+  - [x] `UX-007N` provider-neutral adapter와 remote byte revalidation
+  - [x] `UX-007O` durable provider attempt recovery와 concrete provider activation
+  - [x] `UX-007P` selected-provider adapter와 live conformance
+    - [x] `UX-007P1` active profile provider-common black-box conformance harness
+    - [x] `UX-007P2` exact disposable MinIO adapter·target와 isolated TLS live conformance evidence
+  - [x] `UX-007Q` selected-provider report freshness·revocation과 deployment admission authority
+  - [ ] `UX-007R` production custody (`R1` AWS S3 Seoul 계약 완료, `R2` live evidence 미완료)
 - [ ] TLS 1.3 Exporter·Registry Refresh·External Transparency Anchor
 
-`UX-001~005`는 기존 authority에 결박된 non-authoritative handoff·read projection·queue이며 exact lineage는
-각 계약이 소유한다. `UX-006A/B`는 confirmed Finding의 local SARIF와 authenticated journaled delivery를
-분리하고 unknown 자동 재전송과 downstream attestation을 금지한다. `UX-007A`는 explicit `at+jwt`를
-issuer·audience·client·MFA·key에 결박해 local Principal로 매핑하며 token role·ID Token·Worker/JWKS 권위는 없다.
+### Phase 10 — Pentest Profile 활성화
+
+- [x] `PENTEST-000` inert Profile declarations
+- [x] `PENTEST-001A` signed authorization
+- [x] `PENTEST-001B` Profile-native compile
+- [x] `PENTEST-001C1` CAP-002 Range activation
+- [x] `PENTEST-001C2` approved Recon dispatch
+- [x] `PENTEST-002A` neutral Observation admission
+- [x] `PENTEST-002B` independently authorized replay
+- [x] `PENTEST-003A` Finding confirmation prerequisite policy
+- [x] `PENTEST-003B` controlled semantic validity evidence
+- [x] `PENTEST-003C` current Graph `plan` Decision과 별도 confirmation admission
+- [x] `PENTEST-003D` admitted validity evidence의 Finding projection
+
+Phase 10 Exit Gate: PENTEST-000~003D와 `UX-007E~R1` 완료. `UX-007R2`는 production pilot까지 보류한다.
+
+### Phase 11 — LLM Pentest Productization
+
+- [x] `PENTEST-004A` signed assessment compilation CLI
+- [x] `PENTEST-004B` approved one-shot Recon CLI
+- [x] `PENTEST-004C1` resumable sealed-evidence composition and local validity report
+- [x] `PENTEST-004C2A` dedicated independently authorized Replay Worker entrypoint
+- [ ] `PENTEST-004C2B` durable source·Replay·three-Control Worker coordination and 004C1 handoff
+  - [x] `PENTEST-004C2B1` signed durable journal and verified 004C1 handoff
+  - [ ] `PENTEST-004C2B2` concrete 004B/004C2A child adapters
+- [ ] `REDTEAM-001` executable LLM/Web/RAG/MCP coverage
+- [ ] `REDTEAM-002` detection·false-positive·replay·cost benchmark
+- [ ] `UX-008` Scope·Evidence·Finding·report product flow
+
+Exit Gate: 승인된 대상을 실행·Replay·Finding·report까지 완료하고 품질 지표를 측정한다.
 
 ## 미결정 제품 사항
 

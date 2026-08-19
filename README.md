@@ -461,9 +461,53 @@ Upload begin and part PUT operations are idempotent for exact retries. A retry c
 existing part with different bytes. Finalization recomputes every file digest and the canonical
 manifest, atomically publishes the staging tree, and then reuses the existing managed Artifact,
 sealed Run, receipt, and projection checks. Small Runs keep the existing inline v1 transport.
-External S3-compatible storage, pre-signed URLs, upload expiry/garbage collection, encryption, and
-tenant isolation remain follow-up work. See
-[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.md).
+The additive UX-007L contract content-addresses a non-executable external-storage deployment
+revision and upload-only binding. UX-007M keeps that revision in an append-only SQLite head with an
+immutable provisioning identity, write-before-use activation, exact checkpoints, and verified
+backup/restore. UX-007N adds an internal provider-neutral runtime that checks that durable head
+immediately before every provider call, keeps pre-signed upload URLs ephemeral and redacted, and
+re-reads all remote parts to recompute the complete canonical manifest before existing managed
+multipart staging. Provider completion still grants no Artifact or finalization authority. A
+UX-007O addition binds a deployment-supplied concrete provider's reviewed non-secret guarantees
+and exact adapter/checkpoint into an append-only activation, journals every provider intent before
+its remote call with a monotonic fence, and reconciles unfinished attempts before new work or a
+provider-aware head successor. It still does not select or implement a cloud provider. Public
+routes, automatic expiry collection, cross-host fencing, KMS/HSM, and off-host retention remain
+follow-up work. UX-007P1 adds a provider-common black-box harness whose fixed raw-observation cases
+cover operation fences, native idempotency, redirect refusal, encryption receipts, immediate reads,
+prefix cleanup, exact PUT/key/expiry signatures, and credential-safe adapter/SDK/HTTP logs. It
+rechecks the active head/profile around every case and emits only a secret-free, non-authoritative
+report. UX-007P2 selects a strictly local, disposable, single-node MinIO image and exact boto3 SDK,
+binds its endpoint/bucket/signer/runtime credential custody/SSE-C/TLS/isolation inventory, implements
+the adapter and target, and retains passing reports from all eight actual TLS/S3 cases. This archived
+MinIO image is test-only; the report remains transport-only and cannot authorize deployment,
+Artifact admission, or finalization. UX-007Q binds the exact inventory, activation, and report into
+a one-hour, append-only, revocable admission head, and rechecks it at startup and before provider
+work while leaving cleanup/reconciliation available. Public-network, Artifact-admission, and
+finalization authority remain false; live production custody remains UX-007R2.
+UX-007R1 now selects a non-executable AWS S3 Seoul desired state: one bucket, STS role,
+customer-managed KMS key, VPC endpoint, and separated operations/security/cost/checkpoint custody
+per tenant. It requires fresh live inventory, isolation probes, backup/restore evidence, and cost
+approval before UX-007R2 can grant any production activation. No AWS resource or credential is
+created, and all transport, public-network, Artifact, and finalization eligibility remains false.
+See
+[ADR-0045](docs/adr/0045-resumable-multipart-portable-artifact-transport.md),
+[UX-007L contract](docs/orchestration/UX-007L-object-storage-deployment-authority.md),
+[UX-007M contract](docs/orchestration/UX-007M-object-storage-durable-authority-head.md),
+[UX-007N contract](docs/orchestration/UX-007N-object-storage-provider-revalidation.md),
+[UX-007O contract](docs/orchestration/UX-007O-durable-object-storage-provider-recovery.md),
+[UX-007P harness contract](docs/orchestration/UX-007P-provider-common-conformance-harness.md),
+[UX-007P2 selected-provider contract](docs/orchestration/UX-007P2-minio-selected-provider-live-conformance.md),
+[UX-007Q admission contract](docs/orchestration/UX-007Q-selected-provider-deployment-admission.md),
+[UX-007R1 production selection contract](docs/orchestration/UX-007R1-aws-s3-production-custody-selection.md),
+[ADR-0188](docs/adr/0188-separate-object-storage-transport-from-artifact-admission.md),
+[ADR-0189](docs/adr/0189-activate-object-storage-authority-head-before-provider-use.md),
+[ADR-0190](docs/adr/0190-revalidate-remote-object-storage-before-managed-admission.md),
+[ADR-0191](docs/adr/0191-journal-and-reconcile-object-storage-provider-attempts.md),
+[ADR-0192](docs/adr/0192-derive-provider-conformance-from-raw-observations.md),
+[ADR-0193](docs/adr/0193-select-disposable-minio-for-local-provider-conformance.md),
+[ADR-0194](docs/adr/0194-require-fresh-revocable-selected-provider-admission.md), and
+[ADR-0195](docs/adr/0195-select-aws-s3-seoul-production-custody-boundary.md).
 
 ## B2.8f Target-signed TLS session binding
 
@@ -519,8 +563,9 @@ priority and the [current handoff](HANDOFF.md) for the Git baseline and verifica
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
+| Pentest | Typed assessment and exact Scope, signed authorization verification, Profile-native Campaign/Envelope compilation through `pentest-compile`, deployment-pinned approved one-shot GET Recon through `pentest-recon-dispatch`, a dedicated independently authorized Replay Worker path through `pentest-replay-dispatch`, a signed durable five-stage coordination journal, controlled CWE-200 validity evidence, current-Graph confirmation admission, and a two-phase resumable local validity report through `pentest-workflow-run`. Concrete coordination deployment adapters remain follow-up work. |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested portable Artifact inline or through a resumable 64 MiB local-object-store multipart path, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, support signed registry rotation, and bind the Target-signed application exchange to the Worker-observed TLS 1.2 channel. Only validity drives confirmation, while impact and severity remain information-only. |
-| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, external object-store/pre-signed multipart transport above the 64 MiB local slice with expiry, encryption, and tenant isolation, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, Admin discovery adapters and broader RAG Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, multi-adapter Snapshot-to-Plan scheduling, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
+| Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, a selected live provider adapter and conformance environment for the durably activated external object-store path, remote expiry/garbage collection, cross-host fencing, KMS/HSM, and tenant enforcement, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, Admin discovery adapters and broader RAG Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, multi-adapter Snapshot-to-Plan scheduling, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
 BENCH-003B1 additionally admits complete sealed raw observations for both benchmark arms, derives
 all twelve metrics in code, and seals two Results plus the canonical numeric Comparison. The
@@ -819,7 +864,9 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   `{"replay-worker-service":["kisa-exact-v1"]}` grants that one profile only to the
   separately authenticated Replay Worker subject. Route authorization is symmetric: that Replay
   subject is rejected from every generic Worker route, while the generic Worker and every
-  non-allowlisted subject are rejected from all Replay routes. Claim and heartbeat return a
+  non-allowlisted subject are rejected from all Replay routes. The dedicated Replay Worker token and
+  executor profile allowlist must be configured together; either partial state fails startup before
+  the token can be classified as a generic Worker. Claim and heartbeat return a
   `ReplayExecutionClaimView` containing the exact server-validated canonical `ReplayCompilation`,
   and the envelope rechecks its canonical compilation, Candidate, contract, Grant, Campaign, Mode,
   Candidate Run, and Replay Run bindings. The permit remains a non-bearer proof whose issuance has
@@ -859,7 +906,7 @@ external Bug Bounty or CTF submission, and production multi-tenant deployment ar
   the host-observed proxy exchange, and that executor signature. HTTPS CONNECT and leaf-SPKI,
   signed registry-v3 anti-rollback and bounded pin rotation, and registry-v4 TLS 1.2 dual-observer
   session binding complete that exact confirmation chain. TLS 1.3 RFC 9266 exporter support and
-  large object-store/multipart transfer remain incomplete.
+  executable external object-store/multipart provider integration remain incomplete.
 - Audit Events form a sequence-checked SHA-256 chain, and completed Run artifacts are captured in
   append-only integrity seals. Mode Pack outputs extend the previous root instead of overwriting it.
 
@@ -959,6 +1006,136 @@ authorization-code/PKCE browser flow or dynamic discovery/JWKS client. See
 [`UX-007A`](docs/orchestration/UX-007A-oidc-mfa-human-identity.md) and
 [`ADR 0166`](docs/adr/0166-bind-mfa-oidc-identity-without-token-role-authority.md).
 
+## Worker mTLS subject binding
+
+The Control Plane can optionally bind every bearer-authenticated Worker subject to one pinned
+client-certificate leaf SPKI through `PAJIN_CP_WORKER_MTLS_TRUST_POLICY`. Worker requests then need
+both the configured bearer credential and matching direct-TLS certificate evidence; neither factor
+grants authority alone. The policy must cover every and only Worker-only credential subject.
+
+The bundled direct Uvicorn server exposes verified peer evidence through the standard ASGI TLS
+extension and uses optional client-certificate verification so Human OIDC and opaque Human bearer
+principals can still connect without a certificate. Forwarded certificate headers are never trusted,
+and deployments behind a TLS-terminating proxy are unsupported until a separately authenticated
+proxy-to-application identity protocol is designed. See
+[`UX-007B`](docs/orchestration/UX-007B-worker-mtls-subject-binding.md) and
+[`ADR 0167`](docs/adr/0167-bind-worker-subjects-to-direct-mtls-certificates.md).
+
+## Human mutation ABAC
+
+### Signed approval decisions
+
+`PAJIN_CP_ABAC_POLICY` can optionally narrow an authenticated Approver's authority for
+`POST /v1/approvals/{approval_id}/decision`. Each rule admits one exact
+`(principal_subject, approval.decide, tool_id, target, risk_tier)` tuple. The Control Plane
+recovers the action attributes only from the verified signed checkpoint and requires the local
+RBAC role first; OIDC claims, certificate fields, HTTP headers, and decision request data cannot
+grant or expand authority.
+
+When configured, an absent or mismatched exact tuple fails closed with a generic `403` before the
+approval changes. Other route families retain their existing RBAC boundaries. See
+[`UX-007C`](docs/orchestration/UX-007C-signed-approval-abac.md) and
+[`ADR 0168`](docs/adr/0168-authorize-approval-decisions-from-signed-attributes.md).
+
+### Exact Run submission
+
+`PAJIN_CP_RUN_SUBMISSION_ABAC_POLICY` separately narrows `POST /v1/runs`. Each rule admits one
+exact `(principal_subject, run.submit, submission_authority_digest)` tuple. The server computes the
+digest from the authenticated local subject, campaign, complete bounded input, idempotency key, Job
+kind, and retry limit; the request cannot supply or override it.
+
+ABAC runs before idempotency lookup or any Run, Job, or event mutation. Request fields present only
+candidate material for a deployment-owned exact digest rule and do not independently grant
+authority. See [`UX-007F`](docs/orchestration/UX-007F-exact-run-submission-abac.md) and
+[`ADR 0182`](docs/adr/0182-authorize-run-submission-by-canonical-submission-authority.md).
+
+### Exact Replay source Artifact admission
+
+`PAJIN_CP_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY` separately narrows
+`POST /v1/replay/source-artifacts`. Each rule admits one exact
+`(principal_subject, replay.source-artifact.admit,
+source_artifact_admission_authority_digest)` tuple. The server computes the digest from the
+authenticated local subject, opaque staging ID, producer Run and Job IDs, idempotency key, and the
+fixed sealed-Run media/schema identity; the request cannot supply or override it.
+
+ABAC runs before repository, idempotency, producer, or staged-content observation and before any
+managed import, Artifact row, or event mutation. Existing producer eligibility, sealed Run,
+managed-integrity, transaction, and staging-consumption checks remain independently mandatory. See
+[`UX-007G`](docs/orchestration/UX-007G-exact-replay-source-artifact-admission-abac.md) and
+[`ADR 0183`](docs/adr/0183-authorize-replay-source-artifact-admission-by-exact-handoff.md).
+
+### Exact Replay batch admission
+
+`PAJIN_CP_REPLAY_BATCH_ADMISSION_ABAC_POLICY` separately narrows `POST /v1/replay/batches`.
+Each rule admits one exact `(principal_subject, replay.batch.admit,
+replay_batch_admission_authority_digest)` tuple. The server binds the authenticated local subject,
+exact baseline and optional Retest Artifact locators, all projection/attestation flags, and the
+idempotency key; the request cannot supply or override the digest.
+
+ABAC runs before signer/trust configuration, repository or idempotency observation, managed-source
+resolution, derivation, and durable mutation. Existing source integrity, eligibility, deterministic
+compilation, idempotency, and internal issuance checks remain independently mandatory. See
+[`UX-007H`](docs/orchestration/UX-007H-exact-replay-batch-admission-abac.md) and
+[`ADR 0184`](docs/adr/0184-authorize-replay-batch-admission-by-exact-request.md).
+
+### Exact Run cancellation
+
+`PAJIN_CP_RUN_CANCELLATION_ABAC_POLICY` separately narrows
+`POST /v1/runs/{run_id}/cancel`. Each rule admits one exact
+`(principal_subject, run.cancel, submission_authority_digest)` tuple. The immutable digest binds
+the submitter, campaign, complete input, idempotency key, Job kind, and retry limit; changing any
+bound field produces a different resource authority.
+
+The cancellation transaction locks the Run and evaluates this policy before idempotent handling
+or any Job, Approval, Replay, Run, reservation, or event mutation. URL Run ID, cancellation reason,
+OIDC claims, certificate fields, and HTTP headers do not grant authority. See
+[`UX-007D`](docs/orchestration/UX-007D-exact-run-cancellation-abac.md) and
+[`ADR 0169`](docs/adr/0169-authorize-run-cancellation-by-submission-authority.md).
+
+### Exact explicit maintenance action
+
+`PAJIN_CP_MAINTENANCE_ABAC_POLICY` separately narrows
+`POST /v1/maintenance/requeue-expired`. Each rule admits one exact
+`(principal_subject, maintenance.requeue-expired)` tuple. The request has no resource body: the
+server clock and records selected under existing locks determine which approvals, Runs, Jobs,
+Replay tickets, and reservations are expired.
+
+ABAC runs before time capture, database observation, or mutation. Worker claim paths retain their
+server-owned opportunistic lease sweep without acquiring Human maintenance authority. Existing
+expiry, retry/dead-letter, Replay fencing, reservation, cancellation, and audit invariants remain
+mandatory. See [`UX-007I`](docs/orchestration/UX-007I-exact-maintenance-requeue-expired-abac.md)
+and [`ADR 0185`](docs/adr/0185-authorize-explicit-maintenance-by-exact-action.md).
+
+`GET /v1/runs/{run_id}/approval` is rollback-only. It may return durable `pending` or `approved`
+with an elapsed `expires_at`, but observation never expires the Approval, cancels the Run, or
+appends events. Reconciliation belongs to exact-authorized maintenance or the independently
+authorized decision/resume action. See
+[`UX-007J`](docs/orchestration/UX-007J-non-mutating-current-approval-read.md) and
+[`ADR 0186`](docs/adr/0186-make-current-approval-observation-non-mutating.md).
+
+### Exact checkpoint resume
+
+`PAJIN_CP_CHECKPOINT_RESUME_ABAC_POLICY` separately narrows
+`POST /v1/checkpoints/{checkpoint_id}/resume`. Each rule admits one exact
+`(principal_subject, checkpoint.resume, checkpoint_resume_authority_digest)` tuple. The digest
+binds the verified signed checkpoint identity and its exact matching approval intent, including the
+signer, approval ID, call fingerprint, Tool, target, risk tier, and expiry.
+
+The resume transaction derives that digest only from locked server records after checkpoint
+signature verification and approval-intent matching, then evaluates ABAC before one-use state
+handling or mutation. URL/request values and identity claims do not grant continuation authority.
+See [`UX-007E`](docs/orchestration/UX-007E-exact-checkpoint-resume-abac.md) and
+[`ADR 0181`](docs/adr/0181-authorize-checkpoint-resume-by-signed-continuation-authority.md).
+
+### Phase 9 deployment opt-in boundary
+
+An unset OIDC, Worker mTLS, or exact ABAC policy preserves only its documented compatibility
+boundary; it does not attest that production narrowing is active. Blank or invalid policy material
+fails startup, and each exact ABAC policy remains independent. The Replay Worker token and executor
+profile allowlist are one deployment unit so a partial configuration cannot inherit generic Worker
+authority. See [`UX-007K`](docs/orchestration/UX-007K-phase9-deployment-authority-ceiling.md) and
+[`ADR 0187`](docs/adr/0187-bind-replay-worker-credential-to-executor-profiles.md).
+
 ## Run the vertical slice
 
 ```powershell
@@ -1014,6 +1191,223 @@ uses its current time and delegates to the existing source-specific compiler, wh
 exact Scope Approval or embedded CTF authorization. The response contains the compiled Campaign
 and canonical digest with explicit false markers for persistence, Capability, Permit, Run
 submission, and execution authority. It does not write a Campaign or create a Run.
+
+PENTEST-000 adds a separate direct-call source and draft for explicit
+`pajin.profile.pentest@1.0.0` selection. `examples/pentest-inert-assessment.yaml` declares an opaque
+authorization-evidence commitment, Scope, exact HTTP targets, `GET`/`HEAD` ceilings, and source
+hypotheses. The projected Surfaces remain `declared-not-observed`, the hypotheses remain
+`source-declared-not-admitted`, and all compilation, admission, Worker, network, and execution
+markers are false. It intentionally has no CLI, artifact writer, Control Plane route, Campaign,
+Capability, or Permit. See the
+[PENTEST-000 contract](docs/orchestration/PENTEST-000-inert-profile-scope-surface-hypothesis.md)
+and [ADR-0170](docs/adr/0170-select-pentest-profile-without-execution-authority.md).
+
+PENTEST-001A adds a separate direct-call Ed25519 authorization verifier. A deployment-supplied
+trust anchor fixes the issuer, Pentest Profile, key lifecycle, and revoked authorization IDs. The
+signed statement binds the exact inert draft, evidence digest, authenticated subject, declared
+Scope, targets, `GET`/`HEAD` ceiling, request budgets, and validity window. Verification also
+requires the raw evidence bytes and an independently derived expected subject. Its
+content-addressed result remains `verified-active-not-compiled`; Campaign, Envelope, Capability,
+Permit, Worker, network, and execution markers are all false. Serialized results are audit records,
+not bearer credentials. See the
+[PENTEST-001A contract](docs/orchestration/PENTEST-001A-signed-authorization-verification.md) and
+[ADR-0171](docs/adr/0171-verify-pentest-authorization-before-campaign-compilation.md).
+
+PENTEST-001B freshly re-runs that verifier and attenuates the exact signed intersection into a
+content-addressed Profile-native Campaign, GET-only CAP-002 compile inputs, and the existing
+`MissionEnvelope` wire. It does not add a Pentest `CampaignMode` or claim legacy behavioral parity.
+The code-owned CAP-001 definition is pinned to `http.get@1.0.0`, T2, manual autonomy, strict empty
+parameters, exact target digests, signed total/rate ceilings, and the active authorization window.
+Signed HEAD remains visible for audit but is not compiled by the GET-only Tool; a HEAD-only target
+fails closed. The CAP-002 seven-role authority set, lifecycle activation, Grant, Proposal, Permit,
+Worker, network access, and execution remain false. See the
+[PENTEST-001B contract](docs/orchestration/PENTEST-001B-profile-native-campaign-envelope-compilation.md)
+and [ADR-0172](docs/adr/0172-compile-pentest-authority-without-legacy-mode-or-activation.md).
+
+PENTEST-001C1 binds that Definition to a complete exact CAP-002 seven-role authority set backed by
+the built-in `HTTPGetTool`, then admits only the current externally signed experimental release for
+Range use. Every activation operation re-resolves the signed lifecycle head and code authority;
+partial role sets, substituted Tools, non-empty parameters, non-GET methods, historical releases,
+and stable-context drift fail closed. Preparation remains non-executable. Because `http.get` is T2,
+the ordinary Graph Permit is invalid, and the existing Tool Gateway accepts only legacy Campaigns.
+See the
+[PENTEST-001C1 contract](docs/orchestration/PENTEST-001C1-cap002-signed-range-activation.md) and
+[ADR-0173](docs/adr/0173-bind-pentest-recon-cap002-before-approved-dispatch.md).
+
+PENTEST-001C2 adds a separate direct-call Profile-native execution gate without changing or
+fabricating a legacy Campaign. It freshly reconstructs the signed Campaign and current activation,
+binds an external current-Snapshot Graph Decision and exact operator approval, and uses only the
+existing atomic approved-Permit path. The exact approval, one-use T2 Permit, total and rolling
+request budgets, and non-reusable receipt are consumed in one SQLite transaction. A bearer-derived
+Worker-only Principal must match live direct-mTLS leaf SPKI evidence before consumption and again
+inside the callback. Only then does the gate add a one-GET, no-private-network, secret-free egress
+policy to the CAP-002 network-none job and append a pre-dispatch audit event. Recon success,
+including a non-2xx observation such as 404, additionally requires one exact host-observed Docker
+HTTP receipt. Exact retries and failed post-Permit attempts never redispatch. The boundary remains
+direct-call only and does not add approval issuance, Control Plane routing, automatic Docker
+provisioning, Discovery admission, Finding, replay, cleanup, or reporting authority. See the
+[PENTEST-001C2 contract](docs/orchestration/PENTEST-001C2-approved-one-shot-recon-dispatch.md) and
+[ADR-0174](docs/adr/0174-compose-approved-pentest-recon-without-legacy-campaign.md).
+
+PENTEST-002A admits that exchange only after the C2 request reservation, full execution evidence,
+full outcome, and terminal audit have been sealed into one integrity-valid Run. It revalidates the
+exact request, approved Permit and receipt, Worker mTLS admission, Recon Oracle, and host-owned HTTP
+receipt, then rebuilds a code-owned neutral `ObservationProposal` against the current Graph
+Snapshot. The existing single writer atomically compares the Event Log head before admission. The
+Graph receives only the real Permit-bound Action, one response-metadata Observation, three sealed
+Evidence references, and `produces`/`supported-by` edges. HTTP status and body do not become a
+Finding, confirmed Hypothesis, authorized Surface, replay, target expansion, or execution
+authority. See the
+[PENTEST-002A contract](docs/orchestration/PENTEST-002A-evidence-bound-discovery-admission.md) and
+[ADR-0175](docs/adr/0175-admit-pentest-recon-observations-without-finding-authority.md).
+
+PENTEST-002B reopens that exact admitted Observation and sealed C2 lineage before writing a
+non-executable Replay Plan into a separate Run. The CAP-002 Replay Strategy remains disabled.
+Execution still requires a separate current Graph Snapshot and Decision, fresh request and
+operator approval, new one-use Permit and receipt, and a different Worker subject/direct-mTLS
+admission through the existing C2 gate. After the replay Run is sealed, a third sealed Run records
+only status, content-type, and body-digest equality bits. A match or change creates no Finding,
+impact, Scope expansion, confirmation, reporting, or future execution authority. See the
+[PENTEST-002B contract](docs/orchestration/PENTEST-002B-independently-authorized-recon-replay.md)
+and
+[ADR-0176](docs/adr/0176-replay-pentest-recon-under-independent-action-authority.md).
+
+PENTEST-003A registers the sole policy-only prerequisite set for Pentest Finding confirmation.
+It binds the exact Pentest Profile's existing `controlled-validity-replay` floor, Recon Capability,
+GET Tool, PENTEST-002A admission, and PENTEST-002B comparison versions. Even a complete response
+coordinate match remains insufficient: a later gate must also prove a registered code-owned
+semantic validity verdict, Baseline/Negative Control/Counterfactual contrast, a current Graph
+`plan` Decision over the exact confirmation intent, and separate confirmation admission. Impact
+and severity stay not-evaluated information only, Scope cannot expand, and every evidence,
+confirmation, Finding, reporting, and execution authority marker remains false. See the
+[PENTEST-003A contract](docs/orchestration/PENTEST-003A-replay-bound-finding-confirmation-policy.md)
+and
+[ADR-0177](docs/adr/0177-require-controlled-semantic-evidence-before-pentest-finding-confirmation.md).
+
+PENTEST-003B reopens the sealed source, independently authorized Replay, and three separately
+approved C2 Control executions before evaluating a code-owned `CWE-200` JSON service-metadata
+Oracle. The exact source hypothesis, signed target and Scope digest, PENTEST-002A admission, and
+PENTEST-002B all-match comparison are bound into a validity-only Claim. Control roles come from
+signed target IDs, require the fixed `true/false/false` Baseline/Negative/Counterfactual pattern,
+and retain disjoint Run, request, Decision, approval, one-use Permit, Worker, and evidence lineage.
+The new sealed publication omits response bodies and states only that the existing
+`controlled-validity-replay` floor is satisfied; impact, severity, Graph Decision issuance,
+confirmation admission, Finding, reporting, Scope expansion, and execution authority remain
+closed. See the
+[PENTEST-003B contract](docs/orchestration/PENTEST-003B-controlled-semantic-validity-evidence.md)
+and
+[ADR-0178](docs/adr/0178-bind-pentest-controlled-validity-to-sealed-c2-evidence.md).
+
+PENTEST-003C reopens that complete sealed evidence into a separate, body-free, non-executable
+confirmation Intent that binds the exact Campaign, policy, validity Claim, source hypothesis,
+target, signed Scope, and PENTEST-003B publication. A distinct gate accepts only an externally
+supplied current Graph Snapshot `plan` Decision whose payload is the exact Intent digest, then
+reopens policy, evidence, Intent, Decision, and Graph state before sealing a separate admission.
+The admission records `controlled-validity-admitted-for-finding-projection-not-confirmed`; it does
+not issue a Decision, create or project a Finding, infer impact or severity, render a report,
+expand Scope, or authorize execution. See the
+[PENTEST-003C contract](docs/orchestration/PENTEST-003C-graph-bound-confirmation-admission.md) and
+[ADR-0179](docs/adr/0179-admit-pentest-confirmation-under-current-graph-plan.md).
+
+PENTEST-003D consumes only that verified current admission and reopens its Intent, controlled
+validity evidence, code-owned policy, exact Graph Decision, and current Snapshot before sealing a
+separate validity-only product Finding. The additive Pentest wire preserves the complete Claim,
+hypothesis, target, and signed Scope while recording impact and severity as
+`not-evaluated-information-only`; it does not force those unknowns into the generic severity-bearing
+Finding wire. Graph mutation, reporting, external delivery, Scope expansion, and execution remain
+false, and no `findings.json` or report is created. See the
+[PENTEST-003D contract](docs/orchestration/PENTEST-003D-admitted-validity-finding-projection.md) and
+[ADR-0180](docs/adr/0180-project-pentest-findings-from-current-admitted-validity.md).
+
+PENTEST-004A exposes the first operator-facing Pentest product seam without weakening those gates.
+`pentest-compile` loads the typed assessment, strict signed authorization bundle, deployment-selected
+public trust anchor, and exact authorization-evidence bytes; compares the signed subject with an
+external expected subject; evaluates freshness at the current UTC time; and runs the existing
+PENTEST-001B compiler. It writes and rereads one content-addressed
+`pentest-campaign-envelope-compilation.json` containing no raw authorization evidence or private key.
+
+```powershell
+.venv\Scripts\pajin pentest-compile examples\pentest-inert-assessment.yaml `
+  --authorization-bundle <signed-authorization-bundle.json> `
+  --trust-anchor <deployment-pentest-trust-anchor.json> `
+  --authorization-evidence <reviewed-authorization-evidence.bin> `
+  --expected-subject principal:pentest-operator
+```
+
+The example assessment's evidence digest is illustrative and must be replaced by a deployment-owned
+assessment that commits the exact reviewed evidence. The CLI does not authenticate
+`--expected-subject`; a deployment must derive it independently. The output still grants no
+activation, approval, Permit, Worker, network, execution, Finding, or reporting authority. See the
+[PENTEST-004A contract](docs/orchestration/PENTEST-004A-operator-compilation-entrypoint.md) and
+[ADR-0196](docs/adr/0196-expose-pentest-compilation-without-execution-authority.md).
+
+PENTEST-004B connects that artifact to the existing approved one-shot GET gate. The Control Plane
+loads one externally issued `PentestReconOperatorDeployment` only when both
+`PAJIN_CP_PENTEST_RECON_DEPLOYMENT_PATH` and its exact
+`PAJIN_CP_PENTEST_RECON_DEPLOYMENT_SHA256` are configured. Startup reconstructs current signed
+CAP-002 activation, the Graph Permit store, external approval input authority, Worker mTLS policy,
+and RunStore, then freshly recompiles the 004A artifact with its raw evidence and current trust
+anchor. The request cannot supply or replace any of those authorities.
+
+Run the client from the separated Worker/Gateway environment with the Worker Bearer credential in
+`PAJIN_CP_WORKER_TOKEN`:
+
+```powershell
+.venv\Scripts\pajin pentest-recon-dispatch `
+  .pajin\pentest-compilations\<digest>\pentest-campaign-envelope-compilation.json `
+  --deployment-id deployment:pentest-recon-001 `
+  --intent-digest <approved-intent-sha256> `
+  --approval-id <external-approval-id> `
+  --control-plane-url https://control-plane.example.test `
+  --tls-ca-file <ca.pem> `
+  --mtls-certificate-file <worker.cert.pem> `
+  --mtls-private-key-file <worker.key.pem>
+```
+
+The Worker route passes live server-verified TLS evidence into PENTEST-001C2, consumes the approval
+and Permit once, permits only one signed-scope GET with private networks and secrets disabled, and
+seals terminal Run evidence. Exact retry returns the prior receipt without another Worker call.
+This remains a read-only Recon path.
+
+PENTEST-004C2A adds the corresponding dedicated Replay Worker boundary. Configure
+`PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_PATH` and
+`PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_SHA256` together with the existing direct-mTLS policy and
+dedicated Replay Worker executor profile, then invoke:
+
+```powershell
+.venv\Scripts\pajin pentest-replay-dispatch `
+  <replay-compilation-artifact.json> `
+  --deployment-id deployment:pentest-replay-001 `
+  --intent-digest <approved-replay-intent-sha256> `
+  --approval-id <external-replay-approval-id> `
+  --source-admission-digest <sealed-source-admission-sha256> `
+  --control-plane-url https://control-plane.example.test `
+  --tls-ca-file <ca.pem> `
+  --mtls-certificate-file <replay-worker.cert.pem> `
+  --mtls-private-key-file <replay-worker.key.pem>
+```
+
+The deployment reopens the source seal and exact Discovery admission, persists the Replay Plan
+before Permit consumption, and passes the live Replay Worker TLS session into the existing 002B
+gate. It grants no comparison or Finding authority and an exact retry never calls the Worker twice.
+
+PENTEST-004C1 composes already sealed source, Replay, and
+three Control Runs into deterministic controlled-validity and confirmation-Intent stages, then
+requires an external Ed25519 finalization bound to the current Graph `plan` Decision and Operator
+subject before producing a body-free local Finding/report. Configure
+`PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_PATH` and
+`PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_SHA256`, then use `pentest-workflow-run`.
+
+PENTEST-004C2B1 adds an externally signed, ordered five-stage journal and separated generic/Replay
+Worker routes. It seals the start intent before a child call, allows an expired activation to use
+reconcile-only recovery only after that seal, and emits a freshly reloadable 004C1 deployment after
+all five receipts and the Replay comparison validate. The coordination runtime is injection-only
+until PENTEST-004C2B2 supplies the digest-pinned child deployment registry and concrete 004B/004C2A
+adapters; LLM/Web/RAG/MCP/System attack Capabilities then follow in REDTEAM-001. See the
+[PENTEST-004B contract](docs/orchestration/PENTEST-004B-approved-recon-operator-entrypoint.md) and
+[PENTEST-004C1 contract](docs/orchestration/PENTEST-004C1-resumable-evidence-workflow.md), and
+[PENTEST-004C2A contract](docs/orchestration/PENTEST-004C2A-dedicated-replay-worker-entrypoint.md), and
+[PENTEST-004C2B1 contract](docs/orchestration/PENTEST-004C2B1-durable-worker-coordination.md).
 
 ## Bug Bounty Scope Parser
 
@@ -1661,10 +2055,32 @@ $env:PAJIN_CP_OPERATOR_TOKEN='<distinct-random-operator-token>'
 $env:PAJIN_CP_APPROVER_TOKEN='<distinct-random-approver-token>'
 $env:PAJIN_CP_WORKER_TOKEN='<distinct-random-worker-token>'
 $env:PAJIN_CP_WORKER_SUBJECT='worker-service'
+# Optional dedicated Replay Worker; token and profile allowlist are required together:
 $env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
 $env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
 $env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
+# Optional UX-007C exact signed-approval ABAC policy:
+$env:PAJIN_CP_ABAC_POLICY='<one-line-control-plane-abac-policy-json>'
+# Optional UX-007F exact Run submission ABAC policy:
+$env:PAJIN_CP_RUN_SUBMISSION_ABAC_POLICY='<one-line-run-submission-policy-json>'
+# Optional UX-007D exact Run cancellation ABAC policy:
+$env:PAJIN_CP_RUN_CANCELLATION_ABAC_POLICY='<one-line-run-cancellation-policy-json>'
+# Optional UX-007E exact signed checkpoint resume ABAC policy:
+$env:PAJIN_CP_CHECKPOINT_RESUME_ABAC_POLICY='<one-line-checkpoint-resume-policy-json>'
+# Optional UX-007G exact Replay source Artifact admission ABAC policy:
+$env:PAJIN_CP_REPLAY_SOURCE_ARTIFACT_ABAC_POLICY='<one-line-replay-source-artifact-policy-json>'
+# Optional UX-007H exact Replay batch admission ABAC policy:
+$env:PAJIN_CP_REPLAY_BATCH_ADMISSION_ABAC_POLICY='<one-line-replay-batch-admission-policy-json>'
+# Optional UX-007I exact explicit maintenance ABAC policy:
+$env:PAJIN_CP_MAINTENANCE_ABAC_POLICY='<one-line-maintenance-policy-json>'
+# Optional UX-007B direct Worker mTLS; configure all four values together:
+$env:PAJIN_CP_TLS_CERT_FILE='<control-plane-server-certificate-chain.pem>'
+$env:PAJIN_CP_TLS_KEY_FILE='<control-plane-server-private-key.pem>'
+$env:PAJIN_CP_WORKER_MTLS_CA_FILE='<worker-client-ca-certificate.pem>'
+$env:PAJIN_CP_WORKER_MTLS_TRUST_POLICY='<one-line-worker-mtls-trust-policy-json>'
+# Optional only when the server private key is encrypted:
+# $env:PAJIN_CP_TLS_KEY_PASSWORD='<server-private-key-password>'
 # Optional, required together only for portable_attestation batches:
 $env:PAJIN_CP_REPLAY_ATTESTATION_KEY_ID='<active-key-id>'
 $env:PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY='<base64url-raw-32-byte-ed25519-seed>'
@@ -1976,6 +2392,7 @@ accepted. The default profiles therefore report `simulated: true` and
 | --- | --- | --- |
 | `PAJIN_CP_URL` | HTTPS origin URL | Bearer-authenticated transport is HTTPS-only by default; credentials, paths, queries, fragments, malformed authorities, and non-HTTP(S) schemes are rejected |
 | `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `false`; literal `true` only in the bundled Compose lab | Explicitly permits HTTP only for loopback or the `control-plane` Compose service name; never enable it for remote or production transport |
+| `PAJIN_CP_TLS_CA_FILE`, `PAJIN_CP_MTLS_CERT_FILE`, `PAJIN_CP_MTLS_KEY_FILE` | Unset; all three are required together over HTTPS | Verifies the Control Plane server and presents the Worker certificate whose leaf SPKI is pinned to the bearer subject; an optional `PAJIN_CP_MTLS_KEY_PASSWORD` unlocks an encrypted client key |
 | `PAJIN_DAEMON_CANCELLATION_GRACE_SECONDS` | 2 seconds; 0.05-30 | Cooperative return before the daemon calls `task.cancel()` |
 | `PAJIN_DAEMON_CANCELLATION_FORCE_SECONDS` | 5 seconds; 0.05-30 | Bounded wait after forced task cancellation and for each final drain |
 | `PAJIN_DAEMON_STATUS_PATH` | `~/.pajin/status/worker-status.json` | Host default is below the user's non-shared home; custom parents must be daemon-owned and non-writable by group/others |
@@ -2101,8 +2518,9 @@ network.
 
 | Replay Worker setting | Compose value | Boundary |
 | --- | --- | --- |
-| `PAJIN_CP_URL`, `PAJIN_CP_REPLAY_WORKER_TOKEN` | HTTPS API origin and distinct Replay Worker secret | Required authenticated Replay transport; the token must differ from Operator, Approver, and generic Worker credentials; Replay and generic Worker routes reject each other's subjects; production requires managed secrets |
+| `PAJIN_CP_URL`, `PAJIN_CP_REPLAY_WORKER_TOKEN` | HTTPS API origin and distinct Replay Worker secret | Required authenticated Replay transport; the token must be configured with `PAJIN_CP_REPLAY_EXECUTOR_PROFILES`, differ from Operator, Approver, and generic Worker credentials, and use managed secrets; Replay and generic Worker routes reject each other's subjects |
 | `PAJIN_CP_ALLOW_PLAINTEXT_HTTP_FOR_LAB` | `true` only in bundled Compose; default `false` | Narrow local-lab exception for `http://control-plane:8090`; remote HTTP remains rejected and production must use HTTPS |
+| `PAJIN_CP_TLS_CA_FILE`, `PAJIN_CP_MTLS_CERT_FILE`, `PAJIN_CP_MTLS_KEY_FILE` | Unset; all three are required together over HTTPS | Verifies the Control Plane server and presents the Replay Worker certificate pinned to the Replay bearer subject; an optional `PAJIN_CP_MTLS_KEY_PASSWORD` unlocks an encrypted client key |
 | `PAJIN_REPLAY_WORKER_ID` | `pajin-compose-replay-worker-1` | Status identity only; the Bearer principal is the authorization identity |
 | `PAJIN_REPLAY_EXECUTOR_PROFILE` | `kisa-exact-v1` | Literal-only, matching `PAJIN_CP_REPLAY_EXECUTOR_PROFILES` |
 | `PAJIN_REPLAY_STAGING_ROOT` | `/var/lib/pajin/artifact-staging` | Owner-only root; shared by the legacy path, or Worker-local when portable executor attestation is configured; claims carry only an opaque `stage_<uuid>` |

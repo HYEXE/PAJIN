@@ -34,6 +34,8 @@ from pajin.target_attestation import (
 from pajin.tools.base import ToolSpec
 
 KISA_EXACT_REPLAY_EXECUTOR_PROFILE: Literal["kisa-exact-v1"] = "kisa-exact-v1"
+SOURCE_ARTIFACT_MEDIA_TYPE = "application/vnd.pajin.run+directory"
+SOURCE_ARTIFACT_SCHEMA_KIND = "pajin.run.sealed.v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -271,6 +273,75 @@ def submission_authority_digest(
         }
     )
     return sha256(b"pajin.control-plane.submission-authority/v1\0" + material).hexdigest()
+
+
+def checkpoint_resume_authority_digest(
+    *,
+    checkpoint_id: str,
+    run_id: str,
+    sequence: int,
+    schema_version: int,
+    payload_sha256: str,
+    signature: str,
+    key_id: str,
+    approval_id: str,
+    call_fingerprint: str,
+    tool_id: str,
+    target: str,
+    risk_tier: int,
+    expires_at: datetime,
+) -> str:
+    """Bind one signed checkpoint and its exact continuation approval intent."""
+
+    string_fields = (
+        checkpoint_id,
+        run_id,
+        payload_sha256,
+        signature,
+        key_id,
+        approval_id,
+        call_fingerprint,
+        tool_id,
+        target,
+    )
+    if not all(isinstance(value, str) and value for value in string_fields):
+        raise ValueError("checkpoint resume authority string fields must not be empty")
+    for label, value in (
+        ("payload digest", payload_sha256),
+        ("checkpoint signature", signature),
+        ("call fingerprint", call_fingerprint),
+    ):
+        if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+            raise ValueError(f"checkpoint resume authority {label} is invalid")
+    if type(sequence) is not int or sequence < 1:
+        raise ValueError("checkpoint resume authority sequence is invalid")
+    if type(schema_version) is not int or schema_version < 1:
+        raise ValueError("checkpoint resume authority schema version is invalid")
+    if type(risk_tier) is not int or risk_tier not in {
+        int(ToolRiskTier.T3),
+        int(ToolRiskTier.T4),
+    }:
+        raise ValueError("checkpoint resume authority risk tier is invalid")
+    if expires_at.tzinfo is None or expires_at.utcoffset() is None:
+        raise ValueError("checkpoint resume authority expiry must be timezone-aware")
+    material = canonical_control_plane_json(
+        {
+            "approvalId": approval_id,
+            "callFingerprint": call_fingerprint,
+            "checkpointId": checkpoint_id,
+            "expiresAt": expires_at.astimezone(UTC).isoformat(),
+            "keyId": key_id,
+            "payloadSha256": payload_sha256,
+            "riskTier": risk_tier,
+            "runId": run_id,
+            "schemaVersion": schema_version,
+            "sequence": sequence,
+            "signature": signature,
+            "target": target,
+            "toolId": tool_id,
+        }
+    )
+    return sha256(b"pajin.control-plane.checkpoint-resume-authority/v1\0" + material).hexdigest()
 
 
 def non_replayable_submission_authority_digest(*, run_id: str, authority_kind: str) -> str:
@@ -628,6 +699,31 @@ class AdmitSourceArtifactRequest(StrictModel):
     idempotency_key: str = Field(min_length=8, max_length=200)
 
 
+def source_artifact_admission_authority_digest(
+    request: AdmitSourceArtifactRequest,
+    *,
+    actor: str,
+) -> str:
+    """Bind one Operator to an exact managed source Artifact admission request."""
+
+    if not isinstance(actor, str) or not 1 <= len(actor) <= 200:
+        raise ValueError("source Artifact admission authority actor is invalid")
+    material = canonical_control_plane_json(
+        {
+            "actor": actor,
+            "idempotencyKey": request.idempotency_key,
+            "mediaType": SOURCE_ARTIFACT_MEDIA_TYPE,
+            "producerJobId": request.producer_job_id,
+            "producerRunId": request.producer_run_id,
+            "schemaKind": SOURCE_ARTIFACT_SCHEMA_KIND,
+            "stagingId": request.staging_id,
+        }
+    )
+    return sha256(
+        b"pajin.control-plane.source-artifact-admission-authority/v1\0" + material
+    ).hexdigest()
+
+
 class ReplayRateAccountAuthority(StrictModel):
     """Rate-account authority reconstructed from immutable source evidence."""
 
@@ -732,6 +828,41 @@ class CreateReplayBatchRequest(StrictModel):
         if self.target_attestation and not self.portable_attestation:
             raise ValueError("target attestation requires portable Replay attestation")
         return self
+
+
+def replay_batch_admission_authority_digest(
+    request: CreateReplayBatchRequest,
+    *,
+    actor: str,
+) -> str:
+    """Bind one Operator to an exact Replay batch admission request."""
+
+    if not isinstance(actor, str) or not 1 <= len(actor) <= 200:
+        raise ValueError("Replay batch admission authority actor is invalid")
+    material = canonical_control_plane_json(
+        {
+            "actor": actor,
+            "claimProjection": request.claim_projection,
+            "idempotencyKey": request.idempotency_key,
+            "portableAttestation": request.portable_attestation,
+            "retestSource": (
+                {
+                    "artifactId": request.retest_source.artifact_id,
+                    "repositoryVersion": request.retest_source.repository_version,
+                }
+                if request.retest_source is not None
+                else None
+            ),
+            "source": {
+                "artifactId": request.source.artifact_id,
+                "repositoryVersion": request.source.repository_version,
+            },
+            "targetAttestation": request.target_attestation,
+        }
+    )
+    return sha256(
+        b"pajin.control-plane.replay-batch-admission-authority/v1\0" + material
+    ).hexdigest()
 
 
 class ReplayClaimRequest(StrictModel):

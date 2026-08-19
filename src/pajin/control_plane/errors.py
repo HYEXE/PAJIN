@@ -7,6 +7,10 @@ class ControlPlaneError(RuntimeError):
     """Base class for expected Control Plane errors."""
 
 
+class AuthorizationDenied(ControlPlaneError):
+    """Authenticated principal was denied by deployment authorization policy."""
+
+
 class ResourceNotFound(ControlPlaneError):
     pass
 

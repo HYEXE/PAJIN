@@ -1434,6 +1434,20 @@ class RunStore:
             self._record_path_identity(destination)
             return destination.relative_to(self.path).as_posix()
 
+    def write_text_create_only(self, relative_path: str, content: str) -> str:
+        """Atomically install one UTF-8 text artifact without replacing an existing path."""
+
+        with self._mutation():
+            destination = self._safe_destination(relative_path)
+            self._require_unsealed(destination)
+            if not isinstance(content, str):
+                raise TypeError("RunStore text content must be a string")
+            serialized = content if content.endswith("\n") else content + "\n"
+            self._prepare_destination_parent(destination)
+            _atomic_create_private(destination, serialized.encode("utf-8"))
+            self._record_path_identity(destination)
+            return destination.relative_to(self.path).as_posix()
+
     def write_bytes(self, relative_path: str, content: bytes) -> str:
         """Write exact opaque evidence bytes without newline or JSON normalization."""
 

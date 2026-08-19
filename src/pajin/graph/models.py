@@ -438,8 +438,14 @@ class GraphProposalLineage(StrictModel):
     task_id: _Identifier = Field(alias="taskId")
     request_id: _PortableIdentifier = Field(alias="requestId")
     request_digest: _Sha256 = Field(alias="requestDigest")
-    capability_grant_id: _Identifier = Field(alias="capabilityGrantId")
-    capability_grant_digest: _Sha256 = Field(alias="capabilityGrantDigest")
+    capability_grant_id: _Identifier | None = Field(
+        default=None,
+        alias="capabilityGrantId",
+    )
+    capability_grant_digest: _Sha256 | None = Field(
+        default=None,
+        alias="capabilityGrantDigest",
+    )
     capability_id: _Identifier = Field(alias="capabilityId")
     capability_version: _Identifier = Field(alias="capabilityVersion")
     capability_digest: _Sha256 = Field(alias="capabilityDigest")
@@ -462,8 +468,12 @@ class GraphProposalLineage(StrictModel):
 
     @model_validator(mode="after")
     def require_complete_canonical_lineage(self) -> Self:
+        if (self.capability_grant_id is None) is not (self.capability_grant_digest is None):
+            raise ValueError("Capability Grant ID and digest must be provided together")
         if (self.action_permit_id is None) is not (self.action_permit_digest is None):
             raise ValueError("Action Permit ID and digest must be provided together")
+        if self.capability_grant_id is None and self.action_permit_id is None:
+            raise ValueError("Graph Proposal requires a Capability Grant or Action Permit")
         keys = [(item.reference, item.sha256) for item in self.evidence]
         if keys != sorted(set(keys)):
             raise ValueError("Graph Proposal evidence must be unique and sorted")

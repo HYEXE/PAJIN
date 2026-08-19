@@ -942,6 +942,11 @@ function isCancellableRun(run) {
   return run !== null && ["queued", "running", "awaiting-approval"].includes(run.state);
 }
 
+function isApprovalElapsed(approval) {
+  return approval !== null
+    && new Date(approval.intent.expires_at).getTime() <= Date.now();
+}
+
 function updateWorkflowControls() {
   const run = session.currentRun;
   const approval = session.currentApproval;
@@ -949,11 +954,16 @@ function updateWorkflowControls() {
     && run !== null
     && run.state === "awaiting-approval"
     && run.current_checkpoint_id === approval.checkpoint_id;
-  const pendingApproval = approvalMatchesCurrentCheckpoint && approval.state === "pending";
+  const approvalElapsed = approvalMatchesCurrentCheckpoint && isApprovalElapsed(approval);
+  const pendingApproval = approvalMatchesCurrentCheckpoint
+    && approval.state === "pending"
+    && !approvalElapsed;
   const selfRequestedApproval = pendingApproval
     && approval.requested_by === session.subject;
   const canDecide = session.canApprove && pendingApproval && !selfRequestedApproval;
-  const resumableApproval = approvalMatchesCurrentCheckpoint && approval.state === "approved";
+  const resumableApproval = approvalMatchesCurrentCheckpoint
+    && approval.state === "approved"
+    && !approvalElapsed;
   const cancellable = isCancellableRun(run);
   const busy = session.actionBusy || session.detailLoading;
 
@@ -967,6 +977,10 @@ function updateWorkflowControls() {
 
   if (run === null) {
     elements.workflowHelp.textContent = "Select a Run to load its current approval boundary.";
+  } else if (approvalElapsed) {
+    elements.workflowHelp.textContent = (
+      "The approval has expired. An authorized maintenance or action request must reconcile it."
+    );
   } else if (selfRequestedApproval && session.canApprove) {
     elements.workflowHelp.textContent = "The approval requester cannot decide their own request.";
   } else if (pendingApproval && session.canApprove) {
@@ -993,7 +1007,10 @@ function renderApproval(approval) {
     return;
   }
 
-  elements.approvalState.textContent = approval.state;
+  elements.approvalState.textContent = isApprovalElapsed(approval)
+    && ["pending", "approved"].includes(approval.state)
+    ? `${approval.state} · expired`
+    : approval.state;
   elements.approvalTool.textContent = approval.intent.tool_id;
   elements.approvalTarget.textContent = approval.intent.target;
   elements.approvalRisk.textContent = `T${approval.intent.risk_tier}`;

@@ -9,6 +9,7 @@ from typing import Any
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
+from pajin.control_plane.abac import ControlPlaneRunCancellationAuthorizer
 from pajin.control_plane.claim_service import ControlPlaneClaimService
 from pajin.control_plane.collaborator_hooks import ControlPlaneTransactionHooks
 from pajin.control_plane.database import (
@@ -112,6 +113,7 @@ class ControlPlaneLifecycleService:
         views: ControlPlaneViewMapper,
         claims: ControlPlaneClaimService,
         hooks: LifecycleServiceHooks,
+        run_cancellation_authorizer: ControlPlaneRunCancellationAuthorizer | None = None,
     ) -> None:
         self.repository = repository
         self.signer = signer
@@ -119,6 +121,7 @@ class ControlPlaneLifecycleService:
         self._views = views
         self._claims = claims
         self._hooks = hooks
+        self._run_cancellation_authorizer = run_cancellation_authorizer
 
     def cancel_run(
         self,
@@ -147,6 +150,11 @@ class ControlPlaneLifecycleService:
                 {job.job_id: job for job in self._lock_cancellable_jobs(session, run_id)}
             )
             run = self._records.run(session, run_id, lock=True)
+            if self._run_cancellation_authorizer is not None:
+                self._run_cancellation_authorizer.authorize_run_cancellation(
+                    principal_subject=actor,
+                    submission_authority_digest=run.submission_authority_digest,
+                )
             if run.state == RunState.CANCELLED.value:
                 return CancelRunView(
                     run=self._views.run(run),
@@ -681,6 +689,11 @@ class ControlPlaneLifecycleService:
         """Cancel under the canonical Replay graph then capacity-layer lock order."""
 
         graph = self._lock_replay_cancellation_graph(session, replay_item_hint)
+        if self._run_cancellation_authorizer is not None:
+            self._run_cancellation_authorizer.authorize_run_cancellation(
+                principal_subject=actor,
+                submission_authority_digest=graph.run.submission_authority_digest,
+            )
         if graph.current_item.state == ReplayItemState.CANCELLED.value:
             return CancelRunView(
                 run=self._views.run(graph.run),

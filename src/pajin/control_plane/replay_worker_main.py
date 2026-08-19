@@ -143,6 +143,10 @@ async def run_from_env() -> None:
         base_url=_required_env("PAJIN_CP_URL"),
         bearer_token=_required_env("PAJIN_CP_REPLAY_WORKER_TOKEN"),
         allow_plaintext_http_for_lab=_plaintext_http_for_lab_enabled(),
+        tls_ca_file=os.environ.get("PAJIN_CP_TLS_CA_FILE"),
+        tls_client_cert_file=os.environ.get("PAJIN_CP_MTLS_CERT_FILE"),
+        tls_client_key_file=os.environ.get("PAJIN_CP_MTLS_KEY_FILE"),
+        tls_client_key_password=os.environ.get("PAJIN_CP_MTLS_KEY_PASSWORD"),
     ) as client:
         executor = KISAExactReplayExecutor(
             client=client,

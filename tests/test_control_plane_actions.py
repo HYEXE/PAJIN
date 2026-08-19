@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -20,6 +20,14 @@ from pajin.control_plane.models import (
     ControlPlaneConflictCode,
     Principal,
     PrincipalRole,
+)
+from pajin.control_plane.pentest_replay import (
+    PentestReplayOperatorDispatchRequest,
+    PentestReplayOperatorDispatchView,
+)
+from pajin.control_plane.pentest_workflow import (
+    PentestOperatorWorkflowRequest,
+    PentestOperatorWorkflowView,
 )
 
 OPERATOR_TOKEN = "actions-operator-token-that-is-long-and-distinct"
@@ -66,6 +74,148 @@ def _settings(path: Path) -> ControlPlaneSettings:
 
 def _auth(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
+
+
+class _PentestWorkflowRuntime:
+    def __init__(self) -> None:
+        self.principals: list[Principal] = []
+
+    def run(
+        self,
+        request: PentestOperatorWorkflowRequest,
+        *,
+        principal: Principal,
+    ) -> PentestOperatorWorkflowView:
+        self.principals.append(principal)
+        return PentestOperatorWorkflowView(
+            deploymentId=request.deployment_id,
+            workflowId="pentest-operator-workflow-api",
+            workflowDigest="a" * 64,
+            status="awaiting-signed-finalization",
+            controlledValidityEvidenceId="pentest-controlled-validity-api",
+            controlledValidityEvidenceDigest="b" * 64,
+            confirmationIntentId="pentest-confirmation-intent-api",
+            confirmationIntentDigest="c" * 64,
+            reportingPerformed=False,
+        )
+
+
+class _PentestReplayRuntime:
+    def __init__(self) -> None:
+        self.principals: list[Principal] = []
+
+    async def dispatch_once(
+        self,
+        request: PentestReplayOperatorDispatchRequest,
+        *,
+        worker_scope: object,
+        worker_principal: Principal,
+    ) -> PentestReplayOperatorDispatchView:
+        assert worker_scope is not None
+        self.principals.append(worker_principal)
+        return PentestReplayOperatorDispatchView(
+            deploymentId=request.deployment_id,
+            compilationAuthorityDigest=request.compilation_authority_digest,
+            intentDigest=request.intent_digest,
+            approvalId=request.approval_id,
+            sourceAdmissionId="pentest-recon-discovery-admission_api",
+            sourceAdmissionDigest=request.source_admission_digest,
+            replayPlanId="pentest-recon-replay-plan_api",
+            replayPlanDigest="b" * 64,
+            replayBindingId="pentest-recon-replay-authorization_api",
+            replayBindingDigest="c" * 64,
+            approvalReceiptId="approval-receipt-api",
+            approvalReceiptDigest="d" * 64,
+            permitId="permit-api",
+            permitDigest="e" * 64,
+            runId="run_20260819T000000Z_1234abcd",
+            dispatched=True,
+            outcomeId="pentest-recon-outcome-api",
+            outcomeDigest="f" * 64,
+            sealedRunRootDigest="1" * 64,
+        )
+
+
+def test_pentest_workflow_route_requires_operator_and_returns_non_bearer_view(
+    tmp_path: Path,
+) -> None:
+    runtime = _PentestWorkflowRuntime()
+    app = create_app(
+        _settings(tmp_path / "pentest-workflow-route.db"),
+        pentest_workflow_runtime=runtime,
+    )
+    request = {
+        "apiVersion": "pajin.dev/pentest-operator-workflow-request/v1alpha1",
+        "kind": "PentestOperatorWorkflowRequest",
+        "deploymentId": "pentest-workflow-deployment-api",
+        "replayComparisonDigest": "d" * 64,
+        "hypothesisId": "health-metadata-exposure",
+    }
+    with TestClient(app) as client:
+        forbidden = client.post(
+            "/v1/pentest/workflows/run",
+            headers=_auth(AUDITOR_TOKEN),
+            json=request,
+        )
+        response = client.post(
+            "/v1/pentest/workflows/run",
+            headers=_auth(OPERATOR_TOKEN),
+            json=request,
+        )
+
+    assert forbidden.status_code == 403
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == "awaiting-signed-finalization"
+    assert response.json()["reportingPerformed"] is False
+    assert runtime.principals == [
+        Principal(
+            subject="actions-operator",
+            roles=frozenset({PrincipalRole.OPERATOR, PrincipalRole.AUDITOR}),
+        )
+    ]
+
+
+def test_pentest_replay_route_requires_dedicated_replay_worker(
+    tmp_path: Path,
+) -> None:
+    runtime = _PentestReplayRuntime()
+    settings = replace(
+        _settings(tmp_path / "pentest-replay-route.db"),
+        replay_executor_profiles={"actions-worker": frozenset({"pentest-replay"})},
+    )
+    app = create_app(settings, pentest_replay_runtime=runtime)
+    request = {
+        "apiVersion": "pajin.dev/pentest-replay-operator-dispatch-request/v1alpha1",
+        "kind": "PentestReplayOperatorDispatchRequest",
+        "deploymentId": "pentest-replay-deployment-api",
+        "compilationAuthorityDigest": "a" * 64,
+        "intentDigest": "b" * 64,
+        "approvalId": "pentest-replay-approval-api",
+        "sourceAdmissionDigest": "c" * 64,
+    }
+    with TestClient(app) as client:
+        forbidden = client.post(
+            "/v1/worker/pentest/replay/dispatch",
+            headers=_auth(OPERATOR_TOKEN),
+            json=request,
+        )
+        response = client.post(
+            "/v1/worker/pentest/replay/dispatch",
+            headers=_auth(WORKER_TOKEN),
+            json=request,
+        )
+
+    assert forbidden.status_code == 403
+    assert response.status_code == 200, response.text
+    assert response.json()["dispatched"] is True
+    assert response.json()["comparisonAuthority"] is False
+    assert response.json()["executionAuthority"] is False
+    assert runtime.principals == [
+        Principal(
+            subject="actions-worker",
+            roles=frozenset({PrincipalRole.WORKER}),
+        )
+    ]
 
 
 def _submit(client: TestClient, suffix: str) -> tuple[str, str]:
@@ -812,7 +962,7 @@ def test_pending_approval_expiry_is_committed_before_decision_conflict(
         assert event_types.count("run.cancelled") == 1
 
 
-def test_pending_approval_expiry_is_atomically_committed_by_current_read(
+def test_pending_approval_current_read_reports_elapsed_intent_without_mutation(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -822,23 +972,24 @@ def test_pending_approval_expiry_is_atomically_committed_by_current_read(
         future = workflow.expires_at + timedelta(minutes=1)
         monkeypatch.setattr("pajin.control_plane.service.utc_now", lambda: future)
 
-        for _attempt in range(2):
+        for token in (OPERATOR_TOKEN, APPROVER_TOKEN, AUDITOR_TOKEN):
             current = client.get(
                 f"/v1/runs/{workflow.run_id}/approval",
-                headers=_auth(AUDITOR_TOKEN),
+                headers=_auth(token),
             )
             assert current.status_code == 200
-            assert current.json()["state"] == "expired"
+            assert current.json()["state"] == "pending"
+            assert datetime.fromisoformat(current.json()["intent"]["expires_at"]) < future
 
         run = client.get(f"/v1/runs/{workflow.run_id}", headers=_auth(AUDITOR_TOKEN))
-        assert run.json()["state"] == "cancelled"
+        assert run.json()["state"] == "awaiting-approval"
         event_types = [event["event_type"] for event in _events(client, workflow.run_id)]
-        assert event_types.count("approval.expired") == 1
-        assert event_types.count("run.cancelled") == 1
+        assert "approval.expired" not in event_types
+        assert "run.cancelled" not in event_types
         with app.state.repository.transaction() as session:
             approval = session.get(ApprovalRecord, workflow.approval_id)
             checkpoint = session.get(CheckpointRecord, workflow.checkpoint_id)
-            assert approval is not None and approval.state == "expired"
+            assert approval is not None and approval.state == "pending"
             assert checkpoint is not None and checkpoint.claimed_at is None
             assert checkpoint.continuation_job_id is None
 

@@ -774,7 +774,12 @@ function jobView(run, { state = "queued", kind = "campaign" } = {}) {
   };
 }
 
-function approvalFor(run, state = "pending", requestedBy = "worker") {
+function approvalFor(
+  run,
+  state = "pending",
+  requestedBy = "worker",
+  expiresAt = "2030-01-01T00:00:00Z",
+) {
   return {
     approval_id: `approval-${run.run_id}`,
     run_id: run.run_id,
@@ -784,7 +789,7 @@ function approvalFor(run, state = "pending", requestedBy = "worker") {
       tool_id: "runtime-tool",
       target: "https://example.invalid/target",
       risk_tier: 3,
-      expires_at: "2030-01-01T00:00:00Z",
+      expires_at: expiresAt,
     },
     state,
     requested_by: requestedBy,
@@ -1600,6 +1605,29 @@ assert.equal(elements.get("#status-message").classList.contains("success"), fals
 assert.equal(elements.get("#approve-button").disabled, true);
 assert.match(elements.get("#workflow-help").textContent, /cannot decide their own request/);
 assert.equal(elements.get("#workflow-reason").value, "runtime approval reason");
+
+enqueueFetch(
+  "/v1/runs?limit=25&offset=0",
+  () => jsonResponse(runList([
+    runSummary(pendingRun.run_id, pendingRun.campaign_name, pendingRun.state),
+  ])),
+);
+enqueueFetch(`/v1/runs/${pendingRun.run_id}`, () => jsonResponse(pendingRun));
+enqueueFetch(
+  `/v1/runs/${pendingRun.run_id}/events?limit=200`,
+  () => jsonResponse([eventFor(pendingRun)]),
+);
+enqueueFetch(
+  `/v1/runs/${pendingRun.run_id}/approval`,
+  () => jsonResponse(approvalFor(pendingRun, "pending", "worker", "2000-01-01T00:00:00Z")),
+);
+await elements.get("#refresh-button").dispatch("click");
+assert.equal(elements.get("#approval-state").textContent, "pending · expired");
+assert.equal(elements.get("#approve-button").disabled, true);
+assert.equal(elements.get("#deny-button").disabled, true);
+assert.equal(elements.get("#resume-button").disabled, true);
+assert.equal(elements.get("#workflow-reason").disabled, true);
+assert.match(elements.get("#workflow-help").textContent, /authorized maintenance or action/);
 
 await elements.get("#lock-button").dispatch("click");
 assert.equal(elements.get("#workflow-reason").value, "");
