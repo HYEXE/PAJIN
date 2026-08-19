@@ -239,7 +239,8 @@ Recon·Replay Worker와 daemon은 기존 atomic mTLS 기본값 `True`를 유지�
     `api_version`을 저장하지만 두 reader가 `apiVersion`을 찾던 불일치를 공통 strict parser로 제거했다.
   - 로컬 Python 3.12 Linux 재현: CI 실패 3건 `3 passed`; 관련 portable execution·Object Storage·Replay 파일
     전체 `139 passed`; 진단용 임시 Docker volume은 제거를 확인했다.
-  - 원격 전체 CI 재검증 필요
+  - 수정 commit `e9e190f`의 원격 run `32222963776`은 Ruff, Linux 대상 mypy 313개 파일과 전체 pytest
+    `4115 passed, 67 skipped`를 통과했다.
 - 수정·신규 Python 테스트 전체 묶음: `419 passed, 2 skipped, 1 deselected`
   - skip: Node.js runtime 부재 1건, POSIX-only durable managed import 1건
   - deselect: Windows endpoint security가 간헐적으로 가로채는 실제 loopback mTLS handshake 1건
