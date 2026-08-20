@@ -5,6 +5,9 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0206: Bind Domain Workers to the Existing Authority Path](docs/adr/0206-bind-domain-workers-to-existing-authority-path.md)
+- [ADR-0205: Admit Cross-domain Knowledge without Scope Expansion](docs/adr/0205-admit-cross-domain-knowledge-without-scope-expansion.md)
+- [ADR-0204: Separate Security Domain from Profile and Authority](docs/adr/0204-separate-security-domain-from-profile-and-authority.md)
 - [ADR-0203: Bind Multi-turn LLM/RAG Request Units before Execution](docs/adr/0203-bind-multi-turn-llm-rag-request-units.md)
 - [ADR-0202: Compose an Approved Single-turn LLM Red Team Profile](docs/adr/0202-compose-approved-single-turn-llm-redteam-profile.md)
 - [ADR-0201: Resolve Dynamic Pentest Child Deployments from a Server-owned Registry](docs/adr/0201-resolve-dynamic-pentest-child-deployments-from-server-registry.md)

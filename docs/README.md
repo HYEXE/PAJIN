@@ -9,6 +9,7 @@ the root [agent instructions](../AGENTS.md), [plan](../PLAN.md), [handoff](../HA
 ## Start here
 
 - [Architecture v2 RFC](rfc/0001-pajin-architecture-v2.md)
+- [Multi-domain architecture RFC](rfc/0002-multi-domain-security-analysis-architecture.md)
 - [Architecture decision records](adr/)
 - [Capability contracts](capability/)
 - [Canonical Graph contracts](graph/)

@@ -3,11 +3,6 @@
 재현된 미해결 제약만 기록한다. 비밀정보의 실제 값과 추측성 백로그는 기록하지 않는다.
 로드맵 작업은 `PLAN.md`에서 관리한다.
 
-## 저장소 전체 Ruff format 기준선
-
-- 2026-08-11 전체 `ruff format --check src tests containers`는 기존 166개 파일을 재포맷 대상으로 보고했다.
-  대상 Python은 통과했다. unrelated 대규모 format diff는 별도 작업 전까지 만들지 않는다.
-
 ## Windows managed Artifact POSIX durability
 
 - Windows의 managed repository/import 회귀는 POSIX directory `fsync` 부재로 실패한다. 2026-08-18 확대
@@ -34,17 +29,25 @@
 - 비권위: 003D는 validity만 confirmed한다. impact·severity는 `not-evaluated-information-only`이고 Graph mutation,
   report·external delivery, Scope 확장, Decision issuance와 추가 execution은 계속 닫혀 있다.
 
-## PENTEST-004A/B/C1 경계
+## PENTEST-004A~C2B2 실행·조정 경계
 
 - 보장: compile은 signed 입력, Recon은 deployment·현재 authority·direct-mTLS를 재검증한다. workflow는 봉인된
   source·Replay·세 Control과 외부 서명 current-Graph finalization만 validity-only local report로 조합한다.
-- 제한: local Gateway가 Docker를 직접 호스팅하며 distributed Worker·cross-host fence·live multi-Worker coordination은
-  없다. CLI는 누락 권위를 만들지 않고 LLM/Web/RAG/MCP/System 공격 Capability도 제공하지 않는다.
+  004C2B2는 server-owned child registry, concrete child adapter, direct-mTLS 재검증과 restart reload를 제공한다.
+- 제한: registry 자동화, distributed Worker queue와 cross-host fence는 없고 host-local filesystem 권한이
+  deployment TCB다. CLI는 누락 권위나 다른 Security Domain 실행 권위를 만들지 않는다.
 
 ## REDTEAM-001A/B LLM·RAG 제품 경계
 
 - 테스트는 trusted Docker receipt fixture이며 실제 외부 Target 운영 증거가 아니다. 두 프로필은 host-local이고
   Replay·Finding·report, Web·MCP·browser·system·write·cleanup 권위와 cross-host fence가 없다.
+
+## ARCH-002 multi-domain architecture 경계
+
+- ARCH-002와 ADR-0204~0206은 accepted architecture와 roadmap일 뿐 runtime 구현이 아니다. Security Domain
+  registry, domain-aware Capability projection, Worker boundary registry와 benchmark extension은 모두 planned다.
+- 현재 일반 Network/System/Application/Mobile/Cloud/Cryptography/Forensics executable vertical slice는 없다.
+  기존 infrastructure나 CTF fixture를 해당 domain 지원 완료 증거로 해석하지 않는다.
 
 ## UX-006B authenticated external delivery 경계
 
@@ -782,9 +785,3 @@
 - 2026-08-02 Docker Desktop 4.78.0 / Engine 29.5.3에서 관련 governed live 측정과 cleanup이
   통과했다. 다음 세션 가용성은 보장되지 않으므로 실제 컨테이너 증거가 필요할 때 daemon과 exact
   image ID를 다시 확인한다. fake-provider 검증과 실행하지 않은 live 검증을 구분한다.
-
-## PENTEST-004C2A~B2 Worker 실행·조정 경계
-
-- 004C2B2는 server-owned child registry, concrete 004B/004C2A adapters, direct-mTLS 재검증,
-  deterministic Replay comparison과 restart reload를 제공한다. registry 자동화, distributed Worker queue와
-  cross-host fence는 없으며 host-local filesystem 권한이 deployment TCB다.
