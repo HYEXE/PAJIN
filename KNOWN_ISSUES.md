@@ -41,6 +41,11 @@
 - 제한: local Gateway가 Docker를 직접 호스팅하며 distributed Worker·cross-host fence·live multi-Worker coordination은
   없다. CLI는 누락 권위를 만들지 않고 LLM/Web/RAG/MCP/System 공격 Capability도 제공하지 않는다.
 
+## REDTEAM-001A/B LLM·RAG 제품 경계
+
+- 테스트는 trusted Docker receipt fixture이며 실제 외부 Target 운영 증거가 아니다. 두 프로필은 host-local이고
+  Replay·Finding·report, Web·MCP·browser·system·write·cleanup 권위와 cross-host fence가 없다.
+
 ## UX-006B authenticated external delivery 경계
 
 - 보장: exact export·registered sink·authorization·one-use lease·stable key를 dispatch 전 journal에 결박한다.
@@ -767,12 +772,6 @@
 - 2026-08-19 현재 `.venv\Scripts\pajin.exe pentest-compile --help`도 출력 없이 정지해 중단했다.
   `.venv\Scripts\python.exe -m pajin.cli pentest-compile --help`는 통과했다.
 
-## 동기화된 macOS `.venv`와 Windows pytest 임시 경로
-
-- 2026-08-12 동기화 `.venv`는 macOS arm64였고 새 venv는 `OPENSSL_Applink`, 기본 pytest temp는
-  `WinError 5`였다. 저장소 밖 ASCII 환경의 `uv --system-certs sync --frozen`과 전용 `--basetemp`로
-  exact lock을 검증했다. Windows uv/temp ACL과 Linux symlink 검증은 별도다.
-
 ## Git OpenSSL CA 경로
 
 - 상태: 활성. 기본 Git이 `unable to get local issuer certificate`를 보고하면 TLS 검증을 끄지 말고
@@ -784,7 +783,8 @@
   통과했다. 다음 세션 가용성은 보장되지 않으므로 실제 컨테이너 증거가 필요할 때 daemon과 exact
   image ID를 다시 확인한다. fake-provider 검증과 실행하지 않은 live 검증을 구분한다.
 
-## PENTEST-004C2A~B1 Worker 실행·조정 경계
+## PENTEST-004C2A~B2 Worker 실행·조정 경계
 
-- B1은 signed five-stage journal·reconcile-only·004C1 handoff까지다. B2 adapter 전에는 injection-only·503이며
-  cross-host fence가 없다. Windows Run root도 create-only 경로 길이 여유가 필요하다.
+- 004C2B2는 server-owned child registry, concrete 004B/004C2A adapters, direct-mTLS 재검증,
+  deterministic Replay comparison과 restart reload를 제공한다. registry 자동화, distributed Worker queue와
+  cross-host fence는 없으며 host-local filesystem 권한이 deployment TCB다.

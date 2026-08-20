@@ -563,7 +563,7 @@ priority and the [current handoff](HANDOFF.md) for the Git baseline and verifica
 | AI Red Team | KISA catalog for 19 threat classes and 52 checklist items; executable A01, A02, A04, M03, and M06 scenarios; separate Claim-bound validity/impact/severity fresh-session Replay authority for exact M03, M06, and A04 through `kisa-run` and an explicit Local path; opt-in information-only validation Controls with three fresh single-call Capabilities per Candidate, registered materializer identity, and separate request/evidence/receipt lineage; Claim replay projections; and baseline-bound negative replay that remains inconclusive without external remediation attestation |
 | Bug Bounty | Program-policy review, canonical scope compilation, conservative duplicate triage, local report drafts, and one fixed Boolean SQL injection lab |
 | CTF | Typed local Web backup and offline single-byte XOR challenges, plus a bounded Web + Crypto Suite |
-| Pentest | Typed assessment and exact Scope, signed authorization verification, Profile-native Campaign/Envelope compilation through `pentest-compile`, deployment-pinned approved one-shot GET Recon through `pentest-recon-dispatch`, a dedicated independently authorized Replay Worker path through `pentest-replay-dispatch`, a signed durable five-stage coordination journal, controlled CWE-200 validity evidence, current-Graph confirmation admission, and a two-phase resumable local validity report through `pentest-workflow-run`. Concrete coordination deployment adapters remain follow-up work. |
+| Pentest | Typed assessment and exact Scope, signed authorization verification, Profile-native Campaign/Envelope compilation through `pentest-compile`, deployment-pinned approved one-shot GET Recon through `pentest-recon-dispatch`, a dedicated independently authorized Replay Worker path through `pentest-replay-dispatch`, and a deployment-loaded five-stage coordination journal whose server-owned registry resolves concrete 004B/004C2A children through `pentest-workflow-stage-dispatch`. Controlled CWE-200 validity evidence, current-Graph confirmation admission, and a two-phase resumable local validity report remain available through `pentest-workflow-run`. |
 | Control Plane | Optional authenticated FastAPI API, PostgreSQL Job queue, approval checkpoints, fenced cooperative cancellation, leases and crash recovery, a same-origin Web Console preview, owner-controlled managed Artifacts, opaque Operator Replay source/batch admission with role-scoped batch/item/ticket/finalization/projection reads, durable exact-KISA Replay finalization, fresh-identity retry issuance, and a dedicated `kisa-exact-v1` Replay Worker. Schema v11 publishes CAS-fenced multi-item projections; schema v12 binds a confirmed baseline to one parent Retest Artifact and publishes a server-reverified `kisa-retest.json`; schema v13 adds append-only exact Claim bindings and an opt-in v3 Claim-specific public projection; schema v14 adds the signed Target registry anti-rollback ledger. Additional opt-ins seal an Ed25519 Claim-receipt verifier bundle, carry an executor-attested portable Artifact inline or through a resumable 64 MiB local-object-store multipart path, bind a Target-issued receipt and host observation, pin HTTPS endpoint SPKI, support signed registry rotation, and bind the Target-signed application exchange to the Worker-observed TLS 1.2 channel. Only validity drives confirmation, while impact and severity remain information-only. |
 | Primary gaps | Validation Controls and Claim-by-Claim Replay beyond the three registered KISA scenarios, live registry refresh and externally anchored transparency/federation, TLS 1.3 RFC 9266 exporter support, a selected live provider adapter and conformance environment for the durably activated external object-store path, remote expiry/garbage collection, cross-host fencing, KMS/HSM, and tenant enforcement, attested operational Provider diversity, severity calibration and multi-Reviewer/Human consensus, Admin discovery adapters and broader RAG Hypothesis/Observation rules, trusted new-Surface admission from follow-up observations, ranking and information-value scoring, multi-adapter Snapshot-to-Plan scheduling, parallel-safe and more-than-two-wave execution, Finding/report review UI, distributed Workers, external integrations, and independently anchored production evidence |
 
@@ -1398,16 +1398,43 @@ subject before producing a body-free local Finding/report. Configure
 `PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_PATH` and
 `PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_SHA256`, then use `pentest-workflow-run`.
 
-PENTEST-004C2B1 adds an externally signed, ordered five-stage journal and separated generic/Replay
+PENTEST-004C2B adds an externally signed, ordered five-stage journal and separated generic/Replay
 Worker routes. It seals the start intent before a child call, allows an expired activation to use
 reconcile-only recovery only after that seal, and emits a freshly reloadable 004C1 deployment after
-all five receipts and the Replay comparison validate. The coordination runtime is injection-only
-until PENTEST-004C2B2 supplies the digest-pinned child deployment registry and concrete 004B/004C2A
-adapters; LLM/Web/RAG/MCP/System attack Capabilities then follow in REDTEAM-001. See the
+all five receipts and the Replay comparison validate. PENTEST-004C2B2 loads that runtime from an
+externally SHA-pinned deployment and resolves dynamically issued 004B/004C2A children only through
+the server-owned `<stage>/<childDeploymentDigest>.json` registry. Every retry rechecks the live
+direct-mTLS Worker session; reconciliation can only reopen a pre-existing terminal child Run.
+
+Configure `PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH` with its exact
+`PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256`. Additional generic Workers use
+`PAJIN_CP_ADDITIONAL_WORKER_CREDENTIALS`, a strict subject-to-token-environment-name map, and every
+Worker must appear exactly once in the current mTLS policy. Submit the externally signed activation:
+
+```powershell
+.venv\Scripts\pajin pentest-workflow-stage-dispatch `
+  <signed-stage-activation.json> `
+  --control-plane-url https://control-plane.example.test `
+  --tls-ca-file <ca.pem> `
+  --mtls-certificate-file <worker.cert.pem> `
+  --mtls-private-key-file <worker.key.pem> `
+  --worker-token-env <environment-name-for-this-worker>
+```
+
+REDTEAM-001A adds `redteam-llm-v1` as an explicit product ceiling over the existing signed
+Capability Graph deployment. It admits only approved single-turn M03/M06 `ai.chat-probe` actions
+against an exact `ai-chat-api` Campaign Target. REDTEAM-001B adds the separate
+`redteam-llm-rag-v1` ceiling for exact A04 `1.1.0`: its two prepared turns, Capability definition,
+Graph Proposal, T2 approval, ActionPermit, and Gateway accounting all reserve two request units,
+and it accepts one exact `ai-chat-api` or `rag-chat-api` Target. Web, MCP, browser, and system
+surfaces remain closed. See the
+[REDTEAM-001A contract](docs/orchestration/REDTEAM-001A-approved-single-turn-llm-profile.md),
+[REDTEAM-001B contract](docs/orchestration/REDTEAM-001B-multi-turn-llm-rag-profile.md),
 [PENTEST-004B contract](docs/orchestration/PENTEST-004B-approved-recon-operator-entrypoint.md) and
 [PENTEST-004C1 contract](docs/orchestration/PENTEST-004C1-resumable-evidence-workflow.md), and
 [PENTEST-004C2A contract](docs/orchestration/PENTEST-004C2A-dedicated-replay-worker-entrypoint.md), and
-[PENTEST-004C2B1 contract](docs/orchestration/PENTEST-004C2B1-durable-worker-coordination.md).
+[PENTEST-004C2B1 contract](docs/orchestration/PENTEST-004C2B1-durable-worker-coordination.md), and
+[PENTEST-004C2B2 contract](docs/orchestration/PENTEST-004C2B2-concrete-child-deployment-adapters.md).
 
 ## Bug Bounty Scope Parser
 
@@ -2059,6 +2086,11 @@ $env:PAJIN_CP_WORKER_SUBJECT='worker-service'
 $env:PAJIN_CP_REPLAY_WORKER_TOKEN='<distinct-random-replay-worker-token>'
 $env:PAJIN_CP_REPLAY_WORKER_SUBJECT='replay-worker-service'
 $env:PAJIN_CP_REPLAY_EXECUTOR_PROFILES='{"replay-worker-service":["kisa-exact-v1"]}'
+# Optional additional separated generic Workers. Map subjects to secret environment variable names:
+$env:PAJIN_CONTROL_BASELINE_TOKEN='<distinct-random-baseline-worker-token>'
+$env:PAJIN_CONTROL_NEGATIVE_TOKEN='<distinct-random-negative-worker-token>'
+$env:PAJIN_CONTROL_COUNTERFACTUAL_TOKEN='<distinct-random-counterfactual-worker-token>'
+$env:PAJIN_CP_ADDITIONAL_WORKER_CREDENTIALS='{"pentest-control-baseline":"PAJIN_CONTROL_BASELINE_TOKEN","pentest-control-negative":"PAJIN_CONTROL_NEGATIVE_TOKEN","pentest-control-counterfactual":"PAJIN_CONTROL_COUNTERFACTUAL_TOKEN"}'
 $env:PAJIN_CP_CHECKPOINT_KEY='<random-signing-key-at-least-32-bytes>'
 # Optional UX-007C exact signed-approval ABAC policy:
 $env:PAJIN_CP_ABAC_POLICY='<one-line-control-plane-abac-policy-json>'
@@ -2079,6 +2111,9 @@ $env:PAJIN_CP_TLS_CERT_FILE='<control-plane-server-certificate-chain.pem>'
 $env:PAJIN_CP_TLS_KEY_FILE='<control-plane-server-private-key.pem>'
 $env:PAJIN_CP_WORKER_MTLS_CA_FILE='<worker-client-ca-certificate.pem>'
 $env:PAJIN_CP_WORKER_MTLS_TRUST_POLICY='<one-line-worker-mtls-trust-policy-json>'
+# Optional PENTEST-004C2B2 runtime; both values are required together:
+$env:PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH='<absolute-coordination-deployment.json>'
+$env:PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256='<lowercase-sha256>'
 # Optional only when the server private key is encrypted:
 # $env:PAJIN_CP_TLS_KEY_PASSWORD='<server-private-key-password>'
 # Optional, required together only for portable_attestation batches:

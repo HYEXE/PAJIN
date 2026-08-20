@@ -5,6 +5,9 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0203: Bind Multi-turn LLM/RAG Request Units before Execution](docs/adr/0203-bind-multi-turn-llm-rag-request-units.md)
+- [ADR-0202: Compose an Approved Single-turn LLM Red Team Profile](docs/adr/0202-compose-approved-single-turn-llm-redteam-profile.md)
+- [ADR-0201: Resolve Dynamic Pentest Child Deployments from a Server-owned Registry](docs/adr/0201-resolve-dynamic-pentest-child-deployments-from-server-registry.md)
 - [ADR-0200: Require Externally Signed Ordered Worker Stage Activation](docs/adr/0200-require-externally-signed-ordered-worker-stage-activation.md)
 - [ADR-0199: Dispatch Pentest Replay through a Dedicated Worker Session](docs/adr/0199-dispatch-pentest-replay-through-dedicated-worker-session.md)
 - [ADR-0197: Expose Approved Recon Only through a Live Worker Session](docs/adr/0197-expose-approved-recon-only-through-live-worker-session.md)
