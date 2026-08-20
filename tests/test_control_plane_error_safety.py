@@ -1,4 +1,5 @@
 import json
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -13,6 +14,11 @@ from pajin.control_plane.client import (
     ControlPlaneTransientError,
 )
 from pajin.control_plane.models import ControlPlaneConflictCode
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationRequest,
+    PentestWorkflowStageActivationBundle,
+    PentestWorkflowStageActivationStatement,
+)
 
 
 def test_control_plane_validation_detail_omits_input_messages_and_field_names() -> None:
@@ -88,3 +94,83 @@ async def test_control_plane_client_does_not_reflect_remote_error_detail(
     assert str(raised.value) == safe_message
     assert secret not in str(raised.value)
     assert "forged daemon status" not in str(raised.value)
+
+
+@pytest.mark.asyncio
+async def test_pentest_workflow_client_selects_separate_recon_and_replay_routes() -> None:
+    paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        paths.append(request.url.path)
+        payload = json.loads(request.content)
+        statement = payload["activation"]["statement"]
+        completed = ["source"] if payload["stage"] == "source" else ["source", "replay"]
+        return httpx.Response(
+            200,
+            json={
+                "apiVersion": "pajin.dev/pentest-workflow-coordination-view/v1alpha1",
+                "kind": "PentestWorkflowCoordinationView",
+                "deploymentId": payload["deploymentId"],
+                "deploymentDigest": payload["deploymentDigest"],
+                "coordinationRunId": statement["coordinationRunId"],
+                "completedStages": completed,
+                "nextStage": (
+                    "replay" if payload["stage"] == "source" else "control-baseline"
+                ),
+                "workflowPreparationEligible": False,
+                "workflowDeploymentId": None,
+                "workflowDeploymentDigest": None,
+                "workflowDeploymentSha256": None,
+                "sealedCoordinationRootDigest": "e" * 64,
+                "executionAuthority": False,
+                "findingAuthority": False,
+            },
+        )
+
+    now = datetime(2026, 8, 20, 12, 0, tzinfo=UTC)
+    requests = []
+    predecessor: str | None = None
+    for ordinal, stage in enumerate(("source", "replay"), start=1):
+        statement = PentestWorkflowStageActivationStatement(
+            issuerId="pajin.pentest-stage-authority",
+            issuerVersion="1.0.0",
+            issuerDigest="d" * 64,
+            coordinationDeploymentId="pentest-coordination-client",
+            coordinationDeploymentDigest="a" * 64,
+            coordinationRunId="run_20260820T120000Z_1234abcd",
+            stage=stage,
+            ordinal=ordinal,
+            predecessorReceiptDigest=predecessor,
+            childDeploymentId=f"deployment:pentest-{stage}",
+            childDeploymentDigest=("b" if stage == "source" else "c") * 64,
+            workerSubject=f"pentest-{stage}-worker",
+            issuedAt=now,
+            expiresAt=now + timedelta(minutes=5),
+        )
+        bundle = PentestWorkflowStageActivationBundle(
+            keyId="pentest-stage-key-client",
+            statement=statement,
+            signatureBase64url="A" * 86,
+        )
+        requests.append(
+            PentestWorkflowCoordinationRequest(
+                deploymentId=statement.coordination_deployment_id,
+                deploymentDigest=statement.coordination_deployment_digest,
+                stage=stage,
+                activation=bundle,
+            )
+        )
+        predecessor = "f" * 64
+
+    async with ControlPlaneClient(
+        base_url="https://control-plane.invalid",
+        bearer_token="worker-client-token-00000000000000000001",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        for request in requests:
+            await client.dispatch_pentest_workflow_stage(request)
+
+    assert paths == [
+        "/v1/worker/pentest/workflows/stages/recon/dispatch",
+        "/v1/worker/pentest/workflows/stages/replay/dispatch",
+    ]

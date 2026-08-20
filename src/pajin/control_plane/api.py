@@ -107,6 +107,9 @@ from pajin.control_plane.pentest_workflow import PentestOperatorWorkflowRuntime
 from pajin.control_plane.pentest_workflow_coordination import (
     PentestWorkflowCoordinationDispatchRuntime,
 )
+from pajin.control_plane.pentest_workflow_coordination_deployment import (
+    load_pentest_workflow_coordination_deployment,
+)
 from pajin.control_plane.pentest_workflow_deployment import (
     load_pentest_operator_workflow_deployment,
 )
@@ -152,12 +155,19 @@ _MAINTENANCE_ABAC_POLICY_ENV = "PAJIN_CP_MAINTENANCE_ABAC_POLICY"
 
 _OIDC_HUMAN_TRUST_POLICY_ENV = "PAJIN_CP_OIDC_HUMAN_TRUST_POLICY"
 _WORKER_MTLS_TRUST_POLICY_ENV = "PAJIN_CP_WORKER_MTLS_TRUST_POLICY"
+_ADDITIONAL_WORKER_CREDENTIALS_ENV = "PAJIN_CP_ADDITIONAL_WORKER_CREDENTIALS"
 _PENTEST_RECON_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_RECON_DEPLOYMENT_PATH"
 _PENTEST_RECON_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_RECON_DEPLOYMENT_SHA256"
 _PENTEST_REPLAY_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_PATH"
 _PENTEST_REPLAY_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_SHA256"
 _PENTEST_WORKFLOW_DEPLOYMENT_PATH_ENV = "PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_PATH"
 _PENTEST_WORKFLOW_DEPLOYMENT_SHA256_ENV = "PAJIN_CP_PENTEST_WORKFLOW_DEPLOYMENT_SHA256"
+_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH_ENV = (
+    "PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH"
+)
+_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256_ENV = (
+    "PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256"
+)
 _REPLAY_EXECUTOR_PROFILES_ENV = "PAJIN_CP_REPLAY_EXECUTOR_PROFILES"
 _REPLAY_ATTESTATION_KEY_ID_ENV = "PAJIN_CP_REPLAY_ATTESTATION_KEY_ID"
 _REPLAY_ATTESTATION_PRIVATE_KEY_ENV = "PAJIN_CP_REPLAY_ATTESTATION_PRIVATE_KEY"
@@ -176,6 +186,7 @@ _MAX_REPLAY_EXECUTOR_PROFILES_PER_SUBJECT = 20
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_BYTES = 64 * 1024
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_DEPTH = 4
 _MAX_REPLAY_EXECUTOR_PROFILES_JSON_NODES = 4_096
+_WORKER_TOKEN_ENV_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]{0,127}$")
 _TRUE_ENV_VALUES = frozenset({"1", "true", "yes"})
 _FALSE_ENV_VALUES = frozenset({"0", "false", "no"})
 # A bounded Control Plane JSON object is at most 1,000,000 canonical UTF-8
@@ -661,6 +672,45 @@ def _parse_replay_executor_profiles(
         ) from exc
 
 
+def _parse_additional_worker_credentials(raw: str | None) -> dict[str, str]:
+    """Resolve Worker subject-to-token-environment bindings without embedding tokens in JSON."""
+
+    if raw is None:
+        return {}
+    if not raw.strip():
+        raise RuntimeError(f"{_ADDITIONAL_WORKER_CREDENTIALS_ENV} must not be empty")
+    try:
+        decoded = parse_strict_json_bytes(
+            raw.encode("utf-8"),
+            label=_ADDITIONAL_WORKER_CREDENTIALS_ENV,
+            max_bytes=64 * 1024,
+            max_depth=4,
+            max_nodes=1_024,
+        )
+        if not isinstance(decoded, dict) or not 1 <= len(decoded) <= 254:
+            raise ValueError("additional Worker credential map must contain 1-254 entries")
+        result: dict[str, str] = {}
+        for subject, token_environment in decoded.items():
+            Principal(subject=subject, roles=frozenset({PrincipalRole.WORKER}))
+            if (
+                not isinstance(token_environment, str)
+                or _WORKER_TOKEN_ENV_PATTERN.fullmatch(token_environment) is None
+            ):
+                raise ValueError("additional Worker token environment name is invalid")
+            token = os.environ.get(token_environment)
+            if token is None or not token.strip():
+                raise ValueError("additional Worker token environment is unavailable")
+            result[subject] = token
+        if len(result.values()) != len(set(result.values())):
+            raise ValueError("additional Worker bearer credentials must be distinct")
+        return result
+    except (UnicodeEncodeError, ValueError) as exc:
+        raise RuntimeError(
+            f"{_ADDITIONAL_WORKER_CREDENTIALS_ENV} must be a strict JSON "
+            "Worker-subject-to-token-environment map"
+        ) from exc
+
+
 def _parse_executor_attestation_anchor(
     raw: str | None,
     *,
@@ -820,6 +870,27 @@ def _validate_pentest_replay_deployment_settings(
         raise ValueError("Pentest Replay deployment SHA-256 is malformed")
 
 
+def _validate_pentest_workflow_coordination_deployment_settings(
+    path: Path | None,
+    digest: str | None,
+    worker_policy: WorkerMTLSTrustPolicy | None,
+    replay_executor_profiles: Mapping[str, frozenset[str]],
+) -> None:
+    if (path is None) != (digest is None):
+        raise ValueError(
+            "Pentest workflow coordination deployment path and SHA-256 "
+            "must be configured together"
+        )
+    if path is not None and worker_policy is None:
+        raise ValueError("Pentest workflow coordination deployment requires Worker mTLS policy")
+    if path is not None and not replay_executor_profiles:
+        raise ValueError(
+            "Pentest workflow coordination deployment requires a dedicated Replay Worker"
+        )
+    if digest is not None and re.fullmatch(r"^[a-f0-9]{64}$", digest) is None:
+        raise ValueError("Pentest workflow coordination deployment SHA-256 is malformed")
+
+
 @dataclass(frozen=True)
 class ControlPlaneSettings:
     database_url: str
@@ -834,6 +905,8 @@ class ControlPlaneSettings:
     pentest_replay_deployment_sha256: str | None = None
     pentest_workflow_deployment_path: Path | None = None
     pentest_workflow_deployment_sha256: str | None = None
+    pentest_workflow_coordination_deployment_path: Path | None = None
+    pentest_workflow_coordination_deployment_sha256: str | None = None
     abac_policy: ControlPlaneABACPolicy | None = None
     run_submission_abac_policy: ControlPlaneRunSubmissionABACPolicy | None = None
     run_cancellation_abac_policy: ControlPlaneRunCancellationABACPolicy | None = None
@@ -991,6 +1064,12 @@ class ControlPlaneSettings:
             self.worker_mtls_trust_policy,
             normalized,
         )
+        _validate_pentest_workflow_coordination_deployment_settings(
+            self.pentest_workflow_coordination_deployment_path,
+            self.pentest_workflow_coordination_deployment_sha256,
+            self.worker_mtls_trust_policy,
+            normalized,
+        )
         attestation_values = (
             self.replay_attestation_key_id,
             self.replay_attestation_private_key,
@@ -1023,12 +1102,21 @@ class ControlPlaneSettings:
         raw_oidc_human_trust_policy = os.environ.get(_OIDC_HUMAN_TRUST_POLICY_ENV)
         raw_replay_profiles = os.environ.get(_REPLAY_EXECUTOR_PROFILES_ENV)
         raw_worker_mtls_trust_policy = os.environ.get(_WORKER_MTLS_TRUST_POLICY_ENV)
+        raw_additional_worker_credentials = os.environ.get(
+            _ADDITIONAL_WORKER_CREDENTIALS_ENV
+        )
         pentest_recon_deployment_path = os.environ.get(_PENTEST_RECON_DEPLOYMENT_PATH_ENV)
         pentest_recon_deployment_sha256 = os.environ.get(_PENTEST_RECON_DEPLOYMENT_SHA256_ENV)
         pentest_replay_deployment_path = os.environ.get(_PENTEST_REPLAY_DEPLOYMENT_PATH_ENV)
         pentest_replay_deployment_sha256 = os.environ.get(_PENTEST_REPLAY_DEPLOYMENT_SHA256_ENV)
         pentest_workflow_deployment_path = os.environ.get(_PENTEST_WORKFLOW_DEPLOYMENT_PATH_ENV)
         pentest_workflow_deployment_sha256 = os.environ.get(_PENTEST_WORKFLOW_DEPLOYMENT_SHA256_ENV)
+        pentest_workflow_coordination_deployment_path = os.environ.get(
+            _PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH_ENV
+        )
+        pentest_workflow_coordination_deployment_sha256 = os.environ.get(
+            _PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256_ENV
+        )
         raw_abac_policy = os.environ.get(_ABAC_POLICY_ENV)
         raw_run_submission_abac_policy = os.environ.get(_RUN_SUBMISSION_ABAC_POLICY_ENV)
         raw_run_cancellation_abac_policy = os.environ.get(_RUN_CANCELLATION_ABAC_POLICY_ENV)
@@ -1343,6 +1431,25 @@ class ControlPlaneSettings:
             or pentest_workflow_deployment_sha256 != pentest_workflow_deployment_sha256.strip()
         ):
             raise RuntimeError("Pentest workflow deployment settings must not be blank")
+        if (pentest_workflow_coordination_deployment_path in {None, ""}) != (
+            pentest_workflow_coordination_deployment_sha256 in {None, ""}
+        ):
+            raise RuntimeError(
+                "Pentest workflow coordination deployment path and SHA-256 "
+                "must be configured together"
+            )
+        if pentest_workflow_coordination_deployment_path is not None and (
+            not pentest_workflow_coordination_deployment_path
+            or pentest_workflow_coordination_deployment_path
+            != pentest_workflow_coordination_deployment_path.strip()
+            or pentest_workflow_coordination_deployment_sha256 is None
+            or not pentest_workflow_coordination_deployment_sha256
+            or pentest_workflow_coordination_deployment_sha256
+            != pentest_workflow_coordination_deployment_sha256.strip()
+        ):
+            raise RuntimeError(
+                "Pentest workflow coordination deployment settings must not be blank"
+            )
         key_id = os.environ.get("PAJIN_CP_CHECKPOINT_KEY_ID", "v1")
         operator_subject = os.environ.get("PAJIN_CP_OPERATOR_SUBJECT", "operator")
         approver_subject = os.environ.get(
@@ -1366,6 +1473,22 @@ class ControlPlaneSettings:
                 subject=approver_subject,
                 roles=frozenset({PrincipalRole.APPROVER, PrincipalRole.AUDITOR}),
             )
+        additional_worker_credentials = _parse_additional_worker_credentials(
+            raw_additional_worker_credentials
+        )
+        existing_tokens = set(credentials)
+        existing_subjects = {principal.subject for principal in credentials.values()}
+        for subject, token in additional_worker_credentials.items():
+            if token in existing_tokens or subject in existing_subjects:
+                raise RuntimeError(
+                    "additional Worker credentials must use distinct tokens and subjects"
+                )
+            credentials[token] = Principal(
+                subject=subject,
+                roles=frozenset({PrincipalRole.WORKER}),
+            )
+            existing_tokens.add(token)
+            existing_subjects.add(subject)
         authenticated_subjects = {principal.subject for principal in credentials.values()}
         if oidc_human_trust_policy is not None:
             authenticated_subjects.update(
@@ -1374,6 +1497,10 @@ class ControlPlaneSettings:
         replay_worker_subject: str | None = None
         if replay_worker_token is not None:
             replay_worker_subject = replay_worker_subject_setting or "replay-worker-service"
+            if replay_worker_token in existing_tokens:
+                raise RuntimeError(
+                    "Replay Worker credential must be distinct from additional Workers"
+                )
             if replay_worker_subject in authenticated_subjects:
                 raise RuntimeError(
                     "Replay Worker subject must be distinct from every other role subject"
@@ -1432,6 +1559,14 @@ class ControlPlaneSettings:
                 else None
             ),
             pentest_workflow_deployment_sha256=pentest_workflow_deployment_sha256,
+            pentest_workflow_coordination_deployment_path=(
+                Path(pentest_workflow_coordination_deployment_path)
+                if pentest_workflow_coordination_deployment_path is not None
+                else None
+            ),
+            pentest_workflow_coordination_deployment_sha256=(
+                pentest_workflow_coordination_deployment_sha256
+            ),
             abac_policy=abac_policy,
             run_submission_abac_policy=run_submission_abac_policy,
             run_cancellation_abac_policy=run_cancellation_abac_policy,
@@ -1504,6 +1639,7 @@ class _ControlPlaneApplicationContext:
     pentest_recon_runtime: PentestReconDispatchRuntime | None
     pentest_replay_runtime: PentestReplayDispatchRuntime | None
     pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None
+    pentest_workflow_coordination_runtime: PentestWorkflowCoordinationDispatchRuntime | None
     service: ControlPlaneService
     authenticator: BearerAuthenticator
 
@@ -1629,6 +1765,16 @@ def _build_application_context(
             settings.pentest_workflow_deployment_path,
             expected_sha256=settings.pentest_workflow_deployment_sha256,
         )
+    pentest_workflow_coordination_runtime: PentestWorkflowCoordinationDispatchRuntime | None = None
+    if settings.pentest_workflow_coordination_deployment_path is not None:
+        assert settings.pentest_workflow_coordination_deployment_sha256 is not None
+        assert settings.worker_mtls_trust_policy is not None
+        pentest_workflow_coordination_runtime = load_pentest_workflow_coordination_deployment(
+            settings.pentest_workflow_coordination_deployment_path,
+            expected_sha256=settings.pentest_workflow_coordination_deployment_sha256,
+            current_worker_mtls_policy=settings.worker_mtls_trust_policy,
+            allowed_replay_worker_subjects=frozenset(settings.replay_executor_profiles),
+        )
     return _ControlPlaneApplicationContext(
         settings=settings,
         repository=repository,
@@ -1651,6 +1797,7 @@ def _build_application_context(
         pentest_recon_runtime=pentest_recon_runtime,
         pentest_replay_runtime=pentest_replay_runtime,
         pentest_workflow_runtime=pentest_workflow_runtime,
+        pentest_workflow_coordination_runtime=pentest_workflow_coordination_runtime,
         service=service,
         authenticator=_build_bearer_authenticator(settings),
     )
@@ -1973,6 +2120,16 @@ def create_app(
     if pentest_workflow_runtime is not None and context.pentest_workflow_runtime is not None:
         raise ValueError("Pentest workflow runtime cannot be both injected and configured")
     selected_pentest_workflow_runtime = pentest_workflow_runtime or context.pentest_workflow_runtime
+    if (
+        pentest_workflow_coordination_runtime is not None
+        and context.pentest_workflow_coordination_runtime is not None
+    ):
+        raise ValueError(
+            "Pentest workflow coordination runtime cannot be both injected and configured"
+        )
+    selected_pentest_workflow_coordination_runtime = (
+        pentest_workflow_coordination_runtime or context.pentest_workflow_coordination_runtime
+    )
     app = FastAPI(
         title="PAJIN Control Plane",
         version="0.1.0",
@@ -1997,7 +2154,7 @@ def create_app(
         pentest_recon_runtime=selected_pentest_recon_runtime,
         pentest_replay_runtime=selected_pentest_replay_runtime,
         pentest_workflow_runtime=selected_pentest_workflow_runtime,
-        pentest_workflow_coordination_runtime=pentest_workflow_coordination_runtime,
+        pentest_workflow_coordination_runtime=(selected_pentest_workflow_coordination_runtime),
         dependencies=dependencies,
     )
     return app

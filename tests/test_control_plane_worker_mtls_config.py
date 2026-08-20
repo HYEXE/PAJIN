@@ -187,3 +187,31 @@ def test_pentest_replay_deployment_requires_digest_and_worker_mtls(
     monkeypatch.setenv("PAJIN_CP_PENTEST_REPLAY_DEPLOYMENT_SHA256", "a" * 64)
     with pytest.raises(ValueError, match="requires Worker mTLS policy"):
         ControlPlaneSettings.from_env()
+
+
+def test_pentest_workflow_coordination_deployment_requires_digest_and_worker_mtls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("PAJIN_CP_OPERATOR_TOKEN", f"operator{_TOKEN_SUFFIX}")
+    monkeypatch.setenv("PAJIN_CP_APPROVER_TOKEN", f"approver{_TOKEN_SUFFIX}")
+    monkeypatch.setenv("PAJIN_CP_WORKER_TOKEN", f"worker{_TOKEN_SUFFIX}")
+    monkeypatch.setenv("PAJIN_CP_CHECKPOINT_KEY", "checkpoint-key-that-is-long-enough-for-mtls")
+    monkeypatch.setenv(
+        "PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_PATH",
+        "coordination.json",
+    )
+    monkeypatch.delenv(
+        "PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256",
+        raising=False,
+    )
+    monkeypatch.delenv("PAJIN_CP_WORKER_MTLS_TRUST_POLICY", raising=False)
+
+    with pytest.raises(RuntimeError, match="path and SHA-256"):
+        ControlPlaneSettings.from_env()
+
+    monkeypatch.setenv(
+        "PAJIN_CP_PENTEST_WORKFLOW_COORDINATION_DEPLOYMENT_SHA256",
+        "a" * 64,
+    )
+    with pytest.raises(ValueError, match="requires Worker mTLS policy"):
+        ControlPlaneSettings.from_env()

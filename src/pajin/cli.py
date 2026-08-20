@@ -111,6 +111,11 @@ from pajin.control_plane.pentest_workflow import (
     PentestOperatorWorkflowView,
     load_pentest_workflow_finalization_bundle,
 )
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationRequest,
+    PentestWorkflowCoordinationView,
+    load_pentest_workflow_stage_activation_bundle,
+)
 from pajin.domain.manifest import load_manifest
 from pajin.domain.models import CampaignManifest, CampaignMode, ToolRiskTier
 from pajin.domain.orchestration import RunStatus
@@ -1638,6 +1643,100 @@ def dispatch_pentest_replay(
     if view.outcome_id is not None:
         _print_cli_field("Outcome", view.outcome_id)
     _print_cli_field("Sealed Run root", view.sealed_run_root_digest)
+
+
+async def _dispatch_pentest_workflow_stage_client(
+    *,
+    control_plane_url: str,
+    worker_token: str,
+    tls_ca_file: Path,
+    mtls_certificate_file: Path,
+    mtls_private_key_file: Path,
+    mtls_private_key_password: str | None,
+    request: PentestWorkflowCoordinationRequest,
+) -> PentestWorkflowCoordinationView:
+    async with ControlPlaneClient(
+        base_url=control_plane_url,
+        bearer_token=worker_token,
+        tls_ca_file=str(tls_ca_file),
+        tls_client_cert_file=str(mtls_certificate_file),
+        tls_client_key_file=str(mtls_private_key_file),
+        tls_client_key_password=mtls_private_key_password,
+    ) as client:
+        return await client.dispatch_pentest_workflow_stage(request)
+
+
+@app.command("pentest-workflow-stage-dispatch")
+def dispatch_pentest_workflow_stage(
+    activation_bundle: Annotated[
+        Path,
+        typer.Argument(exists=True, readable=True, dir_okay=False),
+    ],
+    control_plane_url: Annotated[str, typer.Option("--control-plane-url")],
+    tls_ca_file: Annotated[
+        Path,
+        typer.Option("--tls-ca-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_certificate_file: Annotated[
+        Path,
+        typer.Option("--mtls-certificate-file", exists=True, readable=True, dir_okay=False),
+    ],
+    mtls_private_key_file: Annotated[
+        Path,
+        typer.Option("--mtls-private-key-file", exists=True, readable=True, dir_okay=False),
+    ],
+    worker_token_env: Annotated[
+        str | None,
+        typer.Option("--worker-token-env"),
+    ] = None,
+    mtls_private_key_password_env: Annotated[
+        str | None,
+        typer.Option("--mtls-private-key-password-env"),
+    ] = None,
+) -> None:
+    """Submit one externally signed stage over its direct-mTLS Worker session."""
+
+    with _cli_error_boundary("Cannot dispatch signed Pentest workflow stage", exit_code=2):
+        activation = load_pentest_workflow_stage_activation_bundle(activation_bundle)
+        statement = activation.statement
+        selected_token_env = worker_token_env or (
+            "PAJIN_CP_REPLAY_WORKER_TOKEN"
+            if statement.stage == "replay"
+            else "PAJIN_CP_WORKER_TOKEN"
+        )
+        worker_token = os.environ.get(selected_token_env)
+        if worker_token is None or not worker_token.strip():
+            raise ValueError("Worker bearer credential environment variable is unavailable")
+        private_key_password = (
+            os.environ.get(mtls_private_key_password_env)
+            if mtls_private_key_password_env is not None
+            else None
+        )
+        view = asyncio.run(
+            _dispatch_pentest_workflow_stage_client(
+                control_plane_url=control_plane_url,
+                worker_token=worker_token,
+                tls_ca_file=tls_ca_file,
+                mtls_certificate_file=mtls_certificate_file,
+                mtls_private_key_file=mtls_private_key_file,
+                mtls_private_key_password=private_key_password,
+                request=PentestWorkflowCoordinationRequest(
+                    deploymentId=statement.coordination_deployment_id,
+                    deploymentDigest=statement.coordination_deployment_digest,
+                    stage=statement.stage,
+                    activation=activation,
+                ),
+            )
+        )
+    _print_cli_field("Coordination deployment", view.deployment_id)
+    _print_cli_field("Coordination Run", view.coordination_run_id)
+    _print_cli_field("Completed stages", ", ".join(view.completed_stages))
+    _print_cli_field("Next stage", view.next_stage or "none")
+    _print_cli_field(
+        "Workflow preparation eligible",
+        str(view.workflow_preparation_eligible).lower(),
+    )
+    _print_cli_field("Sealed coordination root", view.sealed_coordination_root_digest)
 
 
 async def _run_pentest_operator_workflow_client(

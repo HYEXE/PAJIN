@@ -49,6 +49,10 @@ from pajin.control_plane.pentest_workflow import (
     PentestOperatorWorkflowRequest,
     PentestOperatorWorkflowView,
 )
+from pajin.control_plane.pentest_workflow_coordination import (
+    PentestWorkflowCoordinationRequest,
+    PentestWorkflowCoordinationView,
+)
 from pajin.control_plane.security import validate_bearer_token
 
 # Worker responses can contain a one-megabyte bounded Job payload plus the
@@ -98,6 +102,10 @@ class ControlPlanePentestReplayRejected(ControlPlaneClientError):
 
 class ControlPlanePentestWorkflowRejected(ControlPlaneClientError):
     """The deployment-pinned Pentest operator workflow failed closed."""
+
+
+class ControlPlanePentestWorkflowCoordinationRejected(ControlPlaneClientError):
+    """The signed Pentest Worker stage activation failed closed."""
 
 
 def _validated_control_plane_base_url(
@@ -378,6 +386,30 @@ class ControlPlaneClient:
                 "Control Plane rejected the Pentest operator workflow"
             ) from exc
         return self._validated(response, PentestOperatorWorkflowView)
+
+    async def dispatch_pentest_workflow_stage(
+        self,
+        request: PentestWorkflowCoordinationRequest,
+    ) -> PentestWorkflowCoordinationView:
+        """Dispatch one signed stage through its generic or dedicated Replay Worker route."""
+
+        path = (
+            "/v1/worker/pentest/workflows/stages/replay/dispatch"
+            if request.stage == "replay"
+            else "/v1/worker/pentest/workflows/stages/recon/dispatch"
+        )
+        try:
+            response = await self._request(
+                "POST",
+                path,
+                json=request.model_dump(mode="json", by_alias=True),
+                timeout=httpx.Timeout(connect=5, read=300, write=10, pool=5),
+            )
+        except ControlPlaneLeaseLost as exc:
+            raise ControlPlanePentestWorkflowCoordinationRejected(
+                "Control Plane rejected the signed Pentest workflow stage"
+            ) from exc
+        return self._validated(response, PentestWorkflowCoordinationView)
 
     async def heartbeat(self, job_id: str, request: LeaseRequest) -> JobView:
         response = await self._request(
