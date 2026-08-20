@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from test_kisa_replay import TranscriptWorker, _trusted_docker_backend
 
 import pajin.control_plane.worker_main as worker_main_module
 from pajin.capabilities import (
@@ -79,10 +80,17 @@ from pajin.control_plane.capability_deployment import (
 from pajin.control_plane.executors import (
     CampaignJobExecutor,
     CapabilityGraphBatchCampaignJobInput,
+    CapabilityGraphCampaignJobInput,
     PermanentExecutionError,
 )
 from pajin.control_plane.models import JobState, JobView
+from pajin.control_plane.redteam_profiles import (
+    REDTEAM_LLM_PROFILE_DIGEST,
+    REDTEAM_LLM_RAG_PROFILE,
+    REDTEAM_LLM_RAG_PROFILE_DIGEST,
+)
 from pajin.domain.ctf import CTFScenario
+from pajin.domain.manifest import load_manifest
 from pajin.domain.models import (
     AutonomyLevel,
     CampaignManifest,
@@ -120,6 +128,7 @@ from pajin.graph import (
     action_permit_attempt_id,
     graph_snapshot_ref,
 )
+from pajin.modes.ai_redteam.catalog import KISA_CATALOG
 from pajin.policy.engine import PolicyEngine
 from pajin.runtime.store import (
     RunStore,
@@ -127,7 +136,7 @@ from pajin.runtime.store import (
     load_verified_run_snapshot,
 )
 from pajin.runtime.worker import SimulatedWorkerBackend
-from pajin.tools.ai import AIChatProbeTool
+from pajin.tools.ai import AIChatProbeInput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
@@ -1262,6 +1271,9 @@ def _seed_worker_graph(
     campaign: CampaignManifest,
     graph_run_id: str,
     request: ToolRequest,
+    capability_id: str = "pajin.ai.kisa.indirect-tool-hijacking",
+    capability_version: str = "1.0.0",
+    surface_type: str = "mock-agent",
 ) -> tuple[SQLiteGraphStore, GraphDecision]:
     digest_a = "a" * 64
     digest_b = "b" * 64
@@ -1281,8 +1293,8 @@ def _seed_worker_graph(
             requestDigest=capability_tool_request_digest(request),
             capabilityGrantId="grant:capability-worker",
             capabilityGrantDigest=digest_b,
-            capabilityId="pajin.ai.kisa.indirect-tool-hijacking",
-            capabilityVersion="1.0.0",
+            capabilityId=capability_id,
+            capabilityVersion=capability_version,
             capabilityDigest=digest_c,
             sourceRootDigest=digest_a,
             evidence=[
@@ -1296,7 +1308,7 @@ def _seed_worker_graph(
         surface={
             "campaignId": campaign.metadata.name,
             "targetId": "target:capability-worker",
-            "surfaceType": "mock-agent",
+            "surfaceType": surface_type,
             "locatorSchema": "pajin.discovery.mock-agent.v1",
             "locatorDigest": digest_b,
             "origin": GraphContentOrigin.TRUSTED_CORE,
@@ -1347,6 +1359,14 @@ def _seed_worker_graph(
 def _capability_worker_fixture(
     tmp_path: Path,
     campaign: CampaignManifest,
+    *,
+    capability_id: str = "pajin.ai.kisa.indirect-tool-hijacking",
+    request: ToolRequest | None = None,
+    profile: str = "capability-graph-v1",
+    envelope_profile: str | None = None,
+    profile_digest: str = "e" * 64,
+    reservation_request_units: int | None = None,
+    surface_type: str = "mock-agent",
 ) -> tuple[CapabilityGraphDeploymentRuntime, dict[str, object], Path, bytes]:
     bundle, policy, keys, releases = _rollout_inputs()
     rollout = admit_existing_mode_capability_releases(
@@ -1356,13 +1376,13 @@ def _capability_worker_fixture(
         releases=releases,
         clock=lambda: NOW,
     )
-    release = _release_for(rollout, "pajin.ai.kisa.indirect-tool-hijacking")
+    release = _release_for(rollout, capability_id)
     activation = activate_existing_mode_capabilities(
         rollout=rollout,
         releases=(release,),
         profile=CapabilityUseProfile.RANGE,
     )
-    request = ToolRequest(
+    request = request or ToolRequest(
         request_id="tool_capability_worker_dispatch",
         agent_id="agent:planner-local",
         tool_id="mock.agent-probe",
@@ -1382,6 +1402,9 @@ def _capability_worker_fixture(
         campaign=campaign,
         graph_run_id=graph_run_id,
         request=prepared.request,
+        capability_id=capability_id,
+        capability_version=prepared.capability.capability_version,
+        surface_type=surface_type,
     )
     compiler = CapabilityGraphCompilerIdentity(
         compilerId="pajin.capability-worker-compiler",
@@ -1394,9 +1417,9 @@ def _capability_worker_fixture(
     envelope = MissionEnvelope(
         campaignId=campaign.metadata.name,
         runId=graph_run_id,
-        profileId="capability-graph-v1",
+        profileId=envelope_profile or profile,
         profileVersion="1.0.0",
-        profileDigest="e" * 64,
+        profileDigest=profile_digest,
         compilerId=compiler.compiler_id,
         compilerVersion=compiler.compiler_version,
         compilerDigest=compiler.compiler_digest,
@@ -1438,7 +1461,11 @@ def _capability_worker_fixture(
         normalizedParametersDigest=prepared.normalized_parameters_digest,
         riskTier=capability.risk_tier,
         reservation=ActionBudgetReservation(
-            requestUnits=definition.request_unit_cost,
+            requestUnits=(
+                definition.request_unit_cost
+                if reservation_request_units is None
+                else reservation_request_units
+            ),
             costMicrousd=0,
         ),
         createdAt=NOW - timedelta(minutes=6),
@@ -1515,7 +1542,7 @@ def _capability_worker_fixture(
         clock=lambda: NOW,
     )
     job_input = {
-        "profile": "capability-graph-v1",
+        "profile": profile,
         "proposal": proposal.model_dump(mode="json", by_alias=True),
         "decision": decision.model_dump(mode="json", by_alias=True),
         "release": release.model_dump(mode="json", by_alias=True),
@@ -1524,6 +1551,80 @@ def _capability_worker_fixture(
         "approval": approval.model_dump(mode="json", by_alias=True),
     }
     return runtime, job_input, deployment_path, content
+
+
+def _redteam_llm_worker_fixture(
+    tmp_path: Path,
+    *,
+    target_type: str = "ai-chat-api",
+    scenario_id: str = "kisa.model.system-prompt-disclosure",
+    profile: str = "redteam-llm-v1",
+    envelope_profile: str | None = None,
+    reservation_request_units: int | None = None,
+) -> tuple[CampaignManifest, CapabilityGraphDeploymentRuntime, dict[str, object]]:
+    campaign = load_manifest(Path("examples/kisa-ai-chat-lab.yaml"))
+    if target_type != "ai-chat-api":
+        campaign = campaign.model_copy(
+            update={
+                "spec": campaign.spec.model_copy(
+                    update={
+                        "targets": [
+                            campaign.spec.targets[0].model_copy(update={"type": target_type})
+                        ]
+                    }
+                )
+            }
+        )
+    scenario = next(item for item in KISA_CATALOG.scenarios if item.scenario_id == scenario_id)
+    assert scenario.probe is not None
+    capability_id, threat_class = {
+        "kisa.agent.memory-poisoning-persistence": (
+            "pajin.ai.kisa.memory-poisoning-persistence",
+            "A04",
+        ),
+        "kisa.model.jailbreak-policy-bypass": (
+            "pajin.ai.kisa.jailbreak-policy-bypass",
+            "M06",
+        ),
+        "kisa.model.system-prompt-disclosure": (
+            "pajin.ai.kisa.system-prompt-disclosure",
+            "M03",
+        ),
+    }[scenario_id]
+    request = ToolRequest(
+        request_id=f"tool_redteam_llm_{threat_class.lower()}_dispatch",
+        agent_id="agent:redteam-llm-specialist",
+        tool_id=AIChatProbeTool.spec.tool_id,
+        target=campaign.spec.targets[0].endpoint,
+        method="POST",
+        arguments=AIChatProbeInput(
+            scenario_id=scenario.scenario_id,
+            threat_class=threat_class,
+            session_id=f"pajin:redteam:{threat_class.lower()}:1",
+            turns=scenario.probe.turns,
+            checks=scenario.probe.checks,
+        ).model_dump(mode="json"),
+    )
+    runtime, job_input, _, _ = _capability_worker_fixture(
+        tmp_path,
+        campaign,
+        capability_id=capability_id,
+        request=request,
+        profile=profile,
+        envelope_profile=envelope_profile,
+        profile_digest=(
+            (
+                REDTEAM_LLM_RAG_PROFILE_DIGEST
+                if profile == REDTEAM_LLM_RAG_PROFILE
+                else REDTEAM_LLM_PROFILE_DIGEST
+            )
+            if envelope_profile is None
+            else "e" * 64
+        ),
+        reservation_request_units=reservation_request_units,
+        surface_type=target_type,
+    )
+    return campaign, runtime, job_input
 
 
 def _capability_worker_batch_fixture(
@@ -1751,6 +1852,280 @@ async def test_worker_deployment_dispatches_once_and_retry_never_reexecutes(
         )
         == reconciliation.record
     )
+
+
+def test_redteam_llm_job_rejects_another_tool_contract(
+    tmp_path: Path,
+) -> None:
+    _, _, job_input = _redteam_llm_worker_fixture(tmp_path)
+    wrong = dict(job_input)
+    wrong["request"] = {
+        **job_input["request"],
+        "tool_id": "mock.agent-probe",
+    }
+
+    with pytest.raises(ValidationError, match="exact AI chat probe Tool"):
+        CapabilityGraphCampaignJobInput.model_validate(wrong)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "scenario_id",
+    [
+        "kisa.model.jailbreak-policy-bypass",
+        "kisa.model.system-prompt-disclosure",
+    ],
+)
+async def test_redteam_llm_profile_executes_exact_approved_probe_once(
+    tmp_path: Path,
+    scenario_id: str,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        scenario_id=scenario_id,
+    )
+    transcript_worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(transcript_worker),
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+
+    first = await executor.execute(job)
+    retry = await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    assert first.result["executionProfile"] == "redteam-llm-v1"
+    assert first.result["dispatched"] is True
+    assert first.result["dispatchStatus"] == "completed"
+    assert first.result["toolSuccess"] is True
+    assert retry.result["dispatched"] is False
+    assert retry.result["permitId"] == first.result["permitId"]
+    assert len(transcript_worker.jobs) == 1
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_profile_rejects_rag_target_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        target_type="rag-chat-api",
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_profile_rejects_multi_turn_memory_probe_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        scenario_id="kisa.agent.memory-poisoning-persistence",
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_profile_requires_deployment_pinned_t2_approval(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(tmp_path)
+    job_input = dict(job_input)
+    job_input.pop("approval")
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="requires deployment-pinned approval"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_profile_rejects_generic_envelope_relabel_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        envelope_profile="capability-graph-v1",
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("target_type", ["ai-chat-api", "rag-chat-api"])
+async def test_redteam_llm_rag_profile_binds_two_turns_to_graph_reservation(
+    tmp_path: Path,
+    target_type: str,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        target_type=target_type,
+        scenario_id="kisa.agent.memory-poisoning-persistence",
+        profile=REDTEAM_LLM_RAG_PROFILE,
+    )
+    transcript_worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(transcript_worker),
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+
+    first = await executor.execute(job)
+    retry = await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    proposal = ActionProposal.model_validate(job_input["proposal"])
+    approval = ActionApprovalEnvelope.model_validate(job_input["approval"])
+    permit = runtime.graph_store.permit_store.permits()[0]
+    assert first.result["executionProfile"] == REDTEAM_LLM_RAG_PROFILE
+    assert first.result["dispatched"] is True
+    assert first.result["dispatchStatus"] == "completed"
+    assert first.result["toolSuccess"] is True
+    assert proposal.reservation.request_units == 2
+    assert approval.reservation.request_units == 2
+    assert permit.reservation.request_units == 2
+    assert retry.result["dispatched"] is False
+    assert retry.result["permitId"] == first.result["permitId"]
+    assert len(transcript_worker.jobs) == 1
+    worker_probe = json.loads(transcript_worker.jobs[0].stdin)["probe"]
+    assert len(worker_probe["turns"]) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reservation_request_units", [1, 3])
+async def test_redteam_llm_rag_profile_rejects_inexact_reservation_before_permit(
+    tmp_path: Path,
+    reservation_request_units: int,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        scenario_id="kisa.agent.memory-poisoning-persistence",
+        profile=REDTEAM_LLM_RAG_PROFILE,
+        reservation_request_units=reservation_request_units,
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_rag_profile_rejects_single_turn_capability_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        profile=REDTEAM_LLM_RAG_PROFILE,
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_rag_profile_requires_deployment_pinned_t2_approval(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        scenario_id="kisa.agent.memory-poisoning-persistence",
+        profile=REDTEAM_LLM_RAG_PROFILE,
+    )
+    job_input = dict(job_input)
+    job_input.pop("approval")
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="requires deployment-pinned approval"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_llm_rag_profile_rejects_generic_envelope_relabel_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_llm_worker_fixture(
+        tmp_path,
+        scenario_id="kisa.agent.memory-poisoning-persistence",
+        profile=REDTEAM_LLM_RAG_PROFILE,
+        envelope_profile="capability-graph-v1",
+    )
+    worker = TranscriptWorker([True])
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_docker_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
 
 
 @pytest.mark.asyncio

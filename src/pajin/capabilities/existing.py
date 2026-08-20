@@ -123,7 +123,7 @@ class _ExistingCapabilityContract:
             tool,
             component=f"existing Capability Tool {self.registration.tool_id}",
         )
-        return {
+        context: dict[str, object] = {
             "adapterContractVersion": EXISTING_MODE_CAPABILITY_ADAPTER_VERSION,
             "capabilityId": self.registration.capability_id,
             "capabilityVersion": self.registration.capability_version,
@@ -135,6 +135,9 @@ class _ExistingCapabilityContract:
             "replayBinding": replay,
             "tool": _json_context_value(tool_context),
         }
+        if self.registration.request_unit_cost is not None:
+            context["requestUnitCost"] = self.registration.request_unit_cost
+        return context
 
 
 class _ExistingAuthorityBase:
@@ -392,10 +395,11 @@ def _kisa_contract(scenario: KISAScenarioDefinition) -> _ExistingCapabilityContr
         "threatClasses": cast(JsonValue, sorted(scenario.threat_classes)),
         "exactCatalogProbe": scenario.probe is not None,
     }
+    multi_turn_a04 = scenario.scenario_id == "kisa.agent.memory-poisoning-persistence"
     return _ExistingCapabilityContract(
         registration=ToolCapabilityRegistration(
             capabilityId=capability_id,
-            capabilityVersion="1.0.0",
+            capabilityVersion="1.1.0" if multi_turn_a04 else "1.0.0",
             toolId=scenario.tool_id,
             domain="ai-redteam",
             maturity=CapabilityMaturity.EXPERIMENTAL,
@@ -412,6 +416,7 @@ def _kisa_contract(scenario: KISAScenarioDefinition) -> _ExistingCapabilityContr
             sideEffectClass=side_effect,
             approvalRequired=False,
             cleanupRequired=False,
+            requestUnitCost=2 if multi_turn_a04 else None,
         ),
         expected_tool_version="1.0.0",
         method=scenario.method,

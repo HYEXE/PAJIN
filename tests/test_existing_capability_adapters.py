@@ -232,10 +232,30 @@ def test_existing_mode_bundle_registers_only_seven_explicit_experimental_capabil
     }
     assert all(definition.maturity is CapabilityMaturity.EXPERIMENTAL for definition in definitions)
     assert all(len(manifest.authorities) == 7 for manifest in bundle.capabilities())
+    by_id = {definition.capability_id: definition for definition in definitions}
+    a04 = by_id["pajin.ai.kisa.memory-poisoning-persistence"]
+    assert a04.capability_version == "1.1.0"
+    assert a04.request_unit_cost == 2
+    assert {item.capability_id: item.request_unit_cost for item in definitions} == {
+        "pajin.ai.kisa.indirect-tool-hijacking": 1,
+        "pajin.ai.kisa.jailbreak-policy-bypass": 1,
+        "pajin.ai.kisa.memory-poisoning-persistence": 2,
+        "pajin.ai.kisa.system-prompt-disclosure": 1,
+        "pajin.bug-bounty.boolean-sqli-lab": 3,
+        "pajin.ctf.crypto-single-byte-xor": 1,
+        "pajin.ctf.web-exposed-backup-config": 1,
+    }
 
     registrations = existing_mode_capability_registrations()
     assert registrations == existing_mode_capability_registrations()
     assert len({item.parameter_schema_digest for item in registrations}) == 7
+    a04_registration = next(
+        item
+        for item in registrations
+        if item.capability_id == "pajin.ai.kisa.memory-poisoning-persistence"
+    )
+    assert a04_registration.capability_version == "1.1.0"
+    assert a04_registration.request_unit_cost == 2
 
 
 def test_existing_mode_bundle_does_not_discover_unregistered_extra_tools() -> None:

@@ -40,7 +40,7 @@ the bootstrap automatically.
 | `pajin.ai.kisa.indirect-tool-hijacking@1.0.0` | `mock.agent-probe@1.0.0` | `mock-agent` | A01, A02 | none |
 | `pajin.ai.kisa.system-prompt-disclosure@1.0.0` | `ai.chat-probe@1.0.0` | AI/RAG chat API | M03 | exact KISA fresh session |
 | `pajin.ai.kisa.jailbreak-policy-bypass@1.0.0` | `ai.chat-probe@1.0.0` | AI/RAG chat API | M06 | exact KISA fresh session |
-| `pajin.ai.kisa.memory-poisoning-persistence@1.0.0` | `ai.chat-probe@1.0.0` | AI/RAG chat API | A04 | exact KISA fresh session |
+| `pajin.ai.kisa.memory-poisoning-persistence@1.1.0` | `ai.chat-probe@1.0.0` | AI/RAG chat API | A04 | exact KISA fresh session |
 | `pajin.bug-bounty.boolean-sqli-lab@1.0.0` | `bug-bounty.boolean-sqli-probe@1.0.0` | synthetic Bug Bounty API | CWE-89 | none |
 | `pajin.ctf.web-exposed-backup-config@1.0.0` | `ctf.web-backup-probe@1.0.0` | local CTF Web | CTF-WEB | none |
 | `pajin.ctf.crypto-single-byte-xor@1.0.0` | `ctf.crypto-single-byte-xor@1.0.0` | offline CTF Crypto | CTF-CRYPTO | none |
@@ -67,6 +67,12 @@ recomputes that context, so Tool or catalog drift after bootstrap fails.
 All current adapters declare either `none` or `read-only` side effects. Cleanup handlers
 explicitly return no plan. A future write-capable adapter requires a new definition and real
 cleanup authority; it cannot reuse this contract.
+
+The ToolSpec carries the minimum network request cost. A registration may declare an explicit
+reviewed `requestUnitCost` only when one fixed Capability action always performs more exchanges.
+A04 `1.1.0` is the first such definition: its exact two-turn catalog request reserves two units.
+The other registrations continue to use their ToolSpec cost. This is code-owned definition
+metadata, not caller-selected dynamic authority.
 
 ## Parameter and semantic boundaries
 

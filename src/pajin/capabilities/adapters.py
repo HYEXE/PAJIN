@@ -67,6 +67,12 @@ class ToolCapabilityRegistration(StrictModel):
     side_effect_class: CapabilitySideEffectClass = Field(alias="sideEffectClass")
     approval_required: bool = Field(alias="approvalRequired")
     cleanup_required: bool = Field(alias="cleanupRequired")
+    request_unit_cost: int | None = Field(
+        default=None,
+        alias="requestUnitCost",
+        ge=1,
+        le=100,
+    )
 
 
 def tool_spec_digest(spec: ToolSpec) -> str:
@@ -117,7 +123,11 @@ def capability_definition_from_tool(
         evidenceTypes=tuple(sorted(snapshot.evidence_types)),
         networkAccess=snapshot.network_access,
         approvalRequired=registration.approval_required,
-        requestUnitCost=snapshot.network_request_cost,
+        requestUnitCost=(
+            registration.request_unit_cost
+            if registration.request_unit_cost is not None
+            else snapshot.network_request_cost
+        ),
         cleanupRequired=registration.cleanup_required,
         parallelSafe=snapshot.parallel_safe,
     )

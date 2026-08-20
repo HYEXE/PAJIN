@@ -38,6 +38,13 @@ from pajin.control_plane.capability_deployment import (
     CapabilityGraphDeploymentRuntime,
 )
 from pajin.control_plane.models import ApprovalIntent, JobKind, JobView
+from pajin.control_plane.redteam_profiles import (
+    REDTEAM_LLM_PROFILE,
+    REDTEAM_LLM_RAG_PROFILE,
+    RedteamProfileError,
+    validate_redteam_llm_profile,
+    validate_redteam_llm_rag_profile,
+)
 from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import (
     CampaignManifest,
@@ -194,7 +201,11 @@ class CampaignJobInput(StrictModel):
 class CapabilityGraphCampaignJobInput(StrictModel):
     """One exact Graph decision dispatched through a startup-pinned deployment."""
 
-    profile: Literal["capability-graph-v1"]
+    profile: Literal[
+        "capability-graph-v1",
+        "redteam-llm-v1",
+        "redteam-llm-rag-v1",
+    ]
     proposal: ActionProposal
     decision: GraphDecision
     release: CapabilityReleaseRef
@@ -206,6 +217,10 @@ class CapabilityGraphCampaignJobInput(StrictModel):
     def bind_job_authority(self) -> CapabilityGraphCampaignJobInput:
         if self.proposal.campaign_id != self.decision.campaign_id:
             raise ValueError("Capability Graph Job authority belongs to another Campaign or Run")
+        if self.profile in {REDTEAM_LLM_PROFILE, REDTEAM_LLM_RAG_PROFILE} and (
+            self.request.tool_id != "ai.chat-probe" or self.request.method != "POST"
+        ):
+            raise ValueError("REDTEAM LLM/RAG Job requires the exact AI chat probe Tool")
         if self.approval is not None and (
             self.approval.proposal != self.proposal
             or self.approval.graph_decision != self.decision
@@ -574,6 +589,8 @@ class CampaignJobExecutor:
         if raw_input.get("profile") in {
             "capability-graph-v1",
             "capability-graph-batch-v1",
+            REDTEAM_LLM_PROFILE,
+            REDTEAM_LLM_RAG_PROFILE,
         }:
             return await self._execute_capability_graph(
                 job,
@@ -830,6 +847,7 @@ class CampaignJobExecutor:
             raise PermanentExecutionError(
                 "capability-graph-v1 request preparation failed closed"
             ) from exc
+        self._require_redteam_product_authority(runtime, job_input, prepared, campaign)
         store = runtime.open_run_store(envelope.run_id)
         permits = self._capability_graph_permits(
             runtime,
@@ -946,6 +964,44 @@ class CampaignJobExecutor:
                 "general-attack-v1 permits only approval-free, non-networked, zero-cost "
                 "T0/T1 no-write actions"
             )
+
+    @staticmethod
+    def _require_redteam_product_authority(
+        runtime: CapabilityGraphDeploymentRuntime,
+        job_input: CapabilityGraphCampaignJobInput | CapabilityGraphBatchCampaignJobInput,
+        prepared: PreparedCapabilityAction,
+        campaign: CampaignManifest,
+    ) -> None:
+        if not isinstance(job_input, CapabilityGraphCampaignJobInput) or (
+            job_input.profile not in {REDTEAM_LLM_PROFILE, REDTEAM_LLM_RAG_PROFILE}
+        ):
+            return
+        try:
+            binding = next(
+                item
+                for item in runtime.activation.activation_set.bindings
+                if item.release == prepared.release
+                and item.action_capability.reference() == prepared.capability
+            )
+            definition = runtime.activation.rollout.bundle.definitions.resolve(
+                binding.capability.capability
+            )
+            validator = (
+                validate_redteam_llm_profile
+                if job_input.profile == REDTEAM_LLM_PROFILE
+                else validate_redteam_llm_rag_profile
+            )
+            validator(
+                campaign=campaign,
+                definition=definition,
+                envelope=runtime.deployment.mission_envelope,
+                proposal=job_input.proposal,
+                request=prepared.request,
+            )
+        except (KeyError, RedteamProfileError, StopIteration, ValueError) as exc:
+            raise PermanentExecutionError(
+                f"{job_input.profile} authority is outside the product profile"
+            ) from exc
 
     @staticmethod
     def _capability_graph_permits(
@@ -1143,6 +1199,8 @@ class CampaignJobExecutor:
         execution_profile: Literal[
             "capability-graph-v1",
             "capability-graph-batch-v1",
+            "redteam-llm-v1",
+            "redteam-llm-rag-v1",
         ],
         outcome: GatewayOutcome | None,
         dispatched: bool,
