@@ -84,6 +84,10 @@ def test_all_legacy_modes_measure_exact_planner_parity_without_execution(
         assert [step["request"]["request_id"] for step in steps] == [
             f"fixture-request-{index}" for index in range(len(steps))
         ]
+        assert all(
+            step["threat_classes"] == sorted(step["threat_classes"])
+            for step in steps
+        )
         assert CommonEnginePlannerParityAuthority.model_validate(
             authority.model_dump(mode="json", by_alias=True)
         ) == authority

@@ -163,7 +163,7 @@ class CommonEngineNormalizedPlan(StrictModel):
             raise ValueError("normalized Planner step identities are not canonical")
         if [step.request.request_id for step in plan.steps] != expected_request_ids:
             raise ValueError("normalized Planner request identities are not canonical")
-        normalized = plan.model_dump(mode="json", by_alias=True)
+        normalized = _canonical_plan_payload(plan)
         if self.normalized_plan != normalized:
             raise ValueError("normalized Planner output differs from typed canonical form")
         semantic_digest = _common_engine_digest(
@@ -430,7 +430,7 @@ def _normalize_plan(
     constructor_digest: str,
 ) -> CommonEngineNormalizedPlan:
     authoritative = AgentPlan.model_validate(plan.model_dump(mode="json", by_alias=True))
-    payload = authoritative.model_dump(mode="json", by_alias=True)
+    payload = _canonical_plan_payload(authoritative)
     for index, step in enumerate(payload["steps"]):
         step["step_id"] = f"fixture-step-{index}"
         step["request"]["request_id"] = f"fixture-request-{index}"
@@ -440,3 +440,10 @@ def _normalize_plan(
         constructorDigest=constructor_digest,
         normalizedPlan=payload,
     )
+
+
+def _canonical_plan_payload(plan: AgentPlan) -> dict[str, Any]:
+    payload = plan.model_dump(mode="json", by_alias=True)
+    for step in payload["steps"]:
+        step["threat_classes"] = sorted(step["threat_classes"])
+    return payload
