@@ -5,6 +5,8 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0208: Register an MCP Capability without Discovery Authority](docs/adr/0208-register-mcp-capability-without-discovery-authority.md)
+- [ADR-0207: Compose a Bounded Web Red Team Profile](docs/adr/0207-compose-bounded-web-redteam-profile.md)
 - [ADR-0206: Bind Domain Workers to the Existing Authority Path](docs/adr/0206-bind-domain-workers-to-existing-authority-path.md)
 - [ADR-0205: Admit Cross-domain Knowledge without Scope Expansion](docs/adr/0205-admit-cross-domain-knowledge-without-scope-expansion.md)
 - [ADR-0204: Separate Security Domain from Profile and Authority](docs/adr/0204-separate-security-domain-from-profile-and-authority.md)

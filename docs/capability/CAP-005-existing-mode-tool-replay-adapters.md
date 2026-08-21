@@ -1,6 +1,6 @@
 # CAP-005: Existing Mode, Tool, and Replay Adapters
 
-- Status: locally implemented with hard-exit dispatch recovery verification
+- Status: locally implemented with hard-exit dispatch recovery and registered MCP extension
 - Date: 2026-07-28
 - Prerequisites: ARCH-001, CAP-001, CAP-002, CAP-003, CAP-004, ADR-0051 through ADR-0054
 
@@ -24,12 +24,15 @@ the bootstrap automatically.
 - **Schema/API versions:** existing CAP-001/002 schemas plus
   `pajin.existing-mode-capability-adapter/v1` and
   `pajin.dev/existing-kisa-replay-plan/v1alpha1`,
+  `pajin.dev/existing-mode-capability-release-set/v1alpha1` for the base inventory,
+  `pajin.dev/existing-mode-capability-release-set/v1alpha2` for the MCP extension,
   `pajin.dev/existing-mode-capability-activation-set/v1alpha1`, and
+  `pajin.dev/existing-mode-capability-activation-set/v1alpha2`, and
   `pajin.dev/prepared-capability-action/v1alpha1`, and
   `pajin.dev/capability-dispatch-audit-event/v1alpha1`
-- **Audit artifacts:** seven canonical `CapabilityDefinition` records, seven complete
-  `CodeBackedCapability` authority sets, and content-addressed Permit dispatch events in the
-  RunStore hash chain
+- **Audit artifacts:** seven canonical base `CapabilityDefinition` records, one opt-in registered
+  MCP definition, complete `CodeBackedCapability` authority sets, and content-addressed Permit
+  dispatch events in the RunStore hash chain
 - **Benchmark impact:** none until CAP-006 records coverage and runtime wiring executes an
   activated release
 
@@ -47,6 +50,18 @@ the bootstrap automatically.
 
 The inventory is code-authored and closed. An additional registered Tool does not become a
 Capability, and a missing or non-`1.0.0` Tool makes bootstrap fail.
+
+REDTEAM-001D adds one opt-in extension without changing that base inventory:
+
+| Capability | Tool / remote binding | Surface | Threat | Replay |
+| --- | --- | --- | --- | --- |
+| `pajin.ai.mcp.instruction-hijacking-inspection@1.0.0` | `mcp.demo-security.inspect-text@1.0.0` / `demo-security:inspect_text` | `mock-mcp` | A01 | none |
+
+The MCP extension is returned only when callers explicitly request `include_registered_mcp=True`
+and supply the exact registered Tool. It admits one fixed synthetic text, requires approval, costs
+one request unit, uses no Worker network, and adds the same complete seven CAP-002 roles. MCP
+discovery, WALK metadata, a matching server or Tool name, and Tool registration alone remain
+non-authoritative.
 
 ## Definition and authority binding
 
@@ -81,6 +96,8 @@ metadata, not caller-selected dynamic authority.
 - KISA A01/A02 accepts only the existing typed mock simulation contract.
 - Bug Bounty remains fixed to the one synthetic Boolean SQLi scenario.
 - CTF remains fixed to the typed local Web backup and content-addressed offline XOR scenarios.
+- MCP remains fixed to the registered demo server, `inspect_text`, one synthetic target, and one
+  typed instruction-hijacking input.
 - Compilers preserve request, agent, target, method, Tool, and materialized arguments; CAP-002
   wrappers reject expansion.
 
@@ -93,6 +110,8 @@ Success Oracles do not create Finding authority. They independently classify nor
   fields;
 - CTF Crypto recomputes the complete 256-key XOR result on the host; and
 - CTF Web validates typed request/result identity and candidate discovery semantics.
+- registered MCP recomputes the expected normalized server, remote Tool, content, target, verdict,
+  and observation from the authorized fixed input.
 
 Tool Gateway trusted-execution validation, evidence sealing, Candidate admission, replay
 confirmation, and independent Finding validation remain separate required boundaries.
@@ -180,9 +199,10 @@ they do not satisfy the production exit gate.
 - Registration is not activation. CAP-004 still requires a reviewed publisher-signed first
   release before any profile may resolve the Capability.
 - `admit_existing_mode_capability_releases()` accepts only externally supplied policy, public
-  trust keys, and seven signed first-release bundles. It creates no key, review, signature, or
-  approval and rejects incomplete, duplicated, untrusted, future-dated, or authority-drifted
-  inventories through CAP-004 verification.
+  trust keys, and one exact signed inventory. The unchanged `v1alpha1` inventory requires seven
+  base releases; opt-in `v1alpha2` requires those seven plus the registered MCP release. It creates
+  no key, review, signature, or approval and rejects incomplete, duplicated, untrusted,
+  future-dated, or authority-drifted inventories through CAP-004 verification.
 - A content-addressed `ExistingModeCapabilityReleaseSet` binds each exact code authority to its
   signed bundle digest, release reference, maturity, and exact benchmark-mapping digest.
 - `existing_mode_capability_benchmark_mappings()` provides one closed CAP-003 mapping for every
@@ -195,6 +215,8 @@ they do not satisfy the production exit gate.
 ## Verification
 
 - exact seven-Capability inventory and complete seven-role authority sets;
+- additive eight-Capability MCP release/activation inventory without base definition or digest
+  mutation;
 - deterministic, distinct scenario-specific parameter-schema digests;
 - missing Tool, extra Tool, and post-registration Tool-drift behavior;
 - exact KISA catalog materialization, compilation, and Worker preparation;
@@ -215,6 +237,8 @@ they do not satisfy the production exit gate.
   paths, and content-addressed exit-gate identity; and
 - unsuccessful dispatch, absent source/evidence, activation expansion, and post-seal mutation
   rejection.
+- exact registered MCP success/retry plus Tool, method, target, input, server registration,
+  request-unit, Campaign expansion, approval, profile, and deployment-version rejection.
 
 ## Crash-window reconciliation
 

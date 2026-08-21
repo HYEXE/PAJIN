@@ -4,8 +4,8 @@
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
 - 현재 단계: Phase 11 — Initial Pentest / Red Team Productization
-- 현재 우선순위: `REDTEAM-001C` bounded Web Capability profile
-- 다음 우선순위: `REDTEAM-001D` registered MCP Capability profile
+- 현재 우선순위: `REDTEAM-002` initial detection·false-positive·replay·cost benchmark
+- 다음 우선순위: `UX-008` initial Scope·Evidence·Finding·report product flow
 
 ## 제품 목표
 
@@ -126,11 +126,11 @@ Phase 10 Exit Gate: PENTEST-000~003D와 UX-007E~R1 완료. UX-007R2 production p
 - [x] `PENTEST-004C2B` durable source·Replay·three-Control Worker coordination and 004C1 handoff
   - [x] `PENTEST-004C2B1` signed durable journal and verified 004C1 handoff
   - [x] `PENTEST-004C2B2` concrete 004B/004C2A child adapters
-- [ ] `REDTEAM-001` initial executable Web/AI Capability bootstrap
+- [x] `REDTEAM-001` initial executable Web/AI Capability bootstrap
   - [x] `REDTEAM-001A` approved single-turn LLM M03/M06 profile
   - [x] `REDTEAM-001B` multi-turn LLM/RAG A04 request-unit profile
-  - [ ] `REDTEAM-001C` bounded Web Capability profile
-  - [ ] `REDTEAM-001D` registered MCP Capability profile
+  - [x] `REDTEAM-001C` bounded Web Capability profile
+  - [x] `REDTEAM-001D` registered MCP Capability profile
 - [ ] `REDTEAM-002` initial detection·false-positive·replay·cost benchmark
 - [ ] `UX-008` initial Scope·Evidence·Finding·report product flow
 

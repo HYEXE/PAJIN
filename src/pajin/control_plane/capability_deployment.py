@@ -69,11 +69,15 @@ from pajin.tools.ai import AIChatProbeTool
 from pajin.tools.base import ToolRegistry
 from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
+from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import MockAgentProbe
 
 CAPABILITY_GRAPH_DEPLOYMENT_API_VERSION = "pajin.dev/capability-graph-worker-deployment/v1alpha1"
 CAPABILITY_GRAPH_BATCH_DEPLOYMENT_API_VERSION = (
     "pajin.dev/capability-graph-worker-deployment/v1alpha2"
+)
+CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION = (
+    "pajin.dev/capability-graph-worker-deployment/v1alpha3"
 )
 _MAX_DEPLOYMENT_BYTES = 8 * 1024 * 1024
 _RUN_ID_PATTERN = r"^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$"
@@ -108,7 +112,7 @@ class CapabilityGraphWorkerDeployment(StrictModel):
         alias="apiVersion",
         pattern=(
             r"^pajin\.dev/capability-graph-worker-deployment/"
-            r"(?:v1alpha1|v1alpha2)$"
+            r"(?:v1alpha1|v1alpha2|v1alpha3)$"
         ),
     )
     kind: str = Field(
@@ -153,12 +157,12 @@ class CapabilityGraphWorkerDeployment(StrictModel):
     )
     releases: tuple[CapabilityReleaseBundle, ...] = Field(
         min_length=7,
-        max_length=7,
+        max_length=8,
     )
     activated_releases: tuple[CapabilityReleaseRef, ...] = Field(
         alias="activatedReleases",
         min_length=1,
-        max_length=7,
+        max_length=8,
     )
     profile: CapabilityUseProfile
     release_set_digest: str = Field(
@@ -210,6 +214,13 @@ class CapabilityGraphWorkerDeployment(StrictModel):
 
     @model_validator(mode="after")
     def bind_campaign_and_state_roots(self) -> CapabilityGraphWorkerDeployment:
+        expected_release_count = (
+            8 if self.api_version == CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION else 7
+        )
+        if len(self.releases) != expected_release_count:
+            raise ValueError(
+                "Capability Graph deployment version differs from its exact release inventory"
+            )
         if capability_graph_campaign_digest(self.campaign) != self.campaign_digest:
             raise ValueError("Capability Graph deployment Campaign digest differs")
         if (
@@ -660,9 +671,15 @@ def load_capability_graph_deployment(
 
     selected_clock = clock or (lambda: datetime.now(UTC))
     try:
-        tools = _existing_mode_tool_registry()
+        include_registered_mcp = (
+            deployment.api_version == CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION
+        )
+        tools = _existing_mode_tool_registry(include_registered_mcp=include_registered_mcp)
         rollout = admit_existing_mode_capability_releases(
-            bundle=existing_mode_capability_bundle(tools),
+            bundle=existing_mode_capability_bundle(
+                tools,
+                include_registered_mcp=include_registered_mcp,
+            ),
             policy=deployment.lifecycle_policy,
             trust_keys=deployment.trust_keys,
             releases=deployment.releases,
@@ -779,7 +796,7 @@ def load_capability_graph_deployment(
     )
 
 
-def _existing_mode_tool_registry() -> ToolRegistry:
+def _existing_mode_tool_registry(*, include_registered_mcp: bool = False) -> ToolRegistry:
     """Build the closed CAP-005 Tool inventory without plugin discovery."""
 
     tools = ToolRegistry()
@@ -791,4 +808,6 @@ def _existing_mode_tool_registry() -> ToolRegistry:
         CTFCryptoXORTool(),
     ):
         tools.register(tool)
+    if include_registered_mcp:
+        tools.register(demo_mcp_tool())
     return tools

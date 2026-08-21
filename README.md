@@ -144,16 +144,16 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Capability lifecycle | Implemented | Exact CAP-001 definitions, complete CAP-002 authority sets, signed lifecycle/activation, Gateway dispatch, Oracle, Replay-plan, and cleanup boundaries |
 | Pentest | Implemented, bounded | Signed assessment compilation, approved one-shot GET Recon, independently authorized Replay, three Controls, durable five-stage coordination, controlled validity, and local Finding/report projection |
 | AI / LLM / RAG | Implemented, bounded | REDTEAM-001A exact single-turn M03/M06 and REDTEAM-001B exact two-turn A04 against approved AI/RAG targets |
-| Web / API | Partially implemented | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, fixed local Boolean SQLi and CTF Web labs; REDTEAM-001C is planned |
-| MCP | Discovery and walking-chain execution assets exist | Discovery remains non-authoritative; REDTEAM-001D exact product Capability registration is planned |
+| Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, and REDTEAM-001C exact three-request Boolean SQLi profile against one fixed synthetic local endpoint; no general scanner or arbitrary target authority |
+| MCP | Implemented, bounded | Discovery remains non-authoritative; REDTEAM-001D admits one approval-required, network-disabled registered `demo-security:inspect_text` Capability with one fixed synthetic input and no Replay or Finding authority |
 | Benchmark | Implemented foundation | BENCH-001 fixed metrics, signed measurement/Target Factory lifecycle, local Web and AI/RAG/MCP fixtures/providers; domain-aware metrics are planned |
 | Network, System, Application, Mobile, Cloud | Planned product domains | Infrastructure primitives may exist, but no general executable security-analysis vertical slice is claimed |
 | Cryptography | One fixed CTF lab only | General cryptographic analysis is planned |
 | Digital Forensics | Planned | No general forensic Surface, Capability, Worker, replay, or benchmark vertical slice is implemented |
 
-REDTEAM-001A/B and PENTEST contracts remain stable compatibility boundaries. REDTEAM-001C bounded
-Web is the next implementation task, followed by REDTEAM-001D registered MCP. The broader
-multi-domain foundation begins only after the current Phase 11 milestone.
+REDTEAM-001A/B/C/D and PENTEST contracts remain stable compatibility boundaries. REDTEAM-002
+benchmarking and UX-008 remain before the broader multi-domain foundation begins after the current
+Phase 11 milestone.
 
 The authoritative priority and status are in [PLAN.md](PLAN.md) and the verified checkpoint is in
 [HANDOFF.md](HANDOFF.md).

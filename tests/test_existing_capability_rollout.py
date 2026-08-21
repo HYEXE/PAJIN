@@ -12,12 +12,25 @@ from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
+from test_bug_bounty_runtime import (
+    ContractBugBountyWorker,
+)
+from test_bug_bounty_runtime import (
+    _campaign as _bug_bounty_campaign,
+)
+from test_bug_bounty_runtime import (
+    _trusted_docker_backend as _trusted_bug_bounty_backend,
+)
 from test_kisa_replay import TranscriptWorker, _trusted_docker_backend
 
 import pajin.control_plane.worker_main as worker_main_module
 from pajin.capabilities import (
     CAPABILITY_DISPATCH_RECONCILIATION_EVENT_TYPE,
     CAPABILITY_OPERATIONAL_EVIDENCE_ARTIFACT,
+    EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION,
+    EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION,
+    REGISTERED_MCP_CAPABILITY_ID,
+    REGISTERED_MCP_TARGET,
     CapabilityBenchmarkMapping,
     CapabilityDeliveryEvidence,
     CapabilityDispatchAuditEvent,
@@ -70,6 +83,7 @@ from pajin.capabilities import (
 )
 from pajin.control_plane.capability_deployment import (
     CAPABILITY_GRAPH_BATCH_DEPLOYMENT_API_VERSION,
+    CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION,
     CapabilityGraphCompilerIdentity,
     CapabilityGraphDeploymentError,
     CapabilityGraphDeploymentRuntime,
@@ -88,6 +102,16 @@ from pajin.control_plane.redteam_profiles import (
     REDTEAM_LLM_PROFILE_DIGEST,
     REDTEAM_LLM_RAG_PROFILE,
     REDTEAM_LLM_RAG_PROFILE_DIGEST,
+    REDTEAM_MCP_PROFILE,
+    REDTEAM_MCP_PROFILE_DIGEST,
+    REDTEAM_MCP_REQUEST_UNITS,
+    REDTEAM_WEB_CAPABILITY_ID,
+    REDTEAM_WEB_PROFILE,
+    REDTEAM_WEB_PROFILE_DIGEST,
+    REDTEAM_WEB_REQUEST_UNITS,
+    REDTEAM_WEB_TARGET_ENDPOINT,
+    RedteamProfileError,
+    validate_redteam_mcp_profile,
 )
 from pajin.domain.ctf import CTFScenario
 from pajin.domain.manifest import load_manifest
@@ -138,9 +162,19 @@ from pajin.runtime.store import (
 from pajin.runtime.worker import SimulatedWorkerBackend
 from pajin.tools.ai import AIChatProbeInput, AIChatProbeTool
 from pajin.tools.base import ToolRegistry
-from pajin.tools.bug_bounty import BooleanSQLiProbeTool
+from pajin.tools.bug_bounty import (
+    BOOLEAN_SQLI_SCENARIO,
+    BooleanSQLiProbeInput,
+    BooleanSQLiProbeTool,
+)
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
 from pajin.tools.gateway import ToolGateway
+from pajin.tools.mcp import (
+    MCP_INSTRUCTION_HIJACKING_PROBE_TEXT,
+    MCPInstructionHijackingProbeInput,
+    RegisteredMCPTool,
+    demo_mcp_tool,
+)
 from pajin.tools.mock import MockAgentProbe
 
 NOW = datetime(2026, 7, 27, 6, tzinfo=UTC)
@@ -148,7 +182,7 @@ REVIEWED_AT = NOW - timedelta(days=2)
 RELEASED_AT = NOW - timedelta(days=1)
 
 
-def _bundle() -> ExistingModeCapabilityBundle:
+def _bundle(*, include_registered_mcp: bool = False) -> ExistingModeCapabilityBundle:
     tools = ToolRegistry()
     for tool in (
         MockAgentProbe(),
@@ -158,7 +192,12 @@ def _bundle() -> ExistingModeCapabilityBundle:
         CTFCryptoXORTool(),
     ):
         tools.register(tool)
-    return existing_mode_capability_bundle(tools)
+    if include_registered_mcp:
+        tools.register(demo_mcp_tool())
+    return existing_mode_capability_bundle(
+        tools,
+        include_registered_mcp=include_registered_mcp,
+    )
 
 
 def _seed(label: str) -> bytes:
@@ -251,13 +290,15 @@ def _signed_releases(
     return tuple(releases)
 
 
-def _rollout_inputs() -> tuple[
+def _rollout_inputs(
+    *, include_registered_mcp: bool = False
+) -> tuple[
     ExistingModeCapabilityBundle,
     CapabilityLifecyclePolicy,
     tuple[CapabilityLifecycleTrustKey, ...],
     tuple[CapabilityReleaseBundle, ...],
 ]:
-    bundle = _bundle()
+    bundle = _bundle(include_registered_mcp=include_registered_mcp)
     policy = CapabilityLifecyclePolicy.reference_policy()
     keys, publisher, reviewer = _signing_authority()
     releases = _signed_releases(
@@ -665,6 +706,32 @@ def test_rollout_verifies_all_external_signatures_and_is_order_independent() -> 
         )
         assert resolved.capability.reference() == binding.capability
         assert resolved.maturity is CapabilityMaturity.EXPERIMENTAL
+
+
+def test_registered_mcp_rollout_uses_additive_release_and_activation_versions() -> None:
+    bundle, policy, keys, releases = _rollout_inputs(include_registered_mcp=True)
+
+    rollout = admit_existing_mode_capability_releases(
+        bundle=bundle,
+        policy=policy,
+        trust_keys=keys,
+        releases=releases,
+        clock=lambda: NOW,
+    )
+    release = _release_for(rollout, REGISTERED_MCP_CAPABILITY_ID)
+    activation = activate_existing_mode_capabilities(
+        rollout=rollout,
+        releases=(release,),
+        profile=CapabilityUseProfile.RANGE,
+    )
+
+    assert rollout.release_set.api_version == (EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION)
+    assert len(rollout.release_set.bindings) == 8
+    assert len(rollout.benchmark_mappings) == 8
+    assert activation.activation_set.api_version == (
+        EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION
+    )
+    assert activation.activation_set.bindings[0].release == release
 
 
 def test_rollout_metrics_promote_only_verified_mapping_and_lifecycle_coverage() -> None:
@@ -1128,9 +1195,11 @@ async def test_gateway_dispatch_fails_closed_before_execution_when_audit_append_
 class _CountingSimulatedWorker(SimulatedWorkerBackend):
     def __init__(self) -> None:
         self.calls = 0
+        self.jobs = []
 
     async def run(self, *args, **kwargs):
         self.calls += 1
+        self.jobs.append(args[0])
         return await super().run(*args, **kwargs)
 
 
@@ -1367,8 +1436,9 @@ def _capability_worker_fixture(
     profile_digest: str = "e" * 64,
     reservation_request_units: int | None = None,
     surface_type: str = "mock-agent",
+    include_registered_mcp: bool = False,
 ) -> tuple[CapabilityGraphDeploymentRuntime, dict[str, object], Path, bytes]:
-    bundle, policy, keys, releases = _rollout_inputs()
+    bundle, policy, keys, releases = _rollout_inputs(include_registered_mcp=include_registered_mcp)
     rollout = admit_existing_mode_capability_releases(
         bundle=bundle,
         policy=policy,
@@ -1516,6 +1586,11 @@ def _capability_worker_fixture(
         expires_at=NOW + timedelta(hours=1),
     )
     deployment = CapabilityGraphWorkerDeployment(
+        apiVersion=(
+            CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION
+            if include_registered_mcp
+            else "pajin.dev/capability-graph-worker-deployment/v1alpha1"
+        ),
         deploymentId="test.capability-graph-worker",
         campaign=campaign,
         campaignDigest=campaign_digest,
@@ -1623,6 +1698,131 @@ def _redteam_llm_worker_fixture(
         ),
         reservation_request_units=reservation_request_units,
         surface_type=target_type,
+    )
+    return campaign, runtime, job_input
+
+
+def _redteam_web_worker_fixture(
+    tmp_path: Path,
+    *,
+    target: str = REDTEAM_WEB_TARGET_ENDPOINT,
+    envelope_profile: str | None = None,
+    reservation_request_units: int | None = None,
+    allowed_tool_categories: set[str] | None = None,
+    include_additional_target: bool = False,
+) -> tuple[CampaignManifest, CapabilityGraphDeploymentRuntime, dict[str, object]]:
+    campaign = _bug_bounty_campaign()
+    if target != campaign.spec.targets[0].endpoint:
+        campaign = campaign.model_copy(
+            update={
+                "spec": campaign.spec.model_copy(
+                    update={
+                        "targets": [
+                            campaign.spec.targets[0].model_copy(update={"endpoint": target})
+                        ]
+                    }
+                )
+            }
+        )
+    if allowed_tool_categories is not None:
+        rules = campaign.spec.rules_of_engagement.model_copy(
+            update={"allowed_tool_categories": allowed_tool_categories}
+        )
+        campaign = campaign.model_copy(
+            update={"spec": campaign.spec.model_copy(update={"rules_of_engagement": rules})}
+        )
+    if include_additional_target:
+        additional = campaign.spec.targets[0].model_copy(
+            update={
+                "id": "unexpected-web-target",
+                "endpoint": "http://host.docker.internal:8771/v1/users/lookup",
+            }
+        )
+        campaign = campaign.model_copy(
+            update={
+                "spec": campaign.spec.model_copy(
+                    update={"targets": [*campaign.spec.targets, additional]}
+                )
+            }
+        )
+    request = ToolRequest(
+        request_id="tool_redteam_web_boolean_sqli_dispatch",
+        agent_id="agent:redteam-web-specialist",
+        tool_id=BooleanSQLiProbeTool.spec.tool_id,
+        target=target,
+        method="GET",
+        arguments=BooleanSQLiProbeInput().model_dump(mode="json"),
+    )
+    runtime, job_input, _, _ = _capability_worker_fixture(
+        tmp_path,
+        campaign,
+        capability_id=REDTEAM_WEB_CAPABILITY_ID,
+        request=request,
+        profile=REDTEAM_WEB_PROFILE,
+        envelope_profile=envelope_profile,
+        profile_digest=(REDTEAM_WEB_PROFILE_DIGEST if envelope_profile is None else "e" * 64),
+        reservation_request_units=reservation_request_units,
+        surface_type="bug-bounty-api",
+    )
+    return campaign, runtime, job_input
+
+
+def _redteam_mcp_worker_fixture(
+    tmp_path: Path,
+    *,
+    target: str = REGISTERED_MCP_TARGET,
+    envelope_profile: str | None = None,
+    reservation_request_units: int | None = None,
+    allowed_tool_categories: set[str] | None = None,
+    include_additional_target: bool = False,
+) -> tuple[CampaignManifest, CapabilityGraphDeploymentRuntime, dict[str, object]]:
+    campaign = load_manifest(Path("examples/mcp-tool.yaml"))
+    rules = campaign.spec.rules_of_engagement.model_copy(
+        update={
+            "allowed_tool_categories": (
+                {"ai-redteam", "analysis", "mcp"}
+                if allowed_tool_categories is None
+                else allowed_tool_categories
+            )
+        }
+    )
+    target_record = campaign.spec.targets[0].model_copy(update={"endpoint": target})
+    targets = [target_record]
+    if include_additional_target:
+        targets.append(
+            target_record.model_copy(
+                update={
+                    "id": "unexpected-mcp-target",
+                    "endpoint": "https://mcp.internal/other/inspect-text",
+                }
+            )
+        )
+    campaign = campaign.model_copy(
+        update={
+            "spec": campaign.spec.model_copy(
+                update={"targets": targets, "rules_of_engagement": rules}
+            )
+        }
+    )
+    request = ToolRequest(
+        request_id="tool_redteam_mcp_instruction_hijacking_dispatch",
+        agent_id="agent:redteam-mcp-specialist",
+        tool_id="mcp.demo-security.inspect-text",
+        target=target,
+        method="POST",
+        arguments=MCPInstructionHijackingProbeInput().model_dump(mode="json"),
+    )
+    runtime, job_input, _, _ = _capability_worker_fixture(
+        tmp_path,
+        campaign,
+        capability_id=REGISTERED_MCP_CAPABILITY_ID,
+        request=request,
+        profile=REDTEAM_MCP_PROFILE,
+        envelope_profile=envelope_profile,
+        profile_digest=(REDTEAM_MCP_PROFILE_DIGEST if envelope_profile is None else "e" * 64),
+        reservation_request_units=reservation_request_units,
+        surface_type="mock-mcp",
+        include_registered_mcp=True,
     )
     return campaign, runtime, job_input
 
@@ -2126,6 +2326,421 @@ async def test_redteam_llm_rag_profile_rejects_generic_envelope_relabel_before_p
 
     assert worker.jobs == []
     assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.parametrize(
+    "request_update",
+    [
+        {"tool_id": "ctf.web-backup-probe"},
+        {"method": "POST"},
+    ],
+)
+def test_redteam_web_job_rejects_another_tool_contract(
+    tmp_path: Path,
+    request_update: dict[str, object],
+) -> None:
+    _, _, job_input = _redteam_web_worker_fixture(tmp_path)
+    wrong = dict(job_input)
+    wrong["request"] = {
+        **job_input["request"],
+        **request_update,
+    }
+
+    with pytest.raises(ValidationError, match="exact Boolean SQLi probe Tool"):
+        CapabilityGraphCampaignJobInput.model_validate(wrong)
+
+
+@pytest.mark.asyncio
+async def test_redteam_web_profile_executes_exact_approved_probe_once(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(tmp_path)
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+
+    first = await executor.execute(job)
+    retry = await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    proposal = ActionProposal.model_validate(job_input["proposal"])
+    approval = ActionApprovalEnvelope.model_validate(job_input["approval"])
+    permit = runtime.graph_store.permit_store.permits()[0]
+    assert first.result["executionProfile"] == REDTEAM_WEB_PROFILE
+    assert first.result["dispatched"] is True
+    assert first.result["dispatchStatus"] == "completed"
+    assert first.result["toolSuccess"] is True
+    assert proposal.reservation.request_units == REDTEAM_WEB_REQUEST_UNITS
+    assert approval.reservation.request_units == REDTEAM_WEB_REQUEST_UNITS
+    assert permit.reservation.request_units == REDTEAM_WEB_REQUEST_UNITS
+    assert retry.result["dispatched"] is False
+    assert retry.result["permitId"] == first.result["permitId"]
+    assert len(worker.jobs) == 1
+    assert json.loads(worker.jobs[0].stdin) == {
+        "target": REDTEAM_WEB_TARGET_ENDPOINT,
+        "scenarioId": BOOLEAN_SQLI_SCENARIO,
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reservation_request_units", [1, 4])
+async def test_redteam_web_profile_rejects_inexact_reservation_before_permit(
+    tmp_path: Path,
+    reservation_request_units: int,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(
+        tmp_path,
+        reservation_request_units=reservation_request_units,
+    )
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_web_profile_rejects_another_endpoint_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(
+        tmp_path,
+        target="http://host.docker.internal:8771/v1/users/lookup",
+    )
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_web_profile_rejects_another_scenario_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(tmp_path)
+    wrong_request = dict(job_input["request"])
+    wrong_request["arguments"] = {"scenario_id": "bug-bounty.api.unregistered"}
+    job_input = dict(job_input)
+    job_input["request"] = wrong_request
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="request preparation failed closed"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fixture_update",
+    [
+        {"allowed_tool_categories": {"active-test", "bug-bounty", "http"}},
+        {"include_additional_target": True},
+    ],
+)
+async def test_redteam_web_profile_rejects_target_expansion_or_missing_category(
+    tmp_path: Path,
+    fixture_update: dict[str, object],
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(tmp_path, **fixture_update)
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_web_profile_requires_deployment_pinned_t2_approval(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(tmp_path)
+    job_input = dict(job_input)
+    job_input.pop("approval")
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="requires deployment-pinned approval"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_web_profile_rejects_generic_envelope_relabel_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_web_worker_fixture(
+        tmp_path,
+        envelope_profile="capability-graph-v1",
+    )
+    worker = ContractBugBountyWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=_trusted_bug_bounty_backend(worker),
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.jobs == []
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.parametrize(
+    "request_update",
+    [
+        {"tool_id": "mcp.demo-security.discover"},
+        {"method": "GET"},
+    ],
+)
+def test_redteam_mcp_job_rejects_another_tool_contract(
+    tmp_path: Path,
+    request_update: dict[str, object],
+) -> None:
+    _, _, job_input = _redteam_mcp_worker_fixture(tmp_path)
+    wrong = dict(job_input)
+    wrong["request"] = {**job_input["request"], **request_update}
+
+    with pytest.raises(ValidationError, match="exact registered MCP Tool"):
+        CapabilityGraphCampaignJobInput.model_validate(wrong)
+
+
+@pytest.mark.asyncio
+async def test_redteam_mcp_profile_executes_exact_approved_probe_once(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(tmp_path)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+    job = _capability_worker_job(job_input)
+
+    first = await executor.execute(job)
+    retry = await executor.execute(job.model_copy(update={"attempts": 2}))
+
+    proposal = ActionProposal.model_validate(job_input["proposal"])
+    approval = ActionApprovalEnvelope.model_validate(job_input["approval"])
+    permit = runtime.graph_store.permit_store.permits()[0]
+    assert runtime.deployment.api_version == CAPABILITY_GRAPH_MCP_DEPLOYMENT_API_VERSION
+    assert len(runtime.deployment.releases) == 8
+    assert first.result["executionProfile"] == REDTEAM_MCP_PROFILE
+    assert first.result["dispatched"] is True
+    assert first.result["dispatchStatus"] == "completed"
+    assert first.result["toolSuccess"] is True
+    assert proposal.reservation.request_units == REDTEAM_MCP_REQUEST_UNITS
+    assert approval.reservation.request_units == REDTEAM_MCP_REQUEST_UNITS
+    assert permit.reservation.request_units == REDTEAM_MCP_REQUEST_UNITS
+    assert retry.result["dispatched"] is False
+    assert retry.result["permitId"] == first.result["permitId"]
+    assert worker.calls == 1
+    assert worker.jobs[0].command == ["mcp-call"]
+    assert worker.jobs[0].network.value == "none"
+    assert json.loads(worker.jobs[0].stdin) == {
+        "serverId": "demo-security",
+        "toolName": "inspect_text",
+        "arguments": {"text": MCP_INSTRUCTION_HIJACKING_PROBE_TEXT},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reservation_request_units", [2, 3])
+async def test_redteam_mcp_profile_rejects_inexact_reservation_before_permit(
+    tmp_path: Path,
+    reservation_request_units: int,
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(
+        tmp_path,
+        reservation_request_units=reservation_request_units,
+    )
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "request_update",
+    [
+        {"target": "https://mcp.internal/other/inspect-text"},
+        {"arguments": {"text": "agent-selected input"}},
+    ],
+)
+async def test_redteam_mcp_profile_rejects_retargeting_before_permit(
+    tmp_path: Path,
+    request_update: dict[str, object],
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(tmp_path)
+    wrong = dict(job_input)
+    wrong["request"] = {**job_input["request"], **request_update}
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError):
+        await executor.execute(_capability_worker_job(wrong))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "fixture_update",
+    [
+        {"allowed_tool_categories": {"analysis", "mcp"}},
+        {"include_additional_target": True},
+    ],
+)
+async def test_redteam_mcp_profile_rejects_target_expansion_or_missing_category(
+    tmp_path: Path,
+    fixture_update: dict[str, object],
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(tmp_path, **fixture_update)
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_mcp_profile_requires_deployment_pinned_approval(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(tmp_path)
+    job_input = dict(job_input)
+    job_input.pop("approval")
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="requires deployment-pinned approval"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+@pytest.mark.asyncio
+async def test_redteam_mcp_profile_rejects_generic_envelope_relabel_before_permit(
+    tmp_path: Path,
+) -> None:
+    _, runtime, job_input = _redteam_mcp_worker_fixture(
+        tmp_path,
+        envelope_profile="capability-graph-v1",
+    )
+    worker = _CountingSimulatedWorker()
+    executor = CampaignJobExecutor(
+        output_root=tmp_path / "unused-local-runs",
+        worker=worker,
+        capability_deployment=runtime,
+    )
+
+    with pytest.raises(PermanentExecutionError, match="outside the product profile"):
+        await executor.execute(_capability_worker_job(job_input))
+
+    assert worker.calls == 0
+    assert runtime.graph_store.permit_store.permits() == ()
+
+
+def test_redteam_mcp_profile_rejects_remote_registration_drift(
+    tmp_path: Path,
+) -> None:
+    campaign, runtime, job_input = _redteam_mcp_worker_fixture(tmp_path)
+    prepared_release = _release_for(runtime.activation.rollout, REGISTERED_MCP_CAPABILITY_ID)
+    binding = runtime.activation.activation_set.bindings[0]
+    definition = runtime.activation.rollout.bundle.definitions.resolve(
+        binding.capability.capability
+    )
+    canonical_tool = demo_mcp_tool()
+    drifted_tool = RegisteredMCPTool(
+        canonical_tool.registration.model_copy(update={"server_id": "other-server"})
+    )
+
+    with pytest.raises(RedteamProfileError, match="exact registered"):
+        validate_redteam_mcp_profile(
+            campaign=campaign,
+            definition=definition,
+            envelope=runtime.deployment.mission_envelope,
+            proposal=ActionProposal.model_validate(job_input["proposal"]),
+            request=ToolRequest.model_validate(job_input["request"]),
+            tool=drifted_tool,
+        )
+    assert binding.release == prepared_release
+
+
+def test_mcp_deployment_version_rejects_legacy_or_extended_inventory_relabel(
+    tmp_path: Path,
+) -> None:
+    _, runtime, _ = _redteam_mcp_worker_fixture(tmp_path)
+    extended = runtime.deployment.model_dump(mode="json", by_alias=True)
+    extended["apiVersion"] = "pajin.dev/capability-graph-worker-deployment/v1alpha1"
+
+    with pytest.raises(ValidationError, match="exact release inventory"):
+        CapabilityGraphWorkerDeployment.model_validate(extended)
 
 
 @pytest.mark.asyncio

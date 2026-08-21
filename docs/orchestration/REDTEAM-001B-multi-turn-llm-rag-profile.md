@@ -75,9 +75,9 @@ authority.
 
 ## Remaining REDTEAM-001 boundary
 
-REDTEAM-001C must define a bounded Web Capability profile. REDTEAM-001D must define a registered
-MCP Capability profile. Neither can be inferred from the LLM/RAG Tool categories or Capability
-surface declarations.
+REDTEAM-001C separately defines the implemented bounded Web Capability profile. REDTEAM-001D must
+define a registered MCP Capability profile. Neither authority can be inferred from the LLM/RAG
+Tool categories or Capability surface declarations.
 
 ## Compatibility and rollback
 

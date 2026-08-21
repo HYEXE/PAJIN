@@ -69,10 +69,18 @@ from pajin.tools.ctf import (
     CTFWebBackupProbeInput,
     CTFWebBackupProbeOutput,
 )
+from pajin.tools.mcp import (
+    MCP_INSTRUCTION_HIJACKING_PROBE_TEXT,
+    MCPInstructionHijackingProbeInput,
+    MCPInstructionHijackingProbeOutput,
+)
 from pajin.tools.mock import MockAgentProbeInput, MockAgentProbeOutput
 
 EXISTING_MODE_CAPABILITY_ADAPTER_VERSION = "pajin.existing-mode-capability-adapter/v1"
 EXISTING_KISA_REPLAY_PLAN_API_VERSION = "pajin.dev/existing-kisa-replay-plan/v1alpha1"
+REGISTERED_MCP_CAPABILITY_ID = "pajin.ai.mcp.instruction-hijacking-inspection"
+REGISTERED_MCP_CAPABILITY_VERSION = "1.0.0"
+REGISTERED_MCP_TARGET = "https://mcp.internal/demo-security/inspect-text"
 _AUTHORITY_VERSION = "1.0.0"
 
 _KISA_CAPABILITY_IDS = {
@@ -90,6 +98,7 @@ class ExistingCapabilitySuccessPolicy(StrEnum):
     CTF_CRYPTO_HOST_RECOMPUTE = "ctf-crypto-host-recompute"
     CTF_WEB_CANDIDATE = "ctf-web-candidate"
     KISA_CATALOG_TRANSCRIPT = "kisa-catalog-transcript"
+    MCP_INSTRUCTION_HIJACKING_INSPECTION = "mcp-instruction-hijacking-inspection"
     MOCK_AGENT_SIMULATION = "mock-agent-simulation"
 
 
@@ -303,18 +312,28 @@ class _ExistingCleanupHandler(_ExistingAuthorityBase):
         return None
 
 
-def existing_mode_capability_registrations() -> tuple[ToolCapabilityRegistration, ...]:
-    """Return the seven explicit Tool registrations without discovering plugins."""
+def existing_mode_capability_registrations(
+    *,
+    include_registered_mcp: bool = False,
+) -> tuple[ToolCapabilityRegistration, ...]:
+    """Return the closed base inventory and optional registered MCP extension."""
 
-    return tuple(contract.registration for contract in _existing_capability_contracts())
+    return tuple(
+        contract.registration
+        for contract in _existing_capability_contracts(
+            include_registered_mcp=include_registered_mcp
+        )
+    )
 
 
 def existing_mode_capability_bundle(
     tools: ToolRegistry,
+    *,
+    include_registered_mcp: bool = False,
 ) -> ExistingModeCapabilityBundle:
-    """Bind supported current Mode Tools to complete CAP-001/CAP-002 registries."""
+    """Bind the base inventory and optional MCP Tool to complete CAP-001/002 authority."""
 
-    contracts = _existing_capability_contracts()
+    contracts = _existing_capability_contracts(include_registered_mcp=include_registered_mcp)
     for contract in contracts:
         try:
             spec = tools.spec(contract.registration.tool_id)
@@ -366,9 +385,14 @@ def _authorities_for(
     )
 
 
-def _existing_capability_contracts() -> tuple[_ExistingCapabilityContract, ...]:
+def _existing_capability_contracts(
+    *,
+    include_registered_mcp: bool = False,
+) -> tuple[_ExistingCapabilityContract, ...]:
     contracts = [*(_kisa_contract(scenario) for scenario in KISA_CATALOG.scenarios)]
     contracts.extend((_boolean_sqli_contract(), _ctf_web_contract(), _ctf_crypto_contract()))
+    if include_registered_mcp:
+        contracts.append(_registered_mcp_contract())
     return tuple(contracts)
 
 
@@ -521,6 +545,43 @@ def _ctf_crypto_contract() -> _ExistingCapabilityContract:
     )
 
 
+def _registered_mcp_contract() -> _ExistingCapabilityContract:
+    return _ExistingCapabilityContract(
+        registration=ToolCapabilityRegistration(
+            capabilityId=REGISTERED_MCP_CAPABILITY_ID,
+            capabilityVersion=REGISTERED_MCP_CAPABILITY_VERSION,
+            toolId="mcp.demo-security.inspect-text",
+            domain="ai-redteam",
+            maturity=CapabilityMaturity.EXPERIMENTAL,
+            supportedSurfaceTypes=("mock-mcp",),
+            threatClasses=("A01",),
+            preconditions=(
+                "authorized-target",
+                "fixed-registered-mcp-tool",
+                "synthetic-local-input",
+            ),
+            parameterSchemaDigest=_parameter_schema_digest(
+                MCPInstructionHijackingProbeInput,
+                constraints={
+                    "serverId": "demo-security",
+                    "remoteToolName": "inspect_text",
+                    "target": REGISTERED_MCP_TARGET,
+                    "text": MCP_INSTRUCTION_HIJACKING_PROBE_TEXT,
+                },
+            ),
+            sideEffectClass=CapabilitySideEffectClass.READ_ONLY,
+            approvalRequired=True,
+            cleanupRequired=False,
+            requestUnitCost=1,
+        ),
+        expected_tool_version="1.0.0",
+        method="POST",
+        parameter_model=MCPInstructionHijackingProbeInput,
+        scenario_id="redteam.mcp.instruction-hijacking-inspection",
+        success_policy=(ExistingCapabilitySuccessPolicy.MCP_INSTRUCTION_HIJACKING_INSPECTION),
+    )
+
+
 def _parameter_schema_digest(
     model_type: type[BaseModel],
     *,
@@ -588,6 +649,8 @@ def _semantic_support(
         return _ctf_web_support(request, result)
     if policy is ExistingCapabilitySuccessPolicy.CTF_CRYPTO_HOST_RECOMPUTE:
         return _ctf_crypto_support(request, result)
+    if policy is ExistingCapabilitySuccessPolicy.MCP_INSTRUCTION_HIJACKING_INSPECTION:
+        return _registered_mcp_support(request, result)
     raise ValueError("existing Capability uses an unsupported success policy")
 
 
@@ -671,6 +734,22 @@ def _ctf_crypto_support(request: ToolRequest, result: ToolResult) -> bool:
     ):
         raise ValueError("CTF Crypto observation differs from host recomputation")
     return output.solved
+
+
+def _registered_mcp_support(request: ToolRequest, result: ToolResult) -> bool:
+    probe = MCPInstructionHijackingProbeInput.model_validate(request.arguments)
+    output = MCPInstructionHijackingProbeOutput.model_validate(result.data)
+    if (
+        probe.text != MCP_INSTRUCTION_HIJACKING_PROBE_TEXT
+        or request.target != REGISTERED_MCP_TARGET
+        or output.target != request.target
+        or output.mcp_server_id != "demo-security"
+        or output.mcp_tool_name != "inspect_text"
+        or [item.model_dump(mode="json") for item in output.mcp_content]
+        != [{"type": "text", "text": "inspection complete"}]
+    ):
+        raise ValueError("registered MCP observation differs from its exact authority")
+    return output.vulnerable
 
 
 def _solve_single_byte_xor(ciphertext_hex: str) -> tuple[int | None, str | None]:

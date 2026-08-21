@@ -3,6 +3,7 @@
 from pajin.capabilities.activation import (
     CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION,
     EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION,
+    EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION,
     PREPARED_CAPABILITY_ACTION_API_VERSION,
     CapabilityDispatchAuditEvent,
     CapabilityDispatchAuditStore,
@@ -64,6 +65,9 @@ from pajin.capabilities.cleanup_dispatch import (
 from pajin.capabilities.existing import (
     EXISTING_KISA_REPLAY_PLAN_API_VERSION,
     EXISTING_MODE_CAPABILITY_ADAPTER_VERSION,
+    REGISTERED_MCP_CAPABILITY_ID,
+    REGISTERED_MCP_CAPABILITY_VERSION,
+    REGISTERED_MCP_TARGET,
     ExistingCapabilitySuccessPolicy,
     ExistingModeCapabilityBundle,
     existing_mode_capability_bundle,
@@ -161,6 +165,7 @@ from pajin.capabilities.reconciliation import (
     reconcile_capability_dispatch,
 )
 from pajin.capabilities.rollout import (
+    EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION,
     EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION,
     ExistingModeCapabilityReleaseBinding,
     ExistingModeCapabilityReleaseSet,
@@ -226,8 +231,13 @@ __all__ = [
     "EXISTING_KISA_REPLAY_PLAN_API_VERSION",
     "EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION",
     "EXISTING_MODE_CAPABILITY_ADAPTER_VERSION",
+    "EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION",
+    "EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION",
     "EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION",
     "PREPARED_CAPABILITY_ACTION_API_VERSION",
+    "REGISTERED_MCP_CAPABILITY_ID",
+    "REGISTERED_MCP_CAPABILITY_VERSION",
+    "REGISTERED_MCP_TARGET",
     "WEB_AI_HYBRID_CAMPAIGN_EXIT_GATE_API_VERSION",
     "WEB_AI_HYBRID_CAPABILITY_IDS",
     "ActionCompilerTemplate",

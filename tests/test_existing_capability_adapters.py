@@ -8,6 +8,9 @@ import pytest
 
 from pajin.capabilities import (
     EXISTING_KISA_REPLAY_PLAN_API_VERSION,
+    REGISTERED_MCP_CAPABILITY_ID,
+    REGISTERED_MCP_CAPABILITY_VERSION,
+    REGISTERED_MCP_TARGET,
     CapabilityAuthorityError,
     CapabilityAuthorityRole,
     CapabilityDefinitionError,
@@ -36,10 +39,15 @@ from pajin.tools.ctf import (
     crypto_artifact_target,
 )
 from pajin.tools.http import HTTPGetTool
+from pajin.tools.mcp import (
+    MCP_INSTRUCTION_HIJACKING_PROBE_TEXT,
+    MCPInstructionHijackingProbeInput,
+    demo_mcp_tool,
+)
 from pajin.tools.mock import MockAgentProbe
 
 
-def _tools() -> tuple[ToolRegistry, AIChatProbeTool]:
+def _tools(*, include_registered_mcp: bool = False) -> tuple[ToolRegistry, AIChatProbeTool]:
     registry = ToolRegistry()
     ai_tool = AIChatProbeTool()
     for tool in (
@@ -50,12 +58,17 @@ def _tools() -> tuple[ToolRegistry, AIChatProbeTool]:
         CTFCryptoXORTool(),
     ):
         registry.register(tool)
+    if include_registered_mcp:
+        registry.register(demo_mcp_tool())
     return registry, ai_tool
 
 
-def _bundle() -> ExistingModeCapabilityBundle:
-    tools, _ai_tool = _tools()
-    return existing_mode_capability_bundle(tools)
+def _bundle(*, include_registered_mcp: bool = False) -> ExistingModeCapabilityBundle:
+    tools, _ai_tool = _tools(include_registered_mcp=include_registered_mcp)
+    return existing_mode_capability_bundle(
+        tools,
+        include_registered_mcp=include_registered_mcp,
+    )
 
 
 def _manifest(bundle: ExistingModeCapabilityBundle, capability_id: str):
@@ -256,6 +269,82 @@ def test_existing_mode_bundle_registers_only_seven_explicit_experimental_capabil
     )
     assert a04_registration.capability_version == "1.1.0"
     assert a04_registration.request_unit_cost == 2
+
+
+def test_registered_mcp_extension_adds_one_exact_capability_without_mutating_base() -> None:
+    base = _bundle()
+    extended = _bundle(include_registered_mcp=True)
+
+    definitions = extended.definitions.definitions()
+    assert len(definitions) == 8
+    mcp_definition = extended.definitions.resolve(
+        next(
+            item.reference()
+            for item in definitions
+            if item.capability_id == REGISTERED_MCP_CAPABILITY_ID
+        )
+    )
+    assert mcp_definition.capability_version == REGISTERED_MCP_CAPABILITY_VERSION
+    assert mcp_definition.supported_surface_types == ("mock-mcp",)
+    assert mcp_definition.threat_classes == ("A01",)
+    assert mcp_definition.approval_required
+    assert mcp_definition.request_unit_cost == 1
+    assert not mcp_definition.network_access
+    assert len(_manifest(extended, REGISTERED_MCP_CAPABILITY_ID).authorities) == 7
+    base_digests = {
+        item.capability_id: item.capability_digest for item in base.definitions.definitions()
+    }
+    assert {
+        item.capability_id: item.capability_digest
+        for item in definitions
+        if item.capability_id in base_digests
+    } == base_digests
+    registrations = existing_mode_capability_registrations(include_registered_mcp=True)
+    assert len(registrations) == 8
+    assert registrations[-1].capability_id == REGISTERED_MCP_CAPABILITY_ID
+
+
+def test_registered_mcp_oracle_recomputes_exact_normalized_observation() -> None:
+    bundle = _bundle(include_registered_mcp=True)
+    request = ToolRequest(
+        request_id="request_registered_mcp",
+        agent_id="agent:redteam-mcp",
+        tool_id="mcp.demo-security.inspect-text",
+        target=REGISTERED_MCP_TARGET,
+        method="POST",
+        arguments=MCPInstructionHijackingProbeInput().model_dump(mode="json"),
+    )
+    materializer = _authority(
+        bundle,
+        REGISTERED_MCP_CAPABILITY_ID,
+        CapabilityAuthorityRole.MATERIALIZER,
+    )
+    oracle = _authority(
+        bundle,
+        REGISTERED_MCP_CAPABILITY_ID,
+        CapabilityAuthorityRole.SUCCESS_ORACLE,
+    )
+    expected = {
+        "target": REGISTERED_MCP_TARGET,
+        "vulnerable": True,
+        "observation": "untrusted text contains an instruction-hijacking pattern",
+        "mcpServerId": "demo-security",
+        "mcpToolName": "inspect_text",
+        "mcpContent": [{"type": "text", "text": "inspection complete"}],
+    }
+
+    assert materializer.materialize(request.arguments) == {
+        "text": MCP_INSTRUCTION_HIJACKING_PROBE_TEXT
+    }
+    assert (
+        oracle.evaluate(request, _result(request, expected)) is CapabilityOracleDecision.SUCCEEDED
+    )
+    forged = {**expected, "mcpToolName": "unregistered_tool"}
+    assert (
+        oracle.evaluate(request, _result(request, forged)) is CapabilityOracleDecision.INCONCLUSIVE
+    )
+    with pytest.raises(CapabilityAuthorityError, match="exact Tool input"):
+        materializer.materialize({"text": "agent-selected input"})
 
 
 def test_existing_mode_bundle_does_not_discover_unregistered_extra_tools() -> None:

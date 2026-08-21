@@ -38,6 +38,7 @@ from pajin.capabilities.models import (
     capability_definition_digest,
 )
 from pajin.capabilities.rollout import (
+    EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION,
     ExistingModeCapabilityRollout,
     ExistingModeCapabilityRolloutError,
 )
@@ -63,6 +64,9 @@ from pajin.tools.gateway import GatewayOutcome, canonical_tool_request_digest
 EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION: Literal[
     "pajin.dev/existing-mode-capability-activation-set/v1alpha1"
 ] = "pajin.dev/existing-mode-capability-activation-set/v1alpha1"
+EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION: Literal[
+    "pajin.dev/existing-mode-capability-activation-set/v1alpha2"
+] = "pajin.dev/existing-mode-capability-activation-set/v1alpha2"
 PREPARED_CAPABILITY_ACTION_API_VERSION: Literal["pajin.dev/prepared-capability-action/v1alpha1"] = (
     "pajin.dev/prepared-capability-action/v1alpha1"
 )
@@ -71,7 +75,7 @@ CAPABILITY_DISPATCH_AUDIT_EVENT_API_VERSION: Literal[
 ] = "pajin.dev/capability-dispatch-audit-event/v1alpha1"
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
-_MAX_ACTIVATED_CAPABILITIES = 7
+_MAX_ACTIVATED_CAPABILITIES = 8
 _MAX_GATEWAY_OUTCOME_BYTES = 32 * 1024 * 1024
 
 
@@ -250,7 +254,10 @@ class ExistingModeCapabilityActivationSet(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/existing-mode-capability-activation-set/v1alpha1"] = Field(
+    api_version: Literal[
+        "pajin.dev/existing-mode-capability-activation-set/v1alpha1",
+        "pajin.dev/existing-mode-capability-activation-set/v1alpha2",
+    ] = Field(
         default=EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION,
         alias="apiVersion",
     )
@@ -740,6 +747,11 @@ def activate_existing_mode_capabilities(
             )
         )
     activation_set = ExistingModeCapabilityActivationSet(
+        apiVersion=(
+            EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION
+            if rollout.release_set.api_version == EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION
+            else EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION
+        ),
         releaseSetDigest=rollout.release_set.release_set_digest,
         profile=requested_profile,
         bindings=tuple(sorted(bindings, key=_activation_binding_key)),
@@ -840,6 +852,15 @@ def _verify_activation(activation: ExistingModeCapabilityActivation) -> None:
     if activation_set.release_set_digest != rollout.release_set.release_set_digest:
         raise ExistingModeCapabilityActivationError(
             "Capability activation references another signed release set"
+        )
+    expected_api_version = (
+        EXISTING_MODE_CAPABILITY_ACTIVATION_SET_API_VERSION
+        if rollout.release_set.api_version == EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION
+        else EXISTING_MODE_CAPABILITY_MCP_ACTIVATION_SET_API_VERSION
+    )
+    if activation_set.api_version != expected_api_version:
+        raise ExistingModeCapabilityActivationError(
+            "Capability activation-set version differs from its signed release inventory"
         )
     release_bindings = {_release_key(item.release): item for item in rollout.release_set.bindings}
     for binding in activation_set.bindings:

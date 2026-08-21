@@ -11,6 +11,7 @@ from pydantic import ConfigDict, Field, ValidationError, model_validator
 
 from pajin.capabilities.authorities import CodeBackedCapabilityRef
 from pajin.capabilities.existing import (
+    REGISTERED_MCP_CAPABILITY_ID,
     ExistingModeCapabilityBundle,
 )
 from pajin.capabilities.lifecycle import (
@@ -41,9 +42,13 @@ from pajin.domain.models import StrictModel
 EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION: Literal[
     "pajin.dev/existing-mode-capability-release-set/v1alpha1"
 ] = "pajin.dev/existing-mode-capability-release-set/v1alpha1"
+EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION: Literal[
+    "pajin.dev/existing-mode-capability-release-set/v1alpha2"
+] = "pajin.dev/existing-mode-capability-release-set/v1alpha2"
 
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 _EXPECTED_CAPABILITY_COUNT = 7
+_REGISTERED_MCP_CAPABILITY_COUNT = 8
 
 _BENCHMARK_CONTRACTS: dict[str, tuple[str, str]] = {
     "pajin.ai.kisa.indirect-tool-hijacking": (
@@ -74,6 +79,10 @@ _BENCHMARK_CONTRACTS: dict[str, tuple[str, str]] = {
         "pajin.benchmark.ctf.web-exposed-backup-config",
         "Typed request and result identities yield an exposed backup configuration candidate.",
     ),
+    REGISTERED_MCP_CAPABILITY_ID: (
+        "pajin.benchmark.ai.mcp.instruction-hijacking-inspection",
+        "The host recomputes the exact registered MCP observation from the authorized input.",
+    ),
 }
 
 
@@ -100,11 +109,14 @@ class ExistingModeCapabilityReleaseBinding(StrictModel):
 
 
 class ExistingModeCapabilityReleaseSet(StrictModel):
-    """Content-addressed inventory of seven externally reviewed signed releases."""
+    """Content-addressed base inventory or opt-in registered MCP extension."""
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal["pajin.dev/existing-mode-capability-release-set/v1alpha1"] = Field(
+    api_version: Literal[
+        "pajin.dev/existing-mode-capability-release-set/v1alpha1",
+        "pajin.dev/existing-mode-capability-release-set/v1alpha2",
+    ] = Field(
         default=EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION,
         alias="apiVersion",
     )
@@ -122,11 +134,18 @@ class ExistingModeCapabilityReleaseSet(StrictModel):
     policy_digest: _Sha256 = Field(alias="policyDigest")
     bindings: tuple[ExistingModeCapabilityReleaseBinding, ...] = Field(
         min_length=_EXPECTED_CAPABILITY_COUNT,
-        max_length=_EXPECTED_CAPABILITY_COUNT,
+        max_length=_REGISTERED_MCP_CAPABILITY_COUNT,
     )
 
     @model_validator(mode="after")
     def bind_release_set_identity(self) -> Self:
+        expected_count = (
+            _EXPECTED_CAPABILITY_COUNT
+            if self.api_version == EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION
+            else _REGISTERED_MCP_CAPABILITY_COUNT
+        )
+        if len(self.bindings) != expected_count:
+            raise ValueError("existing Mode release-set version differs from its exact inventory")
         keys = [_binding_key(item) for item in self.bindings]
         if keys != sorted(set(keys)):
             raise ValueError("existing Mode release bindings must be unique and canonically sorted")
@@ -147,10 +166,12 @@ class ExistingModeCapabilityReleaseSet(StrictModel):
             by_alias=True,
             exclude={"release_set_id", "release_set_digest"},
         )
-        digest = capability_definition_digest(
-            "pajin.capability.existing-mode-release-set/v1",
-            material,
+        namespace = (
+            "pajin.capability.existing-mode-release-set/v1"
+            if self.api_version == EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION
+            else "pajin.capability.existing-mode-release-set/v2"
         )
+        digest = capability_definition_digest(namespace, material)
         release_set_id = f"existing-mode-release-set_{digest}"
         if self.release_set_digest and self.release_set_digest != digest:
             raise ValueError("existing Mode release-set digest differs from canonical identity")
@@ -177,7 +198,7 @@ class ExistingModeCapabilityRollout:
 def existing_mode_capability_benchmark_mappings(
     bundle: ExistingModeCapabilityBundle,
 ) -> tuple[CapabilityBenchmarkMapping, ...]:
-    """Return the closed CAP-003 mappings for all seven CAP-005 adapters."""
+    """Return closed CAP-003 mappings for the base or registered MCP inventory."""
 
     if not isinstance(bundle, ExistingModeCapabilityBundle):
         raise TypeError("existing Mode benchmark mappings require their exact bundle")
@@ -197,10 +218,9 @@ def existing_mode_capability_benchmark_mappings(
                 expectedObservables=(observable,),
             )
         )
-    if len(mappings) != _EXPECTED_CAPABILITY_COUNT:
-        raise ExistingModeCapabilityRolloutError(
-            "existing Mode benchmark inventory must contain exactly seven Capabilities"
-        )
+    expected_count = _expected_capability_count(bundle)
+    if len(mappings) != expected_count:
+        raise ExistingModeCapabilityRolloutError(_inventory_error("benchmark", expected_count))
     return tuple(sorted(mappings, key=lambda item: _definition_key(item.capability)))
 
 
@@ -212,7 +232,7 @@ def admit_existing_mode_capability_releases(
     releases: Iterable[CapabilityReleaseBundle],
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> ExistingModeCapabilityRollout:
-    """Verify seven externally signed first releases without generating signing authority."""
+    """Verify an exact externally signed inventory without generating signing authority."""
 
     if not isinstance(bundle, ExistingModeCapabilityBundle):
         raise TypeError("existing Mode rollout requires its exact Capability bundle")
@@ -237,10 +257,9 @@ def admit_existing_mode_capability_releases(
         )
         for item in releases
     )
-    if len(canonical_releases) != _EXPECTED_CAPABILITY_COUNT:
-        raise ExistingModeCapabilityRolloutError(
-            "existing Mode rollout requires exactly seven signed first releases"
-        )
+    expected_count = _expected_capability_count(bundle)
+    if len(canonical_releases) != expected_count:
+        raise ExistingModeCapabilityRolloutError(_inventory_error("rollout", expected_count))
     try:
         lifecycle = CapabilityLifecycleRegistry(
             definitions=bundle.definitions,
@@ -259,7 +278,7 @@ def admit_existing_mode_capability_releases(
     release_bundles = {
         _capability_key(item.release.statement.capability): item for item in canonical_releases
     }
-    if len(release_bundles) != _EXPECTED_CAPABILITY_COUNT:
+    if len(release_bundles) != expected_count:
         raise ExistingModeCapabilityRolloutError(
             "existing Mode rollout contains duplicate Capability releases"
         )
@@ -274,7 +293,7 @@ def admit_existing_mode_capability_releases(
             head = lifecycle.head(reference.capability.capability_id)
         except (KeyError, CapabilityLifecycleError) as exc:
             raise ExistingModeCapabilityRolloutError(
-                "existing Mode rollout does not cover the exact seven-Capability inventory"
+                "existing Mode rollout does not cover the exact Capability inventory"
             ) from exc
         statement = signed_bundle.release.statement
         if head != statement.reference():
@@ -291,6 +310,11 @@ def admit_existing_mode_capability_releases(
             )
         )
     release_set = ExistingModeCapabilityReleaseSet(
+        apiVersion=(
+            EXISTING_MODE_CAPABILITY_RELEASE_SET_API_VERSION
+            if expected_count == _EXPECTED_CAPABILITY_COUNT
+            else EXISTING_MODE_CAPABILITY_MCP_RELEASE_SET_API_VERSION
+        ),
         policyDigest=canonical_policy.digest,
         bindings=tuple(sorted(bindings, key=_binding_key)),
     )
@@ -354,7 +378,7 @@ def _verify_rollout(rollout: ExistingModeCapabilityRollout) -> None:
     binding_by_capability = {
         _capability_key(_binding_capability(item)): item for item in release_set.bindings
     }
-    if len(binding_by_capability) != _EXPECTED_CAPABILITY_COUNT:
+    if len(binding_by_capability) != _expected_capability_count(rollout.bundle):
         raise ExistingModeCapabilityRolloutError(
             "existing Mode release-set inventory is incomplete"
         )
@@ -382,6 +406,25 @@ def _verify_rollout(rollout: ExistingModeCapabilityRollout) -> None:
             raise ExistingModeCapabilityRolloutError(
                 "existing Mode rollout release binding drifted"
             )
+
+
+def _expected_capability_count(bundle: ExistingModeCapabilityBundle) -> int:
+    capability_ids = {item.capability.capability_id for item in bundle.capabilities()}
+    base_ids = set(_BENCHMARK_CONTRACTS) - {REGISTERED_MCP_CAPABILITY_ID}
+    if capability_ids == base_ids:
+        return _EXPECTED_CAPABILITY_COUNT
+    if capability_ids == set(_BENCHMARK_CONTRACTS):
+        return _REGISTERED_MCP_CAPABILITY_COUNT
+    raise ExistingModeCapabilityRolloutError(
+        "existing Mode Capability inventory differs from the closed base or MCP extension"
+    )
+
+
+def _inventory_error(label: str, expected_count: int) -> str:
+    count = "seven" if expected_count == _EXPECTED_CAPABILITY_COUNT else "eight"
+    if label == "benchmark":
+        return f"existing Mode benchmark inventory must contain exactly {count} Capabilities"
+    return f"existing Mode rollout requires exactly {count} signed first releases"
 
 
 def _canonical_model[ModelT: StrictModel](

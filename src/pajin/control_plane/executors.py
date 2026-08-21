@@ -41,9 +41,13 @@ from pajin.control_plane.models import ApprovalIntent, JobKind, JobView
 from pajin.control_plane.redteam_profiles import (
     REDTEAM_LLM_PROFILE,
     REDTEAM_LLM_RAG_PROFILE,
+    REDTEAM_MCP_PROFILE,
+    REDTEAM_WEB_PROFILE,
     RedteamProfileError,
     validate_redteam_llm_profile,
     validate_redteam_llm_rag_profile,
+    validate_redteam_mcp_profile,
+    validate_redteam_web_profile,
 )
 from pajin.discovery.hypothesis import AttackHypothesisSet, SurfaceBoundPlan
 from pajin.domain.models import (
@@ -110,6 +114,7 @@ from pajin.supervision import (
 )
 from pajin.tools.base import ToolRegistry
 from pajin.tools.gateway import GatewayOutcome, ToolGateway
+from pajin.tools.mcp import RegisteredMCPTool
 from pajin.tools.mock import ApprovalCheckTool, MockAgentProbe, SleepCheckTool
 from pajin.workflow.cancellation import seal_executor_quiescence
 from pajin.workflow.local import LocalCampaignRunner, LocalToolExecutionError
@@ -205,6 +210,8 @@ class CapabilityGraphCampaignJobInput(StrictModel):
         "capability-graph-v1",
         "redteam-llm-v1",
         "redteam-llm-rag-v1",
+        "redteam-mcp-v1",
+        "redteam-web-v1",
     ]
     proposal: ActionProposal
     decision: GraphDecision
@@ -221,6 +228,15 @@ class CapabilityGraphCampaignJobInput(StrictModel):
             self.request.tool_id != "ai.chat-probe" or self.request.method != "POST"
         ):
             raise ValueError("REDTEAM LLM/RAG Job requires the exact AI chat probe Tool")
+        if self.profile == REDTEAM_WEB_PROFILE and (
+            self.request.tool_id != "bug-bounty.boolean-sqli-probe" or self.request.method != "GET"
+        ):
+            raise ValueError("REDTEAM Web Job requires the exact Boolean SQLi probe Tool")
+        if self.profile == REDTEAM_MCP_PROFILE and (
+            self.request.tool_id != "mcp.demo-security.inspect-text"
+            or self.request.method != "POST"
+        ):
+            raise ValueError("REDTEAM MCP Job requires the exact registered MCP Tool")
         if self.approval is not None and (
             self.approval.proposal != self.proposal
             or self.approval.graph_decision != self.decision
@@ -591,6 +607,8 @@ class CampaignJobExecutor:
             "capability-graph-batch-v1",
             REDTEAM_LLM_PROFILE,
             REDTEAM_LLM_RAG_PROFILE,
+            REDTEAM_MCP_PROFILE,
+            REDTEAM_WEB_PROFILE,
         }:
             return await self._execute_capability_graph(
                 job,
@@ -973,7 +991,13 @@ class CampaignJobExecutor:
         campaign: CampaignManifest,
     ) -> None:
         if not isinstance(job_input, CapabilityGraphCampaignJobInput) or (
-            job_input.profile not in {REDTEAM_LLM_PROFILE, REDTEAM_LLM_RAG_PROFILE}
+            job_input.profile
+            not in {
+                REDTEAM_LLM_PROFILE,
+                REDTEAM_LLM_RAG_PROFILE,
+                REDTEAM_MCP_PROFILE,
+                REDTEAM_WEB_PROFILE,
+            }
         ):
             return
         try:
@@ -986,18 +1010,33 @@ class CampaignJobExecutor:
             definition = runtime.activation.rollout.bundle.definitions.resolve(
                 binding.capability.capability
             )
-            validator = (
-                validate_redteam_llm_profile
-                if job_input.profile == REDTEAM_LLM_PROFILE
-                else validate_redteam_llm_rag_profile
-            )
-            validator(
-                campaign=campaign,
-                definition=definition,
-                envelope=runtime.deployment.mission_envelope,
-                proposal=job_input.proposal,
-                request=prepared.request,
-            )
+            if job_input.profile == REDTEAM_MCP_PROFILE:
+                tool = runtime.tools.tool(prepared.request.tool_id)
+                if type(tool) is not RegisteredMCPTool:
+                    raise RedteamProfileError(
+                        "REDTEAM MCP runtime Tool is not the sealed registration"
+                    )
+                validate_redteam_mcp_profile(
+                    campaign=campaign,
+                    definition=definition,
+                    envelope=runtime.deployment.mission_envelope,
+                    proposal=job_input.proposal,
+                    request=prepared.request,
+                    tool=tool,
+                )
+            else:
+                validator = {
+                    REDTEAM_LLM_PROFILE: validate_redteam_llm_profile,
+                    REDTEAM_LLM_RAG_PROFILE: validate_redteam_llm_rag_profile,
+                    REDTEAM_WEB_PROFILE: validate_redteam_web_profile,
+                }[job_input.profile]
+                validator(
+                    campaign=campaign,
+                    definition=definition,
+                    envelope=runtime.deployment.mission_envelope,
+                    proposal=job_input.proposal,
+                    request=prepared.request,
+                )
         except (KeyError, RedteamProfileError, StopIteration, ValueError) as exc:
             raise PermanentExecutionError(
                 f"{job_input.profile} authority is outside the product profile"
@@ -1201,6 +1240,8 @@ class CampaignJobExecutor:
             "capability-graph-batch-v1",
             "redteam-llm-v1",
             "redteam-llm-rag-v1",
+            "redteam-mcp-v1",
+            "redteam-web-v1",
         ],
         outcome: GatewayOutcome | None,
         dispatched: bool,

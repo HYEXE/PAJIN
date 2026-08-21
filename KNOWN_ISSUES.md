@@ -37,10 +37,11 @@
 - 제한: registry 자동화, distributed Worker queue와 cross-host fence는 없고 host-local filesystem 권한이
   deployment TCB다. CLI는 누락 권위나 다른 Security Domain 실행 권위를 만들지 않는다.
 
-## REDTEAM-001A/B LLM·RAG 제품 경계
+## REDTEAM-001A~D 제품 경계
 
-- 테스트는 trusted Docker receipt fixture이며 실제 외부 Target 운영 증거가 아니다. 두 프로필은 host-local이고
-  Replay·Finding·report, Web·MCP·browser·system·write·cleanup 권위와 cross-host fence가 없다.
+- 테스트는 local fixture이며 외부 Target 증거가 아니다. A/B는 LLM/RAG, C는 단일 synthetic Web
+  endpoint, D는 network-disabled demo MCP Tool과 고정 입력 하나만 허용한다. 독립 Replay·Finding·report,
+  browser·system·write·cleanup 권위와 cross-host fence는 없다.
 
 ## ARCH-002 multi-domain architecture 경계
 
