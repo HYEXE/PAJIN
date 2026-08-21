@@ -4,8 +4,8 @@
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
 - 현재 단계: Phase 11 — Initial Pentest / Red Team Productization
-- 현재 우선순위: `REDTEAM-002` initial detection·false-positive·replay·cost benchmark
-- 다음 우선순위: `UX-008` initial Scope·Evidence·Finding·report product flow
+- 현재 우선순위: `UX-008` initial Scope·Evidence·Finding·report product flow
+- 다음 우선순위: `DOMAIN-001` code-owned Security Domain taxonomy
 
 ## 제품 목표
 
@@ -131,7 +131,10 @@ Phase 10 Exit Gate: PENTEST-000~003D와 UX-007E~R1 완료. UX-007R2 production p
   - [x] `REDTEAM-001B` multi-turn LLM/RAG A04 request-unit profile
   - [x] `REDTEAM-001C` bounded Web Capability profile
   - [x] `REDTEAM-001D` registered MCP Capability profile
-- [ ] `REDTEAM-002` initial detection·false-positive·replay·cost benchmark
+- [x] `REDTEAM-002` initial detection·false-positive·replay·cost benchmark
+  - exact REDTEAM-001A~D Profile·CAP-002·CAP-003·CAP-006 denominator
+  - sealed positive·negative-control·Replay·policy-denial raw Observation과 aggregate report
+  - valid Finding·cleanup·미등록 MCP negative/Replay metric은 explicit `not-applicable`
 - [ ] `UX-008` initial Scope·Evidence·Finding·report product flow
 
 Phase 11 Exit Gate: 현재 계약을 깨지 않고 승인된 초기 Pentest/Web/AI/MCP slice를 실행하며,

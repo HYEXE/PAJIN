@@ -43,6 +43,15 @@
   endpoint, D는 network-disabled demo MCP Tool과 고정 입력 하나만 허용한다. 독립 Replay·Finding·report,
   browser·system·write·cleanup 권위와 cross-host fence는 없다.
 
+## REDTEAM-002 measurement 경계
+
+- 보장: exact REDTEAM-001 Profile, CAP-002/003/006 identity, request-unit cost와 sealed raw
+  Observation을 재검증해 detection·false-positive·Replay·cost·evidence·
+  policy-denial metric을 집계한다. 미등록 metric은 0이 아니라 explicit `not-applicable`이다.
+- 제한: reference test raw facts는 실제 외부 Target이나 production score가 아니다. 배포된
+  measurement adapter가 원 source lineage와 측정값의 진실성을 책임지며, REDTEAM-002 report는 자체로
+  Finding·Scope·Permit·execution authority를 만들지 않는다.
+
 ## ARCH-002 multi-domain architecture 경계
 
 - ARCH-002와 ADR-0204~0206은 accepted architecture와 roadmap일 뿐 runtime 구현이 아니다. Security Domain
@@ -536,15 +545,6 @@
   자체의 fail-closed 동작은 이 환경에서 증명할 수 없다. 이는 PAJIN 코드 회귀의 증거가 아니다.
 - 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
   실행한다.
-
-## Benchmark Harness 고정 fixture 만료
-
-- 상태: 2026-08-06 해소
-- 원인: distribution fixture가 고정된 과거 `issued_at/expires_at`을 사용해 실제 activation 시각에
-  만료됐다.
-- 조치: distribution fixture의 `issued_at`을 현재 시각 기준으로 만들되 registry 발급 시각보다
-  앞서지 않도록 하고, 만료 음성 테스트의 고정 시각 계약은 유지했다.
-- 검증: deterministic baseline·single-agent·ZAP 관련 묶음 17 passed, 2 skipped.
 
 ## Windows POSIX 파일·디렉터리 mode 검사
 

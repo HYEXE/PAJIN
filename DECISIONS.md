@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0209: Measure Red Team Profiles without Finding Authority](docs/adr/0209-measure-redteam-profiles-without-finding-authority.md)
 - [ADR-0208: Register an MCP Capability without Discovery Authority](docs/adr/0208-register-mcp-capability-without-discovery-authority.md)
 - [ADR-0207: Compose a Bounded Web Red Team Profile](docs/adr/0207-compose-bounded-web-redteam-profile.md)
 - [ADR-0206: Bind Domain Workers to the Existing Authority Path](docs/adr/0206-bind-domain-workers-to-existing-authority-path.md)
