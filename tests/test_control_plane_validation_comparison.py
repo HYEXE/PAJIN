@@ -230,6 +230,8 @@ def test_walking_control_comparison_endpoint_fails_closed_without_evidence(
     )
     with TestClient(configured) as client:
         assert client.get(path, headers=_auth(OPERATOR_TOKEN)).status_code == 404
+        (configured_root / "comparisons").write_text("not-a-directory", encoding="utf-8")
+        assert client.get(path, headers=_auth(OPERATOR_TOKEN)).status_code == 409
 
 
 def test_walking_control_comparison_evidence_root_loads_from_environment(

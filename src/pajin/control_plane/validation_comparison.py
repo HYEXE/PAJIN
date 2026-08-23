@@ -411,6 +411,11 @@ class VerifiedWalkingControlComparisonReader:
             )
         path = self._root / _COMPARISON_ROOT / comparison_id / _COMPARISON_ARTIFACT
         try:
+            _require_lookup_artifact_exists(
+                self._root,
+                comparison_id=comparison_id,
+                artifact_path=path,
+            )
             decoded = load_bounded_strict_json(
                 path,
                 max_bytes=_MAX_ARTIFACT_BYTES,
@@ -453,6 +458,35 @@ class VerifiedWalkingControlComparisonReader:
             raise WalkingControlComparisonIntegrityError(
                 "Walking Control comparison authority is not integrity-valid"
             ) from exc
+
+
+def _require_lookup_artifact_exists(
+    root: Path,
+    *,
+    comparison_id: str,
+    artifact_path: Path,
+) -> None:
+    """Distinguish an absent lookup key from malformed existing path material."""
+
+    for candidate in (
+        root / _COMPARISON_ROOT,
+        root / _COMPARISON_ROOT / comparison_id,
+        artifact_path,
+    ):
+        try:
+            candidate.lstat()
+        except FileNotFoundError as exc:
+            raise WalkingControlComparisonNotFound(
+                "Walking Control comparison was not found"
+            ) from exc
+        except OSError:
+            # The secure bounded reader remains authoritative for inaccessible,
+            # non-directory, link, junction, and raced path material.
+            return
+        if candidate.is_symlink() or candidate.is_junction():
+            return
+        if candidate != artifact_path and not candidate.is_dir():
+            return
 
 
 def write_walking_control_comparison_locator(
