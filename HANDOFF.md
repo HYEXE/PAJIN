@@ -5,8 +5,9 @@
 - 기록일: 2026-08-24
 - 작업 체크아웃: `C:\Workspace\HYEXE\PAJIN`
 - 브랜치: `main`
-- 기준 HEAD: `923965e` (`security(deps): cryptography 취약 버전 범위 제거`)
-- 작업 트리 체크포인트: 기준 HEAD 위의 미커밋 `AI-001B~D` 구현·테스트·계약 문서
+- 구현 체크포인트: `df97fa8` (`feat(ai): 읽기 전용 분석과 Replay 검증 경계 구현`)
+- 선행 감사 수정: `8b84983` Control Plane dependency lock, `1046cfe` VAL-004C 조회 상태
+- 작업 트리 체크포인트: 구현 체크포인트 기준 clean
 - 완료된 단계: `PENTEST-004C2B2`, `REDTEAM-001A~D`, `REDTEAM-002`, `UX-008`,
   `DOMAIN-001~006`, `WEB-001A~D`, `AI-001A~D`
 - 현재 우선순위: `NET-001A` host/service/protocol/port Surface model
