@@ -28,7 +28,8 @@ def test_repository_owns_one_bounded_operational_state_set() -> None:
     state_documents = [REPOSITORY_ROOT / name for name in names]
     for path in state_documents:
         assert path.is_file()
-        assert path.stat().st_size < 64 * 1024
+        repository_bytes = path.read_bytes().replace(b"\r\n", b"\n")
+        assert len(repository_bytes) < 64 * 1024
 
     policy = (DOCS_ROOT / "DOCUMENTATION_POLICY.md").read_text(encoding="utf-8")
     assert "repository-first documentation model" in policy

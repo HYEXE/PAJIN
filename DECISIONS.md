@@ -5,6 +5,9 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0219: Bind AI Replay, Controls, and Benchmark without Action Authority](docs/adr/0219-bind-ai-replay-controls-and-benchmark-without-action-authority.md)
+- [ADR-0218: Admit AI Observations without Tool Authority](docs/adr/0218-admit-ai-observations-without-tool-authority.md)
+- [ADR-0217: Bind AI Analysis without Provider Authority](docs/adr/0217-bind-ai-analysis-without-provider-authority.md)
 - [ADR-0216: Classify AI Surfaces without Tool Authority](docs/adr/0216-classify-ai-surfaces-without-tool-authority.md)
 - [ADR-0215: Bind Web Replay and Ground Truth without Measurement Authority](docs/adr/0215-bind-web-replay-and-ground-truth-without-measurement-authority.md)
 - [ADR-0214: Compose Web Knowledge through the Existing Graph Writer](docs/adr/0214-compose-web-knowledge-through-existing-graph-writer.md)

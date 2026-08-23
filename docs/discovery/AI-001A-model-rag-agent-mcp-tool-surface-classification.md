@@ -69,9 +69,16 @@ interface only describes a Surface. Discovery metadata cannot choose a Tool, act
 Capability, authorize a URL or credential, select a Worker, or issue an ActionPermit. MCP remains a
 transport and integration mechanism behind the same Capability and Gateway authority path.
 
-AI-001B must separately bind an exact provider/model/Tool identity to an existing or newly
-registered read-only CAP-002 Capability, current authority, budget, credential lease, AI Worker
-boundary, Policy/Approval, ActionPermit, and Gateway dispatch path.
+AI-001B now separately binds exact provider/model/RAG/MCP/Tool identities to four existing
+read-only CAP-002 Capabilities, request/token/cost ceilings, and the minimum AI Worker boundary.
+It stops at non-authoritative action preparation; current Profile, Campaign Scope, budget,
+credential lease, Policy/Approval, ActionPermit, Gateway, deployment, and execution remain
+independent downstream requirements.
+
+AI-001C now consumes only exact Surface references from an AI-001B preparation while reverifying
+an already sealed REDTEAM execution. It admits neutral Observation/Evidence through the existing
+Graph writer; it does not turn these Surface values into discovery, Tool selection, Scope, replay,
+Finding, or additional execution authority.
 
 ## Fail-closed behavior
 

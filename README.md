@@ -146,6 +146,9 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Pentest | Implemented, bounded | Signed assessment compilation, approved one-shot GET Recon, independently authorized Replay, three Controls, durable five-stage coordination, controlled validity, and local Finding/report projection |
 | AI / LLM / RAG | Implemented, bounded | REDTEAM-001A exact single-turn M03/M06 and REDTEAM-001B exact two-turn A04 against approved AI/RAG targets |
 | AI typed Surface classification | Implemented, registry only | AI-001A classifies exact model, RAG, agent, MCP, and Tool knowledge under DOMAIN-002, reuses existing RAG/MCP/Tool locators, and adds secret-free model/agent identities; typed values remain `registered-not-authorized` and provide no Profile, Scope, Capability, Permit, Tool/Worker, network, credential, Graph, runtime, or execution authority |
+| AI read-only analysis binding | Implemented, preparation only | AI-001B binds four existing REDTEAM-001A/B/D read-only CAP-002 identities to exact provider/model/RAG/MCP/Tool Surfaces, request/token/cost ceilings, and the DOMAIN-004 minimum AI Worker profile; it stops at `PreparedCapabilityAction` and grants no Profile, Scope, approval, Permit, budget, credential, Worker, network, Observation/Evidence, Graph, Finding, or execution authority |
+| AI sealed Observation admission | Implemented, bounded | AI-001C reverifies one successful sealed REDTEAM LLM, LLM/RAG, or registered MCP Capability Graph Run and admits only one neutral `ai.behavior-observation` plus exact Evidence through the existing Graph single writer; Surface references remain classification-only and grant no Tool, Scope, Permit, Worker, replay, Finding, or further execution authority |
+| AI Replay, Controls, and benchmark contract | Implemented, bounded | AI-001D binds one exact AI-001C M03/M06/A04 source to separately sealed KISA two-repetition fresh-session Replay, three-Control evidence, the matching REDTEAM-002 Capability contract, and the DOMAIN-006 AI plan; it binds no concrete Ground Truth case or measurement and grants no confirmation, Finding, Scope, Permit, Worker, network, credential, Replay, or execution authority |
 | Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, and REDTEAM-001C exact three-request Boolean SQLi profile against one fixed synthetic local endpoint; no general scanner or arbitrary target authority |
 | Web/API typed Surface | Implemented, registry only | WEB-001A binds the DOMAIN-002 `web.http-operation` semantics to existing concrete endpoint and bounded URI-template locator models; typed values remain `registered-not-authorized` and provide no Observation, Evidence, Graph, Scope, Capability, Permit, Worker, network, runtime, or execution authority |
 | Web/API read-only discovery binding | Implemented, preparation only | WEB-001B binds only a concrete WEB-001A GET Surface to the existing signed Pentest Recon CAP-002 and DOMAIN-004 minimum Web Worker profile; it stops at `PreparedCapabilityAction`, leaves pre-Gateway network disabled, and grants no Scope, approval, Permit, Worker selection, Observation/Evidence, Graph, Finding, runtime, or execution authority |
@@ -171,8 +174,13 @@ benchmark-registry contracts. WEB-001A is complete as a typed registry only, WEB
 non-Campaign binding and preparation boundary only, and WEB-001C as one bounded sealed-source
 knowledge-admission composition only. WEB-001D adds a bounded independent Replay projection and a
 separate private Ground Truth profile; it does not claim that the two form a measured benchmark
-case. AI-001A is complete as a typed classification registry only; it does not claim model, agent,
-RAG, MCP, or Tool discovery or execution support. AI-001B is next.
+case. AI-001A is complete as a typed classification registry only. AI-001B adds exact binding and
+signed lifecycle preparation for four existing read-only REDTEAM Capabilities. AI-001C admits a
+bounded sealed Observation/Evidence result without making Surface, Profile, Domain, MCP, or Tool
+metadata authoritative. AI-001D adds a bounded semantic binding to independently sealed KISA
+fresh-session Replay and Controls plus the existing REDTEAM-002 benchmark contract. It does not
+claim a measured Ground Truth case, confirm the AI Observation, or provide general model, agent,
+RAG, MCP, or Tool discovery or execution support. NET-001A is next.
 
 The authoritative priority and status are in [PLAN.md](PLAN.md) and the verified checkpoint is in
 [HANDOFF.md](HANDOFF.md).

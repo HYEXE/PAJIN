@@ -2,15 +2,15 @@
 
 ## 현재 체크포인트
 
-- 기록일: 2026-08-23
-- 작업 체크아웃: `/Users/hyeonexcel/Workspace/HYEXEN/PAJIN`
+- 기록일: 2026-08-24
+- 작업 체크아웃: `C:\Workspace\HYEXE\PAJIN`
 - 브랜치: `main`
-- 감사 시작 기준: `8d764be778ec76794e61496dbc9ddce348de0dfb`
-- 구현 체크포인트: `cde01b4` (`feat(security): 멀티 도메인 분석 기반 구현`)
+- 기준 HEAD: `923965e` (`security(deps): cryptography 취약 버전 범위 제거`)
+- 작업 트리 체크포인트: 기준 HEAD 위의 미커밋 `AI-001B~D` 구현·테스트·계약 문서
 - 완료된 단계: `PENTEST-004C2B2`, `REDTEAM-001A~D`, `REDTEAM-002`, `UX-008`,
-  `DOMAIN-001~006`, `WEB-001A~D`, `AI-001A`
-- 현재 우선순위: `AI-001B` exact provider/model/tool-bound read-only analysis Capability
-- 다음 우선순위: `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
+  `DOMAIN-001~006`, `WEB-001A~D`, `AI-001A~D`
+- 현재 우선순위: `NET-001A` host/service/protocol/port Surface model
+- 다음 우선순위: `NET-001B` read-only service-identification Capability and scoped Network Worker
 
 이 문서 자체를 동기화하는 커밋이 구현 체크포인트 뒤에 이어지므로 정확한 현재 HEAD와 원격 상태는
 아래 Git 명령으로 확인한다. 문서와 Git이 다르면 Git과 파일시스템을 우선한다.
@@ -60,6 +60,25 @@
   - model, RAG, agent, MCP, Tool의 5개 class와 10개 locator kind를 secret-free typed Surface registry로
     분류한다.
   - provider/model alias, credential, Tool discovery 또는 Domain metadata를 실행 권위로 바꾸지 않는다.
+- `AI-001B`
+  - REDTEAM-001A M03/M06, REDTEAM-001B A04, REDTEAM-001D MCP의 exact Profile·CAP-002·Tool identity를
+    typed model/RAG/MCP/Tool Surface, request/token/cost ceiling과 minimum AI Worker profile에 결박한다.
+  - current Provider registration과 signed lifecycle release를 재검증해 `PreparedCapabilityAction`까지만
+    만들며 Profile·Scope·approval·Permit·budget·credential·Worker·Gateway·Graph·execution 권위는 만들지 않는다.
+- `AI-001C`
+  - AI-001B exact preparation과 기존 REDTEAM LLM/RAG/MCP Capability Graph Run의 seal, consumed Permit,
+    dispatch reconciliation, request reservation, Tool/Worker Evidence와 Gateway outcome digest를 재검증한다.
+  - exact model/Tool, model/RAG/Tool, MCP/Tool Surface reference를 DOMAIN-002 AI semantic에 결박하고 기존
+    Graph single writer에 Action 1·neutral Observation 1·Evidence 2만 admission한다.
+  - Surface/Profile/Domain/MCP/Tool metadata와 source Permit은 추가 Scope·Tool·Worker·network·credential·Replay·
+    Finding·execution 권위가 아니며 exact retry는 Tool을 재실행하지 않는다.
+- `AI-001D`
+  - AI-001C sealed source/admission과 별도 KISA source의 두 fresh-session Replay·세 Control을 다시 열어
+    exact target·Tool·scenario·threat class·turn·check 및 disjoint session/request identity를 검증한다.
+  - exact REDTEAM-002 Profile·Capability·CAP-003 mapping·CAP-006 Replay contract와 DOMAIN-006 AI plan을
+    content-addressed projection에 결박하되 concrete Ground Truth case나 numeric measurement는 만들지 않는다.
+  - 독립 KISA lane의 Profile floor는 충족하지만 AI Observation confirmation·Finding으로 전환하지 않으며
+    source Graph/Permit/Profile/Domain/Tool metadata에서 Replay·Permit·Worker·network·credential·execution 권위를 만들지 않는다.
 - Pentest Recon CAP-002 authority-set identity는 unordered Tool categories/evidence types를 정렬해
   Python hash seed와 무관하게 기존 digest를 재현한다.
 
@@ -76,51 +95,54 @@ authority marker 주입, boolean/integer coercion, relabel 또는 substitution�
 - DOMAIN-006은 numeric measurement, concrete per-domain replay, validation-floor evaluation을 구현하지 않는다.
 - WEB-001A~D는 typed Surface, read-only preparation, sealed neutral admission, independent Replay와 private
   Ground Truth registration까지다. 일반 scanner, measured benchmark와 Finding 확정은 없다.
-- AI-001A는 classification-only다. provider/model invocation, RAG query, agent 실행, MCP/Tool 선택,
-  credential lease, Observation/Evidence, Graph admission과 executable AI support는 없다.
+- AI-001A~D는 typed registry, preparation, neutral admission과 direct-call Replay/Control/benchmark-contract
+  binding까지다. MCP Replay, concrete AI Ground Truth·numeric measurement, AI Observation confirmation·Finding,
+  arbitrary provider·agent·MCP·Tool execution과 일반 AI discovery/runtime은 없다.
 
 ### planned
 
-- `AI-001B`: exact provider/model/tool-bound read-only analysis Capability
-- `AI-001C`: cross-Surface Observation/Evidence admission without Tool authority
-- `AI-001D`: deterministic replay and AI benchmark Ground Truth
-- 이후 Network, Cloud/Container, System, Application/Binary, Mobile, Cryptography, Forensics vertical slice
+- Network, Cloud/Container, System, Application/Binary, Mobile, Cryptography, Forensics vertical slice
 
 ## 핵심 변경 위치
 
 - Domain과 Graph: `src/pajin/domain/security_domain.py`, `src/pajin/graph/domain_semantics.py`,
   `src/pajin/graph/cross_domain_admission.py`
 - Capability와 Worker boundary: `src/pajin/capabilities/domain_projection.py`,
-  `src/pajin/capabilities/web_discovery.py`, `src/pajin/control_plane/domain_worker_boundaries.py`
+  `src/pajin/capabilities/web_discovery.py`, `src/pajin/capabilities/ai_analysis.py`,
+  `src/pajin/control_plane/domain_worker_boundaries.py`
 - Surface classification: `src/pajin/discovery/web_surfaces.py`, `src/pajin/discovery/ai_surfaces.py`
 - Workflow: `src/pajin/workflow/redteam_product_flow.py`,
-  `src/pajin/workflow/web_discovery_admission.py`, `src/pajin/workflow/web_replay_benchmark.py`
+  `src/pajin/workflow/web_discovery_admission.py`, `src/pajin/workflow/web_replay_benchmark.py`,
+  `src/pajin/workflow/ai_analysis_admission.py`, `src/pajin/workflow/ai_replay_benchmark.py`
 - Benchmark: `src/pajin/benchmark/domain_metrics.py`
-- 권위 문서: `docs/rfc/0002-multi-domain-security-analysis-architecture.md`, ADR-0210~0216,
-  UX-008, DOMAIN-001~006, WEB-001A~D, AI-001A 버전형 계약
+- 권위 문서: `docs/rfc/0002-multi-domain-security-analysis-architecture.md`, ADR-0210~0219,
+  UX-008, DOMAIN-001~006, WEB-001A~D, AI-001A~D 버전형 계약
 
 ## 최신 검증
 
-- 누적 집중 positive/adversarial 회귀:
-  - `.venv/bin/pytest -q tests/test_benchmark_redteam.py tests/test_security_domain_taxonomy.py
-    tests/test_multi_domain_graph_semantics.py tests/test_capability_domain_projection.py
-    tests/test_domain_worker_boundaries.py tests/test_cross_domain_graph_admission.py
-    tests/test_domain_benchmark_metrics.py tests/test_web_http_operation_surfaces.py
-    tests/test_web_read_only_discovery.py tests/test_pentest_recon_dispatch.py
-    tests/test_ai_surface_classification.py tests/test_documentation.py`
-  - `627 passed`
+- AI-001D 집중 positive/adversarial 회귀:
+  - `.venv\Scripts\python.exe -m pytest -q tests\test_ai_replay_benchmark.py`
+  - `1 passed`
+- AI-001D와 KISA Replay·Control·Profile evidence, REDTEAM benchmark, AI-001B/C,
+  CAP-002 lifecycle·adapter, VAL-004C 조회 분류, Control Plane dependency export와 문서 인접 회귀:
+  - `.venv\Scripts\python.exe -m pytest -q tests\test_ai_replay_benchmark.py
+    tests\test_ai_analysis_admission.py tests\test_ai_read_only_analysis.py
+    tests\test_profile_validation_evidence.py tests\test_validation_controls.py
+    tests\test_kisa_replay.py tests\test_benchmark_redteam.py
+    tests\test_domain_benchmark_metrics.py tests\test_existing_capability_adapters.py
+    tests\test_existing_capability_rollout.py tests\test_documentation.py
+    tests\test_control_plane_validation_comparison.py
+    tests\test_deployment.py::test_control_plane_dependency_export_matches_the_root_lock`
+  - `273 passed`
 - 전체 정적 검증:
-  - `.venv/bin/ruff check src tests containers scripts`: 통과
-  - `.venv/bin/mypy --strict --platform linux src/pajin`: `328 source files` 통과
-  - `.venv/bin/python -m compileall -q src`: 통과
+  - `.venv\Scripts\ruff.exe check src tests containers scripts`: 통과
+  - `.venv\Scripts\mypy.exe --strict --platform linux src\pajin`: `331 source files` 통과
+  - `.venv\Scripts\python.exe -m compileall -q src`: 통과
   - `git diff --check`: 통과
-- 전체 회귀:
-  - sandbox loopback 2건을 제외한 전체 pytest: `4756 passed, 67 skipped, 2 deselected`
-  - 제외한 direct-mTLS와 Replay Worker process 2건은 loopback 권한 경계에서 `2 passed`
-- Codex Security working-tree diff 감사:
-  - changed production source 18개와 authority boundary 11개 surface 검토
-  - reportable finding `0`, coverage `complete`
-- Linux CI는 실행하지 않았다. 위 결과는 macOS project `.venv` 기준이다.
+- Windows 전체 pytest는 `4564 passed, 115 skipped, 187 failed`였다. 실패 중 VAL-004C missing lookup의
+  404/409 오분류와 Control Plane `cryptography` export lock 불일치는 수정 후 위 집중 회귀가 통과했다.
+  나머지는 POSIX directory `fsync`·secure `dirfd`, Windows 파일명·symlink 제약 184건과 현재 venv에
+  optional `boto3` extra가 없는 MinIO inventory 1건이다. Linux 전체 pytest는 실행하지 않았다.
 
 ## 알려진 제한
 
@@ -149,7 +171,7 @@ git diff --check
 
 ## 다음 한 단계
 
-`AI-001B`에서 AI-001A exact provider/model/Tool identity를 기존 REDTEAM-001A/B/D와 CAP-002 lifecycle에
-결박하는 최소 read-only analysis Capability를 설계한다. Domain metadata, Profile 이름, MCP/Tool discovery,
-provider registration digest만으로 Scope, approval, Permit, Worker, network, credential 또는 execution authority를
-만들지 않는다.
+`NET-001A`에서 DOMAIN-001 Network classification과 DOMAIN-002 Network semantics를 재검증하고
+host/service/protocol/port를 secret-free typed Surface와 locator registry로 결박한다. discovery 결과나
+port/protocol metadata를 Scope, scanner, raw-socket, credential, Worker, network 또는 execution authority로
+전환하지 않는다.

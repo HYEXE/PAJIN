@@ -5,8 +5,9 @@
 
 ## Windows managed Artifact POSIX durability
 
-- Windows의 managed repository/import 회귀는 POSIX directory `fsync` 부재로 실패한다. 2026-08-18 확대
-  묶음은 같은 원인으로 `33 passed, 12 skipped, 55 failed`였다. 정책을 우회하지 않고 Linux/WSL에서 검증한다.
+- 2026-08-24 Windows 전체 pytest에서 managed Artifact/Replay 152건은 POSIX directory `fsync`, Worker
+  status/resume 28건은 secure `dirfd`, integrity 4건은 비이식 파일명·symlink 제약으로 실패했다.
+  보안 정책을 우회하지 않고 Linux/WSL에서 검증한다.
 
 ## UX-007B-R deployment validation limits
 
@@ -47,14 +48,12 @@
 
 ## ARCH-002 multi-domain architecture 경계
 
-- DOMAIN-001~003은 taxonomy, Graph semantics와 현행 Capability inventory이며 실행 권위가 없다.
-- DOMAIN-004는 Worker profile/binding만 제공하며 conformance, activation, Permit/Gateway runtime은 없다.
-- DOMAIN-005는 admitted AI Observation→Web knowledge producer 1개뿐이며 target 권위가 없다.
-- DOMAIN-006은 metric·applicability·strategy registry일 뿐 수치, Ground Truth, Replay나 quality가 아니다.
-- WEB-001A~D는 typed knowledge, GET preparation/admission/Replay와 별도 private Ground Truth만 구현하며
-  SQLi measurement·Profile floor·Finding·Target selection 권위가 없다.
-- AI-001A는 비실행 typed registry다.
-- 기존 infrastructure, registry, 단일 cross-domain edge나 fixture는 Domain 지원 완료 증거가 아니다.
+- DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
+- WEB-001A~D는 typed GET knowledge·Replay와 별도 private Ground Truth까지만 구현한다. SQLi measurement,
+  Profile floor, Finding과 Target selection은 없다.
+- AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
+  Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
+- registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
 
 ## UX-006B authenticated external delivery 경계
 

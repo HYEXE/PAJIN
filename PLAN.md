@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 14 — AI / LLM / RAG / Agent / MCP Analysis
-- 현재 우선순위: `AI-001B` exact provider/model/tool-bound read-only analysis Capability
-- 다음 우선순위: `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
+- 현재 단계: Phase 15 — Network / Service Analysis
+- 현재 우선순위: `NET-001A` host/service/protocol/port Surface model
+- 다음 우선순위: `NET-001B` read-only service-identification Capability and scoped Network Worker
 
 ## 제품 목표
 
@@ -254,11 +254,38 @@ Target catalog, Docker/ZAP benchmark 자산.
   - 기존 discovery `SurfaceLocator`/`AttackSurface`/DOMAIN-002/REDTEAM/walking/benchmark wire는 변경하지 않고
     class/kind/model/order/Domain/digest substitution, mutable alias, secret·authority injection과 boolean
     coercion을 fail-closed
-- [ ] `AI-001B` exact provider/model/tool-bound read-only analysis Capability
-- [ ] `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
-- [ ] `AI-001D` fresh-session replay, controls and AI benchmark extension
+- [x] `AI-001B` exact provider/model/tool-bound read-only analysis Capability
+  - 기존 REDTEAM-001A M03/M06, REDTEAM-001B A04, REDTEAM-001D MCP의 exact Profile·CAP-002·Tool을
+    DOMAIN-003 AI classification과 DOMAIN-004 minimum AI Worker profile에 결박
+  - provider-backed action은 secret-free provider/model/immutable revision과 exact model/Tool 또는
+    model/RAG/Tool Surface set을, MCP action은 fixed demo-security MCP/Tool Surface set을 고정
+  - request/token/cost ceiling은 attenuation-only이며 provider registration을 preparation에서 재검증하지만
+    budget reservation·credential lease·Worker job·Gateway dispatch를 만들지 않음
+  - signed lifecycle `PreparedCapabilityAction`에서 멈추고 Product Profile·Campaign Scope·approval·Permit·
+    deployment·credential·Observation/Evidence·Graph·Finding·execution 권위를 모두 false로 고정
+- [x] `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
+  - exact AI-001B preparation과 기존 ActionPermit으로 실행·봉인된 REDTEAM LLM/RAG/MCP Capability Graph
+    Run의 dispatch reconciliation, reservation, Tool/Worker Evidence와 Gateway outcome digest를 재검증
+  - model/Tool, model/RAG/Tool, MCP/Tool Surface reference와 DOMAIN-002 `ai.behavior-observation`을
+    content-addressed candidate에 결박하되 Surface node나 새 discovery authority는 만들지 않음
+  - existing Canonical Graph single writer만 재사용해 Action 1·neutral Observation 1·Evidence 2와
+    `produces`/`supported-by`만 admission하고 exact retry는 Tool을 재실행하지 않음
+  - source output·Profile·Domain·MCP/Tool metadata를 Tool 선택, Scope·approval·Permit·Worker·network·
+    credential·Replay·Finding·추가 execution authority로 전환하지 않고 `registered-not-authorized` 유지
+- [x] `AI-001D` fresh-session replay, controls and AI benchmark extension
+  - AI-001C exact sealed source/admission을 다시 열고 별도 KISA source의 2회 fresh-session Replay와
+    Baseline·Negative Control·Counterfactual evidence를 VAL-004A로 완전 재검증
+  - admitted AI source, KISA source, Replay 2회와 Control 3개의 target·Tool·scenario·threat class·turn·check를
+    exact 결박하고 모든 session/request identity를 서로 분리
+  - exact REDTEAM-002 Profile·Capability·CAP-003 mapping·CAP-006 Replay contract와 DOMAIN-006 AI
+    `fresh-session-independent-replay` plan을 content-addressed projection에 결박
+  - Ground Truth vocabulary/coverage requirement만 등록하고 concrete case·numeric measurement·AI Observation
+    confirmation·Finding과 Scope·approval·Permit·Tool/Worker·network·credential·Replay·execution 권위는 만들지 않음
 
 재사용: REDTEAM-001A/B/D, KISA Oracle/Replay, RAG/MCP walking chain과 local AI Target Factory.
+
+Phase 14의 계획된 AI-001A~D bounded bootstrap checkpoint는 완료했다. 이는 arbitrary provider/agent/MCP
+execution, concrete AI Ground Truth measurement, confirmed Finding 또는 일반 AI discovery/runtime 완료 주장이 아니다.
 
 ### Phase 15 — Network / Service Analysis
 

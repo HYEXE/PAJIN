@@ -229,7 +229,7 @@ domain Workers, and runtime adoption remain later vertical-slice work.
 | Domain | Existing reusable assets | Missing Surface model | Missing Capability | Required Worker boundary | Replay strategy | Benchmark strategy | Risk / approval implications |
 | --- | --- | --- | --- | --- | --- | --- | --- |
 | Web | HTTP/OpenAPI/auth/file-upload locators, HTTP GET Pentest Capability, fixed Boolean SQLi and CTF Web Capabilities, Docker/ZAP benchmark assets | WEB-001A exact HTTP operation and URI-template registry is implemented; generalized auth/data-flow/API Surface typing remains | WEB-001B reuses exact signed Pentest GET Recon for concrete GET preparation; WEB-001C binds one already approved sealed Recon result into neutral Graph knowledge; broader non-lab analysis remains | egress-only, no host filesystem, exact target/method; WEB-001B pins the DOMAIN-004 minimum profile without selecting a Worker | WEB-001D binds the exact Web source to PENTEST-002B fresh-Permit, dedicated-Worker independent Replay and preserves match/change | WEB-001D binds the existing private P0-D1 Boolean SQLi Ground Truth to the DOMAIN-006 Web plan without measurement; general Web quality measurement remains | preparation grants no egress; WEB-001C source authority remains provenance only, WEB-001D creates no new action authority, and active probes require exact T2+ approval and request budgets |
-| AI | KISA catalog, LLM/RAG tools, REDTEAM-001A/B, RAG/MCP discovery, local AI benchmark provider | unified model/RAG/agent/MCP/tool classification projection | REDTEAM-001D exact MCP Capability; broader agent/data-flow Capabilities | exact provider/model/tool identity and request/token/cost ceilings | fresh-session semantic replay and controls | threat-class ground truth, false-positive, replay, request/token/cost, and policy-denial metrics | prompt content and discovered tools never grant authority; T2+ approval remains profile/deployment bound |
+| AI | KISA catalog, LLM/RAG tools, REDTEAM-001A/B, RAG/MCP discovery, local AI benchmark provider | AI-001A exact model/RAG/agent/MCP/Tool classification is implemented; AI-001C consumes only exact references and general discovery/data-flow remain missing | AI-001B binds four existing REDTEAM-001A/B/D read-only CAP-002 identities through preparation; AI-001C reverifies their existing sealed execution and admits neutral Observation/Evidence; broader agent/data-flow Capabilities remain missing | AI-001B pins the DOMAIN-004 minimum AI profile without selecting a Worker; AI-001C verifies the deployment-produced Worker evidence but creates no Worker, network, or credential authority | AI-001D binds exact M03/M06/A04 source semantics to separately sealed two-repetition KISA fresh-session Replay and three-Control evidence without dispatching from Graph knowledge; MCP Replay remains unavailable | AI-001D binds the matching REDTEAM-002 Profile, Capability, Ground Truth vocabulary and negative-control/Replay requirements to the DOMAIN-006 AI plan without a concrete case or measurement; production Ground Truth and numeric metrics remain missing | prompt content, provider registration, model identity, Surface classes, and discovered tools never grant authority; AI-001C source Permit remains consumed provenance, AI-001D creates no action or confirmation authority, and T2+ approval remains profile/deployment bound |
 | Network | Scope engine, egress policy, trusted network receipts, Worker identity | host/service/protocol/port Surface and locator schemas | read-only service-identification Capability | bounded protocol privileges and exact address/port Scope | independent protocol handshake from a fresh Worker identity | isolated service fixtures, service recall, protocol accuracy, denial correctness, packet/request cost | no raw socket or broad scan authority from discovery; privileges require explicit deployment review |
 | Cloud | ephemeral Secret leases, object-storage provider contracts, attestation, Docker/container lifecycle | account/project/resource/IAM/container Surfaces | read-only inventory and policy-evaluation Capabilities | ephemeral credentials and exact account/project/resource Scope; no ambient credentials | fresh credential lease plus deterministic policy re-evaluation | disposable accounts or emulators, IAM ground truth, resource coverage, denial and cleanup metrics | credentials and tenant identity require separate custody; writes and privilege changes are later T3+ slices |
 | System | isolated Docker Worker, host-local journals, direct mTLS identities | host/process/filesystem/service/configuration Surfaces | read-only host inventory/configuration Capability | authenticated host agent or isolated lab; no implicit root | immutable snapshot re-analysis or fresh authenticated inspection | disposable VM/container ground truth, coverage, privilege-denial, evidence completeness | host access is explicit authority; privilege escalation and mutation are separate high-risk Capabilities |
@@ -324,6 +324,39 @@ provider, admit a raw measurement, publish metrics, satisfy a Profile validation
 a Finding. The generic GET Replay proof is not relabeled as the SQLi matcher result. The exact
 contract is [WEB-001D](../benchmark/WEB-001D-independent-web-replay-ground-truth.md).
 
+### 9.5 AI-001A classification through AI-001D independent validation binding
+
+AI-001A registers secret-free typed model, RAG, agent, MCP, and Tool Surfaces as
+`registered-not-authorized` knowledge. AI-001B reopens four exact existing REDTEAM-001A/B/D
+read-only CAP-002 identities and binds them to the required ordered Surface set, current provider
+registration when applicable, request/token/cost ceilings, and the DOMAIN-004 minimum AI Worker
+profile.
+
+AI-001B delegates only to the existing signed lifecycle `prepare_action` and stops at
+`PreparedCapabilityAction`. AI-001C then accepts only an exact AI-001B preparation paired with an
+existing REDTEAM Capability Graph Run that was policy-allowed, executed under the consumed
+ActionPermit, and sealed. It reverifies dispatch reconciliation, request reservation, Tool/Worker
+evidence, code-owned adapter result, trusted receipt or network-disabled MCP boundary, and Gateway
+outcome digest. It admits one neutral `ai.behavior-observation` and two Evidence nodes through the
+existing Graph single writer.
+
+The ordered AI Surface references remain classification input; AI-001C does not propose Surface,
+Hypothesis, or Finding nodes and does not turn source output, Profile, Domain, provider/model, MCP,
+or Tool metadata into Scope, approval, Permit, Worker, network, credential, Replay, or further
+execution authority.
+
+AI-001D reopens that exact source/admission and separately sealed VAL-004A KISA evidence. For M03,
+M06, or A04 it exact-matches target, Tool, scenario, threat class, turns, and checks while requiring
+the admitted source, KISA source, two Replay repetitions, and three Controls to have disjoint
+sessions and request identities. It also reconstructs the matching REDTEAM-002 Profile,
+Capability, CAP-003 mapping, CAP-006 Replay contract, Ground Truth vocabulary, and DOMAIN-006 AI
+plan. The KISA lane may satisfy its own Profile floor, but no concrete benchmark case or
+measurement is produced and the AI Observation is not confirmed. The exact contracts are
+[AI-001A](../discovery/AI-001A-model-rag-agent-mcp-tool-surface-classification.md),
+[AI-001B](../capability/AI-001B-provider-model-tool-bound-read-only-analysis.md),
+[AI-001C](../graph/AI-001C-cross-surface-observation-evidence-admission.md), and
+[AI-001D](../benchmark/AI-001D-fresh-session-replay-controls-benchmark.md).
+
 ## 10. Delivery order
 
 1. Complete REDTEAM-001C as the current bounded Web product slice.
@@ -354,10 +387,10 @@ or Web execution based on the `web` domain label.
 This candidate is planned, not implemented by this RFC. Its versioned REDTEAM-001C contract and
 ADR must be reviewed with positive and adversarial tests before runtime code is added.
 
-Post-acceptance status: REDTEAM-001C/D, REDTEAM-002, UX-008, DOMAIN-001 through DOMAIN-006, and
-WEB-001A through WEB-001D were implemented within the bounded claims of their separate versioned
-contracts and tests. The paragraph above is retained as the acceptance-time design record; it is
-not the current roadmap authority.
+Post-acceptance status: REDTEAM-001C/D, REDTEAM-002, UX-008, DOMAIN-001 through DOMAIN-006,
+WEB-001A through WEB-001D, and AI-001A through AI-001D were implemented within the bounded claims
+of their separate versioned contracts and tests. The paragraph above is retained as the
+acceptance-time design record; it is not the current roadmap authority.
 
 ## 12. Compatibility and migration
 
