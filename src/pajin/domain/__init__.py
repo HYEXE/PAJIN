@@ -36,6 +36,17 @@ from pajin.domain.replay import (
     ValidationPacket,
     replay_claim_binding,
 )
+from pajin.domain.security_domain import (
+    SECURITY_DOMAIN_CLASSIFICATION_API_VERSION,
+    SECURITY_DOMAIN_TAXONOMY_API_VERSION,
+    RegisteredSecurityDomain,
+    SecurityDomain,
+    SecurityDomainClassificationRef,
+    SecurityDomainTaxonomy,
+    SecurityDomainTaxonomyError,
+    registered_security_domain_taxonomy,
+    resolve_registered_security_domain,
+)
 from pajin.domain.validation import (
     AtomicClaim,
     AtomicClaimDecision,
@@ -61,6 +72,8 @@ from pajin.domain.validation import (
 )
 
 __all__ = [
+    "SECURITY_DOMAIN_CLASSIFICATION_API_VERSION",
+    "SECURITY_DOMAIN_TAXONOMY_API_VERSION",
     "AgentPlan",
     "AtomicClaim",
     "AtomicClaimDecision",
@@ -84,6 +97,7 @@ __all__ = [
     "ModeReplayContract",
     "PlannedStep",
     "ProviderModelReviewBinding",
+    "RegisteredSecurityDomain",
     "ReplayArtifactSet",
     "ReplayAttempt",
     "ReplayAttemptStatus",
@@ -99,6 +113,10 @@ __all__ = [
     "ReplayOutcome",
     "ReplaySessionPolicy",
     "ReplaySourceCapabilityReceipt",
+    "SecurityDomain",
+    "SecurityDomainClassificationRef",
+    "SecurityDomainTaxonomy",
+    "SecurityDomainTaxonomyError",
     "SeverityClaimReconciliation",
     "SeverityDerivationPacket",
     "SeverityDerivationStatus",
@@ -113,5 +131,7 @@ __all__ = [
     "ValidationPacket",
     "ValidationReasonCode",
     "campaign_manifest_digest",
+    "registered_security_domain_taxonomy",
     "replay_claim_binding",
+    "resolve_registered_security_domain",
 ]

@@ -37,27 +37,24 @@
 - 제한: registry 자동화, distributed Worker queue와 cross-host fence는 없고 host-local filesystem 권한이
   deployment TCB다. CLI는 누락 권위나 다른 Security Domain 실행 권위를 만들지 않는다.
 
-## REDTEAM-001A~D 제품 경계
+## REDTEAM-001/002·UX-008 경계
 
-- 테스트는 local fixture이며 외부 Target 증거가 아니다. A/B는 LLM/RAG, C는 단일 synthetic Web
-  endpoint, D는 network-disabled demo MCP Tool과 고정 입력 하나만 허용한다. 독립 Replay·Finding·report,
-  browser·system·write·cleanup 권위와 cross-host fence는 없다.
-
-## REDTEAM-002 measurement 경계
-
-- 보장: exact REDTEAM-001 Profile, CAP-002/003/006 identity, request-unit cost와 sealed raw
-  Observation을 재검증해 detection·false-positive·Replay·cost·evidence·
-  policy-denial metric을 집계한다. 미등록 metric은 0이 아니라 explicit `not-applicable`이다.
-- 제한: reference test raw facts는 실제 외부 Target이나 production score가 아니다. 배포된
-  measurement adapter가 원 source lineage와 측정값의 진실성을 책임지며, REDTEAM-002 report는 자체로
-  Finding·Scope·Permit·execution authority를 만들지 않는다.
+- A/B는 LLM/RAG, C는 단일 synthetic Web endpoint, D는 network-disabled fixed MCP Tool만 실행한다.
+- REDTEAM-002는 sealed raw Observation에서 metric과 explicit `not-applicable`을 집계한다. fixture는
+  production score가 아니며 adapter가 source lineage를 책임진다.
+- UX-008은 이를 Scope·Evidence·no-Finding·measurement view로 투영한다. Campaign Scope·PROF-001
+  mapping·VAL-003·HTTP/UI·delivery와 Finding·Permit·execution 권위는 없다.
 
 ## ARCH-002 multi-domain architecture 경계
 
-- ARCH-002와 ADR-0204~0206은 accepted architecture와 roadmap일 뿐 runtime 구현이 아니다. Security Domain
-  registry, domain-aware Capability projection, Worker boundary registry와 benchmark extension은 모두 planned다.
-- 현재 일반 Network/System/Application/Mobile/Cloud/Cryptography/Forensics executable vertical slice는 없다.
-  기존 infrastructure나 CTF fixture를 해당 domain 지원 완료 증거로 해석하지 않는다.
+- DOMAIN-001~003은 taxonomy, Graph semantics와 현행 Capability inventory이며 실행 권위가 없다.
+- DOMAIN-004는 Worker profile/binding만 제공하며 conformance, activation, Permit/Gateway runtime은 없다.
+- DOMAIN-005는 admitted AI Observation→Web knowledge producer 1개뿐이며 target 권위가 없다.
+- DOMAIN-006은 metric·applicability·strategy registry일 뿐 수치, Ground Truth, Replay나 quality가 아니다.
+- WEB-001A~D는 typed knowledge, GET preparation/admission/Replay와 별도 private Ground Truth만 구현하며
+  SQLi measurement·Profile floor·Finding·Target selection 권위가 없다.
+- AI-001A는 비실행 typed registry다.
+- 기존 infrastructure, registry, 단일 cross-domain edge나 fixture는 Domain 지원 완료 증거가 아니다.
 
 ## UX-006B authenticated external delivery 경계
 

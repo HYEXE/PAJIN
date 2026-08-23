@@ -48,6 +48,12 @@ from pajin.tools.bug_bounty import BooleanSQLiProbeTool
 from pajin.tools.ctf import CTFCryptoXORTool, CTFWebBackupProbeTool
 from pajin.tools.mcp import demo_mcp_tool
 from pajin.tools.mock import MockAgentProbe
+from pajin.workflow.redteam_product_flow import (
+    RedteamProductFlowError,
+    RedteamProductFlowProjection,
+    RedteamProductFlowProjector,
+    load_redteam_product_flow,
+)
 
 NOW = datetime(2026, 8, 21, 1, tzinfo=UTC)
 
@@ -584,3 +590,186 @@ def test_report_loader_rejects_post_seal_source_mutation(tmp_path: Path) -> None
             outcome,
             source_outcomes=sources,
         )
+
+
+def test_product_flow_projects_verified_scope_evidence_and_measurement_without_findings(
+    tmp_path: Path,
+) -> None:
+    profile_set = registered_redteam_benchmark_profile_set(_bundle())
+    recorder = RedteamBenchmarkRunObservationRecorder(output_root=tmp_path / "sources")
+    sources = tuple(recorder.run(profile_set, item) for item in _observations(profile_set))
+    benchmark = RedteamInitialBenchmarkRunner(output_root=tmp_path / "reports").run(
+        profile_set,
+        sources,
+        measured_at=NOW + timedelta(minutes=1),
+    )
+
+    outcome = RedteamProductFlowProjector(output_root=tmp_path / "product").project(
+        profile_set,
+        benchmark,
+        source_outcomes=sources,
+    )
+    projection = load_redteam_product_flow(profile_set, outcome)
+
+    assert projection == outcome.projection
+    assert projection.measurement_report.report == benchmark.report
+    assert tuple(item.profile_id for item in projection.scopes) == (
+        REDTEAM_LLM_PROFILE,
+        REDTEAM_LLM_RAG_PROFILE,
+        REDTEAM_WEB_PROFILE,
+        REDTEAM_MCP_PROFILE,
+    )
+    assert all(item.campaign_scope_available is False for item in projection.scopes)
+    assert all(item.scope_authorized is False for item in projection.scopes)
+    assert all(item.scope_expanded is False for item in projection.scopes)
+    assert len(projection.evidence) == len(sources)
+    assert all(item.sealed_source_verified is True for item in projection.evidence)
+    assert all(item.evidence_content_included is False for item in projection.evidence)
+    assert all(item.observation_is_finding is False for item in projection.evidence)
+    assert all(item.confirmed_finding_count == 0 for item in projection.findings)
+    assert all(item.validation_floor_satisfied is False for item in projection.findings)
+    assert all(item.finding_confirmed is False for item in projection.findings)
+    assert projection.measurement_report.finding_report_available is False
+    assert projection.measurement_report.external_delivery_authorized is False
+    assert projection.authority_boundary.campaign_profile_mapping_inferred is False
+    assert projection.authority_boundary.scope_authority_granted is False
+    assert projection.authority_boundary.finding_authority_granted is False
+    assert projection.authority_boundary.execution_authorized is False
+    assert any(
+        case.detected
+        for source in sources
+        for case in source.observation.detection_cases
+    )
+
+
+@pytest.mark.parametrize(
+    ("section", "field", "replacement"),
+    [
+        ("scopes", "scopeAuthorized", True),
+        ("scopes", "profileDigest", "0" * 64),
+        ("evidence", "observationIsFinding", True),
+        ("evidence", "profileId", "redteam-unknown-v1"),
+        (
+            "evidence",
+            "observationId",
+            f"redteam-benchmark-observation:{'0' * 64}",
+        ),
+        ("findings", "campaignProfileMappingRegistered", True),
+        ("findings", "validationFloorSatisfied", True),
+        ("findings", "findingConfirmed", True),
+        ("findings", "confirmedFindingCount", False),
+        ("evidence", "sourceArtifactPath", "../outside.json"),
+        ("measurementReport", "confirmedFindingCount", False),
+        ("authorityBoundary", "scopeExpanded", True),
+        ("authorityBoundary", "findingAuthorityGranted", True),
+        ("authorityBoundary", "executionAuthorized", True),
+        ("authorityBoundary", "findingAuthorityGranted", 0),
+    ],
+)
+def test_product_flow_rejects_authority_escalation_or_boolean_coercion(
+    section: str,
+    field: str,
+    replacement: object,
+) -> None:
+    profile_set = registered_redteam_benchmark_profile_set(_bundle())
+    report = aggregate_redteam_initial_benchmark(
+        profile_set,
+        _observations(profile_set),
+        measured_at=NOW,
+    )
+    observations = tuple(
+        sorted(_observations(profile_set), key=lambda item: item.observation_digest)
+    )
+    payload = RedteamProductFlowProjection(
+        profileSetDigest=report.profile_set.profile_set_digest,
+        sourceObservationDigests=tuple(item.observation_digest for item in observations),
+        scopes=tuple(
+            {
+                "profileId": profile.profile_id,
+                "profileVersion": profile.profile_version,
+                "profileDigest": profile.profile_digest,
+                "profileContractDigest": profile.contract_digest,
+                "capabilities": tuple(
+                    sorted(
+                        (item.capability for item in profile.capabilities),
+                        key=lambda item: (
+                            item.capability.capability_id,
+                            item.capability.capability_version,
+                        ),
+                    )
+                ),
+                "sourceObservationCount": sum(
+                    item.profile_id == profile.profile_id for item in observations
+                ),
+            }
+            for profile in report.profile_set.profiles
+        ),
+        evidence=tuple(
+            {
+                "observationId": item.observation_id,
+                "observationDigest": item.observation_digest,
+                "profileId": item.profile_id,
+                "capability": item.capability,
+                "sourceKind": item.source_kind.value,
+                "sourceRunId": item.source_run_id,
+                "sourceRootDigest": item.source_root_digest,
+                "sourceArtifactPath": item.source_artifact_path,
+                "sourceArtifactSha256": item.source_artifact_sha256,
+                "detectionCaseCount": len(item.detection_cases),
+                "replayCaseCount": len(item.replay_cases),
+                "evidenceExpectedCount": item.evidence_expected_count,
+                "evidenceVerifiedCount": item.evidence_verified_count,
+            }
+            for item in observations
+        ),
+        findings=tuple(
+            {
+                "profileId": profile.profile_id,
+                "sourceObservationCount": sum(
+                    item.profile_id == profile.profile_id for item in observations
+                ),
+            }
+            for profile in report.profile_set.profiles
+        ),
+        measurementReport={"report": report},
+        authorityBoundary={},
+    ).model_dump(mode="json", by_alias=True)
+
+    target = payload[section]
+    if isinstance(target, list):
+        target = target[0]
+    assert isinstance(target, dict)
+    target[field] = replacement
+
+    with pytest.raises(ValidationError):
+        RedteamProductFlowProjection.model_validate(payload)
+
+
+def test_product_flow_loader_rejects_post_seal_projection_or_source_mutation(
+    tmp_path: Path,
+) -> None:
+    profile_set = registered_redteam_benchmark_profile_set(_bundle())
+    recorder = RedteamBenchmarkRunObservationRecorder(output_root=tmp_path / "sources")
+    sources = tuple(recorder.run(profile_set, item) for item in _observations(profile_set))
+    benchmark = RedteamInitialBenchmarkRunner(output_root=tmp_path / "reports").run(
+        profile_set,
+        sources,
+        measured_at=NOW + timedelta(minutes=1),
+    )
+    first = RedteamProductFlowProjector(output_root=tmp_path / "product-first").project(
+        profile_set,
+        benchmark,
+        source_outcomes=sources,
+    )
+    (first.run_path / first.artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(RedteamProductFlowError, match="not sealed and reproducible"):
+        load_redteam_product_flow(profile_set, first)
+
+    second = RedteamProductFlowProjector(output_root=tmp_path / "product-second").project(
+        profile_set,
+        benchmark,
+        source_outcomes=sources,
+    )
+    (sources[0].run_path / sources[0].artifact_path).write_text("{}", encoding="utf-8")
+    with pytest.raises(RedteamProductFlowError, match="not sealed and reproducible"):
+        load_redteam_product_flow(profile_set, second)

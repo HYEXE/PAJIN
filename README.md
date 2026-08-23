@@ -55,8 +55,9 @@ These concepts are orthogonal:
 | Worker boundary | Deployment-owned isolation, identity, credential, filesystem, network, and evidence constraints |
 
 The code-owned Campaign Profiles are `pentest`, `bug-hunt`, `ctf`, and `ai-assessment`.
-The long-term Security Domain taxonomy is `web`, `network`, `system`, `application`,
-`mobile`, `cloud`, `ai`, `cryptography`, and `forensics`.
+The code-owned Security Domain taxonomy is `web`, `network`, `system`, `application`, `mobile`,
+`cloud`, `ai`, `cryptography`, and `forensics`. Its current implementation is classification-only
+and explicitly asserts no runtime support or execution authority.
 
 A Profile may use exact Capabilities from multiple domains. For example, `pentest + web`,
 `pentest + system`, `ai-assessment + ai`, and `ctf + cryptography` are valid combinations.
@@ -144,16 +145,34 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Capability lifecycle | Implemented | Exact CAP-001 definitions, complete CAP-002 authority sets, signed lifecycle/activation, Gateway dispatch, Oracle, Replay-plan, and cleanup boundaries |
 | Pentest | Implemented, bounded | Signed assessment compilation, approved one-shot GET Recon, independently authorized Replay, three Controls, durable five-stage coordination, controlled validity, and local Finding/report projection |
 | AI / LLM / RAG | Implemented, bounded | REDTEAM-001A exact single-turn M03/M06 and REDTEAM-001B exact two-turn A04 against approved AI/RAG targets |
+| AI typed Surface classification | Implemented, registry only | AI-001A classifies exact model, RAG, agent, MCP, and Tool knowledge under DOMAIN-002, reuses existing RAG/MCP/Tool locators, and adds secret-free model/agent identities; typed values remain `registered-not-authorized` and provide no Profile, Scope, Capability, Permit, Tool/Worker, network, credential, Graph, runtime, or execution authority |
 | Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, and REDTEAM-001C exact three-request Boolean SQLi profile against one fixed synthetic local endpoint; no general scanner or arbitrary target authority |
+| Web/API typed Surface | Implemented, registry only | WEB-001A binds the DOMAIN-002 `web.http-operation` semantics to existing concrete endpoint and bounded URI-template locator models; typed values remain `registered-not-authorized` and provide no Observation, Evidence, Graph, Scope, Capability, Permit, Worker, network, runtime, or execution authority |
+| Web/API read-only discovery binding | Implemented, preparation only | WEB-001B binds only a concrete WEB-001A GET Surface to the existing signed Pentest Recon CAP-002 and DOMAIN-004 minimum Web Worker profile; it stops at `PreparedCapabilityAction`, leaves pre-Gateway network disabled, and grants no Scope, approval, Permit, Worker selection, Observation/Evidence, Graph, Finding, runtime, or execution authority |
+| Web/API sealed knowledge admission | Implemented, bounded | WEB-001C exact-binds WEB-001B to an already approved sealed Pentest Recon source, reuses PENTEST-002A and the existing Graph single writer to admit only Action/neutral Observation/three Evidence nodes, and leaves typed Surface knowledge `registered-not-authorized` with no Scope, execution, Replay, or Finding authority |
+| Web/API Replay and Ground Truth | Implemented, bounded | WEB-001D binds WEB-001C to an actual PENTEST-002B fresh-authority Replay proof and separately binds the private code-owned P0-D1 Boolean SQLi Ground Truth to the DOMAIN-006 Web plan; it creates no Target selection, benchmark measurement, Profile-floor, Finding, Scope, Permit, Worker, network, or execution authority |
 | MCP | Implemented, bounded | Discovery remains non-authoritative; REDTEAM-001D admits one approval-required, network-disabled registered `demo-security:inspect_text` Capability with one fixed synthetic input and no Replay or Finding authority |
-| Benchmark | Implemented, bounded | BENCH-001 measurement/Target Factory lifecycle plus REDTEAM-002 exact profile detection, false-positive, Replay, request/Tool cost, evidence, and policy-denial contract with sealed aggregation; reference fixtures are not production scores, and domain-aware metrics are planned |
+| Benchmark | Implemented, bounded | BENCH-001 measurement/Target Factory lifecycle plus REDTEAM-002 exact profile detection, false-positive, Replay, request/Tool cost, evidence, and policy-denial contract with sealed aggregation; reference fixtures are not production scores |
+| Product projection | Implemented, bounded | UX-008 reopens the sealed REDTEAM-002 aggregate and every source into separate profile-bound Scope, content-free Evidence, explicit unconfirmed Finding, and measurement-only report sections; complete Campaign Scope, Campaign Profile-floor evaluation, HTTP/UI exposure, and report delivery are not implemented |
+| Security Domain taxonomy | Implemented, classification only | DOMAIN-001 registers the exact nine content-addressed values with Profile mapping, runtime-support assertion, Scope, Capability, Permit, Tool, Worker, network, filesystem, credential, Graph, Finding, and execution authority fixed absent |
+| Multi-domain Graph semantics | Implemented, semantics only | DOMAIN-002 binds exact nine-domain Surface/locator/Hypothesis/Observation semantic type-sets to the unchanged six-node, eight-relation Canonical Graph and existing single writer; locator implementations, producers, admission, runtime support, and authority remain absent |
+| Capability Domain projection | Implemented, inventory only | DOMAIN-003 binds the exact current nine CAP-001/CAP-002 identities to explicit Web 3, AI 5, and Cryptography 1 classifications; signed release/activation, Profile, Scope, Permit, Tool, Worker, runtime-support, and execution authority remain absent from the projection |
+| Domain Worker boundaries | Implemented, registry only | DOMAIN-004 registers nine code-owned minimum profiles and can bind an exact lifecycle-verified release bundle to one DOMAIN-003 record and deployment mTLS subject/SPKI; profile conformance, current activation, Permit/Gateway authority, runtime support, and execution remain absent |
+| Cross-domain Graph admission | Implemented, one bounded producer | DOMAIN-005 admits an exact existing AI Observation to a Web Surface through `discovers` or Web Hypothesis through `enables` using the existing single writer; target knowledge remains `registered-not-authorized`, source authority is provenance only, and other domain pairs and runtime extraction remain planned |
+| Domain benchmark registry | Implemented, registry only | DOMAIN-006 registers 13 common and 13 exact domain-specific metric definitions, explicit applicability, and one Replay/re-analysis strategy per Domain while preserving BENCH-001/REDTEAM-002 wire identities; it asserts no measurement, quality, validation-floor, Finding, Target Factory, Permit, runtime-support, or execution authority |
 | Network, System, Application, Mobile, Cloud | Planned product domains | Infrastructure primitives may exist, but no general executable security-analysis vertical slice is claimed |
 | Cryptography | One fixed CTF lab only | General cryptographic analysis is planned |
 | Digital Forensics | Planned | No general forensic Surface, Capability, Worker, replay, or benchmark vertical slice is implemented |
 
-REDTEAM-001A/B/C/D, REDTEAM-002, and PENTEST contracts remain stable compatibility boundaries.
-UX-008 remains before the broader multi-domain foundation begins after the current Phase 11
-milestone.
+REDTEAM-001A/B/C/D, REDTEAM-002, UX-008, and PENTEST contracts remain stable compatibility
+boundaries. Phase 11 and DOMAIN-001 through DOMAIN-006 are complete within their stated bounded
+classification, semantics, inventory, Worker-registry, one-producer Graph-admission, and
+benchmark-registry contracts. WEB-001A is complete as a typed registry only, WEB-001B as a
+non-Campaign binding and preparation boundary only, and WEB-001C as one bounded sealed-source
+knowledge-admission composition only. WEB-001D adds a bounded independent Replay projection and a
+separate private Ground Truth profile; it does not claim that the two form a measured benchmark
+case. AI-001A is complete as a typed classification registry only; it does not claim model, agent,
+RAG, MCP, or Tool discovery or execution support. AI-001B is next.
 
 The authoritative priority and status are in [PLAN.md](PLAN.md) and the verified checkpoint is in
 [HANDOFF.md](HANDOFF.md).

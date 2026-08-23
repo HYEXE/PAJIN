@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 11 — Initial Pentest / Red Team Productization
-- 현재 우선순위: `UX-008` initial Scope·Evidence·Finding·report product flow
-- 다음 우선순위: `DOMAIN-001` code-owned Security Domain taxonomy
+- 현재 단계: Phase 14 — AI / LLM / RAG / Agent / MCP Analysis
+- 현재 우선순위: `AI-001B` exact provider/model/tool-bound read-only analysis Capability
+- 다음 우선순위: `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
 
 ## 제품 목표
 
@@ -135,9 +135,11 @@ Phase 10 Exit Gate: PENTEST-000~003D와 UX-007E~R1 완료. UX-007R2 production p
   - exact REDTEAM-001A~D Profile·CAP-002·CAP-003·CAP-006 denominator
   - sealed positive·negative-control·Replay·policy-denial raw Observation과 aggregate report
   - valid Finding·cleanup·미등록 MCP negative/Replay metric은 explicit `not-applicable`
-- [ ] `UX-008` initial Scope·Evidence·Finding·report product flow
+- [x] `UX-008` initial Scope·Evidence·Finding·report product flow
+  - exact sealed REDTEAM-002 aggregate와 모든 source Observation을 재검증하는 read-only projection
+  - Campaign Scope와 REDTEAM→PROF-001 mapping은 unavailable, Finding·delivery·execution authority는 false
 
-Phase 11 Exit Gate: 현재 계약을 깨지 않고 승인된 초기 Pentest/Web/AI/MCP slice를 실행하며,
+Phase 11 Exit Gate: 완료. 현재 계약을 깨지 않고 승인된 초기 Pentest/Web/AI/MCP slice를 실행하며,
 Profile별 Replay/validation floor와 초기 benchmark·product flow를 검증한다. REDTEAM-001은
 모든 보안 도메인의 umbrella가 아니다.
 
@@ -145,32 +147,50 @@ Profile별 Replay/validation floor와 초기 benchmark·product flow를 검증�
 
 ### Phase 12 — Multi-domain Security Analysis Foundation
 
-ARCH-002와 ADR-0204~0206은 accepted architecture decision이다. 아래 DOMAIN 항목은 모두
-`planned`이며 문서만으로 구현됐다고 보지 않는다.
+ARCH-002와 ADR-0204~0206은 accepted architecture decision이다. 각 DOMAIN 항목은 아래 checkbox와
+명시된 경계에 따라 상태를 구분하며 문서만으로 구현됐다고 보지 않는다.
 
-- [ ] `DOMAIN-001` code-owned Security Domain taxonomy
+- [x] `DOMAIN-001` code-owned Security Domain taxonomy
   - 9개 Domain을 exact versioned classification으로 정의
   - Campaign Profile과 orthogonal하고 authority marker는 모두 false
   - legacy `CapabilityDefinition.domain` identity를 변경하지 않음
-- [ ] `DOMAIN-002` common multi-domain Surface/Hypothesis/Observation semantics
+  - classification-only이며 9개 Domain의 executable runtime 지원을 주장하지 않음
+- [x] `DOMAIN-002` common multi-domain Surface/Hypothesis/Observation semantics
   - ARCH-001의 6개 node와 8개 relation 재사용
-  - domain-specific locator/type registry와 one Graph writer 유지
-- [ ] `DOMAIN-003` domain-aware Capability inventory projection
-  - exact `CapabilityDefinitionRef`에 classification을 결박
-  - Domain·surface·Tool metadata로 activation/Permit/Worker를 추론하지 않음
-- [ ] `DOMAIN-004` domain-specific Worker trust-boundary registry
-  - exact Capability release와 deployment-owned Worker profile 결박
-  - 기존 Policy/Approval/Permit/Gateway/receipt 경로 재사용
-- [ ] `DOMAIN-005` cross-domain Graph admission
-  - Observation이 다른 Domain Surface/Hypothesis를 발견·활성화할 수 있음
-  - 새 Surface는 `registered-not-authorized`; Scope와 execution authority는 불변
-- [ ] `DOMAIN-006` domain-aware validation/replay/benchmark contract
-  - 공통 metric과 exact domain-specific metric registry 분리
-  - BENCH-001 v1 호환 유지, `not-applicable` 의미를 명시
+  - exact 9-domain locator/type semantic registry와 기존 one Graph writer 유지
+  - semantics-only이며 locator implementation, Graph producer/admission과 runtime support는 false
+- [x] `DOMAIN-003` domain-aware Capability inventory projection
+  - exact CAP-001 definition과 complete CAP-002 authority set을 DOMAIN-001 classification에 결박
+  - 현재 9개 Capability를 Web 3·AI 5·Cryptography 1로 explicit review하고 나머지는 미분류
+  - signed release/activation과 Profile·Scope·Permit·Tool·Worker·runtime authority는 projection에 없음
+  - legacy Domain namespace·surface·Tool metadata로 classification 또는 authority를 추론하지 않음
+- [x] `DOMAIN-004` domain-specific Worker trust-boundary registry
+  - exact lifecycle-verified signed Capability release bundle과 deployment-owned Worker mTLS
+    subject/SPKI, exact code-owned minimum profile을 content-addressed binding으로 결박
+  - 9개 Domain 최소 격리·identity·budget 요구를 등록하되 runtime conformance와 executable support는
+    주장하지 않음
+  - current activation·Campaign·Graph Decision·approval·Permit·Gateway authority는 기존 경로에만 남고
+    Domain/Tool metadata로 Worker를 선택하지 않음
+- [x] `DOMAIN-005` cross-domain Graph admission
+  - exact admitted AI Observation에서 Web Surface `discovers`와 Hypothesis `enables`를 기존
+    Canonical Graph single writer로 admission
+  - current Snapshot prefix, source event, Campaign, Evidence lineage와 code-owned producer를 재검증
+  - 새 Surface/Hypothesis는 `registered-not-authorized`; Scope·Capability·Permit·Worker·execution과
+    source authority transfer는 불변
+  - 현재 구현 producer는 AI→Web 1개뿐이며 일반 cross-domain runtime이나 executable Web/AI
+    vertical slice를 주장하지 않음
+- [x] `DOMAIN-006` domain-aware validation/replay/benchmark contract
+  - 13개 common metric과 exact DOMAIN-001에 결박된 13개 domain-specific metric을 분리
+  - 9개 Domain별 Replay/deterministic re-analysis 전략과 explicit `required`/`not-applicable` 등록
+  - Forensics는 exploit Finding recall 대신 task success·artifact coverage·parsing accuracy·provenance
+    preservation·corrupted-input handling을 사용
+  - BENCH-001·REDTEAM-002 wire identity를 유지하고 measurement·quality·validation floor·Finding·
+    Target Factory·Permit·execution authority를 모두 false로 고정
 
-Phase 12 Exit Gate: Profile/Domain/Capability/Tool 관계가 코드와 테스트로 분리되고, 한
+Phase 12 Exit Gate: 완료. Profile/Domain/Capability/Tool 관계가 코드와 테스트로 분리되고, 한
 cross-domain Observation이 기존 Canonical Graph에 admission되지만 Scope·Capability·Permit·Worker
-권위를 만들지 않음을 positive/adversarial test로 증명한다.
+권위를 만들지 않으며 Domain metric registry가 측정·검증·실행 권위를 만들지 않음을
+positive/adversarial test로 증명한다.
 
 ## Domain vertical slices
 
@@ -181,17 +201,59 @@ mutation, credential use와 privilege-changing action은 별도 후속 milestone
 
 ### Phase 13 — Web / API Security Analysis
 
-- [ ] `WEB-001A` typed HTTP/API Surface and locator registry
-- [ ] `WEB-001B` read-only Web/API discovery Capability and egress-only Worker profile
-- [ ] `WEB-001C` sealed Observation/Evidence and registered-not-authorized Graph admission
-- [ ] `WEB-001D` independent replay and Web/API benchmark ground truth
+- [x] `WEB-001A` typed HTTP/API Surface and locator registry
+  - DOMAIN-001 Web classification과 DOMAIN-002 `web.http-operation`/locator schema를 exact 결박
+  - 기존 `HTTPSurfaceLocator` concrete endpoint와 `HTTPRouteSurfaceLocator` URI-template route 재사용
+  - typed Surface는 content-addressed `registered-not-authorized`이며 Observation/Evidence/Graph admission 아님
+  - 기존 discovery·`AttackSurface` wire를 변경하지 않고 Scope·Capability·Permit·Tool·Worker·network·
+    runtime·execution authority를 모두 false로 고정
+- [x] `WEB-001B` read-only Web/API discovery Capability and egress-only Worker profile
+  - 새 Campaign Profile이나 공격 엔진 없이 WEB-001A concrete GET Surface를 기존 complete Pentest
+    Recon CAP-002와 DOMAIN-003 Web classification에 exact 결박
+  - DOMAIN-004 minimum Web Worker profile의 bounded egress·no host filesystem·no credential·isolated
+    non-root 요구를 pin하되 profile이나 Domain metadata로 Worker를 선택하지 않음
+  - current signed activation 아래 `PreparedCapabilityAction`까지만 만들며 Worker job·egress policy·
+    Observation/Evidence·Graph·Scope·approval·Permit·dispatch·execution authority는 만들지 않음
+  - URI-template, non-GET, redirect, ambient credential, identity/budget/authority drift를 fail-closed
+- [x] `WEB-001C` sealed Observation/Evidence and registered-not-authorized Graph admission
+  - WEB-001B preparation을 동일한 existing Pentest dispatch intent와 exact 결박하고 PENTEST-002A가 sealed
+    Run의 reservation·execution Evidence·normalized outcome과 Permit·approval·Worker receipt·Oracle을 재검증
+  - existing PENTEST-002A producer와 Canonical Graph single writer만 재사용해 Action 1·neutral Observation 1·
+    Evidence 3과 `produces`/`supported-by`만 admission하며 별도 Web ledger/writer를 만들지 않음
+  - WEB-001A Surface와 DOMAIN-002 Web semantics는 classification/reference로만 결박하고 target knowledge를
+    `registered-not-authorized`로 고정하며 Scope·Capability·approval·Permit·Worker·network·execution·Replay·
+    Finding 권위를 만들지 않음
+  - unsealed/failed/foreign source, preparation·Surface·semantic·Evidence·candidate drift와 authority escalation을
+    fail-closed하고 exact Graph retry는 기존 semantic attempt를 재사용
+- [x] `WEB-001D` independent replay and Web/API benchmark ground truth
+  - WEB-001C exact source를 PENTEST-002B의 fresh Run·request·Decision·approval·one-use Permit·receipt·별도
+    Worker session과 sealed body-free comparison에 결박하고 response match/change를 구분
+  - exact DOMAIN-006 Web `independent-replay` plan을 재검증하되 source Graph admission이나 소비된 Permit으로
+    Replay·Scope·Worker·network·execution 권위를 만들지 않음
+  - 기존 P0-D1 Traditional Web/API catalog와 private code-owned Boolean SQLi Ground Truth를 별도
+    `registered-ground-truth-not-measured` profile로 결박
+  - generic GET Replay와 SQLi Ground Truth를 measured case/Finding으로 합치지 않으며 Target Factory selection,
+    provider execution, detection quality, numeric metric과 Profile validation floor를 모두 false로 고정
+
+Phase 13의 계획된 WEB-001A~D bounded bootstrap checkpoint는 완료했다. 이는 일반 Web/API bounded
+Hypothesis, exact Ground Truth measurement linkage, Campaign Profile validation floor와 confirmed Finding까지
+요구하는 ARCH-002의 전체 product vertical-slice 완료 주장은 아니다.
 
 재사용: REDTEAM-001C, Pentest HTTP GET, HTTP/OpenAPI/auth/file-upload discovery, traditional Web
 Target catalog, Docker/ZAP benchmark 자산.
 
 ### Phase 14 — AI / LLM / RAG / Agent / MCP Analysis
 
-- [ ] `AI-001A` model/RAG/agent/MCP/tool Surface classification
+- [x] `AI-001A` model/RAG/agent/MCP/tool Surface classification
+  - exact DOMAIN-001 AI classification과 DOMAIN-002 `ai.model-rag-agent-tool` semantics 아래 model, RAG,
+    agent, MCP, Tool 5개 class와 10개 locator kind를 code-owned registry로 결박
+  - RAG·MCP·Tool은 기존 locator를 재사용하고 model은 secret-free provider/model/immutable revision,
+    agent는 existing model/Tool trace provenance dimension과 맞춘 additive locator로 표현
+  - typed Surface는 `registered-not-authorized` pre-Observation knowledge이며 Profile·Scope·Capability·
+    approval·Permit·Tool/Worker·network/credential·Graph·runtime·execution 권위를 모두 false로 고정
+  - 기존 discovery `SurfaceLocator`/`AttackSurface`/DOMAIN-002/REDTEAM/walking/benchmark wire는 변경하지 않고
+    class/kind/model/order/Domain/digest substitution, mutable alias, secret·authority injection과 boolean
+    coercion을 fail-closed
 - [ ] `AI-001B` exact provider/model/tool-bound read-only analysis Capability
 - [ ] `AI-001C` cross-Surface Observation/Evidence admission without Tool authority
 - [ ] `AI-001D` fresh-session replay, controls and AI benchmark extension
@@ -271,11 +333,11 @@ Worker isolation을 기준으로 재평가할 수 있다. 한 PR에서 여러 do
 
 다음 항목은 구현 중 암묵적으로 결정하지 않고 새 ADR 또는 버전형 계약으로 결정한다.
 
-- DOMAIN-003 classification projection의 exact schema와 registry lifecycle
 - legacy `CapabilityDefinition.domain`의 장기 deprecation 여부
+- 향후 Capability 추가 시 code-owned Domain projection의 review·version 발행 절차
 - Domain Surface locator registry의 publisher/review authority
 - Worker trust-boundary profile의 deployment signing과 conformance authority
-- BENCH-001 v1과 domain-specific metric extension의 wire 관계
+- Domain별 numeric measurement artifact, aggregator와 Ground Truth admission authority
 - Network raw-socket 및 System agent privilege의 최초 허용 수준
 - Cloud disposable benchmark provider와 credential custodian
 - Mobile emulator/device provider와 signed app identity

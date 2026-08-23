@@ -25,6 +25,11 @@ from pajin.benchmark import (
     registered_traditional_web_api_target_catalog,
     select_traditional_web_api_target_profile,
 )
+from pajin.workflow.web_replay_benchmark import (
+    WebAPIBenchmarkGroundTruthProfile,
+    WebReplayBenchmarkError,
+    registered_web_api_benchmark_ground_truth_profile,
+)
 
 NOW = datetime(2026, 8, 1, tzinfo=UTC)
 TARGET_IMAGE_ID = "sha256:" + "a" * 64
@@ -136,6 +141,72 @@ def test_catalog_keeps_private_ground_truth_out_of_public_registration() -> None
     assert selection.provider_execution_authorized is False
     assert selection.target_profile_admitted is True
     assert selection.authority_digest == selection.model_copy().authority_digest
+
+
+def test_web_domain_profile_binds_private_code_owned_ground_truth_without_authority() -> None:
+    profile = _profile()
+    expected_ground_truth = _ground_truth(profile)
+
+    web_profile = registered_web_api_benchmark_ground_truth_profile(
+        profile,
+        benchmark_id=expected_ground_truth.benchmark_id,
+    )
+
+    assert web_profile.domain_benchmark_plan.domain_classification.domain.value == "web"
+    assert web_profile.private_ground_truth.ground_truth == expected_ground_truth
+    assert web_profile.target_catalog.registrations == (
+        web_profile.private_ground_truth.registration,
+    )
+    assert web_profile.state == "registered-ground-truth-not-measured"
+    assert web_profile.private_ground_truth_verified is True
+    assert web_profile.target_profile_selected is False
+    assert web_profile.target_factory_authority is False
+    assert web_profile.provider_execution_authorized is False
+    assert web_profile.measurement_observed is False
+    assert web_profile.replay_evidence_bound is False
+    assert web_profile.detection_quality_established is False
+    assert web_profile.profile_validation_floor_satisfied is False
+    assert web_profile.finding_authority is False
+    assert web_profile.permit_issuance_authorized is False
+    assert web_profile.execution_authorized is False
+    assert (
+        WebAPIBenchmarkGroundTruthProfile.model_validate(
+            web_profile.model_dump(mode="json", by_alias=True)
+        )
+        == web_profile
+    )
+
+
+def test_web_domain_ground_truth_profile_rejects_drift_and_authority_escalation() -> None:
+    profile = _profile()
+    web_profile = registered_web_api_benchmark_ground_truth_profile(
+        profile,
+        benchmark_id="benchmark:docker-bug-bounty-v1",
+    )
+
+    payload = web_profile.model_dump(mode="json", by_alias=True)
+    payload["domainBenchmarkPlan"]["planDigest"] = "0" * 64
+    with pytest.raises(ValidationError, match="not code-registered"):
+        WebAPIBenchmarkGroundTruthProfile.model_validate(payload)
+
+    payload = web_profile.model_dump(mode="json", by_alias=True)
+    payload["privateGroundTruth"]["groundTruth"]["cases"][0]["expectedFindingId"] = (
+        "finding:substituted"
+    )
+    with pytest.raises(ValidationError):
+        WebAPIBenchmarkGroundTruthProfile.model_validate(payload)
+
+    payload = web_profile.model_dump(mode="json", by_alias=True)
+    payload["providerExecutionAuthorized"] = True
+    with pytest.raises(ValidationError, match="must be boolean false"):
+        WebAPIBenchmarkGroundTruthProfile.model_validate(payload)
+
+    forged_profile = profile.model_copy(update={"target_factory_digest": "0" * 64})
+    with pytest.raises(WebReplayBenchmarkError, match="failed closed"):
+        registered_web_api_benchmark_ground_truth_profile(
+            forged_profile,
+            benchmark_id="benchmark:docker-bug-bounty-v1",
+        )
 
 
 @pytest.mark.parametrize(
@@ -362,9 +433,7 @@ async def test_catalog_wrapper_requires_receipt_bound_evidence_to_match_ground_t
     mismatched_observation.pop("observationId")
     mismatched_observation.pop("observationDigest")
     mismatched_observation["matchedKnownFindingCount"] = 0
-    provider._observation = WalkingBenchmarkRunObservation.model_validate(
-        mismatched_observation
-    )
+    provider._observation = WalkingBenchmarkRunObservation.model_validate(mismatched_observation)
     with pytest.raises(BenchmarkTargetCatalogError, match="does not match"):
         await wrapper.execute(
             coordinate,

@@ -3,7 +3,10 @@
 - Status: Accepted
 - Date: 2026-08-20
 - Extends: [ARCH-001](0001-pajin-architecture-v2.md)
-- Implementation status: architecture and roadmap only; multi-domain runtime work is planned
+- Implementation status: DOMAIN-001 through DOMAIN-006 foundations, WEB-001A typed HTTP-operation
+  locator registry, WEB-001B exact read-only discovery binding/preparation, and WEB-001C bounded
+  sealed-source Graph admission are implemented within their contracts; general domain runtimes
+  remain planned
 
 ## 1. Purpose
 
@@ -22,6 +25,8 @@ domain label, discovered Tool, or model output from becoming an authority root.
 ## 2. Verified baseline
 
 The baseline audited for this RFC is `main@c429a1b5bf76aa6d9cbe6d6218e951fd6a343f5c`.
+This section preserves the acceptance-time baseline rather than acting as current operational
+status; [PLAN.md](../../PLAN.md) and [HANDOFF.md](../../HANDOFF.md) own the current checkpoint.
 
 ### Implemented
 
@@ -74,9 +79,10 @@ Campaign, activation, Policy, and Permit authorities allow them.
 
 The current `CapabilityDefinition.domain` field is a legacy namespace that contains values such as
 `ai-redteam`, `bug-bounty`, `ctf`, and `pentest`. ARCH-002 does not reinterpret or rewrite those
-signed identities. DOMAIN-003 will add an exact, content-addressed classification projection bound
-to a `CapabilityDefinitionRef`. Neither this projection nor `supportedSurfaceTypes` can activate a
-release, issue a Grant or Permit, select a Tool, or widen Campaign Scope.
+signed identities. [DOMAIN-003](../capability/DOMAIN-003-domain-aware-capability-inventory-projection.md)
+adds an exact, content-addressed classification projection bound to a `CapabilityDefinitionRef`.
+Neither this projection nor `supportedSurfaceTypes` can activate a release, issue a Grant or Permit,
+select a Tool, or widen Campaign Scope.
 
 MCP is not a Profile, Security Domain, or authority system. It can be a Surface and a Tool transport
 or integration mechanism. A discovered MCP server or Tool remains non-executable until an exact
@@ -147,7 +153,7 @@ Domain-specific meaning is expressed through registered Surface types and locato
 Hypothesis and Observation types, Capability references, producer identities, and evidence lineage.
 No domain receives a separate graph ledger or writer.
 
-Examples of planned cross-domain knowledge edges include:
+Examples of cross-domain knowledge edges include:
 
 - a Web Observation discovering a Cloud resource Surface and enabling an IAM Hypothesis;
 - a Mobile analysis Observation discovering a Web/API Surface;
@@ -160,6 +166,11 @@ Surfaces as registered-not-authorized in the domain admission projection. Any la
 a new Proposal compiled against current Campaign Scope, exact Capability activation, Policy,
 approval, Permit, and Worker boundary. The originating action's authority is never transferable to
 the discovered Surface.
+
+[DOMAIN-005](../graph/DOMAIN-005-cross-domain-graph-admission.md) now implements one exact
+AI-Observation-to-Web-Surface-or-Hypothesis producer through the existing single writer. That
+bounded bootstrap does not implement the other example pairs, arbitrary extraction, general Web or
+AI analysis, or execution against the admitted knowledge.
 
 ## 6. Common Capability lifecycle
 
@@ -191,9 +202,10 @@ Capabilities and the existing Permit/Gateway path.
 
 ## 7. Domain-specific Worker trust boundaries
 
-Domain classification does not select a Worker. DOMAIN-004 will register deployment-owned Worker
-boundary profiles and bind an exact profile to a Capability release and deployment. The minimum
-planned boundaries are:
+Domain classification does not select a Worker. DOMAIN-004 registers code-owned minimum Worker
+boundary profiles and can bind an exact profile to a lifecycle-verified Capability release bundle
+and deployment-owned mTLS subject/SPKI. The implemented registry is non-executable and does not
+prove concrete Worker conformance. The minimum boundaries are:
 
 | Domain | Minimum Worker boundary |
 | --- | --- |
@@ -209,13 +221,14 @@ planned boundaries are:
 
 Every boundary still requires the existing Policy, approval, ActionPermit, Gateway, Worker identity,
 receipt, evidence, and retry invariants. A broader Worker cannot be selected merely because two
-Capabilities share a Security Domain.
+Capabilities share a Security Domain. Deployment signing, profile-conformance authority, concrete
+domain Workers, and runtime adoption remain later vertical-slice work.
 
 ## 8. Repository gap analysis
 
 | Domain | Existing reusable assets | Missing Surface model | Missing Capability | Required Worker boundary | Replay strategy | Benchmark strategy | Risk / approval implications |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| Web | HTTP/OpenAPI/auth/file-upload locators, HTTP GET Pentest Capability, fixed Boolean SQLi and CTF Web Capabilities, Docker/ZAP benchmark assets | generalized Web/API Surface taxonomy and exact domain projection | REDTEAM-001C product ceiling and later non-lab Web analysis Capabilities | egress-only, no host filesystem, exact target/method | deterministic re-request or independent fixed-probe replay with fresh Permit | existing traditional Web/API Target catalog plus recall, precision, replay, policy-denial, cost, and evidence metrics | read-only recon can remain low risk; active probes require exact T2+ approval and request budgets |
+| Web | HTTP/OpenAPI/auth/file-upload locators, HTTP GET Pentest Capability, fixed Boolean SQLi and CTF Web Capabilities, Docker/ZAP benchmark assets | WEB-001A exact HTTP operation and URI-template registry is implemented; generalized auth/data-flow/API Surface typing remains | WEB-001B reuses exact signed Pentest GET Recon for concrete GET preparation; WEB-001C binds one already approved sealed Recon result into neutral Graph knowledge; broader non-lab analysis remains | egress-only, no host filesystem, exact target/method; WEB-001B pins the DOMAIN-004 minimum profile without selecting a Worker | WEB-001D binds the exact Web source to PENTEST-002B fresh-Permit, dedicated-Worker independent Replay and preserves match/change | WEB-001D binds the existing private P0-D1 Boolean SQLi Ground Truth to the DOMAIN-006 Web plan without measurement; general Web quality measurement remains | preparation grants no egress; WEB-001C source authority remains provenance only, WEB-001D creates no new action authority, and active probes require exact T2+ approval and request budgets |
 | AI | KISA catalog, LLM/RAG tools, REDTEAM-001A/B, RAG/MCP discovery, local AI benchmark provider | unified model/RAG/agent/MCP/tool classification projection | REDTEAM-001D exact MCP Capability; broader agent/data-flow Capabilities | exact provider/model/tool identity and request/token/cost ceilings | fresh-session semantic replay and controls | threat-class ground truth, false-positive, replay, request/token/cost, and policy-denial metrics | prompt content and discovered tools never grant authority; T2+ approval remains profile/deployment bound |
 | Network | Scope engine, egress policy, trusted network receipts, Worker identity | host/service/protocol/port Surface and locator schemas | read-only service-identification Capability | bounded protocol privileges and exact address/port Scope | independent protocol handshake from a fresh Worker identity | isolated service fixtures, service recall, protocol accuracy, denial correctness, packet/request cost | no raw socket or broad scan authority from discovery; privileges require explicit deployment review |
 | Cloud | ephemeral Secret leases, object-storage provider contracts, attestation, Docker/container lifecycle | account/project/resource/IAM/container Surfaces | read-only inventory and policy-evaluation Capabilities | ephemeral credentials and exact account/project/resource Scope; no ambient credentials | fresh credential lease plus deterministic policy re-evaluation | disposable accounts or emulators, IAM ground truth, resource coverage, denial and cleanup metrics | credentials and tenant identity require separate custody; writes and privilege changes are later T3+ slices |
@@ -231,7 +244,7 @@ The Canonical Graph, CAP-002, Permit/Gateway, evidence, and Target Factory found
 ## 9. Domain-aware benchmark contract
 
 The current BENCH-001 v1 contract requires twelve attack-oriented metrics in a fixed order. It is
-retained for compatibility. DOMAIN-006 will define an additive domain-aware measurement contract
+retained for compatibility. DOMAIN-006 implements an additive, non-executable domain-aware registry
 with:
 
 - common metrics: ground-truth coverage, recall or task success where applicable, false-positive
@@ -241,10 +254,75 @@ with:
   aggregator; and
 - explicit `not-applicable` semantics without inventing zero-valued measurements.
 
-Forensics may emphasize artifact coverage, parsing accuracy, provenance preservation, and damaged
-input handling rather than exploit Finding recall. Cryptography may emphasize vector coverage and
-independent recomputation. The benchmark registry remains non-executable; Target Factory activation
-and measurement admission continue to be separate authorities.
+Forensics uses task success, artifact coverage, parsing accuracy, provenance preservation, and
+damaged-input handling rather than exploit Finding recall. Cryptography registers vector coverage
+and independent recomputation. These are registry requirements, not measured quality or runtime
+support. The benchmark registry remains non-executable; Target Factory activation, Ground Truth,
+measurement admission, Profile validation floors, and Replay Evidence continue to be separate
+authorities. The exact contract is [DOMAIN-006](../benchmark/DOMAIN-006-domain-aware-validation-replay-benchmark-registry.md).
+
+### 9.1 WEB-001A typed Web Surface registry
+
+WEB-001A implements the DOMAIN-002 `web.http-operation` locator schema by binding the exact Web
+classification and type-set to the unchanged concrete `HTTPSurfaceLocator` and bounded URI-template
+`HTTPRouteSurfaceLocator`. It adds a content-addressed typed Surface whose initial state is
+`registered-not-authorized`, without changing `SurfaceObservation`, `AttackSurface`, or Graph wire
+identities.
+
+The registry is representation authority only. It does not discover a target, seal Evidence, admit
+a Graph node, expand Scope, activate a Capability, select a Tool or Worker, issue a Permit, grant
+network access, or assert runtime support. The exact contract is
+[WEB-001A](../discovery/WEB-001A-typed-http-api-surface-locator-registry.md).
+
+### 9.2 WEB-001B read-only Web discovery binding
+
+WEB-001B adds a content-addressed binding, not a Campaign Profile. It pins the concrete WEB-001A
+GET locator, the existing complete `pajin.pentest.http-get-recon@1.0.0` CAP-002 identity, its exact
+DOMAIN-003 Web classification, and the DOMAIN-004 minimum Web Worker profile. The Worker profile
+requires bounded egress, no host filesystem, no credentials, and an isolated non-root runtime, but
+the reference neither selects a Worker nor proves deployment conformance.
+
+Preparation requires the existing current signed Pentest Recon activation and delegates to its
+materializer/action compiler. The output remains `prepared-not-authorized`: it contains no Worker
+job or egress policy, Observation, Evidence, Graph admission, Scope expansion, approval, Permit,
+dispatch, or execution authority. A pre-Gateway executor job remains network-disabled; only the
+existing Gateway may grant exact bounded egress after current authority checks. URI templates and
+non-GET methods fail closed. The exact contract is
+[WEB-001B](../capability/WEB-001B-read-only-web-discovery-binding.md).
+
+### 9.3 WEB-001C sealed Web knowledge admission
+
+WEB-001C exact-binds the WEB-001B preparation to the same already approved and executed Pentest
+Recon intent. It delegates sealed Run, reservation, execution Evidence, normalized outcome,
+ActionPermit, approval receipt, Worker admission, trusted HTTP receipt, and Oracle verification to
+the existing PENTEST-002A gate. The new content-addressed Web candidate/proof classifies that
+neutral source under the DOMAIN-002 Web semantics without using Domain metadata as authority.
+
+PENTEST-002A remains the producer and `GraphAdmissionAuthority` remains the only writer. The event
+admits one succeeded Action, one neutral Observation, three Evidence nodes, and only `produces` and
+`supported-by` edges. The WEB-001A Surface stays an exact reference with
+`registered-not-authorized` knowledge state; no Surface/Hypothesis/CampaignFact/Finding node,
+Scope expansion, Capability activation, approval or Permit authority, Worker/network authority,
+execution, or Replay is created. Exact Graph retries reuse the prior event and never repeat the HTTP
+request. The exact contract is
+[WEB-001C](../graph/WEB-001C-sealed-web-discovery-graph-admission.md).
+
+### 9.4 WEB-001D independent Replay and Ground Truth profile
+
+WEB-001D reuses PENTEST-002B instead of adding a Web-specific Replay executor. A content-addressed
+projection reopens its sealed comparison and exact-binds the complete WEB-001C admission, concrete
+URL and GET method, source admission identity, and DOMAIN-006 Web `independent-replay` plan. The
+underlying Replay retains a fresh Run, request, Graph Decision, approval, one-use ActionPermit,
+receipt, dedicated Worker admission, dispatch, and execution identity. The projection records
+response match or change without granting another request or Finding authority.
+
+A second private profile reconstructs the existing P0-D1 Traditional Web/API catalog, public
+registration, complete Boolean SQLi Ground Truth, and code-owned matcher from one exact provisioned
+Docker profile, then binds them to the same DOMAIN-006 Web plan. This profile is
+`registered-ground-truth-not-measured`: it does not select or activate a Target Factory, execute a
+provider, admit a raw measurement, publish metrics, satisfy a Profile validation floor, or confirm
+a Finding. The generic GET Replay proof is not relabeled as the SQLi matcher result. The exact
+contract is [WEB-001D](../benchmark/WEB-001D-independent-web-replay-ground-truth.md).
 
 ## 10. Delivery order
 
@@ -263,7 +341,7 @@ re-analysis, and benchmark ground truth. Active probing, mutation, reversible wr
 use, debugger attach, device instrumentation, and privilege-changing actions require later
 separately reviewed slices.
 
-## 11. Initial implementation candidate
+## 11. Initial implementation candidate at acceptance
 
 REDTEAM-001C remains the next implementation task. The audit identifies the safest existing
 bootstrap as an explicit product ceiling over the already registered
@@ -275,6 +353,11 @@ or Web execution based on the `web` domain label.
 
 This candidate is planned, not implemented by this RFC. Its versioned REDTEAM-001C contract and
 ADR must be reviewed with positive and adversarial tests before runtime code is added.
+
+Post-acceptance status: REDTEAM-001C/D, REDTEAM-002, UX-008, DOMAIN-001 through DOMAIN-006, and
+WEB-001A through WEB-001D were implemented within the bounded claims of their separate versioned
+contracts and tests. The paragraph above is retained as the acceptance-time design record; it is
+not the current roadmap authority.
 
 ## 12. Compatibility and migration
 
@@ -303,6 +386,11 @@ runtime conditions.
 - [ADR-0204](../adr/0204-separate-security-domain-from-profile-and-authority.md)
 - [ADR-0205](../adr/0205-admit-cross-domain-knowledge-without-scope-expansion.md)
 - [ADR-0206](../adr/0206-bind-domain-workers-to-existing-authority-path.md)
+- [ADR-0211](../adr/0211-register-domain-metrics-without-measurement-authority.md)
+- [ADR-0212](../adr/0212-type-web-http-surfaces-without-discovery-authority.md)
+- [ADR-0213](../adr/0213-reuse-get-recon-for-web-discovery-without-egress-authority.md)
+- [ADR-0214](../adr/0214-compose-web-knowledge-through-existing-graph-writer.md)
+- [ADR-0215](../adr/0215-bind-web-replay-and-ground-truth-without-measurement-authority.md)
 - [ADR-0046](../adr/0046-common-engine-and-campaign-profiles.md)
 - [ADR-0048](../adr/0048-minimum-graph-and-admission-consistency.md)
 - [ADR-0052](../adr/0052-code-backed-capability-authority-set.md)

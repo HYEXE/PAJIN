@@ -5,6 +5,13 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0216: Classify AI Surfaces without Tool Authority](docs/adr/0216-classify-ai-surfaces-without-tool-authority.md)
+- [ADR-0215: Bind Web Replay and Ground Truth without Measurement Authority](docs/adr/0215-bind-web-replay-and-ground-truth-without-measurement-authority.md)
+- [ADR-0214: Compose Web Knowledge through the Existing Graph Writer](docs/adr/0214-compose-web-knowledge-through-existing-graph-writer.md)
+- [ADR-0213: Reuse GET Recon for Web Discovery without Egress Authority](docs/adr/0213-reuse-get-recon-for-web-discovery-without-egress-authority.md)
+- [ADR-0212: Type Web HTTP Surfaces without Discovery Authority](docs/adr/0212-type-web-http-surfaces-without-discovery-authority.md)
+- [ADR-0211: Register Domain Metrics without Measurement Authority](docs/adr/0211-register-domain-metrics-without-measurement-authority.md)
+- [ADR-0210: Project Red Team Product Flow without Finding Authority](docs/adr/0210-project-redteam-product-flow-without-finding-authority.md)
 - [ADR-0209: Measure Red Team Profiles without Finding Authority](docs/adr/0209-measure-redteam-profiles-without-finding-authority.md)
 - [ADR-0208: Register an MCP Capability without Discovery Authority](docs/adr/0208-register-mcp-capability-without-discovery-authority.md)
 - [ADR-0207: Compose a Bounded Web Red Team Profile](docs/adr/0207-compose-bounded-web-redteam-profile.md)
