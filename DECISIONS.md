@@ -5,6 +5,14 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0227: Bind Cloud Policy Replay and Fixtures without Provider Authority](docs/adr/0227-bind-cloud-policy-replay-and-fixtures-without-provider-authority.md)
+- [ADR-0226: Admit Cloud API Observations without Credential-use Authority](docs/adr/0226-admit-cloud-api-observations-without-credential-use-authority.md)
+- [ADR-0225: Bind Cloud Read-only Preparation without Credential-use Authority](docs/adr/0225-bind-cloud-read-only-preparation-without-credential-use-authority.md)
+- [ADR-0224: Type Cloud Resources without Credential Authority](docs/adr/0224-type-cloud-resources-without-credential-authority.md)
+- [ADR-0223: Bind Network Replay and Fixtures without Service Authority](docs/adr/0223-bind-network-replay-and-fixtures-without-service-authority.md)
+- [ADR-0222: Admit Network Protocol Knowledge without Service Authority](docs/adr/0222-admit-network-protocol-knowledge-without-service-authority.md)
+- [ADR-0221: Bind Passive Service Identification without Network Authority](docs/adr/0221-bind-passive-service-identification-without-network-authority.md)
+- [ADR-0220: Type Network Services without Scan Authority](docs/adr/0220-type-network-services-without-scan-authority.md)
 - [ADR-0219: Bind AI Replay, Controls, and Benchmark without Action Authority](docs/adr/0219-bind-ai-replay-controls-and-benchmark-without-action-authority.md)
 - [ADR-0218: Admit AI Observations without Tool Authority](docs/adr/0218-admit-ai-observations-without-tool-authority.md)
 - [ADR-0217: Bind AI Analysis without Provider Authority](docs/adr/0217-bind-ai-analysis-without-provider-authority.md)

@@ -375,6 +375,13 @@ class RulesOfEngagement(StrictModel):
             raise ValueError("allowedMethods values must be strings")
         return {item.upper() for item in items if isinstance(item, str)}
 
+    @field_validator("allow_private_networks", mode="before")
+    @classmethod
+    def require_private_network_boolean(cls, value: object) -> object:
+        if type(value) is not bool:
+            raise ValueError("allowPrivateNetworks must be boolean")
+        return value
+
     @field_validator("allowed_tool_categories", "prohibit", "stop_on", mode="before")
     @classmethod
     def require_bounded_policy_labels(cls, value: object) -> object:

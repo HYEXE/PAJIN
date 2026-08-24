@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 15 — Network / Service Analysis
-- 현재 우선순위: `NET-001A` host/service/protocol/port Surface model
-- 다음 우선순위: `NET-001B` read-only service-identification Capability and scoped Network Worker
+- 현재 단계: Phase 17 — System / Host Analysis
+- 현재 우선순위: `SYS-001A` host/process/filesystem/service/configuration Surface model
+- 다음 우선순위: `SYS-001B` read-only inspection Capability and authenticated non-root Worker
 
 ## 제품 목표
 
@@ -289,17 +289,95 @@ execution, concrete AI Ground Truth measurement, confirmed Finding 또는 일반
 
 ### Phase 15 — Network / Service Analysis
 
-- [ ] `NET-001A` host/service/protocol/port Surface model
-- [ ] `NET-001B` read-only service-identification Capability and scoped Network Worker
-- [ ] `NET-001C` protocol Observation/Evidence admission and bounded Hypothesis
-- [ ] `NET-001D` fresh handshake replay and isolated service benchmark
+- [x] `NET-001A` host/service/protocol/port Surface model
+  - exact Network classification과 `network.host-service` semantic을 host/port/service 3-class locator registry에 결박
+  - DNS는 resolve하지 않고 IDNA canonicalize하며 IPv4/IPv6는 explicit address family와 대조
+  - unknown service는 host/protocol/port로만 표현하고 service name을 well-known port에서 추론하지 않음
+  - discovery/AttackSurface wire, Scope, scanner, raw socket, credential, Worker, network, Graph admission,
+    execution 권위는 만들지 않음
+- [x] `NET-001B` read-only service-identification Capability and scoped Network Worker
+  - exact IPv4/IPv6 literal·TCP·단일 port Surface를 signed CAP-002 release와 fixed passive-banner budget에 결박
+  - current Campaign의 exact host-wide CONNECT allow, same-authority deny 부재, CONNECT RoE와 private-network
+    authority를 준비 단계에서 교차 검증
+  - complete code-backed Capability와 local Network Domain classification, DOMAIN-004 minimum Network Worker
+    profile을 content-addressed binding으로 고정하되 기존 global DOMAIN-003 inventory identity는 변경하지 않음
+  - Worker는 egress proxy에만 CONNECT를 쓰고 Target application write 없이 banner 최대 1,024 bytes만 읽으며,
+    Gateway는 exact authority로 egress를 축소하고 host-observed CONNECT receipt를 요구
+  - preparation은 `PreparedCapabilityAction`에서 멈추고 approval·Permit·Worker·egress·network·Observation·
+    Evidence·Graph admission·execution 권위를 만들지 않음
+- [x] `NET-001C` protocol Observation/Evidence admission and bounded Hypothesis
+  - current NET-001B activation·Campaign Scope와 sealed approved Run의 consumed Permit·approval receipt·
+    completed dispatch·Gateway/Worker Evidence·host-observed CONNECT receipt를 함께 재검증
+  - 기존 Graph single writer를 통해 neutral `network.protocol-observation`, succeeded Action과 2개 Evidence를
+    admission하고 raw banner·target coordinate·product/version 문자열은 Graph prose에 복제하지 않음
+  - bounded service label이 있을 때만 별도 fresh passive handshake를 요구하는 confidence `0.5` open
+    `network.exposure` Hypothesis를 admit하고 unknown label에는 Hypothesis나 negative conclusion을 만들지 않음
+  - service label, Graph membership과 source approval/Permit provenance는 Surface·Scope·Capability·approval·Permit·
+    Tool·Worker·network·credential·Replay·Finding·execution 권위를 만들지 않음
+- [x] `NET-001D` fresh handshake replay and isolated service benchmark
+  - NET-001C source와 별도 승인·Permit·Run·request·Worker execution·sealed Evidence identity를 가진
+    fresh passive handshake execution을 재검증하고 동일 Surface·Scope·Capability·protocol budget에 결박
+  - bounded protocol label을 match/change/unresolved의 neutral comparison으로만 투영하고 banner digest
+    일치는 별도 신호로 유지하며 어떤 상태도 service confirmation이나 Finding으로 승격하지 않음
+  - ftp/imap/pop3/smtp/ssh known-positive와 unknown negative Control의 synthetic passive-banner Ground Truth를
+    disposable loopback-container-per-case requirement로 등록하되 Target Factory·fixture 실행·numeric measurement·
+    validation floor·Scope·approval·Permit·Worker·network·Replay·execution 권위를 만들지 않음
 
 ### Phase 16 — Cloud / IAM / Container Analysis
 
-- [ ] `CLOUD-001A` account/project/resource/IAM/container Surface model
-- [ ] `CLOUD-001B` read-only inventory/policy Capability with ephemeral credential lease
-- [ ] `CLOUD-001C` resource/policy Observation admission without credential-use authority
-- [ ] `CLOUD-001D` deterministic policy replay and disposable cloud/emulator benchmark
+- [x] `CLOUD-001A` account/project/resource/IAM/container Surface model
+  - DOMAIN-001 Cloud classification과 DOMAIN-002 `cloud.account-resource` semantics를 exact account, project,
+    resource, IAM, container locator 5종과 content-addressed typed Surface registry에 결박
+  - provider/partition/account parent와 account→project→resource/IAM/container parent lineage를 identity에
+    포함하고 provider-local ID, explicit location, bounded IAM kind, immutable container/image digest를 유지
+  - 기존 AWS S3/STS/KMS, MinIO와 Docker 계약의 좌표는 provider-local knowledge로만 표현할 수 있으며
+    provider selection·tenant authority·credential lease·inventory/policy read·container access·Scope·Capability·
+    Permit·Worker·network·Graph admission·mutation·execution 권위를 만들지 않음
+- [x] `CLOUD-001B` read-only inventory/policy Capability with ephemeral credential lease
+  - exact CLOUD-001A Surface와 complete signed CAP-002, local Cloud Domain classification, DOMAIN-004 minimum
+    Cloud Worker profile, current Campaign의 exact Surface token·provider GET target Scope와 private-network
+    authority를 함께 결박
+  - `inventory-read`는 locator 5종, `policy-read`는 exact IAM Surface만 허용하고 explicit provider/partition·
+    canonical HTTPS origin·exact Surface/operation GET route·TTL/runtime/response budget을 adapter에 고정
+  - `allowPrivateNetworks`는 literal boolean만 허용하고 false일 때 non-global IP literal·`localhost`·fixed
+    Docker host route를 exact allow와 별개로 거부하며 DNS/connect-time enforcement는 deployment runtime에 유지
+  - trusted `SecretBroker` current snapshot과 일치하는 Campaign-scoped active single-use lease만 받아 raw lease
+    ID·secret reference·material 없이 fingerprint-only reference로 준비하고 materialization은 허용하지 않음
+  - adapter는 secret-free request description만 만들고 실제 provider runtime·WorkerJob·network call·result
+    normalization은 제공하지 않으며 Oracle은 inconclusive로 유지
+  - `PreparedCapabilityAction`에서 멈추고 provider selection/invocation·credential use·mutation·approval·Permit·
+    Worker·egress·Observation·Evidence·Graph admission·execution 권위를 모두 false로 고정
+- [x] `CLOUD-001C` resource/policy Observation admission without credential-use authority
+  - current Cloud activation·Campaign Scope·CLOUD-001B preparation·Graph Decision/Proposal/Grant와 exactly one
+    consumed Permit·durable approval-consumption receipt를 기존 권위 저장소에서 다시 결박
+  - admission gate에 deployment-configured trust anchor를 고정해 exact Cloud Worker profile·direct mTLS identity·Capability/release·provider
+    adapter·credential audience·Ed25519 key lifecycle를 검증하고 deployment-produced execution statement와
+    detached neutral response receipt의 signature·file/content digest·timing·one-GET/zero-write budget을 재검증
+  - credential-use receipt는 broker recheck·single-use materialization/consumption·discard를 나타내는 signed
+    historical provenance로만 취급하며 bearer lease ID·secret reference·credential material을 저장하거나
+    materialization·reuse·새 credential-use 권위를 만들지 않음
+  - 기존 Graph single writer에 succeeded Action 1·neutral `cloud.api-observation` 1·signed execution Evidence 1·
+    response-receipt Evidence 1과 `produces` 1·`supported-by` 2만 admission하고 raw provider body/header·resource·
+    policy field·target coordinate를 Graph prose에 복제하지 않음
+  - HTTP success나 body digest에서 resource existence/ownership·policy effect·effective permission을 추론하지
+    않고 Hypothesis/Finding·Scope expansion·Capability activation·Permit issuance·provider/Worker selection·network·
+    credential use·mutation·Replay·후속 execution 권위를 모두 false로 유지
+- [x] `CLOUD-001D` deterministic policy replay and disposable cloud/emulator benchmark
+  - 두 separately admitted CLOUD-001C policy-read execution을 deployment-configured trust anchor와 각 Graph
+    authority store로 다시 열고 Surface·Scope·Capability·release·provider route·credential principal·query
+    semantics는 같되 Run·preparation·request·Decision·Proposal·approval·Permit·dispatch·single-use lease·
+    statement·external execution·source root·Graph admission·policy artifact identity는 모두 다르게 강제
+  - CLOUD-001C response digest를 policy input으로 사용하지 않고 exact admission/execution/receipt/body/trust
+    digest에 결박된 deployment-derived sanitized policy artifact를 별도 Ed25519 signature domain으로 검증
+  - wildcard 없는 exact principal/action/resource rule에 deny-overrides allow deterministic evaluator를 적용해
+    policy input+decision match, input changed+decision match, decision changed의 neutral state만 투영
+  - exact allow·explicit deny override·implicit-deny negative Control 3개 Ground Truth와 per-case disposable
+    account/emulator·fresh single-use credential·cleanup evidence requirement를 등록하되 실제 Target/credential
+    provision·provider/emulator execution·cleanup·measurement·validation floor·Finding·Replay 권위는 만들지 않음
+
+Phase 16의 계획된 CLOUD-001A~D bounded bootstrap checkpoint는 완료했다. 이는 repository-owned provider
+runtime, provider-specific policy translator, effective-permission Oracle, live disposable Target measurement,
+Cloud mutation 또는 general container runtime 완료 주장이 아니다.
 
 ### Phase 17 — System / Host Analysis
 

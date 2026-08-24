@@ -65,6 +65,50 @@ def test_secret_lease_expires_before_materialization() -> None:
     assert broker.snapshot()[0]["status"] == "expired"
 
 
+def test_secret_lease_inspection_rechecks_identity_without_consuming_material() -> None:
+    current = [datetime(2026, 7, 12, tzinfo=UTC)]
+    broker = SecretBroker(clock=lambda: current[0])
+    broker.register("provider/example/api-key", "inspection-secret")
+    lease = broker.issue(
+        "provider/example/api-key",
+        audience="worker:cloud",
+        binding="provider-api-key",
+        scope="run_cloud",
+        ttl_seconds=1,
+    )
+
+    inspected = broker.inspect(
+        lease.lease_id,
+        audience="worker:cloud",
+        scope="run_cloud",
+    )
+    assert inspected == lease
+    assert inspected is not lease
+    assert inspected.remaining_uses == 1
+
+    with pytest.raises(PermissionError, match="audience mismatch"):
+        broker.inspect(
+            lease.lease_id,
+            audience="worker:other",
+            scope="run_cloud",
+        )
+    with pytest.raises(PermissionError, match="scope mismatch"):
+        broker.inspect(
+            lease.lease_id,
+            audience="worker:cloud",
+            scope="run_other",
+        )
+
+    current[0] += timedelta(seconds=2)
+    expired = broker.inspect(
+        lease.lease_id,
+        audience="worker:cloud",
+        scope="run_cloud",
+    )
+    assert expired.status is SecretLeaseStatus.EXPIRED
+    assert expired.remaining_uses == 1
+
+
 def test_secret_lease_run_scopes_isolate_materialization_revocation_and_snapshots() -> None:
     now = datetime(2026, 7, 12, tzinfo=UTC)
     broker = SecretBroker(clock=lambda: now)

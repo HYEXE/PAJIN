@@ -89,6 +89,18 @@ def test_campaign_budgets_reject_boolean_number_coercion(field: str) -> None:
         Budgets.model_validate({field: True})
 
 
+@pytest.mark.parametrize("value", (0, 1, "false", "true"))
+def test_campaign_private_network_authority_rejects_boolean_coercion(
+    sample_campaign: CampaignManifest,
+    value: object,
+) -> None:
+    payload = sample_campaign.model_dump(mode="json", by_alias=True)
+    payload["spec"]["rulesOfEngagement"]["allowPrivateNetworks"] = value
+
+    with pytest.raises(ValidationError, match="allowPrivateNetworks must be boolean"):
+        CampaignManifest.model_validate(payload)
+
+
 def test_agent_plan_rejects_duplicate_tool_request_ids() -> None:
     request = ToolRequest(
         request_id="tool_duplicate",

@@ -163,7 +163,15 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Domain Worker boundaries | Implemented, registry only | DOMAIN-004 registers nine code-owned minimum profiles and can bind an exact lifecycle-verified release bundle to one DOMAIN-003 record and deployment mTLS subject/SPKI; profile conformance, current activation, Permit/Gateway authority, runtime support, and execution remain absent |
 | Cross-domain Graph admission | Implemented, one bounded producer | DOMAIN-005 admits an exact existing AI Observation to a Web Surface through `discovers` or Web Hypothesis through `enables` using the existing single writer; target knowledge remains `registered-not-authorized`, source authority is provenance only, and other domain pairs and runtime extraction remain planned |
 | Domain benchmark registry | Implemented, registry only | DOMAIN-006 registers 13 common and 13 exact domain-specific metric definitions, explicit applicability, and one Replay/re-analysis strategy per Domain while preserving BENCH-001/REDTEAM-002 wire identities; it asserts no measurement, quality, validation-floor, Finding, Target Factory, Permit, runtime-support, or execution authority |
-| Network, System, Application, Mobile, Cloud | Planned product domains | Infrastructure primitives may exist, but no general executable security-analysis vertical slice is claimed |
+| Network typed Surface | Implemented, registry only | NET-001A binds unresolved canonical DNS/IP hosts, exact TCP/UDP ports, and explicit service names to the Network Domain and `network.host-service` semantics without resolution, service inference, Scope, scanner, Worker, network, Graph, or execution authority |
+| Network passive service identification | Implemented, preparation and bounded adapter path | NET-001B binds one IP-literal TCP `network-port` to an exact signed read-only CAP-002 Capability, current exact CONNECT Scope, fixed one-connection/zero-target-write/1,024-byte budget, and DOMAIN-004 minimum Network profile; preparation grants no approval, Permit, Worker, egress, Observation/Evidence, Graph, or execution authority, and actual dispatch must use the existing Gateway/deployment/trusted-receipt path |
+| Network sealed protocol knowledge | Implemented, bounded admission only | NET-001C reverifies one approved sealed NET-001B Run, consumed Permit and approval receipt, completed dispatch, Gateway/Worker Evidence, and host-observed CONNECT receipt before the existing Graph writer admits neutral protocol Observation/Evidence and an optional open Hypothesis; service labels and source provenance grant no confirmation, Replay, Finding, or action authority |
+| Network fresh Worker Replay and fixtures | Implemented, bounded and unmeasured | NET-001D binds the NET-001C source to a separately authorized sealed passive TCP execution with disjoint Run/request/Decision/Permit/Worker/Evidence identities and reports neutral label match/change/unresolved; it separately registers five positive protocol banners and one unknown negative Control as isolated fixture Ground Truth without Target selection, fixture execution, measurement, validation-floor, service confirmation, Finding, Replay, network, or action authority |
+| Cloud typed Surface | Implemented, registry only | CLOUD-001A binds exact provider-partition accounts, nested projects, provider-local resources, IAM objects, and immutable container/image coordinates to the Cloud Domain and `cloud.account-resource` semantics without provider selection, inventory or policy reads, credential lease, tenant authority, container access, Scope, Worker, network, Graph, mutation, or execution authority |
+| Cloud read-only inventory and policy binding | Implemented, preparation and request adaptation only | CLOUD-001B binds one exact typed Cloud Surface to a current signed CAP-002 release, exact Campaign Surface-token and provider-GET Scope, literal private-network authority, an explicit bounded provider route, a trusted active one-use Campaign credential-lease fingerprint, and the minimum Cloud Worker profile; non-global literals and fixed local names require explicit opt-in, while the preparation provides no bearer lease ID, credential materialization or use, provider runtime, WorkerJob, network call, result, Observation/Evidence, Graph, mutation, or execution authority |
+| Cloud sealed provider knowledge | Implemented, bounded admission only | CLOUD-001C reverifies a deployment-produced signed read-only execution statement, neutral detached response receipt, exact consumed Permit and durable approval receipt, current Cloud activation and Campaign Scope, Worker/mTLS trust anchor, and historical credential-use receipt before the existing Graph writer admits one neutral `cloud.api-observation` with digest-only Evidence; no provider runtime, raw response, resource/policy interpretation, Hypothesis, Finding, Replay, credential use, mutation, or further action authority is added |
+| Cloud fresh-credential policy Replay and fixtures | Implemented, bounded and unmeasured | CLOUD-001D reopens two separately admitted policy reads with disjoint Run/Permit/single-use lease/execution/admission identities, verifies separately signed sanitized exact-rule artifacts, and reports only deterministic input/decision match or change; it registers exact allow, deny-override, and implicit-deny negative-Control fixtures with disposable account/emulator and cleanup-evidence requirements without provisioning, provider execution, effective-permission confirmation, measurement, validation-floor, Finding, Replay, credential, or action authority |
+| System, Application, Mobile | Planned product domains | Infrastructure primitives may exist, but no general executable security-analysis vertical slice is claimed |
 | Cryptography | One fixed CTF lab only | General cryptographic analysis is planned |
 | Digital Forensics | Planned | No general forensic Surface, Capability, Worker, replay, or benchmark vertical slice is implemented |
 
@@ -180,7 +188,35 @@ bounded sealed Observation/Evidence result without making Surface, Profile, Doma
 metadata authoritative. AI-001D adds a bounded semantic binding to independently sealed KISA
 fresh-session Replay and Controls plus the existing REDTEAM-002 benchmark contract. It does not
 claim a measured Ground Truth case, confirm the AI Observation, or provide general model, agent,
-RAG, MCP, or Tool discovery or execution support. NET-001A is next.
+RAG, MCP, or Tool discovery or execution support. NET-001A adds typed Network identity without scan
+authority. NET-001B adds one signed, Scope-bound passive TCP preparation and bounded
+Tool/Worker/Gateway adapter path. NET-001C admits only a neutral sealed protocol Observation with
+two Evidence references and, for one bounded label, an open Hypothesis requiring separately
+authorized validation. NET-001D reopens a separately authorized sealed passive execution and
+compares only bounded labels and banner digests, then separately registers five positive protocol
+fixtures and one unknown negative Control. It adds no DNS, UDP, broad scan, active application
+write, automatic Replay scheduling, physical Worker identity proof, service confirmation, Finding,
+numeric benchmark result, or general Network runtime. CLOUD-001A adds a secret-free typed registry
+only: account, project, resource, IAM, and container identity is content-addressed knowledge, not
+provider support, live inventory, policy evaluation, credential or tenant authority, container
+runtime access, or an executable Cloud analysis path. CLOUD-001B adds a current signed read-only
+preparation with exact Surface/provider Scope, explicit GET request adaptation, and a trusted
+single-use lease fingerprint. Private-network authority is a literal Campaign boolean; non-global
+IP literals and fixed local names fail closed without opt-in, while deployment egress retains
+DNS/connect-time enforcement. The adapter does not call a provider, and the preparation contains no
+bearer lease ID or credential material and grants no credential-use, Worker, network, result,
+knowledge-admission, mutation, or execution authority. CLOUD-001C then verifies one separately
+authorized deployment-produced signed execution source and admits only a neutral API-response
+Observation plus digest-only Evidence through the existing Graph writer. The repository still has
+no Cloud provider runtime; the raw response and provider-derived resource or policy fields stay
+outside the Graph, and HTTP success establishes neither resource existence nor effective access.
+CLOUD-001D requires two independently authorized CLOUD-001C policy reads and separately signed,
+source-bound sanitized exact-rule artifacts; a response digest alone is never policy input. Its
+deny-overrides exact-match evaluator distinguishes unchanged input, changed input with the same
+decision, and changed decision without claiming provider-effective permission. A separate
+three-case disposable account/emulator profile remains registered but unprovisioned, unexecuted,
+uncleaned, and unmeasured, so no Ground Truth result, numeric Cloud metric, Profile floor, Finding,
+credential use, automatic Replay, provider runtime, or mutation authority is created.
 
 The authoritative priority and status are in [PLAN.md](PLAN.md) and the verified checkpoint is in
 [HANDOFF.md](HANDOFF.md).

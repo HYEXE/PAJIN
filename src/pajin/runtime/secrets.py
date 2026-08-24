@@ -172,10 +172,7 @@ class SecretBroker:
             if lease is None:
                 raise KeyError("unknown secret lease")
             self._require_scope(lease, scope)
-            now = self._now()
-            if lease.status is SecretLeaseStatus.ACTIVE and now >= lease.expires_at:
-                lease.status = SecretLeaseStatus.EXPIRED
-                lease.revoked_reason = "lease TTL expired"
+            self._refresh_status(lease)
             if lease.status is not SecretLeaseStatus.ACTIVE:
                 raise PermissionError(f"secret lease is {lease.status.value}")
             if lease.audience != audience:
@@ -189,6 +186,27 @@ class SecretBroker:
                 binding=lease.binding,
                 value=self._secrets[secret_ref],
             )
+
+    def inspect(
+        self,
+        lease_id: str,
+        *,
+        audience: str,
+        scope: str | None = None,
+    ) -> SecretLease:
+        """Return current lease metadata without materializing or consuming its secret."""
+
+        if scope is not None:
+            _validate_lease_scope(scope)
+        with self._lock:
+            lease = self._leases.get(lease_id)
+            if lease is None:
+                raise KeyError("unknown secret lease")
+            self._require_scope(lease, scope)
+            self._refresh_status(lease)
+            if lease.audience != audience:
+                raise PermissionError("secret lease audience mismatch")
+            return lease.model_copy(deep=True)
 
     def revoke(
         self,
@@ -254,6 +272,11 @@ class SecretBroker:
     def _now(self) -> datetime:
         value = self._clock()
         return value if value.tzinfo is not None else value.replace(tzinfo=UTC)
+
+    def _refresh_status(self, lease: SecretLease) -> None:
+        if lease.status is SecretLeaseStatus.ACTIVE and self._now() >= lease.expires_at:
+            lease.status = SecretLeaseStatus.EXPIRED
+            lease.revoked_reason = "lease TTL expired"
 
     @staticmethod
     def _require_scope(lease: SecretLease, scope: str | None) -> None:
