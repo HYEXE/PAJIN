@@ -16,6 +16,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from hmac import compare_digest
 from http.client import HTTPResponse, HTTPSConnection
+from ipaddress import ip_address
 from re import fullmatch
 from threading import Thread
 from typing import IO, Any, BinaryIO, TextIO
@@ -38,6 +39,7 @@ MAX_PROVIDER_CHUNKS = 10_000
 MAX_WORKER_INPUT_BYTES = 1_100_000
 MAX_MCP_RESPONSE_BYTES = 1_000_000
 MAX_MCP_STDERR_BYTES = 128_000
+MAX_NETWORK_SERVICE_BANNER_BYTES = 1_024
 _WORKER_INPUT_CHUNK_CHARS = 8_192
 _MCP_STREAM_CHUNK_BYTES = 65_536
 _MCP_READER_JOIN_SECONDS = 5
@@ -1401,6 +1403,155 @@ def direct_network_check(payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _network_service_name(banner: bytes) -> str | None:
+    sample = banner[:512].decode("ascii", errors="ignore").upper()
+    if sample.startswith("SSH-"):
+        return "ssh"
+    if sample.startswith("220") and "ESMTP" in sample:
+        return "smtp"
+    if sample.startswith("220") and "FTP" in sample:
+        return "ftp"
+    if sample.startswith("* OK") and "IMAP" in sample:
+        return "imap"
+    if sample.startswith("+OK") and "POP3" in sample:
+        return "pop3"
+    return None
+
+
+def _network_proxy_coordinate() -> tuple[str, int]:
+    proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    if not proxy_url:
+        raise RuntimeError("Network service identification requires the egress proxy")
+    parsed = urlsplit(proxy_url)
+    if (
+        parsed.scheme != "http"
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Network service egress proxy URL is invalid")
+    try:
+        port = parsed.port or 80
+    except ValueError as exc:
+        raise ValueError("Network service egress proxy port is invalid") from exc
+    return parsed.hostname, port
+
+
+def _receive_connect_response(
+    connection: socket.socket,
+    *,
+    max_header_bytes: int = 8_192,
+) -> tuple[bool, bytes]:
+    response = bytearray()
+    while b"\r\n\r\n" not in response:
+        chunk = connection.recv(min(1_024, max_header_bytes - len(response)))
+        if not chunk:
+            break
+        response.extend(chunk)
+        if len(response) >= max_header_bytes:
+            raise ValueError("egress proxy CONNECT response headers exceeded the byte limit")
+    header, separator, remainder = bytes(response).partition(b"\r\n\r\n")
+    if not separator:
+        raise ValueError("egress proxy CONNECT response was incomplete")
+    status_line = header.partition(b"\r\n")[0]
+    return status_line.startswith(b"HTTP/1.1 200 "), remainder
+
+
+def network_service_identify(payload: dict[str, Any]) -> dict[str, Any]:
+    required = {
+        "addressFamily",
+        "connectTimeoutMilliseconds",
+        "host",
+        "maxBannerBytes",
+        "port",
+        "protocolProfile",
+        "readTimeoutMilliseconds",
+        "target",
+        "transportProtocol",
+    }
+    if set(payload) != required:
+        raise ValueError("Network service input fields differ from the fixed profile")
+    address_family = _required_string(payload, "addressFamily")
+    host = _required_string(payload, "host")
+    target = _required_string(payload, "target")
+    if address_family not in {"ipv4", "ipv6"}:
+        raise ValueError("Network service address family is unsupported")
+    try:
+        address = ip_address(host)
+    except ValueError as exc:
+        raise ValueError("Network service host must be an IP literal") from exc
+    if (
+        address.version != (4 if address_family == "ipv4" else 6)
+        or str(address) != host
+        or payload["transportProtocol"] != "tcp"
+        or payload["protocolProfile"] != "tcp-passive-banner-v1"
+        or payload["connectTimeoutMilliseconds"] != 5_000
+        or payload["readTimeoutMilliseconds"] != 2_000
+        or payload["maxBannerBytes"] != MAX_NETWORK_SERVICE_BANNER_BYTES
+    ):
+        raise ValueError("Network service input differs from the fixed passive profile")
+    port = payload["port"]
+    if type(port) is not int or not 1 <= port <= 65_535:
+        raise ValueError("Network service port is invalid")
+    rendered_host = f"[{host}]" if address_family == "ipv6" else host
+    authority = rendered_host if port == 443 else f"{rendered_host}:{port}"
+    if target != f"https://{authority}/":
+        raise ValueError("Network service target differs from its exact coordinate")
+
+    banner = b""
+    connected = False
+    try:
+        proxy_host, proxy_port = _network_proxy_coordinate()
+        with socket.create_connection(
+            (proxy_host, proxy_port),
+            timeout=payload["connectTimeoutMilliseconds"] / 1_000,
+        ) as connection:
+            connection.settimeout(payload["connectTimeoutMilliseconds"] / 1_000)
+            request = (
+                f"CONNECT {rendered_host}:{port} HTTP/1.1\r\nHost: {rendered_host}:{port}\r\n\r\n"
+            ).encode("ascii")
+            connection.sendall(request)
+            connected, remainder = _receive_connect_response(connection)
+            if connected:
+                connection.settimeout(payload["readTimeoutMilliseconds"] / 1_000)
+                retained = bytearray(remainder[:MAX_NETWORK_SERVICE_BANNER_BYTES])
+                while len(retained) < MAX_NETWORK_SERVICE_BANNER_BYTES:
+                    try:
+                        chunk = connection.recv(MAX_NETWORK_SERVICE_BANNER_BYTES - len(retained))
+                    except TimeoutError:
+                        break
+                    if not chunk:
+                        break
+                    retained.extend(chunk)
+                banner = bytes(retained)
+    except (OSError, RuntimeError, TimeoutError, ValueError):
+        connected = False
+        banner = b""
+
+    output: dict[str, Any] = {
+        "target": target,
+        "addressFamily": address_family,
+        "host": host,
+        "transportProtocol": "tcp",
+        "port": port,
+        "protocolProfile": "tcp-passive-banner-v1",
+        "connected": connected,
+        "bannerBytes": len(banner),
+        "bannerBase64": b64encode(banner).decode("ascii"),
+        "bannerSha256": sha256(banner).hexdigest(),
+    }
+    if connected:
+        service_name = _network_service_name(banner)
+        if service_name is not None:
+            output["serviceName"] = service_name
+    else:
+        output["error"] = "target-unavailable"
+    return output
+
+
 @dataclass(slots=True)
 class _BoundedPipeCapture:
     limit: int
@@ -1680,6 +1831,7 @@ _UNPRIVILEGED_ACTIONS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     "isolation-check": _isolation_action,
     "sleep-check": _sleep_action,
     "http-get": http_get,
+    "network-service-identify": network_service_identify,
     "ai-chat-probe": ai_chat_probe,
     "bug-bounty-sqli-probe": bug_bounty_sqli_probe,
     "ctf-web-backup-probe": ctf_web_backup_probe,

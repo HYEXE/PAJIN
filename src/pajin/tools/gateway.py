@@ -11,12 +11,14 @@ from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import PurePosixPath
 from threading import Lock
+from urllib.parse import urlsplit
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 from pajin.domain.models import CampaignManifest, CapabilityGrant, ToolRequest, ToolResult
 from pajin.policy.engine import PolicyDecision, PolicyEngine
+from pajin.policy.scope import normalize_scope_pattern, normalize_target_url
 from pajin.runtime.error_safety import audit_safe_exception_diagnostic
 from pajin.runtime.secrets import (
     SecretBroker,
@@ -87,9 +89,7 @@ def _canonical_tool_request_with_digest(
         UnicodeError,
         ValueError,
     ) as exc:
-        raise ToolRequestCanonicalizationError(
-            "Tool request is not strict canonical JSON"
-        ) from exc
+        raise ToolRequestCanonicalizationError("Tool request is not strict canonical JSON") from exc
     if len(encoded) > _MAX_TOOL_REQUEST_JSON_BYTES:
         raise ToolRequestCanonicalizationError(
             "Tool request exceeds the bounded canonical JSON size"
@@ -575,7 +575,16 @@ class ToolGateway:
             if job.network is not NetworkMode.NONE or job.egress_policy is not None:
                 raise ValueError("Tool Adapter cannot grant itself network access")
             if spec.network_access:
-                job = self._grant_egress(campaign, job, request_cost=request_cost)
+                response_byte_limit = tool.network_response_byte_limit(
+                    request.model_copy(deep=True)
+                )
+                job = self._grant_egress(
+                    campaign,
+                    job,
+                    request=request,
+                    request_cost=request_cost,
+                    response_byte_limit=response_byte_limit,
+                )
             metadata = safe_job_metadata(request, job)
             json.dumps(metadata, allow_nan=False, ensure_ascii=False, sort_keys=True)
         except Exception as exc:
@@ -589,17 +598,48 @@ class ToolGateway:
         campaign: CampaignManifest,
         job: WorkerJob,
         *,
+        request: ToolRequest,
         request_cost: int,
+        response_byte_limit: int | None,
     ) -> WorkerJob:
+        if request.method == "CONNECT":
+            if "CONNECT" not in campaign.spec.rules_of_engagement.allowed_methods:
+                raise ValueError("CONNECT egress requires reviewed Campaign authority")
+            target = urlsplit(normalize_target_url(request.target))
+            if (
+                target.scheme != "https"
+                or not target.netloc
+                or target.path != "/"
+                or target.query
+                or target.fragment
+            ):
+                raise ValueError("CONNECT egress requires one exact HTTPS authority")
+            exact_rule = f"https://{target.netloc}/**"
+            normalized_allow = [normalize_scope_pattern(rule) for rule in campaign.spec.scope.allow]
+            normalized_deny = [normalize_scope_pattern(rule) for rule in campaign.spec.scope.deny]
+            if exact_rule not in normalized_allow:
+                raise ValueError("CONNECT egress requires an exact host-wide Campaign allow rule")
+            if any(urlsplit(rule).netloc == target.netloc for rule in normalized_deny):
+                raise ValueError("CONNECT egress authority overlaps a Campaign deny rule")
+            allow = [exact_rule]
+            deny: list[str] = []
+        else:
+            allow = list(campaign.spec.scope.allow)
+            deny = list(campaign.spec.scope.deny)
         scoped = job.model_copy(
             update={
                 "network": NetworkMode.EGRESS_PROXY,
                 "egress_policy": EgressPolicy(
-                    allow=list(campaign.spec.scope.allow),
-                    deny=list(campaign.spec.scope.deny),
+                    allow=allow,
+                    deny=deny,
                     allowed_methods=set(campaign.spec.rules_of_engagement.allowed_methods),
                     allow_private_networks=(
                         campaign.spec.rules_of_engagement.allow_private_networks
+                    ),
+                    max_response_bytes=(
+                        response_byte_limit
+                        if response_byte_limit is not None
+                        else EgressPolicy.model_fields["max_response_bytes"].default
                     ),
                     max_requests=request_cost,
                 ),

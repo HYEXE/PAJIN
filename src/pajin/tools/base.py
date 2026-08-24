@@ -505,6 +505,12 @@ class Tool(ABC):
         del request
         return self.spec.network_request_cost
 
+    def network_response_byte_limit(self, request: ToolRequest) -> int | None:
+        """Optionally tighten the host egress relay response-byte ceiling."""
+
+        del request
+        return None
+
     def validate_trusted_execution(
         self,
         request: ToolRequest,
