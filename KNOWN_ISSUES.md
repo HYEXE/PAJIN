@@ -766,11 +766,11 @@
 
 ## Windows 애플리케이션 제어에 의한 임시 console-script 차단
 
-- 2026-08-06 clean wheel·sdist 설치와 metadata 검증 뒤 임시 venv console-script가 `WinError 4551`로
-  차단됐다. packaging/entrypoint 16건은 통과했지만 installed wrapper smoke는 Linux CI 또는 승인된
-  AppControl 환경에서 재검증해야 한다. assertion이나 정책을 우회하지 않는다.
-- 2026-08-19 현재 `.venv\Scripts\pajin.exe pentest-compile --help`도 출력 없이 정지해 중단했다.
-  `.venv\Scripts\python.exe -m pajin.cli pentest-compile --help`는 통과했다.
+- 2026-08-27 project `.venv\Scripts\python.exe`가 `_overlapped` DLL을 Application Control 정책으로
+  로드하지 못해 asyncio와 pytest 초기화가 차단된다. bundled Codex Python과 project site-packages를
+  결합한 검증은 통과했고 Ruff/mypy/uv console script는 정상이다. 앞서 clean wheel·sdist의 임시
+  wrapper도 `WinError 4551`, `pajin.exe`는 무응답이 재현됐다. assertion이나 정책을 우회하지 않으며
+  installed-wrapper와 project Python 검증은 Linux CI 또는 승인된 AppControl 환경에서 다시 수행한다.
 
 ## Git OpenSSL CA 경로
 
