@@ -744,6 +744,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "cryptography" },
+    { name = "idna" },
     { name = "pydantic" },
     { name = "pydantic-ai-slim" },
     { name = "pyyaml" },
@@ -784,6 +785,7 @@ requires-dist = [
     { name = "boto3", marker = "extra == 'object-storage-minio'", specifier = "==1.43.73" },
     { name = "botocore", marker = "extra == 'object-storage-minio'", specifier = "==1.43.73" },
     { name = "cryptography", specifier = ">=50,<51" },
+    { name = "idna", specifier = ">=3.10,<4" },
     { name = "fastapi", marker = "extra == 'control-plane'", specifier = ">=0.116,<1" },
     { name = "httpx", marker = "extra == 'control-plane'", specifier = ">=0.28,<1" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.28,<1" },
