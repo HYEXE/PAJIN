@@ -5,6 +5,18 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0239: Bind Mobile Package Re-analysis and Fixtures without Package or Device Authority](docs/adr/0239-bind-mobile-package-reanalysis-and-fixtures-without-package-or-device-authority.md)
+- [ADR-0238: Admit Mobile Package-analysis Knowledge without Package or Device Authority](docs/adr/0238-admit-mobile-package-analysis-knowledge-without-package-or-device-authority.md)
+- [ADR-0237: Bind Mobile Package Analysis without Package or Device Access Authority](docs/adr/0237-bind-mobile-package-analysis-without-package-or-device-access-authority.md)
+- [ADR-0236: Type Mobile Application and Runtime Knowledge without Package or Device Authority](docs/adr/0236-type-mobile-application-runtime-without-package-or-device-authority.md)
+- [ADR-0235: Bind Application Re-analysis and Fixtures without Artifact Authority](docs/adr/0235-bind-application-reanalysis-and-fixtures-without-artifact-authority.md)
+- [ADR-0234: Admit Application Analysis Knowledge without Artifact Authority](docs/adr/0234-admit-application-analysis-knowledge-without-artifact-authority.md)
+- [ADR-0233: Bind Application Static Analysis without Artifact-access Authority](docs/adr/0233-bind-application-static-analysis-without-artifact-access-authority.md)
+- [ADR-0232: Type Application Artifact and Runtime Knowledge without Analysis Authority](docs/adr/0232-type-application-artifact-runtime-without-analysis-authority.md)
+- [ADR-0231: Bind System Replay and Fixtures without Host Authority](docs/adr/0231-bind-system-replay-and-fixtures-without-host-authority.md)
+- [ADR-0230: Admit System Host Knowledge without Host-access Authority](docs/adr/0230-admit-system-host-knowledge-without-host-access-authority.md)
+- [ADR-0229: Bind System Read-only Inspection without Host-access Authority](docs/adr/0229-bind-system-read-only-inspection-without-host-access-authority.md)
+- [ADR-0228: Type System Host Resources without Host-access Authority](docs/adr/0228-type-system-host-resources-without-host-access-authority.md)
 - [ADR-0227: Bind Cloud Policy Replay and Fixtures without Provider Authority](docs/adr/0227-bind-cloud-policy-replay-and-fixtures-without-provider-authority.md)
 - [ADR-0226: Admit Cloud API Observations without Credential-use Authority](docs/adr/0226-admit-cloud-api-observations-without-credential-use-authority.md)
 - [ADR-0225: Bind Cloud Read-only Preparation without Credential-use Authority](docs/adr/0225-bind-cloud-read-only-preparation-without-credential-use-authority.md)

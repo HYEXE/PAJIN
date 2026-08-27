@@ -804,6 +804,40 @@ provider lifecycle each name one Factory, P0-D3 creates no combined Factory, Man
 Observation, metric, or execution authority. Runnable Hybrid measurement requires a coordinated
 multi-provider lifecycle and explicit transfer evidence in a successor contract.
 
+MOBILE-001C applies the same single-writer and sealed-evidence architecture to the device-free
+Mobile static-analysis slice. It rebuilds current MOBILE-001B authority for both the selected
+Surface and root APK/IPA package, then verifies one deployment-signed external static-sandbox
+execution, consumed Permit, durable approval receipt, recomputed Gateway decision, exact
+lineage-derived parser/image identity, bounded archive configuration and observed maxima, and one
+detached digest-only result receipt. The existing Graph writer admits one fixed neutral
+`mobile.analysis-observation` with two restricted Evidence nodes and, only for one of eight exact
+class/operation review signals, one confidence `0.5` open `mobile.security-property` Hypothesis.
+The deployment signature is provenance rather than repository-owned parser or live sandbox proof.
+The current device-bound DOMAIN-004 Mobile profile remains deferred, no Worker job is
+materialized, and package/manifest/signing/runtime/security truth, device/network/credential use,
+Replay, Finding, mutation, and new action authority remain absent. The exact contract is
+[MOBILE-001C](../graph/MOBILE-001C-sealed-mobile-package-analysis-knowledge-admission.md), with the
+authority decision recorded in [ADR-0238](../adr/0238-admit-mobile-package-analysis-knowledge-without-package-or-device-authority.md).
+
+MOBILE-001D adds a deterministic verification and projection boundary without adding a Mobile
+runtime. It reopens the exact stored MOBILE-001C admission and one separately authorized sealed
+execution through the current C verifier, deployment trust anchor, and both exact Graph stores.
+Selected/root Surface and complete platform lineage, immutable package identity, custody/sandbox,
+operation/parser/image, selected/root Scope, release, resource and archive ceilings, and all six
+signed archive observations must match, while every action/evidence authority coordinate must be
+disjoint and causally ordered. Equal result digests require equal signed byte counts. The projection
+reports only neutral digest/byte-count/signal match, change, or unresolved and satisfies the
+DOMAIN-006 `deterministic-package-reanalysis` strategy without confirming package, manifest,
+runtime, security-property, Hypothesis, or Finding truth. A separate content-addressed profile
+registers known-positive and no-signal negative Controls for all fourteen valid Android/APK and
+iOS/IPA selected Surface lineages, exactly 28 cases, plus disposable network/DNS-disabled non-root
+static-sandbox, archive-safety, and cleanup-evidence requirements. It materializes, executes, cleans
+up, and measures nothing. The device-bound Mobile profile remains deferred and profile/Worker/
+device/Replay/action authority remains false. The exact contract is
+[MOBILE-001D](../benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md), with the
+authority decision recorded in
+[ADR-0239](../adr/0239-bind-mobile-package-reanalysis-and-fixtures-without-package-or-device-authority.md).
+
 ## 10. Definition of Done
 
 Each vertical slice requires:

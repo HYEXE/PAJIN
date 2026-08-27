@@ -4,12 +4,11 @@
 - Date: 2026-08-20
 - Extends: [ARCH-001](0001-pajin-architecture-v2.md)
 - Implementation status: DOMAIN-001 through DOMAIN-006 foundations, bounded WEB-001A through D,
-  AI-001A through D, NET-001A through D, and CLOUD-001A through D vertical slices are implemented
-  within their contracts; Cloud coverage currently stops at comparing two separately admitted
-  fresh-credential policy reads through signed sanitized exact-rule artifacts and registering
-  unprovisioned disposable fixtures, without a repository provider runtime, provider-specific
-  interpreter, effective-permission confirmation, measurement, or credential-use authority, while
-  general domain runtimes remain planned
+  AI-001A through D, NET-001A through D, CLOUD-001A through D, SYS-001A through D, APP-001A through
+  D, and MOBILE-001A through D are implemented within their contracts. Mobile coverage includes a
+  typed registry, static package-analysis preparation, sealed knowledge admission, deterministic
+  comparison, and unmeasured fixture requirements; it provides no parser, Worker, device runtime,
+  or benchmark execution. General domain runtimes remain planned.
 
 ## 1. Purpose
 
@@ -62,7 +61,33 @@ status; [PLAN.md](../../PLAN.md) and [HANDOFF.md](../../HANDOFF.md) own the curr
   before admitting neutral Graph knowledge, without interpreting resource or policy fields; and
   CLOUD-001D compares two separately authorized policy reads through signed sanitized exact-rule
   artifacts and registers unprovisioned disposable fixtures without provider-effective permission,
-  benchmark measurement, or action authority.
+  benchmark measurement, or action authority; and
+- SYS-001A implements exact secret-free host/process/filesystem/service/configuration typed identity;
+  SYS-001B binds signed network-disabled metadata-only preparation, exact Surface-token Scope,
+  bounded ceilings, and deployment public Worker mTLS/non-root configuration without inventing an
+  agent endpoint or granting live authentication, host access, or a Worker job; and SYS-001C
+  verifies deployment-signed Gateway/mTLS/non-root/result provenance before admitting one neutral
+  Observation with digest-only Evidence and, for two fixed review signals only, one open bounded
+  Hypothesis, without granting root, mutation, Replay, Finding, or further execution authority; and
+  SYS-001D distinguishes signed same-snapshot re-analysis from a separately authorized fresh
+  authenticated inspection, projects only neutral match/change/unresolved, and registers
+  unexecuted disposable-host controls without measurement or host authority; and
+- APP-001A implements exact digest-only binary and exact-parent configuration/runtime/library
+  typed identity without artifact resolution or analysis authority; and APP-001B binds signed
+  read-only preparation, an opaque custody/authorization reference, exact parser, network-disabled
+  non-root read-only sandbox requirements, and bounded ceilings without artifact read, mount,
+  Worker job, result, Graph admission, Finding, or execution authority; and
+- MOBILE-001A implements exact APP-binary-parent APK/IPA declarations and exact-parent
+  application/runtime/storage/deep-link/TLS/authentication typed identity without package read,
+  analysis, emulator/device access, instrumentation, network, credential, or execution authority;
+  and MOBILE-001B binds exact selected/root-package identity, opaque custody, lineage-derived parser,
+  selected-and-package Scope, and static sandbox requirements into signed preparation without
+  profile conformance, package read, WorkerJob, device runtime, result, or execution authority; and
+  MOBILE-001C verifies one externally signed static-sandbox execution and admits neutral digest-only
+  Observation/Evidence with an optional bounded open Hypothesis while preserving the device/profile/
+  Worker boundary; and MOBILE-001D independently reverifies one stored source and one separately
+  authorized exact-package execution, projects only neutral match/change/unresolved, and registers
+  28 unexecuted seeded Mobile fixture requirements without measurement or package/device authority.
 
 ### Planned
 
@@ -70,7 +95,7 @@ status; [PLAN.md](../../PLAN.md) and [HANDOFF.md](../../HANDOFF.md) own the curr
 - a first-class non-authoritative Security Domain taxonomy;
 - domain-aware Capability inventory projections and Worker trust-boundary registrations;
 - multi-domain cross-Surface admission and domain-aware benchmark extensions; and
-- the System, Application, Mobile, general Cryptography, and Digital Forensics vertical slices.
+- the remaining general Cryptography and Digital Forensics vertical slices.
 
 ## 3. Orthogonal taxonomy
 
@@ -242,9 +267,9 @@ domain Workers, and runtime adoption remain later vertical-slice work.
 | AI | KISA catalog, LLM/RAG tools, REDTEAM-001A/B, RAG/MCP discovery, local AI benchmark provider | AI-001A exact model/RAG/agent/MCP/Tool classification is implemented; AI-001C consumes only exact references and general discovery/data-flow remain missing | AI-001B binds four existing REDTEAM-001A/B/D read-only CAP-002 identities through preparation; AI-001C reverifies their existing sealed execution and admits neutral Observation/Evidence; broader agent/data-flow Capabilities remain missing | AI-001B pins the DOMAIN-004 minimum AI profile without selecting a Worker; AI-001C verifies the deployment-produced Worker evidence but creates no Worker, network, or credential authority | AI-001D binds exact M03/M06/A04 source semantics to separately sealed two-repetition KISA fresh-session Replay and three-Control evidence without dispatching from Graph knowledge; MCP Replay remains unavailable | AI-001D binds the matching REDTEAM-002 Profile, Capability, Ground Truth vocabulary and negative-control/Replay requirements to the DOMAIN-006 AI plan without a concrete case or measurement; production Ground Truth and numeric metrics remain missing | prompt content, provider registration, model identity, Surface classes, and discovered tools never grant authority; AI-001C source Permit remains consumed provenance, AI-001D creates no action or confirmation authority, and T2+ approval remains profile/deployment bound |
 | Network | Scope engine, egress policy, trusted network receipts, Worker identity | NET-001A exact host/port/service registry and NET-001C neutral protocol Observation/Evidence plus optional bounded open Hypothesis are implemented; product/version typing remains missing | NET-001B implements one signed read-only IP-literal TCP passive service-identification Capability and preparation; general scanners and active handshakes remain missing | NET-001B pins the DOMAIN-004 minimum Network profile, exact address/port CONNECT Scope, one connection, zero target writes, 1,024 response bytes, and host-observed receipt without selecting a Worker; NET-001C reverifies the sealed Docker Worker/Gateway evidence but creates no Worker | NET-001D binds a separately authorized sealed passive execution with disjoint Run/request/Decision/Permit/Worker/Evidence identity and reports only neutral label match/change/unresolved; it does not schedule Replay or prove a distinct physical Worker | NET-001D registers five known-positive protocol banners and one unknown negative Control with disposable loopback-container isolation requirements; fixture provisioning, numeric service accuracy, recall, denial correctness, and request cost remain missing | NET-001B grants no DNS, UDP, raw socket, broad scan, credential, approval, Permit, Worker, Graph, or execution authority; NET-001C source authority remains provenance, and NET-001D creates no service confirmation, measurement, Replay, or further action authority |
 | Cloud | ephemeral Secret leases, object-storage provider contracts, attestation, Docker/container lifecycle | CLOUD-001A exact account/project/resource/IAM/container registry is implemented; typed values remain secret-free `registered-not-authorized` knowledge and general discovery remains missing | CLOUD-001B implements one signed read-only inventory/policy preparation and explicit exact-GET request adapter; CLOUD-001C verifies one external signed execution and admits a neutral `cloud.api-observation` with digest-only Evidence, while no repository provider runtime or provider-specific response interpreter exists | CLOUD-001B pins the minimum Cloud profile and exact request/lease ceilings; CLOUD-001C verifies a deployment-configured Worker/direct-mTLS/provider/key trust anchor, current Campaign authority, consumed Permit, approval receipt, and historical credential-use receipt without selecting a Worker or authorizing another credential use | CLOUD-001D reopens two separately admitted policy reads with disjoint Run/Permit/single-use lease/execution/admission identity, verifies separately signed sanitized exact-rule artifacts, and reports only deterministic input/decision match or change; a response digest alone is never policy input | CLOUD-001D registers exact allow, explicit deny override, and implicit-deny negative-Control Ground Truth with disposable account/emulator, fresh credential, and cleanup-evidence requirements; provisioning, execution, cleanup, resource-policy coverage, denial correctness, and cost remain unmeasured | provider/account/tenant identity, lease fingerprints, signed receipts, admitted observations, and deterministic projections never grant credential, runtime, effective-permission, mutation, Replay, Finding, or further action authority; writes and privilege changes are later T3+ slices |
-| System | isolated Docker Worker, host-local journals, direct mTLS identities | host/process/filesystem/service/configuration Surfaces | read-only host inventory/configuration Capability | authenticated host agent or isolated lab; no implicit root | immutable snapshot re-analysis or fresh authenticated inspection | disposable VM/container ground truth, coverage, privilege-denial, evidence completeness | host access is explicit authority; privilege escalation and mutation are separate high-risk Capabilities |
-| Application | content-addressed Artifacts, sealed evidence, Worker sandbox patterns | binary/config/runtime/library Surfaces | static analysis Capability; dynamic analysis remains separate | sandboxed read-only artifact mount; no network by default | deterministic re-analysis of the exact artifact digest | seeded binaries and configs, parser/analyzer recall and precision | code execution, debugger attach, or network access requires new authority and stronger isolation |
-| Mobile | Artifact and container patterns only | APK/IPA/app/runtime/storage/deeplink/TLS/auth Surfaces | static package analysis Capability; emulator analysis later | exact artifact and emulator/device identity; no ambient device access | exact package re-analysis, then fresh emulator replay when authorized | seeded apps, manifest/storage/deeplink ground truth, device cleanup | device identity, signing material, and runtime instrumentation require explicit approval |
+| System | isolated Docker Worker, host-local journals, direct mTLS identities | SYS-001A exact host/process/filesystem/service/configuration registry is implemented; typed values preserve parent lineage and remain secret-free `registered-not-authorized` knowledge, while live state and general discovery remain missing | SYS-001B implements one signed network-disabled metadata-only read preparation and exact-Surface request adapter; SYS-001C verifies one external signed non-root execution and admits neutral `system.host-observation` knowledge with digest-only Evidence, while no repository host-agent runtime or raw host-result interpreter exists | SYS-001B pins the minimum System profile, exact public Worker mTLS policy/subject/SPKI, declared non-root identity, Surface-token Scope, and request/artifact/runtime ceilings; SYS-001C verifies the deployment trust anchor, consumed Permit, approval receipt, recomputed Gateway policy outcome, direct-mTLS admission, non-root identity/confinement, and signed live-host-or-snapshot result provenance without selecting a Worker or granting another host read | SYS-001D reopens one stored C admission and a separately authorized sealed execution, requires disjoint authority identities and a signed replay start after source finish, distinguishes same-snapshot re-analysis from fresh authenticated inspection, and reports only neutral digest/byte-count/signal match/change/unresolved; trusted wire reload requires the receiver trust anchor and both exact Graph stores, and only same-snapshot mode satisfies DOMAIN-006 | SYS-001D registers five all-Surface known-positive, negative-Control, and privilege-denial requirements with disposable non-root container/VM, cleanup, and evidence-completeness requirements; private Ground Truth verification, provisioning, execution, cleanup, coverage, denial correctness, and numeric metrics remain unobserved | host identity, deployment configuration, signed execution provenance, admitted Observation, comparison, and open review Hypothesis never grant access; root, privilege escalation, service control, mutation, Replay, Finding, and further execution remain separate authority |
+| Application | content-addressed Artifacts, sealed evidence, Worker sandbox patterns | APP-001A exact digest-only binary and exact-parent configuration/declared-runtime/library registry is implemented; APP-001C admits only neutral result provenance and an optional open Hypothesis, while artifact resolution, byte/format/runtime/dependency verification, and general discovery remain missing | APP-001B implements one signed read-only static-analysis preparation and exact class-owned parser mapping; APP-001C reverifies one external signed offline execution and admits digest-only Evidence, while no repository parser or sandbox runtime exists | APP-001B pins an opaque custody reference plus exact parser/image digests, non-root identity, read-only no-exec artifact mount, disabled network, and bounded resources as configuration; APP-001C verifies the deployment trust anchor and runtime assertion without selecting another sandbox or Worker | APP-001D reopens one stored C admission and a separately authorized exact-artifact execution, requires disjoint action/evidence identities and a signed causal order, rejects equal result digests with unequal signed byte counts, and reports only neutral digest/byte-count/signal match/change/unresolved without scheduling Replay; trusted wire reload requires the external trust anchor, both evidence contexts, and exact Graph stores | APP-001D registers binary/configuration/runtime/library known-positive and negative-Control requirements with disposable offline non-root sandbox and cleanup-evidence requirements; Ground Truth verification, materialization, provider/fixture execution, cleanup, artifact-analysis coverage, quality, and numeric metrics remain unobserved | supplied digest, custody/sandbox configuration, signed provenance, admitted knowledge, comparison, or seeded Ground Truth requirement grants no artifact read, Scope expansion, approval, Permit, sandbox/Worker selection, network, dynamic execution, debugger, mutation, Replay, Finding, or further execution authority |
+| Mobile | APP-001A content coordinates plus Artifact and container patterns | MOBILE-001A exact APP-binary-parent APK/IPA, application, declared-runtime, logical-storage, sanitized deep-link/TLS/authentication registry is implemented; MOBILE-001C admits only neutral package-analysis provenance and an optional open Hypothesis, while package resolution, byte/format/manifest/signing verification, and general discovery remain missing | MOBILE-001B implements one signed read-only package-analysis preparation with eight exact Surface operations and root-lineage APK/IPA parser selection; MOBILE-001C reverifies one external signed device-free static execution and admits digest-only Evidence, while no repository parser or sandbox runtime exists | MOBILE-001B pins opaque custody, selected/root package Scope, parser/image digests, non-root network/DNS-disabled read-only/noexec configuration and archive ceilings; MOBILE-001C verifies the deployment trust anchor and runtime/archive assertions but deliberately keeps the current device-bound Mobile profile deferred and cannot materialize a WorkerJob | MOBILE-001D reopens one stored C admission and a separately authorized exact-package execution, requires equal selected/root/platform/package/parser/archive semantics, disjoint action/evidence identities and signed causal order, and reports only neutral digest/byte-count/signal match/change/unresolved; trusted wire reload requires both evidence contexts, both Graph stores, and the external trust anchor | MOBILE-001D registers one known-positive and one no-signal negative Control for all fourteen valid Android/APK and iOS/IPA selected Surface lineages, exactly 28 cases, with seeded packages, disposable offline static sandbox, archive-safety, and cleanup-evidence requirements; Ground Truth verification, materialization, provider/fixture execution, cleanup, manifest-component coverage, quality, and numeric metrics remain unobserved | typed identity, custody/sandbox configuration, signed provenance, admitted knowledge, comparison, and seeded Ground Truth requirements grant no package read, Scope expansion, approval, Permit, profile conformance, Worker, network/DNS, credential, emulator/device access, install/launch/instrumentation, storage/TLS/auth invocation, mutation, Replay, Finding, measurement, or execution authority; signing identity and runtime instrumentation require separate Evidence and approval |
 | Cryptography | offline CTF single-byte XOR Capability and host recomputation Oracle | protocol/key-usage/ciphertext/configuration Surfaces | general offline cryptographic misuse analysis Capability | offline artifact analysis by default | deterministic independent recomputation with another implementation or Oracle | seeded vectors, classification accuracy, false positives, coverage, evidence completeness | key material is sensitive evidence, never an implicit credential-use authority |
 | Forensics | immutable Run artifacts, hashes, evidence lineage, read-only verification | disk/memory/log/artifact forensic Surfaces and provenance schema | read-only parser/analyzer Capability | immutable source, provenance-preserving parser, no evidence mutation | deterministic re-parse or independent parser comparison | artifact coverage, parsing accuracy, provenance preservation, corruption handling | evidence may create a Hypothesis only; credential use, lateral movement, or mutation requires new authority |
 
@@ -454,6 +479,190 @@ cases with disposable account/emulator and cleanup-evidence requirements, but pr
 executes, cleans up, and measures nothing. The exact contract is
 [CLOUD-001D](../benchmark/CLOUD-001D-fresh-credential-policy-replay-disposable-fixtures.md).
 
+SYS-001A implements the reserved `system.host-resource` locator schema as five additive,
+secret-free classes for pseudonymous hosts, content-bound process snapshots, logical-mount-relative
+filesystem entries, manager-qualified services, and sanitized configuration records. Every child
+embeds exact parent lineage, while mutable PID, host-local absolute or ambiguous path, symlink,
+service display name, raw configuration value, credential, and privilege fields fail closed. The
+registry and typed Surface grant no host existence or state claim, Scope, Capability, approval,
+Permit, authenticated host agent, Tool/Worker, filesystem or service access, credential/root,
+network, Graph-admission, mutation, or execution authority. The exact contract is
+[SYS-001A](../discovery/SYS-001A-host-process-filesystem-service-configuration-surface-model.md).
+
+SYS-001B binds one exact SYS-001A Surface to a complete current signed CAP-002 release, a local
+System classification, and the DOMAIN-004 authenticated non-root System profile. One metadata-only
+operation is fixed per Surface class, with one request, bounded artifact bytes and runtime, and
+zero content/value reads, process signals, service control, and host writes. An explicit
+content-addressed deployment binds the exact opaque host, complete public Worker mTLS policy and
+selected subject/SPKI, executable digest, declared non-root identity, and an attenuated operation
+set. Preparation requires exact non-routable Surface-token Scope and GET, then stops at
+`PreparedCapabilityAction`. It does not invent a host-agent endpoint: the existing Worker initiates
+its authenticated Control Plane session, and Tool network access remains disabled. It does not
+perform live bearer/direct-mTLS authentication, attest non-root confinement, open a session or host
+connection, materialize a Worker job, read the host, produce knowledge, or grant root, mutation, or
+execution authority. The exact contract is
+[SYS-001B](../capability/SYS-001B-read-only-inspection-capability.md).
+
+SYS-001C invokes no host runtime. It rebuilds the current SYS-001B activation, Campaign Scope, and
+exact preparation, then joins the approved job to one consumed ActionPermit and durable approval
+receipt in the existing authority store. A deployment-configured Ed25519 trust anchor fixes the
+exact host-agent deployment and Capability/release, recomputes the current Gateway policy outcome,
+and verifies `WorkerMTLSAdmission`, non-root runtime identity/confinement receipt, execution window,
+and detached raw-result-free receipt. The signed receipt distinguishes live authenticated host input
+from an immutable snapshot digest without embedding raw host data. The existing Graph single writer admits one succeeded Action, one neutral
+`system.host-observation`, and two restricted Evidence nodes. A fixed configuration-metadata-drift
+or service-status-review signal may add only one confidence `0.5` open
+`system.security-configuration` Hypothesis that calls for a separately authorized fresh inspection;
+absence of a signal creates no conclusion. Raw host content, paths, service/configuration values,
+host access, root or privilege escalation, service control, mutation, Replay, Finding, and further
+execution authority remain outside the contract. The repository still supplies no live host-agent
+connector. The exact contract is
+[SYS-001C](../graph/SYS-001C-sealed-system-host-knowledge-admission.md).
+
+SYS-001D invokes no Replay runtime. It reopens the exact stored SYS-001C source and one separately
+authorized sealed execution through the current C verifier and the same deployment trust anchor.
+Capability/release, Surface/operation, deployment, Scope, budget, and normalized request semantics
+must match, while Run, request, Decision, Permit, approval, execution, statement, attestation, and
+result identities must all differ. The replay statement's signed start must be strictly later than
+the source statement's signed finish, preventing an older sealed execution from being relabeled as
+Replay without claiming physical Worker freshness. Trusted wire reload requires both original
+evidence contexts, both exact Graph stores, and the receiver deployment trust anchor; bare model
+parsing and embedded anchor or Graph events are structural only. Two receipts for the same signed immutable
+snapshot satisfy the DOMAIN-006 `immutable-snapshot-reanalysis` strategy. Two live authenticated
+receipts form a fresh inspection comparison but explicitly do not satisfy that strategy. Mixed
+modes and different snapshot identities fail closed. The projection reports only result match,
+changed, or unresolved, and equal result digests require equal signed byte counts; it confirms no
+host state or Finding and writes no Graph event.
+
+The separate content-addressed fixture profile covers all five System Surface classes with two
+known-positive review signals, two negative Controls, and one filesystem privilege-denial Control.
+Every case requires a disposable non-root container or VM plus execution, runtime, result-or-denial,
+and cleanup evidence. The profile records registered Ground Truth requirements while keeping
+private verification false; it provisions, executes, cleans up, and measures nothing and grants no
+Target Factory, host-agent, root, mutation, Replay, or further execution authority. The exact contract
+is [SYS-001D](../benchmark/SYS-001D-system-replay-disposable-host-fixtures.md).
+
+APP-001A invokes no artifact repository, parser, analyzer, process, or sandbox. Its code-owned
+registry contains exactly binary, configuration, declared-runtime, and library classes. Binary
+identity is one caller-supplied lowercase artifact SHA-256. Configuration and runtime locators
+embed the complete exact binary parent; a library embeds the complete exact binary or runtime
+parent. Normalized coordinates reject mutable aliases, path/URL/wildcard syntax, and floating or
+range versions, while all locators reject raw content, process state, secret, credential, and
+unknown fields. The content-addressed typed Surface binds the exact Application Domain and
+`application.artifact-runtime` semantics and remains `registered-not-authorized`. It does not
+resolve or verify bytes, identify format, parse configuration, attest runtime support, resolve a
+dependency graph, change the legacy discovery wire, admit Graph knowledge, or grant static or
+dynamic analysis, Scope, Capability, approval, Permit, sandbox/Worker, network, debugger, Finding,
+mutation, or execution authority. The exact contract is
+[APP-001A](../discovery/APP-001A-binary-configuration-runtime-library-surface-model.md).
+
+APP-001B adds the complete experimental read-only CAP-002 identity and requires a current signed
+Range release plus the exact non-routable Application Surface token in current Campaign Scope. A
+content-addressed custody binding carries only opaque deployment authority/object/authorization
+coordinates, authorization-document digest, declared byte count, and the exact APP-001A Surface;
+it neither reuses the sealed Run `ArtifactRef` nor resolves or verifies bytes. A separate
+configuration-only sandbox binding pins the class-owned parser, executable and image digests,
+explicit non-root identity, fixed read-only no-exec artifact mount, disabled network, no new
+privileges, fixed output schema, and artifact/output/runtime/memory/process ceilings. Preparation
+stops at a secret-free `PreparedCapabilityAction`; authorization verification, artifact read,
+mount, sandbox selection or attestation, Worker job, network, dynamic execution, debugger attach,
+result, Observation/Evidence, Graph admission, Finding, and execution remain absent. The exact
+contract is [APP-001B](../capability/APP-001B-read-only-static-analysis-capability.md).
+
+APP-001C rebuilds the exact current APP-001B preparation and approved execution inputs, resolves
+one consumed ActionPermit and durable approval-consumption receipt from the existing authority
+store, recomputes Gateway policy, and verifies a deployment-configured Ed25519 signature over the
+exact custody/artifact/sandbox identities and a detached digest-only result receipt. The configured
+deployment assertion binds non-root, disabled-network, read-only/no-exec mount and resource-limit
+conformance, but repository code does not independently inspect a live sandbox, custody service,
+image, executable, or parser output. The existing Graph writer admits one succeeded Action, one
+fixed neutral `application.analysis-observation`, two restricted Evidence nodes, and only for a
+fixed class-bound review signal one confidence `0.5` open Hypothesis. It grants no artifact access,
+format/runtime/dependency/vulnerability truth, raw output, sandbox or Worker invocation, network,
+dynamic execution, debugger, mutation, Replay, Finding, or further action authority. The exact
+contract is
+[APP-001C](../graph/APP-001C-sealed-application-static-analysis-knowledge-admission.md).
+
+APP-001D invokes no parser, sandbox, Worker, or Replay runtime. It reopens the exact stored
+APP-001C source and one separately authorized sealed execution through the current C verifier,
+receiver deployment trust anchor, and both exact Graph stores. Immutable artifact, Surface,
+operation, custody/sandbox, parser executable/image, output schema, Scope, release, request, and
+budget semantics must match, while every action and evidence authority coordinate must be disjoint
+and causally ordered. Equal result-body digests require equal signed byte counts. The projection
+reports only neutral digest/byte-count/signal match, change, or unresolved and confirms no artifact
+format, runtime, dependency, vulnerability, Hypothesis, or Finding truth. Bare model parsing is
+structural only; trusted reload rebuilds the complete projection from the external evidence
+contexts. A separate eight-case profile registers one known-positive and one negative-Control
+requirement for each binary, configuration, runtime, and library Surface plus disposable offline
+non-root sandbox and cleanup-evidence requirements. It materializes, executes, cleans up, and
+measures nothing. The exact contract is
+[APP-001D](../benchmark/APP-001D-application-reanalysis-seeded-artifact-fixtures.md).
+
+MOBILE-001A implements the reserved `mobile.application-runtime` locator schema as eight additive,
+secret-free classes. APK and IPA declarations embed one exact APP-001A binary coordinate;
+applications embed the complete package; and runtime, storage, deep-link, TLS-policy, and
+authentication-flow declarations embed the complete application. Android/iOS application-ID,
+runtime, link, and platform-policy mismatch fails closed. Deep links store a canonical scheme plus
+an optional strict IDNA host and optional host-dependent exact port, stable route ID, and a
+sanitized declaration digest rather than a full URI or path. Public builders revalidate nested
+Pydantic instances before deriving
+identity. Package bytes, manifest, signing material, raw security configuration, secrets,
+credentials, device state, and device-local paths cannot enter the locator. The registry and typed
+Surface grant no package resolution/read or verification, static/dynamic analysis, sandbox,
+emulator/device/Tool/Worker selection or access, instrumentation, storage/network/TLS/auth use,
+Scope, Capability, approval, Permit, Graph admission, Finding, mutation, runtime support, or
+execution authority. The exact contract is
+[MOBILE-001A](../discovery/MOBILE-001A-apk-ipa-app-runtime-storage-deeplink-tls-auth-surface-model.md).
+
+MOBILE-001B registers a new seven-role, read-only T2 CAP-002 bundle for all eight MOBILE-001A
+Surface classes. Each operation is owned by the selected Surface class, while the logical parser
+family is derived only from the canonical root package lineage: APK selects the Android structure
+parser and IPA selects the iOS structure parser. The exact selected Surface, reconstructed root
+package Surface, APP binary digest, declared byte count, and opaque deployment custody/object/
+authorization digest reference are content-addressed together. Both selected and root package
+non-routable Surface tokens require exact current Campaign allow rules, with deny taking
+precedence. The sandbox binding records exact parser/image digests, explicit non-root identity,
+network/DNS-disabled read-only/noexec requirements, and bounded archive entry, uncompressed-size,
+path, nesting, and compression-ratio ceilings with traversal, symlink, and duplicate-name
+rejection. These are configuration requirements, not runtime conformance evidence. Because the
+current DOMAIN-004 Mobile minimum profile is device-bound, MOBILE-001B records
+`domainWorkerProfileBound=false`, defers profile binding, and cannot materialize a WorkerJob. It
+stops at `PreparedCapabilityAction` and grants no package resolution/read, parser or sandbox
+execution, emulator/device selection or access, install/launch/instrumentation, storage/network/
+TLS/auth/credential use, result, Observation/Evidence, Graph admission, Hypothesis, Finding,
+mutation, Replay, or execution authority. The exact contract is
+[MOBILE-001B](../capability/MOBILE-001B-read-only-package-analysis-capability.md).
+
+MOBILE-001C rebuilds current MOBILE-001B activation, selected/root exact Scope, preparation,
+Decision, approval, consumed Permit, and durable approval-consumption receipt. A
+deployment-configured Ed25519 trust anchor verifies one external non-root network/DNS-disabled
+static-sandbox execution whose selected/root/platform/package/custody/parser/image identity,
+resource and archive ceilings, six bounded archive observations, recomputed Gateway decision,
+causal zero-live-channel budget, and detached digest-only result receipt match that current
+authority. The existing Graph writer admits one neutral `mobile.analysis-observation`, two
+restricted Evidence nodes, and only for eight class-owned review signals one confidence `0.5` open
+`mobile.security-property` Hypothesis. It does not inspect package bytes or parser output and grants
+no package/manifest/signing/runtime/security truth, device/profile/Worker binding, network,
+credential, mutation, Replay, Finding, or further action authority. The exact contract is
+[MOBILE-001C](../graph/MOBILE-001C-sealed-mobile-package-analysis-knowledge-admission.md).
+
+MOBILE-001D invokes no parser, sandbox, Worker, Replay runtime, emulator, or device. It reopens one
+stored MOBILE-001C source and one separately authorized sealed execution through the current C
+verifier, deployment trust anchor, and both exact Graph stores. Selected/root Surface and complete
+platform lineage, immutable package, custody/sandbox, operation/parser/image, selected/root Scope,
+release, resource and archive ceilings, and all signed archive observations must match. All action
+and evidence authority coordinates must differ and the signed re-analysis start must follow the
+source finish. Equal result-body digests require equal signed byte counts; the projection otherwise
+reports only neutral digest/byte-count/signal match, change, or unresolved without interpreting
+either result body. A separate 28-case content-addressed profile registers known-positive and
+no-signal negative Controls across all fourteen valid Android/APK and iOS/IPA selected Surface
+lineages, with seeded packages, disposable network/DNS-disabled non-root static sandbox,
+read-only/noexec mount, archive safety, and execution/runtime/result/cleanup evidence requirements.
+It materializes, executes, cleans up, and measures nothing, and the device-bound Mobile profile,
+Worker job, emulator/device path, Finding, Replay, measurement, and further execution authority
+remain absent. The exact contract is
+[MOBILE-001D](../benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md).
+
 ## 10. Delivery order
 
 1. Complete REDTEAM-001C as the current bounded Web product slice.
@@ -485,10 +694,11 @@ This candidate is planned, not implemented by this RFC. Its versioned REDTEAM-00
 ADR must be reviewed with positive and adversarial tests before runtime code is added.
 
 Post-acceptance status: REDTEAM-001C/D, REDTEAM-002, UX-008, DOMAIN-001 through DOMAIN-006,
-WEB-001A through WEB-001D, AI-001A through AI-001D, NET-001A through NET-001D, and CLOUD-001A through CLOUD-001D were
-implemented within the bounded claims of their separate versioned contracts and tests. The
-paragraph above is retained as the acceptance-time design record; it is not the current roadmap
-authority.
+WEB-001A through WEB-001D, AI-001A through AI-001D, NET-001A through NET-001D, CLOUD-001A through
+CLOUD-001D, SYS-001A through SYS-001D, APP-001A through APP-001D, and MOBILE-001A through
+MOBILE-001D were implemented within the bounded claims of
+their separate versioned contracts and tests. The paragraph above is retained as the
+acceptance-time design record; it is not the current roadmap authority.
 
 ## 12. Compatibility and migration
 
@@ -530,6 +740,18 @@ runtime conditions.
 - [ADR-0225](../adr/0225-bind-cloud-read-only-preparation-without-credential-use-authority.md)
 - [ADR-0226](../adr/0226-admit-cloud-api-observations-without-credential-use-authority.md)
 - [ADR-0227](../adr/0227-bind-cloud-policy-replay-and-fixtures-without-provider-authority.md)
+- [ADR-0228](../adr/0228-type-system-host-resources-without-host-access-authority.md)
+- [ADR-0229](../adr/0229-bind-system-read-only-inspection-without-host-access-authority.md)
+- [ADR-0230](../adr/0230-admit-system-host-knowledge-without-host-access-authority.md)
+- [ADR-0231](../adr/0231-bind-system-replay-and-fixtures-without-host-authority.md)
+- [ADR-0232](../adr/0232-type-application-artifact-runtime-without-analysis-authority.md)
+- [ADR-0233](../adr/0233-bind-application-static-analysis-without-artifact-access-authority.md)
+- [ADR-0234](../adr/0234-admit-application-analysis-knowledge-without-artifact-authority.md)
+- [ADR-0235](../adr/0235-bind-application-reanalysis-and-fixtures-without-artifact-authority.md)
+- [ADR-0236](../adr/0236-type-mobile-application-runtime-without-package-or-device-authority.md)
+- [ADR-0237](../adr/0237-bind-mobile-package-analysis-without-package-or-device-access-authority.md)
+- [ADR-0238](../adr/0238-admit-mobile-package-analysis-knowledge-without-package-or-device-authority.md)
+- [ADR-0239](../adr/0239-bind-mobile-package-reanalysis-and-fixtures-without-package-or-device-authority.md)
 - [ADR-0046](../adr/0046-common-engine-and-campaign-profiles.md)
 - [ADR-0048](../adr/0048-minimum-graph-and-admission-consistency.md)
 - [ADR-0052](../adr/0052-code-backed-capability-authority-set.md)

@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 17 — System / Host Analysis
-- 현재 우선순위: `SYS-001A` host/process/filesystem/service/configuration Surface model
-- 다음 우선순위: `SYS-001B` read-only inspection Capability and authenticated non-root Worker
+- 현재 단계: Phase 20 — Cryptographic Analysis
+- 현재 우선순위: `CRYPTO-001A` protocol/key-usage/ciphertext/configuration Surface model
+- 다음 우선순위: `CRYPTO-001B` offline cryptographic misuse analysis Capability
 
 ## 제품 목표
 
@@ -381,26 +381,179 @@ Cloud mutation 또는 general container runtime 완료 주장이 아니다.
 
 ### Phase 17 — System / Host Analysis
 
-- [ ] `SYS-001A` host/process/filesystem/service/configuration Surface model
-- [ ] `SYS-001B` read-only inspection Capability and authenticated non-root Worker
-- [ ] `SYS-001C` host Observation/Evidence admission and bounded Hypothesis
-- [ ] `SYS-001D` snapshot/fresh-inspection replay and disposable host benchmark
+- [x] `SYS-001A` host/process/filesystem/service/configuration Surface model
+  - DOMAIN-001 System classification과 DOMAIN-002 `system.host-resource` semantics를 exact host, process,
+    filesystem, service, configuration locator 5종과 content-addressed typed Surface registry에 결박
+  - 모든 child locator에 exact host 또는 resource parent lineage를 포함하고 process-instance/executable,
+    filesystem content, service definition, sanitized configuration digest로 mutable local name과 분리
+  - host ID·logical mount·configuration namespace를 canonicalize하고 PID, absolute/ambiguous path, symlink,
+    service display name, raw configuration value, secret·credential·privilege metadata를 fail closed로 거부
+  - 기존 discovery/AttackSurface wire, Docker/host journal, Scope, Capability, approval, Permit, authenticated
+    host agent, Worker, network, Graph admission, credential/root, host mutation, execution 권위를 만들지 않음
+- [x] `SYS-001B` read-only inspection Capability and authenticated non-root host-agent preparation boundary
+  - complete signed CAP-002와 local System classification을 SYS-001A locator registry 및 DOMAIN-004
+    deployment-scoped·bounded-host-read·deployment-authentication·authenticated-non-root-agent profile에 결박
+  - host/process/filesystem/service/configuration class별 metadata-only read operation 5종을 exact mapping하고
+    request 1회, artifact 1,024~1,048,576 bytes, runtime 1~60초 ceiling과 content/value read·signal·control·write 0을 강제
+  - explicit host-agent deployment에 exact opaque host, public Worker mTLS policy digest와 selected subject/SPKI,
+    executable digest, non-root run-as identity 및 attenuated operation set을 content-addressed 결박
+  - 기존 pull-based Worker 경로와 맞지 않는 별도 agent endpoint를 만들지 않고 network-disabled Capability의
+    current Campaign non-routable exact Surface token과 GET만 요구해 signed `PreparedCapabilityAction`까지 생성
+  - bearer/direct-mTLS authentication, non-root attestation, agent session, host connection/read, budget reservation,
+    WorkerJob, network, Observation/Evidence, Graph, approval, Permit, root·privilege escalation, mutation, execution 권위는 만들지 않음
+- [x] `SYS-001C` host Observation/Evidence admission and bounded Hypothesis
+  - current SYS-001B activation·Campaign Scope·exact preparation과 approved job, exactly one consumed
+    ActionPermit·durable approval receipt를 기존 SQLite authority store에서 다시 결박
+  - deployment-configured Ed25519 trust anchor가 exact host-agent deployment·Capability/release를 고정하고
+    current Campaign·Grant·request·Tool spec으로 Gateway policy를 재계산한 sanitized outcome, Worker direct-mTLS
+    admission, non-root runtime identity/confinement, detached result receipt의 file/content digest·timing·
+    one-request/zero-content-read/zero-write budget을 검증
+  - existing Graph single writer에 succeeded Action 1·neutral `system.host-observation` 1·restricted Evidence 2와
+    `produces` 1·`supported-by` 2만 admission하고 raw host content·path·service/configuration 값을 Graph prose에
+    복제하지 않으며 exact retry는 host agent·Tool·Gateway·Worker를 재실행하지 않음
+  - fixed configuration-drift 또는 service-status review signal이 있을 때만 confidence `0.5` open
+    `system.security-configuration` Hypothesis와 `enables` 1을 admission하고 signal 부재에는 Hypothesis나
+    negative conclusion을 만들지 않음
+  - source identity와 prior Permit provenance를 Surface·Scope·Capability·approval·Permit·host access·agent/Worker·
+    network·credential·root·privilege escalation·service control·mutation·Replay·Finding·후속 execution 권위로
+    전환하지 않음
+- [x] `SYS-001D` snapshot/fresh-inspection replay and disposable host benchmark
+  - SYS-001C signed result receipt에 raw-value-free `live-authenticated-host` 또는
+    `immutable-host-snapshot` source kind를 요구하고 snapshot mode만 exact snapshot SHA-256을 결박
+  - one stored SYS-001C source admission과 separately authorized sealed execution을 current C verifier로 다시
+    열어 exact Capability/release·Surface/operation·deployment·Scope·request semantics를 맞추고 Run/request/
+    Decision/Permit/approval/execution/statement/attestation/result identity 재사용을 거부하며 replay signed
+    start가 source signed finish보다 이후인지 검증
+  - wire projection의 trusted reload는 deployment trust anchor·양쪽 source evidence·exact Graph store로
+    expected projection을 다시 만들고 전체 일치를 요구하며, bare model parse와 embedded anchor/Graph event는
+    structural projection일 뿐 deployment verification으로 취급하지 않음
+  - same immutable snapshot re-analysis와 fresh authenticated inspection을 명시적으로 구분하며 DOMAIN-006
+    `immutable-snapshot-reanalysis` strategy는 전자에만 satisfied로 투영
+  - equal result-body digest에는 exact signed result byte-count equality를 요구하고 digest·byte-count·bounded
+    review signal로 neutral match/change/unresolved만 content-addressed projection하며 raw result를 해석하거나
+    Graph write, Replay scheduling, host-agent/Tool/Worker/network 호출을 수행하지 않음
+  - 5개 System Surface를 모두 포함하는 known-positive 2·negative Control 2·privilege-denial Control 1과
+    disposable non-root container/VM, result-or-denial·cleanup evidence completeness 요구를 등록
+  - private Ground Truth requirement registration과 실제 verification을 분리하고 fixture provision·execution·
+    cleanup, raw host data, numeric measurement, Profile floor, host state/Finding, root·privilege escalation·
+    service control·mutation 또는 후속 execution authority를 만들지 않음
 
 ### Phase 18 — Native Application / Binary Analysis
 
-- [ ] `APP-001A` binary/config/runtime/library Surface model
-- [ ] `APP-001B` sandboxed read-only static analysis Capability
-- [ ] `APP-001C` artifact-bound Observation/Evidence admission
-- [ ] `APP-001D` deterministic re-analysis and seeded binary benchmark
+- [x] `APP-001A` binary/config/runtime/library Surface model
+  - binary는 caller-supplied lowercase artifact SHA-256만으로 식별하고 path·filename·format·bytes·custody를
+    Surface identity나 검증 주장으로 포함하지 않음
+  - configuration과 runtime은 exact binary parent를, library는 exact binary 또는 runtime parent를 완전히
+    내장해 parent substitution이 content identity를 바꾸도록 결박
+  - configuration/runtime/library coordinate를 case-fold하고 path·URL·query·fragment·wildcard·mutable alias와
+    floating/range version을 fail closed하며 raw content·process state·secret·credential field를 거부
+  - typed Surface를 Application Domain과 DOMAIN-002 `application.artifact-runtime` semantics에 exact 결박하되
+    artifact resolve/read·static/dynamic analysis·Scope·Capability·approval·Permit·sandbox/Worker·network·debugger·
+    Graph·Finding·mutation·runtime support·execution authority를 만들지 않음
+- [x] `APP-001B` sandboxed read-only static analysis Capability
+  - exact APP-001A Surface와 deployment-supplied custody authority/object/authorization digest reference를
+    content-addressed 결박하되 path·URL·raw bytes·secret·credential을 포함하지 않고 custody·authorization·
+    artifact bytes 검증 또는 read를 수행했다고 주장하지 않음
+  - Surface class별 operation/parser를 exact mapping하고 parser executable·sandbox image digest,
+    non-root identity, read-only root와 no-exec artifact mount, disabled network, no-new-privileges 및
+    artifact/output/runtime/memory/process ceiling을 configuration-only sandbox boundary에 결박
+  - current signed CAP-002 release와 exact Campaign Surface-token Scope를 secret-free request 및
+    `PreparedCapabilityAction`으로 준비하되 mount·sandbox/Worker·network·dynamic execution·debugger·
+    Observation/Evidence·Graph·Finding·execution authority를 만들지 않음
+- [x] `APP-001C` artifact-bound Observation/Evidence admission
+  - current activation·Campaign Scope·exact APP-001B preparation과 approved job, exactly one consumed
+    ActionPermit·durable approval receipt를 existing SQLite authority store에서 다시 결박
+  - deployment-configured Ed25519 trust anchor와 signed execution이 exact custody/artifact digest,
+    operation/parser, executable/image, non-root network-disabled read-only/no-exec sandbox, result receipt와
+    causal budget을 주장하는지 재검증하되 repository가 live custody·sandbox conformance를 독립 주장하지 않음
+  - existing Graph single writer에 succeeded Action 1, neutral `application.analysis-observation` 1,
+    restricted Evidence 2와 `produces`/`supported-by`만 admission하고 fixed class-bound review signal에만
+    confidence `0.5` open Hypothesis와 `enables`를 추가
+  - raw artifact/output, format·configuration·runtime·dependency·vulnerability truth, Scope·Capability·approval·
+    Permit·artifact access·sandbox/Worker·network·dynamic execution·debugger·mutation·Replay·Finding·후속 execution
+    authority를 만들지 않음
+- [x] `APP-001D` deterministic re-analysis and seeded binary benchmark
+  - stored APP-001C admission과 separately authorized sealed re-analysis를 current verifier로 다시 열고 exact
+    artifact/Surface/operation·custody/sandbox·parser executable/image·output schema·Scope·release·budget을 결박
+  - wire projection의 trusted reload는 deployment trust anchor·양쪽 evidence root·exact Graph store를 요구하고
+    current APP-001C verifier로 재구성한 결과와 전체 비교하며 bare model parse는 검증으로 취급하지 않음
+  - Run/source-root/request/envelope/proposal/Decision/Permit/dispatch/approval/execution/attestation/result-receipt
+    identity 재사용과 source finish 이전 re-analysis start를 fail closed
+  - equal body digest에는 exact signed result byte-count equality를 요구하고 digest·byte-count·bounded review
+    signal만으로 neutral match/change/unresolved를 투영하며 format·configuration·runtime·dependency·
+    vulnerability·Hypothesis·Finding truth와 Graph write·Replay scheduling·후속 authority를 만들지 않음
+  - binary/configuration/runtime/library 각각 known-positive와 negative Control 8건, disposable network-disabled
+    non-root sandbox·read-only noexec mount·execution/runtime/result/cleanup evidence requirement를 등록하되
+    Ground Truth verification·fixture materialization·provider/fixture execution·cleanup·coverage/quality/Profile-floor
+    measurement를 수행하지 않음
 
 Dynamic execution, debugger attach와 network access는 APP-001의 권위가 아니다.
 
 ### Phase 19 — Mobile Application Analysis
 
-- [ ] `MOBILE-001A` APK/IPA/app/runtime/storage/deeplink/TLS/auth Surface model
-- [ ] `MOBILE-001B` read-only package analysis Capability
-- [ ] `MOBILE-001C` exact app/artifact Observation/Evidence admission
-- [ ] `MOBILE-001D` package re-analysis and seeded mobile benchmark
+- [x] `MOBILE-001A` APK/IPA/app/runtime/storage/deeplink/TLS/auth Surface model
+  - APP-001A exact binary를 부모로 재사용하는 APK/IPA package와 그 아래 exact application,
+    runtime/storage/deeplink/TLS/auth locator 8종을 Mobile Domain 및 `mobile.application-runtime`
+    semantics에 content-addressed registry로 결박
+  - complete binary→package→application parent lineage, Android/iOS application ID·runtime·link·TLS
+    platform 일치, canonical numeric/dotted exact runtime version, optional strict IDNA host와 path-free
+    logical declaration coordinate를 강제
+  - raw package/manifest/security configuration, signing·secret·credential material, storage value,
+    full deeplink URI/path, device state/path와 mutable alias·range·wildcard·authority field를 거부하고
+    preconstructed Pydantic parent/child도 public boundary에서 dump 후 재검증
+  - typed Surface는 `registered-not-authorized`이며 package resolve/read·format/manifest/signing verification,
+    static/dynamic analysis, sandbox/emulator/device/Tool/Worker selection·access·instrumentation, storage/network/
+    credential use, Scope·Capability·approval·Permit·Graph·Finding·mutation·runtime·execution 권위를 만들지 않음
+- [x] `MOBILE-001B` read-only package analysis Capability
+  - exact MOBILE-001A Surface와 root APK/IPA package Surface, deployment-owned opaque
+    custody/object/authorization digest reference 및 exact package byte ceiling을 함께 content-addressed 결박
+  - 8개 Surface class별 operation을 완전 열거하고 parser family는 caller 입력이나 filename이 아니라
+    canonical root package lineage에서만 APK/IPA로 도출
+  - parser executable·sandbox image digest, non-root identity, network/DNS-disabled read-only/noexec mount,
+    archive entry/uncompressed-size/path/nesting/compression-ratio ceiling과 traversal/symlink/duplicate-name 거부를
+    configuration requirement로 결박하되 runtime conformance를 주장하지 않음
+  - current signed CAP-002 release와 selected Surface 및 root package의 exact non-routable Campaign Scope를
+    `PreparedCapabilityAction`으로 준비하되 current DOMAIN-004 device-bound Mobile profile에는 결박하지 않고
+    WorkerJob·package read·device/emulator·install/launch/instrumentation·network·storage/TLS/auth·credential·
+    Observation/Evidence·Graph·Hypothesis·Finding·mutation·execution authority를 만들지 않음
+- [x] `MOBILE-001C` sealed package-analysis Observation/Evidence admission and bounded Hypothesis
+  - current activation·Campaign selected/root exact Scope·MOBILE-001B preparation·approved job을 다시 만들고
+    existing SQLite authority store의 exactly one consumed ActionPermit과 durable approval-consumption receipt에 결박
+  - deployment-configured Ed25519 trust anchor와 signed external static-sandbox execution에서 selected/root Surface,
+    package digest/bytes·custody authorization digest·operation/parser·executable/image·non-root identity·Gateway outcome·
+    causal timing·zero live-channel budget과 detached digest-only result receipt를 검증
+  - runtime receipt가 B의 package/output/runtime/memory/process 및 archive entry/uncompressed-size/path/nesting/
+    compression-ratio ceiling과 observed archive maxima, traversal/symlink/duplicate-name rejection을 exact 결박하되
+    configured deployment assertion을 repository-owned parser 또는 live sandbox proof로 승격하지 않음
+  - existing Graph single writer에 succeeded Action 1, neutral `mobile.analysis-observation` 1, restricted Evidence 2,
+    `produces` 1과 `supported-by` 2를 admission하고 8개 exact class/operation review signal에만 confidence `0.5`
+    open `mobile.security-property` Hypothesis와 `enables` 1을 허용; no-signal에는 결론을 만들지 않음
+  - current device-bound DOMAIN-004 Mobile profile은 계속 deferred/false로 유지하고 WorkerJob·package/raw output·
+    format/manifest/signing/runtime/storage/deeplink/TLS/auth truth·device/emulator·install/launch/instrumentation·network·
+    credential·mutation·Replay·Finding·후속 execution authority를 만들지 않음
+- [x] `MOBILE-001D` package re-analysis and seeded mobile benchmark
+  - one stored MOBILE-001C admission과 separately authorized sealed re-analysis를 current C verifier,
+    deployment-configured trust anchor 및 양쪽 exact SQLite Graph store로 다시 열어 source admission과
+    evidence context를 재검증하며 bare model parse를 trusted verification으로 취급하지 않음
+  - selected/root Surface·complete parent lineage·platform·package digest/bytes·operation·custody/sandbox·
+    lineage-derived parser·executable/image·output schema·selected/root exact Scope rule·release·activation·
+    request/resource/archive ceiling과 6개 observed archive 값을 exact 결박해 drift를 changed result가 아닌
+    incomparable input으로 fail closed
+  - Run/source-root/request/envelope/proposal/Decision/Permit/dispatch/approval/execution/runtime receipt/
+    attestation/result-receipt identity 재사용을 거부하고 re-analysis signed start가 source signed finish보다
+    strictly later인지 검증
+  - equal result-body digest에는 exact result byte-count equality를 요구하고 digest·bytes·bounded review signal의
+    neutral match/change/unresolved만 투영하며 DOMAIN-006 `deterministic-package-reanalysis` strategy를 결박하되
+    bytes equality 자체나 changed/unresolved를 package·manifest·runtime·security-property·Finding truth로 만들지 않음
+  - APK/Android, IPA/iOS 및 application/runtime/storage/deeplink/TLS/auth의 양 플랫폼을 포함한 14개 valid
+    selected/platform/root lineage마다 known-positive와 no-signal negative Control을 등록해 exact 28-case seeded
+    profile을 만들고 disposable network/DNS-disabled non-root static sandbox·read-only/noexec package mount·archive
+    safety·execution/runtime/result/cleanup evidence requirement를 결박하되 fixture materialization·provider/fixture
+    execution·cleanup·manifest-component coverage/evidence completeness/detection quality/Profile-floor measurement를
+    수행하지 않음
+  - current device-bound DOMAIN-004 Mobile profile, profile conformance, WorkerJob, emulator/device, install/launch/
+    instrumentation, storage/network/TLS/auth/credential use, Graph write, mutation, Replay scheduling, Finding 및
+    후속 execution authority를 계속 false로 유지
 
 Emulator/device instrumentation은 별도 device identity와 authority가 필요한 후속 slice다.
 
