@@ -3,6 +3,8 @@ from http import HTTPStatus
 from pathlib import Path
 from types import ModuleType
 
+import pytest
+
 
 def _load_target() -> ModuleType:
     path = Path("containers/bug-bounty-target/target.py")
@@ -42,3 +44,31 @@ def test_hardened_lab_rejects_non_numeric_probe_and_preserves_baseline() -> None
     assert probe_status is HTTPStatus.BAD_REQUEST
     assert probe["recordCount"] == 0
     assert probe["synthetic"] is True
+
+
+def test_target_access_log_is_canonical_query_free_jsonl(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = _load_target()
+    handler = object.__new__(target.Handler)
+    handler.path = "/v1/users/lookup?id=do-not-log"
+    handler.command = "GET"
+
+    handler.log_request(200)
+
+    assert capsys.readouterr().out == (
+        '{"event":"pajin.synthetic-http-response","method":"GET",'
+        '"path":"/v1/users/lookup","status":200}\n'
+    )
+
+
+def test_target_access_log_ignores_preparse_error_without_path(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    target = _load_target()
+    handler = object.__new__(target.Handler)
+    handler.command = None
+
+    handler.log_request(400)
+
+    assert capsys.readouterr().out == ""

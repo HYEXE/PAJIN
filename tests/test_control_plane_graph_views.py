@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 import pajin.control_plane.decision_views as decision_views
 import pajin.control_plane.graph_views as graph_views
 from pajin.control_plane.api import ControlPlaneSettings, create_app
-from pajin.control_plane.graph_views import _build_hypothesis_attention_ranking
+from pajin.control_plane.graph_views import _build_hypothesis_attention_ranking, _node_view
 from pajin.control_plane.models import Principal, PrincipalRole
 from pajin.graph import (
     GraphAction,
@@ -59,6 +59,27 @@ DIGEST_C = "c" * 64
 DIGEST_D = "d" * 64
 DIGEST_E = "e" * 64
 DIGEST_F = "f" * 64
+
+
+def test_sealed_source_action_view_remains_capability_free() -> None:
+    action = GraphAction(
+        campaignId=CAMPAIGN,
+        requestId="request_web-source-view_1",
+        requestDigest=DIGEST_A,
+        authorityKind=GraphAuthorityKind.SEALED_SOURCE_AUTHORITY,
+        authorityId="web-zap-source-measurement-authority:sealed",
+        authorityDigest=DIGEST_B,
+        toolId="benchmark.zap-baseline.measure",
+        targetDigest=DIGEST_C,
+        status=GraphActionStatus.SUCCEEDED,
+        executedAt=NOW,
+    )
+
+    view = _node_view(action)
+
+    assert view.display_key == action.tool_id
+    assert view.display_value is None
+    assert view.state == GraphActionStatus.SUCCEEDED.value
 
 
 def _settings(
@@ -506,9 +527,7 @@ def test_graph_decision_audit_view_is_operator_only_redacted_and_read_only(
     assert "sensitive-decision-actor" not in serialized
     assert "recorderId" not in serialized
     assert "actorId" not in serialized
-    assert {
-        path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before
-    } == before
+    assert {path: (path.read_bytes(), path.stat().st_mtime_ns) for path in before} == before
 
 
 def test_graph_decision_audit_view_filters_current_snapshot_but_verifies_history(

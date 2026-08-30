@@ -11,6 +11,9 @@ from pajin.runtime.store import (
     verify_run_integrity,
 )
 from pajin.runtime.worker import (
+    DockerEgressLifecycleObservation,
+    DockerEgressLifecycleObservationError,
+    DockerEgressLifecycleObserver,
     DockerWorkerBackend,
     EgressPolicy,
     NetworkMode,
@@ -26,6 +29,9 @@ from pajin.runtime.worker import (
 
 __all__ = [
     "AuditEvent",
+    "DockerEgressLifecycleObservation",
+    "DockerEgressLifecycleObservationError",
+    "DockerEgressLifecycleObserver",
     "DockerWorkerBackend",
     "EgressPolicy",
     "NetworkMode",

@@ -97,6 +97,7 @@ class GraphAuthorityKind(StrEnum):
     CAPABILITY_GRANT = "capability-grant"
     ACTION_PERMIT = "action-permit"
     REPLAY_CAPABILITY_GRANT = "replay-capability-grant"
+    SEALED_SOURCE_AUTHORITY = "sealed-source-authority"
 
 
 class CampaignFactValidationState(StrEnum):
@@ -232,9 +233,21 @@ class GraphAction(_GraphNodeBase):
     authority_kind: GraphAuthorityKind = Field(alias="authorityKind")
     authority_id: _Identifier = Field(alias="authorityId")
     authority_digest: _Sha256 = Field(alias="authorityDigest")
-    capability_id: _Identifier = Field(alias="capabilityId")
-    capability_version: _Identifier = Field(alias="capabilityVersion")
-    capability_digest: _Sha256 = Field(alias="capabilityDigest")
+    capability_id: _Identifier | None = Field(
+        default=None,
+        alias="capabilityId",
+        exclude_if=lambda value: value is None,
+    )
+    capability_version: _Identifier | None = Field(
+        default=None,
+        alias="capabilityVersion",
+        exclude_if=lambda value: value is None,
+    )
+    capability_digest: _Sha256 | None = Field(
+        default=None,
+        alias="capabilityDigest",
+        exclude_if=lambda value: value is None,
+    )
     tool_id: _Identifier = Field(alias="toolId")
     target_digest: _Sha256 = Field(alias="targetDigest")
     status: GraphActionStatus
@@ -244,6 +257,16 @@ class GraphAction(_GraphNodeBase):
     @classmethod
     def normalize_executed_at(cls, value: datetime) -> datetime:
         return _normalize_utc(value, label="Graph Action executed_at")
+
+    @model_validator(mode="after")
+    def require_authority_specific_capability_binding(self) -> Self:
+        values = (self.capability_id, self.capability_version, self.capability_digest)
+        if self.authority_kind is GraphAuthorityKind.SEALED_SOURCE_AUTHORITY:
+            if any(value is not None for value in values):
+                raise ValueError("sealed-source Graph Action cannot claim Capability authority")
+        elif any(value is None for value in values):
+            raise ValueError("Graph Action Capability binding is incomplete")
+        return self
 
 
 class GraphObservation(_GraphNodeBase):
@@ -446,13 +469,35 @@ class GraphProposalLineage(StrictModel):
         default=None,
         alias="capabilityGrantDigest",
     )
-    capability_id: _Identifier = Field(alias="capabilityId")
-    capability_version: _Identifier = Field(alias="capabilityVersion")
-    capability_digest: _Sha256 = Field(alias="capabilityDigest")
+    capability_id: _Identifier | None = Field(
+        default=None,
+        alias="capabilityId",
+        exclude_if=lambda value: value is None,
+    )
+    capability_version: _Identifier | None = Field(
+        default=None,
+        alias="capabilityVersion",
+        exclude_if=lambda value: value is None,
+    )
+    capability_digest: _Sha256 | None = Field(
+        default=None,
+        alias="capabilityDigest",
+        exclude_if=lambda value: value is None,
+    )
     action_permit_id: _Identifier | None = Field(default=None, alias="actionPermitId")
     action_permit_digest: _Sha256 | None = Field(
         default=None,
         alias="actionPermitDigest",
+    )
+    source_authority_id: _Identifier | None = Field(
+        default=None,
+        alias="sourceAuthorityId",
+        exclude_if=lambda value: value is None,
+    )
+    source_authority_digest: _Sha256 | None = Field(
+        default=None,
+        alias="sourceAuthorityDigest",
+        exclude_if=lambda value: value is None,
     )
     source_root_digest: _Sha256 = Field(alias="sourceRootDigest")
     evidence: list[GraphEvidenceBinding] = Field(
@@ -472,8 +517,29 @@ class GraphProposalLineage(StrictModel):
             raise ValueError("Capability Grant ID and digest must be provided together")
         if (self.action_permit_id is None) is not (self.action_permit_digest is None):
             raise ValueError("Action Permit ID and digest must be provided together")
-        if self.capability_grant_id is None and self.action_permit_id is None:
-            raise ValueError("Graph Proposal requires a Capability Grant or Action Permit")
+        if (self.source_authority_id is None) is not (self.source_authority_digest is None):
+            raise ValueError("source authority ID and digest must be provided together")
+        capability_values = (
+            self.capability_id,
+            self.capability_version,
+            self.capability_digest,
+        )
+        if self.source_authority_id is not None:
+            if (
+                self.capability_grant_id is not None
+                or self.action_permit_id is not None
+                or any(value is not None for value in capability_values)
+            ):
+                raise ValueError(
+                    "sealed-source Graph lineage cannot claim Capability or Permit authority"
+                )
+        elif self.capability_grant_id is None and self.action_permit_id is None:
+            raise ValueError(
+                "Graph Proposal requires a Capability Grant or Action Permit, "
+                "or sealed source authority"
+            )
+        elif any(value is None for value in capability_values):
+            raise ValueError("Graph Proposal Capability binding is incomplete")
         keys = [(item.reference, item.sha256) for item in self.evidence]
         if keys != sorted(set(keys)):
             raise ValueError("Graph Proposal evidence must be unique and sorted")
@@ -556,8 +622,7 @@ class HypothesisProposal(_GraphProposalBase):
         for edge in self.edges:
             if (
                 edge.campaign_id != campaign_id
-                or edge.relation
-                not in {GraphRelation.MOTIVATES, GraphRelation.ENABLES}
+                or edge.relation not in {GraphRelation.MOTIVATES, GraphRelation.ENABLES}
                 or edge.target.node_id != self.hypothesis.node_id
                 or edge.target.kind is not GraphNodeKind.HYPOTHESIS
             ):
@@ -588,9 +653,7 @@ class ObservationProposal(_GraphProposalBase):
         if (
             self.action.campaign_id != campaign_id
             or self.observation.campaign_id != campaign_id
-            or any(
-            evidence.campaign_id != campaign_id for evidence in self.evidence_nodes
-            )
+            or any(evidence.campaign_id != campaign_id for evidence in self.evidence_nodes)
         ):
             raise ValueError("Observation Proposal node belongs to another Campaign")
         if (
@@ -603,6 +666,12 @@ class ObservationProposal(_GraphProposalBase):
             raise ValueError("Observation Proposal Action differs from its request lineage")
         expected_authority = (
             (
+                GraphAuthorityKind.SEALED_SOURCE_AUTHORITY,
+                self.lineage.source_authority_id,
+                self.lineage.source_authority_digest,
+            )
+            if self.lineage.source_authority_id is not None
+            else (
                 GraphAuthorityKind.ACTION_PERMIT,
                 self.lineage.action_permit_id,
                 self.lineage.action_permit_digest,
@@ -629,12 +698,8 @@ class ObservationProposal(_GraphProposalBase):
         evidence_ids = [evidence.node_id for evidence in self.evidence_nodes]
         if evidence_ids != sorted(set(evidence_ids)):
             raise ValueError("Observation Proposal evidence nodes must be unique and sorted")
-        lineage_evidence = {
-            (item.reference, item.sha256) for item in self.lineage.evidence
-        }
-        proposed_evidence = {
-            (item.reference, item.sha256) for item in self.evidence_nodes
-        }
+        lineage_evidence = {(item.reference, item.sha256) for item in self.lineage.evidence}
+        proposed_evidence = {(item.reference, item.sha256) for item in self.evidence_nodes}
         if proposed_evidence != lineage_evidence:
             raise ValueError("Observation Proposal evidence differs from its lineage")
         if any(
@@ -648,8 +713,7 @@ class ObservationProposal(_GraphProposalBase):
             raise ValueError("Observation Proposal edges must be unique and sorted")
         if any(
             edge.campaign_id != campaign_id
-            or self.observation.node_id
-            not in {edge.source.node_id, edge.target.node_id}
+            or self.observation.node_id not in {edge.source.node_id, edge.target.node_id}
             for edge in self.edges
         ):
             raise ValueError("Observation Proposal contains an unrelated edge")
@@ -670,9 +734,7 @@ class ObservationProposal(_GraphProposalBase):
             and edge.source.node_id == self.observation.node_id
         }
         if supported_evidence_ids != set(evidence_ids):
-            raise ValueError(
-                "Observation Proposal must bind every Evidence node with supported-by"
-            )
+            raise ValueError("Observation Proposal must bind every Evidence node with supported-by")
         positions: dict[str, set[GraphRelation]] = {}
         for edge in self.edges:
             if edge.relation in {
@@ -681,9 +743,7 @@ class ObservationProposal(_GraphProposalBase):
             }:
                 positions.setdefault(edge.target.node_id, set()).add(edge.relation)
         if any(len(relations) > 1 for relations in positions.values()):
-            raise ValueError(
-                "one Graph Observation cannot support and contradict one Hypothesis"
-            )
+            raise ValueError("one Graph Observation cannot support and contradict one Hypothesis")
         return self
 
 

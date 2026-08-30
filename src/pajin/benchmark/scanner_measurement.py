@@ -101,9 +101,7 @@ class ScannerBaselineSourceBinding(StrictModel):
     harness_authority_sha256: _Sha256 = Field(alias="harnessAuthoritySha256")
     harness_authority_digest: _Sha256 = Field(alias="harnessAuthorityDigest")
     activation_digest: _Sha256 = Field(alias="activationDigest")
-    registry_admission_authority_digest: _Sha256 = Field(
-        alias="registryAdmissionAuthorityDigest"
-    )
+    registry_admission_authority_digest: _Sha256 = Field(alias="registryAdmissionAuthorityDigest")
     target_run_id: _Identifier = Field(alias="targetRunId")
     target_root_digest: _Sha256 = Field(alias="targetRootDigest")
     target_authority_sha256: _Sha256 = Field(alias="targetAuthoritySha256")
@@ -113,9 +111,7 @@ class ScannerBaselineSourceBinding(StrictModel):
     target_coordinate_digest: _Sha256 = Field(alias="targetCoordinateDigest")
     execution_receipt_digest: _Sha256 = Field(alias="executionReceiptDigest")
     execution_operation_id: _Identifier = Field(alias="executionOperationId")
-    execution_provider_evidence_digest: _Sha256 = Field(
-        alias="executionProviderEvidenceDigest"
-    )
+    execution_provider_evidence_digest: _Sha256 = Field(alias="executionProviderEvidenceDigest")
     provider_evidence: DockerBenchmarkProviderEvidence = Field(alias="providerEvidence")
     raw_sarif_artifact: str = Field(alias="rawSarifArtifact", min_length=1, max_length=300)
     raw_sarif_sha256: _Sha256 = Field(alias="rawSarifSha256")
@@ -129,8 +125,7 @@ class ScannerBaselineSourceBinding(StrictModel):
         )
         if (
             self.provider_evidence.stage != "execution"
-            or self.provider_evidence.evidence_digest
-            != self.execution_provider_evidence_digest
+            or self.provider_evidence.evidence_digest != self.execution_provider_evidence_digest
             or self.provider_evidence.operation_id != self.execution_operation_id
             or self.provider_evidence.raw_sarif_sha256 != self.raw_sarif_sha256
             or self.provider_evidence.raw_sarif_size_bytes
@@ -164,19 +159,13 @@ class ScannerBaselineMeasurementAuthority(StrictModel):
         default=SCANNER_BASELINE_MEASUREMENT_API_VERSION,
         alias="apiVersion",
     )
-    kind: Literal["ScannerBaselineMeasurementAuthority"] = (
-        "ScannerBaselineMeasurementAuthority"
-    )
+    kind: Literal["ScannerBaselineMeasurementAuthority"] = "ScannerBaselineMeasurementAuthority"
     authority_id: str = Field(default="", alias="authorityId", max_length=110)
     authority_digest: str = Field(default="", alias="authorityDigest", max_length=64)
     plan: ScannerBaselineMeasurementPlanAuthority
     registration: ZAPScannerRegistration
-    catalog_selection: BenchmarkTargetProfileSelectionAuthority = Field(
-        alias="catalogSelection"
-    )
-    sources: tuple[ScannerBaselineSourceBinding, ...] = Field(
-        min_length=1, max_length=2_000
-    )
+    catalog_selection: BenchmarkTargetProfileSelectionAuthority = Field(alias="catalogSelection")
+    sources: tuple[ScannerBaselineSourceBinding, ...] = Field(min_length=1, max_length=2_000)
     baseline_result: BenchmarkResult = Field(alias="baselineResult")
     baseline_result_digest: _Sha256 = Field(alias="baselineResultDigest")
     measurement_state: Literal["registry-governed-zap-baseline-measured"] = Field(
@@ -203,12 +192,10 @@ class ScannerBaselineMeasurementAuthority(StrictModel):
             != self.plan.scanner_contract.parser_contract_digest
             or self.catalog_selection != self.plan.target_selection
             or any(
-                source.normalization.registration_digest
-                != self.registration.registration_digest
+                source.normalization.registration_digest != self.registration.registration_digest
                 or source.provider_evidence.scanner_registration_digest
                 != self.registration.registration_digest
-                or source.provider_evidence.scanner_image_id
-                != self.registration.scanner_image_id
+                or source.provider_evidence.scanner_image_id != self.registration.scanner_image_id
                 for source in sources
             )
             or self.sources != sources
@@ -391,8 +378,7 @@ def load_scanner_baseline_measurement_authority(
             if (
                 raw != loaded_source.raw_sarif
                 or sha256(raw).hexdigest() != source.raw_sarif_sha256
-                or parse_zap_sarif(raw, registration=sealed_registration)
-                != source.normalization
+                or parse_zap_sarif(raw, registration=sealed_registration) != source.normalization
             ):
                 raise ValueError("sealed ZAP SARIF differs from provider source")
     except (
@@ -504,9 +490,7 @@ def _canonical_sources(
     ):
         raise ValueError("P0-E2B requires one deterministic Scanner baseline arm")
     canonical = tuple(
-        ScannerBaselineSourceBinding.model_validate(
-            source.model_dump(mode="json", by_alias=True)
-        )
+        ScannerBaselineSourceBinding.model_validate(source.model_dump(mode="json", by_alias=True))
         for source in sources
     )
     ordered = tuple(
@@ -676,14 +660,22 @@ def _parse_sources(raw: bytes) -> tuple[ScannerBaselineSourceBinding, ...]:
     value = json.loads(raw)
     if not isinstance(value, list):
         raise ValueError("Scanner source bindings must be a JSON array")
-    return tuple(ScannerBaselineSourceBinding.model_validate(item) for item in value)
+    sources = tuple(ScannerBaselineSourceBinding.model_validate(item) for item in value)
+    if raw != _json_bytes([source.model_dump(mode="json", by_alias=True) for source in sources]):
+        raise ValueError("Scanner source binding wire is not canonical")
+    return sources
 
 
 def _parse_observations(raw: bytes) -> tuple[WalkingBenchmarkRunObservation, ...]:
     value = json.loads(raw)
     if not isinstance(value, list):
         raise ValueError("Scanner observations must be a JSON array")
-    return tuple(WalkingBenchmarkRunObservation.model_validate(item) for item in value)
+    observations = tuple(WalkingBenchmarkRunObservation.model_validate(item) for item in value)
+    if raw != _json_bytes(
+        [observation.model_dump(mode="json", by_alias=True) for observation in observations]
+    ):
+        raise ValueError("Scanner observation wire is not canonical")
+    return observations
 
 
 def _json_bytes(value: object) -> bytes:

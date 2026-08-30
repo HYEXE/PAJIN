@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import multiprocessing
 import os
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -341,9 +342,73 @@ def test_recoverable_runner_preserves_completed_p0_c1_authority(tmp_path: Path) 
         ("execution", 1, 1),
         ("cleanup", 1, 1),
     ]
-    assert BenchmarkTargetOperationJournal(
-        tmp_path / "state" / "target-operations.sqlite3"
-    ).pending() == ()
+    journal_path = tmp_path / "state" / "target-operations.sqlite3"
+    journal = BenchmarkTargetOperationJournal.open_existing(journal_path)
+    assert journal.pending() == ()
+    adapter, coordinate, attempt, records = journal.completed_attempt_for_operation(
+        outcome.authority.execution_receipt.operation_id
+    )
+    assert adapter == outcome.authority.adapter
+    assert coordinate == outcome.authority.coordinate
+    assert attempt.fence == 1
+    assert len(records) == 8
+    assert [record.record_type for record in records] == ["intent", "receipt"] * 4
+    assert [record.operation.stage for record in records[::2]] == [
+        "reset",
+        "isolation",
+        "execution",
+        "cleanup",
+    ]
+    assert records[-1].receipt == outcome.authority.cleanup_receipt
+    with pytest.raises(BenchmarkTargetRecoveryError, match="absent or ambiguous"):
+        journal.completed_attempt_for_operation("benchmark-target-operation:missing")
+
+
+def test_completed_attempt_reader_rejects_foreign_canonical_record_chain(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest()
+    provider = _RecoverableProvider(manifest, _trust_anchor())
+    runner = _runner(tmp_path, provider)
+    first = asyncio.run(
+        runner.run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+    second = asyncio.run(
+        runner.run(
+            manifest,
+            arm_id=manifest.arms[0].arm_id,
+            seed=7,
+            repetition=1,
+        )
+    )
+    journal_path = tmp_path / "state" / "target-operations.sqlite3"
+    with sqlite3.connect(journal_path) as connection:
+        attempts = connection.execute(
+            "SELECT attempt_id FROM attempts WHERE state = 'completed' ORDER BY rowid"
+        ).fetchall()
+        assert len(attempts) == 2
+        first_attempt_id, second_attempt_id = (str(row[0]) for row in attempts)
+        assert first_attempt_id != second_attempt_id
+        connection.execute(
+            "DELETE FROM records WHERE attempt_id = ?",
+            (first_attempt_id,),
+        )
+        connection.execute(
+            "UPDATE records SET attempt_id = ? WHERE attempt_id = ?",
+            (first_attempt_id, second_attempt_id),
+        )
+
+    journal = BenchmarkTargetOperationJournal.open_existing(journal_path)
+    with pytest.raises(BenchmarkTargetRecoveryError, match="durable attempt"):
+        journal.completed_attempt_for_operation(second.authority.execution_receipt.operation_id)
+    assert first.authority.execution_receipt.operation_id != (
+        second.authority.execution_receipt.operation_id
+    )
 
 
 def test_hard_exit_is_fenced_retried_sealed_and_allows_next_run(tmp_path: Path) -> None:
@@ -451,9 +516,10 @@ def test_failed_inline_cleanup_is_reconciled_before_runner_returns(tmp_path: Pat
     assert recovery.lifecycle_state == "cleanup-reconciled"
     assert recovery.cleanup_receipt is not None
     assert recovery.cleanup_receipt.status == "succeeded"
-    assert BenchmarkTargetOperationJournal(
-        tmp_path / "state" / "target-operations.sqlite3"
-    ).pending() == ()
+    assert (
+        BenchmarkTargetOperationJournal(tmp_path / "state" / "target-operations.sqlite3").pending()
+        == ()
+    )
 
 
 def test_unresolved_recovery_seals_failure_and_blocks_new_reset(tmp_path: Path) -> None:
@@ -521,11 +587,7 @@ def test_recovery_does_not_swallow_base_exception_or_claim_it_as_provider_error(
 
     recovery_path = asyncio.run(runner.reconcile_pending())[0]
     authority = load_benchmark_target_recovery_authority(recovery_path)
-    fence_two = [
-        record
-        for record in authority.journal_records
-        if record.operation.fence == 2
-    ]
+    fence_two = [record for record in authority.journal_records if record.operation.fence == 2]
     assert [record.record_type for record in fence_two] == ["intent"]
     assert authority.resolution_fence == 3
 
@@ -557,6 +619,55 @@ def test_new_recovery_fence_rejects_stale_journal_writer(tmp_path: Path) -> None
     assert recovery_fence > attempt.fence
     with pytest.raises(BenchmarkTargetRecoveryError, match="Stale or foreign operation"):
         journal.append_provider_error(reset)
+
+
+def test_current_attempt_reader_rejects_coercible_noncanonical_wire(tmp_path: Path) -> None:
+    manifest = _manifest()
+    provider = _RecoverableProvider(manifest, _trust_anchor())
+    coordinate = BenchmarkTargetCoordinate(
+        benchmarkId=manifest.benchmark_id,
+        manifestDigest=manifest.digest(),
+        arm=manifest.arms[0],
+        seed=7,
+        repetition=1,
+    )
+    database = tmp_path / "state" / "target-operations.sqlite3"
+    journal = BenchmarkTargetOperationJournal(database)
+    attempt = journal.begin_attempt(provider.definition, coordinate)
+    canonical = attempt.model_dump_json(by_alias=True)
+    noncanonical = canonical.replace(f'"fence":{attempt.fence}', f'"fence":"{attempt.fence}"')
+    assert noncanonical != canonical
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE attempts SET attempt_json = ? WHERE attempt_id = ?",
+            (noncanonical, attempt.attempt_id),
+        )
+
+    with pytest.raises(BenchmarkTargetRecoveryError, match="identity differs"):
+        journal.current_open_attempt(attempt.attempt_id)
+
+
+def test_current_attempt_reader_rejects_coercible_fence_column(tmp_path: Path) -> None:
+    manifest = _manifest()
+    provider = _RecoverableProvider(manifest, _trust_anchor())
+    coordinate = BenchmarkTargetCoordinate(
+        benchmarkId=manifest.benchmark_id,
+        manifestDigest=manifest.digest(),
+        arm=manifest.arms[0],
+        seed=7,
+        repetition=1,
+    )
+    database = tmp_path / "state" / "target-operations.sqlite3"
+    journal = BenchmarkTargetOperationJournal(database)
+    attempt = journal.begin_attempt(provider.definition, coordinate)
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE attempts SET fence = ? WHERE attempt_id = ?",
+            (sqlite3.Binary(str(attempt.fence).encode("ascii")), attempt.attempt_id),
+        )
+
+    with pytest.raises(BenchmarkTargetRecoveryError, match="identity differs"):
+        journal.current_open_attempt(attempt.attempt_id)
 
 
 def test_recovery_reader_rejects_sealed_authority_mutation(tmp_path: Path) -> None:

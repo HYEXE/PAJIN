@@ -38,9 +38,9 @@ from pajin.graph.models import (
     parse_graph_proposal,
 )
 
-GRAPH_ADMISSION_EVENT_API_VERSION: Literal[
+GRAPH_ADMISSION_EVENT_API_VERSION: Literal["pajin.dev/graph-admission-event/v1alpha1"] = (
     "pajin.dev/graph-admission-event/v1alpha1"
-] = "pajin.dev/graph-admission-event/v1alpha1"
+)
 
 _MAX_EVENT_BYTES = 4 * 1024 * 1024
 _MAX_LINEAGE_BYTES = 512 * 1024
@@ -137,7 +137,13 @@ class GraphProducerRegistry:
 class GraphLineageVerifier(Protocol):
     """Trusted adapter boundary for Run/request/Capability/evidence lineage."""
 
-    def verify(self, lineage: GraphProposalLineage) -> None:
+    def verify(
+        self,
+        lineage: GraphProposalLineage,
+        *,
+        proposal_digest: str | None = None,
+        expected_event_log_head_digest: str | None = None,
+    ) -> None:
         """Fail unless all proposal lineage fields match a registered trusted source."""
 
 
@@ -150,22 +156,66 @@ class TrustedGraphLineageRegistry:
 
     def __init__(self, lineages: Iterable[GraphProposalLineage] = ()) -> None:
         self._digests: dict[tuple[str, str, str, str, str], str] = {}
+        self._sealed_source_bindings: dict[tuple[str, str, str, str, str], tuple[str, str]] = {}
         for lineage in lineages:
             self.register(lineage)
 
-    def register(self, lineage: GraphProposalLineage) -> None:
+    def register(
+        self,
+        lineage: GraphProposalLineage,
+        *,
+        proposal_digest: str | None = None,
+        expected_event_log_head_digest: str | None = None,
+    ) -> None:
         key = _lineage_key(lineage)
         digest = _lineage_digest(lineage)
+        if lineage.source_authority_id is not None:
+            if (
+                proposal_digest is None
+                or expected_event_log_head_digest is None
+                or fullmatch(r"^[a-f0-9]{64}$", proposal_digest) is None
+                or fullmatch(r"^[a-f0-9]{64}$", expected_event_log_head_digest) is None
+            ):
+                raise ValueError(
+                    "sealed-source Graph trust requires an exact Proposal digest and Event Log head"
+                )
+        elif proposal_digest is not None or expected_event_log_head_digest is not None:
+            raise ValueError(
+                "Capability/Permit Graph lineage cannot register sealed-source bindings"
+            )
         existing = self._digests.get(key)
         if existing is not None and existing != digest:
             raise ValueError("trusted Graph lineage identity has equivocated")
+        if proposal_digest is not None and expected_event_log_head_digest is not None:
+            binding = (proposal_digest, expected_event_log_head_digest)
+            existing_binding = self._sealed_source_bindings.get(key)
+            if existing_binding is not None and existing_binding != binding:
+                raise ValueError("trusted sealed-source Graph Proposal has equivocated")
+            self._sealed_source_bindings[key] = binding
         self._digests[key] = digest
 
-    def verify(self, lineage: GraphProposalLineage) -> None:
+    def verify(
+        self,
+        lineage: GraphProposalLineage,
+        *,
+        proposal_digest: str | None = None,
+        expected_event_log_head_digest: str | None = None,
+    ) -> None:
         expected = self._digests.get(_lineage_key(lineage))
         if expected is None or expected != _lineage_digest(lineage):
             raise GraphLineageVerificationError(
                 "Graph proposal lineage does not match a registered trusted source"
+            )
+        if lineage.source_authority_id is not None:
+            binding = self._sealed_source_bindings.get(_lineage_key(lineage))
+            if binding != (proposal_digest, expected_event_log_head_digest):
+                raise GraphLineageVerificationError(
+                    "sealed-source Graph Proposal does not match its registered "
+                    "content and Event Log head"
+                )
+        elif proposal_digest is not None or expected_event_log_head_digest is not None:
+            raise GraphLineageVerificationError(
+                "Capability/Permit Graph lineage received sealed-source bindings"
             )
 
 
@@ -261,21 +311,44 @@ class GraphAdmissionEvent(StrictModel):
         alias="capabilityGrantDigest",
         pattern=r"^[a-f0-9]{64}$",
     )
-    capability_id: _Identifier = Field(alias="capabilityId", min_length=1, max_length=200)
-    capability_version: _Identifier = Field(
+    capability_id: _Identifier | None = Field(
+        default=None,
+        alias="capabilityId",
+        min_length=1,
+        max_length=200,
+        exclude_if=lambda value: value is None,
+    )
+    capability_version: _Identifier | None = Field(
+        default=None,
         alias="capabilityVersion",
         min_length=1,
         max_length=200,
+        exclude_if=lambda value: value is None,
     )
-    capability_digest: _Sha256 = Field(
+    capability_digest: _Sha256 | None = Field(
+        default=None,
         alias="capabilityDigest",
         pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
     )
     action_permit_id: _Identifier | None = Field(default=None, alias="actionPermitId")
     action_permit_digest: _Sha256 | None = Field(
         default=None,
         alias="actionPermitDigest",
         pattern=r"^[a-f0-9]{64}$",
+    )
+    source_authority_id: _Identifier | None = Field(
+        default=None,
+        alias="sourceAuthorityId",
+        min_length=1,
+        max_length=200,
+        exclude_if=lambda value: value is None,
+    )
+    source_authority_digest: _Sha256 | None = Field(
+        default=None,
+        alias="sourceAuthorityDigest",
+        pattern=r"^[a-f0-9]{64}$",
+        exclude_if=lambda value: value is None,
     )
     source_root_digest: _Sha256 = Field(
         alias="sourceRootDigest",
@@ -306,8 +379,29 @@ class GraphAdmissionEvent(StrictModel):
             raise ValueError("Graph admission Capability Grant binding is incomplete")
         if (self.action_permit_id is None) is not (self.action_permit_digest is None):
             raise ValueError("Graph admission Action Permit binding is incomplete")
-        if self.capability_grant_id is None and self.action_permit_id is None:
-            raise ValueError("Graph admission requires a Capability Grant or Action Permit")
+        if (self.source_authority_id is None) is not (self.source_authority_digest is None):
+            raise ValueError("Graph admission source authority binding is incomplete")
+        capability_values = (
+            self.capability_id,
+            self.capability_version,
+            self.capability_digest,
+        )
+        if self.source_authority_id is not None:
+            if (
+                self.capability_grant_id is not None
+                or self.action_permit_id is not None
+                or any(value is not None for value in capability_values)
+            ):
+                raise ValueError(
+                    "sealed-source Graph admission cannot claim Capability or Permit authority"
+                )
+        elif self.capability_grant_id is None and self.action_permit_id is None:
+            raise ValueError(
+                "Graph admission requires a Capability Grant or Action Permit, "
+                "or sealed source authority"
+            )
+        elif any(value is None for value in capability_values):
+            raise ValueError("Graph admission Capability binding is incomplete")
         return self
 
     @model_validator(mode="after")
@@ -380,17 +474,20 @@ class GraphAdmissionEvent(StrictModel):
             raise ValueError("Surface admission event contains invalid node material")
         surface = self.admitted_nodes[0]
         if any(
-            edge.relation is not GraphRelation.DISCOVERS
-            or edge.target.node_id != surface.node_id
+            edge.relation is not GraphRelation.DISCOVERS or edge.target.node_id != surface.node_id
             for edge in self.admitted_edges
         ):
             raise ValueError("Surface admission event contains invalid edge material")
 
     def _require_hypothesis_material(self) -> None:
-        if len(self.admitted_nodes) != 1 or not isinstance(
-            self.admitted_nodes[0],
-            GraphHypothesis,
-        ) or not self.admitted_edges:
+        if (
+            len(self.admitted_nodes) != 1
+            or not isinstance(
+                self.admitted_nodes[0],
+                GraphHypothesis,
+            )
+            or not self.admitted_edges
+        ):
             raise ValueError("Hypothesis admission event contains invalid node material")
         hypothesis = self.admitted_nodes[0]
         if (
@@ -408,9 +505,7 @@ class GraphAdmissionEvent(StrictModel):
 
     def _require_observation_material(self) -> None:
         actions = [node for node in self.admitted_nodes if isinstance(node, GraphAction)]
-        observations = [
-            node for node in self.admitted_nodes if isinstance(node, GraphObservation)
-        ]
+        observations = [node for node in self.admitted_nodes if isinstance(node, GraphObservation)]
         evidence = [node for node in self.admitted_nodes if isinstance(node, GraphEvidence)]
         if len(actions) != 1 or len(observations) != 1 or not evidence:
             raise ValueError("Observation admission event contains incomplete node material")
@@ -450,9 +545,7 @@ class GraphAdmissionEvent(StrictModel):
             if edge.relation is GraphRelation.SUPPORTED_BY
             and edge.source.node_id == observation.node_id
         }
-        if len(production_edges) != 1 or supported_ids != {
-            item.node_id for item in evidence
-        }:
+        if len(production_edges) != 1 or supported_ids != {item.node_id for item in evidence}:
             raise ValueError("Observation admission event contains incomplete edge material")
         positions: dict[str, set[GraphRelation]] = {}
         for edge in self.admitted_edges:
@@ -469,6 +562,12 @@ class GraphAdmissionEvent(StrictModel):
     def _action_matches_event(self, action: GraphAction) -> bool:
         expected_authority = (
             (
+                GraphAuthorityKind.SEALED_SOURCE_AUTHORITY,
+                self.source_authority_id,
+                self.source_authority_digest,
+            )
+            if self.source_authority_id is not None
+            else (
                 GraphAuthorityKind.ACTION_PERMIT,
                 self.action_permit_id,
                 self.action_permit_digest,
@@ -733,7 +832,11 @@ class GraphAdmissionAuthority:
                     GraphAdmissionReason.STALE_SNAPSHOT,
                 )
 
-            reason = self._rejection_reason(proposal)
+            reason = self._rejection_reason(
+                proposal,
+                proposal_digest=proposal_digest,
+                expected_event_log_head_digest=expected_event_log_head_digest,
+            )
             if reason is not None:
                 return self._reject(proposal, proposal_digest, reason)
 
@@ -757,7 +860,13 @@ class GraphAdmissionAuthority:
                 idempotent=False,
             )
 
-    def _rejection_reason(self, proposal: GraphProposal) -> GraphAdmissionReason | None:
+    def _rejection_reason(
+        self,
+        proposal: GraphProposal,
+        *,
+        proposal_digest: str,
+        expected_event_log_head_digest: str | None,
+    ) -> GraphAdmissionReason | None:
         if proposal.lineage.campaign_id != self._campaign_id:
             return GraphAdmissionReason.FOREIGN_CAMPAIGN
         registration = self._producers.registration(proposal.producer_id)
@@ -773,7 +882,14 @@ class GraphAdmissionAuthority:
         if not _payload_producer_matches(proposal):
             return GraphAdmissionReason.PRODUCER_PAYLOAD_MISMATCH
         try:
-            self._lineage_verifier.verify(proposal.lineage)
+            if proposal.lineage.source_authority_id is not None:
+                self._lineage_verifier.verify(
+                    proposal.lineage,
+                    proposal_digest=proposal_digest,
+                    expected_event_log_head_digest=expected_event_log_head_digest,
+                )
+            else:
+                self._lineage_verifier.verify(proposal.lineage)
         except GraphLineageVerificationError:
             return GraphAdmissionReason.LINEAGE_VERIFICATION_FAILED
         return None
@@ -839,6 +955,8 @@ class GraphAdmissionAuthority:
             capabilityDigest=lineage.capability_digest,
             actionPermitId=lineage.action_permit_id,
             actionPermitDigest=lineage.action_permit_digest,
+            sourceAuthorityId=lineage.source_authority_id,
+            sourceAuthorityDigest=lineage.source_authority_digest,
             sourceRootDigest=lineage.source_root_digest,
             evidence=[item.model_copy(deep=True) for item in lineage.evidence],
             admittedNodes=sorted(nodes, key=lambda item: item.node_id),
@@ -873,9 +991,7 @@ class GraphAdmissionAuthority:
         raise TypeError("unsupported Graph Proposal kind")
 
     def _edges_resolve(self, nodes: list[GraphNode], edges: list[GraphEdge]) -> bool:
-        proposed = {
-            node.node_id: (node.campaign_id, GraphNodeKind(node.kind)) for node in nodes
-        }
+        proposed = {node.node_id: (node.campaign_id, GraphNodeKind(node.kind)) for node in nodes}
         for edge in edges:
             for reference in (edge.source, edge.target):
                 identity = proposed.get(reference.node_id)

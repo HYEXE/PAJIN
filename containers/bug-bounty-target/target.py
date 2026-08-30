@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
@@ -81,6 +82,21 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, format: str, *args: object) -> None:
         del format, args
+
+    def log_request(self, code: int | str = "-", size: int | str = "-") -> None:
+        del size
+        request_path = getattr(self, "path", None)
+        if not isinstance(request_path, str):
+            return
+        path = urlsplit(request_path).path
+        event = {
+            "event": "pajin.synthetic-http-response",
+            "method": self.command,
+            "path": path,
+            "status": int(code) if isinstance(code, int) else code,
+        }
+        sys.stdout.write(json.dumps(event, separators=(",", ":"), sort_keys=True) + "\n")
+        sys.stdout.flush()
 
     def _json(self, status: int, payload: dict[str, Any]) -> None:
         body = json.dumps(payload, separators=(",", ":")).encode("utf-8")

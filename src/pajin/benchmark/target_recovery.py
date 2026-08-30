@@ -30,9 +30,9 @@ from pajin.benchmark.target_factory import (
 from pajin.domain.models import StrictModel
 from pajin.runtime.store import RunIntegrityError, RunStore, load_verified_run_artifacts
 
-BENCHMARK_TARGET_OPERATION_API_VERSION: Literal[
+BENCHMARK_TARGET_OPERATION_API_VERSION: Literal["pajin.dev/benchmark-target-operation/v1alpha1"] = (
     "pajin.dev/benchmark-target-operation/v1alpha1"
-] = "pajin.dev/benchmark-target-operation/v1alpha1"
+)
 BENCHMARK_TARGET_RECOVERY_AUTHORITY_API_VERSION: Literal[
     "pajin.dev/benchmark-target-recovery-authority/v1alpha1"
 ] = "pajin.dev/benchmark-target-recovery-authority/v1alpha1"
@@ -328,8 +328,7 @@ def _validated_authority_journal(
         ):
             raise ValueError("Recovery Authority journal chain differs")
         if operation.fence < attempt.fence or (
-            operation.fence > attempt.fence
-            and operation.stage != BenchmarkTargetStage.CLEANUP
+            operation.fence > attempt.fence and operation.stage != BenchmarkTargetStage.CLEANUP
         ):
             raise ValueError("Recovery Authority contains an invalid fenced stage")
         if operation.fence == attempt.fence and record.record_type == "intent":
@@ -423,6 +422,35 @@ class BenchmarkTargetOperationJournal:
         self.path = Path(os.path.abspath(path))
         _initialize_journal(self.path)
 
+    @classmethod
+    def open_existing(cls, path: Path) -> BenchmarkTargetOperationJournal:
+        """Open an existing journal without creating or mutating its schema."""
+
+        resolved = Path(os.path.abspath(path))
+        if not resolved.exists():
+            raise BenchmarkTargetRecoveryError("Target operation journal is absent")
+        _require_safe_journal_path(resolved)
+        _require_safe_journal_sidecars(resolved)
+        try:
+            with _readonly_connection(resolved) as connection:
+                tables = {
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table'"
+                    ).fetchall()
+                }
+                if not {"fences", "attempts", "records"}.issubset(tables):
+                    raise BenchmarkTargetRecoveryError(
+                        "Target operation journal schema is incomplete"
+                    )
+        except sqlite3.Error as exc:
+            raise BenchmarkTargetRecoveryError(
+                "Target operation journal could not be opened read-only"
+            ) from exc
+        journal = object.__new__(cls)
+        journal.path = resolved
+        return journal
+
     def begin_attempt(
         self,
         adapter: RegisteredBenchmarkTargetFactoryAdapter,
@@ -497,6 +525,96 @@ class BenchmarkTargetOperationJournal:
             ).fetchall()
             return tuple(self._attempt_snapshot(connection, row) for row in rows)
 
+    def current_open_attempt(
+        self,
+        attempt_id: str,
+    ) -> tuple[
+        RegisteredBenchmarkTargetFactoryAdapter,
+        BenchmarkTargetCoordinate,
+        BenchmarkTargetAttempt,
+        int,
+        tuple[BenchmarkTargetOperationRecord, ...],
+    ]:
+        """Read one authoritative open attempt, including its current effective fence."""
+
+        with _readonly_connection(self.path) as connection:
+            row = _required_open_attempt(connection, attempt_id)
+            adapter, coordinate, attempt, records = self._attempt_snapshot(connection, row)
+            recovery_fence = row["active_recovery_fence"]
+            if recovery_fence is not None and type(recovery_fence) is not int:
+                raise BenchmarkTargetRecoveryError("Journal recovery fence is not canonical")
+            stored_fence = row["fence"]
+            if type(stored_fence) is not int:
+                raise BenchmarkTargetRecoveryError("Journal attempt fence is not canonical")
+            active_fence = recovery_fence if recovery_fence is not None else stored_fence
+            return adapter, coordinate, attempt, active_fence, records
+
+    def completed_attempt_for_operation(
+        self,
+        operation_id: str,
+    ) -> tuple[
+        RegisteredBenchmarkTargetFactoryAdapter,
+        BenchmarkTargetCoordinate,
+        BenchmarkTargetAttempt,
+        tuple[BenchmarkTargetOperationRecord, ...],
+    ]:
+        """Read the one completed durable attempt containing an exact provider operation."""
+
+        if (
+            not isinstance(operation_id, str)
+            or not operation_id
+            or len(operation_id) > 110
+            or operation_id.strip() != operation_id
+        ):
+            raise BenchmarkTargetRecoveryError("Target operation identity is invalid")
+        matches: list[
+            tuple[
+                RegisteredBenchmarkTargetFactoryAdapter,
+                BenchmarkTargetCoordinate,
+                BenchmarkTargetAttempt,
+                tuple[BenchmarkTargetOperationRecord, ...],
+            ]
+        ] = []
+        with _readonly_connection(self.path) as connection:
+            rows = connection.execute(
+                "SELECT * FROM attempts WHERE state = 'completed' ORDER BY rowid"
+            ).fetchall()
+            for row in rows:
+                adapter, coordinate, attempt, records = self._attempt_snapshot(connection, row)
+                if not any(record.operation.operation_id == operation_id for record in records):
+                    continue
+                recovery_fence = row["active_recovery_fence"]
+                stored_fence = row["fence"]
+                if (
+                    recovery_fence is not None
+                    or type(stored_fence) is not int
+                    or stored_fence != attempt.fence
+                ):
+                    raise BenchmarkTargetRecoveryError(
+                        "Completed Target attempt fence is not canonical"
+                    )
+                matches.append((adapter, coordinate, attempt, records))
+        if len(matches) != 1:
+            raise BenchmarkTargetRecoveryError(
+                "Completed Target attempt for operation is absent or ambiguous"
+            )
+        return matches[0]
+
+    def latest_scope_fence(self, *, adapter_digest: str, coordinate_digest: str) -> int:
+        """Read the latest fence ever issued for one exact adapter-coordinate scope."""
+
+        scope = _scope_digest(adapter_digest, coordinate_digest)
+        with _readonly_connection(self.path) as connection:
+            row = connection.execute(
+                "SELECT value FROM fences WHERE scope_digest = ?",
+                (scope,),
+            ).fetchone()
+            if row is None or len(row) != 1 or type(row[0]) is not int or row[0] < 1:
+                raise BenchmarkTargetRecoveryError(
+                    "Target operation scope fence is absent or noncanonical"
+                )
+            return row[0]
+
     def claim_recovery(self, attempt: BenchmarkTargetAttempt) -> int:
         scope = _scope_digest(attempt.adapter_digest, attempt.coordinate_digest)
         with _write_transaction(self.path) as connection:
@@ -570,13 +688,11 @@ class BenchmarkTargetOperationJournal:
                 if prior is not None
                 else None
             )
-            sequence = (
-                int(
-                    connection.execute(
-                        "SELECT COALESCE(MAX(sequence), 0) + 1 FROM records WHERE attempt_id = ?",
-                        (operation.attempt_id,),
-                    ).fetchone()[0]
-                )
+            sequence = int(
+                connection.execute(
+                    "SELECT COALESCE(MAX(sequence), 0) + 1 FROM records WHERE attempt_id = ?",
+                    (operation.attempt_id,),
+                ).fetchone()[0]
             )
             record = BenchmarkTargetOperationRecord(
                 sequence=sequence,
@@ -602,26 +718,61 @@ class BenchmarkTargetOperationJournal:
         BenchmarkTargetAttempt,
         tuple[BenchmarkTargetOperationRecord, ...],
     ]:
-        adapter = RegisteredBenchmarkTargetFactoryAdapter.model_validate_json(
-            str(row["adapter_json"])
-        )
-        coordinate = BenchmarkTargetCoordinate.model_validate_json(str(row["coordinate_json"]))
-        attempt = BenchmarkTargetAttempt.model_validate_json(str(row["attempt_json"]))
+        adapter_json = str(row["adapter_json"])
+        coordinate_json = str(row["coordinate_json"])
+        attempt_json = str(row["attempt_json"])
+        stored_fence = row["fence"]
+        active_recovery_fence = row["active_recovery_fence"]
+        adapter = RegisteredBenchmarkTargetFactoryAdapter.model_validate_json(adapter_json)
+        coordinate = BenchmarkTargetCoordinate.model_validate_json(coordinate_json)
+        attempt = BenchmarkTargetAttempt.model_validate_json(attempt_json)
         if (
-            attempt.attempt_id != str(row["attempt_id"])
+            adapter_json != adapter.model_dump_json(by_alias=True)
+            or coordinate_json != coordinate.model_dump_json(by_alias=True)
+            or attempt_json != attempt.model_dump_json(by_alias=True)
+            or attempt.attempt_id != str(row["attempt_id"])
             or attempt.adapter_digest != adapter.adapter_digest
             or attempt.coordinate_digest != coordinate.coordinate_digest
-            or attempt.fence != int(row["fence"])
+            or type(stored_fence) is not int
+            or attempt.fence != stored_fence
+            or (
+                active_recovery_fence is not None
+                and (
+                    type(active_recovery_fence) is not int or active_recovery_fence <= stored_fence
+                )
+            )
         ):
             raise BenchmarkTargetRecoveryError("Journal attempt identity differs")
-        records = tuple(
-            BenchmarkTargetOperationRecord.model_validate_json(str(item[0]))
+        record_jsons = tuple(
+            str(item[0])
             for item in connection.execute(
                 "SELECT record_json FROM records WHERE attempt_id = ? ORDER BY sequence",
                 (attempt.attempt_id,),
             ).fetchall()
         )
+        records = tuple(
+            BenchmarkTargetOperationRecord.model_validate_json(raw) for raw in record_jsons
+        )
+        if any(
+            raw != record.model_dump_json(by_alias=True)
+            for raw, record in zip(record_jsons, records, strict=True)
+        ):
+            raise BenchmarkTargetRecoveryError("Journal record wire is not canonical")
         _require_record_chain(records)
+        highest_allowed_fence = (
+            stored_fence if active_recovery_fence is None else active_recovery_fence
+        )
+        if any(
+            record.operation.attempt_id != attempt.attempt_id
+            or record.operation.attempt_digest != attempt.attempt_digest
+            or record.operation.adapter_digest != adapter.adapter_digest
+            or record.operation.coordinate_digest != coordinate.coordinate_digest
+            or not stored_fence <= record.operation.fence <= highest_allowed_fence
+            for record in records
+        ):
+            raise BenchmarkTargetRecoveryError(
+                "Journal record operation differs from its durable attempt"
+            )
         return adapter, coordinate, attempt, records
 
 
@@ -956,8 +1107,7 @@ def _require_recovery_receipt(
         raise ValueError("Recovery cleanup receipt differs from exact fenced operation")
     known = request.known_isolation_receipt
     if known is not None and (
-        receipt.environment_id != known.environment_id
-        or receipt.isolation_id != known.isolation_id
+        receipt.environment_id != known.environment_id or receipt.isolation_id != known.isolation_id
     ):
         raise ValueError("Recovery cleanup receipt differs from known isolation identity")
 
@@ -1080,10 +1230,7 @@ def _require_safe_journal_path(path: Path) -> None:
     if parent.exists() and not parent.is_dir():
         raise BenchmarkTargetRecoveryError("Target operation journal parent is unsafe")
     if (path.exists() or path.is_symlink() or path.is_junction()) and (
-        not path.is_file()
-        or path.is_symlink()
-        or path.is_junction()
-        or path.stat().st_nlink != 1
+        not path.is_file() or path.is_symlink() or path.is_junction() or path.stat().st_nlink != 1
     ):
         raise BenchmarkTargetRecoveryError(
             "Target operation journal is not a single-link regular file"

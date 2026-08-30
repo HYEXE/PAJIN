@@ -259,6 +259,7 @@ from pajin.benchmark.scanner_baseline import (
 from pajin.benchmark.scanner_docker_provider import (
     CatalogBoundDockerZAPScannerTargetFactoryAdapter,
     DockerZAPScannerTargetFactoryAdapter,
+    ZAPScannerRequestUnitEvidence,
 )
 from pajin.benchmark.scanner_measurement import (
     SCANNER_BASELINE_MEASUREMENT_API_VERSION,
@@ -658,6 +659,7 @@ __all__ = [
     "ZAPSarifFinding",
     "ZAPSarifNormalization",
     "ZAPScannerRegistration",
+    "ZAPScannerRequestUnitEvidence",
     "active_benchmark_measurement_registry_key",
     "aggregate_redteam_initial_benchmark",
     "aggregate_walking_benchmark_metrics",

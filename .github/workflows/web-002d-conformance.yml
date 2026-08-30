@@ -1,0 +1,109 @@
+name: WEB-002D real-Docker conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_web_002d_conformance:
+        description: Run the exact WEB-002D real-Docker conformance
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: web-002d-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: Ubuntu 24.04 / exact boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      ZAP_REGISTRY_DIGEST: sha256:71db37cd5b75663b35758d10aaec05bf6fbac23f5020e3046c70e628a5f84efa
+
+    steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRM_WEB_002D_CONFORMANCE: ${{ inputs.confirm_web_002d_conformance }}
+        run: test "$CONFIRM_WEB_002D_CONFORMANCE" = "true"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+
+      - name: Record runtime context
+        run: |
+          git rev-parse HEAD
+          python --version
+          docker version
+          printf 'github_sha=%s\n' "$GITHUB_SHA"
+          printf 'runner_image_os=%s\n' "${ImageOS:-unknown}"
+          printf 'runner_image_version=%s\n' "${ImageVersion:-unknown}"
+
+      - name: Build exact repository images
+        run: |
+          docker build --pull --platform linux/amd64 --tag pajin-bug-bounty-target:dev containers/bug-bounty-target
+          docker build --pull --platform linux/amd64 --tag pajin-benchmark-worker:dev containers/benchmark-worker
+          docker build --pull --platform linux/amd64 --tag pajin-worker:dev containers/worker
+          docker build --pull --platform linux/amd64 --tag pajin-egress-proxy:dev containers/egress-proxy
+
+      - name: Pull the digest-pinned ZAP image
+        run: |
+          docker pull --platform linux/amd64 "ghcr.io/zaproxy/zaproxy@${ZAP_REGISTRY_DIGEST}"
+          zap_image_id="$(docker image inspect "ghcr.io/zaproxy/zaproxy@${ZAP_REGISTRY_DIGEST}" --format '{{.Id}}')"
+          docker tag "$zap_image_id" ghcr.io/zaproxy/zaproxy:stable
+
+      - name: Record exact image identities
+        run: |
+          docker image inspect pajin-bug-bounty-target:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect pajin-benchmark-worker:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect ghcr.io/zaproxy/zaproxy:stable --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect pajin-worker:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect pajin-egress-proxy:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+
+      - name: Run WEB-002D conformance
+        env:
+          PAJIN_TEST_DOCKER_WEB_002D: "1"
+        run: >-
+          uv run --locked pytest -q
+          tests/test_web_controlled_validation_docker.py::test_real_docker_web_002d_controlled_validation_conformance
+
+      - name: Require zero PAJIN Docker residue
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          benchmark_containers="$(docker container ls --all --quiet --filter label=pajin.benchmark.managed=true)"
+          benchmark_networks="$(docker network ls --quiet --filter label=pajin.benchmark.managed=true)"
+          execution_containers="$(docker container ls --all --quiet --filter label=pajin.execution-id)"
+          execution_networks="$(docker network ls --quiet --filter label=pajin.execution-id)"
+          named_containers="$(docker container ls --all --quiet --filter name=^/pajin-bench-)"
+          named_networks="$(docker network ls --quiet --filter name=^pajin-bench-)"
+
+          residue="${benchmark_containers}${benchmark_networks}${execution_containers}"
+          residue+="${execution_networks}${named_containers}${named_networks}"
+          if [[ -n "$residue" ]]; then
+            printf '%s\n' \
+              "benchmark_containers=$benchmark_containers" "benchmark_networks=$benchmark_networks" \
+              "execution_containers=$execution_containers" "execution_networks=$execution_networks" \
+              "named_containers=$named_containers" "named_networks=$named_networks" >&2
+            exit 1
+          fi

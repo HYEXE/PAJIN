@@ -154,6 +154,67 @@ def _observation_proposal(
     )
 
 
+def _sealed_source_observation_proposal() -> ObservationProposal:
+    base = _observation_proposal()
+    lineage = GraphProposalLineage(
+        campaignId=CAMPAIGN,
+        runId="run:domain-admission:sealed",
+        agentId="agent:ai-sealed-source",
+        taskId="task:ai-sealed-source:1",
+        requestId="tool_ai_sealed_source_1",
+        requestDigest=DIGEST_B,
+        sourceAuthorityId="source:ai:sealed",
+        sourceAuthorityDigest=DIGEST_C,
+        sourceRootDigest=DIGEST_D,
+        evidence=base.lineage.evidence,
+        producedAt=NOW + timedelta(seconds=2),
+    )
+    action = GraphAction(
+        campaignId=CAMPAIGN,
+        requestId=lineage.request_id,
+        requestDigest=lineage.request_digest,
+        authorityKind=GraphAuthorityKind.SEALED_SOURCE_AUTHORITY,
+        authorityId=lineage.source_authority_id,
+        authorityDigest=lineage.source_authority_digest,
+        toolId="ai.sealed-source",
+        targetDigest=DIGEST_F,
+        status=GraphActionStatus.SUCCEEDED,
+        executedAt=NOW,
+    )
+    edges = sorted(
+        [
+            GraphEdge(
+                campaignId=CAMPAIGN,
+                relation=GraphRelation.PRODUCES,
+                source=graph_node_ref(action),
+                target=graph_node_ref(base.observation),
+                authorityId=AUTHORITY_ID,
+                authorityDigest=DIGEST_A,
+            ),
+            GraphEdge(
+                campaignId=CAMPAIGN,
+                relation=GraphRelation.SUPPORTED_BY,
+                source=graph_node_ref(base.observation),
+                target=graph_node_ref(base.evidence_nodes[0]),
+                authorityId=AUTHORITY_ID,
+                authorityDigest=DIGEST_A,
+            ),
+        ],
+        key=lambda item: item.edge_id,
+    )
+    return ObservationProposal(
+        proposalId="proposal:ai-observation:sealed-source",
+        producerId=base.producer_id,
+        producerVersion=base.producer_version,
+        producerDigest=base.producer_digest,
+        lineage=lineage,
+        action=action,
+        observation=base.observation,
+        evidenceNodes=base.evidence_nodes,
+        edges=edges,
+    )
+
+
 def _snapshot(event_log: InMemoryGraphEventLog) -> GraphSnapshot:
     projection = GraphProjector.project(campaign_id=CAMPAIGN, events=event_log.events())
     return GraphSnapshot(
@@ -398,6 +459,57 @@ def test_gate_rejects_foreign_or_wrongly_classified_source_observation() -> None
             target_id="target:wrong-domain-api",
             locator_digest=DIGEST_B,
         )
+
+
+def test_gate_rejects_nontransferable_sealed_source_observation() -> None:
+    first = _observation_proposal()
+    sealed = _sealed_source_observation_proposal()
+    trusted = TrustedGraphLineageRegistry([first.lineage])
+    event_log = InMemoryGraphEventLog()
+    authority = GraphAdmissionAuthority(
+        campaign_id=CAMPAIGN,
+        authority_id=AUTHORITY_ID,
+        authority_digest=DIGEST_A,
+        producers=GraphProducerRegistry(
+            [
+                GraphProducerRegistration(
+                    producerId=SOURCE_PRODUCER_ID,
+                    producerVersion="1.0.0",
+                    producerDigest=DIGEST_F,
+                    allowedProposalKinds=(GraphProposalKind.OBSERVATION,),
+                ),
+                cross_domain_graph_producer_registration(),
+            ]
+        ),
+        lineage_verifier=trusted,
+        event_log=event_log,
+        clock=lambda: NOW + timedelta(seconds=6),
+    )
+    first_event = authority.submit(first).event
+    trusted.register(
+        sealed.lineage,
+        proposal_digest=sealed.digest(),
+        expected_event_log_head_digest=first_event.event_digest,
+    )
+    source_event = authority.submit_if_current(
+        sealed,
+        expected_event_log_head_digest=first_event.event_digest,
+    ).event
+    gate = CrossDomainGraphAdmissionGate(
+        event_log=event_log,
+        graph_admission=authority,
+        trusted_lineages=trusted,
+    )
+
+    with pytest.raises(CrossDomainGraphAdmissionError, match="source"):
+        gate.prepare_surface(
+            source_event=source_event,
+            snapshot=_snapshot(event_log),
+            target_id="target:sealed-source-api",
+            locator_digest=DIGEST_B,
+        )
+
+    assert source_event.decision is GraphAdmissionDecision.ADMITTED
 
 
 def test_contract_is_exact_ai_to_web_classification_without_execution_authority() -> None:

@@ -445,9 +445,7 @@ def test_event_log_rejects_unauthorized_fact_state_and_dangling_material() -> No
     raw["event_id"] = ""
     raw["event_digest"] = ""
     raw["admitted_nodes"][0]["node_id"] = ""
-    raw["admitted_nodes"][0]["validation_state"] = (
-        CampaignFactValidationState.CORROBORATED.value
-    )
+    raw["admitted_nodes"][0]["validation_state"] = CampaignFactValidationState.CORROBORATED.value
     with pytest.raises(ValidationError, match="unauthorized state"):
         GraphAdmissionEvent.model_validate(raw)
 
@@ -578,3 +576,53 @@ def test_graph_lineage_rejects_missing_or_partial_execution_authority() -> None:
     payload["actionPermitId"] = "action-permit:graph:partial"
     with pytest.raises(ValidationError, match="provided together"):
         GraphProposalLineage.model_validate(payload)
+
+    source_payload = _lineage().model_dump(mode="json", by_alias=True)
+    source_payload.pop("capabilityGrantId")
+    source_payload.pop("capabilityGrantDigest")
+    source_payload.pop("capabilityId")
+    source_payload.pop("capabilityVersion")
+    source_payload.pop("capabilityDigest")
+    source_payload["sourceAuthorityId"] = "source:graph:sealed"
+    with pytest.raises(ValidationError, match="source authority ID and digest"):
+        GraphProposalLineage.model_validate(source_payload)
+
+    source_payload["sourceAuthorityDigest"] = DIGEST_C
+    source_payload["actionPermitId"] = "action-permit:graph:forged"
+    source_payload["actionPermitDigest"] = DIGEST_D
+    with pytest.raises(
+        ValidationError,
+        match="cannot claim Capability or Permit authority",
+    ):
+        GraphProposalLineage.model_validate(source_payload)
+
+
+def test_graph_admission_event_rejects_partial_or_mixed_sealed_source_authority() -> None:
+    proposal = _surface_proposal()
+    authority, _ = _authority([proposal])
+    legacy_event = authority.submit(proposal).event
+    legacy_wire = legacy_event.model_dump(mode="json", by_alias=True)
+
+    assert legacy_event.event_digest == (
+        "c7c9a31f70e27f8a507449d84cda16077cb93dd922bfe3215063abaa07a0f924"
+    )
+    assert "sourceAuthorityId" not in legacy_wire
+    assert "sourceAuthorityDigest" not in legacy_wire
+
+    partial = dict(legacy_wire)
+    partial["eventId"] = ""
+    partial["eventDigest"] = ""
+    partial["sourceAuthorityId"] = "source:graph:sealed"
+    with pytest.raises(ValidationError, match="source authority binding is incomplete"):
+        GraphAdmissionEvent.model_validate(partial)
+
+    mixed = dict(legacy_wire)
+    mixed["eventId"] = ""
+    mixed["eventDigest"] = ""
+    mixed["sourceAuthorityId"] = "source:graph:sealed"
+    mixed["sourceAuthorityDigest"] = DIGEST_B
+    with pytest.raises(
+        ValidationError,
+        match="cannot claim Capability or Permit authority",
+    ):
+        GraphAdmissionEvent.model_validate(mixed)

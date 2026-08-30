@@ -133,18 +133,14 @@ class DockerAIRAGMCPTargetProfile(StrictModel):
         alias="apiVersion",
     )
     kind: Literal["DockerAIRAGMCPTargetProfile"] = "DockerAIRAGMCPTargetProfile"
-    profile_id: Literal[
-        "ai-rag-mcp.docker.file-upload-rag-tool-authorization"
-    ] = Field(
+    profile_id: Literal["ai-rag-mcp.docker.file-upload-rag-tool-authorization"] = Field(
         default="ai-rag-mcp.docker.file-upload-rag-tool-authorization",
         alias="profileId",
     )
     profile_version: Literal["1.0.0"] = Field(default="1.0.0", alias="profileVersion")
     target_image: Literal["pajin-ai-rag-mcp-target:dev"] = Field(alias="targetImage")
     target_image_id: _ImageId = Field(alias="targetImageId")
-    worker_image: Literal["pajin-ai-rag-mcp-benchmark-worker:dev"] = Field(
-        alias="workerImage"
-    )
+    worker_image: Literal["pajin-ai-rag-mcp-benchmark-worker:dev"] = Field(alias="workerImage")
     worker_image_id: _ImageId = Field(alias="workerImageId")
     network_mode: Literal["internal-bridge"] = Field(
         default="internal-bridge",
@@ -248,9 +244,7 @@ class DockerBenchmarkProviderEvidence(StrictModel):
     )
     scanner_plan_digest: _Sha256 | None = Field(default=None, alias="scannerPlanDigest")
     scanner_image_id: _ImageId | None = Field(default=None, alias="scannerImageId")
-    scanner_container_id: _Sha256 | None = Field(
-        default=None, alias="scannerContainerId"
-    )
+    scanner_container_id: _Sha256 | None = Field(default=None, alias="scannerContainerId")
     raw_sarif_sha256: _Sha256 | None = Field(default=None, alias="rawSarifSha256")
     raw_sarif_size_bytes: int | None = Field(
         default=None, alias="rawSarifSizeBytes", ge=1, le=16 * 1024 * 1024
@@ -258,15 +252,39 @@ class DockerBenchmarkProviderEvidence(StrictModel):
     sarif_normalization_digest: _Sha256 | None = Field(
         default=None, alias="sarifNormalizationDigest"
     )
+    scanner_request_unit_evidence_digest: _Sha256 | None = Field(
+        default=None,
+        alias="scannerRequestUnitEvidenceDigest",
+        exclude_if=lambda value: value is None,
+    )
+    scanner_target_log_before_sha256: _Sha256 | None = Field(
+        default=None,
+        alias="scannerTargetLogBeforeSha256",
+        exclude_if=lambda value: value is None,
+    )
+    scanner_target_log_after_sha256: _Sha256 | None = Field(
+        default=None,
+        alias="scannerTargetLogAfterSha256",
+        exclude_if=lambda value: value is None,
+    )
+    scanner_target_log_delta_sha256: _Sha256 | None = Field(
+        default=None,
+        alias="scannerTargetLogDeltaSha256",
+        exclude_if=lambda value: value is None,
+    )
+    scanner_request_units: int | None = Field(
+        default=None,
+        alias="scannerRequestUnits",
+        strict=True,
+        ge=1,
+        le=2**63 - 1,
+        exclude_if=lambda value: value is None,
+    )
     single_agent_registration_digest: _Sha256 | None = Field(
         default=None, alias="singleAgentRegistrationDigest"
     )
-    single_agent_plan_digest: _Sha256 | None = Field(
-        default=None, alias="singleAgentPlanDigest"
-    )
-    single_agent_trace_digest: _Sha256 | None = Field(
-        default=None, alias="singleAgentTraceDigest"
-    )
+    single_agent_plan_digest: _Sha256 | None = Field(default=None, alias="singleAgentPlanDigest")
+    single_agent_trace_digest: _Sha256 | None = Field(default=None, alias="singleAgentTraceDigest")
     raw_model_tool_trace_sha256: _Sha256 | None = Field(
         default=None, alias="rawModelToolTraceSha256"
     )
@@ -274,15 +292,11 @@ class DockerBenchmarkProviderEvidence(StrictModel):
         default=None, alias="rawModelToolTraceSizeBytes", ge=1, le=16 * 1024 * 1024
     )
     tool_loop_run_id: str | None = Field(default=None, alias="toolLoopRunId", max_length=120)
-    tool_loop_root_digest: _Sha256 | None = Field(
-        default=None, alias="toolLoopRootDigest"
-    )
+    tool_loop_root_digest: _Sha256 | None = Field(default=None, alias="toolLoopRootDigest")
     single_agent_worker_image_id: _ImageId | None = Field(
         default=None, alias="singleAgentWorkerImageId"
     )
-    egress_proxy_image_id: _ImageId | None = Field(
-        default=None, alias="egressProxyImageId"
-    )
+    egress_proxy_image_id: _ImageId | None = Field(default=None, alias="egressProxyImageId")
     resources_absent: bool | None = Field(default=None, alias="resourcesAbsent")
     observed_at: datetime = Field(alias="observedAt")
 
@@ -303,6 +317,11 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             self.raw_sarif_sha256,
             self.raw_sarif_size_bytes,
             self.sarif_normalization_digest,
+            self.scanner_request_unit_evidence_digest,
+            self.scanner_target_log_before_sha256,
+            self.scanner_target_log_after_sha256,
+            self.scanner_target_log_delta_sha256,
+            self.scanner_request_units,
         )
         single_agent_values = (
             self.single_agent_registration_digest,
@@ -362,12 +381,16 @@ class DockerBenchmarkProviderEvidence(StrictModel):
                 or self.probe_output_sha256 is not None
                 or any(value is not None for value in scanner_values)
             )
-            probe_invalid = not scanner_mode and not single_agent_mode and (
-                self.worker_container_id is None
-                or self.probe_vulnerable is not True
-                or self.probe_output_sha256 is None
-                or any(value is not None for value in scanner_values)
-                or any(value is not None for value in single_agent_values)
+            probe_invalid = (
+                not scanner_mode
+                and not single_agent_mode
+                and (
+                    self.worker_container_id is None
+                    or self.probe_vulnerable is not True
+                    or self.probe_output_sha256 is None
+                    or any(value is not None for value in scanner_values)
+                    or any(value is not None for value in single_agent_values)
+                )
             )
             if common_invalid or scanner_invalid or single_agent_invalid or probe_invalid:
                 raise ValueError("Docker execution evidence does not prove its observed workload")
@@ -377,13 +400,7 @@ class DockerBenchmarkProviderEvidence(StrictModel):
             or any(
                 value is not None
                 for value in (
-                    self.scanner_registration_digest,
-                    self.scanner_plan_digest,
-                    self.scanner_image_id,
-                    self.scanner_container_id,
-                    self.raw_sarif_sha256,
-                    self.raw_sarif_size_bytes,
-                    self.sarif_normalization_digest,
+                    *scanner_values,
                     *single_agent_values,
                 )
             )
@@ -529,9 +546,7 @@ class _DockerTargetFactoryAdapter:
     @property
     def profile(self) -> DockerTargetProfile:
         return DockerBugBountyTargetProfile.model_validate(
-            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
-                mode="json", by_alias=True
-            )
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(mode="json", by_alias=True)
         )
 
     def evidence(
@@ -550,10 +565,10 @@ class _DockerTargetFactoryAdapter:
             ).fetchone()
         if row is None or row["evidence_json"] is None:
             raise DockerBenchmarkProviderError("Docker provider evidence is unavailable")
-        try:
-            evidence = DockerBenchmarkProviderEvidence.model_validate_json(row["evidence_json"])
-        except ValueError as exc:
-            raise DockerBenchmarkProviderError("Docker provider evidence is invalid") from exc
+        evidence = cast(
+            DockerBenchmarkProviderEvidence,
+            _parse_provider_evidence_wire(row["evidence_json"]),
+        )
         cached_receipt, _ = _parse_provider_result(row["result_json"])
         if (
             cached_receipt != receipt
@@ -1222,9 +1237,7 @@ class DockerBugBountyTargetFactoryAdapter(_DockerTargetFactoryAdapter):
     @property
     def profile(self) -> DockerBugBountyTargetProfile:
         return DockerBugBountyTargetProfile.model_validate(
-            cast(DockerBugBountyTargetProfile, self._profile).model_dump(
-                mode="json", by_alias=True
-            )
+            cast(DockerBugBountyTargetProfile, self._profile).model_dump(mode="json", by_alias=True)
         )
 
 
@@ -1258,9 +1271,7 @@ class DockerAIRAGMCPTargetFactoryAdapter(_DockerTargetFactoryAdapter):
     @property
     def profile(self) -> DockerAIRAGMCPTargetProfile:
         return DockerAIRAGMCPTargetProfile.model_validate(
-            cast(DockerAIRAGMCPTargetProfile, self._profile).model_dump(
-                mode="json", by_alias=True
-            )
+            cast(DockerAIRAGMCPTargetProfile, self._profile).model_dump(mode="json", by_alias=True)
         )
 
     def _target_environment_arguments(self) -> tuple[str, ...]:
@@ -1334,6 +1345,19 @@ class _ResourceNames:
     network: str
     target: str
     worker: str
+
+
+def docker_benchmark_target_network_name(
+    coordinate: BenchmarkTargetCoordinate,
+) -> str:
+    """Derive the provider-owned Target network; callers cannot supply a network name."""
+
+    if type(coordinate) is not BenchmarkTargetCoordinate:
+        raise TypeError("Docker Target network derivation requires an exact coordinate")
+    canonical = BenchmarkTargetCoordinate.model_validate(
+        coordinate.model_dump(mode="json", by_alias=True)
+    )
+    return _resource_names(canonical).network
 
 
 def _resource_names(coordinate: BenchmarkTargetCoordinate) -> _ResourceNames:
@@ -1758,19 +1782,10 @@ def _accept_provider_operation(
                 raise DockerBenchmarkProviderError("Docker provider operation was superseded")
             if existing["state"] == "completed":
                 receipt, observation = _parse_provider_result(existing["result_json"])
-                try:
-                    raw_evidence = existing["evidence_json"]
-                    if not isinstance(raw_evidence, str):
-                        raise ValueError("evidence is not text")
-                    evidence = (
-                        DockerBenchmarkProviderEvidence.model_validate_json(raw_evidence)
-                        if evidence_loader is None
-                        else evidence_loader(raw_evidence)
-                    )
-                except ValueError as exc:
-                    raise DockerBenchmarkProviderError(
-                        "Docker provider cached evidence is invalid"
-                    ) from exc
+                evidence = _parse_provider_evidence_wire(
+                    existing["evidence_json"],
+                    evidence_loader=evidence_loader,
+                )
                 evidence_digest = getattr(evidence, "evidence_digest", None)
                 if evidence_digest != receipt.provider_evidence_digest:
                     raise DockerBenchmarkProviderError(
@@ -1923,7 +1938,39 @@ def _parse_provider_result(
         )
     except ValueError as exc:
         raise DockerBenchmarkProviderError("Docker provider cached result is invalid") from exc
+    canonical = canonical_benchmark_json(
+        {
+            "receipt": receipt.model_dump(mode="json", by_alias=True),
+            "observation": (
+                None if observation is None else observation.model_dump(mode="json", by_alias=True)
+            ),
+        },
+        label="Docker provider operation result",
+        max_bytes=_MAX_PROVIDER_RESULT_BYTES,
+    ).decode("utf-8")
+    if raw != canonical:
+        raise DockerBenchmarkProviderError("Docker provider cached result wire is not canonical")
     return receipt, observation
+
+
+def _parse_provider_evidence_wire(
+    raw: object,
+    *,
+    evidence_loader: Callable[[str], StrictModel] | None = None,
+) -> StrictModel:
+    if not isinstance(raw, str) or not 1 <= len(raw.encode("utf-8")) <= _MAX_PROVIDER_RESULT_BYTES:
+        raise DockerBenchmarkProviderError("Docker provider evidence is invalid")
+    try:
+        evidence = (
+            DockerBenchmarkProviderEvidence.model_validate_json(raw)
+            if evidence_loader is None
+            else evidence_loader(raw)
+        )
+    except ValueError as exc:
+        raise DockerBenchmarkProviderError("Docker provider evidence is invalid") from exc
+    if raw != evidence.model_dump_json(by_alias=True):
+        raise DockerBenchmarkProviderError("Docker provider evidence wire is not canonical")
+    return evidence
 
 
 def _provider_scope(operation: BenchmarkTargetOperation) -> str:

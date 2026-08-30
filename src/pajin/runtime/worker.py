@@ -35,6 +35,7 @@ _MAX_WORKER_TRANSCRIPT_CHARS = 10_000_000
 _MAX_WORKER_STDIN_BYTES = 1_000_000
 _MAX_WORKER_WIRE_INPUT_BYTES = 1_100_000
 _MAX_EGRESS_PROXY_RESPONSE_BYTES = 8 * 1024 * 1024
+_MAX_EGRESS_OBSERVER_CONTEXT_BYTES = 64 * 1024
 
 
 class WorkerStatus(StrEnum):
@@ -480,10 +481,46 @@ class SimulatedWorkerBackend:
         }
 
 
+@dataclass(frozen=True, slots=True)
+class DockerEgressLifecycleObservation:
+    """Exact Docker resource names observed around one egress execution."""
+
+    execution_id: str
+    worker_container_name: str
+    proxy_container_name: str
+    internal_network_name: str
+    external_network_name: str
+
+
+class DockerEgressLifecycleObserver(Protocol):
+    """Host-owned observer invoked outside the Worker container's trust boundary."""
+
+    def stable_observer_context(self) -> Mapping[str, object]: ...
+
+    async def attached(self, observation: DockerEgressLifecycleObservation) -> None: ...
+
+    async def cleaned(self, observation: DockerEgressLifecycleObservation) -> None: ...
+
+
+class DockerEgressLifecycleObservationError(RuntimeError):
+    """Raised after an egress lifecycle observer fails closed."""
+
+    def __init__(self, *, stage: str, cause: Exception) -> None:
+        diagnostic = audit_safe_exception_diagnostic(
+            cause,
+            stage=f"docker-egress-observer-{stage}",
+        )
+        super().__init__(
+            f"Docker egress lifecycle observation failed during {stage}: "
+            f"{diagnostic or 'observer failed without a diagnostic'}"
+        )
+
+
 @dataclass(frozen=True)
 class _EgressRuntime:
     network_name: str
     proxy_name: str
+    external_network_name: str
 
 
 @dataclass(frozen=True)
@@ -550,6 +587,7 @@ class DockerWorkerBackend:
         egress_proxy_image: str = "pajin-egress-proxy:dev",
         external_network: str = "bridge",
         external_network_routes: Mapping[str, str] | None = None,
+        egress_lifecycle_observer: DockerEgressLifecycleObserver | None = None,
     ) -> None:
         if not allowed_images:
             raise ValueError("at least one Docker image must be allowlisted")
@@ -589,6 +627,29 @@ class DockerWorkerBackend:
         self._egress_proxy_image = egress_proxy_image
         self._external_network = external_network
         self._external_network_routes = routes
+        self._egress_lifecycle_observer = egress_lifecycle_observer
+        self._egress_observer_context: dict[str, object] | None = None
+        if egress_lifecycle_observer is not None:
+            try:
+                raw_context = egress_lifecycle_observer.stable_observer_context()
+                encoded_context = json.dumps(
+                    raw_context,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode("utf-8")
+                if (
+                    not isinstance(raw_context, Mapping)
+                    or len(encoded_context) > _MAX_EGRESS_OBSERVER_CONTEXT_BYTES
+                ):
+                    raise ValueError("observer context is not a bounded mapping")
+                parsed_context = json.loads(encoded_context)
+                if type(parsed_context) is not dict:
+                    raise ValueError("observer context is not a JSON object")
+            except (TypeError, ValueError) as exc:
+                raise ValueError("egress lifecycle observer context is not canonical JSON") from exc
+            self._egress_observer_context = parsed_context
 
     def stable_execution_context(self) -> dict[str, object]:
         context: dict[str, object] = {
@@ -600,10 +661,24 @@ class DockerWorkerBackend:
         }
         if self._external_network_routes:
             context["implementationVersion"] = "pajin.docker-worker/v2"
-            context["externalNetworkRoutes"] = dict(
-                sorted(self._external_network_routes.items())
+            context["externalNetworkRoutes"] = dict(sorted(self._external_network_routes.items()))
+        if self._egress_observer_context is not None:
+            context["implementationVersion"] = "pajin.docker-worker/v3"
+            context["egressLifecycleObserver"] = json.loads(
+                json.dumps(
+                    self._egress_observer_context,
+                    allow_nan=False,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
             )
         return context
+
+    def binds_egress_lifecycle_observer(self, observer: object) -> bool:
+        """Return whether this backend owns the exact observer instance."""
+
+        return self._egress_lifecycle_observer is observer
 
     async def run(
         self,
@@ -634,6 +709,8 @@ class DockerWorkerBackend:
         egress_runtime: _EgressRuntime | None = None
         process: asyncio.subprocess.Process | None = None
         force_remove = False
+        observer_observation: DockerEgressLifecycleObservation | None = None
+        observer_attached = False
         try:
             if job.network is NetworkMode.EGRESS_PROXY:
                 try:
@@ -685,6 +762,23 @@ class DockerWorkerBackend:
                     finished_at=datetime.now(UTC),
                 )
 
+            if egress_runtime is not None and self._egress_lifecycle_observer is not None:
+                observer_observation = DockerEgressLifecycleObservation(
+                    execution_id=job.execution_id,
+                    worker_container_name=container_name,
+                    proxy_container_name=egress_runtime.proxy_name,
+                    internal_network_name=egress_runtime.network_name,
+                    external_network_name=egress_runtime.external_network_name,
+                )
+                try:
+                    await self._egress_lifecycle_observer.attached(observer_observation)
+                except Exception as exc:
+                    raise DockerEgressLifecycleObservationError(
+                        stage="attached",
+                        cause=exc,
+                    ) from exc
+                observer_attached = True
+
             capture = await self._execute_container_process(
                 process,
                 job=job,
@@ -728,6 +822,7 @@ class DockerWorkerBackend:
                         container_name=container_name,
                         egress_runtime=egress_runtime,
                         force_remove=force_remove,
+                        observer_observation=(observer_observation if observer_attached else None),
                     ),
                     resources=cleanup_resources,
                 )
@@ -920,9 +1015,11 @@ class DockerWorkerBackend:
         suffix = uuid4().hex
         network_name = f"pajin-egress-{suffix}"
         proxy_name = f"pajin-proxy-{suffix}"
-        runtime = _EgressRuntime(network_name=network_name, proxy_name=proxy_name)
-        external_network = self._external_network_routes.get(
-            job.command[0], self._external_network
+        external_network = self._external_network_routes.get(job.command[0], self._external_network)
+        runtime = _EgressRuntime(
+            network_name=network_name,
+            proxy_name=proxy_name,
+            external_network_name=external_network,
         )
         ready = False
         try:
@@ -1095,6 +1192,7 @@ class DockerWorkerBackend:
         container_name: str,
         egress_runtime: _EgressRuntime | None,
         force_remove: bool,
+        observer_observation: DockerEgressLifecycleObservation | None,
     ) -> None:
         failures: list[_CleanupFailure] = []
         try:
@@ -1132,6 +1230,14 @@ class DockerWorkerBackend:
                     )
         if failures:
             raise WorkerCleanupError(failures)
+        if observer_observation is not None and self._egress_lifecycle_observer is not None:
+            try:
+                await self._egress_lifecycle_observer.cleaned(observer_observation)
+            except Exception as exc:
+                raise DockerEgressLifecycleObservationError(
+                    stage="cleaned",
+                    cause=exc,
+                ) from exc
 
     async def _drain_cleanup(
         self,
@@ -1152,6 +1258,8 @@ class DockerWorkerBackend:
                 break
         try:
             cleanup_task.result()
+        except DockerEgressLifecycleObservationError:
+            raise
         except WorkerCleanupError:
             raise
         except asyncio.CancelledError as exc:

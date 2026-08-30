@@ -16,7 +16,7 @@ Projection, Snapshot, or Supervisor. Agent-produced values are Proposals, not ca
 | --- | --- |
 | `Surface` | Campaign, Target, surface type, locator schema/digest, and origin |
 | `Hypothesis` | Statement, expected observable, producer version/digest, origin, and confidence |
-| `Action` | Request, Capability/Permit authority, registered Capability, Tool, target digest, result time |
+| `Action` | Request, Capability/Permit plus registered Capability, or mutually exclusive sealed-source projection authority; Tool, target digest, and result time |
 | `Observation` | Typed summary/value digest, producer version/digest, taint origin, confidence, and time |
 | `Evidence` | Normalized relative reference, content/root digest, media type, and data classification |
 | `CampaignFact` | Fact key/value digest, validation state, producer provenance, origin, and time |
@@ -67,7 +67,8 @@ Agents and Specialists can submit only four write-intent types.
 - carries the exact Action, one Observation, and at least one Evidence node;
 - requires exactly one `Action produces Observation`;
 - requires `Observation supported-by Evidence` for every Evidence node;
-- exact-matches Action request, Capability, and Grant/Permit authority against lineage;
+- exact-matches Action request and either Capability plus Grant/Permit authority or the mutually
+  exclusive sealed-source authority against lineage;
 - exact-matches lineage evidence reference/digest and Evidence source root; and
 - connects every additional support/contradict/discover/enable edge to the proposed Observation.
 
@@ -79,9 +80,10 @@ Agents and Specialists can submit only four write-intent types.
 - leaves canonical `CampaignFact` materialization to the GRAPH-002 Admission Authority.
 
 Every Proposal binds its registered producer ID/version/digest plus campaign, run, agent, task,
-request ID/digest, CapabilityGrant ID/digest, Capability ID/version/digest, source root, evidence,
-and production time. ActionPermit remains an optional pair until the general execution Permit
-exists, but an ID or digest cannot appear alone. The Proposal digest includes its ID and complete
+request ID/digest, source root, evidence, and production time. Execution-backed lineage carries a
+Capability ID/version/digest plus CapabilityGrant or ActionPermit. Knowledge-only sealed-source
+lineage instead carries an exact source-authority ID/digest and no Capability/Grant/Permit fields.
+Every paired authority is complete or absent. The Proposal digest includes its ID and complete
 canonical content so GRAPH-002 can distinguish exact retry from same-ID/different-content
 equivocation.
 
@@ -105,7 +107,7 @@ Graph models admitted campaign knowledge and provenance.
 - evidence reference/content/source-root lineage mismatch;
 - missing Action production or Evidence support edges;
 - Agent-supplied CampaignFact validation state;
-- partial ActionPermit ID/digest; and
+- partial or mixed CapabilityGrant, ActionPermit, Capability, and sealed-source authority; and
 - overwrite of contradiction instead of a separate identity.
 
 ## Next step

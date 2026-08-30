@@ -38,6 +38,7 @@ from pajin.benchmark import (
     DockerAIRAGMCPTargetFactoryAdapter,
     DockerAIRAGMCPTargetProfile,
     DockerBenchmarkProviderError,
+    DockerBenchmarkProviderEvidence,
     DockerBugBountyTargetFactoryAdapter,
     DockerBugBountyTargetProfile,
     DockerCommandResult,
@@ -60,6 +61,52 @@ TARGET_IMAGE_ID = "sha256:" + "a" * 64
 WORKER_IMAGE_ID = "sha256:" + "b" * 64
 AI_TARGET_IMAGE_ID = "sha256:" + "c" * 64
 AI_WORKER_IMAGE_ID = "sha256:" + "d" * 64
+
+
+LEGACY_DOCKER_PROVIDER_EVIDENCE_KEYS = (
+    "apiVersion",
+    "kind",
+    "evidenceDigest",
+    "adapterDigest",
+    "coordinateDigest",
+    "operationId",
+    "operationDigest",
+    "fence",
+    "stage",
+    "environmentId",
+    "isolationId",
+    "dockerServerVersion",
+    "targetImageId",
+    "workerImageId",
+    "targetContainerId",
+    "workerContainerId",
+    "networkId",
+    "networkInternal",
+    "publishedPortCount",
+    "networkContainerCount",
+    "targetHealthy",
+    "workerExitCode",
+    "probeVulnerable",
+    "probeOutputSha256",
+    "scannerRegistrationDigest",
+    "scannerPlanDigest",
+    "scannerImageId",
+    "scannerContainerId",
+    "rawSarifSha256",
+    "rawSarifSizeBytes",
+    "sarifNormalizationDigest",
+    "singleAgentRegistrationDigest",
+    "singleAgentPlanDigest",
+    "singleAgentTraceDigest",
+    "rawModelToolTraceSha256",
+    "rawModelToolTraceSizeBytes",
+    "toolLoopRunId",
+    "toolLoopRootDigest",
+    "singleAgentWorkerImageId",
+    "egressProxyImageId",
+    "resourcesAbsent",
+    "observedAt",
+)
 
 
 class _FakeDocker:
@@ -242,9 +289,7 @@ class _FakeAIDocker(_FakeDocker):
             containers.pop(_id(name), None)
             if self.malformed_probe:
                 return _ok(b"{}")
-            return _ok(
-                _ai_probe_output(internal_data_accessed=not self.substituted_body)
-            )
+            return _ok(_ai_probe_output(internal_data_accessed=not self.substituted_body))
         return super().run(arguments, stdin=stdin)
 
 
@@ -516,6 +561,38 @@ def _runner(
     )
 
 
+def test_docker_provider_v1alpha1_wire_and_digest_remain_legacy_compatible() -> None:
+    legacy_digest = "51928e0aaba09e9faf682dac7e8b20ca0ee0a4b6fedccf42b1ad9e273975c444"
+    legacy_wire = {
+        "apiVersion": "pajin.dev/docker-benchmark-provider-evidence/v1alpha1",
+        "kind": "DockerBenchmarkProviderEvidence",
+        "evidenceDigest": legacy_digest,
+        "adapterDigest": "a" * 64,
+        "coordinateDigest": "b" * 64,
+        "operationId": "operation:reset",
+        "operationDigest": "c" * 64,
+        "fence": 1,
+        "stage": "reset",
+        "environmentId": "environment:legacy",
+        "dockerServerVersion": "29.5.3",
+        "targetImageId": "sha256:" + "d" * 64,
+        "workerImageId": "sha256:" + "e" * 64,
+        "resourcesAbsent": True,
+        "observedAt": "2026-08-01T12:00:00Z",
+    }
+
+    evidence = DockerBenchmarkProviderEvidence.model_validate_json(json.dumps(legacy_wire))
+    serialized = evidence.model_dump(mode="json", by_alias=True)
+
+    assert evidence.evidence_digest == legacy_digest
+    assert tuple(serialized) == LEGACY_DOCKER_PROVIDER_EVIDENCE_KEYS
+    assert not any(key.startswith("requestUnit") for key in serialized)
+    assert (
+        DockerBenchmarkProviderEvidence.model_validate_json(evidence.model_dump_json(by_alias=True))
+        == evidence
+    )
+
+
 def test_docker_provider_runs_internal_lab_and_retrieves_bound_evidence(tmp_path: Path) -> None:
     docker = _FakeDocker()
     manifest, adapter = _adapter(tmp_path, docker)
@@ -729,9 +806,7 @@ def test_ai_rag_mcp_runnable_catalog_uses_distinct_matcher_and_exact_adapter(
     case = ground_truth.cases[0]
     assert case.matcher_digest == AI_RAG_MCP_DOCKER_MATCHER_DIGEST
     assert case.matcher_digest != AI_RAG_MCP_WALKING_MATCHER_DIGEST
-    forged_adapter = provider.definition.model_copy(
-        update={"target_factory_digest": "f" * 64}
-    )
+    forged_adapter = provider.definition.model_copy(update={"target_factory_digest": "f" * 64})
     with pytest.raises(BenchmarkTargetCatalogError, match="selection failed"):
         select_ai_rag_mcp_docker_target_profile(
             manifest,
@@ -756,9 +831,7 @@ def test_docker_provider_runs_through_registered_target_catalog(tmp_path: Path) 
         profile,
         benchmark_id="benchmark:docker-bug-bounty-v1",
     )
-    manifest = _manifest(profile).model_copy(
-        update={"ground_truth_digest": ground_truth.digest()}
-    )
+    manifest = _manifest(profile).model_copy(update={"ground_truth_digest": ground_truth.digest()})
     provider = DockerBugBountyTargetFactoryAdapter(
         state_path=tmp_path / "docker-provider.sqlite3",
         profile=profile,
@@ -1205,9 +1278,7 @@ def test_real_docker_bug_bounty_provider_conformance(tmp_path: Path) -> None:
         profile,
         benchmark_id="benchmark:docker-bug-bounty-v1",
     )
-    manifest = _manifest(profile).model_copy(
-        update={"ground_truth_digest": ground_truth.digest()}
-    )
+    manifest = _manifest(profile).model_copy(update={"ground_truth_digest": ground_truth.digest()})
     provider = DockerBugBountyTargetFactoryAdapter(
         state_path=tmp_path / "docker-provider.sqlite3",
         profile=profile,

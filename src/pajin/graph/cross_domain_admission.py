@@ -93,20 +93,14 @@ class _FrozenStrictModel(StrictModel):
 class CrossDomainGraphProducerContract(_FrozenStrictModel):
     """One code-owned semantic transition, never a runtime authority root."""
 
-    api_version: Literal[
-        "pajin.dev/cross-domain-graph-producer-contract/v1alpha1"
-    ] = Field(
+    api_version: Literal["pajin.dev/cross-domain-graph-producer-contract/v1alpha1"] = Field(
         default=CROSS_DOMAIN_GRAPH_PRODUCER_CONTRACT_API_VERSION,
         alias="apiVersion",
     )
-    kind: Literal["CrossDomainGraphProducerContract"] = (
-        "CrossDomainGraphProducerContract"
-    )
+    kind: Literal["CrossDomainGraphProducerContract"] = "CrossDomainGraphProducerContract"
     contract_id: str = Field(default="", alias="contractId", max_length=100)
     contract_digest: str = Field(default="", alias="contractDigest", max_length=64)
-    producer_id: Literal[
-        "pajin.graph.cross-domain.ai-to-web-knowledge"
-    ] = Field(
+    producer_id: Literal["pajin.graph.cross-domain.ai-to-web-knowledge"] = Field(
         default="pajin.graph.cross-domain.ai-to-web-knowledge",
         alias="producerId",
     )
@@ -176,15 +170,11 @@ CrossDomainKnowledgeProposal = Annotated[
 class CrossDomainGraphAdmissionCandidate(_FrozenStrictModel):
     """Snapshot-bound knowledge proposal derived from one admitted Observation."""
 
-    api_version: Literal[
-        "pajin.dev/cross-domain-graph-admission-candidate/v1alpha1"
-    ] = Field(
+    api_version: Literal["pajin.dev/cross-domain-graph-admission-candidate/v1alpha1"] = Field(
         default=CROSS_DOMAIN_GRAPH_ADMISSION_CANDIDATE_API_VERSION,
         alias="apiVersion",
     )
-    kind: Literal["CrossDomainGraphAdmissionCandidate"] = (
-        "CrossDomainGraphAdmissionCandidate"
-    )
+    kind: Literal["CrossDomainGraphAdmissionCandidate"] = "CrossDomainGraphAdmissionCandidate"
     candidate_id: str = Field(default="", alias="candidateId", max_length=110)
     candidate_digest: str = Field(default="", alias="candidateDigest", max_length=64)
     contract: CrossDomainGraphProducerContract
@@ -460,8 +450,7 @@ class CrossDomainGraphAdmissionGate:
         authority_id = getattr(graph_admission, "_authority_id", None)
         authority_digest = getattr(graph_admission, "_authority_digest", None)
         if not all(
-            isinstance(value, str)
-            for value in (campaign_id, authority_id, authority_digest)
+            isinstance(value, str) for value in (campaign_id, authority_id, authority_digest)
         ):
             raise ValueError("Cross-domain Graph authority identity is incomplete")
         self._event_log = event_log
@@ -600,9 +589,7 @@ class CrossDomainGraphAdmissionGate:
             snapshot,
             require_current=require_current,
         )
-        target = resolve_registered_security_domain_graph_type_set(
-            self._contract.target_type_set
-        )
+        target = resolve_registered_security_domain_graph_type_set(self._contract.target_type_set)
         surface = GraphSurface(
             campaignId=snapshot.campaign_id,
             targetId=target_id,
@@ -658,9 +645,7 @@ class CrossDomainGraphAdmissionGate:
             snapshot,
             require_current=require_current,
         )
-        target = resolve_registered_security_domain_graph_type_set(
-            self._contract.target_type_set
-        )
+        target = resolve_registered_security_domain_graph_type_set(self._contract.target_type_set)
         hypothesis = GraphHypothesis(
             campaignId=snapshot.campaign_id,
             hypothesisType=target.hypothesis_type,
@@ -718,9 +703,8 @@ class CrossDomainGraphAdmissionGate:
             source_event.model_dump(mode="json", by_alias=True)
         )
         events = self._event_log.events()
-        if (
-            canonical_snapshot.campaign_id != self._campaign_id
-            or canonical_snapshot.revision > len(events)
+        if canonical_snapshot.campaign_id != self._campaign_id or canonical_snapshot.revision > len(
+            events
         ):
             raise CrossDomainGraphAdmissionError(
                 "Cross-domain Graph Snapshot belongs to another or future Campaign head"
@@ -740,9 +724,7 @@ class CrossDomainGraphAdmissionGate:
             and event.event_digest == canonical_event.event_digest
         )
         observations = tuple(
-            node
-            for node in canonical_event.admitted_nodes
-            if isinstance(node, GraphObservation)
+            node for node in canonical_event.admitted_nodes if isinstance(node, GraphObservation)
         )
         source_type_set = resolve_registered_security_domain_graph_type_set(
             self._contract.source_type_set
@@ -752,6 +734,8 @@ class CrossDomainGraphAdmissionGate:
             or matching[0] != canonical_event
             or canonical_event.decision is not GraphAdmissionDecision.ADMITTED
             or canonical_event.proposal_kind is not GraphProposalKind.OBSERVATION
+            or canonical_event.source_authority_id is not None
+            or canonical_event.source_authority_digest is not None
             or len(observations) != 1
             or observations[0].observation_type != source_type_set.observation_type
         ):

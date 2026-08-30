@@ -22,6 +22,7 @@ typed Proposal
   -> proposal-ID/digest retry check
   -> registered producer/version/digest/kind check
   -> exact trusted lineage check
+     (sealed-source additionally binds Proposal digest + expected predecessor head)
   -> canonical node materialization
   -> edge resolution against this attempt or prior admitted nodes
   -> authority-owned append
@@ -29,8 +30,9 @@ typed Proposal
 
 The authority-owned clock assigns event ordering time. Producer time remains provenance only.
 Every event records the proposal and lineage digests, Campaign/Run/Agent/Task/request identity,
-CapabilityGrant and Capability identity, optional ActionPermit, source-root and evidence bindings,
-producer contract, decision, reason, and admitted canonical material.
+either Capability/Grant/Permit identity or mutually exclusive sealed-source authority,
+source-root and evidence bindings, producer contract, decision, reason, and admitted canonical
+material.
 
 ## Consistency contract
 
@@ -65,10 +67,12 @@ application code. Observation and CampaignFact payload producer fields must exac
 outer Proposal producer contract.
 
 `TrustedGraphLineageRegistry` is the reference verifier for a source already authenticated by a
-sealed-Run adapter. It exact-matches Campaign, Run, Agent, Task, request ID/digest,
-CapabilityGrant ID/digest, Capability ID/version/digest, optional ActionPermit ID/digest,
-source-root digest, evidence reference/digest, and producer time. Registering different lineage
-under the same source identity is rejected as trusted-source equivocation.
+sealed-Run adapter. It exact-matches Campaign, Run, Agent, Task, request ID/digest, execution
+authority or sealed-source authority, source-root digest, evidence reference/digest, and producer
+time. Registering different lineage under the same source identity is rejected as trusted-source
+equivocation. Sealed-source registration additionally requires the exact canonical Proposal digest
+and expected Event Log predecessor head. Changed content, another head, or generic non-CAS
+submission cannot reuse that trust.
 
 ### Materialization and edge resolution
 
@@ -76,7 +80,7 @@ under the same source identity is rejected as trusted-source equivocation.
 - `HypothesisProposal` admits its registered-producer Hypothesis and exact motivation/enablement
   edges after their source resolves.
 - `ObservationProposal` admits the full Action, Observation, Evidence nodes, and typed edges. The
-  Action must exactly match request, Capability, and execution-authority lineage.
+  Action must exactly match request and its mutually exclusive execution or sealed-source lineage.
 - `CampaignFactProposal` materializes a canonical CampaignFact with
   `validation_state=admitted`; the producer cannot provide that state.
 
@@ -90,7 +94,8 @@ The GRAPH-001/002 tests cover:
 - mutated Proposal revalidation and canonical identity tampering;
 - unknown producer, version/digest mismatch, kind denial, and payload-producer mismatch;
 - foreign Campaign and unregistered or equivocated trusted lineage;
-- incomplete Action/request/Capability/authority bindings;
+- incomplete or mixed Action/request/Capability/Permit/sealed-source authority bindings;
+- sealed-source Proposal payload substitution, wrong predecessor head, and generic-submit bypass;
 - dangling edges;
 - exact retry and same-ID/different-digest equivocation;
 - rejected-event material injection and event-digest mutation;
@@ -107,6 +112,7 @@ This spike does not implement:
 - durable Graph Projection/Snapshot storage or snapshot-bound decisions;
 - semantic duplicate folding, contradiction state transitions, or stale-decision handling;
 - live adapters from Scope, Capability Registry, or legacy A5 artifacts; or
+- transfer of sealed-source authority through the current cross-domain producer; or
 - Supervisor scheduling and B2.9 fact/snapshot/handoff projections.
 
 RunStore already demonstrates private append, locking, hash chaining, and sealed integrity, but it

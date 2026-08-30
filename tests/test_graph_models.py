@@ -306,9 +306,7 @@ def test_observation_proposal_binds_action_evidence_and_full_lineage() -> None:
     proposal = _observation_proposal()
 
     assert proposal.digest() == proposal.digest()
-    assert parse_graph_proposal(
-        proposal.model_dump(mode="json", by_alias=True)
-    ) == proposal
+    assert parse_graph_proposal(proposal.model_dump(mode="json", by_alias=True)) == proposal
     assert proposal.edges[0].edge_id < proposal.edges[1].edge_id
 
     changed = _observation_proposal().model_copy(
@@ -322,11 +320,7 @@ def test_observation_proposal_binds_action_evidence_and_full_lineage() -> None:
 def test_observation_proposal_rejects_missing_action_or_mismatched_evidence() -> None:
     proposal = _observation_proposal()
     raw = proposal.model_dump(mode="json")
-    remaining = [
-        edge
-        for edge in raw["edges"]
-        if edge["relation"] != GraphRelation.PRODUCES.value
-    ]
+    remaining = [edge for edge in raw["edges"] if edge["relation"] != GraphRelation.PRODUCES.value]
     extra = _edge(
         GraphRelation.SUPPORTS,
         proposal.observation,
@@ -420,9 +414,7 @@ def test_campaign_fact_proposal_is_typed_but_not_a_direct_graph_write() -> None:
         lineage=_lineage(),
         fact=_fact_payload(),
     )
-    parsed = parse_graph_proposal(
-        proposal.model_dump(mode="json", by_alias=True)
-    )
+    parsed = parse_graph_proposal(proposal.model_dump(mode="json", by_alias=True))
     assert isinstance(parsed, CampaignFactProposal)
     assert "validation_state" not in type(parsed.fact).model_fields
 
@@ -464,3 +456,43 @@ def test_graph_timestamps_require_explicit_timezone() -> None:
 
     with pytest.raises(ValidationError, match="explicit UTC offset"):
         GraphAction.model_validate(raw)
+
+
+def test_graph_action_sealed_source_is_capability_free_and_legacy_digest_is_stable() -> None:
+    legacy = _action()
+    legacy_wire = legacy.model_dump(mode="json", by_alias=True)
+
+    assert legacy.node_id == (
+        "graph-node_81338b67a03625fe60d75cc23417fd0d983d4fc661f2356c6e902e9a61445747"
+    )
+    assert "sourceAuthorityId" not in legacy_wire
+    assert "sourceAuthorityDigest" not in legacy_wire
+    assert _observation_proposal().digest() == (
+        "4f53f31b8b62d148506fc149ec248cc31d624f503dfa455d4112465c6a01ecb1"
+    )
+
+    source_wire = dict(legacy_wire)
+    source_wire["nodeId"] = ""
+    source_wire["authorityKind"] = GraphAuthorityKind.SEALED_SOURCE_AUTHORITY.value
+    source_wire["authorityId"] = "source:graph:sealed"
+    source_wire["authorityDigest"] = DIGEST_A
+    source_wire.pop("capabilityId")
+    source_wire.pop("capabilityVersion")
+    source_wire.pop("capabilityDigest")
+    source = GraphAction.model_validate(source_wire)
+    canonical_source = source.model_dump(mode="json", by_alias=True)
+    assert "capabilityId" not in canonical_source
+    assert "capabilityVersion" not in canonical_source
+    assert "capabilityDigest" not in canonical_source
+
+    source_wire["capabilityId"] = "capability:forged"
+    source_wire["capabilityVersion"] = "1.0.0"
+    source_wire["capabilityDigest"] = DIGEST_D
+    with pytest.raises(ValidationError, match="cannot claim Capability authority"):
+        GraphAction.model_validate(source_wire)
+
+    incomplete_capability = dict(legacy_wire)
+    incomplete_capability["nodeId"] = ""
+    incomplete_capability.pop("capabilityDigest")
+    with pytest.raises(ValidationError, match="Capability binding is incomplete"):
+        GraphAction.model_validate(incomplete_capability)

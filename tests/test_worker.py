@@ -8,6 +8,8 @@ from pydantic import ValidationError
 
 from pajin.runtime.secrets import SecretMaterial
 from pajin.runtime.worker import (
+    DockerEgressLifecycleObservation,
+    DockerEgressLifecycleObservationError,
     DockerWorkerBackend,
     EgressPolicy,
     NetworkMode,
@@ -19,6 +21,40 @@ from pajin.runtime.worker import (
     WorkerSecretRequest,
     WorkerStatus,
 )
+
+
+class _RecordingEgressObserver:
+    def __init__(
+        self,
+        *,
+        events: list[str],
+        process: "_FakeProcess",
+        fail_stage: str | None = None,
+    ) -> None:
+        self.events = events
+        self.process = process
+        self.fail_stage = fail_stage
+        self.context: dict[str, object] = {
+            "observerId": "test-host-observer",
+            "contractVersion": 1,
+        }
+        self.observations: list[DockerEgressLifecycleObservation] = []
+
+    def stable_observer_context(self) -> dict[str, object]:
+        return self.context
+
+    async def attached(self, observation: DockerEgressLifecycleObservation) -> None:
+        assert not hasattr(self.process.stdin, "data")
+        self.events.append("attached")
+        self.observations.append(observation)
+        if self.fail_stage == "attached":
+            raise RuntimeError("observer-secret-MUST-NOT-PERSIST")
+
+    async def cleaned(self, observation: DockerEgressLifecycleObservation) -> None:
+        self.events.append("cleaned")
+        self.observations.append(observation)
+        if self.fail_stage == "cleaned":
+            raise RuntimeError("observer-secret-MUST-NOT-PERSIST")
 
 
 class _FakeStdin:
@@ -631,9 +667,7 @@ def test_docker_backend_binds_and_routes_action_specific_external_network(
         }
         calls: list[list[str]] = []
 
-        async def run_cli(
-            args: list[str], *, timeout: float = 10
-        ) -> tuple[int, str, str]:
+        async def run_cli(args: list[str], *, timeout: float = 10) -> tuple[int, str, str]:
             del timeout
             calls.append(args)
             if args[:3] == ["inspect", "--format", "{{.State.Health.Status}}"]:
@@ -653,6 +687,177 @@ def test_docker_backend_binds_and_routes_action_specific_external_network(
 
         proxy_run = next(args for args in calls if args[:2] == ["run", "--detach"])
         assert proxy_run[proxy_run.index("--network") + 1] == "pajin-bench-fixed-net"
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_observer_context_is_frozen_and_versioned() -> None:
+    async def scenario() -> None:
+        process = _FakeProcess(
+            stdout=_completed_reader(),
+            stderr=_completed_reader(),
+        )
+        observer = _RecordingEgressObserver(events=[], process=process)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            external_network_routes={"http-get": "target-net"},
+            egress_lifecycle_observer=observer,
+        )
+
+        first = backend.stable_execution_context()
+        observer.context["observerId"] = "mutated"
+        second = backend.stable_execution_context()
+
+        assert first == second
+        assert first["implementationVersion"] == "pajin.docker-worker/v3"
+        assert first["egressLifecycleObserver"] == {
+            "contractVersion": 1,
+            "observerId": "test-host-observer",
+        }
+
+    asyncio.run(scenario())
+
+
+def test_docker_backend_observes_attached_before_stdin_and_cleaned_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    nonce = "0123456789abcdef0123456789abcdef"
+    monkeypatch.setattr("pajin.runtime.worker.uuid4", lambda: SimpleNamespace(hex=nonce))
+
+    async def scenario() -> None:
+        events: list[str] = []
+        process = _FakeProcess(
+            stdout=_completed_reader(b'{"status":200}'),
+            stderr=_completed_reader(),
+        )
+        observer = _RecordingEgressObserver(events=events, process=process)
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            egress_lifecycle_observer=observer,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-test",
+            proxy_name="pajin-proxy-test",
+            external_network_name="target-net",
+        )
+        job = WorkerJob(
+            execution_id="exec_observed",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            stdin="payload",
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        async def setup_egress(worker_job: WorkerJob) -> object:
+            assert worker_job is job
+            return runtime
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def read_proxy_logs(proxy_name: str, limit: int) -> str:
+            assert proxy_name == runtime.proxy_name
+            assert limit == job.limits.stderr_bytes
+            return ""
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            events.append("cleanup")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_read_proxy_logs", read_proxy_logs)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        result = await backend.run(job)
+
+        assert result.status is WorkerStatus.SUCCEEDED
+        assert process.stdin.data == b"payload"
+        assert events == ["attached", "cleanup", "cleaned"]
+        assert observer.observations[0] == observer.observations[1]
+        assert observer.observations[0] == DockerEgressLifecycleObservation(
+            execution_id="exec_observed",
+            worker_container_name=f"pajin-exec_observed-{nonce}",
+            proxy_container_name="pajin-proxy-test",
+            internal_network_name="pajin-egress-test",
+            external_network_name="target-net",
+        )
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("fail_stage", ("attached", "cleaned"))
+def test_docker_backend_observer_failure_is_sanitized_after_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    fail_stage: str,
+) -> None:
+    async def scenario() -> None:
+        events: list[str] = []
+        process = _FakeProcess(
+            stdout=_completed_reader(),
+            stderr=_completed_reader(),
+        )
+        observer = _RecordingEgressObserver(
+            events=events,
+            process=process,
+            fail_stage=fail_stage,
+        )
+        backend = DockerWorkerBackend(
+            allowed_images={"pajin-worker:dev"},
+            egress_lifecycle_observer=observer,
+        )
+        runtime = SimpleNamespace(
+            network_name="pajin-egress-test",
+            proxy_name="pajin-proxy-test",
+            external_network_name="target-net",
+        )
+        job = WorkerJob(
+            execution_id=f"exec_fail_{fail_stage}",
+            image="pajin-worker:dev",
+            command=["http-get"],
+            stdin="payload",
+            network=NetworkMode.EGRESS_PROXY,
+            egress_policy=EgressPolicy(allow=["https://example.com/**"]),
+        )
+
+        async def setup_egress(worker_job: WorkerJob) -> object:
+            assert worker_job is job
+            return runtime
+
+        async def create_process(*args: object, **kwargs: object) -> _FakeProcess:
+            del args, kwargs
+            return process
+
+        async def read_proxy_logs(proxy_name: str, limit: int) -> str:
+            del proxy_name, limit
+            return ""
+
+        async def force_remove(container_name: str) -> None:
+            assert container_name.startswith("pajin-")
+            events.append("force-remove")
+
+        async def cleanup_egress(cleanup_runtime: object) -> None:
+            assert cleanup_runtime is runtime
+            events.append("cleanup")
+
+        monkeypatch.setattr(backend, "_setup_egress", setup_egress)
+        monkeypatch.setattr(asyncio, "create_subprocess_exec", create_process)
+        monkeypatch.setattr(backend, "_read_proxy_logs", read_proxy_logs)
+        monkeypatch.setattr(backend, "_force_remove", force_remove)
+        monkeypatch.setattr(backend, "_cleanup_egress", cleanup_egress)
+
+        with pytest.raises(DockerEgressLifecycleObservationError) as exc_info:
+            await backend.run(job)
+
+        assert "observer-secret-MUST-NOT-PERSIST" not in str(exc_info.value)
+        if fail_stage == "attached":
+            assert not hasattr(process.stdin, "data")
+            assert events == ["attached", "force-remove", "cleanup"]
+        else:
+            assert process.stdin.data == b"payload"
+            assert events == ["attached", "cleanup", "cleaned"]
 
     asyncio.run(scenario())
 

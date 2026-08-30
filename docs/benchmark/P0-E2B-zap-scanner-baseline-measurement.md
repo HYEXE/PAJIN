@@ -40,14 +40,23 @@ Every authority rejects unknown fields and uses bounded domain-separated canonic
    never mounted. The provider writes the code-owned automation plan there before container start.
 5. The fixed plan seeds the exact lookup endpoint with the Automation Framework requestor, runs a
    bounded active scan, and writes `sarif-json` output.
-6. The provider requires successful container exit, exact image/command/hardening/mount state,
+6. The provider snapshots the Target stdout before and after ZAP and accepts only canonical LF
+   JSONL response records with the bounded GET or POST method set and query-free absolute paths.
+   Both methods count as request units only on the exact lookup path. All other methods and all
+   query-bearing records fail closed.
+7. The provider requires successful container exit, exact image/command/hardening/mount state,
    unchanged plan bytes, a regular bounded SARIF file, and the post-execution target isolation.
-7. Cleanup removes the Scanner, target, and network before the final Observation becomes
+8. Cleanup removes the Scanner, target, and network before the final Observation becomes
    measurement-eligible. Startup recovery reuses the existing durable operation journal and
    higher-fence cleanup behavior.
 
 The Docker execution evidence binds the Scanner registration and plan digests, exact image and
-container IDs, raw SARIF SHA-256 and byte length, and normalization digest to the execution receipt.
+container IDs, raw SARIF SHA-256 and byte length, normalization digest, and the before/after/delta
+Target-log hashes and request-unit count to the execution receipt. Reload reparses the retained
+delta and requires the recalculated request-unit Evidence digest, all three log hashes, and count to
+equal those receipt-bound fields, so a coherent replacement of all retained sidecars is rejected.
+Scanner execution evidence issued without these fields is not replayable and must be regenerated;
+legacy non-Scanner v1alpha1 provider evidence keeps its existing wire and digest.
 
 ## SARIF normalization
 
@@ -61,6 +70,11 @@ Raw SARIF bytes are sealed unchanged through `RunStore.write_bytes`. The measure
 the original registry-governed Harness and Target Runs, reloads receipt-bound provider evidence,
 rereads the provider copy, re-parses it, and requires byte equality with the separately sealed
 measurement copy.
+
+WEB-002B composes this unchanged lifecycle through a separate outer authority. P0-E2B runnable or
+past live status does not by itself prove WEB-002B conformance: the Web wrapper additionally requires
+a fresh completed Target attempt, the exact eight-record durable journal, receipt-bound cleanup
+provider evidence with `resourcesAbsent=true`, and contextful reload through the outer seal.
 
 ## Result semantics
 
@@ -80,6 +94,7 @@ Finding recall only through the code-owned exact matcher, while confirmed count 
 - candidate-bearing, mutated, cross-target, or incomplete P0-E2A coordinates;
 - non-internal network, published port, changed hardening, alternate command, or unexpected mount;
 - missing, oversized, malformed, foreign-tool, foreign-origin, or mutated SARIF;
+- malformed, noncanonical, query-bearing, or unsupported-method Target log records;
 - receipt, operation, provider evidence, Harness, Target Run, registration, or source substitution;
 - duplicate or missing seed/repetition sources; and
 - candidate comparison or Supervisor activation escalation.
@@ -100,3 +115,4 @@ sealed P0-E2B artifacts remain self-describing and must not be reinterpreted as 
 - [BENCH-001 contract](BENCH-001-benchmark-contract.md)
 - [P0-E1 measurement](P0-E1-deterministic-pajin-baseline-measurement.md)
 - [ADR-0097](../adr/0097-run-concrete-zap-baseline-with-raw-sarif.md)
+- [WEB-002B source measurement](WEB-002B-distinct-registry-governed-zap-source-measurement.md)
