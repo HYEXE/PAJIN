@@ -15,8 +15,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    name: Linux / Python 3.12
+  quality:
+    name: Quality / Python 3.12
     runs-on: ubuntu-24.04
     timeout-minutes: 60
 
@@ -45,5 +45,33 @@ jobs:
       - name: Type check
         run: uv run --locked mypy src
 
+  tests:
+    name: Tests / Python 3.12 / shard ${{ matrix.shard }} of 8
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+
       - name: Test
-        run: uv run --locked pytest
+        run: uv run --locked pytest --ci-shard-index ${{ matrix.shard }} --ci-shard-total 8 --durations=25
