@@ -1,7 +1,11 @@
+import re
 from pathlib import Path
+from urllib.parse import unquote
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = REPOSITORY_ROOT / "docs"
+
+MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
 
 def test_repository_uses_one_canonical_markdown_file_per_subject() -> None:
@@ -47,3 +51,21 @@ def test_repository_owns_one_bounded_operational_state_set() -> None:
         )
     )
     assert "https://app.notion.com/p/3a94b2ea35f081329974c7f57eda299a" not in active_navigation
+
+
+def test_repository_markdown_relative_links_resolve() -> None:
+    repository_docs = [*REPOSITORY_ROOT.glob("*.md"), *DOCS_ROOT.rglob("*.md")]
+    broken: list[str] = []
+
+    for document in repository_docs:
+        text = document.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK_PATTERN.finditer(text):
+            target = match.group(1).strip("<>")
+            if target.startswith("#") or ":" in target.split("/", maxsplit=1)[0]:
+                continue
+            relative_target = unquote(target.split("#", maxsplit=1)[0])
+            if relative_target and not (document.parent / relative_target).exists():
+                source = document.relative_to(REPOSITORY_ROOT).as_posix()
+                broken.append(f"{source} -> {target}")
+
+    assert sorted(broken) == []
