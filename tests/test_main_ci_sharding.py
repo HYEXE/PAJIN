@@ -75,15 +75,15 @@ def test_ci_shard_canonicalizes_only_the_nodeid_path() -> None:
     )
 
 
-def test_eight_ci_shards_are_disjoint_and_cover_every_collected_item() -> None:
+def test_twenty_four_ci_shards_are_disjoint_and_cover_every_collected_item() -> None:
     all_items = [
-        _Item(f"tests/test_{number:03}.py::test_case[param-{number}]") for number in range(256)
+        _Item(f"tests/test_{number:03}.py::test_case[param-{number}]") for number in range(768)
     ]
     selected_by_shard: list[set[str]] = []
 
-    for shard_index in range(8):
+    for shard_index in range(24):
         items = list(all_items)
-        config = _Config(shard_index, 8)
+        config = _Config(shard_index, 24)
 
         pytest_collection_modifyitems(config, items)
 
@@ -131,7 +131,7 @@ def test_default_ci_shard_options_are_a_no_op() -> None:
     assert config.hook.calls == []
 
 
-def test_main_ci_workflow_separates_quality_from_eight_test_shards() -> None:
+def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> None:
     workflow = _workflow()
     jobs = workflow["jobs"]
     assert isinstance(jobs, dict)
@@ -144,10 +144,10 @@ def test_main_ci_workflow_separates_quality_from_eight_test_shards() -> None:
     assert quality["runs-on"] == "ubuntu-24.04"
     assert quality["timeout-minutes"] == "60"
     assert tests["runs-on"] == "ubuntu-24.04"
-    assert tests["timeout-minutes"] == "90"
+    assert tests["timeout-minutes"] == "120"
     assert tests["strategy"] == {
         "fail-fast": "false",
-        "matrix": {"shard": [str(shard) for shard in range(8)]},
+        "matrix": {"shard": [str(shard) for shard in range(24)]},
     }
 
     expected_common_steps = {
@@ -183,5 +183,5 @@ def test_main_ci_workflow_separates_quality_from_eight_test_shards() -> None:
     assert quality_steps["Type check"]["run"] == "uv run --locked mypy src"
     assert test_steps["Test"]["run"] == (
         "uv run --locked pytest --ci-shard-index ${{ matrix.shard }} "
-        "--ci-shard-total 8 --durations=25"
+        "--ci-shard-total 24 --durations=25"
     )
