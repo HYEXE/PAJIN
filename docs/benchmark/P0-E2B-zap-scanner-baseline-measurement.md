@@ -36,17 +36,29 @@ Every authority rejects unknown fields and uses bounded domain-separated canonic
 2. The registered target starts in that isolation before ZAP is invoked.
 3. ZAP runs in a separate container with a read-only root filesystem, all capabilities dropped,
    `no-new-privileges`, fixed user, memory/CPU/PID limits, and bounded tmpfs mounts.
-4. Only a fresh operation-specific host directory is bind-mounted at `/zap/wrk`; the repository is
-   never mounted. The provider writes the code-owned automation plan there before container start.
-5. The fixed plan seeds the exact lookup endpoint with the Automation Framework requestor, runs a
+4. The provider requires an exact private artifact root and exclusively creates one fresh
+   operation-specific output directory. The repository is never mounted. The code-owned
+   automation plan is created as a separate exclusive, single-link host-owned file outside that
+   writable directory and is bind-mounted read-only at `/zap/zap.yaml`; only the output directory
+   is bind-mounted read-write at `/zap/wrk`.
+5. On POSIX, the artifact root, fresh output directory, and plan owner must equal the provider
+   process owner. The root and output directory start at mode `0700`, while the plan is exactly
+   `0644`. A held `O_DIRECTORY|O_NOFOLLOW` descriptor opens only the output directory to mode
+   `0733` for the attached Scanner execution. The same descriptor first forces mode `0700` in
+   `finally`, even when the Scanner changes the directory mode or returns a catchable execution
+   error, and only then reports drift. Windows does not treat POSIX mode as evidence; exact path
+   and Docker mount
+   verification remain mandatory there.
+6. The fixed plan seeds the exact lookup endpoint with the Automation Framework requestor, runs a
    bounded active scan, and writes `sarif-json` output.
-6. The provider snapshots the Target stdout before and after ZAP and accepts only canonical LF
+7. The provider snapshots the Target stdout before and after ZAP and accepts only canonical LF
    JSONL response records with the bounded GET or POST method set and query-free absolute paths.
    Both methods count as request units only on the exact lookup path. All other methods and all
    query-bearing records fail closed.
-7. The provider requires successful container exit, exact image/command/hardening/mount state,
-   unchanged plan bytes, a regular bounded SARIF file, and the post-execution target isolation.
-8. Cleanup removes the Scanner, target, and network before the final Observation becomes
+8. The provider requires successful container exit; exact image, command, hardening, and the two
+   destination-keyed mounts; a read-only plan mount; unchanged plan bytes; a regular bounded SARIF
+   file; a resealed output directory; and the post-execution target isolation.
+9. Cleanup removes the Scanner, target, and network before the final Observation becomes
    measurement-eligible. Startup recovery reuses the existing durable operation journal and
    higher-fence cleanup behavior.
 
@@ -92,7 +104,9 @@ Finding recall only through the code-owned exact matcher, while confirmed count 
 
 - Scanner image, version, configuration, parser contract, plan, or output-format substitution;
 - candidate-bearing, mutated, cross-target, or incomplete P0-E2A coordinates;
-- non-internal network, published port, changed hardening, alternate command, or unexpected mount;
+- non-internal network, published port, changed hardening, alternate command, unexpected mount,
+  writable plan mount, preclaimed output directory or plan file, path escape, owner/mode drift, or
+  failed output-directory reseal;
 - missing, oversized, malformed, foreign-tool, foreign-origin, or mutated SARIF;
 - malformed, noncanonical, query-bearing, or unsupported-method Target log records;
 - receipt, operation, provider evidence, Harness, Target Run, registration, or source substitution;

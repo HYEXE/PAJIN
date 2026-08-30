@@ -695,6 +695,15 @@ def test_web_002d_production_provider_guard_requires_exact_unshadowed_docker_cus
             require_production_zap_catalog_provider(provider)
     delattr(concrete, "evidence")
 
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            DockerZAPScannerTargetFactoryAdapter,
+            "_seal_scanner_workspace",
+            lambda _self, _path, _descriptor: None,
+        )
+        with pytest.raises(DockerBenchmarkProviderError, match="shadowed"):
+            require_production_zap_catalog_provider(provider)
+
     runner = concrete._docker
     with monkeypatch.context() as patch:
         patch.setattr(runner, "run", runner.run)

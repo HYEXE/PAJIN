@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sqlite3
+import stat
 import subprocess
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
@@ -13,6 +14,7 @@ from types import SimpleNamespace
 import pytest
 from pydantic import ValidationError
 
+import pajin.benchmark.scanner_docker_provider as scanner_docker_provider_module
 from pajin.benchmark import (
     BenchmarkArm,
     BenchmarkArmKind,
@@ -152,10 +154,11 @@ class _FakeZAPDocker:
                 "Health": {"Status": "starting"},
             }
             workspace = None
+            plan_path = None
         else:
             image = ZAP_IMAGE_ID
             user = "1000:1000"
-            command = ["zap.sh", "-cmd", "-autorun", "/zap/wrk/zap.yaml"]
+            command = ["zap.sh", "-cmd", "-autorun", "/zap/zap.yaml"]
             memory = 2 * 1024 * 1024 * 1024
             cpus = 2_000_000_000
             pids = 512
@@ -163,17 +166,28 @@ class _FakeZAPDocker:
                 "/tmp": "rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000",
                 "/home/zap/.ZAP": "rw,nosuid,nodev,size=512m,uid=1000,gid=1000",
             }
-            raw_mount = arguments[arguments.index("--mount") + 1]
-            source = raw_mount.split("source=", 1)[1].split(",target=", 1)[0]
-            workspace = Path(source)
-            mounts = [
-                {
+            raw_mounts = tuple(
+                arguments[index + 1] for index, value in enumerate(arguments) if value == "--mount"
+            )
+            assert len(raw_mounts) == 2
+            mounts = []
+            workspace = None
+            plan_path = None
+            for raw_mount in raw_mounts:
+                source, target_and_options = raw_mount.split("source=", 1)[1].split(",target=", 1)
+                destination, *options = target_and_options.split(",")
+                mount = {
                     "Type": "bind",
-                    "Source": str(workspace),
-                    "Destination": "/zap/wrk",
-                    "RW": True,
+                    "Source": source,
+                    "Destination": destination,
+                    "RW": "readonly" not in options,
                 }
-            ]
+                mounts.append(mount)
+                if destination == "/zap/wrk":
+                    workspace = Path(source)
+                elif destination == "/zap/zap.yaml":
+                    plan_path = Path(source)
+            assert workspace is not None and plan_path is not None
             state = {"Running": False, "ExitCode": 0}
         self.containers[name] = {
             "Id": _id(name),
@@ -195,6 +209,7 @@ class _FakeZAPDocker:
             "Network": network_name,
             "Role": role,
             "Workspace": None if workspace is None else str(workspace),
+            "PlanPath": None if plan_path is None else str(plan_path),
         }
         self.logs[name] = []
         network = self.networks[network_name]["Containers"]
@@ -238,6 +253,51 @@ class _FakeZAPDocker:
         return _ok()
 
 
+class _WorkspaceBoundaryCheckingZAPDocker(_FakeZAPDocker):
+    def __init__(
+        self,
+        *,
+        fail_scanner: bool = False,
+        drift_workspace_mode: int | None = None,
+    ) -> None:
+        super().__init__()
+        self.fail_scanner = fail_scanner
+        self.drift_workspace_mode = drift_workspace_mode
+        self.scanner_workspace: Path | None = None
+        self.scanner_plan_path: Path | None = None
+        self.scanner_mounts: tuple[dict[str, object], ...] = ()
+
+    def _start(self, arguments: tuple[str, ...]) -> DockerCommandResult:
+        details = self.containers[arguments[-1]]
+        if details["Role"] != "scanner":
+            return super()._start(arguments)
+        workspace = Path(str(details["Workspace"]))
+        plan_path = Path(str(details["PlanPath"]))
+        mounts = details["Mounts"]
+        assert isinstance(mounts, list)
+        mount_by_destination = {
+            str(item["Destination"]): item for item in mounts if isinstance(item, dict)
+        }
+        assert mount_by_destination["/zap/wrk"]["RW"] is True
+        assert mount_by_destination["/zap/zap.yaml"]["RW"] is False
+        assert plan_path.parent == workspace.parent
+        assert workspace not in plan_path.parents
+        assert stat.S_IMODE(workspace.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(workspace.stat().st_mode) == 0o733
+        assert stat.S_IMODE(plan_path.stat().st_mode) == 0o644
+        assert workspace.parent.stat().st_uid == os.geteuid()
+        assert workspace.stat().st_uid == os.geteuid()
+        assert plan_path.stat().st_uid == os.geteuid()
+        self.scanner_workspace = workspace
+        self.scanner_plan_path = plan_path
+        self.scanner_mounts = tuple(mount_by_destination.values())
+        if self.drift_workspace_mode is not None:
+            workspace.chmod(self.drift_workspace_mode)
+        if self.fail_scanner:
+            return DockerCommandResult(returncode=1, stderr=b"expected scanner failure")
+        return super()._start(arguments)
+
+
 class _RequestUnitHardlinkClaimingZAPDocker(_FakeZAPDocker):
     def __init__(self, victim: Path) -> None:
         super().__init__()
@@ -275,6 +335,97 @@ def _target_log_record(
         )
         + "\n"
     ).encode()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode boundary")
+@pytest.mark.parametrize(
+    ("fail_scanner", "drift_workspace_mode"),
+    ((False, None), (True, None), (False, 0o777)),
+    ids=("success", "start-failure", "scanner-mode-drift"),
+)
+def test_zap_scanner_workspace_is_temporarily_open_and_always_resealed(
+    tmp_path: Path,
+    fail_scanner: bool,
+    drift_workspace_mode: int | None,
+) -> None:
+    docker = _WorkspaceBoundaryCheckingZAPDocker(
+        fail_scanner=fail_scanner,
+        drift_workspace_mode=drift_workspace_mode,
+    )
+
+    if fail_scanner or drift_workspace_mode is not None:
+        with pytest.raises(BenchmarkTargetFactoryError):
+            _run(tmp_path, docker=docker)
+    else:
+        _run(tmp_path, docker=docker)
+
+    assert docker.scanner_workspace is not None
+    assert docker.scanner_plan_path is not None
+    workspace = docker.scanner_workspace
+    plan_path = docker.scanner_plan_path
+    assert stat.S_IMODE(workspace.parent.stat().st_mode) == 0o700
+    assert stat.S_IMODE(workspace.stat().st_mode) == 0o700
+    assert stat.S_IMODE(plan_path.stat().st_mode) == 0o644
+    assert workspace.parent.stat().st_uid == os.geteuid()
+    assert workspace.stat().st_uid == os.geteuid()
+    assert plan_path.stat().st_uid == os.geteuid()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX mode boundary")
+@pytest.mark.parametrize(
+    "rollback_verification_fails",
+    (False, True),
+    ids=("rollback-verified", "rollback-verification-fails"),
+)
+def test_zap_scanner_open_failure_reseals_before_reporting_verification_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    rollback_verification_fails: bool,
+) -> None:
+    original_verify = scanner_docker_provider_module._verify_posix_owned_directory_descriptor
+    call_count = 0
+
+    def injected_verify(
+        path: Path,
+        descriptor: int,
+        *,
+        expected_mode: int,
+        label: str,
+    ) -> None:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 2 or (rollback_verification_fails and call_count == 3):
+            raise DockerBenchmarkProviderError(f"injected workspace verification {call_count}")
+        original_verify(
+            path,
+            descriptor,
+            expected_mode=expected_mode,
+            label=label,
+        )
+
+    monkeypatch.setattr(
+        scanner_docker_provider_module,
+        "_verify_posix_owned_directory_descriptor",
+        injected_verify,
+    )
+    with pytest.raises(BenchmarkTargetFactoryError) as caught:
+        _run(tmp_path, docker=_FakeZAPDocker())
+
+    artifact_root = tmp_path / "provider-zap-artifacts"
+    workspaces = tuple(item for item in artifact_root.iterdir() if item.is_dir())
+    assert len(workspaces) == 1
+    assert stat.S_IMODE(workspaces[0].stat().st_mode) == 0o700
+    messages: list[str] = []
+    current: BaseException | None = caught.value
+    visited: set[int] = set()
+    while current is not None and id(current) not in visited:
+        visited.add(id(current))
+        messages.append(str(current))
+        current = current.__cause__ or current.__context__
+    assert any("injected workspace verification 2" in message for message in messages)
+    if rollback_verification_fails:
+        assert any("open and rollback both failed" in message for message in messages)
+        assert any("injected workspace verification 3" in message for message in messages)
 
 
 def test_target_lookup_request_count_accepts_only_query_free_canonical_jsonl() -> None:

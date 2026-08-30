@@ -69,14 +69,25 @@ _MAX_REQUEST_UNIT_EVIDENCE_BYTES = 256 * 1024
 _MAX_TARGET_HTTP_LOG_BYTES = 8 * 1024 * 1024
 _MAX_TARGET_HTTP_LOG_LINES = 100_000
 _TARGET_HTTP_METHODS = frozenset({"GET", "POST"})
+_PRIVATE_ARTIFACT_DIRECTORY_MODE = 0o700
+_SCANNER_DROP_DIRECTORY_MODE = 0o733
+_SCANNER_PLAN_MODE = 0o644
 _Sha256 = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 
 
-def _write_exclusive_regular_bytes(path: Path, content: bytes, *, label: str) -> None:
+def _write_exclusive_regular_bytes(
+    path: Path,
+    content: bytes,
+    *,
+    label: str,
+    mode: int = 0o600,
+) -> None:
     """Create one host-owned artifact without following or replacing a leaf entry."""
 
     if type(content) is not bytes:
         raise TypeError(f"{label} content must be bytes")
+    if type(mode) is not int or mode not in {0o600, _SCANNER_PLAN_MODE}:
+        raise ValueError(f"{label} mode is invalid")
     flags = (
         os.O_WRONLY
         | os.O_CREAT
@@ -98,10 +109,13 @@ def _write_exclusive_regular_bytes(path: Path, content: bytes, *, label: str) ->
             if written <= 0:
                 raise OSError(f"{label} write made no progress")
             remaining = remaining[written:]
+        if os.name == "posix":
+            os.fchmod(descriptor, mode)
         os.fsync(descriptor)
         final_descriptor = os.fstat(descriptor)
         final_path = path.lstat()
         expected_identity = (opened.st_dev, opened.st_ino)
+        expected_uid = os.geteuid() if os.name == "posix" else None
         if (
             not stat.S_ISREG(final_descriptor.st_mode)
             or not stat.S_ISREG(final_path.st_mode)
@@ -111,6 +125,15 @@ def _write_exclusive_regular_bytes(path: Path, content: bytes, *, label: str) ->
             or (final_path.st_dev, final_path.st_ino) != expected_identity
             or final_descriptor.st_size != len(content)
             or final_path.st_size != len(content)
+            or (
+                os.name == "posix"
+                and (
+                    final_descriptor.st_uid != expected_uid
+                    or final_path.st_uid != expected_uid
+                    or stat.S_IMODE(final_descriptor.st_mode) != mode
+                    or stat.S_IMODE(final_path.st_mode) != mode
+                )
+            )
         ):
             raise ValueError(f"{label} identity changed while being written")
     except (OSError, ValueError) as exc:
@@ -118,6 +141,124 @@ def _write_exclusive_regular_bytes(path: Path, content: bytes, *, label: str) ->
     finally:
         if descriptor >= 0:
             os.close(descriptor)
+
+
+def _transition_posix_owned_directory(
+    path: Path,
+    *,
+    accepted_modes: frozenset[int],
+    target_mode: int,
+    label: str,
+) -> None:
+    """Change one exact host-owned directory without following a replaced path."""
+
+    if os.name != "posix":
+        return
+    if not accepted_modes or target_mode not in {
+        _PRIVATE_ARTIFACT_DIRECTORY_MODE,
+        _SCANNER_DROP_DIRECTORY_MODE,
+    }:
+        raise ValueError(f"{label} mode transition is invalid")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
+    try:
+        before = path.lstat()
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        expected_identity = (before.st_dev, before.st_ino)
+        if (
+            not stat.S_ISDIR(before.st_mode)
+            or not stat.S_ISDIR(opened.st_mode)
+            or before.st_uid != os.geteuid()
+            or opened.st_uid != os.geteuid()
+            or (opened.st_dev, opened.st_ino) != expected_identity
+            or stat.S_IMODE(opened.st_mode) not in accepted_modes
+        ):
+            raise ValueError(f"{label} ownership or mode differs")
+        os.fchmod(descriptor, target_mode)
+        final_descriptor = os.fstat(descriptor)
+        final_path = path.lstat()
+        if (
+            not stat.S_ISDIR(final_descriptor.st_mode)
+            or not stat.S_ISDIR(final_path.st_mode)
+            or final_descriptor.st_uid != os.geteuid()
+            or final_path.st_uid != os.geteuid()
+            or (final_descriptor.st_dev, final_descriptor.st_ino) != expected_identity
+            or (final_path.st_dev, final_path.st_ino) != expected_identity
+            or stat.S_IMODE(final_descriptor.st_mode) != target_mode
+            or stat.S_IMODE(final_path.st_mode) != target_mode
+        ):
+            raise ValueError(f"{label} identity changed during mode transition")
+    except (OSError, ValueError) as exc:
+        raise DockerBenchmarkProviderError(f"{label} could not be transitioned safely") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _verify_posix_owned_directory_descriptor(
+    path: Path,
+    descriptor: int,
+    *,
+    expected_mode: int,
+    label: str,
+) -> None:
+    """Verify that a held POSIX directory descriptor still names the exact path."""
+
+    if os.name != "posix" or descriptor < 0:
+        raise ValueError(f"{label} descriptor verification is unavailable")
+    try:
+        opened = os.fstat(descriptor)
+        observed = path.lstat()
+        if (
+            not stat.S_ISDIR(opened.st_mode)
+            or not stat.S_ISDIR(observed.st_mode)
+            or opened.st_uid != os.geteuid()
+            or observed.st_uid != os.geteuid()
+            or (opened.st_dev, opened.st_ino) != (observed.st_dev, observed.st_ino)
+            or stat.S_IMODE(opened.st_mode) != expected_mode
+            or stat.S_IMODE(observed.st_mode) != expected_mode
+        ):
+            raise ValueError(f"{label} identity, ownership, or mode differs")
+    except (OSError, ValueError) as exc:
+        raise DockerBenchmarkProviderError(f"{label} verification failed") from exc
+
+
+def _open_posix_owned_directory(
+    path: Path,
+    *,
+    expected_mode: int,
+    label: str,
+) -> int | None:
+    """Hold one exact POSIX directory across an untrusted container execution."""
+
+    if os.name != "posix":
+        return None
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(path, flags)
+        _verify_posix_owned_directory_descriptor(
+            path,
+            descriptor,
+            expected_mode=expected_mode,
+            label=label,
+        )
+        return descriptor
+    except (OSError, DockerBenchmarkProviderError) as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise DockerBenchmarkProviderError(f"{label} could not be held safely") from exc
 
 
 class ZAPScannerRequestUnitEvidence(StrictModel):
@@ -233,7 +374,17 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
         self._scanner_registration = authoritative_registration
         state_parent = Path(os.path.abspath(state_path)).parent
         self._scanner_artifact_root = state_parent / f"{Path(state_path).stem}-zap-artifacts"
-        self._scanner_artifact_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self._scanner_artifact_root.mkdir(
+            mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE, parents=True, exist_ok=True
+        )
+        if self._scanner_artifact_root.resolve() != self._scanner_artifact_root:
+            raise DockerBenchmarkProviderError("ZAP artifact root is not an exact directory")
+        _transition_posix_owned_directory(
+            self._scanner_artifact_root,
+            accepted_modes=frozenset({_PRIVATE_ARTIFACT_DIRECTORY_MODE}),
+            target_mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+            label="ZAP artifact root",
+        )
 
     @property
     def scanner_plan(self) -> ScannerBaselineMeasurementPlanAuthority:
@@ -392,13 +543,18 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
             expected_members=1,
         )
         workspace = self._workspace(operation.operation_digest)
-        plan_path = workspace / _PLAN_NAME
+        plan_path = self._plan_path(operation.operation_digest)
         artifact_path = workspace / _SARIF_NAME
         request_units_path = workspace / _REQUEST_UNITS_NAME
         request_units_delta_path = workspace / _REQUEST_UNITS_DELTA_NAME
         request_units_before_path = workspace / _REQUEST_UNITS_BEFORE_NAME
         request_units_after_path = workspace / _REQUEST_UNITS_AFTER_NAME
-        plan_path.write_bytes(ZAP_AUTOMATION_PLAN)
+        _write_exclusive_regular_bytes(
+            plan_path,
+            ZAP_AUTOMATION_PLAN,
+            label="ZAP automation plan",
+            mode=_SCANNER_PLAN_MODE,
+        )
         if (
             artifact_path.exists()
             or request_units_path.exists()
@@ -409,7 +565,8 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
             raise DockerBenchmarkProviderError("ZAP output paths were not fresh")
         target_log_before = self._target_log(names.target)
         requests_before = _target_lookup_request_count(target_log_before)
-        mount = f"type=bind,source={workspace},target=/zap/wrk"
+        workspace_mount = f"type=bind,source={workspace},target=/zap/wrk"
+        plan_mount = f"type=bind,source={plan_path},target=/zap/zap.yaml,readonly"
         self._checked(
             (
                 "create",
@@ -435,16 +592,22 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
                 "--tmpfs",
                 "/home/zap/.ZAP:rw,nosuid,nodev,size=512m,uid=1000,gid=1000",
                 "--mount",
-                mount,
+                workspace_mount,
+                "--mount",
+                plan_mount,
                 *self._label_arguments(labels, role="scanner"),
                 self._scanner_registration.scanner_image_id,
                 "zap.sh",
                 "-cmd",
                 "-autorun",
-                "/zap/wrk/zap.yaml",
+                "/zap/zap.yaml",
             )
         )
-        self._checked(("start", "--attach", names.worker))
+        workspace_descriptor = self._open_scanner_workspace(workspace)
+        try:
+            self._checked(("start", "--attach", names.worker))
+        finally:
+            self._seal_scanner_workspace(workspace, workspace_descriptor)
         try:
             observed_plan = read_bounded_regular_bytes(
                 plan_path,
@@ -492,6 +655,7 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
             worker,
             network_name=names.network,
             workspace=workspace,
+            plan_path=plan_path,
         )
         completed = datetime.now(UTC)
         request_unit_evidence = ZAPScannerRequestUnitEvidence(
@@ -558,9 +722,101 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
 
     def _workspace(self, operation_digest: str) -> Path:
         path = self._scanner_artifact_root / operation_digest
-        path.mkdir(mode=0o700, parents=False, exist_ok=True)
+        try:
+            path.mkdir(
+                mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+                parents=False,
+                exist_ok=False,
+            )
+        except OSError as exc:
+            raise DockerBenchmarkProviderError("ZAP operation workspace was not fresh") from exc
         if path.resolve() != path or path.parent != self._scanner_artifact_root:
             raise DockerBenchmarkProviderError("ZAP workspace escaped its artifact root")
+        _transition_posix_owned_directory(
+            path,
+            accepted_modes=frozenset({_PRIVATE_ARTIFACT_DIRECTORY_MODE}),
+            target_mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+            label="ZAP operation workspace",
+        )
+        return path
+
+    def _open_scanner_workspace(self, path: Path) -> int | None:
+        if path.resolve() != path or path.parent != self._scanner_artifact_root:
+            raise DockerBenchmarkProviderError("ZAP workspace escaped before scanner start")
+        descriptor = _open_posix_owned_directory(
+            path,
+            expected_mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+            label="ZAP scanner drop workspace",
+        )
+        if descriptor is None:
+            return None
+        try:
+            os.fchmod(descriptor, _SCANNER_DROP_DIRECTORY_MODE)
+            _verify_posix_owned_directory_descriptor(
+                path,
+                descriptor,
+                expected_mode=_SCANNER_DROP_DIRECTORY_MODE,
+                label="ZAP scanner drop workspace",
+            )
+        except (OSError, DockerBenchmarkProviderError) as exc:
+            try:
+                os.fchmod(descriptor, _PRIVATE_ARTIFACT_DIRECTORY_MODE)
+                _verify_posix_owned_directory_descriptor(
+                    path,
+                    descriptor,
+                    expected_mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+                    label="rolled-back ZAP scanner workspace",
+                )
+            except (OSError, DockerBenchmarkProviderError) as rollback_exc:
+                os.close(descriptor)
+                raise DockerBenchmarkProviderError(
+                    "ZAP scanner workspace open and rollback both failed"
+                ) from rollback_exc
+            os.close(descriptor)
+            raise DockerBenchmarkProviderError(
+                "ZAP scanner drop workspace could not be opened safely"
+            ) from exc
+        return descriptor
+
+    def _seal_scanner_workspace(self, path: Path, descriptor: int | None) -> None:
+        if os.name != "posix":
+            if descriptor is not None:
+                raise DockerBenchmarkProviderError(
+                    "ZAP scanner workspace descriptor exists off POSIX"
+                )
+            if path.resolve() != path or path.parent != self._scanner_artifact_root:
+                raise DockerBenchmarkProviderError("ZAP workspace escaped before reseal")
+            return
+        if descriptor is None:
+            raise DockerBenchmarkProviderError("ZAP scanner workspace descriptor is absent")
+        try:
+            mode_drifted = (
+                stat.S_IMODE(os.fstat(descriptor).st_mode) != _SCANNER_DROP_DIRECTORY_MODE
+            )
+            os.fchmod(descriptor, _PRIVATE_ARTIFACT_DIRECTORY_MODE)
+            if path.resolve() != path or path.parent != self._scanner_artifact_root:
+                raise DockerBenchmarkProviderError("ZAP workspace escaped before reseal")
+            _verify_posix_owned_directory_descriptor(
+                path,
+                descriptor,
+                expected_mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE,
+                label="resealed ZAP scanner workspace",
+            )
+            if mode_drifted:
+                raise DockerBenchmarkProviderError("ZAP scanner changed its workspace mode")
+        except OSError as exc:
+            raise DockerBenchmarkProviderError(
+                "ZAP scanner workspace could not be resealed"
+            ) from exc
+        finally:
+            os.close(descriptor)
+
+    def _plan_path(self, operation_digest: str) -> Path:
+        path = self._scanner_artifact_root / f"{operation_digest}.{_PLAN_NAME}"
+        if path.resolve().parent != self._scanner_artifact_root or path.parent != (
+            self._scanner_artifact_root
+        ):
+            raise DockerBenchmarkProviderError("ZAP plan escaped its artifact root")
         return path
 
     def _artifact_path(self, operation_digest: str) -> Path:
@@ -610,6 +866,7 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
         *,
         network_name: str,
         workspace: Path,
+        plan_path: Path,
     ) -> None:
         self._require_owned_resource(coordinate, operation, worker)
         state = _mapping(worker.get("State"), label="Scanner state")
@@ -630,24 +887,34 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
             or host.get("CapDrop") != ["ALL"]
             or not _has_no_new_privileges(host)
             or config.get("User") != "1000:1000"
-            or config.get("Cmd") != ["zap.sh", "-cmd", "-autorun", "/zap/wrk/zap.yaml"]
+            or config.get("Cmd") != ["zap.sh", "-cmd", "-autorun", "/zap/zap.yaml"]
             or tmpfs
             != {
                 "/tmp": "rw,noexec,nosuid,nodev,size=128m,uid=1000,gid=1000",
                 "/home/zap/.ZAP": "rw,nosuid,nodev,size=512m,uid=1000,gid=1000",
             }
             or not isinstance(mounts, list)
-            or len(mounts) != 1
+            or len(mounts) != 2
+            or any(not isinstance(item, dict) for item in mounts)
         ):
             raise DockerBenchmarkProviderError("ZAP container hardening policy differs")
-        mount = cast(dict[str, object], mounts[0])
+        mount_by_destination = {
+            str(cast(dict[str, object], item).get("Destination")): cast(dict[str, object], item)
+            for item in mounts
+        }
+        if set(mount_by_destination) != {"/zap/wrk", "/zap/zap.yaml"}:
+            raise DockerBenchmarkProviderError("ZAP bind-mount destinations differ")
+        workspace_mount = mount_by_destination["/zap/wrk"]
+        plan_mount = mount_by_destination["/zap/zap.yaml"]
         if (
-            mount.get("Type") != "bind"
-            or Path(str(mount.get("Source"))) != workspace
-            or mount.get("Destination") != "/zap/wrk"
-            or mount.get("RW") is not True
+            workspace_mount.get("Type") != "bind"
+            or Path(str(workspace_mount.get("Source"))) != workspace
+            or workspace_mount.get("RW") is not True
+            or plan_mount.get("Type") != "bind"
+            or Path(str(plan_mount.get("Source"))) != plan_path
+            or plan_mount.get("RW") is not False
         ):
-            raise DockerBenchmarkProviderError("ZAP workspace mount differs")
+            raise DockerBenchmarkProviderError("ZAP Scanner mounts differ")
 
     def _scanner_observation(
         self,
@@ -898,6 +1165,11 @@ _DOCKER_ZAP_PRODUCTION_METHODS = {
         "_reset",
         "_isolate",
         "_execute",
+        "_workspace",
+        "_open_scanner_workspace",
+        "_seal_scanner_workspace",
+        "_plan_path",
+        "_require_scanner_state",
         "_cleanup",
         "_resources_absent",
         "_container_exists",
