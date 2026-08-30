@@ -1159,7 +1159,10 @@ async def test_signed_runtime_cannot_substitute_surface_package_parser_or_archiv
     sandbox = context.preparation.sandbox
     substitutions: tuple[dict[str, object], ...] = (
         {"surface": foreign_surface.reference()},
-        {"packageSurface": foreign_package.reference()},
+        {
+            "packageSurface": foreign_package.reference(),
+            "platform": MobilePlatform.IOS,
+        },
         {"parser": MobilePackageParser.IOS_IPA_STRUCTURE},
         {"artifactSHA256": "0" * 64},
         {"maxArchiveEntries": sandbox.max_archive_entries + 1},
@@ -1193,13 +1196,14 @@ async def test_signed_result_cannot_substitute_selected_or_root_package_surface(
     foreign_surface = _surface(
         MobileSurfaceClass.APPLICATION,
         platform=MobilePlatform.ANDROID,
-        variant="foreign-result",
+        variant="foreignresult",
     )
     foreign_package = _surface(MobileSurfaceClass.IPA)
     substitutions: tuple[dict[str, object], ...] = (
         {"surface": foreign_surface.reference()},
         {
             "packageSurface": foreign_package.reference(),
+            "platform": MobilePlatform.IOS,
             "parser": MobilePackageParser.IOS_IPA_STRUCTURE,
         },
         {"artifactSHA256": "0" * 64},
