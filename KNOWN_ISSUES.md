@@ -7,7 +7,8 @@
 
 - 2026-08-24 Windows 전체 pytest에서 managed Artifact/Replay 152건은 POSIX directory `fsync`, Worker
   status/resume 28건은 secure `dirfd`, integrity 4건은 비이식 파일명·symlink 제약으로 실패했다.
-  보안 정책을 우회하지 않고 Linux/WSL에서 검증한다.
+- Ubuntu CI run `33316840636`(commit `051cad4`)은 Quality·24/24 shard, `7,609 passed, 69 skipped`로
+  성공했다. 따라서 위 실패는 Windows-local 제약으로 구분하며 보안 정책을 우회하지 않는다.
 
 ## UX-007B-R deployment validation limits
 
@@ -49,8 +50,9 @@
 ## ARCH-002 multi-domain architecture 경계
 
 - DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
-- WEB-001A~D는 typed GET knowledge·Replay와 별도 private Ground Truth까지만 구현한다. SQLi measurement,
-  Profile floor, Finding과 Target selection은 없다.
+- WEB-002A~D는 exact case와 ZAP source measurement, 별도 controlled route/Worker 실행, durable
+  claim·denial·Evidence, 독립 floor 평가와 bounded benchmark Ground Truth match Finding까지 구현했다.
+  product entrypoint, Graph Finding admission, report/external delivery와 추가 실행 권위는 닫혀 있다.
 - AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
   Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
 - registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
@@ -520,39 +522,33 @@
 
 ## Windows 비이식 파일명 정규화
 
-- 상태: 활성 환경 제약
+- 상태: Windows-local 환경 제약, Linux 검증 완료
 - 마지막 재현: 2026-08-04
 - 명령: MEM-002 인접 회귀에 `tests\test_integrity.py` 전체를 포함한 pytest 실행
-- 결과: Windows가 `evidence/result:.json`, 후행 점, 후행 공백 경로를 생성 시 정규화해
-  `test_seal_rejects_externally_created_non_portable_artifact_paths`의 세 case가 예상 파일명을
-  실제 디렉터리에서 관찰하지 못했다.
-- 영향: 비이식 경로를 사전에 거부하는 코드 경계의 Linux 동작을 이 Windows 파일시스템에서
-  같은 fixture로 증명할 수 없다. MEM-002의 normalized path validator와 새 집중 테스트는 통과했다.
-- 해소 조건: Linux CI에서 해당 parameterized test를 실행한다.
+- 결과: Windows가 `evidence/result:.json`, 후행 점·공백 경로를 정규화해
+  `test_seal_rejects_externally_created_non_portable_artifact_paths` 세 case를 관찰하지 못했다.
+- 영향: 이 Windows filesystem의 이름 materialization 한계는 남지만, 위 Ubuntu run에는 해당 test와
+  `tests/test_integrity.py` 관련 skip이 없었다.
 
 ## Windows 심볼릭 링크 테스트 권한
 
-- 상태: 활성 환경 제약
+- 상태: Windows-local 환경 제약, Linux 검증 완료
 - 마지막 재현: 2026-08-06
-- 현재 결과: 공통 `tests/platform_test_support.py::symlink_or_skip`을 사용해 권한 없는 Windows에서
-  `WinError 1314`를 명시적 skip으로 분류한다. 관련 CLI·artifact·control·CTF·safe-files 묶음은
-  기능 테스트를 계속 실행하고 symlink 생성이 필요한 음성 사례만 skip한다.
-- 영향: 심볼릭 링크 생성 권한이 없는 Windows 세션에서도 나머지 테스트는 진행되지만, link substitution
-  자체의 fail-closed 동작은 이 환경에서 증명할 수 없다. 이는 PAJIN 코드 회귀의 증거가 아니다.
-- 해소 조건: Linux CI 또는 심볼릭 링크 권한이 있는 Windows 환경에서 전체 테스트를
-  실행한다.
+- 현재 결과: `tests/platform_test_support.py::symlink_or_skip`이 권한 없는 Windows의 `WinError 1314`를
+  명시적 skip으로 분류한다. 관련 기능 테스트는 계속 실행하고 symlink 음성 사례만 skip한다.
+- 영향: 이 host에서는 link-substitution fail-closed를 증명할 수 없지만 코드 회귀 증거가 아니다.
+  위 Ubuntu run의 `symbolic links are unavailable`과 FORENSICS-001C admission skip은 모두 0이므로 Linux
+  경계는 검증됐다.
 
 ## Windows POSIX 파일·디렉터리 mode 검사
 
-- 상태: 테스트 플랫폼 분리 완료, POSIX 보안 검증은 Linux 필요
+- 상태: 테스트 플랫폼 분리 완료, Linux POSIX 보안 검증 완료
 - 마지막 재현: 2026-08-06
-- 명령:
-  `.\.venv\Scripts\python.exe -m pytest -q tests\test_workflow_integrity_regressions.py::test_confirmation_projection_keeps_private_permissions_and_escapes_markdown`
-- 추가 명령:
-  `.\.venv\Scripts\python.exe -m pytest -q tests\test_tool_loop.py::test_high_risk_tool_waits_for_exact_approval_and_resumes_in_new_run`
-- 결과: 기능·escaping·approval 재개 검증은 Windows에서도 실행하고 `0700/0600` mode assertion만
-  POSIX에서 실행하도록 분리했다. Tool Loop 37 passed, workflow integrity 20 passed.
-- 영향: POSIX private mode 자체는 Windows에서 증명할 수 없으며 Linux CI가 필요하다.
+- 명령: `.\.venv\Scripts\python.exe -m pytest -q tests\test_workflow_integrity_regressions.py::test_confirmation_projection_keeps_private_permissions_and_escapes_markdown`
+- 추가: `.\.venv\Scripts\python.exe -m pytest -q tests\test_tool_loop.py::test_high_risk_tool_waits_for_exact_approval_and_resumes_in_new_run`
+- 결과: 기능·escaping·approval은 Windows에서도 검증하고 `0700/0600` assertion만 POSIX로 분리했다.
+  위 Ubuntu run에서 POSIX owner-only mode test skip은 0이었다. 이 Windows host에서는 private mode를
+  재현할 수 없다.
 
 ## PROF-001 Profile semantic authority 경계
 
@@ -766,19 +762,21 @@
 
 ## Windows 애플리케이션 제어에 의한 임시 console-script 차단
 
-- 2026-08-27 project `.venv\Scripts\python.exe`가 `_overlapped` DLL을 Application Control 정책으로
-  로드하지 못해 asyncio와 pytest 초기화가 차단된다. bundled Codex Python과 project site-packages를
-  결합한 검증은 통과했고 Ruff/mypy/uv console script는 정상이다. 앞서 clean wheel·sdist의 임시
-  wrapper도 `WinError 4551`, `pajin.exe`는 무응답이 재현됐다. assertion이나 정책을 우회하지 않으며
-  installed-wrapper와 project Python 검증은 Linux CI 또는 승인된 AppControl 환경에서 다시 수행한다.
+- 상태: project `.venv\Scripts\python.exe`는 Application Control로 `_overlapped`/`_sqlite3`를
+  로드하지 못한다. 검증은 bundled Python+project site-packages, 외부 `TEMP/TMP/TMPDIR`,
+  `-p no:cacheprovider`와 외부 `--basetemp`를 사용하며 Ruff/mypy/uv는 정상이다.
+- 해소 조건: project Python, `pajin.exe`, installed wrapper를 Linux CI 또는 승인된 AppControl 환경에서 검증한다.
+
+## Docker AF_UNIX endpoint 1920
+
+- 상태: 로컬 제약. 두 AF_UNIX endpoint는 reboot 뒤에도 open 1920이다.
+- 영향: post-reboot Docker start도 `sailor-ingest.sock` 제거에서 crash해 Engine/WSL이 시작되지 않았다.
+  관리자 `chkdsk`도 policy/EDR에서 process-create가 거부돼 우회하지 않는다. Ubuntu 24.04 committed-ref
+  conformance run `33310558350`이 통과했으므로 Phase 22 blocker는 아니지만 로컬 Docker가 필요하면
+  endpoint 증거와 함께 support로 전환한다.
 
 ## Git OpenSSL CA 경로
 
 - 상태: 활성. 기본 Git이 `unable to get local issuer certificate`를 보고하면 TLS 검증을 끄지 말고
   `git -c http.sslBackend=schannel <command>`를 사용한다. 로컬 CA 복구 전 push와 `ls-remote`에 동일하게
   적용한다.
-## Docker daemon 가용성
-
-- 2026-08-02 Docker Desktop 4.78.0 / Engine 29.5.3에서 관련 governed live 측정과 cleanup이
-  통과했다. 다음 세션 가용성은 보장되지 않으므로 실제 컨테이너 증거가 필요할 때 daemon과 exact
-  image ID를 다시 확인한다. fake-provider 검증과 실행하지 않은 live 검증을 구분한다.

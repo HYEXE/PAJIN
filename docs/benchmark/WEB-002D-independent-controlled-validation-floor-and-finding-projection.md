@@ -2,11 +2,15 @@
 
 ## Status
 
-Implementation and deterministic/static verification are complete. A prior-tree opt-in real-Docker
-conformance run passed on 2026-08-30 (`1 passed in 545.95s`) with exact success and denial
-lifecycles, cleanup, sealing, and fresh-session reopen. That evidence predates subsequent provider
-Evidence compatibility and production Worker custody hardening changes in the current working
-tree, so current-tree real-Docker conformance remains pending.
+Implementation, deterministic/static verification, and exact-commit real-Docker conformance are
+complete. Ubuntu 24.04 GitHub run `33310558350`, job `99254722600`, exact-checked-out commit
+`975bf7876a186cefae66c289d09f530f3e0fe7aa`, passed the exact test in
+`666.82s (0:11:06)`; the complete job took 12 minutes 20 seconds. Success and denial lifecycles,
+cleanup, sealing, and fresh-session reopen all passed; six independent container/network
+label/name queries returned zero matching resources.
+The covered WEB runtime, Docker test, and conformance workflow paths remain unchanged at the current checkpoint.
+This evidence is bounded to the registered synthetic P0-D1 case and does not authorize production
+or external probing.
 
 ## Purpose
 
@@ -201,9 +205,11 @@ artifacts that omit the required ledger identity.
 - `tests/test_web_validation_evaluation.py`: independent recomputation, fourteen metrics, private
   matcher, evidence inventory, strict JSON, and bounded Finding projection.
 - `tests/test_web_controlled_validation_docker.py`: required opt-in real-Docker success and denial
-  conformance. The prior-tree run passed on 2026-08-30 (`1 passed in 545.95s`) with cleanup,
-  sealing, fresh-session reopen, and independent resource-absence checks. It predates the current
-  compatibility and custody hardening and is not current-tree conformance evidence.
+  conformance. Ubuntu 24.04 run `33310558350`, job `99254722600`, checked out exact commit
+  `975bf7876a186cefae66c289d09f530f3e0fe7aa` and passed the exact node in
+  `666.82s (0:11:06)`. The complete 12-minute-20-second job verified cleanup, sealing, and
+  fresh-session reopen after the current compatibility and custody hardening. Six independent
+  container/network label/name queries returned zero matching resources.
 - `.github/workflows/web-002d-conformance.yml`: manual, non-cancelling Ubuntu 24.04 lane that builds
   the four repository images, pulls the registered ZAP linux/amd64 manifest by registry digest,
   records runtime and exact image identities, runs the exact node, and audits residue without

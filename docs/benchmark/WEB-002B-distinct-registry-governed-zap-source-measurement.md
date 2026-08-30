@@ -1,7 +1,9 @@
 # WEB-002B: Distinct Registry-Governed ZAP Source Measurement
 
-- Status: Implementation and deterministic provider verification are complete; post-audit
-  current-tree real-Docker conformance is pending in the dedicated WEB-002D workflow
+- Status: Implementation, deterministic provider verification, and post-audit exact-commit
+  real-Docker conformance are complete
+- Accepted conformance evidence: Ubuntu 24.04 run `33310558350`, job `99254722600`, passed the exact combined WEB-002D test at commit `975bf7876a186cefae66c289d09f530f3e0fe7aa`
+- The covered WEB runtime, Docker test, and conformance workflow paths remain unchanged at the current checkpoint
 - Prior conformance: the 2026-08-29 run predates receipt-bound request-unit custody and is retained
   only as historical evidence
 - Lineage API: `pajin.dev/web-zap-source-lineage/v1alpha1`
@@ -132,7 +134,13 @@ Scanner-source, and observation wire coercion. The opt-in test exercises the sam
 loader with real Docker; standard test runs continue to skip it unless
 `PAJIN_TEST_DOCKER_ZAP=1`.
 
-On 2026-08-29,
+The combined exact-commit WEB-002D conformance at commit
+`975bf7876a186cefae66c289d09f530f3e0fe7aa` passed on Ubuntu 24.04 in run `33310558350`, job
+`99254722600`. The exact node completed in `666.82s (0:11:06)` and verified source and controlled
+lifecycle cleanup, sealing, and fresh-session reopen; six independent container/network label/name
+queries returned zero matching resources.
+
+As earlier development evidence, on 2026-08-29,
 `test_real_docker_web_zap_source_measurement_conformance` passed against Docker Engine 29.7.2
 with Target image
 `sha256:a6387af2d56e4d41fd208985227dc73099a3dc140ffa24abf08fe59550c7f2e0`, Worker image

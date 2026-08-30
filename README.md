@@ -154,6 +154,10 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Web/API read-only discovery binding | Implemented, preparation only | WEB-001B binds only a concrete WEB-001A GET Surface to the existing signed Pentest Recon CAP-002 and DOMAIN-004 minimum Web Worker profile; it stops at `PreparedCapabilityAction`, leaves pre-Gateway network disabled, and grants no Scope, approval, Permit, Worker selection, Observation/Evidence, Graph, Finding, runtime, or execution authority |
 | Web/API sealed knowledge admission | Implemented, bounded | WEB-001C exact-binds WEB-001B to an already approved sealed Pentest Recon source, reuses PENTEST-002A and the existing Graph single writer to admit only Action/neutral Observation/three Evidence nodes, and leaves typed Surface knowledge `registered-not-authorized` with no Scope, execution, Replay, or Finding authority |
 | Web/API Replay and Ground Truth | Implemented, bounded | WEB-001D binds WEB-001C to an actual PENTEST-002B fresh-authority Replay proof and separately binds the private code-owned P0-D1 Boolean SQLi Ground Truth to the DOMAIN-006 Web plan; it creates no Target selection, benchmark measurement, Profile-floor, Finding, Scope, Permit, Worker, network, or execution authority |
+| Web/API measured-case authority | Implemented, registered and non-executable | WEB-002A adds a distinct internal-target Profile and complete T2 read-only Capability authority set, binds exact P0-D1/P0-E2B and DOMAIN-006 predecessors into a public-safe measured case, and registers a controlled-validation-only signed route whose issuer, verifier, and reload path resolve the durable `ActionApprovalAuthorization` plus the current Target journal head and effective fence instead of trusting caller snapshots. Its floor policy binds exact metric denominators, including a content-addressed code-owned denial-Control registry, but it provides no route-consumption ledger or runtime adapter, materializes or consumes no route, executes no Target/ZAP/Worker/network path, observes no metric, satisfies no floor, and authorizes no Finding, product, report, Graph write, or execution |
+| Web/API ZAP source measurement | Implemented, bounded | WEB-002B reconstructs the exact WEB-002A case and executes only its plan-owned registry-governed P0-D1/P0-E2B coordinate. Its public-safe authority binds the exact signed distribution bundle, immutable images, internal network with zero published ports, raw SARIF custody, strict normalization, completed Target authority, the exact eight-record operation journal, and receipt-bound cleanup resource absence. Contextful reload reopens every predecessor and canonical stored wire. It never uses the controlled-validation route and grants no Ground Truth disclosure, floor, Graph, Finding, comparison, Supervisor, product, report, or further execution authority. Current opt-in real-Docker conformance passed through the same outer runner and loader with observed cleanup; the successful audit's six exact container/network label/name queries found no matching resources. |
+| Web/API sealed ZAP knowledge admission | Implemented, bounded | WEB-002C reopens the exact WEB-002B authority and scanner normalization, recomputes only registered-Surface presence, requires that trusted-core Surface in the current Graph Snapshot, and admits one neutral Observation plus authority-reference Evidence and only on signal one confidence-0.5 open Hypothesis. Sealed-source trust is bound to the exact Proposal digest and CAS predecessor head, is non-transferable cross-domain, and grants no Capability, Permit, route, Worker, network, Replay, floor, Finding, product, report, or further execution authority. |
+| Web/API independently controlled validation | Implemented, conformance verified | WEB-002D consumes one signed controlled-validation route through an atomic single-use claim, executes a fresh Target through proxy-only Worker routing, seals exact Worker and cleanup Evidence plus a separate zero-side-effect denial, independently evaluates the fourteen-metric DOMAIN-006 floor, and projects only a `benchmark-ground-truth-match` claim-ceiling Finding. Commit `975bf7876a186cefae66c289d09f530f3e0fe7aa` passed the dedicated Ubuntu 24.04 exact-commit real-Docker run `33310558350`; Graph mutation, product, report, external delivery, and additional execution authority remain absent. |
 | MCP | Implemented, bounded | Discovery remains non-authoritative; REDTEAM-001D admits one approval-required, network-disabled registered `demo-security:inspect_text` Capability with one fixed synthetic input and no Replay or Finding authority |
 | Benchmark | Implemented, bounded | BENCH-001 measurement/Target Factory lifecycle plus REDTEAM-002 exact profile detection, false-positive, Replay, request/Tool cost, evidence, and policy-denial contract with sealed aggregation; reference fixtures are not production scores |
 | Product projection | Implemented, bounded | UX-008 reopens the sealed REDTEAM-002 aggregate and every source into separate profile-bound Scope, content-free Evidence, explicit unconfirmed Finding, and measurement-only report sections; complete Campaign Scope, Campaign Profile-floor evaluation, HTTP/UI exposure, and report delivery are not implemented |
@@ -183,8 +187,15 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | Mobile read-only package analysis | Implemented, preparation and request adaptation only | MOBILE-001B binds one exact MOBILE-001A Surface and its canonical root APK/IPA package to a current signed CAP-002 release, opaque deployment custody/authorization metadata, exact selected-and-package non-routable Scope, lineage-derived APK/IPA parser, image/executable digests, and a non-root network/DNS-disabled read-only/noexec static sandbox configuration with archive-bomb ceilings; it deliberately does not bind the current device-bound Mobile Worker profile and performs no package resolution/read, mount, parser or Worker execution, emulator/device access, install/launch/instrumentation, storage/network/TLS/auth/credential use, Observation/Evidence, Graph, Hypothesis, Finding, mutation, or execution |
 | Mobile sealed package-analysis knowledge | Implemented, bounded admission only | MOBILE-001C rebuilds current MOBILE-001B selected/root Scope, preparation, and approved execution inputs, resolves one consumed Permit and durable approval receipt, recomputes Gateway policy, and verifies a deployment-signed external non-root network/DNS-disabled static-sandbox execution whose exact package lineage, parser/image, archive ceilings and observations, zero live channels, and detached digest-only result receipt match the preparation; the existing Graph writer admits one neutral `mobile.analysis-observation`, two restricted Evidence nodes, and only for eight exact class/operation signals one confidence `0.5` open `mobile.security-property` Hypothesis, while the device-bound DOMAIN-004 profile and Worker job remain deferred and no raw output, package/manifest/signing/runtime/security truth, device/network/credential use, Replay, Finding, mutation, or further action authority is added |
 | Mobile deterministic package re-analysis and seeded fixtures | Implemented, comparison and requirement registry only | MOBILE-001D reopens one stored MOBILE-001C admission and one separately authorized sealed exact-package execution through the current verifier, requires equal selected/root/platform/package/custody/parser/image/Scope/budget and observed-archive provenance plus disjoint causal action/evidence identities, and emits only neutral digest/byte-count/signal match/change/unresolved; it separately registers 28 known-positive and negative-Control requirements covering all 14 valid Android/APK and iOS/IPA Surface lineages with disposable offline static-sandbox, archive-safety, and cleanup-evidence requirements, but performs no package materialization, parser/sandbox execution, device/profile/Worker binding, cleanup, measurement, Replay scheduling, Finding, or further action |
-| Cryptography | One fixed CTF lab only | General cryptographic analysis is planned |
-| Digital Forensics | Planned | No general forensic Surface, Capability, Worker, replay, or benchmark vertical slice is implemented |
+| Cryptography typed Surface | Implemented, registry only | CRYPTO-001A binds exact protocol roots and sibling key-usage, ciphertext-digest, and sanitized configuration declarations to the Cryptography Domain and `cryptography.protocol-key-artifact` semantics; key identity/material/reference, plaintext, raw ciphertext/configuration/parameters, artifact access, analysis, cryptographic operations, Scope, Capability, Permit, Tool/Worker, network, Oracle, Graph, Finding, mutation, and execution authority remain absent |
+| Cryptography offline misuse-analysis preparation | Implemented, non-executable | CRYPTO-001B binds one exact CRYPTO-001A Surface and its full class/input/digest/operation/analyzer mapping, current signed Range Capability and exact Scope, code-classified digest-derived custody/authorization metadata, code-owned rule vocabulary, exact Cryptography Worker profile, code-owned deployment/non-root runtime identities, and network-disabled read-only/noexec sandbox requirements; it resolves no bytes, uses no key or credential, performs no cryptographic operation or Oracle call, materializes no Worker, and admits no result or Graph knowledge |
+| Cryptography sealed analysis knowledge | Implemented, bounded admission only | CRYPTO-001C rebuilds current CRYPTO-001B authority, verifies one deployment-signed consumed-Permit offline execution and strict detached digest-only result receipt, and uses a workflow-owned pure structural Oracle to recompute the exact Surface/mapping/rule/custody/output/result declaration before the existing Graph writer admits one neutral `cryptography.analysis-observation`, two restricted Evidence nodes, and only for a code-derived class signal one confidence `0.5` open Hypothesis; `no-signal` stays inconclusive, and no artifact/result body/key read, semantic misuse or negative truth, Capability Oracle, Finding, Replay, or further action authority is added |
+| Cryptography independent recomputation and seeded vectors | Implemented, comparison and requirement registry only | CRYPTO-001D reopens one stored CRYPTO-001C admission and a later separately authorized execution under distinct executable, image, sandbox, trust-anchor, signer, action, and Evidence identities while requiring exact logical Surface/artifact/custody/rule/Scope/budget semantics; it emits only neutral opaque-result and structural-disposition match/change/unresolved and registers eight unmaterialized seeded-vector requirements without proving source-code, algorithmic, organizational, host, or common-mode independence, semantic correctness, Ground Truth, measurement, Finding, Replay scheduling, key use, target cryptographic execution, or further authority |
+| Cryptography executable analysis | One fixed CTF lab plus external sealed provenance only | The bounded single-byte XOR Capability remains independent; CRYPTO-001B is preparation-only, CRYPTO-001C verifies one external execution, and CRYPTO-001D compares two supplied sealed provenance contexts and registers future vector requirements without providing a general analyzer, sandbox/Worker runtime, vector materializer, key search, recovered output, semantic Oracle, or executable benchmark path |
+| Digital Forensics typed Surface | Implemented, registry only | FORENSICS-001A binds caller-declared disk, memory, log, and generic artifact classes plus a complete content-free PAJIN Run-root/artifact-record/provenance-record/artifact digest and strict byte-count coordinate to the Forensics Domain and `forensics.immutable-artifact` semantics; source existence, seal, authenticity, external anchoring, membership, digest/size, immutability, custody, format, parser result, credential use, lateral movement, evidence mutation, Scope, Capability, Permit, Tool/Worker, network, Graph, Hypothesis, Finding, and execution authority remain absent |
+| Digital Forensics read-only parser preparation | Implemented, non-executable | FORENSICS-001B binds one complete FORENSICS-001A Surface and its neutral class-owned input/operation/parser mapping to a current signed CAP-002 release, exact parser-bound non-routable Scope, opaque custody/authorization coordinates, the exact provenance-preserving DOMAIN-004 Forensics profile, exact executable/configuration/image digests, and immutable read-only/noexec non-root network/DNS-disabled sandbox requirements with bounded byte-defined parser work, recursion, decompression ratio, and absolute expanded bytes; it resolves or reads no source, attests or executes no parser/Worker, mutates no evidence, and admits no result, Observation/Evidence, Graph, Hypothesis, Finding, or execution authority |
+| Digital Forensics sealed analysis knowledge | Implemented, bounded admission only | FORENSICS-001C loads only byte-SHA-256-canonical outer execution and detached result-receipt metadata beneath a Gate-owned absolute existing non-symlink root, rejects traversal/alias/hardlink/symlink/junction paths, and verifies disjoint deployment source-membership and parser-execution Ed25519 roles; it rebuilds current Range/Scope/preparation/approval/consumed-Permit authority, the signed outer statement's exact Grant ID/digest, and the Gateway Grant digest, then uses a pure structural Oracle before the existing Graph writer admits one neutral `forensics.analysis-observation`, exactly two restricted Evidence nodes, and only for `review` one confidence `0.5` open Hypothesis; no raw source/result/provenance body, semantic truth, mutation, credential/lateral action, Replay, Finding, benchmark, or further authority is added |
+| Digital Forensics re-parse/comparison and seeded evidence requirements | Implemented, comparison and requirement registry only | FORENSICS-001D reopens one stored FORENSICS-001C admission and one later separately authorized sealed execution against the same deployment source-membership authority, automatically deriving `deterministic-reparse` only when all concrete parser coordinates are equal or `independent-parser-comparison` only when execution trust/signer/executable/configuration/image/sandbox coordinates all differ; partial drift fails closed, only independent mode satisfies DOMAIN-006, and both emit only neutral opaque-result and structural-disposition match/change/unresolved. A separate profile registers twelve unmaterialized disk/memory/log/artifact positive, no-signal, and corrupted-input bounded-rejection requirements without proving source/custody/provenance or parser correctness, observing Ground Truth or rejection, executing a parser, writing Graph knowledge, measuring any metric, confirming a Finding, scheduling Replay, or granting further authority |
 
 REDTEAM-001A/B/C/D, REDTEAM-002, UX-008, and PENTEST contracts remain stable compatibility
 boundaries. Phase 11 and DOMAIN-001 through DOMAIN-006 are complete within their stated bounded
@@ -193,7 +204,26 @@ benchmark-registry contracts. WEB-001A is complete as a typed registry only, WEB
 non-Campaign binding and preparation boundary only, and WEB-001C as one bounded sealed-source
 knowledge-admission composition only. WEB-001D adds a bounded independent Replay projection and a
 separate private Ground Truth profile; it does not claim that the two form a measured benchmark
-case. AI-001A is complete as a typed classification registry only. AI-001B adds exact binding and
+case. WEB-002A now registers that exact case composition, a controlled-validation-only signed route
+whose issue, verify, and reload paths reopen the durable approval authorization and current Target
+journal head/effective fence, a Web-specific floor policy with an exact code-owned denial-Control
+denominator, and a separated private/public expected-Finding mapping. It has no consumption ledger
+or runtime adapter. WEB-002B now provides the distinct bounded ZAP source-measurement runner and
+contextful reload path over the plan-owned fresh Target lifecycle, raw SARIF, completed journal, and
+verified cleanup. That source path was reverified at exact commit
+`975bf7876a186cefae66c289d09f530f3e0fe7aa` by Ubuntu 24.04 combined run `33310558350`, so the
+WEB-002B runtime precondition is complete. WEB-002C now adds bounded neutral Graph
+Observation/Evidence admission and an optional open Hypothesis without exposing raw SARIF, private
+Ground Truth, or runtime identity. WEB-002D now consumes one independently controlled route with an
+atomic single-use claim and a separate zero-side-effect denial, executes a fresh Target through the
+proxy-only Worker boundary, seals exact Worker and cleanup Evidence, evaluates the fourteen-metric
+DOMAIN-006 floor, and projects only the bounded claim-ceiling Finding. Exact-commit Ubuntu 24.04
+run `33310558350`, job `99254722600`, passed in 12 minutes 20 seconds, completing the Phase 22
+Exit Gate. The verified WEB runtime, Docker test, and conformance workflow paths remain unchanged at the current checkpoint. Product entrypoint, production or external probing, report delivery, Graph Finding
+admission, and general Domain runtime authority remain absent. The next checkpoint is the UX-009A
+read-only product slice.
+AI-001A is
+complete as a typed classification registry only. AI-001B adds exact binding and
 signed lifecycle preparation for four existing read-only REDTEAM Capabilities. AI-001C admits a
 bounded sealed Observation/Evidence result without making Surface, Profile, Domain, MCP, or Tool
 metadata authoritative. AI-001D adds a bounded semantic binding to independently sealed KISA
@@ -382,6 +412,63 @@ profile remains deferred and no package, Worker, device, manifest/security truth
 or further execution authority is created. The exact contract is
 [MOBILE-001D](docs/benchmark/MOBILE-001D-package-reanalysis-seeded-mobile-fixtures.md).
 
+CRYPTO-001A adds a content-free typed registry only. One exact protocol declaration is the root;
+key-usage kind, ciphertext digest, and sanitized configuration declarations are sibling children
+with complete protocol lineage. There is no free-form key-usage ID and no key identity, reference,
+fingerprint or material, plaintext, raw ciphertext, cryptographic parameter, raw configuration,
+path, endpoint, credential, or Oracle result. Declaration digests are unverified caller
+coordinates, not redaction or proof that their external preimages were sanitized. The registry
+does not resolve or read an artifact, analyze cryptographic misuse, perform a cryptographic
+operation, use a key or credential, negotiate a protocol, invoke an Oracle, select a Tool or
+Worker, access a network, admit Graph knowledge, or authorize execution. The existing fixed
+single-byte XOR lab remains independent. The exact contract is
+[CRYPTO-001A](docs/discovery/CRYPTO-001A-protocol-key-usage-ciphertext-configuration-surface-model.md).
+
+CRYPTO-001B adds a non-executable offline misuse-analysis preparation boundary. It binds one
+complete CRYPTO-001A Surface and its full class/locator/input/digest/operation/analyzer mapping to
+a current signed Range Capability, exact non-routable Campaign Scope, code-classified
+digest-derived custody metadata, an externally supplied authorization-document digest, a
+code-owned bounded signal vocabulary, and the exact DOMAIN-004 Cryptography profile.
+The sandbox record fixes code-owned deployment and non-root service identities, requires
+network/DNS-disabled read-only/noexec operation and exact image, executable, rule, and resource
+ceilings, and accepts no caller-controlled identity text, but it is configuration rather than
+runtime attestation. All network, key, credential, key-store, cryptographic-operation, key-search,
+protocol-negotiation, Oracle, plaintext/key-output, command, and mutation budgets are zero. The
+Tool and CAP-002 runtime roles materialize no Worker or result, and the CTF XOR runtime is not
+reused. The exact contract is
+[CRYPTO-001B](docs/capability/CRYPTO-001B-offline-cryptographic-misuse-analysis-capability.md).
+
+CRYPTO-001C admits only structurally verified knowledge from an already approved and completed
+external execution. It reopens a deployment-signed Ed25519 execution bundle and strict detached
+result receipt, rebuilds current B preparation/Scope/Grant/Decision/Permit/approval and Gateway
+policy, and checks exact Surface lineage, custody, analyzer/rule/image, resource ceilings, causal
+timing, and zero network/key/credential/cryptographic-operation channels. A repository-owned pure
+Oracle reads neither artifact nor result body: it recomputes metadata consistency and derives one
+class-owned review signal from `review`, or `inconclusive-no-signal` from `no-signal`. The existing
+Graph writer receives one succeeded Action, one fixed neutral Observation, and two restricted
+Evidence nodes; a review signal may add one open confidence `0.5` Hypothesis that explicitly
+requires separately authorized future re-analysis. Neither disposition is misuse truth or a
+negative conclusion, and no key use, external Oracle, Replay, Finding, or further execution is
+authorized. The exact contract is
+[CRYPTO-001C](docs/graph/CRYPTO-001C-oracle-recomputed-cryptographic-analysis-knowledge-admission.md).
+
+CRYPTO-001D compares that stored source with one later, separately authorized sealed execution.
+Both CRYPTO-001C contexts are reopened through their exact Graph stores and separate deployment
+trust anchors. The logical Surface, artifact and custody coordinates, rule, operation, analyzer,
+Scope, release, schema, resources, and zero-live-channel semantics must match, while executable,
+image, sandbox, active signer, Run, approval, Permit, execution, runtime, attestation, result, and
+Oracle identities must differ. The projection reports only opaque result-body digest/byte-count
+and structural disposition/signal `matched`, `changed`, or `unresolved`; it reads neither body and
+turns no state into semantic cryptographic truth or a negative conclusion. A separate exact
+eight-case registry covers protocol, key usage, ciphertext, and configuration positive and
+no-signal Control requirements, but materializes no vector or sandbox and records no Ground Truth,
+cleanup, coverage, recomputation-success, quality, or validation-floor measurement. Distinct
+implementation provenance is limited to the configured executable/image/sandbox/signer identities;
+source-code, algorithmic, organizational, supply-chain, physical-host, and common-mode independence
+remain unverified. The signed timestamp order is not a source-root-bound causal chain and does not
+prove cross-signer clock synchronization. The exact contract is
+[CRYPTO-001D](docs/benchmark/CRYPTO-001D-independent-implementation-replay-seeded-vector-requirements.md).
+
 The authoritative priority and status are in [PLAN.md](PLAN.md) and the verified checkpoint is in
 [HANDOFF.md](HANDOFF.md).
 
@@ -400,9 +487,85 @@ Artifact
 -> Graph Admission
 ```
 
-A forensic Observation may enable a Hypothesis such as possible credential material. It cannot
-authorize use of that credential, lateral movement, evidence mutation, or another active probe.
-Those actions require separate Capabilities and fresh authority.
+FORENSICS-001A implements only the first content-free representation boundary. Each disk, memory,
+log, or generic artifact locator embeds the complete caller-supplied `pajin.dev/run-integrity/v1`
+source root, source artifact-record, provenance-record, artifact digest, and byte-count coordinate.
+The coordinate does not resolve or verify the Run, artifact, provenance, source immutability, or
+chain of custody and carries no path, URI, raw evidence, credential, secret, or parser output.
+The standalone Surface reference is an opaque digest pointer with no unbound class or locator-kind
+claim; exact use requires rebinding it to the complete revalidated Surface. The established
+discovery and Run-integrity wires remain unchanged.
+
+FORENSICS-001B adds a non-executable read-only parser preparation boundary. It rebinds every
+custody and sandbox reference to the complete Surface, derives one exact input, operation, and
+logical parser from the Surface class, and binds a current signed CAP-002 release, an exact
+`GET` Scope token containing both Surface and parser identity, opaque authorization/custody
+coordinates, the exact provenance-preserving Forensics Worker profile, and a fixed non-root
+network/DNS-disabled immutable read-only/noexec sandbox requirement. Parser executable,
+configuration, and image digests plus artifact/output/runtime/memory/process/byte-defined
+parser-work/recursion/decompression-ratio/absolute-expanded-byte ceilings are content-addressed.
+Live credential and secret access, source writes and copies, evidence mutations, lateral movement,
+target execution, device sessions, plugin loads, shell commands, host reads, network, and DNS
+channels are fixed to zero.
+
+The slice stops at `PreparedCapabilityAction` with state `prepared-not-authorized`. It does not
+resolve or read a source, verify root/record/provenance/custody/digest/size/immutability, materialize
+a mount or Worker job, attest or execute a parser, or create a result or Graph knowledge. See the
+[FORENSICS-001B contract](docs/capability/FORENSICS-001B-immutable-source-read-only-parser-analysis-capability.md).
+
+FORENSICS-001C admits knowledge only from a Gate-owned, deployment-configured absolute existing
+non-symlink evidence root. The two accepted metadata files have code-owned references derived from
+the SHA-256 of their exact bytes: one outer parser-execution bundle containing the separately
+signed source-membership assertion, and one detached digest-only result receipt. Reference
+validation and the shared bounded reader reject traversal, aliases, multiple hard links, every
+symlink or junction component and leaf, oversized or changed files, and ambiguous JSON.
+
+The nested source-membership/custody signature and outer parser-execution signature use distinct
+deployment-owned Ed25519 trust anchors and disjoint keyrings; caller or evidence anchor selection
+is forbidden and missing production anchors fail closed. Verification authenticates the complete
+FORENSICS-001A provenance and FORENSICS-001B custody assertions plus the exact B preparation,
+parser, sandbox, resource, pre/post, and zero-channel runtime assertions. It does not turn those
+signed assertions into independently verified source, custody, format, immutability, parser, or
+result truth.
+
+Before Graph proposal construction, C rebuilds the current signed Range activation/release, exact
+parser-bound Scope and preparation, approved job, durable approval-consumption receipt, and one
+consumed ActionPermit. The signed outer statement binds the exact Capability Grant ID and canonical
+digest, and the recomputed Gateway outcome includes that Grant digest. A workflow-owned pure
+structural Oracle opens no raw result body and accepts only inconclusive `review` or `no-signal`.
+
+The existing Graph CAS single writer admits one fixed neutral Observation and exactly two
+restricted Evidence nodes. Only `review` may immediately add one confidence `0.5` open Hypothesis;
+`no-signal` creates no Hypothesis or negative conclusion. C provides no raw-source/result/provenance/
+custody admission, semantic or Finding truth, source/result read, mutation, credential or secret
+use, lateral movement, Replay, benchmark/measurement, or further action authority. See the
+[FORENSICS-001C contract](docs/graph/FORENSICS-001C-sealed-forensic-analysis-knowledge-admission.md).
+
+A FORENSICS-001C Observation may enable only the fixed open class-owned review Hypothesis above.
+It cannot name or confirm credential material, authorize credential use, lateral movement,
+evidence mutation, or another active probe. Those actions require separate Evidence, Capabilities,
+and fresh authority.
+
+FORENSICS-001D invokes no parser, sandbox, Worker, Replay scheduler, or benchmark Harness. It
+contextfully reopens the exact stored C admission and a later separately authorized C execution
+through two evidence roots and Graph stores. One deployment source-membership trust anchor must
+authenticate equal immutable Surface/provenance/custody/source-state semantics for both contexts.
+The gate automatically derives `deterministic-reparse` when execution trust, signer, executable,
+configuration, image, and sandbox coordinates all match, or `independent-parser-comparison` when
+all differ; partial drift fails closed. All action and evidence identities are disjoint, and the
+second signed start must follow the source finish. Neither mode proves independent source code,
+organizations, physical hosts, clock authority, source truth, provenance truth, deterministic
+semantics, or parser correctness.
+
+The projection reports only opaque result digest/byte-count, result disposition, structural-Oracle
+disposition, and bounded signal match, change, or unresolved. Equal result digests with different
+signed byte counts fail closed, and neither agreement nor disagreement becomes semantic or Finding
+truth. A separate profile registers exactly twelve requirements: known-positive review,
+`no-signal` negative Control, and corrupted-input bounded rejection for each disk, memory, log,
+and generic artifact Surface. Only independent mode satisfies the DOMAIN-006 strategy. All four
+Forensics metrics remain required references but unmeasured; the registry materializes, executes,
+rejects, cleans up, and measures nothing. See the
+[FORENSICS-001D contract](docs/benchmark/FORENSICS-001D-independent-parser-comparison-seeded-evidence-requirements.md).
 
 ## Safety invariants
 
@@ -474,10 +637,18 @@ milestone history embedded in this README.
 .venv\Scripts\python -m mypy src
 ```
 
-The SHA-pinned [Linux CI workflow](.github/workflows/ci.yml) installs the locked dependency set and
-runs Ruff, strict mypy, and the default pytest suite on Ubuntu 24.04 with Python 3.12. Live Docker,
-PostgreSQL, Control Plane, Worker, and external-provider tests remain environment-gated and must not
-be reported as executed when their prerequisites are absent.
+The SHA-pinned [Linux CI workflow](.github/workflows/ci.yml) installs the locked dependency set on
+Ubuntu 24.04 with Python 3.12. It separates a 60-minute Quality job for Ruff and strict mypy from
+twenty-four `fail-fast: false` pytest matrix shards with 120-minute timeouts. A SHA-256 digest of
+each canonical full node ID deterministically assigns every collected test to exactly one shard; local
+pytest remains unsharded unless both CI shard options are supplied.
+The separate [WEB-002D conformance workflow](.github/workflows/web-002d-conformance.yml) is off by
+default and runs only after its required confirmation input. It builds the four repository-owned
+images for `linux/amd64`, pulls the registered ZAP image by its amd64 registry digest, records
+runtime and exact image identities, runs only the exact opt-in node, and requires six independent
+container/network label/name residue queries to return no matches. `workflow_dispatch` verifies only a committed ref; it is not evidence for uncommitted
+working-tree changes. Other live Docker, PostgreSQL, Control Plane, Worker, and external-provider
+tests remain environment-gated and must not be reported as executed without their prerequisites.
 
 ## Documentation
 

@@ -2,628 +2,540 @@
 
 ## 현재 체크포인트
 
-- 기록일: 2026-08-27
+- 기록일: 2026-08-31
 - 작업 체크아웃: `C:\Workspace\HYEXE\PAJIN`
 - 브랜치: `main`
-- 기준 체크포인트: `654dc28` (`docs(roadmap): 분석 도메인 로드맵과 계약 색인 동기화`)
-- 직전 구현 체크포인트: `3d40207` (`feat(benchmark): 도메인 Replay와 재분석 경계 추가`)
-- 구현 상태: `NET-001A~D`, `CLOUD-001A~D`, `SYS-001A~D`, `APP-001A~D`,
-  `MOBILE-001A~D` 구현·검증·로컬 커밋 완료
-- 선행 감사 수정: `8b84983` Control Plane dependency lock, `1046cfe` VAL-004C 조회 상태
-- 로컬 커밋: `2aeb064` Discovery A, `40d6874` Capability B, `ef280c9` Graph C,
-  `3d40207` Replay/benchmark D, `654dc28` roadmap/contract index
-- 작업 트리 체크포인트: 이 `HANDOFF.md`와 `KNOWN_ISSUES.md` 동기화만 남았으며 이 문서의
-  체크포인트 커밋이 뒤따른다. `origin/main`은 `2870a9e`이고 push는 수행하지 않았다.
-- 완료된 단계: `PENTEST-004C2B2`, `REDTEAM-001A~D`, `REDTEAM-002`, `UX-008`,
-  `DOMAIN-001~006`, `WEB-001A~D`, `AI-001A~D`, `NET-001A~D`, `CLOUD-001A~D`, `SYS-001A~D`,
-  `APP-001A~D`, `MOBILE-001A~D`
-- 현재 우선순위: `CRYPTO-001A` protocol/key-usage/ciphertext/configuration Surface model
-- 다음 우선순위: `CRYPTO-001B` offline cryptographic misuse analysis Capability
+- 기준 코드·CI 체크포인트: `051cad4bb67b021dc998a60b1502c7425834ea0b`
+  (`fix(ci): 전체 테스트를 24개 shard로 재분할`)
+- 선행 모바일 fixture 보정 체크포인트: `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`
+- 기준 체크포인트 push 후 Git: `HEAD == origin/main == 051cad4bb67b021dc998a60b1502c7425834ea0b`,
+  ahead/behind `0/0`, staged 변경과 진행 중인 merge/rebase/cherry-pick 없음
+- 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`의 코드와 versioned contract가 커밋됨
+- `WEB-002D` 구현은 exact conformance commit `975bf7876a186cefae66c289d09f530f3e0fe7aa` 이후 불변이며,
+  해당 commit의 Ubuntu 24.04 run `33310558350`, job `99254722600`에서 real-Docker 검증을 통과함
+- 기준 체크포인트의 repo-wide Ubuntu 24.04 CI run `33316840636`은 Quality와 24개 pytest shard가
+  모두 성공했다. 선택 합계는 `7,609 passed, 69 skipped`, 실패·취소 0, 전체 1시간 39분 7초이며
+  최장 shard 17은 `5,925.98s (1:38:45)`의 pytest와 1시간 39분 3초 job으로 끝났다.
+- Phase 22 Exit Gate는 완료됐으며 product entrypoint와 production/external probing 권위는 여전히 없음
+- 현재 우선순위: ADR-0257의 Phase 23 `UX-009A` sealed measured-Web product-flow projection
+- 다음 우선순위: Phase 23 `UX-009B` deployment-pinned contextful product reader
+- deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
+  문서 동기화 시작 시 unstaged 변경은 루트 운영 문서 4개, WEB benchmark 계약 2개와 multi-domain RFC
+  1개뿐이었으며, 이후 CI 검증에서 식별한 두 test/CI 보정은 위 선행·기준 체크포인트로 커밋·push했다.
 
-정확한 현재 HEAD와 원격 상태는 아래 Git 명령으로 확인한다. 문서와 Git이 다르면 Git과
-파일시스템을 우선한다.
+문서보다 Git과 파일시스템의 실제 상태를 우선한다. 재개 즉시 아래 Git 명령으로 다시 확인한다.
 
-## 구현 상태
+## 현재 구현 상태
 
-### implemented
+### 공통 기반과 완료된 도메인
 
-- `UX-008`
-  - verified REDTEAM-002 aggregate/source Run에서 content-addressed product-flow projection을 발행한다.
-  - source identity, completeness와 no-Finding 상태만 투영하며 Campaign Scope, validation floor,
-    Finding 또는 execution authority를 만들지 않는다.
-- `DOMAIN-001`
-  - Web, Network, System, Application, Mobile, Cloud, AI, Cryptography, Forensics의 exact taxonomy와
-    classification registry를 제공한다.
-  - Domain은 Profile과 직교하는 metadata이며 Scope, Capability, Permit, Tool, Worker 또는 실행 권위가 아니다.
-- `DOMAIN-002`
-  - 9개 Domain의 Surface/Hypothesis/Observation semantic type-set을 기존 Canonical Graph의 6개 node,
-    8개 relation과 single admission writer에 결박한다.
-  - 별도 domain ledger나 authority model을 만들지 않는다.
-- `DOMAIN-003`
-  - 기존 CAP-001/CAP-002 registry의 exact identity를 Web, AI, Cryptography classification에 투영한다.
-  - legacy domain 문자열이나 Tool metadata에서 권위를 추론하지 않는다.
-- `DOMAIN-004`
-  - 9개 Domain의 최소 Worker trust-boundary profile과 exact deployment binding registry를 제공한다.
-  - profile은 Worker 선택, current activation, Permit 또는 conformance 증거가 아니다.
-- `DOMAIN-005`
-  - admitted AI Observation에서 Web Surface/Hypothesis knowledge를 만드는 bounded AI→Web producer를
-    기존 `GraphAdmissionAuthority`에 결박한다.
-  - 새 knowledge는 `registered-not-authorized`이며 discovery가 Scope나 실행 권위를 확장하지 않는다.
-- `DOMAIN-006`
-  - common/domain-specific metric, applicability와 Replay 또는 deterministic re-analysis plan registry를
-    제공한다.
-  - metric은 measurement vocabulary이며 Finding, validation-floor 충족 또는 실행 권위가 아니다.
-- `CLOUD-001A`
-  - provider-partition account, nested project, provider-local resource, IAM object와 immutable
-    container/image identity를 exact Cloud Domain과 `cloud.account-resource` semantics에 결박한다.
-  - typed Surface는 `registered-not-authorized`이며 provider selection, tenant/credential authority,
-    inventory/policy read, container access, Scope, Capability, Permit, Worker, network, Graph, mutation 또는
-    execution 권위를 만들지 않는다.
-- `CLOUD-001B`
-  - exact CLOUD-001A Surface를 complete signed CAP-002, local Cloud Domain classification, DOMAIN-004 minimum
-    Cloud Worker profile과 current Campaign의 exact non-routable Surface token·provider GET target Scope 및
-    private-network authority에 결박한다.
-  - `inventory-read`는 locator 5종, `policy-read`는 exact IAM Surface만 허용하며 explicit provider/partition,
-    canonical HTTPS origin과 unique Surface/operation GET route, TTL/runtime/response budget을 고정한다.
-  - `allowPrivateNetworks`는 literal boolean만 허용한다. false이면 exact allow와 별개로 non-global IP literal,
-    `localhost`와 fixed Docker host를 거부하고 DNS/connect-time enforcement는 deployment runtime에 남긴다.
-  - `SecretBroker.inspect`로 현재 broker-owned snapshot을 소비 없이 재조회하고 exact Campaign scope·audience·
-    binding·active single-use·최대 60초 TTL을 재검증한 뒤 raw lease ID·secret reference·material 없이
-    fingerprint-only credential reference를 준비한다.
-  - provider adapter는 secret-free request description만 만들고 provider client·WorkerJob·network request·
-    result normalization을 제공하지 않는다. Tool runtime은 fail-closed, Oracle은 inconclusive다.
-  - preparation은 `PreparedCapabilityAction`에서 멈추며 credential materialization/use·provider invocation·
-    mutation·approval·Permit·Worker·egress·Observation·Evidence·Graph admission·execution 권위를 만들지 않는다.
-- `CLOUD-001C`
-  - current Cloud activation·Campaign Scope·CLOUD-001B preparation·Graph Decision/Proposal/Grant와 exactly one
-    consumed Permit·durable approval-consumption receipt를 기존 권위 저장소에서 다시 결박한다.
-  - admission gate에 고정된 deployment-configured trust anchor에서 exact Capability/release·Cloud Worker profile·direct mTLS subject/SPKI·provider
-    adapter·credential audience·Ed25519 key lifecycle를 검증하고 deployment-produced signed execution statement와
-    detached raw-body-free response receipt의 signature·file/content digest·timing·one-GET/zero-write budget을 재검증한다.
-  - signed credential-use receipt는 broker recheck·single-use materialization/consumption·discard를 나타내는
-    historical provenance일 뿐이며 CLOUD-001C는 bearer lease ID·secret reference·credential material을 받거나
-    broker/provider/Worker/network를 호출하지 않는다.
-  - 기존 Graph single writer에 succeeded Action 1·neutral `cloud.api-observation` 1·digest-only Evidence 2와
-    `produces` 1·`supported-by` 2만 admission한다. raw response/header·resource/policy field·target coordinate는
-    Graph prose에 들어가지 않고 HTTP success/body digest에서 existence·ownership·policy effect·effective
-    permission·Hypothesis·Finding·Replay·후속 action authority를 추론하지 않는다.
-- `CLOUD-001D`
-  - 두 separately admitted CLOUD-001C policy-read source를 같은 deployment-configured trust anchor와 각자의
-    SQLite Graph authority store로 다시 열고 exact stored admission까지 재검증한다.
-  - Surface·Campaign Scope·Capability/release·provider adapter/route·credential audience/binding/scope와
-    secret-reference fingerprint·exact query는 같고 Run·preparation·request·Decision·Proposal·approval·Permit·
-    dispatch·single-use lease fingerprint·signed statement·external execution·source root·admission·policy artifact
-    identity는 모두 다른 경우에만 fresh-credential Replay로 결박한다.
-  - CLOUD-001C response digest 자체를 policy input으로 취급하지 않는다. exact C admission/execution/receipt/body/
-    trust digest에 결박된 deployment-derived sanitized artifact를 별도 Ed25519 signature domain으로 검증하고,
-    wildcard 없는 exact principal/action/resource rule을 deny-overrides allow evaluator로 결정론적으로 평가한다.
-  - input+decision match, input changed+decision match, decision changed를 neutral state로만 투영하며 provider
-    semantics·effective permission·resource existence·Finding·Profile floor 또는 후속 Replay/execution을 확인하지 않는다.
-  - exact allow, explicit deny override, implicit-deny negative Control 3개 private Ground Truth와 per-case disposable
-    account/emulator·fresh credential·cleanup evidence 요구를 등록한다. Target/credential provision, provider/emulator
-    실행, cleanup, live evidence binding, numeric measurement는 수행하지 않는다.
-- `WEB-001A`
-  - concrete HTTP endpoint와 URI-template API route를 위한 typed locator/Surface registry를 제공한다.
-- `WEB-001B`
-  - concrete GET Surface를 기존 signed `pajin.pentest.http-get-recon@1.0.0` CAP-002와 Web Worker profile에
-    결박해 `PreparedCapabilityAction`까지만 만든다. 준비 단계는 egress·Worker job·Permit을 만들지 않는다.
-- `WEB-001C`
-  - prior approved PENTEST-002A execution의 sealed Observation/Evidence를 재검증해 neutral Action,
-    Observation, Evidence를 기존 Graph writer로 admission한다.
-- `WEB-001D`
-  - WEB-001C knowledge와 PENTEST-002B independent Replay comparison을 결박한다.
-  - P0-D1 private SQLi Ground Truth는 `registered-ground-truth-not-measured`로 유지한다.
-- `AI-001A`
-  - model, RAG, agent, MCP, Tool의 5개 class와 10개 locator kind를 secret-free typed Surface registry로
-    분류한다.
-  - provider/model alias, credential, Tool discovery 또는 Domain metadata를 실행 권위로 바꾸지 않는다.
-- `AI-001B`
-  - REDTEAM-001A M03/M06, REDTEAM-001B A04, REDTEAM-001D MCP의 exact Profile·CAP-002·Tool identity를
-    typed model/RAG/MCP/Tool Surface, request/token/cost ceiling과 minimum AI Worker profile에 결박한다.
-  - current Provider registration과 signed lifecycle release를 재검증해 `PreparedCapabilityAction`까지만
-    만들며 Profile·Scope·approval·Permit·budget·credential·Worker·Gateway·Graph·execution 권위는 만들지 않는다.
-- `AI-001C`
-  - AI-001B exact preparation과 기존 REDTEAM LLM/RAG/MCP Capability Graph Run의 seal, consumed Permit,
-    dispatch reconciliation, request reservation, Tool/Worker Evidence와 Gateway outcome digest를 재검증한다.
-  - exact model/Tool, model/RAG/Tool, MCP/Tool Surface reference를 DOMAIN-002 AI semantic에 결박하고 기존
-    Graph single writer에 Action 1·neutral Observation 1·Evidence 2만 admission한다.
-  - Surface/Profile/Domain/MCP/Tool metadata와 source Permit은 추가 Scope·Tool·Worker·network·credential·Replay·
-    Finding·execution 권위가 아니며 exact retry는 Tool을 재실행하지 않는다.
-- `AI-001D`
-  - AI-001C sealed source/admission과 별도 KISA source의 두 fresh-session Replay·세 Control을 다시 열어
-    exact target·Tool·scenario·threat class·turn·check 및 disjoint session/request identity를 검증한다.
-  - exact REDTEAM-002 Profile·Capability·CAP-003 mapping·CAP-006 Replay contract와 DOMAIN-006 AI plan을
-    content-addressed projection에 결박하되 concrete Ground Truth case나 numeric measurement는 만들지 않는다.
-  - 독립 KISA lane의 Profile floor는 충족하지만 AI Observation confirmation·Finding으로 전환하지 않으며
-    source Graph/Permit/Profile/Domain/Tool metadata에서 Replay·Permit·Worker·network·credential·execution 권위를 만들지 않는다.
-- `NET-001A`
-  - unresolved DNS/IP host, exact TCP/UDP port와 explicit service name을 host/port/service 3-class locator
-    registry와 `registered-not-authorized` typed Surface에 결박한다.
-  - DNS는 network call 없이 IDNA canonicalize하고 IPv4/IPv6는 explicit address family와 대조한다.
-  - unknown service는 port locator로 유지하며 well-known port에서 service를 추론하지 않는다.
-  - 기존 discovery/AttackSurface wire를 바꾸지 않고 Scope·scanner·raw socket·credential·Worker·network·
-    Graph admission·execution 권위를 모두 false로 유지한다.
-- `NET-001B`
-  - exact IPv4/IPv6 literal·TCP·단일 port Surface를 externally signed current Range CAP-002 release,
-    current Campaign Scope, fixed passive-banner protocol budget과 DOMAIN-004 minimum Network Worker profile에 결박한다.
-  - complete 7-role code-backed Capability와 local resolvable Network Domain classification을 등록하되 기존
-    global DOMAIN-003 inventory identity를 변경하거나 Domain metadata를 activation·Worker 권위로 바꾸지 않는다.
-  - preparation은 exact host-wide CONNECT allow, same-authority deny 부재, CONNECT RoE와 non-global IP의
-    private-network authority를 재검증한 뒤 `PreparedCapabilityAction`에서 멈춘다.
-  - Tool/Worker/Gateway adapter 경계는 proxy-mediated CONNECT 한 번, Target application write 0 bytes, passive
-    banner 최대 1,024 bytes와 host-observed exact CONNECT receipt를 강제한다. 준비 자체는 Worker·egress·network·
-    Observation·Evidence·Graph·approval·Permit·execution 권위를 만들지 않는다.
-- `NET-001C`
-  - current NET-001B activation·Campaign Scope에서 preparation을 재구성하고 approved sealed source Run의
-    exactly consumed Permit·durable approval receipt·completed dispatch reconciliation·Gateway/Worker Evidence·
-    exact egress metadata·host-observed CONNECT receipt를 함께 재검증한다.
-  - 기존 Graph single writer를 통해 succeeded Action, neutral `network.protocol-observation`과 2개 Evidence를
-    admission하며 raw banner·target coordinate·product/version·Worker transcript를 Graph prose에 복제하지 않는다.
-  - bounded classifier label이 있을 때만 별도 승인된 fresh passive handshake를 요구하는 confidence `0.5` open
-    `network.exposure` Hypothesis를 admission하고 unknown label에는 Hypothesis나 negative conclusion을 만들지 않는다.
-  - exact retry는 기존 semantic attempt를 반환하고 redispatch하지 않으며 service label·Graph membership·source
-    approval/Permit은 service confirmation이나 Surface·Scope·Capability·Tool·Worker·network·Replay·Finding·execution
-    권위를 만들지 않는다.
-- `NET-001D`
-  - NET-001C source/admission과 separately authorized sealed passive TCP execution을 각각 current NET-001B
-    activation·Campaign Scope·approval receipt·consumed Permit·Docker Worker·trusted CONNECT evidence까지 재검증한다.
-  - Surface·Scope·Capability·release·protocol budget·Tool semantics는 같고 Run root·request·envelope·Decision·
-    Proposal·approval receipt·Permit·dispatch·Worker execution·artifact·terminal·reconciliation identity는 모두
-    다른 경우에만 fresh execution Replay를 인정한다.
-  - source/replay label은 match/change/unresolved의 neutral state로만 투영하고 banner digest equality를 별도
-    기록한다. 어떤 상태도 service Observation confirmation·Ground Truth binding·Profile floor·Finding·후속
-    Replay 또는 execution authority가 아니다.
-  - ftp/imap/pop3/smtp/ssh known-positive와 unknown negative Control의 synthetic banner Ground Truth 6건을
-    disposable loopback-container-per-case requirement로 등록하고 current standalone Worker classifier와 대조한다.
-    profile은 Target selection·factory/provider/fixture execution·live Replay binding·numeric measurement를 만들지 않는다.
-- `SYS-001A`
-  - pseudonymous host와 exact parent를 포함하는 process, logical-mount-relative filesystem,
-    manager-qualified service, sanitized configuration locator 5종을 System Domain과
-    `system.host-resource` semantics에 결박한다.
-  - PID, absolute/ambiguous path, symlink, service display name, raw configuration value, secret·credential·
-    privilege metadata를 거부하고 child identity에 parent와 sanitized content digest를 포함한다.
-  - typed Surface는 content-addressed `registered-not-authorized` knowledge이며 host existence/state, Scope,
-    Capability, approval, Permit, authenticated host agent, Tool/Worker, network, Graph admission, credential/root,
-    host mutation 또는 execution 권위를 만들지 않는다.
-- `SYS-001B`
-  - exact SYS-001A Surface를 complete signed read-only CAP-002, local System Domain classification과
-    DOMAIN-004 deployment-scoped·bounded-host-read·deployment-authentication·authenticated-non-root-agent
-    minimum profile에 결박한다.
-  - host/process/filesystem/service/configuration에 class별 metadata-only operation 5종을 exact mapping하고
-    request 1회, artifact bytes·runtime ceiling, filesystem content/configuration value read·process signal·
-    service control·host write 0을 강제한다.
-  - explicit content-addressed host-agent deployment는 exact opaque host, complete public Worker mTLS policy와
-    selected subject/SPKI, executable digest, non-root run-as identity, attenuated operation set을 결박한다.
-    serialized binding도 policy digest와 certificate membership을 다시 검증한다.
-  - 기존 Worker가 mTLS로 Control Plane에 연결해 claim하는 구조에 맞춰 별도 routable agent endpoint를 만들지
-    않는다. network-disabled Capability는 current Campaign의 exact non-routable Surface token과 GET만 요구하고
-    `PreparedCapabilityAction`에서 멈춘다. private-network RoE는 투영되지만 host-access authority가 아니다.
-  - live bearer/direct-mTLS authentication, non-root runtime attestation, agent session, host connection/read,
-    budget reservation, Worker·network, Observation/Evidence, Graph, approval, Permit, root·privilege escalation,
-    mutation 또는 execution 권위를 만들지 않는다.
-- `SYS-001C`
-  - current activation·Campaign Scope·exact SYS-001B preparation과 approved job, exactly one consumed
-    ActionPermit·durable approval receipt를 existing SQLite authority store에서 다시 결박한다.
-  - deployment-configured Ed25519 trust anchor는 exact host-agent deployment·Capability/release를 고정하고
-    current Campaign·Grant·request·Tool spec으로 Gateway policy를 재계산한 sanitized outcome,
-    `WorkerMTLSAdmission`, declared non-root runtime identity/confinement과 detached raw-result-free receipt의
-    file/content digest·timing·artifact/runtime ceiling을 검증한다.
-  - existing Graph single writer에 succeeded Action 1, neutral `system.host-observation` 1, restricted Evidence 2,
-    `produces` 1과 `supported-by` 2를 admission한다. fixed configuration/service review signal에만 confidence
-    `0.5` open `system.security-configuration` Hypothesis와 `enables` 1을 추가하고 no-signal에는 결론을 만들지 않는다.
-  - raw host content·path·service/configuration value를 Graph prose에 복제하지 않으며 source provenance에서
-    Surface·Scope·Capability·approval·Permit·host access·agent/Worker·network·credential·root·privilege escalation·
-    service control·mutation·Replay·Finding·후속 execution authority를 만들지 않는다.
-- `SYS-001D`
-  - SYS-001C signed receipt에 explicit live-host 또는 immutable-snapshot input provenance를 추가하고 snapshot
-    mode에만 exact snapshot SHA-256을 요구해 Replay mode를 unsigned label이나 output digest로 추론하지 않는다.
-  - one stored SYS-001C admission과 separately authorized sealed execution을 current C verifier·same deployment
-    trust anchor로 다시 열고 Capability/release·Surface/operation·deployment·Scope·budget·normalized request
-    semantics를 exact 결박하며 모든 Run/request/Decision/Permit/approval/execution/evidence identity 재사용을
-    거부하고 replay signed start가 source signed finish보다 이후인지 검증한다.
-  - trusted wire reload는 bare Pydantic parse를 검증으로 취급하지 않고 deployment trust anchor, 양쪽 source
-    inputs/evidence context와 exact Graph store로 expected projection을 재구성해 전체 일치를 요구한다. embedded
-    trust anchor, unstored 또는 recomputed Graph admission은 structural parse만 통과하며 trusted loader에서는 거부한다.
-  - same immutable snapshot re-analysis와 fresh authenticated inspection을 구분해 body digest·bounded signal의
-    neutral match/change/unresolved만 투영하고 equal body digest에는 exact signed result byte-count equality를
-    요구한다. fresh mode는 DOMAIN-006 immutable-snapshot strategy를 satisfied로 표시하지 않으며 Graph write나
-    Replay scheduling을 수행하지 않는다.
-  - 5개 Surface 전체를 covering하는 known-positive 2·negative Control 2·filesystem privilege-denial Control 1과
-    disposable non-root container/VM, result-or-denial·cleanup evidence completeness 요구를 content-addressed
-    fixture profile로 등록한다. Ground Truth requirement registration은 true지만 private verification은 false다.
-  - host-agent provision·execution·cleanup, raw host value, measurement·Profile floor·host state/Finding,
-    root·privilege escalation·service control·mutation·Replay·후속 execution authority를 만들지 않는다.
-- `APP-001A`
-  - caller-supplied lowercase artifact SHA-256 binary와 exact binary-parent configuration/runtime,
-    exact binary-or-runtime-parent library locator 4종을 Application Domain 및
-    `application.artifact-runtime` semantics에 결박한다.
-  - child locator가 complete parent를 내장해 binary/runtime substitution이 typed Surface identity를 바꾸며,
-    coordinate는 case-fold하고 path·URL·query·fragment·wildcard·mutable alias·floating/range version을 거부한다.
-  - typed Surface는 content-addressed `registered-not-authorized` knowledge이고 artifact resolve/read·bytes/format·
-    configuration/runtime/dependency verification·Scope·Capability·approval·Permit·sandbox/Worker·network·debugger·
-    Graph·Finding·mutation·runtime support·execution authority를 만들지 않는다.
-- `APP-001B`
-  - exact APP-001A Surface를 current signed read-only CAP-002 release, exact non-routable Campaign Surface-token Scope,
-    deployment-supplied opaque custody authority/object/authorization digest reference와 결박한다.
-  - Surface class별 operation/parser를 exact mapping하고 parser executable·sandbox image digest, explicit non-root
-    identity, read-only root와 fixed no-exec artifact mount, disabled network, no-new-privileges 및
-    artifact/output/runtime/memory/process ceiling을 content-addressed configuration-only sandbox로 결박한다.
-  - preparation은 secret-free request와 `PreparedCapabilityAction`까지만 만들며 authorization verification,
-    artifact resolve/read, mount, sandbox/Worker selection·attestation·execution, network, dynamic execution,
-    debugger, Observation/Evidence, Graph, Finding 또는 execution authority를 만들지 않는다.
-- `APP-001C`
-  - current activation·Campaign Scope·exact APP-001B preparation과 approved job, exactly one consumed
-    ActionPermit·durable approval receipt를 existing SQLite authority store에서 다시 결박한다.
-  - deployment-configured Ed25519 trust anchor와 signed execution에서 exact custody/artifact digest,
-    operation/parser, executable/image, non-root network-disabled read-only/no-exec sandbox requirement,
-    recomputed Gateway decision, causal budget과 detached digest-only result receipt를 검증한다.
-  - existing Graph single writer에 succeeded Action 1, neutral `application.analysis-observation` 1,
-    restricted Evidence 2, `produces` 1과 `supported-by` 2를 admission한다. fixed class-bound review signal에만
-    confidence `0.5` open `application.vulnerability` Hypothesis와 `enables` 1을 추가하고 no-signal에는
-    결론을 만들지 않는다.
-  - raw artifact/output, format·configuration·runtime·dependency·vulnerability truth, Scope·Capability·approval·
-    Permit·artifact access·custody authority·sandbox/Worker·network·dynamic execution·debugger·mutation·Replay·
-    Finding·후속 execution authority를 만들지 않는다.
-- `APP-001D`
-  - stored APP-001C admission과 separately authorized sealed re-analysis를 current APP-001C verifier와 같은
-    deployment trust anchor로 다시 열고 source Observation·optional Hypothesis가 exact source Graph store에
-    저장됐는지 확인한다. re-analysis는 Graph에 자동 admission하지 않는다.
-  - trusted wire reload는 bare Pydantic parse를 검증으로 취급하지 않고 deployment trust anchor, 양쪽 source
-    inputs/evidence root와 exact Graph store로 expected projection을 재구성해 전체 일치를 요구한다. unstored
-    self-consistent Graph event, recomputed attestation/source-root digest와 foreign valid trust anchor를 거부한다.
-  - exact immutable artifact/Surface/operation·custody/sandbox·parser executable/image·output schema·Scope·release·
-    activation·normalized request semantics·budget을 요구하고 Run/source-root/request/envelope/proposal/Decision/
-    Permit/dispatch/approval/execution/attestation/result-receipt identity 재사용과 non-causal start를 거부한다.
-  - equal opaque body digest에는 exact signed result byte-count equality를 요구하고 digest·byte-count·bounded
-    class review signal만으로 match/change/unresolved를 투영한다. changed는 security regression이 아니고
-    unresolved는 negative conclusion이 아니다. Graph write·artifact read·parser/sandbox 실행·Replay scheduling이나
-    format/configuration/runtime/dependency/vulnerability/Hypothesis/Finding authority가 없다.
-  - binary/configuration/runtime/library 각각 known-positive와 negative Control 총 8건에 disposable offline
-    non-root sandbox, read-only noexec mount, execution/runtime/result/cleanup evidence를 요구하되 fixture를
-    materialize·provision·execute·cleanup·measure하지 않는다. Ground Truth requirement registration과 실제
-    verification을 분리하고 provider/fixture execution authority도 false로 유지한다.
-- `MOBILE-001A`
-  - APP-001A exact binary를 부모로 재사용하는 APK/IPA package와 exact application, declared runtime,
-    logical storage, sanitized deeplink, TLS policy, authentication flow locator 8종을 Mobile Domain 및
-    `mobile.application-runtime` semantics에 결박한다.
-  - binary→package→application complete lineage와 Android/iOS application ID·runtime·link·TLS kind 일치를
-    identity에 포함하고 runtime은 canonical numeric/dotted version, deeplink는 canonical scheme·optional strict
-    IDNA host·host-dependent optional integer port·logical route ID·sanitized declaration digest만 허용한다.
-  - raw package/manifest/security config·signing material·secret·credential·storage value·full URI/path·device
-    state/path와 mutable/range/wildcard/authority extra field를 거부한다. public builder와 typed Surface는
-    preconstructed Pydantic parent/child도 alias JSON으로 dump한 뒤 재검증한다.
-  - typed Surface는 content-addressed `registered-not-authorized` knowledge이며 package resolve/read·format/
-    manifest/signing verification, static/dynamic analysis, sandbox/emulator/device/Tool/Worker selection·access·
-    instrumentation, storage/network/TLS/auth/credential use, Scope·Capability·approval·Permit·Graph·Finding·
-    mutation·runtime support·execution authority를 만들지 않는다.
-- `MOBILE-001B`
-  - exact MOBILE-001A selected Surface와 canonical root APK/IPA package Surface, APP binary digest,
-    exact byte count 및 deployment-owned opaque custody/object/authorization digest reference를 함께 결박한다.
-    custody/sandbox public reference는 운반하는 모든 가변 claim으로 원 binding digest를 재계산해 동일
-    ID/digest 아래 authorization·Surface lineage·parser/image·deployment·resource/archive ceiling 치환을 거부한다.
-  - 8개 Surface class별 operation을 완전 열거하고 parser family는 filename·extension·caller platform이 아니라
-    canonical root package lineage에서만 Android APK 또는 iOS IPA로 도출해 substitution을 거부한다.
-  - parser executable·sandbox image digest, explicit non-root identity, network/DNS-disabled read-only root와
-    read-only/noexec package mount, no-new-privileges 및 archive entry/uncompressed-size/path/nesting/
-    compression-ratio ceiling과 traversal/symlink/duplicate-name 거부를 configuration-only 요구로 결박한다.
-  - selected Surface와 root package의 non-routable token 둘 다 exact current Campaign allow를 요구하고 deny를
-    우선한다. current signed T2 read-only CAP-002의 7개 역할을 등록하되 `PreparedCapabilityAction`에서 멈춘다.
-  - current DOMAIN-004 Mobile minimum profile은 device-bound이므로 Application profile이나 placeholder device
-    identity를 쓰지 않고 `domainWorkerProfileBound=false`, profile binding deferred, WorkerJob unavailable을 유지한다.
-    package resolve/read/mount/parser·sandbox 실행, emulator/device, install/launch/instrumentation, storage/network/
-    TLS/auth/credential, Observation/Evidence·Graph·Hypothesis·Finding·mutation·Replay·execution authority가 없다.
-- `MOBILE-001C`
-  - current activation·Campaign의 selected/root exact Scope·MOBILE-001B preparation·approved job을 다시 만들고
-    existing SQLite authority store의 exactly one consumed ActionPermit과 durable approval-consumption receipt를
-    exact current authority로 결박한다.
-  - deployment-configured Ed25519 trust anchor와 signed external static-sandbox execution에서 selected Surface와
-    root APK/IPA Surface, package digest/bytes·custody authorization digest·operation·lineage parser·executable/image·
-    non-root identity·recomputed Gateway outcome·causal timing·zero live-channel budget과 detached digest-only
-    result receipt를 검증한다.
-  - signed runtime receipt가 MOBILE-001B package/output/runtime/memory/process 및 archive entry/uncompressed-size/
-    path/nesting/compression-ratio ceiling, observed archive maxima와 traversal/symlink/duplicate-name rejection을
-    exact 결박한다. 이는 configured deployment assertion이며 repository-owned parser·sandbox 또는 live runtime
-    conformance 증거가 아니다.
-  - existing Graph single writer에 succeeded Action 1, neutral `mobile.analysis-observation` 1, restricted Evidence 2,
-    `produces` 1과 `supported-by` 2를 admission한다. 8개 class/operation-bound review signal에만 confidence `0.5`
-    open `mobile.security-property` Hypothesis와 `enables` 1을 허용하고 no-signal에는 부정적 결론을 만들지 않는다.
-  - raw package/parser output·manifest/signing/device/credential 데이터를 Graph에 넣지 않고 package/manifest/
-    application/runtime/storage/deeplink/TLS/auth truth·Scope·Capability·approval·Permit·custody/package/sandbox access·
-    Worker/profile/job·network/DNS·device/emulator·install/launch/instrumentation·credential·mutation·Replay·Finding·
-    후속 execution authority를 만들지 않는다.
-  - current DOMAIN-004 Mobile profile은 계속 device-bound이므로 `domainWorkerProfileBindingDeferred=true`,
-    `domainWorkerProfileBound=false`, `deviceBoundRuntimeProfileApplied=false`, WorkerJob unavailable을 유지한다.
-- `MOBILE-001D`
-  - stored MOBILE-001C source admission과 separately authorized sealed exact-package re-analysis를 current C
-    verifier, deployment-configured trust anchor 및 양쪽 exact Graph store로 다시 열고 trusted wire reload도 같은
-    evidence context를 요구한다. bare model parse와 embedded trust anchor/Graph event는 verification이 아니다.
-  - selected/root Surface·complete platform/root lineage·package digest/bytes·operation·custody/sandbox·parser/
-    executable/image·output schema·selected/root Scope·release·resource/archive ceiling 및 6개 observed archive
-    값을 exact 결박한다. drift는 changed result가 아니라 incomparable input으로 fail closed 한다.
-  - source/re-analysis의 Run/source-root/request/envelope/proposal/Decision/Permit/dispatch/approval/execution/
-    runtime receipt/attestation/result-receipt identity 재사용을 거부하고 re-analysis signed start가 source signed
-    finish보다 strictly later인지 검증한다. equal result-body digest에 다른 signed result byte count도 거부한다.
-  - digest·byte-count·bounded review signal의 neutral match/change/unresolved만 투영하고 DOMAIN-006
-    `deterministic-package-reanalysis` strategy를 결박한다. comparison과 bytes equality는 package·manifest·
-    runtime·security-property·Hypothesis·Finding truth가 아니다.
-  - APK/Android, IPA/iOS와 6개 child class의 양 플랫폼을 포함한 14개 valid lineage마다 known-positive와
-    no-signal negative Control을 둔 exact 28-case seeded profile을 등록한다. disposable network/DNS-disabled
-    non-root static sandbox·read-only/noexec mount·archive safety·execution/runtime/result/cleanup evidence는
-    requirement일 뿐 fixture/package materialization·provider/fixture execution·cleanup·measurement 증거가 아니다.
-  - current device-bound Mobile profile, profile conformance, WorkerJob, emulator/device, install/launch/
-    instrumentation, storage/network/TLS/auth/credential use, Graph write, mutation, Replay scheduling, Finding 및
-    후속 action authority를 계속 false로 유지한다.
-- Pentest Recon CAP-002 authority-set identity는 unordered Tool categories/evidence types를 정렬해
-  Python hash seed와 무관하게 기존 digest를 재현한다.
+- `DOMAIN-001~006`은 9개 Security Domain 분류, 공통 Graph semantics, Capability projection,
+  최소 Worker profile, bounded cross-domain producer와 metric/Replay vocabulary를 제공한다.
+  이 registry들은 Scope, approval, Permit, Worker 선택, 실행, Finding 또는 측정 권위가 아니다.
+- `WEB-001A~D`, `AI-001A~D`, `NET-001A~D`, `CLOUD-001A~D`, `SYS-001A~D`,
+  `APP-001A~D`, `MOBILE-001A~D`는 각 버전형 계약의 제한 안에서 완료됐다.
+- `CRYPTO-001A~D`는 protocol/key-usage/ciphertext/configuration Surface, offline preparation,
+  deployment-signed structural admission, distinct implementation-provenance comparison과 8개 미래 vector
+  requirement까지 커밋됐다. 일반 analyzer, key use, semantic Oracle, vector materialization,
+  benchmark 실행 또는 Finding 권위는 없다.
+- `FORENSICS-001A~D`는 immutable artifact Surface, read-only parser preparation, 두 deployment trust
+  anchor로 인증한 sealed neutral Graph admission, supplied deterministic/independent parser comparison과 12개
+  seeded-evidence requirement까지 커밋됐다. parser 실행, 독립 provenance truth, semantic
+  validation, Finding 또는 measurement 권위는 없다.
 
-모든 새 public loader와 workflow boundary는 canonical identity·digest·order·type을 재검증하고,
-authority marker 주입, boolean/integer coercion, relabel 또는 substitution을 fail closed 한다.
+### Phase 11~21 통합 재평가와 Phase 22 선택
 
-### contract/scaffold only
+- 각 Phase의 `[x]`는 문서에 명시된 bounded contract/projection 범위에서는 실제 코드와 일치했다.
+  이를 일반 multi-domain runtime이나 production benchmark 완료로 확대해석할 수는 없다.
+- Phase 11은 Pentest compile/recon/replay/workflow와 제한된 KISA/MCP runtime을 실행할 수 있다.
+  Phase 13은 그 Pentest GET 경로를 재사용하고, Phase 14는 제한된 KISA fresh-session Replay/Control을
+  재사용한다. Phase 15~21 중 repository-owned domain action은 Network passive-banner Worker가 유일하다.
+- Web에는 P0-D1 fixed Boolean-SQLi Target/Private Ground Truth, catalog-bound Docker Target Factory,
+  P0-E2B runnable ZAP measurement, fixed Boolean-SQLi controlled probe가 모두 이미 존재한다. WEB-001D는
+  이 자산을 의도적으로 `registered-ground-truth-not-measured`에 남겨 두었다.
+- Network는 disposable Target Factory·measurement·CLI가 없고, AI는 concrete Ground Truth와 deterministic
+  measurement 경계가 없다. Cloud/System/Application/Mobile/Cryptography/Forensics는 새 provider/agent/
+  parser/sandbox runtime을 먼저 요구한다.
+- ADR-0250은 다음 vertical slice를 Phase 22 Web으로 선정했다. 독립 review는 기존 REDTEAM Web endpoint
+  `host.docker.internal:8770`과 no-published-port P0-D1/P0-E2B endpoint `target:8080`의 불일치, DOMAIN-006의
+  floor authority 부재와 세 Finding identity의 불일치를 확인했다.
+- ADR-0251은 endpoint와 floor/Finding identity를 보완했고,
+  [ADR-0252](docs/adr/0252-route-measured-web-validation-through-an-exact-egress-proxy-bridge.md)는
+  direct Worker attachment를 supersede한다. Worker는 proxy-only network에 남고 proxy만 exact Target network를
+  bridge한다. ADR-0253은 ZAP source measurement와 controlled-validation route를 분리한다. WEB-002A는
+  additive Profile/Capability, signed controlled route, validation floor와 새 Finding projection policy를
+  구현했다. ADR-0254와 WEB-002B는 exact WEB-002A case에서 plan-owned coordinate 하나만 fresh
+  registry-governed P0-D1/P0-E2B lifecycle로 실행하고 completed journal과 cleanup evidence까지 봉인한다.
+  해당 source path는 exact conformance commit `975bf787` 이후 불변이며 Ubuntu 24.04 combined run
+  `33310558350`이 그 exact commit에서 검증했다. ADR-0255와 WEB-002C는 이 sealed source를
+  knowledge-only Graph lineage로 다시 열어 neutral Observation/Evidence와 bounded Hypothesis만 admission한다.
+  WEB-002D는 independently controlled validation, durable route/denial/Worker Evidence, Profile floor와 bounded
+  Finding projection을 구현했다. Ubuntu 24.04 run `33310558350`은 exact commit `975bf787`에서 post-audit
+  호환성·custody hardening을 검증했으며 해당 경로는 이후 불변이다.
 
-- UX-008은 direct-call projection이다. Control Plane HTTP endpoint와 rendered Web Console panel은 없다.
-- DOMAIN-001~006은 공통 taxonomy, semantic registry, inventory projection, Worker boundary registry,
-  한 bounded cross-domain producer와 metric contract까지다. 일반 multi-domain runtime은 없다.
-- DOMAIN-004 profile/binding은 concrete Worker conformance, deployment signing 또는 Gateway 소비를 구현하지 않는다.
-- DOMAIN-005는 AI→Web knowledge chain 1개만 지원하며 arbitrary extraction이나 target execution은 없다.
-- DOMAIN-006은 numeric measurement, concrete per-domain replay, validation-floor evaluation을 구현하지 않는다.
-- WEB-001A~D는 typed Surface, read-only preparation, sealed neutral admission, independent Replay와 private
-  Ground Truth registration까지다. 일반 scanner, measured benchmark와 Finding 확정은 없다.
-- AI-001A~D는 typed registry, preparation, neutral admission과 direct-call Replay/Control/benchmark-contract
-  binding까지다. MCP Replay, concrete AI Ground Truth·numeric measurement, AI Observation confirmation·Finding,
-  arbitrary provider·agent·MCP·Tool execution과 일반 AI discovery/runtime은 없다.
-- NET-001A는 typed host/port/service knowledge, NET-001B는 IP-literal TCP 단일 port의 수동 banner 식별,
-  NET-001C는 그 한 sealed result의 neutral Graph admission과 optional open Hypothesis, NET-001D는 별도 승인된
-  sealed execution의 neutral comparison과 미측정 synthetic fixture registration까지만 지원한다. DNS
-  resolution, UDP, port enumeration, active application handshake, credential use, raw socket, 일반 scanner와
-  arbitrary Network runtime은 없다.
-- NET-001B preparation은 실행이 아니며 실제 dispatch에는 기존 Policy/Approval, ActionPermit, Gateway,
-  deployment-owned Worker direct mTLS와 trusted host-observed CONNECT receipt가 모두 필요하다. NET-001C는 이미
-  생성된 sealed Evidence와 durable Graph authority만 재검증하며 live mTLS를 재인증하거나 새 dispatcher를
-  구성하지 않는다. NET-001D도 실행을 예약하지 않고 supplied sealed source만 비교하며 distinct physical
-  Worker/container/certificate를 증명하지 않는다. admitted service label과 Hypothesis도 확인·Finding·후속 실행
-  권위가 아니다.
-- CLOUD-001B는 signed preparation과 request adaptation만 구현하며 persisted lease reference는 bearer lease
-  ID가 없는 fingerprint-only metadata다. CLOUD-001C는 deployment-owned runtime이 별도 승인·consumed Permit·
-  direct mTLS·signed credential-use provenance로 만든 sealed execution과 raw-body-free response receipt만
-  재검증한다. 저장소 안에는 실제 Cloud provider client/runtime, live broker materialization, raw response custody,
-  provider-specific resource/policy field interpreter 또는 effective-permission Oracle이 없다. CLOUD-001D는
-  별도 서명된 sanitized exact-rule artifact와 deterministic evaluator만 제공하며 provider semantics를 확인하지
-  않는다. disposable account/emulator profile도 provision·execute·cleanup·measure되지 않았다. admitted
-  Observation과 Replay comparison은 Hypothesis·Finding·후속 execution authority가 아니다.
-- SYS-001A는 locally supplied typed identity와 exact registry resolution만 구현한다. SYS-001B는 signed
-  metadata-only request preparation과 deployment trust configuration만 구현한다. SYS-001C는 external deployment가
-  이미 만든 signed Gateway/mTLS/non-root execution statement와 raw-result-free receipt를 재검증하지만 repository에는
-  live bearer/direct-mTLS host-agent connector, process/filesystem/service/configuration reader, raw result custody,
-  root conformance Oracle 또는 executable System runtime이 없다. SYS-001D도 supplied sealed executions를
-  비교하고 future fixture requirement를 등록할 뿐 snapshot/host를 열거나 agent·container·VM을 provision·execute·
-  cleanup·measure하지 않는다. fresh comparison은 DOMAIN-006 immutable-snapshot strategy 충족 증거가 아니다.
-- APP-001A는 locally supplied digest와 declared coordinate를 content-addressed typed identity로만 만든다.
-  APP-001B는 signed preparation, opaque custody/authorization reference와 sandbox configuration만 만든다.
-  APP-001C는 external deployment의 signed runtime assertion과 detached receipt를 재검증하지만 repository에는
-  generic artifact resolver/reader, custody authorization verifier, parser implementation, image/executable admission,
-  mount materializer, live sandbox/Worker runtime, raw result interpreter 또는 executable Application analysis runtime이 없다.
-  APP-001D도 supplied sealed executions만 비교하고 future seeded fixture requirements를 등록할 뿐 artifact/sandbox를
-  materialize·execute·cleanup·measure하지 않는다.
-- MOBILE-001A는 locally supplied APP binary/package/application/declaration coordinate를 typed identity로만
-  만든다. APK/IPA class는 package format 증거가 아니고 app/runtime/storage/deeplink/TLS/auth locator도 manifest,
-  signing, live device, storage value, route reachability, TLS enforcement 또는 authentication safety 증거가 아니다.
-  MOBILE-001B가 Tool identity와 request adaptation을 추가하고 MOBILE-001C가 external deployment의 signed
-  static-sandbox assertion과 detached receipt를 재검증하지만 저장소에는 package resolver/parser runtime,
-  admitted parser/image/sandbox, Mobile Worker profile conformance, WorkerJob, emulator/device runtime, bridge,
-  installer, instrumentation, storage/network/TLS/auth client, raw result interpreter 또는 executable Mobile
-  analysis path가 없다. C의 admitted Observation과 optional open Hypothesis도 package·runtime·security-property
-  truth, Finding 또는 후속 action authority가 아니다. MOBILE-001D도 supplied sealed executions만 비교하고
-  future 28-case seeded fixture requirement를 등록할 뿐 package/sandbox를 materialize·execute·cleanup·measure하거나
-  device/profile/Worker authority를 추가하지 않는다.
+### WEB-002A
 
-### planned
+- `src/pajin/capabilities/web_measured_validation.py`는 exact internal
+  `http://target:8080/v1/users/lookup` Surface, 기존 `BooleanSQLiProbeTool`, DOMAIN-004 Web Worker
+  boundary와 일곱 code-backed Capability role을 additive Profile/Capability identity로 결박한다. baseline,
+  negative Control, Boolean probe 세 GET만 등록하며 activation, approval, Permit, Worker, network,
+  measurement, Finding, product와 execution 권위는 모두 false다.
+- `src/pajin/workflow/web_measured_case_authority.py`는 current signed Capability release, P0-D1 Target/
+  private Ground Truth, P0-E2B Scanner plan/ZAP registration과 DOMAIN-006 Web plan을 contextfully 재구성한
+  public-safe measured-case identity를 제공한다. bare artifact parsing은 trusted reload가 아니다.
+- `src/pajin/workflow/web_proxy_route_authority.py`는 Ed25519 deployment Trust Anchor 아래 WEB-002D용
+  `controlled-validation` route만 서명·검증한다. approval/Permit snapshot 대신 durable
+  `ActionApprovalAuthorization`을 조회하고, `BenchmarkTargetOperationJournal.current_open_attempt`에서 exact
+  Scanner coordinate와 ordinal-1 reset/isolation receipts, pending ordinal-1 execution intent, current fence를
+  직접 유도한다. journal record/receipt 시간은 issue까지 단조·인과적이어야 하고 reset/isolation environment와
+  비중첩 전이가 유지돼야 한다. verification artifact loader도 모든 live predecessor와 exact wire equality를
+  재검증한다.
+- route validity는 consumed Permit, ActionApproval, Mission Envelope, Campaign authorization과 하나의
+  continuous WeeklyTestingWindow occurrence 안에 있어야 한다. 같은 approval receipt와 Permit은 nonce,
+  Target operation 또는 runtime policy가 달라도 하나의 stable future atomic-consumption slot에 수렴한다.
+  WEB-002A 자체에는 consumption ledger/CAS, route materializer, Docker/proxy/Worker runtime 또는 receipt가 없다.
+- `src/pajin/workflow/web_validation_floor.py`는 DOMAIN-006 14개 metric requirement, exact source/controlled
+  Evidence set, code-owned content-addressed policy-denial Control denominator와 private expected-Finding to
+  public projection commitment를 등록한다. metric observation/evaluation, floor satisfaction, Graph/Finding/
+  report/product 권위는 모두 false다.
+- 추가된 공개 계약은
+  `docs/capability/WEB-002A-measured-validation-capability-profile.md`,
+  `docs/benchmark/WEB-002A-exact-measured-case-route-floor-finding.md`, ADR-0253에 있고, 주요 회귀는
+  `tests/test_web_measured_case_authority.py`, `tests/test_web_proxy_route_authority.py`와 Target journal
+  회귀에 있다.
 
-- remaining Cryptography와 Forensics vertical slices
+### WEB-002B
 
-## 핵심 변경 위치
+- `src/pajin/workflow/web_source_measurement_authority.py`는 exact WEB-002A measured case와 하나의
+  plan-owned Scanner coordinate를 contextfully 재구성하고, constructor-owned provider/Trust Anchor/
+  activation store/signed distribution/Target journal로만 fresh P0-D1 Target, registry-governed Harness와
+  기존 P0-E2B Scanner measurement를 실행한다. caller-selected coordinate, route, approval, Permit,
+  Worker action, request 또는 response를 받지 않는다.
+- `WebZAPSourceLineage`와 `WebZAPSourceMeasurementAuthority`는 exact signed distribution bundle,
+  Scanner/Harness/Target Run과 root, immutable Target/Worker/ZAP image ID, completed attempt/fence,
+  execution/cleanup operation·receipt·provider evidence, raw SARIF hash/size, strict normalization과
+  cleanup `resourcesAbsent=true`를 public-safe identity/digest로 결박한다.
+- completed journal은 reset/isolation/execution/cleanup의 intent/receipt 정확히 8개, 모두 ordinal 1,
+  같은 attempt/fence/adapter/coordinate, Target receipt exact equality와 인과적 timestamp를 요구한다.
+  open/reconciled/incomplete/reordered/foreign/noncanonical journal은 authority가 아니다.
+- loader는 outer artifact만 신뢰하지 않고 exact WEB-002A, Scanner, 모든 Harness/Target, registry
+  activation과 signed bundle, provider execution/raw SARIF/cleanup evidence 및 completed journal을 다시
+  열어 authority를 재구성한다. provider direct/cached-replay result/evidence, Scanner source/observation,
+  outer authority 저장 wire와 세 audit payload는 canonical/exact equality를 요구해 coercion과 resealed
+  semantic drift를 거부한다.
+- WEB-002A의 `controlled-validation` proxy route는 import·materialize·consume하지 않는다. private Ground
+  Truth, metric/floor, Graph/Finding, comparison/Supervisor, product/report와 추가 실행 권위는 모두 false다.
+- 공개 계약은
+  `docs/benchmark/WEB-002B-distinct-registry-governed-zap-source-measurement.md`와 ADR-0254다.
+  deterministic/fail-closed 검증과 exact outer runner/loader real-Docker conformance를 모두 통과해
+  PLAN 상태를 완료로 올렸다.
 
-- Domain과 Graph: `src/pajin/domain/security_domain.py`, `src/pajin/graph/domain_semantics.py`,
-  `src/pajin/graph/cross_domain_admission.py`
-- Capability와 Worker boundary: `src/pajin/capabilities/domain_projection.py`,
-  `src/pajin/capabilities/web_discovery.py`, `src/pajin/capabilities/ai_analysis.py`,
-  `src/pajin/capabilities/network_service.py`, `src/pajin/capabilities/cloud_inventory.py`,
-  `src/pajin/capabilities/system_inspection.py`, `src/pajin/capabilities/application_static_analysis.py`,
-  `src/pajin/capabilities/mobile_package_analysis.py`,
-  `src/pajin/control_plane/domain_worker_boundaries.py`
-- Surface classification: `src/pajin/discovery/web_surfaces.py`, `src/pajin/discovery/ai_surfaces.py`,
-  `src/pajin/discovery/network_surfaces.py`, `src/pajin/discovery/cloud_surfaces.py`,
-  `src/pajin/discovery/system_surfaces.py`, `src/pajin/discovery/application_surfaces.py`,
-  `src/pajin/discovery/mobile_surfaces.py`
-- Network Tool/Worker/Gateway: `src/pajin/tools/network.py`, `src/pajin/tools/gateway.py`,
-  `containers/worker/worker_entry.py`
-- Workflow: `src/pajin/workflow/redteam_product_flow.py`,
-  `src/pajin/workflow/web_discovery_admission.py`, `src/pajin/workflow/web_replay_benchmark.py`,
-  `src/pajin/workflow/ai_analysis_admission.py`, `src/pajin/workflow/ai_replay_benchmark.py`,
-  `src/pajin/workflow/network_service_admission.py`, `src/pajin/workflow/network_replay_benchmark.py`,
-  `src/pajin/workflow/cloud_provider_admission.py`, `src/pajin/workflow/cloud_policy_replay_benchmark.py`,
-  `src/pajin/workflow/system_inspection_admission.py`, `src/pajin/workflow/system_replay_benchmark.py`,
-  `src/pajin/workflow/application_static_analysis_admission.py`,
-  `src/pajin/workflow/application_reanalysis_benchmark.py`,
-  `src/pajin/workflow/mobile_package_analysis_admission.py`,
-  `src/pajin/workflow/mobile_package_reanalysis_benchmark.py`
-- Benchmark: `src/pajin/benchmark/domain_metrics.py`
-- 권위 문서: `docs/rfc/0002-multi-domain-security-analysis-architecture.md`, ADR-0210~0239,
-  UX-008, DOMAIN-001~006, WEB-001A~D, AI-001A~D, NET-001A~D, CLOUD-001A~D, SYS-001A~D,
-  APP-001A~D, MOBILE-001A~D 버전형 계약
+### WEB-002C
+
+- `src/pajin/workflow/web_source_measurement_admission.py`는 WEB-002B outer Run과 모든 measured-case,
+  Scanner, registry, provider, journal predecessor를 다시 연다. 두 번째 outer snapshot의 canonical
+  authority bytes와 세 audit event payload까지 exact equality로 대조한 뒤 registered Web Surface
+  presence만 독립 재계산하며 private Ground Truth와 `knownFindingMatched`는 사용하지 않는다.
+- 검증 결과는 complete measured case나 source lineage를 노출하지 않고 Surface, Domain type-set,
+  source-authority의 content-addressed reference와 최소 scalar만 보존한다. current Graph Snapshot에 이미
+  있는 exact trusted-core Surface가 아니면 admission하지 않는다.
+- Graph의 additive `sealed-source-authority` lineage는 Capability/Grant/Permit tuple과 상호 배타적이며
+  exact Proposal digest와 predecessor event-log head에 결박된다. generic direct submit, lineage 재사용,
+  cross-domain source-authority transfer는 거부한다.
+- 기존 single writer/CAS로 succeeded Action, neutral `web.zap-source-observation`, authority-reference
+  Evidence만 기록한다. registered Surface signal이 있을 때만 confidence `0.5` open Hypothesis를 바로
+  다음 event로 시도하고, 사이에 head가 바뀌면 Hypothesis를 거부하면서 이미 기록된 Observation은 보존한다.
+- raw SARIF, private Ground Truth, Target/provider/runtime identity, controlled route, Scope, Capability,
+  Permit, Worker, network, Replay, floor, Finding, product, report와 추가 실행 권위는 모두 제외한다.
+  계약은 `docs/graph/WEB-002C-sealed-zap-source-knowledge-admission.md`, 결정은 ADR-0255다.
+  새 event wire는 additive지만 구 reader가 알 수 없으므로 upgraded reader를 먼저 배포해야 하며,
+  rollback은 event rewrite 없이 검증된 pre-event store를 복원하거나 새 reader를 유지한다.
+
+### WEB-002D
+
+- `src/pajin/workflow/web_controlled_validation_route.py`는 signed route의 stable consumption slot을 exact
+  SQLite claim/denial ledger에 원자적으로 한 번만 결박한다. 신규 store만 독점 생성하며 existing store와
+  모든 transaction은 DELETE journal, `quick_check`, exact table/index/view/trigger 계약을 다시 검증한다.
+  실행되지 않은 cleanup-complete route는 claim과 경쟁하는 append-only denial tombstone으로 봉인한다.
+- `src/pajin/workflow/web_controlled_validation_runtime.py`는 fresh Target attempt에서 proxy-only Worker의
+  세 exact GET을 실행하고 route claim, request/response, backend/observer/topology, Worker·proxy image와
+  cleanup 전 ephemeral identity를 durable Worker Evidence로 저장한다. production adapter의 fresh-session
+  loader는 store, claim, current backend/image와 resources-absent를 다시 검증하며 test adapter는 reopen할 수 없다.
+- `src/pajin/workflow/web_controlled_validation_authority.py`는 WEB-002B sealed source, 별도 성공 route/claim/
+  Worker Evidence, cleanup-complete 8-record Target lifecycle과 실행되지 않은 별도 route의 7-record denial
+  lifecycle/tombstone을 fresh context에서 다시 연다. 이후 더 높은 Target fence가 생겨도 sealed historical
+  cleanup proof는 검증하되, 과거 route를 새 실행 권위로 되살리지는 않는다.
+- `src/pajin/workflow/web_validation_evaluation.py`는 source request units와 private matcher를 독립 재계산하고
+  실제 source/controlled Evidence inventory, identity 분리와 observed 1/1 zero-side-effect denial에서 14개
+  DOMAIN-006 metric과 floor를 유도한다. Finding은 `benchmark-ground-truth-match` claim ceiling과
+  information-only impact/severity에 제한되며 Graph/product/report, external target 또는 추가 실행 권위가 없다.
+- `src/pajin/benchmark/scanner_docker_provider.py`와 final authority build/load는 source context와 동일한
+  exact production provider, unshadowed wrapper/inner/runner method·state와 canonical custody path를 요구한다.
+  동일 프로세스의 임의 private-memory/constructor 우회는 Python·호스트 TCB 잔여 위험이다.
+- 버전형 계약은 `docs/benchmark/WEB-002D-independent-controlled-validation-floor-and-finding-projection.md`,
+  결정은 ADR-0256이다.
+- opt-in `tests/test_web_controlled_validation_docker.py`는 source ZAP, fresh success/denial Target lifecycle,
+  production Worker/proxy, seal과 fresh reload를 하나의 synthetic P0-D1 경로로 묶는다. 수정 전 실행이 식별한
+  fresh JSON tuple/list strict bug는 수정·집중 회귀를 통과했고 prior-tree real-Docker도
+  `1 passed in 545.95s`였다. 이후 exact source-owned production provider custody guard와 Worker observer
+  hardening을 포함한 committed ref는 Ubuntu 24.04 run `33310558350`에서 exact test를 통과해
+  exact-commit conformance와 Phase 22 Exit Gate를 완료했으며 해당 WEB 경로는 이후 불변이다.
+
+### FORENSICS-001A
+
+- `src/pajin/discovery/forensics_surfaces.py`
+  - exact Forensics Domain과 DOMAIN-002 `forensics.immutable-artifact` type-set에 결박된 disk, memory,
+    log, generic artifact sibling locator 4종을 제공한다.
+  - 모든 locator는 code-owned `pajin.dev/run-integrity/v1` root kind, source-root SHA-256,
+    source artifact-record SHA-256, provenance-record SHA-256, artifact SHA-256와 strict
+    `0..2^63-1` artifact byte count 전체를 `ForensicSourceProvenanceCoordinate`로 내장한다.
+  - 같은 artifact라도 root/record/provenance/byte count 또는 class가 바뀌면 Surface identity가 바뀐다.
+  - source 존재, Run seal, authenticity, external anchoring, artifact membership, digest/size,
+    immutability, chain of custody, evidence class, format과 provenance sanitization은 검증하지 않는다.
+  - path, URI, object key, filename, host/device/case/operator/timestamp, raw evidence/provenance,
+    credential/secret, parser output, Tool/Worker/Scope/Permit 필드는 허용하지 않는다.
+  - public builder/registry/typed-Surface와 complete-Surface reference binding 경계는 nested instance와
+    unmodeled state를 재검증한다. standalone reference는 class/kind claim을 운반하지 않는다.
+  - registry와 typed Surface는 `registered-not-authorized`이며 source resolve/acquire/read/mount/copy,
+    parser/analyzer, credential access/use, lateral movement, evidence mutation, Scope·Capability·approval·
+    Permit·Tool/Worker·network·Graph·Hypothesis·Finding·execution 권위가 모두 false다.
+- `src/pajin/discovery/__init__.py`에 additive public export를 연결했으며 기존 `SurfaceLocator`,
+  `SurfaceObservation`, `AttackSurface`, DOMAIN-002와 Run-integrity wire는 변경하지 않았다.
+- `tests/test_forensics_immutable_artifact_surfaces.py`는 284개 positive/adversarial case를 제공한다.
+- 권위 문서:
+  - `docs/discovery/FORENSICS-001A-disk-memory-log-artifact-provenance-surface-model.md`
+  - `docs/adr/0244-type-forensic-evidence-surfaces-without-source-access-or-evidence-mutation-authority.md`
+  - `PLAN.md`, `DECISIONS.md`, `README.md`, ARCH-002 RFC 갱신
+
+### FORENSICS-001B
+
+- `src/pajin/capabilities/forensic_evidence_analysis.py`
+  - disk, memory, log, generic artifact 4종 모두 complete FORENSICS-001A Surface와 provenance를
+    재검증하고 reference를 다시 유도해 exact match만 허용한다.
+  - current externally signed Range CAP-002 release, exact parser-bound non-routable Campaign Surface Scope와
+    DOMAIN-004 minimum Forensics Worker profile을 동시에 요구한다.
+  - evidence class에서 input kind, operation, logical parser로 가는 exact mapping은 code-owned이고 neutral
+    analysis signal은 별도의 bounded code-owned vocabulary다. caller가 operation/parser/rule/signal을
+    선택하거나 확장할 수 없다.
+  - opaque custody reference, parser executable/image/config digest와 output schema를 고정하고 immutable
+    read-only/noexec input, read-only root, network/DNS disabled, non-root, no-new-privileges sandbox를 요구한다.
+  - artifact/output/runtime/memory/process/parser-work/recursion/decompression-ratio/absolute
+    decompressed-byte ceiling을 고정한다. parser work unit은
+    `one-source-or-expanded-byte-processed`이며 모든 source write, evidence mutation, credential/secret,
+    network, host read, target execution, shell/plugin과 lateral-movement authority budget은 0이다.
+  - 결과는 `PreparedCapabilityAction`의 `prepared-not-authorized`에서 멈춘다. executor와 normalizer는
+    fail closed, Oracle는 `INCONCLUSIVE`, Replay와 cleanup은 no-plan이며 source resolve/read/mount/copy,
+    parser 실행, result, Observation/Evidence, Graph admission, Hypothesis, Finding 권위를 만들지 않는다.
+- `tests/test_forensic_evidence_analysis.py`는 signed lifecycle, exact binding과 모든 ceiling/zero-authority,
+  forged nested Pydantic state, runtime fail-closed 경계를 검증하는 286개 case를 제공한다.
+
+### FORENSICS-001C
+
+- `src/pajin/workflow/forensic_evidence_analysis_admission.py`
+  - Gate 생성자는 deployment-owned absolute existing non-symlink evidence root와 서로 분리된 source-membership,
+    parser-execution Ed25519 Trust Anchor를 필수로 받는다. caller source input은 root나 anchor를 선택할 수 없다.
+  - 두 Evidence 파일은 bounded no-follow regular single-link reader로 읽고 exact file bytes SHA-256에서 유도한
+    code-owned outer execution-bundle/result-receipt reference와 일치해야 한다. caller의 A
+    `sourceRootSHA256` provenance coordinate와 Graph admission evidence `sourceRootDigest`는 별도로 유지한다.
+  - source anchor와 signed membership attestation은 complete A Surface, root/artifact/provenance record,
+    artifact digest·bytes, custody binding/authority/object/authorization, immutable version, purpose와 validity를
+    exact하게 결박한다. execution anchor와 outer statement는 exact B preparation, parser/sandbox/profile,
+    pre/post state, configured·observed ceiling, zero mutation/copy/write/network/credential/device/plugin/
+    lateral-movement/target-execution/shell channel과 detached result를 결박한다.
+  - loader는 current signed Range, exact Campaign Scope, current preparation, approval, one consumed Permit와
+    signed `capabilityGrantId`/`capabilityGrantDigest`를 다시 만들고 비교한다. recomputed Gateway outcome에도
+    exact Grant digest가 포함되며 foreign, missing, expired, revoked, cross-role 또는 drifted authority는
+    fail closed한다.
+  - pure structural Oracle는 source와 result body를 읽지 않고 code-owned class mapping으로 `review` 또는
+    `no-signal`만 재계산한다. `review`일 때만 confidence `0.5`의 open
+    `forensics.forensic-proposition` Hypothesis를 허용하며 `no-signal`은 Hypothesis를 금지한다.
+  - existing Graph single writer에는 succeeded Action과 fixed neutral
+    `forensics.analysis-observation`, restricted JSON Evidence 정확히 2개, 선택적인 open Hypothesis만
+    admission한다. exact retry는 idempotent하고 Observation-only interruption은 같은 head에서 복구하며
+    intervening head는 fail closed한다.
+  - raw source/result/provenance/path/identity/secret/credential, Finding, Scope, Capability, approval, Permit,
+    Worker, Replay, mutation, parser invocation, execution 또는 새 Graph admission authority를 만들지 않는다.
+- `tests/test_forensic_evidence_analysis_admission.py`는 두 trust role, content-addressed Evidence, exact Grant와
+  Gateway, runtime ceiling/zero channel, neutral Graph topology, CAS/retry와 no-signal 경계를 검증한다.
+- 권위 문서:
+  - `docs/adr/0246-authenticate-forensic-source-membership-and-parser-execution-with-distinct-deployment-trust.md`
+  - `docs/graph/FORENSICS-001C-sealed-forensic-analysis-knowledge-admission.md`
+
+### FORENSICS-001D
+
+- `src/pajin/workflow/forensic_evidence_analysis_replay_benchmark.py`
+  - exact stored C admission과 later separately authorized sealed execution을 두 exact evidence root와
+    SQLite Graph authority store에서 current C loader로 다시 열고, one shared source-membership Trust Anchor와
+    explicit source/replay execution Trust Anchor를 deployment context로 요구한다.
+  - source admission의 stored Observation과 optional Hypothesis를 exact하게 확인하고 두 store event count를
+    보존한다. bare model parsing은 self-authenticating하지 않으며 trusted loader는 projection 내부 admission을
+    source store에 대조하고 nested hidden state를 dump 전에 거부한다.
+  - immutable source/custody, complete Surface, logical parser/request, Scope, rule, activation/release, Grant
+    authority semantics, resource/confinement/zero-channel semantics를 동일하게 유지하고 per-execution
+    preparation·Run·request·approval·Permit·execution·runtime·result·Oracle provenance와 signed causal order를
+    분리한다. Grant ID/time window는 같거나 달라도 되며 `tools`/`targets`는 canonical sort한다.
+  - execution anchor/signer, parser executable/configuration/image와 sandbox ID/digest가 모두 같을 때만
+    `deterministic-reparse`, 모두 다를 때만 `independent-parser-comparison`이며 partial drift는 fail closed한다.
+    only independent mode가 DOMAIN-006 exact strategy를 만족한다.
+  - result digest/bytes, result/Oracle disposition과 bounded signal로 neutral match/changed/unresolved만 유도하고
+    equal digest/different bytes를 거부한다. source/result body, semantic truth, parser correctness, Finding,
+    Graph write, Replay scheduling 또는 further execution authority는 만들지 않는다.
+  - separate content-addressed profile은 disk/memory/log/artifact별 positive/no-signal/corrupted-input exact
+    12-case와 four required unmeasured Forensics metric을 등록한다. corrupted Control은 fabricated success가
+    아닌 future bounded parser-rejection receipt를 요구하며 fixture/parser 실행이나 measurement를 수행하지 않는다.
+- `tests/test_forensic_evidence_analysis_replay_benchmark.py`는 11개 collected case로 four Surface/two mode,
+  neutral comparison, partial implementation drift, reused/noncausal provenance, contextful reload, hidden state,
+  Grant determinism, import authority와 fixture/metric/marker 경계를 검증한다.
+- 권위 문서:
+  - `docs/benchmark/FORENSICS-001D-independent-parser-comparison-seeded-evidence-requirements.md`
+  - `docs/adr/0247-bind-independent-forensic-parser-comparison-and-seeded-evidence-without-source-or-measurement-authority.md`
+  - `docs/adr/0249-cross-link-forensic-replay-identity-clarification.md`
+
+## 핵심 결정과 불변식
+
+- FORENSICS-001C의 deployment assertions는 공급된 provenance/custody/parser execution statement의 서명
+  origin과 integrity를 인증하지만 source/custody 사실, evidence class/format, parser correctness 또는 semantic
+  truth를 독립적으로 증명하지 않는다. production source·custody와 execution Trust Anchor, evidence root와
+  key rotation은 계속 deployment 책임이다.
+- FORENSICS-001A의 Run root는 caller coordinate일 뿐 authenticity나 external anchoring 증거가 아니며,
+  FORENSICS-001C의 Graph `sourceRootDigest`는 두 admission Evidence와 verified interpretation의 별도 digest다.
+- ADR-0016 Run integrity는 local tamper evidence를 제공하지만 작성자 인증이나 독립 anchor를 증명하지 않는다.
+- SHA-256은 private 또는 low-entropy credential, token, key, operator/case identity의 redaction이 아니다.
+  이런 preimage를 Forensic identity에 사용하지 않는다.
+- disk/memory/log/artifact는 v1에서 sibling이다. 추출·custody 관계는 FORENSICS-001C의 sealed
+  Observation/Evidence가 없이는 identity 관계로 주장하지 않는다.
+- discovered credential material은 knowledge일 뿐이다. 사용, lateral movement, active probe 또는 evidence
+  mutation에는 별도 Capability와 fresh authority가 필요하다.
+- standalone Surface reference는 inert opaque pointer다. `bind_forensic_immutable_artifact_surface_reference`
+  는 complete Surface와 provenance를 재검증하고 reference를 다시 유도해 exact match만 반환한다.
+- 새 source-root kind, locator class, provenance field, class semantics 또는 digest algorithm은 silent
+  expansion이 아니라 새 registry/schema version을 요구한다.
+- FORENSICS-001B의 class-to-input-kind-to-operation-to-logical-parser mapping은 code-owned exact registry이고
+  neutral signal vocabulary는 별도의 bounded registry다. caller 제공 operation/parser/rule/signal, wildcard
+  Scope 또는 다른 Surface/provenance/custody/sandbox binding은
+  authority 확장이 아니라 fail-closed 사유다.
+- parser work unit `one-source-or-expanded-byte-processed`는 source 또는 expanded byte 하나를 처리한 작업량
+  하나를 뜻한다. artifact byte ceiling과 별도로 parser work, decompression ratio와 absolute decompressed
+  byte ceiling을 모두 만족해야 한다.
+- `PreparedCapabilityAction`은 실행 허가나 admission 결과가 아니다. FORENSICS-001C는 이미 완료된 signed
+  execution과 pre/post immutable assertion을 재검증해 neutral knowledge만 admission하며 parser를 실행하거나
+  signed deployment assertion을 independent source truth로 승격하지 않는다.
 
 ## 최신 검증
 
-### 2026-08-27 최종 통합 검증
+### WEB-002D
 
-- System/Application/Mobile A·B 6개 모듈 전체: `1015 passed in 849.14s`.
-- 최종 리뷰 수정 회귀:
-  - SYS candidate/Permit snapshot provenance와 contextful loader: `2 passed in 39.23s`.
-  - SYS exact Graph-store subtype 거부와 contextful loader: `2 passed in 41.05s`.
-  - APP exact Graph-store subtype 거부와 contextful loader: `2 passed in 61.25s`.
-  - APP/SYS contextful wire에서 `verification.valid=1`은 exact-boolean validator로 거부됨.
-- 전체 Python 정적 검증:
-  - `.venv\Scripts\ruff.exe check .`: 통과.
-  - 변경 Python 24개 `.venv\Scripts\ruff.exe format --check`: `24 files already formatted`.
-  - `.venv\Scripts\mypy.exe --strict --platform linux src\pajin`: `352 source files` 통과.
-  - bundled Python `-m compileall -q src\pajin`과 변경 test 12개: 통과.
-- 문서·패키지·수집:
-  - bundled Python `-m pytest -q tests\test_documentation.py tests\test_secrets.py`:
-    `14 passed in 0.12s`.
-  - `.venv\Scripts\uv.exe lock --check --offline --no-cache`: `Resolved 71 packages in 1ms`.
-  - 변경 test 12개 전체 `--collect-only`: `1144 tests collected in 3.12s`.
-  - Markdown 상대 링크, 언어 정책, trailing whitespace와 `git diff --check`: 통과.
-- 변경 전체 보안 diff scan과 두 차례 독립 C·D 최종 검토를 수행했다. 발견된 SYS embedded-anchor/
-  self-certified Graph low finding, SYS snapshot provenance, APP/SYS exact boolean, APP/SYS Graph-store subtype,
-  activation action metadata·authority-set 치환, APP/SYS equal-digest byte-count 문제를 수정했고 최종 검토에는
-  남은 concrete 코드·보안·문서 blocker가 없었다.
-- 12개 변경 test 모듈 1144건 전체를 연속 실행하지는 않았다. deep C/D Graph/evidence E2E가 건당 수분에서
-  20분 이상 걸리므로 A·B 전체, C·D 대표/공격 회귀, 전체 수집과 정적 검증으로 범위를 나눴다.
+- controlled-validation authority와 proxy route 묶음: `20 passed in 573.18s`
+- durable claim/denial route ledger: `58 passed, 2 skipped`; 두 skip은 Windows의 심볼릭 링크 생성
+  권한(`WinError 1314`)이며 코드 실패가 아니다.
+- production Worker Evidence runtime과 fresh-session durable reopen: `9 passed in 140.90s`
+- independent metric/floor/Finding evaluation: `7 passed in 452.72s`
+- Target disconnect 처리, request-unit method 보존과 canonical JSON 집중 회귀:
+  `15 passed, 34 deselected in 313.36s`
+- repo-wide Ruff check와 WEB-002D 직접 변경/회귀 18개 파일의 format check가 통과했고,
+  `.venv\Scripts\mypy.exe --strict --platform linux src/pajin`은 `370 source files`를 통과했다.
+  repo-wide format check의 기존 184개 대상은 이번 범위와 구분한다.
+- 독립 리뷰의 P1 provider trust-boundary gap을 수정했고 source-owned/fake/delegating/foreign exact provider,
+  instance/class/`__getattribute__` shadow와 runner state drift 집중 회귀가 `2 passed in 211.55s`로 통과했다.
+- 후속 통합 재평가에서 `DockerBenchmarkProviderEvidence/v1alpha1`에 잘못 추가된 request-unit mirror 6개를
+  sidecar로 되돌려 exact legacy wire/digest를 복원했다. provider `18 passed, 2 skipped`, single-agent
+  `5 passed, 1 skipped`, ZAP scanner `33 passed, 2 skipped`가 통과했고 skip은 모두 opt-in real-Docker였다.
+- production controlled-validation Adapter/Inspector/Docker Worker의 exact descriptor·state·observer custody를
+  생성, claim 전, Evidence 저장 전, fresh reopen store read 전에 fail closed로 재검증하도록 보강했다.
+  독립 집중 회귀 4개는 `4 passed in 54.03s`, runtime 전체는 `9 passed in 142.56s`였고 관련
+  Ruff/format과 Linux-target strict mypy도 통과했다.
+- 최종 문서 계약 검증은 `2 passed in 0.05s`, `git diff --check`는 whitespace 오류 없이 기존
+  LF→CRLF warning만 보고했다.
+- 기본 Docker test는 opt-in 경계를 확인하며 `1 skipped in 2.70s`; real-Docker conformance 증거가 아니다.
+- 수정 전 opt-in real-Docker가 식별한 fresh JSON tuple/list strict decoding bug는 수정·집중 회귀를 통과했다.
+  Docker Desktop 4.87.0의 stale AF_UNIX endpoint 5개는 오류 프로세스 10개 종료 뒤 삭제 없이
+  `20260829T213753707689852Z.bak` suffix로 이동했고 기존 backup도 보존했다. 재기동한 Engine 29.7.2/API 1.55는
+  정상 응답했다.
+- 이 prior-tree 로컬 실행의 exact image ID는 Target `sha256:94800e670415d1ec44045b6ed76a7f41953d5632a84cbdeda2060962f4e607d6`,
+  benchmark Worker `sha256:047fb728394c4c363b371deb736aeb81fdddefd6f99088b99f0501f9fa6f8a9d`,
+  ZAP `sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef`, Worker
+  `sha256:679356cf864c80e29ad5e6ae16f524f558f71c0b193918fab0e059ce071cab76`, proxy
+  `sha256:5ee00b48322f61a9f0bbb58a4ed128eef804e07da8ee9985f7e82c59501cd3ff`였다.
+- current post-audit hardening 전 post-fix opt-in real-Docker conformance는 `1 passed in 545.95s`. 테스트 뒤 managed/execution label과
+  `pajin-bench-` exact-name container/network 독립 조회 6건은 모두 0개였고 daemon은 정상 유지됐다.
+- GitHub-hosted conformance를 추가하기 전에는 Docker context가 local npipe 두 개뿐이고 기존 Linux CI에도
+  opt-in env·image build/pull이 없어 당시 구현을 실행할 known-good alternate path가 없었다.
+- 이 제약 때문에 전용 `.github/workflows/web-002d-conformance.yml`을 커밋했다. 기본값 false confirmation
+  뒤에만 digest-pinned linux/amd64 경계를 실행하고 장기 run을 자동 취소하지 않는다.
+- `tests/test_ci_workflow.py`는 `2 passed`; Ruff check/format과 Linux-target strict mypy도 통과했다.
+  committed-ref GitHub-hosted run `33310558350`이 성공했다.
 
-### 단계별 선행 검증 참고
+### WEB-002C
 
-- MOBILE-001D deterministic package re-analysis·28-case fixture·wire security 경계:
-  - bundled Codex Python으로 `tests/test_mobile_package_reanalysis_benchmark.py --collect-only`:
-    `27 tests collected in 2.46s`
-  - exact 28-lineage fixture와 raw-content 8개 marker·zero-counter 15개 coercion:
-    `1 passed in 5.26s`
-  - APK/Android 및 RUNTIME/iOS exact-package match: `2 passed in 914.81s`
-  - digest·signal·result byte-count가 다른 changed와 fresh runtime/confinement provenance 허용:
-    `1 passed in 405.89s`
-  - no-signal opaque digest 차이의 unresolved: `1 passed in 405.30s`
-  - contextful wire reload와 self-consistent forged Graph, recomputed attestation/source-root,
-    foreign deployment trust anchor 거부: `1 passed in 1256.53s`
-  - 전체 27개 모듈은 한 번에 실행하지 않았다. deep C evidence/Graph 재검증 E2E가 건당 약
-    6분 45초~20분 56초이므로 대표 6개를 실행했고 모두 통과했으며 독립 코드·보안 리뷰에도 blocker가 없었다.
-- MOBILE-001D 포함 현재 working-tree 정적·문서·비밀정보 검증:
-  - `.venv\Scripts\ruff.exe check .`: 통과
-  - `.venv\Scripts\mypy.exe --strict --platform linux src\pajin`: `352 source files` 통과
-  - bundled Python `-m compileall -q src\pajin tests\test_mobile_package_reanalysis_benchmark.py`: 통과
-  - bundled Python `-m pytest -q tests\test_documentation.py tests\test_secrets.py`: `14 passed in 0.20s`
-  - MOBILE-001D source/test Ruff format·check 및 strict mypy: 통과
-  - 신규 계약·ADR 링크, 영어 문서 언어, trailing whitespace와 `git diff --check`: 통과
-- MOBILE-001C selected/root package·platform/parser·custody/archive/profile/Worker·Graph authority 경계:
-  - bundled Codex Python으로 `tests/test_mobile_package_analysis_admission.py --collect-only`:
-    `30 tests collected`; APK/IPA와 6개 child Surface의 Android/iOS 조합을 포함한 유효 계보 14개
-  - trust-anchor false-marker coercion `1 passed in 73.37s`, archive/profile 경계
-    `1 passed in 33.99s`, authority/model-copy unknown-state `1 passed in 224.77s`
-  - signal-free APK 종단 간 admission `1 passed in 158.67s`, APPLICATION/iOS 종단 간 admission
-    `1 passed in 197.03s`, exact retry 멱등성 `1 passed in 285.42s`, 서명 변조 거부
-    `1 passed in 93.14s`
-  - 전체 30개를 한 번에 연속 실행하지는 않았다. 각 deep Pydantic/Graph 케이스가 약 1.5~5분이므로
-    남은 검증 위험은 미선택 조합의 연속 실행 범위이며, 실행된 대표 7개에서는 기능 실패가 없었다.
-- MOBILE-001C 포함 현재 working-tree 정적·문서·비밀정보 검증:
-  - `.venv\Scripts\ruff.exe check .`: 통과
-  - `.venv\Scripts\mypy.exe --strict --platform linux src\pajin`: `351 source files` 통과
-  - bundled Python `-m compileall -q src\pajin tests\test_mobile_package_analysis_admission.py`: 통과
-  - bundled Python `-m pytest -q tests\test_documentation.py tests\test_secrets.py`: `14 passed`
-  - MOBILE-001C source/test Ruff format·check 및 strict mypy: 통과
-  - MOBILE-001C 보안 경계 독립 검토와 `git diff --check`: blocker 없이 통과
+- `tests/test_web_source_measurement_admission.py`: `11 passed in 401.05s`. happy/idempotent,
+  no-signal, resealed source tamper, second-read source swap, top-level/nested/dataclass hidden state,
+  exact Proposal/head trust binding, forged/direct submit, stale Snapshot, Observation/Hypothesis
+  사이 head race, lineage mixing과 exact Surface/Graph 경계를 포함한다.
+- `tests/test_graph_models.py tests/test_graph_admission.py tests/test_cross_domain_graph_admission.py`:
+  `40 passed in 3.86s`. legacy Action/event digest와 wire, sealed-source authority exclusivity,
+  proposal/head binding 및 cross-domain 비전이를 검증한다.
+- Graph downstream 소비자 `tests/test_graph_projection.py tests/test_graph_sqlite_store.py
+  tests/test_control_plane_graph_views.py`: `48 passed, 2 skipped in 10.16s`. skip 2건은 기존
+  Windows POSIX link/symlink 제약이다. sealed-source Action이 Capability 없이 operator view에 안전하게
+  투영되는 별도 단독 회귀도 `1 passed in 2.55s`였다.
+- 전체 `ruff check .`, WEB-002C 관련 Python format check와 Linux 대상
+  `mypy --platform linux src` `366 source files`는 통과했다. Windows-native `mypy src`의
+  37건은 기존 POSIX-only `os.O_NOFOLLOW`, `O_DIRECTORY`, `geteuid`, `fchmod`, `fcntl`
+  stub 차이이며 WEB-002C 파일 오류는 아니다.
+- `tests/test_documentation.py`: `2 passed in 0.05s`. `git diff --check`는 whitespace 오류 없이
+  기존 LF→CRLF warning만 보고했고, private-key·대표 credential token 패턴 검색은 일치 항목이 없었다.
+- 독립 공격/소비자/문서 review에서 처음 식별한 Proposal lineage 재사용, source 두 번 읽기 TOCTOU,
+  hidden Pydantic/dataclass state, 과도한 public authority projection, cross-domain source transfer와
+  reader rollback 문서 공백을 수정했다. 최종 재검토에서 남은 P1/P2 런타임 문제는 없다.
 
-- MOBILE-001B exact Surface/root-package Scope, custody/sandbox reference identity, archive ceiling,
-  false-authority marker와 CAP-002 fail-closed 집중 회귀:
-  - bundled Codex Python에 repository `.venv\Lib\site-packages`와 `src`를 연결해
-    `python -m pytest -q tests/test_mobile_package_analysis.py`
-  - reference digest identity 수정과 request/materializer 회귀 포함 `170 passed in 604.58s`
-  - 이후 보강한 request false-marker 전체 sweep와 Replay/Cleanup direct-call 집중 검증:
-    `2 passed in 55.58s`
-- MOBILE-001A~B 현재 통합 회귀:
-  - 같은 bundled Python으로 `tests/test_mobile_application_runtime_surfaces.py
-    tests/test_mobile_package_analysis.py`
-  - 최종 현재 파일 기준 `528 passed in 767.59s`
-- MOBILE-001A 8-class registry, parent/platform identity, strict IDNA, reference/Pydantic-forgery,
-  authority false와 legacy wire 집중 회귀:
-  - bundled Codex Python에 repository `.venv\Lib\site-packages`와 `src`를 연결해
-    `python -m pytest -q tests/test_mobile_application_runtime_surfaces.py`
-  - `357 passed in 35.33s`
-- MOBILE-001A, APP-001A, DOMAIN-001/002/004, discovery wire와 documentation 통합 회귀:
-  - 같은 bundled Python으로 `tests/test_mobile_application_runtime_surfaces.py
-    tests/test_application_artifact_runtime_surfaces.py tests/test_security_domain_taxonomy.py
-    tests/test_multi_domain_graph_semantics.py tests/test_domain_worker_boundaries.py
-    tests/test_discovery_models.py tests/test_documentation.py`
-  - `761 passed in 59.60s`
-- 현재 working-tree 정적·패키지·보안 검증:
-  - `.venv\Scripts\ruff check .`: 통과
-  - `.venv\Scripts\mypy --strict --platform linux src/pajin`: `352 source files` 통과
-  - bundled Python `-m compileall -q src/pajin tests/test_mobile_package_reanalysis_benchmark.py`: 통과
-  - 임시 writable cache를 사용한 `.venv\Scripts\uv.exe lock --check --offline`:
-    `Resolved 71 packages`
-  - MOBILE-001D source/test `.venv\Scripts\ruff format --check`: 통과
-  - bundled Python `-m pytest -q tests/test_documentation.py tests/test_secrets.py`: `14 passed`
-  - repository-wide `ruff format --check .`는 기존 formatting baseline 193개 파일로 미통과하며,
-    Mobile 변경 Python 5개에는 해당하지 않음
-- 같은 미커밋 체크포인트에서 Mobile 추가 전 실행한 선행 slice 회귀:
-  - SYS-001A~D 통합: `477 passed, 2 skipped`
-  - APP-001A~D 통합: `508 passed, 2 skipped`
-- 현재 project `.venv\Scripts\python.exe`는 Windows Application Control이 `_overlapped` DLL
-  로딩을 차단해 pytest 초기화가 불가능하다. 최신 pytest/compileall은
-  `C:\Users\hyeon\.cache\codex-runtimes\codex-primary-runtime\dependencies\python\python.exe`와
-  project site-packages를 사용했고, Ruff/mypy/uv console script는 정상 실행했다.
+### WEB-002B
+
+- `PAJIN_TEST_DOCKER_ZAP=1`로
+  `test_real_docker_web_zap_source_measurement_conformance`를 실행해
+  `1 passed in 69.27s`를 확인했다. Docker Engine은 29.7.2였고 exact Target/Worker/ZAP image ID는
+  각각 `sha256:a6387af2d56e4d41fd208985227dc73099a3dc140ffa24abf08fe59550c7f2e0`,
+  `sha256:047fb728394c4c363b371deb736aeb81fdddefd6f99088b99f0501f9fa6f8a9d`,
+  `sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef`였다.
+  테스트 뒤 독립 Docker 조회에서도 `pajin-bench-` container/network가 남지 않았다.
+- `tests/test_benchmark_zap_scanner.py`: `21 passed, 2 skipped in 549.85s`. WEB-002B happy path,
+  public-safe false authority, literal boolean, completed-journal fence, raw SARIF, exact signed
+  distribution bundle, outer authority/세 audit payload reseal, provider direct/cached-replay
+  evidence/result wire, Scanner source/observation wire와 journal-record coercion 회귀를 포함한다. 기본
+  환경 실행의 skip 2건은 generic P0-E2B와 WEB-002B opt-in real-Docker conformance이며, WEB-002B 항목은
+  위 별도 opt-in 실행으로 통과했다.
+- `tests/test_benchmark_target_recovery.py`: `12 passed in 7.57s`. read-only journal reopen,
+  operation-to-completed-attempt exact lookup, 8-record lifecycle, foreign canonical record-chain 이식 거부와
+  multi-fence recovery 재조정을 포함한다.
+- `test_web_002b_reload_rejects_foreign_distribution_bundle` 단독 보강 검증은 `1 passed in 44.62s`였다.
+- WEB-002B 관련 product/test 7개는 Ruff lint와 format check를 통과했다. 전체 `ruff check .`도 통과했고
+  Linux 대상 strict mypy는 `365 source files`에서 통과했다.
+- `tests/test_documentation.py`: `2 passed in 0.05s`. 첫 검증에서 KNOWN_ISSUES 64 KiB 상한 초과를
+  발견해 현재 상태 중심으로 압축한 뒤 재검증했다.
+- 독립 API/테스트/문서 review가 찾은 cached provider replay canonical-wire 우회, outer artifact canonical
+  JSON 및 시작/완료 audit payload 공백, journal record-chain 이식, authority-reference ID/digest와 transient
+  ADR 상태 문제를 수정했다. 최신 tree 재검토에서 남은 P1/P2는 없다.
+- 2026-08-29 Docker Desktop 4.87.0은 오래된 AF_UNIX reparse endpoint 때문에 시작 시 종료됐다.
+  Docker 프로세스가 없는 상태에서 해당 endpoint만 같은 디렉터리의 `.stale-20260829-*` 이름으로
+  이동해 복구 가능하게 격리했고, Docker API Server 29.7.2와 위 live conformance 성공을 확인했다.
+  저장소 밖 backup endpoint는 보존했으며 repository 파일이나 Docker image/container/network를 삭제하지
+  않았다.
+
+### WEB-002A
+
+- measured-case/Capability/floor/Finding 경계 `tests/test_web_measured_case_authority.py`는 최종
+  `9 passed in 708.72s`였다.
+- signed proxy-route 적대적 회귀 `tests/test_web_proxy_route_authority.py`는 fresh process에서
+  `17 passed in 354.43s`였다. 정상 issue/verify/contextful reload, stable consumption slot, 상위 권한과
+  continuous testing-window cap, durable approval terminal state, signature/key/route revocation, exact Target
+  coordinate/ordinal/current fence, journal environment/causal time/recovery/cleanup drift, public-safe strict wire를
+  검증했다. 마지막 기계적 Ruff format 뒤 정상 route와 future execution-intent 거부를 다시 실행해
+  `2 passed in 47.41s`를 확인했다.
+- Target journal canonical-wire/fence 회귀 `tests/test_benchmark_target_recovery.py`는 `11 passed in 7.67s`였다.
+  Web predecessor 8개 collection은 `150 passed, 1 skipped in 94.32s`였다. skip은 opt-in real Docker ZAP
+  conformance이며 이번 단계에서는 Docker Target/Scanner/proxy/Worker를 실행하지 않았다.
+- 최종 문서·비밀정보 검사는 `14 passed in 0.14s`, 전체 Ruff lint는 통과, 신규 WEB Python 6개는 Ruff
+  format check 통과, Linux 대상 strict mypy는 `364 source files` 통과했다. `git diff --check`는 오류 없이
+  기존 LF→CRLF warning만 보고했다.
+- 독립 authority/hygiene review가 찾은 verification ID 길이, ordinal, approval 재발급 슬롯, 상위 권한 만료,
+  continuous testing window, exact coordinate, durable terminal state, contextful reload, numeric coercion 및 journal
+  인과성 공백을 수정하고 회귀로 고정했다. 최종 재검토에서 남은 P1/P2 제품 blocker는 없었다.
+
+### Phase 11~21 통합 재평가와 Web predecessor
+
+- Phase 11~21의 PLAN 완료 문구를 실제 CLI, Tool/Worker, provider, benchmark runner, Graph admission과
+  false authority marker에 대조했다. 세 개의 독립 read-only 검토도 Phase 13 Web을 전체 후보 중 가장
+  높은 재사용성과 가장 작은 새 runtime 경계로 평가했다.
+- bundled Python과 project site-packages로
+  `tests/test_benchmark_target_catalog.py tests/test_benchmark_zap_scanner.py`를 실행했다. 첫 실행은
+  default `%TEMP%\\pytest-of-<user>` ACL `WinError 5`로 `tmp_path` setup 4건이 막혀 `12 passed,
+  1 skipped, 4 errors`였다. 저장소 내부 전용 `--basetemp`로 격리한 재실행은 `16 passed, 1 skipped in
+  11.29s`였다.
+- skip 1건은 opt-in real Docker ZAP conformance다. 이번 재평가에서는 실제 Docker daemon, image build/pull,
+  Target/Scanner 실행을 수행하지 않았으므로 runnable contract와 현재 머신의 live conformance를 구분한다.
+- 독립 review의 endpoint/network-route, floor/Finding identity 공백과 direct Worker attachment 충돌을 코드에
+  대조했다. ADR-0251/0252와 PLAN/HANDOFF에 additive proxy-route/policy 선행 조건을 반영했고 기존 Accepted
+  ADR-0250/0251 본문은 append-only로 보존했다.
+- 후속 독립 review에서 남은 P1/P2는 없었다. 최종 `tests/test_documentation.py`는 `2 passed in 0.05s`,
+  `PLAN.md`는 59,389 bytes이며 `git diff --check`는 오류 없이 기존 CRLF warning만 보고했다.
+
+### CRYPTO-001A~D + FORENSICS-001A~D 검증 체크포인트
+
+- FORENSICS-001D test collection 11개를 disjoint shard로 검증해 모두 통과했다. four Surface/two mode는
+  disk `877.90s`, memory `740.92s`, log `716.64s`, artifact `779.36s`; changed/unresolved/equal-digest byte
+  invariant는 `974.15s`; partial drift/reused context/noncausal 거부는 `692.00s`; contextful wire reload와
+  stored admission/root/store/anchor/hidden-state/Graph-read-only 경계는 `1862.16s`; 순수 import/Grant/fixture/
+  marker 4개는 최종 `16.19s`였다.
+- `uv run ruff check .`: 통과. D source/test와 수정한 C test helper의 Ruff format check도 통과했다.
+- `uv run mypy --no-sqlite-cache --strict --platform linux src/pajin`: `360 source files` 통과. D source/test
+  exact strict check도 통과했다.
+- 문서 계약 검증은 최종 `2 passed`; `git diff --check`는 오류 없이 기존 LF→CRLF warning만 보고했다.
+- 두 독립 review가 찾은 hidden-state pre-dump 제거, CapabilityGrant set 비결정성/semantic ordering과
+  debugger-zero marker 누락을 수정했다. 재검토 뒤 남은 P1/P2 finding은 없다.
+
+- FORENSICS-001C test collection 79개를 세 disjoint shard로 검증한 Windows 결과는
+  `77 passed, 2 skipped`, code failure 0이다. signature test fixture assertion은 content-addressed
+  reference를 보존하도록 바로잡았고 해당 exact node 재실행은 `1 passed in 176.59s`였다. 두 skip은
+  Windows directory/symlink 생성 제약이다. 이후 repo-wide Ubuntu CI run `33316840636`은 해당 파일의
+  skip 기록 없이 전체 shard가 성공해 Linux 경계 증거를 확보했다.
+- `uv run pytest -q tests/test_forensic_evidence_analysis.py`: `286 passed in 765.48s`
+- FORENSICS-001A와 공통 discovery/capability/DOMAIN 통합 회귀: `575 passed in 68.43s`
+- 문서 계약 검증: `2 passed in 0.05s`
+- `.venv\Scripts\ruff.exe check .`: 모든 검사 통과
+- 변경 Python 15개는 Ruff format check를 통과했다. 현재 repo-wide `ruff format --check`가 보고하는 184개
+  reformat 대상은 기존 baseline이며 해당 변경 15개와 구분한다.
+- `.venv\Scripts\mypy.exe --strict --platform linux src/pajin`: `359 source files` 통과;
+  FORENSICS-001C source와 test 각각의 strict `--platform linux` 검사도 통과했다.
+- 두 독립 boundary/hygiene review에서 수정 뒤 High/Medium finding은 없었다. 219개 Literal marker는 exact
+  type validator에 모두 결박됐고 no-signal Hypothesis, secret/debug/placeholder와 raw result-body read 경로가
+  없음을 확인했다.
 
 ## 알려진 제한
 
-- 성공한 detection, Oracle, Replay 또는 benchmark metric은 Finding이나 negative security conclusion이 아니다.
-- discovered Surface와 cross-domain Observation은 knowledge만 확장하며 Scope나 execution authority를 확장하지 않는다.
-- Tool과 MCP는 integration mechanism이며 registered Capability, current authority, ActionPermit와 Gateway를
-  우회할 수 없다.
-- Forensics는 read-only analysis가 기본이며 발견된 credential material을 별도 Capability·Permit 없이 사용할 수 없다.
-- 일반 multi-domain runtime, production benchmark score, cross-host Worker fence와 Linux CI 증거는 없다.
-- CLOUD-001A의 provider/account/project/resource/IAM/container 값은 provider support, live inventory,
-  effective policy, credential/tenant authority, current container runtime 또는 실행 가능성의 증거가 아니다.
-- CLOUD-001B의 explicit GET adapter와 active lease fingerprint도 provider runtime, credential use, live
-  inventory/policy result 또는 실행 가능성의 증거가 아니다. CLOUD-001C source는 external deployment가 만든
-  signed historical provenance이며 저장소 안에 실제 Worker/provider runtime은 없다. admitted response receipt도
-  resource existence/ownership, policy effect, effective permission, Finding 또는 후속 실행의 증거가 아니다.
-- CLOUD-001D sanitized artifact signature는 deployment provenance와 source binding을 증명하지만 provider-specific
-  translation completeness나 effective permission을 증명하지 않는다. `fresh credential`은 서로 다른 signed
-  single-use lease provenance를 뜻하며 D가 credential을 새로 획득·사용했다는 의미가 아니다. fixture profile은
-  disposable account/emulator, cleanup과 Ground Truth 요구 등록일 뿐 실제 provision·cleanup·측정 증거가 아니다.
-- SYS-001A host/process/filesystem/service/configuration 값은 locally supplied identity knowledge일 뿐 host
-  existence, running process, file content, service state, configuration truth, agent authentication, credential/root
-  privilege 또는 실행 가능성의 증거가 아니다. logical mount와 relative path도 live host path로 resolve되지 않는다.
-- SYS-001B deployment binding의 public mTLS policy, subject/SPKI, executable digest와 non-root run-as identity는
-  deployment configuration일 뿐 live authentication, UID/SID/group/capability confinement 또는 host read 성공
-  증거가 아니다. 별도 agent endpoint도 정의하지 않았으며 repository에는 authenticated host-agent
-  runtime이 없다.
-- SYS-001C의 trust anchor와 signed execution/non-root/result receipt는 external deployment provenance를 검증할
-  뿐 repository가 live host authentication, non-root/root conformance, raw result interpretation 또는 host state
-  Oracle을 수행했다는 증거가 아니다. admitted Observation과 optional open Hypothesis는 host existence,
-  process/file/service/configuration truth, Finding, Replay, benchmark measurement 또는 후속 실행 권위가 아니다.
-- SYS-001D의 same-snapshot/fresh-inspection 구분은 signed input provenance, distinct authority와 causal execution
-  window를 검증한 comparison mode일 뿐 실제 snapshot immutability, live host state, physical Worker freshness 또는
-  분석 정확성을 독립 확인하지 않는다. match/change/unresolved는 Finding이나 negative conclusion이 아니며 fixture profile도
-  disposable host provision·cleanup, privilege denial, evidence completeness 또는 numeric coverage의 측정 증거가 아니다.
-- APP-001A artifact SHA-256과 version/parent coordinate는 caller-supplied identity일 뿐 bytes custody·digest
-  recomputation, binary format, configuration semantics, installed/runtime support, dependency relation, vulnerability,
-  analysis result 또는 실행 가능성의 증거가 아니다.
-- APP-001B custody authority/object/authorization digest와 declared byte count는 deployment-supplied configuration일
-  뿐 issuer/signature/freshness, object existence, bytes·digest 또는 read authority 검증 증거가 아니다. parser/image/
-  executable digest, run-as identity와 sandbox requirement도 live runtime conformance나 분석 성공 증거가 아니다.
-- APP-001C trust anchor와 signed sandbox/runtime/result receipt는 configured external deployment provenance를 검증할
-  뿐 repository가 live custody authorization, artifact bytes, image/executable, mount/network namespace, non-root runtime,
-  parser compatibility 또는 result-body semantics를 독립 확인했다는 증거가 아니다. admitted Observation과 optional
-  open Hypothesis는 format·configuration·runtime·dependency·vulnerability truth, Finding, Replay, benchmark measurement
-  또는 후속 실행 권위가 아니다.
-- APP-001D의 exact-artifact comparison은 두 deployment-signed execution의 same-artifact/parser/image/Scope/budget
-  provenance와 distinct action/evidence identity를 검증할 뿐 artifact bytes, parser determinism, physical sandbox
-  freshness 또는 analysis correctness를 독립 확인하지 않는다. match/change/unresolved는 vulnerability·Hypothesis·
-  Finding이나 negative conclusion이 아니며 seeded fixture profile도 artifact materialization, sandbox provision·cleanup,
-  artifact-analysis coverage, detection quality 또는 Profile-floor 측정 증거가 아니다.
-- MOBILE-001D의 exact-package comparison은 두 deployment-signed execution의 selected/root/platform/package/
-  custody/parser/image/Scope/budget/archive-observation provenance와 distinct action/evidence identity를 검증할 뿐
-  package bytes, format, manifest/signing, parser determinism, live sandbox/profile/Worker/device conformance 또는 분석
-  정확성을 독립 확인하지 않는다. match/change/unresolved와 result byte-count equality는 security conclusion이
-  아니며 28-case fixture profile도 package materialization, sandbox provision·cleanup, Ground Truth verification,
-  manifest-component coverage, detection quality, Profile-floor 또는 numeric measurement 증거가 아니다.
-- NET-001A의 TCP/UDP vocabulary와 service name은 runtime 지원이나 실제 service 식별 증거가 아니다.
-- NET-001C의 admitted protocol Observation과 optional open Hypothesis는 service confirmation, product/version
-  typing, Finding, Replay, Ground Truth, benchmark measurement 또는 negative conclusion이 아니다.
-- NET-001D의 `fresh Worker`는 distinct sealed Docker Worker execution identity를 뜻하며 서로 다른 물리 host,
-  container instance, certificate 또는 live mTLS subject를 증명하지 않는다.
-- NET-001D fixture profile은 synthetic Ground Truth registration일 뿐 isolated container provision, live Replay,
-  service-identification accuracy 측정이나 validation-floor 충족 증거가 아니다.
-- test source 전체를 strict mypy 대상으로 확장한 탐색 검증의 기존 helper annotation 7건은
-  `KNOWN_ISSUES.md`에 기록되어 있다. 공식 Linux CI 범위인 `src/pajin`은 통과한다.
+- 일반 multi-domain runtime, production benchmark score와 cross-host Worker fence 증거는 없다.
+- repo-wide Linux CI 실행 증거는 commit `051cad4bb67b021dc998a60b1502c7425834ea0b`의 Ubuntu 24.04
+  run `33316840636`이다. Quality와 24/24 shard가 성공했고 `7,609 passed, 69 skipped`, 실패·취소 0이었다.
+  이는 repository test/quality conformance 증거이며 일반 Domain runtime이나 production benchmark
+  실행 권위를 만들지 않는다.
+- Phase 22의 WEB-002A registration/read-only authority, WEB-002B bounded ZAP source runtime,
+  WEB-002C knowledge-only Graph admission과 WEB-002D controlled execution/floor/Finding 구현은 exact
+  conformance commit `975bf787` 이후 불변이며 그 commit의 Ubuntu run `33310558350`을 통과했다. 이는
+  product entrypoint, production/external probing, report/Graph admission 또는 일반 Domain runtime 권위를 부여하지 않는다.
+- Docker Desktop은 현재 중지돼 있다. `sailor-ingest.sock`, `dockerInference` 두 0-byte endpoint의 tag는
+  `IO_REPARSE_TAG_AF_UNIX`(`0x80000023`)다. 일반·관리자 권한의 reparse-point open, metadata delete,
+  immediate move가 모두 Win32 1920으로 실패했고 원본·metadata는 그대로이며 새 backup은 생성되지 않았다.
+  사용자 승인으로 전체 WSL 종료와 정상 Windows reboot를 완료한 뒤 Ubuntu·`docker-desktop`이 `Stopped`,
+  Docker process가 0인 상태에서 read-only open을 재시도했지만 두 항목 모두 다시 Win32 1920이었다.
+  C:는 `NTFS/Healthy/OK`, storage 오류 0건, `afunix.sys`는 `RUNNING`이다. 자동 UAC와 사용자가 확인한
+  관리자 `True` Terminal 모두 `chkdsk.exe /?` process create가 `Access is denied`로 차단돼 scan·repair는
+  실행되지 않았다. executable 서명·ACL은 정상이고 IFEO/SRP deny와 표준 CI/AppLocker/Defender 차단 event는
+  없다. Device Guard enforcement가 활성인 환경 정책/EDR 제약으로 분류하며 우회하지 않는다.
+  승인된 post-reboot Docker Desktop 1회 시작은 backend log에서 `sailor-ingest.sock` 제거의
+  `The file cannot be accessed by the system`으로 crash했다. Engine pipe와 `docker-desktop` WSL은
+  시작되지 않았고 reset/data cleanup은 수행하지 않았다. non-force Desktop stop IPC도 응답하지 않아 우리가
+  만든 stop/status client 2개만 종료했다. 이후 supported force stop은 Desktop이 이미 running이 아니라고
+  반환했고 Docker process 0, Ubuntu·`docker-desktop` 모두 `Stopped`를 확인했다. 추가 endpoint 변경·새
+  backup은 없다.
+- FORENSICS-001A~B는 source 또는 provenance를 resolve/read/mount/copy하지 않는다. FORENSICS-001C는
+  deployment-owned root 아래 두 signed/digest-only Evidence 파일만 bounded read하며 parser, target 또는 raw
+  result body를 실행·조회하지 않는다.
+- `pajin.dev/run-integrity/v1`은 허용된 source-root coordinate vocabulary일 뿐 trusted custody provider가 아니다.
+- FORENSICS-001C의 source/custody와 parser execution signature는 configured deployment key에 대한
+  authentication이며 external transparency anchor, independent custody truth, evidence class/format, parser
+  correctness, negative security claim 또는 Finding을 증명하지 않는다.
+- FORENSICS-001B는 parser 실행을 준비하고 FORENSICS-001C는 이미 완료된 signed execution을 admission할
+  뿐 sandbox 생성, parser 실행, Ground Truth, deterministic Replay, benchmark measurement 또는 production
+  score를 구현하지 않는다.
+- FORENSICS-001D는 두 supplied sealed execution을 비교할 뿐 parser를 dispatch하지 않는다. deterministic
+  mode는 repeated concrete configuration만 나타내고 DOMAIN-006를 만족하지 않으며, independent mode도
+  source-code·algorithm·organization·supply-chain·physical host/Worker 또는 common-mode independence를
+  증명하지 않는다. 12개 fixture와 four metric은 requirement registry이며 materialized/observed/measured
+  benchmark가 아니다.
+- FORENSICS-001C link-hardening 중 Windows directory/symlink 생성이 필요한 두 case는 이 host에서 skip된다.
+  Ubuntu repo-wide run `33316840636`에는 해당 파일의 skip이 없고 전체 shard가 성공했으므로 Linux 경계는
+  검증됐지만, 이 Windows host의 symlink 생성 권한 제약은 남아 있다.
+- test source 전체를 strict mypy 대상으로 확장한 탐색 검증의 기존 helper annotation 7건과 Windows
+  symlink 권한 제약은 `KNOWN_ISSUES.md`에 기록되어 있다. 공식 Linux CI 범위인 `src/pajin`은 선행
+  체크포인트에서 통과했다.
 
 ## Git 재개 확인
 
@@ -636,13 +548,18 @@ git log -5 --oneline --decorate
 git diff --check
 ```
 
-작업 재개 시 working tree가 clean인지, `HEAD == origin/main`인지, 진행 중인 merge/rebase/cherry-pick이
-없는지 실제 Git에서 다시 확인한다.
+작업 재개 시 staged/unstaged/untracked 파일과 진행 중인 merge/rebase/cherry-pick을 확인하고 발견한
+변경을 보존한다. 이 문서 동기화 시작 시 CRYPTO-001A~D, FORENSICS-001A~D와 WEB-002A~D 코드는 이미
+커밋돼 있었고 working tree에는 위 7개 문서 변경만 남아 있었다. 이후 Linux CI가 식별한 canonical 모바일
+substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-shard/120분 CI는
+`051cad4bb67b021dc998a60b1502c7425834ea0b`로 각각 커밋·push했고, run `33316840636`에서 전체 성공을
+확인했다. 현재 문서 변경과 Git 상태는 재개 시 다시 대조한다.
 
 ## 다음 한 단계
 
-`CRYPTO-001A`에서 protocol, key-usage, ciphertext artifact 및 cryptographic configuration의 exact parent lineage와
-secret-free content-addressed Surface vocabulary를 정의한다. typed identity는 실제 key material, plaintext,
-credential use, decryption, signing, protocol negotiation, Oracle/recomputation, Scope, Capability, approval, Permit,
-Worker, network, Graph, Finding, mutation 또는 execution authority로 전환하지 않는다. 기존 CTF single-byte XOR
-Capability는 재사용 가능한 분류 자산일 뿐 일반 Cryptography Surface 지원 완료 증거로 취급하지 않는다.
+현재 host의 `chkdsk`, ACL, CI policy, EDR과 AF_UNIX endpoint 우회는 중단하고 로컬 환경 제약으로 유지한다.
+Phase 22 committed-ref conformance와 repo-wide Linux CI는 완료됐으므로 다음 구현은 ADR-0257의 Phase 23
+`UX-009A`다. 첫 구체 작업은 exact `load_web_controlled_validation_authority`로 source Run, WEB-002A/B,
+floor, denial, cleanup과 bounded Finding chain을 publication/reload 양쪽에서 재검증하는 sealed read-only
+projection 계약과 회귀를 구현하는 것이다. deterministic 24-shard/120분 CI는 이미 검증됐으며 별도 후속
+작업이 아니다.
