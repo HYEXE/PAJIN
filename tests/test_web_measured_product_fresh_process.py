@@ -11,15 +11,18 @@ from pajin.workflow.web_measured_product_reader import (
     WebMeasuredProductReadRegistry,
 )
 from tests.web_measured_product_fresh_process import (
+    _fresh_child_detail,
     _fresh_child_stage,
     _mark_fresh_child_stage,
+    _set_fresh_child_detail,
     _start_call_monitoring,
     _stop_call_monitoring,
 )
 
 
-def _mark_first_read_in_spawn(progress: Any) -> None:
+def _mark_first_read_in_spawn(progress: Any, progress_detail: Any) -> None:
     _mark_fresh_child_stage(progress, "first-product-read-complete")
+    _set_fresh_child_detail(progress_detail, "reader.py:123:read")
 
 
 def test_fresh_product_monitor_is_code_local_and_restores_the_tool(
@@ -75,7 +78,11 @@ def test_fresh_product_progress_reports_the_last_completed_stage() -> None:
 def test_fresh_product_progress_crosses_the_spawn_boundary() -> None:
     context = multiprocessing.get_context("spawn")
     progress = context.RawValue("i", 0)
-    process = context.Process(target=_mark_first_read_in_spawn, args=(progress,))
+    progress_detail = context.RawArray("u", 512)
+    process = context.Process(
+        target=_mark_first_read_in_spawn,
+        args=(progress, progress_detail),
+    )
 
     process.start()
     process.join(timeout=15)
@@ -85,3 +92,4 @@ def test_fresh_product_progress_crosses_the_spawn_boundary() -> None:
 
     assert process.exitcode == 0
     assert _fresh_child_stage(progress) == "first-product-read-complete"
+    assert _fresh_child_detail(progress_detail) == "reader.py:123:read"
