@@ -638,6 +638,5 @@ governed measurement, deterministic Ground Truth, product projection 및 rollbac
 선택하거나 명시적으로 보류한다. 이 검토 자체는 Target, network, Worker 또는 fixture 실행 권위가 아니다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
-exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 삭제 시도가 실행 환경의 별도
-승인 요구로 거부돼 남아 있다. 다음 작업자는 사용자의 명시적 원격 브랜치 삭제 승인을 확인한 뒤 정확한
-ref와 SHA를 다시 검증하고 삭제한다.
+exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤
+삭제했으며, `hyexe/ux-009d-*` 원격 ref가 남아 있지 않음을 재검증했다.
