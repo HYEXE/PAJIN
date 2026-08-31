@@ -17,7 +17,6 @@ import stat
 import subprocess
 import sys
 import tempfile
-import threading
 import traceback
 from collections.abc import Callable
 from contextlib import ExitStack
@@ -564,7 +563,6 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
 
     counters: dict[str, int] = {}
     resolver_calls: list[str] = []
-    profile = _profile_recorder(counters, resolver_calls=resolver_calls)
     filesystem_writes: list[str] = []
     socket_events: list[str] = []
     permitted_popen: list[tuple[str, ...]] = []
@@ -629,8 +627,10 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
             if permitted_popen and permitted_popen[-1] == argv:
                 permitted_popen.pop()
 
-    threading.setprofile(profile)
-    sys.setprofile(profile)
+    monitoring_session = _start_call_monitoring(
+        counters,
+        resolver_calls=resolver_calls,
+    )
     try:
         with ExitStack() as stack:
             client = stack.enter_context(TestClient(app))
@@ -765,8 +765,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
             if before_tree != after_tree or before_docker != after_docker:
                 raise AssertionError("fresh WEB product read mutated durable or Docker state")
     finally:
-        sys.setprofile(None)
-        threading.setprofile(None)
+        _stop_call_monitoring(monitoring_session)
         subprocess_module.run = real_subprocess_run
 
     result_material = {
@@ -913,11 +912,11 @@ def _rebuild_route(
     )
 
 
-def _profile_recorder(
+def _monitor_recorder(
     counters: dict[str, int],
     *,
     resolver_calls: list[str],
-) -> Callable[[Any, str, Any], Any]:
+) -> tuple[Callable[[Any, int], None], tuple[Any, ...]]:
     observed: dict[Any, str] = {
         WebMeasuredProductReader.read.__code__: "reader",
         WebMeasuredProductReadRegistry.resolve_for_product_read.__code__: "resolver",
@@ -949,20 +948,57 @@ def _profile_recorder(
             observed[code] = f"forbidden:{owner.__name__}.{name}"
     observed[_callable_code(write_verified_sarif_export)] = "forbidden:write_verified_sarif_export"
 
-    def profile(frame: Any, event: str, _arg: Any) -> Any:
-        if event != "call":
-            return profile
-        label = observed.get(frame.f_code)
+    def monitor(code: Any, _instruction_offset: int) -> None:
+        label = observed.get(code)
         if label is None:
-            return profile
+            return
         counters[label] = counters.get(label, 0) + 1
         if label == "resolver":
-            resolver_calls.append(cast(str, frame.f_locals.get("deployment_id")))
+            resolver_calls.append(cast(str, sys._getframe(1).f_locals.get("deployment_id")))
         if label.startswith("forbidden:"):
             raise AssertionError(f"fresh WEB product invoked {label}")
-        return profile
 
-    return profile
+    return monitor, tuple(observed)
+
+
+def _start_call_monitoring(
+    counters: dict[str, int],
+    *,
+    resolver_calls: list[str],
+) -> tuple[int, int, tuple[Any, ...]]:
+    callback, codes = _monitor_recorder(counters, resolver_calls=resolver_calls)
+    monitoring = sys.monitoring
+    tool_id = monitoring.PROFILER_ID
+    event = monitoring.events.PY_START
+    enabled: list[Any] = []
+    monitoring.use_tool_id(tool_id, "pajin-fresh-web-product")
+    try:
+        previous = monitoring.register_callback(tool_id, event, callback)
+        if previous is not None:
+            raise AssertionError("fresh WEB product monitoring callback is already registered")
+        for code in codes:
+            monitoring.set_local_events(tool_id, code, event)
+            enabled.append(code)
+    except BaseException:
+        for code in reversed(enabled):
+            monitoring.set_local_events(tool_id, code, 0)
+        monitoring.register_callback(tool_id, event, None)
+        monitoring.free_tool_id(tool_id)
+        raise
+    return tool_id, event, tuple(enabled)
+
+
+def _stop_call_monitoring(session: tuple[int, int, tuple[Any, ...]]) -> None:
+    tool_id, event, codes = session
+    monitoring = sys.monitoring
+    try:
+        for code in reversed(codes):
+            monitoring.set_local_events(tool_id, code, 0)
+    finally:
+        try:
+            monitoring.register_callback(tool_id, event, None)
+        finally:
+            monitoring.free_tool_id(tool_id)
 
 
 def _callable_code(value: Any) -> Any:
