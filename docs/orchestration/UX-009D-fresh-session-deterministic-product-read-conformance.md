@@ -191,6 +191,14 @@ reader, or non-Docker fixture cannot replace the required workflow evidence. A w
 not run or did not complete successfully is reported as unverified, not as passing conformance.
 Linux evidence and Windows platform limitations remain separate from the product-read authority.
 
+## Verification evidence
+
+Exact checkpoint `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf` completed the dedicated Ubuntu
+24.04 workflow as run `33410801762`, job `99549584968`. The UX-009D fresh-spawn conformance passed
+in 836.08 seconds, and the unconditional final audit found no PAJIN Docker residue. This evidence
+satisfies the Phase 23 workflow requirement without extending any product, Graph, report,
+delivery, or execution authority.
+
 ## Compatibility and rollback
 
 UX-009D changes no UX-009A API, artifact, event, projection field, canonical-byte rule, flow ID, or

@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 23 — Bounded Measured Web Operator Product Read
-- 현재 우선순위: Phase 23 `UX-009D` exact-commit real-Docker conformance verification
-- 다음 우선순위: Phase 23 Exit Gate
+- 현재 단계: Phase 23 — Bounded Measured Web Operator Product Read — 완료
+- 현재 우선순위: Phase 23 이후 new-domain runtime fresh checkpoint review
+- 다음 우선순위: ADR-0250·ADR-0257의 조건에 따른 Network runtime 후보 검토
 
 ## 제품 목표
 
@@ -735,14 +735,15 @@ new-domain runtime 우선순위로 유지한다.
     `textContent`만 쓰고 lock/token 교체/`pagehide`에서 폐기
   - durable application state와 private/runtime 좌표 공개 없음. UX-009B의 ephemeral advisory lock과
     read-only provider/inspector Evidence check는 유지
-- [ ] `UX-009D` fresh-session deterministic product-read conformance — code-complete; runner verification pending
+- [x] `UX-009D` fresh-session deterministic product-read conformance — complete
   - `spawn` production composition에서 두 publication/read, auth·transport와 isolated failure 13건을 검증
-  - audit code checkpoint `509e654`의 run `33365421750`, job `99404957729`은 runner 할당 전에
-    종료돼 test와 residue audit이 미실행임
+  - exact checkpoint `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`의 Ubuntu run
+    `33410801762`, job `99549584968`에서 fresh-spawn conformance `1 passed in 836.08s`와
+    unconditional PAJIN Docker residue audit이 모두 성공
 
-Phase 23 Exit Gate: planned. exact WEB-002D bounded Finding을 impact/severity가 미평가된
+Phase 23 Exit Gate: 완료. exact WEB-002D bounded Finding을 impact/severity가 미평가된
 `benchmark-ground-truth-match`로만 표시하고, publication·fresh-session reader·Operator endpoint·Web Console이
-동일한 false authority ceiling과 zero-side-effect를 유지해야 한다. Phase 23 완료 뒤에도 Network는 다음
+동일한 false authority ceiling과 zero-side-effect를 유지한다. Phase 23 완료 뒤에도 Network는 다음
 new-domain runtime 후보이며, 별도 ADR·Target Factory·governed measurement·product 경계 없이는 실행하지 않는다.
 
 ## 우선순위와 재평가 기준

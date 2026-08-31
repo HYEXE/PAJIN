@@ -52,9 +52,9 @@
 - DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
 - WEB-002A~D는 exact case와 ZAP source measurement, 별도 controlled route/Worker 실행, durable
   claim·denial·Evidence, 독립 floor 평가와 bounded benchmark Ground Truth match Finding까지 구현했다.
-  UX-009A~D의 bounded product read와 fresh-spawn audit는 `509e654`에 커밋·push됐다. run
-  `33365421750`, job `99404957729`은 runner 할당 전에 종료돼 conformance와 residue audit이
-  미실행이다. Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
+  UX-009A~D의 bounded product read와 fresh-spawn audit는 exact checkpoint `6cb58c1`의 Ubuntu run
+  `33410801762`, job `99549584968`에서 conformance와 unconditional Docker residue audit을 통과했다.
+  Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
 - AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
   Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
 - registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.

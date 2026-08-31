@@ -2,22 +2,19 @@
 
 ## 현재 체크포인트
 
-- 기록일: 2026-08-31
+- 기록일: 2026-09-01
 - 작업 위치: 저장소 루트
 - 브랜치: `main`
-- 공개 준비 변경 체크포인트: `ede2bbfad106d5686bd6bdcabb711ab346e278f9`
-  (`chore(repo): 공개 저장소 전환 준비`)
-- UX-009D 기준 코드 체크포인트: `509e6544960e48dfbc6c0841b6aee4d9c89a329e`
-  (`test(product): fresh-session Web 결과 검증 추가`)
-- 선행 모바일 fixture 보정 체크포인트: `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`
-- 현재 Git: `origin/main == 509e6544960e48dfbc6c0841b6aee4d9c89a329e`이고 local `main`에는 공개
-  준비 변경과 두 HANDOFF 체크포인트의 미푸시 커밋 세 개가 있어 ahead/behind `3/0`이다. staged,
-  unstaged, untracked 변경과 진행 중인 merge/rebase/cherry-pick이 없다.
+- UX-009D 성능 보정 체크포인트: `4440414` (`fix(benchmark): 도메인 레지스트리 반복 재구성 제거`)
+- UX-009D JSON wire 보정 체크포인트: `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`
+  (`test(product): fresh 응답 JSON 검증 경로 수정`)
+- 현재 Git: local `main`과 `origin/main`은 이 체크포인트 문서 반영 뒤 동기화하며 staged, unstaged,
+  untracked 변경과 진행 중인 merge/rebase/cherry-pick이 없어야 한다.
 - 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
   로컬 집중 검증을 통과했다.
-- UX-009D exact-SHA Ubuntu real-Docker conformance와 residue audit 증거는 여전히 없다. runner 할당 전
-  종료된 run `33365421750`과 companion CI run `33365209333`은 사용자가 삭제했으며, 두 ID 모두 GitHub
-  API의 `404 Not Found`로 삭제를 재검증했다.
+- UX-009D exact-SHA Ubuntu real-Docker run `33410801762`, job `99549584968`은 checkpoint
+  `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`에서 fresh-spawn conformance
+  `1 passed in 836.08s`와 unconditional PAJIN Docker residue audit을 모두 통과했다.
 - `WEB-002D` 구현은 exact conformance commit `975bf7876a186cefae66c289d09f530f3e0fe7aa` 이후 불변이며,
   해당 commit의 Ubuntu 24.04 run `33310558350`, job `99254722600`에서 real-Docker 검증을 통과함
 - 기준 체크포인트의 repo-wide Ubuntu 24.04 CI run `33316840636`은 Quality와 24개 pytest shard가
@@ -25,10 +22,10 @@
   최장 shard 17은 `5,925.98s (1:38:45)`의 pytest와 1시간 39분 3초 job으로 끝났다.
 - Phase 22 Exit Gate는 완료됐다. UX-009C의 별도 Operator 소비 경로가 추가됐지만 UX-009A wire 자체,
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
-- 현재 우선순위: Phase 23 `UX-009D` exact-commit real-Docker conformance verification
-- 다음 우선순위: Phase 23 Exit Gate
+- 현재 우선순위: Phase 23 이후 new-domain runtime fresh checkpoint review
+- 다음 우선순위: ADR-0250·ADR-0257 조건에 따른 Network runtime 후보의 authority gap 검토
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
-  UX-009A~D의 새 원격 run은 위 pre-run runner-allocation 실패뿐이며 성공 CI 증거로 취급하지 않는다.
+  UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
 문서보다 Git과 파일시스템의 실제 상태를 우선한다. 재개 즉시 아래 Git 명령으로 다시 확인한다.
 
@@ -619,32 +616,28 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
   runtime을 사용할 수 없어 real-Docker test는 실행하지 않았다.
 - UX-009D supplemental local regression 최신 재실행은 `3 passed in 224.05s`; D Python Ruff lint와
   format, compile 및 real-Docker test collection은 통과했다.
-- exact code checkpoint에 대해 이전에 요청한 workflow는 runner 할당 전에 종료돼 conformance와 residue
-  audit 증거를 만들지 못했다. 해당 run `33365421750`과 companion CI run `33365209333`은 삭제됐고 두
-  ID의 GitHub API `404 Not Found`를 확인했다.
+- DOMAIN-006 canonical registry template cache와 defensive-copy 회귀는 `4440414`에 반영했다. 관련
+  DOMAIN-006·fresh monitor 집중 테스트는 `55 passed`, 인접 Web/DOMAIN-006 회귀는 `169 passed`, Ruff와
+  Linux strict mypy 372 source files가 통과했다.
+- strict model의 JSON array를 Python list로 재검증하던 fresh-process helper는
+  `model_validate_json(first.content)`로 수정했고 집중 회귀 `4 passed`를 통과했다.
+- exact checkpoint `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`의 Ubuntu run `33410801762`, job
+  `99549584968`에서 fresh-spawn conformance `1 passed in 836.08s`와 unconditional residue audit이
+  모두 성공해 UX-009D와 Phase 23 Exit Gate를 완료했다.
 - 새 영어 versioned contract는
   `docs/orchestration/UX-009D-fresh-session-deterministic-product-read-conformance.md`다.
-- UX-009A~D는 `6b8faad`, `ee8b0ed`, `b50f81b`, exact code checkpoint
-  `509e6544960e48dfbc6c0841b6aee4d9c89a329e`로 `main`에 push됐다.
+- UX-009A~D는 `6b8faad`, `ee8b0ed`, `b50f81b`, `509e654`, `4440414`, exact verified checkpoint
+  `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`로 `main`에 push됐다.
 
 ## 다음 한 단계
 
-로컬 real-Docker 검증은 host 환경 제약으로 미실행했다. public-safe 운영 문서와 보안 신고 정책은
-working tree에 반영했고, 기존 Actions run 184개의 artifact metadata를 전수 확인해 보존 artifact가 없음을
-확인했다. 사용자는 기존 Git history 공개를 수용하고 Apache-2.0 적용을 승인했으며, root `LICENSE`,
-package metadata와 README에 해당 라이선스를 반영했다. `main`에는 branch protection과 ruleset이 없고
-Git history에는 non-noreply email metadata가 남아 있다. future commit용 repository-local identity는
-public owner login, ID-based noreply email과 `user.useConfigOnly=true`로 설정했으며 실제 기존 email 값은
-저장소 문서에 기록하지 않는다.
-Apache 공식 원문과 canonical text가 일치하고 문서 회귀는 `4 passed`, Ruff lint/format과
-`uv lock --check --offline`은 통과했다. generated wheel metadata는 `License-Expression: Apache-2.0`,
-`License-File: LICENSE`와 packaged license를 포함한다.
+UX-009D와 Phase 23은 exact Ubuntu real-Docker conformance 및 residue audit으로 완료됐다. 다음 작업은
+ADR-0250과 ADR-0257이 유보한 Network new-domain runtime의 fresh checkpoint review다. 기존 NET-001A~D
+계약과 passive-banner Worker action을 실제 코드에서 재검증하고, disposable service Target Factory,
+governed measurement, deterministic Ground Truth, product projection 및 rollback 경계를 한 개의 새 ADR에서
+선택하거나 명시적으로 보류한다. 이 검토 자체는 Target, network, Worker 또는 fixture 실행 권위가 아니다.
 
-사용자는 pre-run failure Actions run `33365421750`, `33365209333`을 인증 UI에서 삭제했다. 두 run은
-read-only GitHub API의 `404 Not Found`로 삭제를 재검증했다. 이 정리는 실패한 run을 제거했을 뿐
-UX-009D real-Docker conformance나 residue audit 증거를 만들지 않는다. push, 보호 ruleset, private
-vulnerability reporting과 visibility 변경은 아직 승인되지 않았다. 이후 runner 할당이 가능한 상태에서 원격 `main`의
-exact code checkpoint
-`509e6544960e48dfbc6c0841b6aee4d9c89a329e` workflow를 confirmation `true`로 재실행한다. test와 residue
-audit이 모두 성공하기 전에는 UX-009D/Phase 23을 완료로 표시하지 않는다. 성공 뒤 run/job 증거를
-README/RFC/운영 문서에 동기화한다.
+저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
+exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 삭제 시도가 실행 환경의 별도
+승인 요구로 거부돼 남아 있다. 다음 작업자는 사용자의 명시적 원격 브랜치 삭제 승인을 확인한 뒤 정확한
+ref와 SHA를 다시 검증하고 삭제한다.
