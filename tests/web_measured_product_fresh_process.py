@@ -816,7 +816,7 @@ def _run_child(
             )
             if first.json() != expected_projection or second.json() != expected_projection:
                 raise AssertionError("fresh WEB product response differs from the selected outcome")
-            projection = WebMeasuredProductFlowProjection.model_validate(first.json())
+            projection = WebMeasuredProductFlowProjection.model_validate_json(first.content)
             canonical = _strict_run_json_bytes(projection.model_dump(mode="json", by_alias=True))
             expected_read_count = 2 + len(recipe.integrity_failure_cases)
             if (
