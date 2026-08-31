@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Any, cast
 
 from fastapi.testclient import TestClient
-from pydantic import BaseModel
 
 from pajin.benchmark import (
     BenchmarkMeasurementRegistryActivationStore,
@@ -393,14 +392,13 @@ def run_fresh_web_measured_product_probe(
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
     progress = context.RawValue("i", 0)
-    progress_detail = context.RawArray("u", 512)
     previous_hash_seed = os.environ.get("PYTHONHASHSEED")
     previous_no_bytecode = os.environ.get("PYTHONDONTWRITEBYTECODE")
     os.environ["PYTHONHASHSEED"] = str(hash_seed)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     process = context.Process(
         target=_child_entry,
-        args=(send, recipe, progress, progress_detail),
+        args=(send, recipe, progress),
     )
     try:
         process.start()
@@ -417,7 +415,7 @@ def run_fresh_web_measured_product_probe(
             "fresh WEB measured product child did not finish within "
             f"{timeout_seconds}s (hash seed {hash_seed}, "
             f"integrity cases {len(recipe.integrity_failure_cases)}, "
-            f"last stage {last_stage}, last detail {_fresh_child_detail(progress_detail)})"
+            f"last stage {last_stage})"
         )
     try:
         state, payload = receive.recv()
@@ -425,8 +423,7 @@ def run_fresh_web_measured_product_probe(
         process.join(timeout=10)
         raise RuntimeError(
             "fresh WEB measured product child exited without a result "
-            f"(exit code {process.exitcode}, last stage {_fresh_child_stage(progress)}, "
-            f"last detail {_fresh_child_detail(progress_detail)})"
+            f"(exit code {process.exitcode}, last stage {_fresh_child_stage(progress)})"
         ) from exc
     finally:
         receive.close()
@@ -453,20 +450,10 @@ def _child_entry(
     send: Any,
     recipe: FreshWebMeasuredProductRecipe,
     progress: Any,
-    progress_detail: Any,
 ) -> None:
     try:
         _mark_fresh_child_stage(progress, "child-entered")
-        send.send(
-            (
-                "ok",
-                _run_child(
-                    recipe,
-                    progress=progress,
-                    progress_detail=progress_detail,
-                ),
-            )
-        )
+        send.send(("ok", _run_child(recipe, progress=progress)))
     except BaseException:  # pragma: no cover - diagnostics cross the process boundary
         send.send(("error", traceback.format_exc()))
     finally:
@@ -477,7 +464,6 @@ def _run_child(
     recipe: FreshWebMeasuredProductRecipe,
     *,
     progress: Any,
-    progress_detail: Any,
 ) -> FreshWebMeasuredProductProbeResult:
     recipe._validate()
     _mark_fresh_child_stage(progress, "recipe-validated")
@@ -716,7 +702,6 @@ def _run_child(
         counters,
         resolver_calls=resolver_calls,
         progress=progress,
-        progress_detail=progress_detail,
     )
     _mark_fresh_child_stage(progress, "monitoring-started")
     try:
@@ -915,18 +900,6 @@ def _fresh_child_stage(progress: Any) -> str:
     return f"unknown-{stage_index}"
 
 
-def _set_fresh_child_detail(progress_detail: Any, detail: str) -> None:
-    bounded = detail[:511]
-    if progress_detail.value == bounded:
-        return
-    progress_detail.value = bounded
-    print(f"fresh WEB product child detail: {bounded}", file=sys.stderr, flush=True)
-
-
-def _fresh_child_detail(progress_detail: Any) -> str:
-    return cast(str, progress_detail.value) or "none"
-
-
 def _build_failure_apps(
     recipe: FreshWebMeasuredProductRecipe,
     *,
@@ -1038,13 +1011,11 @@ def _monitor_recorder(
     *,
     resolver_calls: list[str],
     progress: Any | None = None,
-    progress_detail: Any | None = None,
 ) -> tuple[Callable[[Any, int], None], tuple[Any, ...]]:
     observed: dict[Any, str] = {
         WebMeasuredProductReader.read.__code__: "reader",
         WebMeasuredProductReadRegistry.resolve_for_product_read.__code__: "resolver",
         load_web_controlled_validation_authority.__code__: "source",
-        BaseModel.model_dump.__code__: "model-dump",
     }
     forbidden: tuple[tuple[type[Any], tuple[str, ...]], ...] = (
         (RunStore, ("create", "append_event", "write_json", "write_bytes", "seal")),
@@ -1076,16 +1047,6 @@ def _monitor_recorder(
         label = observed.get(code)
         if label is None:
             return
-        if label == "model-dump":
-            if progress_detail is not None:
-                caller = sys._getframe(1).f_back
-                if caller is not None:
-                    _set_fresh_child_detail(
-                        progress_detail,
-                        f"{Path(caller.f_code.co_filename).name}:"
-                        f"{caller.f_lineno}:{caller.f_code.co_name}",
-                    )
-            return
         counters[label] = counters.get(label, 0) + 1
         if progress is not None:
             stage = {
@@ -1108,13 +1069,11 @@ def _start_call_monitoring(
     *,
     resolver_calls: list[str],
     progress: Any | None = None,
-    progress_detail: Any | None = None,
 ) -> tuple[int, int, tuple[Any, ...]]:
     callback, codes = _monitor_recorder(
         counters,
         resolver_calls=resolver_calls,
         progress=progress,
-        progress_detail=progress_detail,
     )
     monitoring = sys.monitoring
     tool_id = monitoring.PROFILER_ID

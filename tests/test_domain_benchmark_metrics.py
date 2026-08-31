@@ -5,6 +5,7 @@ from copy import deepcopy
 import pytest
 from pydantic import ValidationError
 
+from pajin.benchmark import domain_metrics as domain_metrics_module
 from pajin.benchmark.domain_metrics import (
     DomainBenchmarkMetricApplicability,
     DomainBenchmarkMetricRequirement,
@@ -76,9 +77,10 @@ def test_registry_is_exact_additive_vocabulary_over_existing_wires() -> None:
     assert len(registry.metrics) == 26
     assert len(registry.plans) == 9
     assert len(registry.registry_digest) == 64
-    assert DomainBenchmarkRegistry.model_validate(
-        registry.model_dump(mode="json", by_alias=True)
-    ) == registry
+    assert (
+        DomainBenchmarkRegistry.model_validate(registry.model_dump(mode="json", by_alias=True))
+        == registry
+    )
 
 
 def test_metric_registry_separates_common_and_exact_domain_metrics() -> None:
@@ -212,6 +214,38 @@ def test_exact_metric_and_plan_references_resolve_without_activation() -> None:
     assert resolved_plan.runtime_support_asserted is False
     assert resolved_plan.target_factory_authority is False
     assert resolved_plan.execution_authorized is False
+
+
+def test_registry_and_resolvers_return_defensive_copies(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = registered_domain_benchmark_registry()
+    second = registered_domain_benchmark_registry()
+    metric_reference = first.metrics[-1].reference()
+    plan_reference = first.plans[-1].reference()
+
+    assert (
+        domain_metrics_module._registered_domain_benchmark_registry_template()
+        is domain_metrics_module._registered_domain_benchmark_registry_template()
+    )
+    assert first == second
+    assert first is not second
+    assert first.metrics[0] is not second.metrics[0]
+
+    object.__setattr__(first.metrics[0], "metric_digest", "0" * 64)
+    third = registered_domain_benchmark_registry()
+    assert third.metrics[0] == second.metrics[0]
+
+    def reject_full_registry_rebuild() -> DomainBenchmarkRegistry:
+        raise AssertionError("exact resolution must not rebuild the public registry")
+
+    monkeypatch.setattr(
+        domain_metrics_module,
+        "registered_domain_benchmark_registry",
+        reject_full_registry_rebuild,
+    )
+    assert resolve_registered_domain_benchmark_metric(metric_reference) == second.metrics[-1]
+    assert resolve_registered_domain_benchmark_plan(plan_reference) == second.plans[-1]
 
 
 def test_exact_resolution_rejects_digest_or_domain_substitution() -> None:

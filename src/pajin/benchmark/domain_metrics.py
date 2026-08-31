@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from functools import cache
 from typing import Annotated, Literal, Self
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -359,9 +360,7 @@ class DomainBenchmarkRegistry(StrictModel):
         default=BENCHMARK_RESULT_API_VERSION,
         alias="benchmarkResultApiVersion",
     )
-    benchmark_comparison_api_version: Literal[
-        "pajin.dev/benchmark-comparison/v1alpha1"
-    ] = Field(
+    benchmark_comparison_api_version: Literal["pajin.dev/benchmark-comparison/v1alpha1"] = Field(
         default=BENCHMARK_COMPARISON_API_VERSION,
         alias="benchmarkComparisonApiVersion",
     )
@@ -730,9 +729,8 @@ _NETWORKED_REQUEST_DOMAINS = frozenset(
 _MONETARY_COST_DOMAINS = frozenset({SecurityDomain.CLOUD, SecurityDomain.AI})
 
 
-def registered_domain_benchmark_registry() -> DomainBenchmarkRegistry:
-    """Return the exact registry without asserting support or measuring a run."""
-
+@cache
+def _registered_domain_benchmark_registry_template() -> DomainBenchmarkRegistry:
     taxonomy = registered_security_domain_taxonomy()
     return DomainBenchmarkRegistry(
         securityDomainTaxonomyDigest=taxonomy.taxonomy_digest,
@@ -741,12 +739,18 @@ def registered_domain_benchmark_registry() -> DomainBenchmarkRegistry:
     )
 
 
+def registered_domain_benchmark_registry() -> DomainBenchmarkRegistry:
+    """Return the exact registry without asserting support or measuring a run."""
+
+    return _registered_domain_benchmark_registry_template().model_copy(deep=True)
+
+
 def resolve_registered_domain_benchmark_metric(
     reference: DomainBenchmarkMetricRef,
 ) -> RegisteredDomainBenchmarkMetric:
     """Resolve an exact metric definition without accepting an observation."""
 
-    for metric in registered_domain_benchmark_registry().metrics:
+    for metric in _registered_domain_benchmark_registry_template().metrics:
         if metric.reference() == reference:
             return metric.model_copy(deep=True)
     raise DomainBenchmarkRegistryError("DOMAIN-006 metric is not registered exactly")
@@ -757,7 +761,7 @@ def resolve_registered_domain_benchmark_plan(
 ) -> RegisteredDomainBenchmarkPlan:
     """Resolve an exact plan without activating Target Factory or Replay authority."""
 
-    for plan in registered_domain_benchmark_registry().plans:
+    for plan in _registered_domain_benchmark_registry_template().plans:
         if plan.reference() == reference:
             return plan.model_copy(deep=True)
     raise DomainBenchmarkRegistryError("DOMAIN-006 plan is not registered exactly")
