@@ -5,13 +5,14 @@
 - 기록일: 2026-08-31
 - 작업 위치: 저장소 루트
 - 브랜치: `main`
-- 기준 코드 체크포인트: `509e6544960e48dfbc6c0841b6aee4d9c89a329e`
+- 공개 준비 변경 체크포인트: `ede2bbfad106d5686bd6bdcabb711ab346e278f9`
+  (`chore(repo): 공개 저장소 전환 준비`)
+- UX-009D 기준 코드 체크포인트: `509e6544960e48dfbc6c0841b6aee4d9c89a329e`
   (`test(product): fresh-session Web 결과 검증 추가`)
 - 선행 모바일 fixture 보정 체크포인트: `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`
-- workflow dispatch 시점 Git: `HEAD == origin/main ==` 실제 원격
-  `509e6544960e48dfbc6c0841b6aee4d9c89a329e`, ahead/behind `0/0`, staged 변경과 진행 중인
-  merge/rebase/cherry-pick 없음. UX-009D 검증 상태, public-readiness 정책, Apache-2.0 metadata와
-  해당 회귀 테스트만 unstaged 수정 상태다.
+- 현재 Git: `origin/main == 509e6544960e48dfbc6c0841b6aee4d9c89a329e`이고 local `main`에는 위
+  공개 준비 변경과 이 HANDOFF 체크포인트의 미푸시 커밋 두 개가 있어 ahead/behind `2/0`이다. staged,
+  unstaged, untracked 변경과 진행 중인 merge/rebase/cherry-pick이 없다.
 - 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
   로컬 집중 검증을 통과했다.
 - exact-SHA Ubuntu run `33365421750`, job `99404957729`은 runner 할당 전에 종료됐다. steps가 없어
