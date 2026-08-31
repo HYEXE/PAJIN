@@ -108,13 +108,14 @@ UX-009B is additive and reuses the UX-009A and WEB-002D APIs without changing th
 database migration. Rollback removes the registry and reader while retaining every sealed source
 and product Run as historical records.
 
-A later Operator-view slice may add a separate authenticated Control Plane endpoint and same-origin
-strict text-only Web Console view while leaving this reader and its wire unchanged. Request-level
-response caching and authorization remain outside this reader. A later conformance slice must perform
-the independent fresh-session deterministic conformance and side-effect audit across repeated reads.
+UX-009C adds the separate authenticated Operator-only Control Plane endpoint and same-origin strict
+text-only Web Console view while leaving this reader and its wire unchanged. Request-level response
+caching and authorization remain outside this reader. UX-009D must perform the independent
+fresh-session deterministic conformance and side-effect audit across repeated reads.
 
 ## Related documents
 
 - [ADR-0257](../adr/0257-project-web-002d-through-a-read-only-operator-product-flow.md)
 - [UX-009A contract](UX-009A-sealed-measured-web-product-flow-projection.md)
+- [UX-009C contract](UX-009C-operator-only-measured-web-product-view.md)
 - [WEB-002D contract](../benchmark/WEB-002D-independent-controlled-validation-floor-and-finding-projection.md)

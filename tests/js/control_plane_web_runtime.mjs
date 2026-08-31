@@ -208,6 +208,20 @@ const selectors = [
   "#validation-comparison-state-value",
   "#validation-comparison-contrast-value",
   "#validation-comparison-lanes",
+  "#web-measured-product-panel",
+  "#web-measured-product-load-button",
+  "#web-measured-product-empty",
+  "#web-measured-product-result",
+  "#web-measured-product-flow-value",
+  "#web-measured-product-source-value",
+  "#web-measured-product-scope-value",
+  "#web-measured-product-evidence-value",
+  "#web-measured-product-floor-value",
+  "#web-measured-product-claim-value",
+  "#web-measured-product-finding-value",
+  "#web-measured-product-impact-value",
+  "#web-measured-product-severity-value",
+  "#web-measured-product-report-value",
   "#review-queue-panel",
   "#review-queue-refresh-button",
   "#review-queue-summary",
@@ -753,6 +767,248 @@ function walkingControlComparison() {
   };
 }
 
+function webMeasuredProduct() {
+  const evaluationDigest = "1".repeat(64);
+  const findingDigest = "2".repeat(64);
+  const projectionDigest = "3".repeat(64);
+  const sourceDigest = "4".repeat(64);
+  const metricSpecs = [
+    [
+      "common.ground-truth-coverage",
+      "1eee24d549cdeff887511583969e2cd4562d18e7d87b3a3d70329560780a4185",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+    [
+      "common.detection-recall",
+      "97b6046f00a70bd353f7ad4c274c37a9e0780bd125bdaaafa902767d33fa9f87",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+    [
+      "common.task-success-rate",
+      "5e92974a3b37e0589f2375b830d03a2f7302291943b6719bb5e723cc053554f3",
+      "ratio", "not-applicable", "not-applicable",
+      "detection-recall-is-primary-outcome", null, null,
+    ],
+    [
+      "common.false-positive-rate",
+      "c780b515030aa6bb0a1c092965622f17581e99a13d2ab791758bd47f16d1e49c",
+      "ratio", "required", "at-most", null, 0, 1,
+    ],
+    [
+      "common.detection-precision",
+      "f526b0ab93f59adb99ee24c93783ef0ec960850b5217d0aa2969386c686b7f89",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+    [
+      "common.replay-or-reanalysis-success-rate",
+      "22c5fba7eabafdc50ac5d578fe2fe4af2a290351adcc29e1e7dd10fafa668bb3",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+    [
+      "common.time-to-first-valid-result",
+      "a0f32aca21af1cd7379775e466dfcccdefa4fe88d0391c879fceadd3c68c5039",
+      "seconds", "required", "measurement-required-no-quality-threshold", null,
+      250_000, 1_000_000,
+    ],
+    [
+      "common.total-request-units",
+      "07648da173a70528396bafa9c0afd7adedad20424d0a0c7bdb28890ac80ef79a",
+      "count", "required", "measurement-required-no-quality-threshold", null, 4, 1,
+    ],
+    [
+      "common.total-tool-calls",
+      "7e4ff3993110b201a9f812cba0d738a2301e34af332b0dd564e9432b805610d3",
+      "count", "required", "measurement-required-no-quality-threshold", null, 2, 1,
+    ],
+    [
+      "common.total-cost-usd",
+      "d0a8ee68983e2e876449be2364823742bff3dc18f4e5010c16c72f5e73952917",
+      "usd", "not-applicable", "not-applicable", "no-monetary-cost-model", null, null,
+    ],
+    [
+      "common.evidence-completeness",
+      "afea19a584fe1d769ba73aedf2aac0403bf65daa79fc9252de3fee1f935379dc",
+      "ratio", "required", "at-least", null, 16, 16,
+    ],
+    [
+      "common.policy-denial-correctness",
+      "d4fde6367f319e007a1671bf45460b1a62861a8545bf77e196e2d310d8aa6cbd",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+    [
+      "common.cleanup-success-rate",
+      "963bdacfe4228e78f70519ee7c350ac2a1c1f636b84977c085b19841dea35ffd",
+      "ratio", "not-applicable", "not-applicable",
+      "read-only-no-cleanup-required", null, null,
+    ],
+    [
+      "web.http-operation-coverage",
+      "bf9df605bbe9138ec764e0410f75f0e0219174b0718580e3907b9aac4ba3c257",
+      "ratio", "required", "at-least", null, 1, 1,
+    ],
+  ];
+  const metrics = metricSpecs.map(([
+    metricId,
+    metricDigest,
+    unit,
+    applicability,
+    comparison,
+    notApplicableReason,
+    numerator,
+    denominator,
+  ]) => {
+    const domainSpecific = metricId === "web.http-operation-coverage";
+    return {
+      metric: {
+        metricId,
+        metricVersion: "1.0.0",
+        metricDigest,
+        category: domainSpecific ? "domain-specific" : "common",
+        domainClassification: domainSpecific ? {
+          classificationId: "pajin.security-domain.web",
+          classificationVersion: "1.0.0",
+          classificationDigest: (
+            "6e38cf99e549ba35287f9b259b9470d2a59bbc93d5a3b9f47599bd83ca8c5081"
+          ),
+          domain: "web",
+        } : null,
+      },
+      unit,
+      applicability,
+      comparison,
+      numerator,
+      denominator,
+      notApplicableReason,
+      satisfied: true,
+    };
+  });
+  const sourceMeasurement = {
+    authorityId: `web-zap-source-measurement:${sourceDigest}`,
+    authorityDigest: sourceDigest,
+  };
+  const evaluation = {
+    evaluationId: `web-validation-floor-evaluation_${evaluationDigest}`,
+    evaluationDigest,
+  };
+  const findingRef = {
+    findingId: `web-benchmark-finding_${findingDigest}`,
+    findingDigest,
+  };
+  const projectionPolicy = {
+    projectionId: `web-benchmark-finding_${projectionDigest}`,
+    projectionDigest,
+  };
+  return {
+    apiVersion: "pajin.dev/web-measured-product-flow-projection/v1alpha1",
+    kind: "WebMeasuredProductFlowProjection",
+    flowId: `web-measured-product-flow:${"5".repeat(64)}`,
+    flowDigest: "5".repeat(64),
+    sourceRunId: "run_20260831T010203Z_1234abcd",
+    sourceAuthorityId: `web-controlled-validation:${"6".repeat(64)}`,
+    sourceAuthorityDigest: "6".repeat(64),
+    scope: {
+      measuredCase: {
+        authorityId: `web-measured-case_${"7".repeat(64)}`,
+        authorityDigest: "7".repeat(64),
+      },
+      sourceMeasurement: { ...sourceMeasurement },
+      scopeState: "measured-case-bounded-campaign-scope-unavailable",
+      campaignScopeAvailable: false,
+      scopeExpanded: false,
+      profileInferred: false,
+    },
+    evidence: {
+      floorEvaluation: { ...evaluation },
+      finding: { ...findingRef },
+      denialControlObservationId: `web-observed-policy-denial:${"8".repeat(64)}`,
+      denialControlObservationDigest: "8".repeat(64),
+      sourceEvidenceRequirementCount: 6,
+      controlledValidationEvidenceRequirementCount: 10,
+      evidenceState: "content-free-authority-references-verified",
+      denialControlSatisfied: true,
+      targetCleanupVerified: true,
+      evidenceContentIncluded: false,
+      filesystemCoordinatesIncluded: false,
+    },
+    floor: {
+      floorPolicy: {
+        policyId: "web-002a:p0-d1-validation-floor",
+        policyVersion: "1.0.0",
+        policyDigest: "9".repeat(64),
+      },
+      projectionPolicy: { ...projectionPolicy },
+      evaluation: { ...evaluation },
+      metrics,
+      publicMetricCount: 14,
+      requiredMetricCount: 11,
+      notApplicableMetricCount: 3,
+      floorState: "satisfied-independent-controlled-validation",
+      denialControlSatisfied: true,
+      targetCleanupVerified: true,
+      benchmarkValidationFloorSatisfied: true,
+    },
+    finding: {
+      finding: { ...findingRef },
+      evaluation: { ...evaluation },
+      projectionPolicy: { ...projectionPolicy },
+      sourceMeasurement: { ...sourceMeasurement },
+      claimCeiling: "benchmark-ground-truth-match",
+      findingState: (
+        "confirmed-benchmark-ground-truth-match-only-impact-and-severity-not-evaluated"
+      ),
+      impactAssurance: "not-evaluated-information-only",
+      severityAssurance: "not-evaluated-information-only",
+      benchmarkGroundTruthMatchConfirmed: true,
+      productFindingConfirmed: true,
+      genericProductionVulnerabilityConfirmed: false,
+      negativeSecurityConclusionAuthorized: false,
+    },
+    report: {
+      reportState: "unavailable-bounded-finding-not-report-authority",
+      reportAvailable: false,
+      reportCreationAuthorized: false,
+      reportDeliveryAuthorized: false,
+      externalDeliveryAuthorized: false,
+    },
+    authorityBoundary: {
+      sourceAuthorityContextuallyVerified: true,
+      readOnlyProjection: true,
+      evidenceContentRedacted: true,
+      web002cGraphPredecessorRequired: false,
+      campaignScopeAvailable: false,
+      scopeExpanded: false,
+      profileInferred: false,
+      privateGroundTruthDisclosed: false,
+      expectedReferenceDisclosed: false,
+      rawSarifDisclosed: false,
+      controlledQueryDisclosed: false,
+      responseBodyDisclosed: false,
+      transcriptDisclosed: false,
+      rawEvidenceDisclosed: false,
+      routeDetailsDisclosed: false,
+      filesystemCoordinatesDisclosed: false,
+      graphIncluded: false,
+      graphMutationAuthorized: false,
+      reportCreationAuthorized: false,
+      reportDeliveryAuthorized: false,
+      externalDeliveryAuthorized: false,
+      capabilityActivationAuthorized: false,
+      permitIssuanceAuthorized: false,
+      routeReuseAuthorized: false,
+      additionalExecutionAuthorized: false,
+      targetSideEffectPerformed: false,
+      providerSideEffectPerformed: false,
+      dockerSideEffectPerformed: false,
+      workerSideEffectPerformed: false,
+      networkSideEffectPerformed: false,
+      credentialSideEffectPerformed: false,
+      externalSystemSideEffectPerformed: false,
+      httpEntrypointAvailable: false,
+      uiEntrypointAvailable: false,
+    },
+  };
+}
+
 function jobView(run, { state = "queued", kind = "campaign" } = {}) {
   return {
     job_id: `job_${"a".repeat(32)}`,
@@ -1036,6 +1292,74 @@ assert.throws(
   ),
   protocol.ApiProtocolError,
 );
+const validWebMeasuredProduct = webMeasuredProduct();
+assert.equal(
+  protocol.validateWebMeasuredProductProjection(validWebMeasuredProduct),
+  validWebMeasuredProduct,
+);
+const escalatedWebMeasuredProduct = webMeasuredProduct();
+escalatedWebMeasuredProduct.finding.genericProductionVulnerabilityConfirmed = true;
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(escalatedWebMeasuredProduct),
+  protocol.ApiProtocolError,
+);
+const privateWebMeasuredProduct = webMeasuredProduct();
+privateWebMeasuredProduct.scope.privateGroundTruth = "must-not-render";
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(privateWebMeasuredProduct),
+  protocol.ApiProtocolError,
+);
+const substitutedWebMeasuredProduct = webMeasuredProduct();
+substitutedWebMeasuredProduct.finding.sourceMeasurement.authorityDigest = "f".repeat(64);
+substitutedWebMeasuredProduct.finding.sourceMeasurement.authorityId = (
+  `web-zap-source-measurement:${"f".repeat(64)}`
+);
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(substitutedWebMeasuredProduct),
+  protocol.ApiProtocolError,
+);
+const reorderedWebMeasuredMetrics = webMeasuredProduct();
+[
+  reorderedWebMeasuredMetrics.floor.metrics[0],
+  reorderedWebMeasuredMetrics.floor.metrics[1],
+] = [
+  reorderedWebMeasuredMetrics.floor.metrics[1],
+  reorderedWebMeasuredMetrics.floor.metrics[0],
+];
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(reorderedWebMeasuredMetrics),
+  protocol.ApiProtocolError,
+);
+const substitutedWebMetricDigest = webMeasuredProduct();
+substitutedWebMetricDigest.floor.metrics[0].metric.metricDigest = "f".repeat(64);
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(substitutedWebMetricDigest),
+  protocol.ApiProtocolError,
+);
+const driftedWebMetricRational = webMeasuredProduct();
+driftedWebMetricRational.floor.metrics[0].numerator = 0;
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(driftedWebMetricRational),
+  protocol.ApiProtocolError,
+);
+const driftedWebElapsedDenominator = webMeasuredProduct();
+driftedWebElapsedDenominator.floor.metrics[6].denominator = 1;
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(driftedWebElapsedDenominator),
+  protocol.ApiProtocolError,
+);
+const negativeZeroWebMetric = webMeasuredProduct();
+negativeZeroWebMetric.floor.metrics[6].numerator = -0;
+assert.throws(
+  () => protocol.validateWebMeasuredProductProjection(negativeZeroWebMetric),
+  protocol.ApiProtocolError,
+);
+const exactInt64WebMetric = webMeasuredProduct();
+exactInt64WebMetric.floor.metrics[6].numerator = 9_007_199_254_740_993n;
+assert.equal(
+  protocol.validateWebMeasuredProductProjection(exactInt64WebMetric),
+  exactInt64WebMetric,
+);
 const auditWithRawActor = graphDecisionAuditView();
 auditWithRawActor.decisions[0].actorId = "sensitive-runtime-actor";
 assert.throws(
@@ -1110,6 +1434,7 @@ assert.equal(elements.get("#hypothesis-ranking-load-button").disabled, false);
 assert.equal(elements.get("#decision-audit-load-button").disabled, false);
 assert.equal(elements.get("#replay-comparison-load-button").disabled, false);
 assert.equal(elements.get("#validation-comparison-load-button").disabled, false);
+assert.equal(elements.get("#web-measured-product-load-button").disabled, false);
 assert.equal(elements.get("#review-queue-refresh-button").disabled, false);
 
 enqueueFetch(
@@ -1221,6 +1546,43 @@ assert.equal(elements.get("#validation-comparison-form").attributes.get("aria-bu
 assert.match(elements.get("#status-message").textContent, /six disjoint VAL-004C coordinates/);
 
 enqueueFetch(
+  "/v1/products/web-measured-flow",
+  (_url, options) => {
+    assert.equal(options.method, undefined);
+    assert.equal(options.body, undefined);
+    assert.equal(options.cache, "no-store");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.redirect, "error");
+    assert.equal(options.referrerPolicy, "no-referrer");
+    return jsonResponse(webMeasuredProduct());
+  },
+);
+await elements.get("#web-measured-product-load-button").dispatch("click");
+assert.equal(elements.get("#web-measured-product-result").hidden, false);
+assert.equal(elements.get("#web-measured-product-empty").hidden, true);
+assert.equal(
+  elements.get("#web-measured-product-claim-value").textContent,
+  "benchmark-ground-truth-match",
+);
+assert.equal(
+  elements.get("#web-measured-product-impact-value").textContent,
+  "not-evaluated-information-only",
+);
+assert.match(elements.get("#web-measured-product-evidence-value").textContent, /6 source/);
+assert.match(elements.get("#web-measured-product-floor-value").textContent, /14 public/);
+assert.equal(elements.get("#web-measured-product-panel").attributes.get("aria-busy"), "false");
+
+const invalidProductResponse = webMeasuredProduct();
+invalidProductResponse.authorityBoundary.reportCreationAuthorized = true;
+enqueueFetch(
+  "/v1/products/web-measured-flow",
+  () => jsonResponse(invalidProductResponse),
+);
+await elements.get("#web-measured-product-load-button").dispatch("click");
+assert.equal(elements.get("#web-measured-product-result").hidden, true);
+assert.match(elements.get("#status-message").textContent, /invalid Measured Web product response/);
+
+enqueueFetch(
   "/v1/runs?limit=25&offset=0",
   () => jsonResponse(runList([], 1)),
 );
@@ -1302,6 +1664,32 @@ const runA = runView("run-a", "first-campaign");
 const runB = runView("run-b", "second-campaign");
 enqueueConnection("operator", [runSummary(runA.run_id, runA.campaign_name), runSummary(runB.run_id, runB.campaign_name)]);
 await submitToken(validToken("races"));
+
+// A completed product read from an old credential generation must not repopulate
+// the text-only view after lock, even if a transport ignores AbortSignal.
+const staleLockedProduct = deferred();
+let staleLockedProductOptions = null;
+enqueueFetch("/v1/products/web-measured-flow", (_url, options) => {
+  staleLockedProductOptions = options;
+  assert.equal(options.signal.aborted, false);
+  return staleLockedProduct.promise;
+});
+const lockedProductRead = elements.get("#web-measured-product-load-button").dispatch("click");
+await settle();
+assert.ok(staleLockedProductOptions);
+await elements.get("#lock-button").dispatch("click");
+assert.equal(staleLockedProductOptions.signal.aborted, true);
+staleLockedProduct.resolve(jsonResponse(webMeasuredProduct()));
+await lockedProductRead;
+assert.equal(elements.get("#connection-label").textContent, "Locked");
+assert.equal(elements.get("#web-measured-product-result").hidden, true);
+assert.match(elements.get("#status-message").textContent, /Console locked/);
+
+enqueueConnection("operator", [
+  runSummary(runA.run_id, runA.campaign_name),
+  runSummary(runB.run_id, runB.campaign_name),
+]);
+await submitToken(validToken("queue-race"));
 
 // A manual queue refresh can finish after lock when a transport ignores AbortSignal.
 // The stale generation must not overwrite the lock announcement with false success.
@@ -1567,6 +1955,10 @@ const pendingRun = runView("run-awaiting", "approval-campaign", "awaiting-approv
 await elements.get("#lock-button").dispatch("click");
 enqueueConnection("approver", [runSummary(pendingRun.run_id, pendingRun.campaign_name, pendingRun.state)]);
 await submitToken(validToken("approver"));
+assert.equal(elements.get("#web-measured-product-load-button").disabled, true);
+const fetchCountBeforeDeniedProductClick = fetchCalls.length;
+await elements.get("#web-measured-product-load-button").dispatch("click");
+assert.equal(fetchCalls.length, fetchCountBeforeDeniedProductClick);
 const approverOpen = elements.get("#runs-body").children[0].children[3].children[0];
 enqueueFetch("/v1/runs?limit=25&offset=0", () => jsonResponse(runList([
   runSummary(pendingRun.run_id, pendingRun.campaign_name, pendingRun.state),
@@ -1668,6 +2060,8 @@ for (const listener of globalListeners.get("pagehide") || []) {
 }
 assert.equal(elements.get("#connection-label").textContent, "Locked");
 assert.equal(elements.get("#token-input").value, "");
+assert.equal(elements.get("#web-measured-product-result").hidden, true);
+assert.equal(elements.get("#web-measured-product-load-button").disabled, true);
 assert.equal(elements.get("#token-input").focused, false);
 assert.equal(elements.get("#workflow-reason").focused, true);
 assert.equal(fetchHandlers.length, 0, "all expected fetch handlers must be consumed");

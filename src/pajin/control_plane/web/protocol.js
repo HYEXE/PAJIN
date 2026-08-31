@@ -823,6 +823,449 @@ function hasExactKeys(record, expected) {
     && keys.every((key, index) => key === canonical[index]);
 }
 
+function exactProductRecord(value, label, keys) {
+  const record = expectRecord(value, label);
+  if (!hasExactKeys(record, keys)) {
+    protocolFailure(label);
+  }
+  return record;
+}
+
+function validateProductDigestRef(value, label, idKey, idPattern, digestKey) {
+  const reference = exactProductRecord(value, label, [idKey, digestKey]);
+  if (!idPattern.test(reference[idKey]) || !SHA256_PATTERN.test(reference[digestKey])) {
+    protocolFailure(label);
+  }
+  return reference;
+}
+
+function sameProductRef(left, right, idKey, digestKey) {
+  return left[idKey] === right[idKey] && left[digestKey] === right[digestKey];
+}
+
+function validateProductInteger(value, label, minimum) {
+  let normalized;
+  if (value instanceof LosslessJsonNumber) {
+    if (!/^(0|[1-9][0-9]*)$/.test(value.source)) protocolFailure(label);
+    normalized = BigInt(value.source);
+  } else if (typeof value === "bigint") {
+    normalized = value;
+  } else if (Number.isSafeInteger(value) && !Object.is(value, -0)) {
+    normalized = BigInt(value);
+  } else {
+    protocolFailure(label);
+  }
+  if (normalized < BigInt(minimum) || normalized > 9_223_372_036_854_775_807n) {
+    protocolFailure(label);
+  }
+  return normalized;
+}
+
+export function validateWebMeasuredProductProjection(value) {
+  const label = "Measured Web product";
+  boundedJsonShape(value, label);
+  const view = exactProductRecord(value, label, [
+    "apiVersion", "kind", "flowId", "flowDigest", "sourceRunId",
+    "sourceAuthorityId", "sourceAuthorityDigest", "scope", "evidence", "floor",
+    "finding", "report", "authorityBoundary",
+  ]);
+  if (view.apiVersion !== "pajin.dev/web-measured-product-flow-projection/v1alpha1"
+    || view.kind !== "WebMeasuredProductFlowProjection"
+    || !/^web-measured-product-flow:[a-f0-9]{64}$/.test(view.flowId)
+    || !SHA256_PATTERN.test(view.flowDigest)
+    || view.flowId !== `web-measured-product-flow:${view.flowDigest}`
+    || !/^run_[0-9]{8}T[0-9]{6}Z_[a-f0-9]{8}$/.test(view.sourceRunId)
+    || !/^web-controlled-validation:[a-f0-9]{64}$/.test(view.sourceAuthorityId)
+    || !SHA256_PATTERN.test(view.sourceAuthorityDigest)
+    || view.sourceAuthorityId !== `web-controlled-validation:${view.sourceAuthorityDigest}`) {
+    protocolFailure(label);
+  }
+
+  const scope = exactProductRecord(view.scope, label, [
+    "measuredCase", "sourceMeasurement", "scopeState", "campaignScopeAvailable",
+    "scopeExpanded", "profileInferred",
+  ]);
+  const measuredCase = validateProductDigestRef(
+    scope.measuredCase,
+    label,
+    "authorityId",
+    /^web-measured-case_[a-f0-9]{64}$/,
+    "authorityDigest",
+  );
+  const sourceMeasurement = validateProductDigestRef(
+    scope.sourceMeasurement,
+    label,
+    "authorityId",
+    /^web-zap-source-measurement:[a-f0-9]{64}$/,
+    "authorityDigest",
+  );
+  if (measuredCase.authorityId !== `web-measured-case_${measuredCase.authorityDigest}`
+    || sourceMeasurement.authorityId
+      !== `web-zap-source-measurement:${sourceMeasurement.authorityDigest}`
+    || scope.scopeState !== "measured-case-bounded-campaign-scope-unavailable"
+    || scope.campaignScopeAvailable !== false
+    || scope.scopeExpanded !== false
+    || scope.profileInferred !== false) {
+    protocolFailure(label);
+  }
+
+  const evidence = exactProductRecord(view.evidence, label, [
+    "floorEvaluation", "finding", "denialControlObservationId",
+    "denialControlObservationDigest", "sourceEvidenceRequirementCount",
+    "controlledValidationEvidenceRequirementCount", "evidenceState",
+    "denialControlSatisfied", "targetCleanupVerified", "evidenceContentIncluded",
+    "filesystemCoordinatesIncluded",
+  ]);
+  const evidenceEvaluation = validateProductDigestRef(
+    evidence.floorEvaluation,
+    label,
+    "evaluationId",
+    /^web-validation-floor-evaluation_[a-f0-9]{64}$/,
+    "evaluationDigest",
+  );
+  const evidenceFinding = validateProductDigestRef(
+    evidence.finding,
+    label,
+    "findingId",
+    /^web-benchmark-finding_[a-f0-9]{64}$/,
+    "findingDigest",
+  );
+  if (evidence.floorEvaluation.evaluationId
+      !== `web-validation-floor-evaluation_${evidence.floorEvaluation.evaluationDigest}`
+    || evidence.finding.findingId
+      !== `web-benchmark-finding_${evidence.finding.findingDigest}`
+    || !/^web-observed-policy-denial:[a-f0-9]{64}$/.test(
+      evidence.denialControlObservationId,
+    )
+    || !SHA256_PATTERN.test(evidence.denialControlObservationDigest)
+    || evidence.denialControlObservationId
+      !== `web-observed-policy-denial:${evidence.denialControlObservationDigest}`
+    || evidence.sourceEvidenceRequirementCount !== 6
+    || evidence.controlledValidationEvidenceRequirementCount !== 10
+    || evidence.evidenceState !== "content-free-authority-references-verified"
+    || evidence.denialControlSatisfied !== true
+    || evidence.targetCleanupVerified !== true
+    || evidence.evidenceContentIncluded !== false
+    || evidence.filesystemCoordinatesIncluded !== false) {
+    protocolFailure(label);
+  }
+
+  const floor = exactProductRecord(view.floor, label, [
+    "floorPolicy", "projectionPolicy", "evaluation", "metrics", "publicMetricCount",
+    "requiredMetricCount", "notApplicableMetricCount", "floorState",
+    "denialControlSatisfied", "targetCleanupVerified", "benchmarkValidationFloorSatisfied",
+  ]);
+  const floorPolicy = exactProductRecord(floor.floorPolicy, label, [
+    "policyId", "policyVersion", "policyDigest",
+  ]);
+  const floorProjectionPolicy = validateProductDigestRef(
+    floor.projectionPolicy,
+    label,
+    "projectionId",
+    /^web-benchmark-finding_[a-f0-9]{64}$/,
+    "projectionDigest",
+  );
+  const floorEvaluation = validateProductDigestRef(
+    floor.evaluation,
+    label,
+    "evaluationId",
+    /^web-validation-floor-evaluation_[a-f0-9]{64}$/,
+    "evaluationDigest",
+  );
+  if (floorPolicy.policyId !== "web-002a:p0-d1-validation-floor"
+    || floorPolicy.policyVersion !== "1.0.0"
+    || !SHA256_PATTERN.test(floorPolicy.policyDigest)
+    || floorProjectionPolicy.projectionId
+      !== `web-benchmark-finding_${floorProjectionPolicy.projectionDigest}`
+    || floorEvaluation.evaluationId
+      !== `web-validation-floor-evaluation_${floorEvaluation.evaluationDigest}`
+    || !Array.isArray(floor.metrics)
+    || floor.metrics.length !== 14
+    || floor.publicMetricCount !== 14
+    || floor.requiredMetricCount !== 11
+    || floor.notApplicableMetricCount !== 3
+    || floor.floorState !== "satisfied-independent-controlled-validation"
+    || floor.denialControlSatisfied !== true
+    || floor.targetCleanupVerified !== true
+    || floor.benchmarkValidationFloorSatisfied !== true) {
+    protocolFailure(label);
+  }
+
+  const metricIds = new Set();
+  let requiredMetricCount = 0;
+  let notApplicableMetricCount = 0;
+  const expectedMetrics = [
+    [
+      "common.ground-truth-coverage",
+      "1eee24d549cdeff887511583969e2cd4562d18e7d87b3a3d70329560780a4185",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.detection-recall",
+      "97b6046f00a70bd353f7ad4c274c37a9e0780bd125bdaaafa902767d33fa9f87",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.task-success-rate",
+      "5e92974a3b37e0589f2375b830d03a2f7302291943b6719bb5e723cc053554f3",
+      "ratio", "not-applicable", "not-applicable",
+      "detection-recall-is-primary-outcome", "common",
+    ],
+    [
+      "common.false-positive-rate",
+      "c780b515030aa6bb0a1c092965622f17581e99a13d2ab791758bd47f16d1e49c",
+      "ratio", "required", "at-most", null, "common",
+    ],
+    [
+      "common.detection-precision",
+      "f526b0ab93f59adb99ee24c93783ef0ec960850b5217d0aa2969386c686b7f89",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.replay-or-reanalysis-success-rate",
+      "22c5fba7eabafdc50ac5d578fe2fe4af2a290351adcc29e1e7dd10fafa668bb3",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.time-to-first-valid-result",
+      "a0f32aca21af1cd7379775e466dfcccdefa4fe88d0391c879fceadd3c68c5039",
+      "seconds", "required", "measurement-required-no-quality-threshold", null, "common",
+    ],
+    [
+      "common.total-request-units",
+      "07648da173a70528396bafa9c0afd7adedad20424d0a0c7bdb28890ac80ef79a",
+      "count", "required", "measurement-required-no-quality-threshold", null, "common",
+    ],
+    [
+      "common.total-tool-calls",
+      "7e4ff3993110b201a9f812cba0d738a2301e34af332b0dd564e9432b805610d3",
+      "count", "required", "measurement-required-no-quality-threshold", null, "common",
+    ],
+    [
+      "common.total-cost-usd",
+      "d0a8ee68983e2e876449be2364823742bff3dc18f4e5010c16c72f5e73952917",
+      "usd", "not-applicable", "not-applicable", "no-monetary-cost-model", "common",
+    ],
+    [
+      "common.evidence-completeness",
+      "afea19a584fe1d769ba73aedf2aac0403bf65daa79fc9252de3fee1f935379dc",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.policy-denial-correctness",
+      "d4fde6367f319e007a1671bf45460b1a62861a8545bf77e196e2d310d8aa6cbd",
+      "ratio", "required", "at-least", null, "common",
+    ],
+    [
+      "common.cleanup-success-rate",
+      "963bdacfe4228e78f70519ee7c350ac2a1c1f636b84977c085b19841dea35ffd",
+      "ratio", "not-applicable", "not-applicable", "read-only-no-cleanup-required", "common",
+    ],
+    [
+      "web.http-operation-coverage",
+      "bf9df605bbe9138ec764e0410f75f0e0219174b0718580e3907b9aac4ba3c257",
+      "ratio", "required", "at-least", null, "domain-specific",
+    ],
+  ];
+  const fixedMetricRationals = new Map([
+    ["common.ground-truth-coverage", [1n, 1n]],
+    ["common.detection-recall", [1n, 1n]],
+    ["common.false-positive-rate", [0n, 1n]],
+    ["common.detection-precision", [1n, 1n]],
+    ["common.replay-or-reanalysis-success-rate", [1n, 1n]],
+    ["common.evidence-completeness", [16n, 16n]],
+    ["common.policy-denial-correctness", [1n, 1n]],
+    ["web.http-operation-coverage", [1n, 1n]],
+  ]);
+  for (const [index, metricValue] of floor.metrics.entries()) {
+    const [
+      expectedId,
+      expectedDigest,
+      expectedUnit,
+      expectedApplicability,
+      expectedComparison,
+      expectedReason,
+      expectedCategory,
+    ] = expectedMetrics[index];
+    const metricObservation = exactProductRecord(metricValue, label, [
+      "metric", "unit", "applicability", "comparison", "numerator", "denominator",
+      "notApplicableReason", "satisfied",
+    ]);
+    const metric = exactProductRecord(metricObservation.metric, label, [
+      "metricId", "metricVersion", "metricDigest", "category", "domainClassification",
+    ]);
+    if (metric.metricId !== expectedId
+      || metric.metricVersion !== "1.0.0"
+      || metric.metricDigest !== expectedDigest
+      || metric.category !== expectedCategory
+      || metricIds.has(metric.metricId)
+      || metricObservation.unit !== expectedUnit
+      || metricObservation.applicability !== expectedApplicability
+      || metricObservation.comparison !== expectedComparison
+      || metricObservation.notApplicableReason !== expectedReason
+      || metricObservation.satisfied !== true) {
+      protocolFailure(label);
+    }
+    metricIds.add(metric.metricId);
+    if (metric.category === "common") {
+      if (metric.domainClassification !== null) protocolFailure(label);
+    } else if (metric.category === "domain-specific") {
+      const domain = exactProductRecord(metric.domainClassification, label, [
+        "classificationId", "classificationVersion", "classificationDigest", "domain",
+      ]);
+      if (domain.classificationId !== "pajin.security-domain.web"
+        || domain.classificationVersion !== "1.0.0"
+        || domain.classificationDigest
+          !== "6e38cf99e549ba35287f9b259b9470d2a59bbc93d5a3b9f47599bd83ca8c5081"
+        || domain.domain !== "web") {
+        protocolFailure(label);
+      }
+    } else {
+      protocolFailure(label);
+    }
+    if (metricObservation.applicability === "required") {
+      const numerator = validateProductInteger(metricObservation.numerator, label, 0);
+      const denominator = validateProductInteger(metricObservation.denominator, label, 1);
+      if (metricObservation.comparison === "not-applicable") {
+        protocolFailure(label);
+      }
+      const fixedRational = fixedMetricRationals.get(metric.metricId);
+      if (fixedRational !== undefined
+        && (numerator !== fixedRational[0] || denominator !== fixedRational[1])) {
+        protocolFailure(label);
+      }
+      if (metric.metricId === "common.time-to-first-valid-result"
+        && denominator !== 1_000_000n) {
+        protocolFailure(label);
+      }
+      if (metric.metricId === "common.total-request-units"
+        && (numerator < 4n || denominator !== 1n)) {
+        protocolFailure(label);
+      }
+      if (metric.metricId === "common.total-tool-calls"
+        && (numerator < 2n || denominator !== 1n)) {
+        protocolFailure(label);
+      }
+      requiredMetricCount += 1;
+    } else if (metricObservation.applicability === "not-applicable") {
+      if (metricObservation.comparison !== "not-applicable"
+        || metricObservation.numerator !== null
+        || metricObservation.denominator !== null
+        || metricObservation.notApplicableReason === null) {
+        protocolFailure(label);
+      }
+      notApplicableMetricCount += 1;
+    } else {
+      protocolFailure(label);
+    }
+  }
+  if (requiredMetricCount !== 11 || notApplicableMetricCount !== 3) {
+    protocolFailure(label);
+  }
+
+  const finding = exactProductRecord(view.finding, label, [
+    "finding", "evaluation", "projectionPolicy", "sourceMeasurement", "claimCeiling",
+    "findingState", "impactAssurance", "severityAssurance",
+    "benchmarkGroundTruthMatchConfirmed", "productFindingConfirmed",
+    "genericProductionVulnerabilityConfirmed", "negativeSecurityConclusionAuthorized",
+  ]);
+  const findingRef = validateProductDigestRef(
+    finding.finding,
+    label,
+    "findingId",
+    /^web-benchmark-finding_[a-f0-9]{64}$/,
+    "findingDigest",
+  );
+  const findingEvaluation = validateProductDigestRef(
+    finding.evaluation,
+    label,
+    "evaluationId",
+    /^web-validation-floor-evaluation_[a-f0-9]{64}$/,
+    "evaluationDigest",
+  );
+  const findingProjectionPolicy = validateProductDigestRef(
+    finding.projectionPolicy,
+    label,
+    "projectionId",
+    /^web-benchmark-finding_[a-f0-9]{64}$/,
+    "projectionDigest",
+  );
+  const findingSource = validateProductDigestRef(
+    finding.sourceMeasurement,
+    label,
+    "authorityId",
+    /^web-zap-source-measurement:[a-f0-9]{64}$/,
+    "authorityDigest",
+  );
+  if (findingRef.findingId !== `web-benchmark-finding_${findingRef.findingDigest}`
+    || findingEvaluation.evaluationId
+      !== `web-validation-floor-evaluation_${findingEvaluation.evaluationDigest}`
+    || findingProjectionPolicy.projectionId
+      !== `web-benchmark-finding_${findingProjectionPolicy.projectionDigest}`
+    || findingSource.authorityId
+      !== `web-zap-source-measurement:${findingSource.authorityDigest}`
+    || finding.claimCeiling !== "benchmark-ground-truth-match"
+    || finding.findingState
+      !== "confirmed-benchmark-ground-truth-match-only-impact-and-severity-not-evaluated"
+    || finding.impactAssurance !== "not-evaluated-information-only"
+    || finding.severityAssurance !== "not-evaluated-information-only"
+    || finding.benchmarkGroundTruthMatchConfirmed !== true
+    || finding.productFindingConfirmed !== true
+    || finding.genericProductionVulnerabilityConfirmed !== false
+    || finding.negativeSecurityConclusionAuthorized !== false
+    || !sameProductRef(sourceMeasurement, findingSource, "authorityId", "authorityDigest")
+    || !sameProductRef(evidenceEvaluation, floorEvaluation, "evaluationId", "evaluationDigest")
+    || !sameProductRef(evidenceEvaluation, findingEvaluation, "evaluationId", "evaluationDigest")
+    || !sameProductRef(evidenceFinding, findingRef, "findingId", "findingDigest")
+    || !sameProductRef(
+      floorProjectionPolicy,
+      findingProjectionPolicy,
+      "projectionId",
+      "projectionDigest",
+    )) {
+    protocolFailure(label);
+  }
+
+  const report = exactProductRecord(view.report, label, [
+    "reportState", "reportAvailable", "reportCreationAuthorized",
+    "reportDeliveryAuthorized", "externalDeliveryAuthorized",
+  ]);
+  if (report.reportState !== "unavailable-bounded-finding-not-report-authority"
+    || report.reportAvailable !== false
+    || report.reportCreationAuthorized !== false
+    || report.reportDeliveryAuthorized !== false
+    || report.externalDeliveryAuthorized !== false) {
+    protocolFailure(label);
+  }
+
+  const boundaryTrue = [
+    "sourceAuthorityContextuallyVerified", "readOnlyProjection", "evidenceContentRedacted",
+  ];
+  const boundaryFalse = [
+    "web002cGraphPredecessorRequired", "campaignScopeAvailable", "scopeExpanded",
+    "profileInferred", "privateGroundTruthDisclosed", "expectedReferenceDisclosed",
+    "rawSarifDisclosed", "controlledQueryDisclosed", "responseBodyDisclosed",
+    "transcriptDisclosed", "rawEvidenceDisclosed", "routeDetailsDisclosed",
+    "filesystemCoordinatesDisclosed", "graphIncluded", "graphMutationAuthorized",
+    "reportCreationAuthorized", "reportDeliveryAuthorized", "externalDeliveryAuthorized",
+    "capabilityActivationAuthorized", "permitIssuanceAuthorized", "routeReuseAuthorized",
+    "additionalExecutionAuthorized", "targetSideEffectPerformed", "providerSideEffectPerformed",
+    "dockerSideEffectPerformed", "workerSideEffectPerformed", "networkSideEffectPerformed",
+    "credentialSideEffectPerformed", "externalSystemSideEffectPerformed",
+    "httpEntrypointAvailable", "uiEntrypointAvailable",
+  ];
+  const boundary = exactProductRecord(
+    view.authorityBoundary,
+    label,
+    [...boundaryTrue, ...boundaryFalse],
+  );
+  if (boundaryTrue.some((key) => boundary[key] !== true)
+    || boundaryFalse.some((key) => boundary[key] !== false)) {
+    protocolFailure(label);
+  }
+  return view;
+}
+
 export function validateWalkingControlComparison(value, comparisonId) {
   const label = "Walking Control comparison";
   const view = expectRecord(value, label);

@@ -9,7 +9,8 @@ import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
-from typing import Annotated, Any
+from threading import Lock
+from typing import TYPE_CHECKING, Annotated, Any
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, Response, status
 from fastapi import Path as FastAPIPath
@@ -137,6 +138,9 @@ from pajin.control_plane.validation_comparison import (
     WalkingControlComparisonUnavailable,
 )
 from pajin.control_plane.web_console import console_asset_response, console_index_response
+
+if TYPE_CHECKING:
+    from pajin.workflow.web_measured_product_reader import WebMeasuredProductReader
 
 PrincipalDependency = Callable[[Principal], Principal]
 RoleDependencyFactory = Callable[..., PrincipalDependency]
@@ -622,6 +626,62 @@ def register_validation_comparison_routes(
             raise HTTPException(
                 status_code=409,
                 detail="Walking Control comparison authority is not integrity-valid",
+            ) from exc
+
+
+def register_web_measured_product_route(
+    app: FastAPI,
+    *,
+    reader: "WebMeasuredProductReader | None",
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register one body-free Operator read over the exact UX-009B reader."""
+
+    from pajin.workflow.web_measured_product_flow import WebMeasuredProductFlowProjection
+    from pajin.workflow.web_measured_product_reader import (
+        WebMeasuredProductReader,
+        WebMeasuredProductReaderError,
+    )
+
+    if reader is not None and type(reader) is not WebMeasuredProductReader:
+        raise TypeError("Measured Web product reads require the exact UX-009B reader")
+
+    reader_lock = Lock()
+
+    def read_serialized(
+        configured_reader: WebMeasuredProductReader,
+    ) -> WebMeasuredProductFlowProjection:
+        with reader_lock:
+            return configured_reader.read()
+
+    @app.get(
+        "/v1/products/web-measured-flow",
+        response_model=WebMeasuredProductFlowProjection,
+    )
+    async def get_web_measured_product_flow(
+        request: Request,
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> WebMeasuredProductFlowProjection:
+        if request.scope.get("query_string", b"") or await request.body():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Measured Web product read accepts no query or request body",
+            )
+        configured_reader = reader
+        if configured_reader is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Measured Web product read is not configured",
+            )
+        try:
+            return await asyncio.to_thread(read_serialized, configured_reader)
+        except WebMeasuredProductReaderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Measured Web product authority is not integrity-valid",
             ) from exc
 
 
@@ -1133,6 +1193,7 @@ def register_control_plane_routes(
     decision_audit_reader: VerifiedGraphDecisionAuditViewReader,
     replay_comparison_reader: VerifiedReplayEvidenceComparisonReader,
     validation_comparison_reader: VerifiedWalkingControlComparisonReader,
+    web_measured_product_reader: "WebMeasuredProductReader | None",
     pentest_recon_runtime: PentestReconDispatchRuntime | None,
     pentest_replay_runtime: PentestReplayDispatchRuntime | None,
     pentest_workflow_runtime: PentestOperatorWorkflowRuntime | None,
@@ -1177,6 +1238,11 @@ def register_control_plane_routes(
     register_validation_comparison_routes(
         app,
         reader=validation_comparison_reader,
+        dependencies=dependencies,
+    )
+    register_web_measured_product_route(
+        app,
+        reader=web_measured_product_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

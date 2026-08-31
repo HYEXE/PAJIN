@@ -519,6 +519,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "replay-comparison-form",
         "validation-comparison-panel",
         "validation-comparison-form",
+        "web-measured-product-panel",
         "review-queue-panel",
     ):
         assert re.search(rf'id="{busy_id}"[^>]+aria-busy="false"', markup) is not None
@@ -535,6 +536,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "decision-audit-load-button",
         "replay-comparison-load-button",
         "validation-comparison-load-button",
+        "web-measured-product-load-button",
         "review-queue-refresh-button",
     ):
         assert re.search(rf'id="{action_id}"[^>]+disabled', markup) is not None
@@ -578,6 +580,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "validateGraphDecisionAuditView",
         "validateReplayEvidenceComparison",
         "validateWalkingControlComparison",
+        "validateWebMeasuredProductProjection",
         "validateHumanReviewQueue",
         "isApprovalElapsed",
         "authorized maintenance or action",
@@ -595,6 +598,7 @@ def test_web_console_uses_external_assets_and_memory_only_credentials(tmp_path: 
         "/v1/decisions/campaigns/",
         "/v1/replay-comparisons/batches/",
         "/v1/validation-comparisons/walking/",
+        "/v1/products/web-measured-flow",
         "/v1/review-queue?limit=",
         "/approval`)",
         "/decision`",

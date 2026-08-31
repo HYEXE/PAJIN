@@ -856,6 +856,64 @@
           More active Runs exist. Resolve or inspect the highest-priority rows, then refresh.
         </p>
       </section>
+
+      <section
+        id="web-measured-product-panel"
+        class="panel replay-comparison-panel"
+        aria-labelledby="web-measured-product-heading"
+        aria-busy="false"
+      >
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">12 / MEASURED WEB PRODUCT</p>
+            <h2 id="web-measured-product-heading">Bounded WEB-002D product view</h2>
+          </div>
+          <button
+            id="web-measured-product-load-button"
+            class="button button-primary"
+            type="button"
+            disabled
+          >
+            Load measured product
+          </button>
+        </div>
+        <p class="panel-intro">
+          Reopen the deployment-pinned UX-009A projection through the zero-argument UX-009B
+          reader. This view has no selector, input, report action, delivery action, or execution
+          action and is available only to an authenticated Operator.
+        </p>
+        <p id="web-measured-product-empty" class="replay-comparison-empty">
+          Connect with an Operator credential to load the measured Web product.
+        </p>
+        <div id="web-measured-product-result" class="replay-comparison-result" hidden>
+          <div class="authority-strip" aria-label="Measured Web product authority boundary">
+            <span class="verified-badge">Source authority contextually verified</span>
+            <span>Read-only projection</span>
+            <span>Evidence content redacted</span>
+            <span>No Campaign Scope expansion</span>
+            <span>No Graph mutation</span>
+            <span>No report or delivery authority</span>
+            <span>No additional execution authority</span>
+          </div>
+          <dl class="replay-comparison-facts">
+            <div><dt>Flow</dt><dd id="web-measured-product-flow-value">--</dd></div>
+            <div><dt>Source Run</dt><dd id="web-measured-product-source-value">--</dd></div>
+            <div><dt>Scope</dt><dd id="web-measured-product-scope-value">--</dd></div>
+            <div><dt>Evidence</dt><dd id="web-measured-product-evidence-value">--</dd></div>
+            <div><dt>Floor</dt><dd id="web-measured-product-floor-value">--</dd></div>
+            <div><dt>Claim ceiling</dt><dd id="web-measured-product-claim-value">--</dd></div>
+            <div><dt>Finding</dt><dd id="web-measured-product-finding-value">--</dd></div>
+            <div><dt>Impact</dt><dd id="web-measured-product-impact-value">--</dd></div>
+            <div><dt>Severity</dt><dd id="web-measured-product-severity-value">--</dd></div>
+            <div><dt>Report</dt><dd id="web-measured-product-report-value">--</dd></div>
+          </dl>
+          <p class="review-queue-more">
+            The preserved UX-009A entrypoint flags remain false because the sealed projection does
+            not grant transport authority; this separate UX-009C view supplies only an
+            Operator-authorized consumption path.
+          </p>
+        </div>
+      </section>
     </main>
 
     <footer>

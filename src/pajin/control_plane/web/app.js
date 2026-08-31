@@ -24,6 +24,7 @@ import {
   validatePrincipal,
   validateReplayEvidenceComparison,
   validateWalkingControlComparison,
+  validateWebMeasuredProductProjection,
   validateResume,
   validateRun,
   validateRunList,
@@ -93,6 +94,8 @@ const session = {
   replayComparisonLoading: false,
   validationComparisonRequestId: 0,
   validationComparisonLoading: false,
+  webMeasuredProductRequestId: 0,
+  webMeasuredProductLoading: false,
   reviewQueueRequestId: 0,
   reviewQueueLoading: false,
   roles: new Set(),
@@ -247,6 +250,28 @@ const elements = {
     "#validation-comparison-contrast-value",
   ),
   validationComparisonLanes: document.querySelector("#validation-comparison-lanes"),
+  webMeasuredProductPanel: document.querySelector("#web-measured-product-panel"),
+  webMeasuredProductLoadButton: document.querySelector(
+    "#web-measured-product-load-button",
+  ),
+  webMeasuredProductEmpty: document.querySelector("#web-measured-product-empty"),
+  webMeasuredProductResult: document.querySelector("#web-measured-product-result"),
+  webMeasuredProductFlowValue: document.querySelector("#web-measured-product-flow-value"),
+  webMeasuredProductSourceValue: document.querySelector("#web-measured-product-source-value"),
+  webMeasuredProductScopeValue: document.querySelector("#web-measured-product-scope-value"),
+  webMeasuredProductEvidenceValue: document.querySelector(
+    "#web-measured-product-evidence-value",
+  ),
+  webMeasuredProductFloorValue: document.querySelector("#web-measured-product-floor-value"),
+  webMeasuredProductClaimValue: document.querySelector("#web-measured-product-claim-value"),
+  webMeasuredProductFindingValue: document.querySelector(
+    "#web-measured-product-finding-value",
+  ),
+  webMeasuredProductImpactValue: document.querySelector("#web-measured-product-impact-value"),
+  webMeasuredProductSeverityValue: document.querySelector(
+    "#web-measured-product-severity-value",
+  ),
+  webMeasuredProductReportValue: document.querySelector("#web-measured-product-report-value"),
   reviewQueuePanel: document.querySelector("#review-queue-panel"),
   reviewQueueRefreshButton: document.querySelector("#review-queue-refresh-button"),
   reviewQueueSummary: document.querySelector("#review-queue-summary"),
@@ -278,6 +303,7 @@ function resetBusyIndicators() {
   setBusy(elements.replayComparisonPanel, false);
   setBusy(elements.validationComparisonForm, false);
   setBusy(elements.validationComparisonPanel, false);
+  setBusy(elements.webMeasuredProductPanel, false);
   setBusy(elements.reviewQueuePanel, false);
 }
 
@@ -336,6 +362,9 @@ function setConnected(connected, roles = [], subject = null) {
   elements.validationComparisonLoadButton.disabled = (
     !session.canOperate || session.validationComparisonLoading
   );
+  elements.webMeasuredProductLoadButton.disabled = (
+    !session.canOperate || session.webMeasuredProductLoading
+  );
   elements.reviewQueueRefreshButton.disabled = !connected || session.reviewQueueLoading;
   if (!connected) {
     elements.discoveryEmpty.textContent = (
@@ -389,6 +418,15 @@ function setConnected(connected, roles = [], subject = null) {
   } else if (!session.canOperate) {
     elements.validationComparisonEmpty.textContent = (
       "VAL-004C comparison requires an Operator credential; other roles are read-denied."
+    );
+  }
+  if (!connected) {
+    elements.webMeasuredProductEmpty.textContent = (
+      "Connect with an Operator credential to load the measured Web product."
+    );
+  } else if (!session.canOperate) {
+    elements.webMeasuredProductEmpty.textContent = (
+      "The measured Web product requires an Operator credential; other roles are read-denied."
     );
   }
   if (!connected) {
@@ -631,6 +669,45 @@ function renderValidationComparison(view) {
   elements.validationComparisonResult.hidden = false;
 }
 
+function clearWebMeasuredProduct({ message = null } = {}) {
+  elements.webMeasuredProductResult.hidden = true;
+  elements.webMeasuredProductEmpty.hidden = false;
+  if (message !== null) {
+    elements.webMeasuredProductEmpty.textContent = message;
+  }
+  elements.webMeasuredProductFlowValue.textContent = "--";
+  elements.webMeasuredProductSourceValue.textContent = "--";
+  elements.webMeasuredProductScopeValue.textContent = "--";
+  elements.webMeasuredProductEvidenceValue.textContent = "--";
+  elements.webMeasuredProductFloorValue.textContent = "--";
+  elements.webMeasuredProductClaimValue.textContent = "--";
+  elements.webMeasuredProductFindingValue.textContent = "--";
+  elements.webMeasuredProductImpactValue.textContent = "--";
+  elements.webMeasuredProductSeverityValue.textContent = "--";
+  elements.webMeasuredProductReportValue.textContent = "--";
+}
+
+function renderWebMeasuredProduct(view) {
+  elements.webMeasuredProductFlowValue.textContent = shortId(view.flowId);
+  elements.webMeasuredProductSourceValue.textContent = view.sourceRunId;
+  elements.webMeasuredProductScopeValue.textContent = view.scope.scopeState;
+  elements.webMeasuredProductEvidenceValue.textContent = (
+    `${view.evidence.sourceEvidenceRequirementCount} source / `
+    + `${view.evidence.controlledValidationEvidenceRequirementCount} controlled validation`
+  );
+  elements.webMeasuredProductFloorValue.textContent = (
+    `${view.floor.publicMetricCount} public / ${view.floor.requiredMetricCount} required / `
+    + `${view.floor.notApplicableMetricCount} not applicable`
+  );
+  elements.webMeasuredProductClaimValue.textContent = view.finding.claimCeiling;
+  elements.webMeasuredProductFindingValue.textContent = view.finding.findingState;
+  elements.webMeasuredProductImpactValue.textContent = view.finding.impactAssurance;
+  elements.webMeasuredProductSeverityValue.textContent = view.finding.severityAssurance;
+  elements.webMeasuredProductReportValue.textContent = view.report.reportState;
+  elements.webMeasuredProductEmpty.hidden = true;
+  elements.webMeasuredProductResult.hidden = false;
+}
+
 function clearReviewQueue({ message = null } = {}) {
   elements.reviewQueueSummary.textContent = "0 active Runs";
   elements.reviewQueueList.replaceChildren();
@@ -757,6 +834,8 @@ function replaceCredential(token) {
   session.replayComparisonLoading = false;
   session.validationComparisonRequestId += 1;
   session.validationComparisonLoading = false;
+  session.webMeasuredProductRequestId += 1;
+  session.webMeasuredProductLoading = false;
   session.reviewQueueRequestId += 1;
   session.reviewQueueLoading = false;
   session.refreshTask = null;
@@ -780,6 +859,7 @@ function lockConsole(
   clearDecisionAudit({ clearInputs: true });
   clearReplayComparison({ clearInputs: true });
   clearValidationComparison({ clearInputs: true });
+  clearWebMeasuredProduct();
   clearReviewQueue();
   announce(message, tone);
   if (focusToken) {
@@ -1404,6 +1484,7 @@ elements.tokenForm.addEventListener("submit", async (event) => {
   clearDecisionAudit({ clearInputs: true });
   clearReplayComparison({ clearInputs: true });
   clearValidationComparison({ clearInputs: true });
+  clearWebMeasuredProduct();
   clearReviewQueue();
   elements.tokenInput.value = "";
   announce("Authenticating and loading Runs…");
@@ -1477,6 +1558,51 @@ elements.reviewQueueRefreshButton.addEventListener("click", async () => {
       const message = error instanceof Error ? error.message : "Unable to load review queue.";
       clearReviewQueue({ message: `Human Review queue unavailable: ${message}` });
       announce(message, "error");
+    }
+  }
+});
+elements.webMeasuredProductLoadButton.addEventListener("click", async () => {
+  if (!session.canOperate || session.webMeasuredProductLoading) {
+    return;
+  }
+  const requestId = ++session.webMeasuredProductRequestId;
+  const authEpoch = session.authEpoch;
+  session.webMeasuredProductLoading = true;
+  setBusy(elements.webMeasuredProductPanel, true);
+  elements.webMeasuredProductLoadButton.disabled = true;
+  clearWebMeasuredProduct({
+    message: "Reopening the exact deployment-pinned source and product projection...",
+  });
+  announce("Verifying the bounded measured Web product authority...");
+  try {
+    const view = validateWebMeasuredProductProjection(
+      await apiRequest("/v1/products/web-measured-flow"),
+    );
+    if (session.webMeasuredProductRequestId !== requestId
+      || session.authEpoch !== authEpoch) {
+      throw new StaleRequestError();
+    }
+    renderWebMeasuredProduct(view);
+    announce(
+      "Verified the measured Web product; report, delivery, and execution remain unavailable.",
+      "success",
+    );
+  } catch (error) {
+    if (!isStaleRequest(error)
+      && session.webMeasuredProductRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      const message = error instanceof Error
+        ? error.message
+        : "Unable to load the measured Web product.";
+      clearWebMeasuredProduct({ message: `Measured Web product unavailable: ${message}` });
+      announce(message, "error");
+    }
+  } finally {
+    if (session.webMeasuredProductRequestId === requestId
+      && session.authEpoch === authEpoch) {
+      session.webMeasuredProductLoading = false;
+      setBusy(elements.webMeasuredProductPanel, false);
+      elements.webMeasuredProductLoadButton.disabled = !session.canOperate;
     }
   }
 });
@@ -1997,5 +2123,6 @@ clearHypothesisRanking({ clearInputs: true });
 clearDecisionAudit({ clearInputs: true });
 clearReplayComparison({ clearInputs: true });
 clearValidationComparison({ clearInputs: true });
+clearWebMeasuredProduct();
 clearReviewQueue();
 updatePagination();

@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from types import MappingProxyType
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, build_opener
@@ -144,6 +144,9 @@ from pajin.target_attestation import (
     parse_target_attestation_trust_registry,
     verify_target_attestation_registry_bundle,
 )
+
+if TYPE_CHECKING:
+    from pajin.workflow.web_measured_product_reader import WebMeasuredProductReader
 
 _ABAC_POLICY_ENV = "PAJIN_CP_ABAC_POLICY"
 _RUN_SUBMISSION_ABAC_POLICY_ENV = "PAJIN_CP_RUN_SUBMISSION_ABAC_POLICY"
@@ -2108,6 +2111,7 @@ def create_app(
     pentest_workflow_coordination_runtime: (
         PentestWorkflowCoordinationDispatchRuntime | None
     ) = None,
+    web_measured_product_reader: "WebMeasuredProductReader | None" = None,
 ) -> FastAPI:
     resolved = settings or ControlPlaneSettings.from_env()
     context = _build_application_context(resolved)
@@ -2151,6 +2155,7 @@ def create_app(
         decision_audit_reader=context.decision_audit_reader,
         replay_comparison_reader=context.replay_comparison_reader,
         validation_comparison_reader=context.validation_comparison_reader,
+        web_measured_product_reader=web_measured_product_reader,
         pentest_recon_runtime=selected_pentest_recon_runtime,
         pentest_replay_runtime=selected_pentest_replay_runtime,
         pentest_workflow_runtime=selected_pentest_workflow_runtime,
