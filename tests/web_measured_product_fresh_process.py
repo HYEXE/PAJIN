@@ -8,7 +8,6 @@ reader, and application objects are always constructed in the child interpreter.
 from __future__ import annotations
 
 import base64
-import faulthandler
 import json
 import multiprocessing
 import os
@@ -348,7 +347,19 @@ class _TreeEntry:
 _FRESH_CHILD_STAGES = (
     "not-started",
     "child-entered",
+    "recipe-validated",
     "environment-prepared",
+    "fixtures-rebuilt",
+    "provider-rebuilt",
+    "source-context-rebuilt",
+    "floor-policy-rebuilt",
+    "projection-mapping-rebuilt",
+    "journal-opened",
+    "routes-rebuilt",
+    "backend-rebuilt",
+    "adapter-rebuilt",
+    "reopen-context-rebuilt",
+    "registration-rebuilt",
     "applications-created",
     "monitoring-started",
     "clients-started",
@@ -384,7 +395,7 @@ def run_fresh_web_measured_product_probe(
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
     process = context.Process(
         target=_child_entry,
-        args=(send, recipe, progress, max(timeout_seconds - 15, 1)),
+        args=(send, recipe, progress),
     )
     try:
         process.start()
@@ -396,14 +407,23 @@ def run_fresh_web_measured_product_probe(
         last_stage = _fresh_child_stage(progress)
         process.terminate()
         process.join(timeout=10)
+        receive.close()
         raise TimeoutError(
             "fresh WEB measured product child did not finish within "
             f"{timeout_seconds}s (hash seed {hash_seed}, "
             f"integrity cases {len(recipe.integrity_failure_cases)}, "
             f"last stage {last_stage})"
         )
-    state, payload = receive.recv()
-    receive.close()
+    try:
+        state, payload = receive.recv()
+    except EOFError as exc:
+        process.join(timeout=10)
+        raise RuntimeError(
+            "fresh WEB measured product child exited without a result "
+            f"(exit code {process.exitcode}, last stage {_fresh_child_stage(progress)})"
+        ) from exc
+    finally:
+        receive.close()
     process.join(timeout=10)
     if process.is_alive():
         process.terminate()
@@ -427,16 +447,13 @@ def _child_entry(
     send: Any,
     recipe: FreshWebMeasuredProductRecipe,
     progress: Any,
-    diagnostic_after_seconds: int,
 ) -> None:
-    faulthandler.dump_traceback_later(diagnostic_after_seconds, repeat=False)
     try:
         _mark_fresh_child_stage(progress, "child-entered")
         send.send(("ok", _run_child(recipe, progress=progress)))
     except BaseException:  # pragma: no cover - diagnostics cross the process boundary
         send.send(("error", traceback.format_exc()))
     finally:
-        faulthandler.cancel_dump_traceback_later()
         send.close()
 
 
@@ -446,6 +463,7 @@ def _run_child(
     progress: Any,
 ) -> FreshWebMeasuredProductProbeResult:
     recipe._validate()
+    _mark_fresh_child_stage(progress, "recipe-validated")
     recipe.process_root.mkdir(parents=True, exist_ok=True)
     temp_root = recipe.process_root / "TEMP"
     temp_root.mkdir(parents=True, exist_ok=True)
@@ -461,6 +479,7 @@ def _run_child(
             scanner_image_id=recipe.scanner_image_id,
         )
     )
+    _mark_fresh_child_stage(progress, "fixtures-rebuilt")
     ground_truth = private_profile.private_ground_truth.ground_truth
     concrete_provider = DockerZAPScannerTargetFactoryAdapter(
         state_path=recipe.provider_state_path,
@@ -478,6 +497,7 @@ def _run_child(
         ),
         ground_truth=ground_truth,
     )
+    _mark_fresh_child_stage(progress, "provider-rebuilt")
     activation_store = BenchmarkMeasurementRegistryActivationStore(recipe.activation_store_path)
     source_reopen_context = WebZAPSourceMeasurementReopenContext(
         outcome=recipe.source_outcome,
@@ -496,6 +516,7 @@ def _run_child(
         distribution_bundle=recipe.distribution_bundle,
         distribution_trust_anchor=recipe.distribution_trust_anchor,
     )
+    _mark_fresh_child_stage(progress, "source-context-rebuilt")
     floor_policy = registered_web_benchmark_validation_floor_policy(
         measured_case,
         capability_bundle=capability_bundle,
@@ -506,6 +527,7 @@ def _run_child(
         scanner_plan=measured_case.scanner_plan,
         scanner_registration=measured_case.scanner_registration,
     )
+    _mark_fresh_child_stage(progress, "floor-policy-rebuilt")
     mapping = bind_web_expected_finding_projection_policy(
         measured_case=measured_case,
         floor_policy=floor_policy,
@@ -517,7 +539,9 @@ def _run_child(
         scanner_plan=measured_case.scanner_plan,
         scanner_registration=measured_case.scanner_registration,
     )
+    _mark_fresh_child_stage(progress, "projection-mapping-rebuilt")
     journal = BenchmarkTargetOperationJournal.open_existing(recipe.source_journal_path)
+    _mark_fresh_child_stage(progress, "journal-opened")
     claim_ledger = WebControlledValidationRouteClaimLedger(recipe.claim_ledger_path)
     success_route = _rebuild_route(
         recipe.success_route,
@@ -539,6 +563,7 @@ def _run_child(
         journal=journal,
         target_profile=recipe.target_profile,
     )
+    _mark_fresh_child_stage(progress, "routes-rebuilt")
     inspector = SubprocessWebControlledDockerBoundaryInspector()
     policy = success_route.runtime_policy
     backend = DockerWorkerBackend(
@@ -551,6 +576,7 @@ def _run_child(
     )
     if policy.worker_backend_digest != web_controlled_worker_backend_context_digest(backend):
         raise AssertionError("fresh WEB product Worker backend digest differs")
+    _mark_fresh_child_stage(progress, "backend-rebuilt")
     adapter = DockerWebControlledValidationAdapter(
         backend=backend,
         inspector=inspector,
@@ -563,6 +589,7 @@ def _run_child(
         worker_backend_id=policy.worker_backend_id,
         worker_backend_version=policy.worker_backend_version,
     )
+    _mark_fresh_child_stage(progress, "adapter-rebuilt")
     reopen_context = WebMeasuredProductSourceReopenContext(
         measured_case_authority=measured_case,
         private_ground_truth_profile=private_profile,
@@ -576,11 +603,13 @@ def _run_child(
         adapter=adapter,
         denial_route_authority=denial_route,
     )
+    _mark_fresh_child_stage(progress, "reopen-context-rebuilt")
     registration = WebMeasuredProductReadRegistration.from_outcome(
         deployment_id=recipe.deployment_id,
         outcome=recipe.product_outcome,
         reopen_context=reopen_context,
     )
+    _mark_fresh_child_stage(progress, "registration-rebuilt")
     registry = WebMeasuredProductReadRegistry((registration,))
     if type(registry) is not WebMeasuredProductReadRegistry or tuple(registry._registrations) != (
         recipe.deployment_id,
@@ -857,6 +886,7 @@ def _run_child(
 
 def _mark_fresh_child_stage(progress: Any, stage: str) -> None:
     progress.value = _FRESH_CHILD_STAGES.index(stage)
+    print(f"fresh WEB product child stage: {stage}", file=sys.stderr, flush=True)
 
 
 def _fresh_child_stage(progress: Any) -> str:
