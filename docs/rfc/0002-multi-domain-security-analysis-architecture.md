@@ -315,8 +315,8 @@ domain Workers, and runtime adoption remain later vertical-slice work.
 | Cryptography | offline CTF single-byte XOR Capability and host recomputation Oracle | CRYPTO-001A exact protocol-root and sibling key-usage/ciphertext-digest/sanitized-configuration registry is implemented; CRYPTO-001C admits only neutral signed result provenance, while protocol/declaration/artifact verification and general discovery remain missing | CRYPTO-001B implements one signed read-only offline misuse-analysis preparation with four exact Surface/locator/input/digest/operation/analyzer rows and a code-owned bounded signal vocabulary; CRYPTO-001C reverifies one external signed offline execution and strict detached receipt and admits digest-only Evidence, while no general analyzer, result-body interpreter, or executable runtime exists and the fixed XOR lab is not generalized | CRYPTO-001B pins the exact DOMAIN-004 offline read-only-artifact profile, code-classified digest-derived custody metadata, exact rule/analyzer/image identity, code-owned deployment/non-root runtime identities, network/DNS-disabled read-only/noexec sandbox requirements, bounded resources, and zero key/credential/crypto/Capability-Oracle channels without selecting a Worker; CRYPTO-001C verifies the deployment trust anchor and signed runtime assertion without selecting another sandbox or Worker | CRYPTO-001D reopens one stored C source and one later separately authorized execution, requires exact logical input semantics plus distinct executable/image/sandbox/signer/action/evidence provenance, and reports only neutral opaque-result and structural-disposition match/change/unresolved without scheduling Replay or proving source-code, algorithmic, organizational, physical-host, or common-mode independence; the C structural Oracle and CTF host Oracle are not independent semantic analyzers | CRYPTO-001D registers eight protocol/key-usage/ciphertext/configuration positive and no-signal Control requirements; vector materialization, Ground Truth, test-vector coverage, recomputation-success rate, evidence completeness, quality, and validation-floor measurement remain absent | Surface, custody, profile, rule, preparation, signed provenance, structural verdict, admitted knowledge, comparison, and vector requirements grant no artifact/result-body read, key or credential use, target cryptographic operation, protocol negotiation, Capability/external Oracle, plaintext/key output, Worker, Graph write, Replay scheduling, Finding, or further execution authority |
 | Forensics | immutable Run artifacts, hashes, evidence lineage, read-only verification | FORENSICS-001A exact disk/memory/log/generic-artifact sibling registry with complete content-free PAJIN Run-root/artifact-record/provenance-record/artifact digest and strict byte-count coordinates is implemented; FORENSICS-001C admits only neutral provenance-preserving knowledge, while source, seal, authenticity, membership, immutability, custody, format, and general discovery remain unverified | FORENSICS-001B implements one signed read-only preparation with a neutral complete class/input/operation/parser map, code-owned signal vocabulary, opaque custody/authorization coordinate, exact parser-bound Scope, and zero live channels; FORENSICS-001C verifies supplied canonical signed execution/result metadata and admits bounded Graph knowledge, while no repository parser, source provider, result-body interpreter, or executable runtime exists | FORENSICS-001B pins the exact DOMAIN-004 provenance-preserving profile, code-owned deployment/non-root identity, immutable read-only/noexec input and read-only root requirements, exact parser executable/configuration/image digests, bounded parser ceilings, and pre/post no-mutation evidence requirements; FORENSICS-001C verifies disjoint deployment source/execution trust anchors plus the signed sandbox/runtime assertions without selecting or attesting another Worker | FORENSICS-001D reopens one stored C admission and a later separate C execution under the same source authority, automatically accepting only exact deterministic re-parse or wholly distinct execution-trust/signer/executable/configuration/image/sandbox independent-parser mode, rejects partial drift, and projects neutral match/change/unresolved without Graph write or Replay scheduling; only independent mode satisfies DOMAIN-006 | FORENSICS-001D registers exactly twelve disk/memory/log/artifact positive, no-signal, and corrupted-input bounded-rejection requirements; artifact coverage, parsing accuracy, provenance-preservation rate, corrupted-input handling rate, Ground Truth, rejection, evidence completeness, quality, and Profile-floor measurement remain unobserved | typed identity, prepared action, signed provenance, structural Oracle verdict, neutral Observation, restricted Evidence, open review Hypothesis, replay comparison, and requirement registry grant no source/result-body read, parser execution or correctness, semantic truth, mutation, credential use, lateral movement, Graph admission, Replay, Finding, measurement, or further execution authority |
 
-The principal remaining blockers are deployment-pinned product reads, production and cross-host
-runtime conformance, and measured multi-case evidence, not taxonomy or nine new engines.
+The principal remaining blockers are fresh-session product-read conformance, production and
+cross-host runtime conformance, and measured multi-case evidence, not taxonomy or nine new engines.
 The Canonical Graph, CAP-002, Permit/Gateway, evidence, and Target Factory foundations are reusable.
 
 ## 9. Domain-aware benchmark contract
@@ -1022,8 +1022,26 @@ controlled route consumption, durable success Worker Evidence and separate clean
 denial Evidence, independent floor
 evaluation, and bounded Finding projection with required real-Docker conformance. Ubuntu 24.04 run
 `33310558350` verified exact commit `975bf7876a186cefae66c289d09f530f3e0fe7aa`. It grants no
-general production or external probing, product, report, Graph Finding admission, or cross-domain
-runtime authority. The paragraph above is
+general production or external probing, report, Graph Finding admission, or cross-domain runtime
+authority. UX-009A subsequently added a distinct content-addressed read-only product Run. Its
+publication and reload paths first contextually reopen the exact WEB-002D authority, then expose
+only measured-case Scope, content-free Evidence references, fourteen public floor metrics, the
+`benchmark-ground-truth-match` claim ceiling with impact and severity unevaluated, and an
+unavailable report state. It does not require WEB-002C as a causal Graph predecessor and grants no
+Graph, report, HTTP/UI, Target, provider, Worker, network, or execution authority. UX-009B then
+added an immutable process-local deployment registry and zero-argument reader that pins the exact
+product Run, flow and source identities plus the complete private WEB-002D reopen context. Every
+read calls the UX-009A loader again; callers cannot supply paths, verifier dependencies, alternate
+source or projection material, or bare JSON, and the reader creates no new Run or application
+durable state. UX-009C subsequently added one fixed body/query-free and non-cacheable Operator-only
+Control Plane GET over that exact reader plus a same-origin strict text-only Console view. It returns
+the unchanged UX-009A wire, rejects non-Operator roles and caller selectors before reading, clears
+stale credential generations, and creates no application durable state, Graph event, report,
+delivery, or execution authority. UX-009D now implements fresh-spawn production composition,
+deterministic publication/read comparison, isolated fail-closed product cases, and a whole-call
+side-effect audit in the existing WEB-002D real-Docker test. This code checkpoint has not yet
+completed an exact-commit Ubuntu workflow, so Phase 23 conformance remains open. The paragraph
+above is
 retained as the acceptance-time design record; it is not the current roadmap authority.
 
 ## 12. Compatibility and migration
@@ -1078,6 +1096,7 @@ runtime conditions.
 - [ADR-0237](../adr/0237-bind-mobile-package-analysis-without-package-or-device-access-authority.md)
 - [ADR-0238](../adr/0238-admit-mobile-package-analysis-knowledge-without-package-or-device-authority.md)
 - [ADR-0239](../adr/0239-bind-mobile-package-reanalysis-and-fixtures-without-package-or-device-authority.md)
+- [ADR-0257](../adr/0257-project-web-002d-through-a-read-only-operator-product-flow.md)
 - [ADR-0046](../adr/0046-common-engine-and-campaign-profiles.md)
 - [ADR-0048](../adr/0048-minimum-graph-and-admission-consistency.md)
 - [ADR-0052](../adr/0052-code-backed-capability-authority-set.md)

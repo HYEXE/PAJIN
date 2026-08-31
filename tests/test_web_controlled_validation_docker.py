@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import json
 import os
+import shutil
 import subprocess
 from contextlib import suppress
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -16,6 +20,7 @@ from pajin.benchmark.target_factory import (
     benchmark_target_coordinate,
 )
 from pajin.benchmark.target_recovery import BenchmarkTargetOperationJournal
+from pajin.runtime.store import AuditEvent, RunStore
 from pajin.runtime.worker import DockerWorkerBackend
 from pajin.workflow.web_controlled_validation_authority import (
     WebCleanupBeforeRouteDenialLifecycle,
@@ -34,6 +39,11 @@ from pajin.workflow.web_controlled_validation_runtime import (
     SubprocessWebControlledDockerBoundaryInspector,
     web_controlled_gateway_policy_digest,
     web_controlled_worker_backend_context_digest,
+)
+from pajin.workflow.web_measured_product_flow import (
+    WebMeasuredProductFlowOutcome,
+    WebMeasuredProductFlowProjector,
+    WebMeasuredProductSourceReopenContext,
 )
 from pajin.workflow.web_proxy_route_authority import (
     WebProxyRouteLiveAuthorityContext,
@@ -55,6 +65,11 @@ from tests.test_web_proxy_route_authority import (
     _operation,
     _with_campaign,
 )
+from tests.web_measured_product_fresh_process import (
+    FreshWebMeasuredProductFailureCase,
+    FreshWebMeasuredProductRecipe,
+    run_fresh_web_measured_product_probe,
+)
 
 pytest_plugins = ("tests.test_web_proxy_route_authority",)
 
@@ -68,6 +83,338 @@ _GATEWAY_POLICY_ID = "gateway-policy.web002.controlled"
 _GATEWAY_POLICY_VERSION = "1.0.0"
 _WORKER_BACKEND_ID = "docker-worker-backend.web002"
 _WORKER_BACKEND_VERSION = "1.0.0"
+_FRESH_PRODUCT_FAILURE_CASE_IDS = (
+    "strict-boolean",
+    "claim-ceiling",
+    "impact-escalation",
+    "severity-escalation",
+    "metric-drift",
+    "product-event-equivocation",
+    "source-event-equivocation",
+    "stale-product-root",
+    "stale-source-root",
+    "foreign-run-path-pair",
+    "noncanonical-json",
+    "duplicate-key-json",
+    "oversized-json",
+)
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return (
+        json.dumps(
+            value,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _copied_product_outcome(
+    outcome: WebMeasuredProductFlowOutcome,
+    *,
+    case_root: Path,
+    source_run_path: Path | None = None,
+) -> WebMeasuredProductFlowOutcome:
+    case_root.mkdir(parents=True, exist_ok=False)
+    product_run_path = case_root / "product-run"
+    shutil.copytree(outcome.run_path, product_run_path)
+    source = (
+        replace(outcome.source, run_path=source_run_path)
+        if source_run_path is not None
+        else outcome.source
+    )
+    return replace(
+        outcome,
+        run_path=product_run_path,
+        source=source,
+    )
+
+
+def _reseal_rewritten_run(*, run_id: str, run_path: Path) -> None:
+    run_path.joinpath("run-integrity.jsonl").unlink()
+    RunStore(run_id=run_id, path=run_path).seal()
+
+
+def _rewrite_events_and_reseal(
+    *,
+    run_id: str,
+    run_path: Path,
+    events: list[AuditEvent],
+) -> None:
+    previous_hash: str | None = None
+    encoded: list[str] = []
+    for sequence, event in enumerate(events, start=1):
+        pending = event.model_copy(
+            update={
+                "sequence": sequence,
+                "previous_hash": previous_hash,
+                "event_hash": "0" * 64,
+            }
+        )
+        finalized = pending.model_copy(update={"event_hash": pending.computed_hash()})
+        encoded.append(finalized.model_dump_json())
+        previous_hash = finalized.event_hash
+    run_path.joinpath("events.jsonl").write_text(
+        "\n".join(encoded) + "\n",
+        encoding="utf-8",
+    )
+    _reseal_rewritten_run(run_id=run_id, run_path=run_path)
+
+
+def _fresh_product_integrity_failure_cases(
+    accepted: WebMeasuredProductFlowOutcome,
+    *,
+    foreign: WebMeasuredProductFlowOutcome,
+    output_root: Path,
+) -> tuple[FreshWebMeasuredProductFailureCase, ...]:
+    output_root.mkdir(parents=True, exist_ok=False)
+    cases: list[FreshWebMeasuredProductFailureCase] = []
+
+    for case_id, section_name, field_name, value in (
+        (
+            "strict-boolean",
+            "authorityBoundary",
+            "additionalExecutionAuthorized",
+            0,
+        ),
+        (
+            "claim-ceiling",
+            "finding",
+            "claimCeiling",
+            "production-vulnerability",
+        ),
+        ("impact-escalation", "finding", "impactAssurance", "high"),
+        ("severity-escalation", "finding", "severityAssurance", "critical"),
+    ):
+        case_outcome = _copied_product_outcome(
+            accepted,
+            case_root=output_root / case_id,
+        )
+        artifact_path = case_outcome.run_path / case_outcome.artifact_path
+        material = cast(
+            dict[str, object],
+            json.loads(artifact_path.read_text(encoding="utf-8")),
+        )
+        section = cast(dict[str, object], material[section_name])
+        section[field_name] = value
+        artifact_path.write_bytes(_canonical_json_bytes(material))
+        _reseal_rewritten_run(
+            run_id=case_outcome.run_id,
+            run_path=case_outcome.run_path,
+        )
+        cases.append(FreshWebMeasuredProductFailureCase(case_id, case_outcome))
+
+    metric_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "metric-drift",
+    )
+    metric_artifact = metric_outcome.run_path / metric_outcome.artifact_path
+    metric_material = cast(
+        dict[str, object],
+        json.loads(metric_artifact.read_text(encoding="utf-8")),
+    )
+    floor = cast(dict[str, object], metric_material["floor"])
+    metrics = cast(list[object], floor["metrics"])
+    for metric_value in metrics:
+        metric = cast(dict[str, object], metric_value)
+        if type(metric.get("numerator")) is int:
+            metric["numerator"] = cast(int, metric["numerator"]) + 1
+            break
+    else:
+        raise AssertionError("fresh WEB product fixture has no rational metric")
+    metric_artifact.write_bytes(_canonical_json_bytes(metric_material))
+    _reseal_rewritten_run(
+        run_id=metric_outcome.run_id,
+        run_path=metric_outcome.run_path,
+    )
+    cases.append(FreshWebMeasuredProductFailureCase("metric-drift", metric_outcome))
+
+    equivocation_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "product-event-equivocation",
+    )
+    events = [
+        AuditEvent.model_validate_json(line)
+        for line in equivocation_outcome.run_path.joinpath("events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    projected = events[1]
+    events[1] = projected.model_copy(
+        update={
+            "payload": {
+                **projected.payload,
+                "flowDigest": "0" * 64,
+            }
+        }
+    )
+    _rewrite_events_and_reseal(
+        run_id=equivocation_outcome.run_id,
+        run_path=equivocation_outcome.run_path,
+        events=events,
+    )
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "product-event-equivocation",
+            equivocation_outcome,
+        )
+    )
+
+    source_equivocation_root = output_root / "source-event-equivocation"
+    source_equivocation_run_path = source_equivocation_root / "source-run"
+    source_equivocation_root.mkdir(parents=True, exist_ok=False)
+    shutil.copytree(accepted.source.run_path, source_equivocation_run_path)
+    source_equivocation_outcome = _copied_product_outcome(
+        accepted,
+        case_root=source_equivocation_root / "selected",
+        source_run_path=source_equivocation_run_path,
+    )
+    source_events = [
+        AuditEvent.model_validate_json(line)
+        for line in source_equivocation_run_path.joinpath("events.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    source_sealed = source_events[1]
+    source_events[1] = source_sealed.model_copy(
+        update={
+            "payload": {
+                **source_sealed.payload,
+                "authorityDigest": "0" * 64,
+            }
+        }
+    )
+    _rewrite_events_and_reseal(
+        run_id=source_equivocation_outcome.source.run_id,
+        run_path=source_equivocation_outcome.source.run_path,
+        events=source_events,
+    )
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "source-event-equivocation",
+            source_equivocation_outcome,
+        )
+    )
+
+    stale_product_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "stale-product-root",
+    )
+    RunStore(
+        run_id=stale_product_outcome.run_id,
+        path=stale_product_outcome.run_path,
+    ).append_event(
+        "product.web-measured-flow.projected",
+        {"staleSelectedOutcome": True},
+    )
+    RunStore(
+        run_id=stale_product_outcome.run_id,
+        path=stale_product_outcome.run_path,
+    ).seal()
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "stale-product-root",
+            stale_product_outcome,
+        )
+    )
+
+    stale_source_root = output_root / "stale-source-root"
+    stale_source_run_path = stale_source_root / "source-run"
+    stale_source_root.mkdir(parents=True, exist_ok=False)
+    shutil.copytree(accepted.source.run_path, stale_source_run_path)
+    stale_source_outcome = _copied_product_outcome(
+        accepted,
+        case_root=stale_source_root / "selected",
+        source_run_path=stale_source_run_path,
+    )
+    RunStore(
+        run_id=stale_source_outcome.source.run_id,
+        path=stale_source_outcome.source.run_path,
+    ).append_event(
+        "benchmark.web-controlled-validation.sealed",
+        {"staleSelectedOutcome": True},
+    )
+    RunStore(
+        run_id=stale_source_outcome.source.run_id,
+        path=stale_source_outcome.source.run_path,
+    ).seal()
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "stale-source-root",
+            stale_source_outcome,
+        )
+    )
+
+    foreign_pair_root = output_root / "foreign-run-path-pair"
+    foreign_pair_root.mkdir(parents=True, exist_ok=False)
+    foreign_run_path = foreign_pair_root / "product-run"
+    shutil.copytree(foreign.run_path, foreign_run_path)
+    foreign_pair_outcome = replace(accepted, run_path=foreign_run_path)
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "foreign-run-path-pair",
+            foreign_pair_outcome,
+        )
+    )
+
+    noncanonical_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "noncanonical-json",
+    )
+    noncanonical_artifact = noncanonical_outcome.run_path / noncanonical_outcome.artifact_path
+    noncanonical_artifact.write_bytes(noncanonical_artifact.read_bytes() + b"\n")
+    _reseal_rewritten_run(
+        run_id=noncanonical_outcome.run_id,
+        run_path=noncanonical_outcome.run_path,
+    )
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "noncanonical-json",
+            noncanonical_outcome,
+        )
+    )
+
+    duplicate_key_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "duplicate-key-json",
+    )
+    duplicate_key_artifact = duplicate_key_outcome.run_path / duplicate_key_outcome.artifact_path
+    duplicate_key_bytes = duplicate_key_artifact.read_bytes()
+    if not duplicate_key_bytes.startswith(b"{\n"):
+        raise AssertionError("fresh WEB product fixture is not canonical JSON")
+    duplicate_key_artifact.write_bytes(
+        b'{\n  "kind": "WebMeasuredProductFlowProjection",\n' + duplicate_key_bytes[2:]
+    )
+    _reseal_rewritten_run(
+        run_id=duplicate_key_outcome.run_id,
+        run_path=duplicate_key_outcome.run_path,
+    )
+    cases.append(
+        FreshWebMeasuredProductFailureCase(
+            "duplicate-key-json",
+            duplicate_key_outcome,
+        )
+    )
+
+    oversized_outcome = _copied_product_outcome(
+        accepted,
+        case_root=output_root / "oversized-json",
+    )
+    oversized_artifact = oversized_outcome.run_path / oversized_outcome.artifact_path
+    oversized_artifact.write_bytes(b'{"padding":"' + b"x" * (4 * 1024 * 1024) + b'"}\n')
+    _reseal_rewritten_run(
+        run_id=oversized_outcome.run_id,
+        run_path=oversized_outcome.run_path,
+    )
+    cases.append(FreshWebMeasuredProductFailureCase("oversized-json", oversized_outcome))
+
+    if tuple(case.case_id for case in cases) != _FRESH_PRODUCT_FAILURE_CASE_IDS:
+        raise AssertionError("fresh WEB product failure case set differs")
+    return tuple(cases)
 
 
 def _docker_image_id(reference: str) -> str:
@@ -571,6 +918,130 @@ def test_real_docker_web_002d_controlled_validation_conformance(
         assert execution_inspector.ephemeral_resources_absent(execution_id)
         assert build_inspector.ephemeral_resources_absent(execution_id)
         assert load_inspector.ephemeral_resources_absent(execution_id)
+
+        product_reopen_context = WebMeasuredProductSourceReopenContext(
+            measured_case_authority=source_context.measured_case,
+            private_ground_truth_profile=source_context.private_profile,
+            source_reopen_context=_source_reopen_context(source_context),
+            floor_policy=floor_policy,
+            mapping=mapping,
+            trust_anchor=success_context.trust_anchor,
+            claim_ledger=load_claims,
+            target_journal=BenchmarkTargetOperationJournal.open_existing(
+                source_context.journal_path
+            ),
+            provider=source_context.catalog_provider,
+            adapter=load_adapter,
+            denial_route_authority=_live_route_context(denial_context),
+        )
+        first_product = WebMeasuredProductFlowProjector(
+            output_root=tmp_path / "first-product-runs"
+        ).project(
+            outcome,
+            reopen_context=product_reopen_context,
+        )
+        second_product = WebMeasuredProductFlowProjector(
+            output_root=tmp_path / "second-product-runs"
+        ).project(
+            outcome,
+            reopen_context=product_reopen_context,
+        )
+        first_bytes = first_product.run_path.joinpath(first_product.artifact_path).read_bytes()
+        second_bytes = second_product.run_path.joinpath(second_product.artifact_path).read_bytes()
+        assert first_product.run_id != second_product.run_id
+        assert first_product.projection == second_product.projection
+        assert first_bytes == second_bytes
+        failure_cases = _fresh_product_integrity_failure_cases(
+            first_product,
+            foreign=second_product,
+            output_root=tmp_path / "fresh-product-integrity-failures",
+        )
+
+        first_recipe = FreshWebMeasuredProductRecipe.from_runtime(
+            audit_root=tmp_path,
+            process_root=tmp_path / "fresh-product-process-one",
+            deployment_id=_DEPLOYMENT_ID,
+            product_outcome=first_product,
+            source_context=source_context,
+            coordinate=coordinate,
+            claim_ledger_path=claim_store_path,
+            worker_evidence_store_path=evidence_store_path,
+            success_route_authority=_live_route_context(success_context),
+            denial_route_authority=_live_route_context(denial_context),
+        )
+        second_recipe = FreshWebMeasuredProductRecipe.from_runtime(
+            audit_root=tmp_path,
+            process_root=tmp_path / "fresh-product-process-two",
+            deployment_id=_DEPLOYMENT_ID,
+            product_outcome=first_product,
+            source_context=source_context,
+            coordinate=coordinate,
+            claim_ledger_path=claim_store_path,
+            worker_evidence_store_path=evidence_store_path,
+            success_route_authority=_live_route_context(success_context),
+            denial_route_authority=_live_route_context(denial_context),
+        )
+        failure_recipe = FreshWebMeasuredProductRecipe.from_runtime(
+            audit_root=tmp_path,
+            process_root=tmp_path / "fresh-product-process-integrity",
+            deployment_id=_DEPLOYMENT_ID,
+            product_outcome=first_product,
+            source_context=source_context,
+            coordinate=coordinate,
+            claim_ledger_path=claim_store_path,
+            worker_evidence_store_path=evidence_store_path,
+            success_route_authority=_live_route_context(success_context),
+            denial_route_authority=_live_route_context(denial_context),
+            integrity_failure_cases=failure_cases,
+        )
+        first_probe = run_fresh_web_measured_product_probe(
+            first_recipe,
+            hash_seed=7,
+            timeout_seconds=300,
+        )
+        second_probe = run_fresh_web_measured_product_probe(
+            second_recipe,
+            hash_seed=31,
+            timeout_seconds=300,
+        )
+        failure_probe = run_fresh_web_measured_product_probe(
+            failure_recipe,
+            hash_seed=53,
+            timeout_seconds=1200,
+        )
+        expected_base64 = base64.b64encode(first_bytes).decode("ascii")
+        assert first_probe.process_id != second_probe.process_id
+        assert first_probe.process_id != os.getpid()
+        assert second_probe.process_id != os.getpid()
+        assert failure_probe.process_id != os.getpid()
+        assert first_probe.canonical_bytes_base64 == expected_base64
+        assert second_probe.canonical_bytes_base64 == expected_base64
+        assert failure_probe.canonical_bytes_base64 == expected_base64
+        assert first_probe.result_digest == second_probe.result_digest
+        assert failure_probe.result_digest == first_probe.result_digest
+        assert first_probe.flow_id == second_probe.flow_id
+        assert first_probe.flow_digest == second_probe.flow_digest
+        assert first_probe.source_run_id == second_probe.source_run_id
+        assert first_probe.source_authority_id == second_probe.source_authority_id
+        assert first_probe.source_authority_digest == second_probe.source_authority_digest
+        assert first_probe.docker_argv == second_probe.docker_argv
+        assert first_probe.integrity_failure_case_ids == ()
+        assert first_probe.integrity_failure_statuses == ()
+        assert second_probe.integrity_failure_case_ids == ()
+        assert second_probe.integrity_failure_statuses == ()
+        expected_failure_ids = tuple(case.case_id for case in failure_cases)
+        assert expected_failure_ids == _FRESH_PRODUCT_FAILURE_CASE_IDS
+        assert failure_probe.integrity_failure_case_ids == expected_failure_ids
+        assert failure_probe.integrity_failure_statuses == (409,) * len(
+            _FRESH_PRODUCT_FAILURE_CASE_IDS
+        )
+        expected_once = first_probe.docker_argv[: len(first_probe.docker_argv) // 2]
+        assert first_probe.docker_argv == expected_once * 2
+        assert failure_probe.docker_argv == (
+            first_probe.docker_argv + expected_once * len(failure_cases)
+        )
+        assert failure_probe.reader_calls == 2 + len(failure_cases)
+        assert failure_probe.source_reload_calls == 2 + len(failure_cases)
     finally:
         for context in reversed(active):
             if context.attempt.attempt_id not in completed_attempt_ids:
