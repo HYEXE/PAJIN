@@ -10,13 +10,14 @@
 - UX-009D 기준 코드 체크포인트: `509e6544960e48dfbc6c0841b6aee4d9c89a329e`
   (`test(product): fresh-session Web 결과 검증 추가`)
 - 선행 모바일 fixture 보정 체크포인트: `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`
-- 현재 Git: `origin/main == 509e6544960e48dfbc6c0841b6aee4d9c89a329e`이고 local `main`에는 위
-  공개 준비 변경과 이 HANDOFF 체크포인트의 미푸시 커밋 두 개가 있어 ahead/behind `2/0`이다. staged,
+- 현재 Git: `origin/main == 509e6544960e48dfbc6c0841b6aee4d9c89a329e`이고 local `main`에는 공개
+  준비 변경과 두 HANDOFF 체크포인트의 미푸시 커밋 세 개가 있어 ahead/behind `3/0`이다. staged,
   unstaged, untracked 변경과 진행 중인 merge/rebase/cherry-pick이 없다.
 - 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
   로컬 집중 검증을 통과했다.
-- exact-SHA Ubuntu run `33365421750`, job `99404957729`은 runner 할당 전에 종료됐다. steps가 없어
-  real-Docker conformance와 residue audit은 미실행이다.
+- UX-009D exact-SHA Ubuntu real-Docker conformance와 residue audit 증거는 여전히 없다. runner 할당 전
+  종료된 run `33365421750`과 companion CI run `33365209333`은 사용자가 삭제했으며, 두 ID 모두 GitHub
+  API의 `404 Not Found`로 삭제를 재검증했다.
 - `WEB-002D` 구현은 exact conformance commit `975bf7876a186cefae66c289d09f530f3e0fe7aa` 이후 불변이며,
   해당 commit의 Ubuntu 24.04 run `33310558350`, job `99254722600`에서 real-Docker 검증을 통과함
 - 기준 체크포인트의 repo-wide Ubuntu 24.04 CI run `33316840636`은 Quality와 24개 pytest shard가
@@ -618,8 +619,9 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
   runtime을 사용할 수 없어 real-Docker test는 실행하지 않았다.
 - UX-009D supplemental local regression 최신 재실행은 `3 passed in 224.05s`; D Python Ruff lint와
   format, compile 및 real-Docker test collection은 통과했다.
-- exact code checkpoint run `33365421750`, job `99404957729`은 head SHA를 올바르게 결박했지만
-  runner 할당 전에 종료됐다. steps 0개라 conformance와 residue audit 증거는 없다.
+- exact code checkpoint에 대해 이전에 요청한 workflow는 runner 할당 전에 종료돼 conformance와 residue
+  audit 증거를 만들지 못했다. 해당 run `33365421750`과 companion CI run `33365209333`은 삭제됐고 두
+  ID의 GitHub API `404 Not Found`를 확인했다.
 - 새 영어 versioned contract는
   `docs/orchestration/UX-009D-fresh-session-deterministic-product-read-conformance.md`다.
 - UX-009A~D는 `6b8faad`, `ee8b0ed`, `b50f81b`, exact code checkpoint
@@ -638,11 +640,10 @@ Apache 공식 원문과 canonical text가 일치하고 문서 회귀는 `4 passe
 `uv lock --check --offline`은 통과했다. generated wheel metadata는 `License-Expression: Apache-2.0`,
 `License-File: LICENSE`와 packaged license를 포함한다.
 
-사용자는 pre-run failure Actions run `33365421750`, `33365209333` 삭제와 이 working tree의 로컬
-commit을 승인했다. 현재 환경에서는 인증된 browser control process가 sandbox ACL 오류로 시작되지 않아
-삭제를 실행하지 못했고 read-only API로 두 run이 여전히 존재함을 재확인했다. 인증을 우회하지 않으며
-visibility 변경 전에 지원되는 인증 UI에서 삭제를 완료해야 한다. push, 보호 ruleset, private vulnerability
-reporting과 visibility 변경은 아직 승인되지 않았다. 이후 runner 할당이 가능한 상태에서 원격 `main`의
+사용자는 pre-run failure Actions run `33365421750`, `33365209333`을 인증 UI에서 삭제했다. 두 run은
+read-only GitHub API의 `404 Not Found`로 삭제를 재검증했다. 이 정리는 실패한 run을 제거했을 뿐
+UX-009D real-Docker conformance나 residue audit 증거를 만들지 않는다. push, 보호 ruleset, private
+vulnerability reporting과 visibility 변경은 아직 승인되지 않았다. 이후 runner 할당이 가능한 상태에서 원격 `main`의
 exact code checkpoint
 `509e6544960e48dfbc6c0841b6aee4d9c89a329e` workflow를 confirmation `true`로 재실행한다. test와 residue
 audit이 모두 성공하기 전에는 UX-009D/Phase 23을 완료로 표시하지 않는다. 성공 뒤 run/job 증거를
