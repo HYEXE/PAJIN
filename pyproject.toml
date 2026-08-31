@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=75"]
+requires = ["setuptools>=77"]
 build-backend = "build_backend"
 backend-path = ["."]
 
@@ -8,6 +8,8 @@ name = "pajin"
 version = "0.1.0"
 description = "Policy-governed multi-agent security validation platform"
 readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 requires-python = ">=3.12"
 dependencies = [
   "cryptography>=50,<51",
@@ -41,7 +43,7 @@ dev = [
   "pytest-asyncio>=0.24,<2",
   "ruff>=0.11,<1",
   # The artifact smoke builds offline with the current environment.
-  "setuptools>=75",
+  "setuptools>=77",
   "types-PyYAML>=6,<7",
   "uv>=0.11,<1",
 ]

@@ -1039,8 +1039,10 @@ the unchanged UX-009A wire, rejects non-Operator roles and caller selectors befo
 stale credential generations, and creates no application durable state, Graph event, report,
 delivery, or execution authority. UX-009D now implements fresh-spawn production composition,
 deterministic publication/read comparison, isolated fail-closed product cases, and a whole-call
-side-effect audit in the existing WEB-002D real-Docker test. This code checkpoint has not yet
-completed an exact-commit Ubuntu workflow, so Phase 23 conformance remains open. The paragraph
+side-effect audit in the existing WEB-002D real-Docker test. Exact code checkpoint
+`509e6544960e48dfbc6c0841b6aee4d9c89a329e` was dispatched as Ubuntu run `33365421750`, job
+`99404957729`, but the job ended before runner allocation. No test step or unconditional residue
+audit ran, so Phase 23 conformance remains open. The paragraph
 above is
 retained as the acceptance-time design record; it is not the current roadmap authority.
 

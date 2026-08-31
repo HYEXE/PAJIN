@@ -12,8 +12,8 @@
 
 ## UX-007B-R deployment validation limits
 
-- Worker TLS는 bearer subject/SPKI에 결박하고 proxy header를 거부한다. Avast가 가로채는 Windows live
-  handshake는 보안 제품을 우회하지 않고 WSL에서 검증한다.
+- Worker TLS는 bearer subject/SPKI에 결박하고 proxy header를 거부한다. 관리형 Windows 환경의 TLS
+  interception으로 제한되는 live handshake는 host security policy를 우회하지 않고 Linux에서 검증한다.
 - Human ABAC action은 서로 분리된 exact 정책이며 current Approval GET은 비변경 projection이다. unset은
   RBAC compatibility이지 production narrowing 증명이 아니다. Replay Worker token/profile partial은 거부한다.
 - UX-007O unknown은 새 작업·successor를 막는다. UX-007P2의 pinned MinIO·boto3 single-node local target은
@@ -52,7 +52,9 @@
 - DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
 - WEB-002A~D는 exact case와 ZAP source measurement, 별도 controlled route/Worker 실행, durable
   claim·denial·Evidence, 독립 floor 평가와 bounded benchmark Ground Truth match Finding까지 구현했다.
-  product entrypoint, Graph Finding admission, report/external delivery와 추가 실행 권위는 닫혀 있다.
+  UX-009A~D의 bounded product read와 fresh-spawn audit는 `509e654`에 커밋·push됐다. run
+  `33365421750`, job `99404957729`은 runner 할당 전에 종료돼 conformance와 residue audit이
+  미실행이다. Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
 - AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
   Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
 - registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
@@ -760,20 +762,18 @@
 - 해소 조건: 운영 백업 또는 독립 transparency/checkpoint anchor와 명시적 distribution Trust
   Anchor rotation authority를 추가한다.
 
-## Windows 애플리케이션 제어에 의한 임시 console-script 차단
+## 관리형 Windows interpreter 실행 제한
 
-- 상태: project `.venv\Scripts\python.exe`는 Application Control로 `_overlapped`/`_sqlite3`를
-  로드하지 못한다. 검증은 bundled Python+project site-packages, 외부 `TEMP/TMP/TMPDIR`,
-  `-p no:cacheprovider`와 외부 `--basetemp`를 사용하며 Ruff/mypy/uv는 정상이다.
-- 해소 조건: project Python, `pajin.exe`, installed wrapper를 Linux CI 또는 승인된 AppControl 환경에서 검증한다.
+- 상태: 일부 관리형 Windows 환경에서는 project interpreter와 console-script 실행이 제한된다.
+  허용된 interpreter, 격리 임시 루트와 `-p no:cacheprovider`를 사용한 검증은 통과한다.
+- 해소 조건: project Python, `pajin.exe`, installed wrapper를 Linux CI 또는 승인된 관리형 환경에서 검증한다.
 
-## Docker AF_UNIX endpoint 1920
+## 로컬 Windows container runtime 가용성
 
-- 상태: 로컬 제약. 두 AF_UNIX endpoint는 reboot 뒤에도 open 1920이다.
-- 영향: post-reboot Docker start도 `sailor-ingest.sock` 제거에서 crash해 Engine/WSL이 시작되지 않았다.
-  관리자 `chkdsk`도 policy/EDR에서 process-create가 거부돼 우회하지 않는다. Ubuntu 24.04 committed-ref
-  conformance run `33310558350`이 통과했으므로 Phase 22 blocker는 아니지만 로컬 Docker가 필요하면
-  endpoint 증거와 함께 support로 전환한다.
+- 상태: 현재 maintainer host에서는 OS-level file-access policy 제약으로 local container runtime을
+  시작할 수 없다. host security policy를 우회하거나 runtime data를 삭제하지 않는다.
+- 영향: Ubuntu 24.04 committed-ref conformance run `33310558350`이 통과했으므로 Phase 22 blocker는
+  아니다. 추가 real-Docker 검증은 GitHub-hosted Linux runner 또는 승인된 별도 Linux host에서 실행한다.
 
 ## Git OpenSSL CA 경로
 

@@ -72,6 +72,9 @@ ADR에 있다. 우선순위는 `PLAN.md`, 최신 기록 체크포인트는 `HAND
 
 - 루트 운영 상태 문서 5개는 단일 한글본으로 유지한다.
 - README, RFC, ADR, 버전형 계약과 나머지 저장소 Markdown은 단일 영어본으로 유지한다.
+- 모든 tracked 문서는 향후 공개될 수 있는 자료로 취급한다. 절대 로컬 체크아웃 경로, 개인 식별자,
+  endpoint-security 제품·process·driver·socket 이름, account·billing 상태와 저장소 밖 backup 이름은
+  기록하지 않는다. 환경 제약은 재현 가능한 영향과 public-safe 검증 경로만 일반화해 남긴다.
 - 코드와 함께 바뀌어야 하는 계약·보안 경계 문서는 같은 변경에 포함한다.
 - 지속적인 아키텍처 근거는 새 ADR에 기록하며, 채택된 ADR은 append-only로 다룬다.
 - `DECISIONS.md`에 ADR 본문을 복제하거나 `PLAN.md`·`HANDOFF.md`에 상세 구현 이력을

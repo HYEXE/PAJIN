@@ -1,4 +1,6 @@
+import hashlib
 import re
+import tomllib
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -6,6 +8,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DOCS_ROOT = REPOSITORY_ROOT / "docs"
 
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+APACHE_2_LICENSE_SHA256 = "c71d239df91726fc519c6eb72d318ec65820627232b2f796219e87dcf35d0ab4"
 
 
 def test_repository_uses_one_canonical_markdown_file_per_subject() -> None:
@@ -17,6 +20,21 @@ def test_repository_uses_one_canonical_markdown_file_per_subject() -> None:
     )
 
     assert localized_docs == []
+
+
+def test_repository_declares_the_canonical_apache_2_license() -> None:
+    license_bytes = (REPOSITORY_ROOT / "LICENSE").read_bytes().replace(b"\r\n", b"\n")
+    normalized_license = license_bytes.rstrip(b"\r\n") + b"\n"
+    assert hashlib.sha256(normalized_license).hexdigest() == APACHE_2_LICENSE_SHA256
+
+    pyproject = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    assert pyproject["build-system"]["requires"] == ["setuptools>=77"]
+    assert pyproject["project"]["license"] == "Apache-2.0"
+    assert pyproject["project"]["license-files"] == ["LICENSE"]
+    assert "setuptools>=77" in pyproject["project"]["optional-dependencies"]["dev"]
+
+    readme = (REPOSITORY_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "[Apache License, Version 2.0](LICENSE)" in readme
 
 
 def test_repository_owns_one_bounded_operational_state_set() -> None:

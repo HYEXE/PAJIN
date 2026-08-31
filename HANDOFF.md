@@ -3,25 +3,30 @@
 ## 현재 체크포인트
 
 - 기록일: 2026-08-31
-- 작업 체크아웃: `C:\Workspace\HYEXE\PAJIN`
+- 작업 위치: 저장소 루트
 - 브랜치: `main`
-- 기준 코드·CI 체크포인트: `051cad4bb67b021dc998a60b1502c7425834ea0b`
-  (`fix(ci): 전체 테스트를 24개 shard로 재분할`)
+- 기준 코드 체크포인트: `509e6544960e48dfbc6c0841b6aee4d9c89a329e`
+  (`test(product): fresh-session Web 결과 검증 추가`)
 - 선행 모바일 fixture 보정 체크포인트: `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`
-- 기준 체크포인트 push 후 Git: `HEAD == origin/main == 051cad4bb67b021dc998a60b1502c7425834ea0b`,
-  ahead/behind `0/0`, staged 변경과 진행 중인 merge/rebase/cherry-pick 없음
-- 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`의 코드와 versioned contract가 커밋됨
+- workflow dispatch 시점 Git: `HEAD == origin/main ==` 실제 원격
+  `509e6544960e48dfbc6c0841b6aee4d9c89a329e`, ahead/behind `0/0`, staged 변경과 진행 중인
+  merge/rebase/cherry-pick 없음. UX-009D 검증 상태, public-readiness 정책, Apache-2.0 metadata와
+  해당 회귀 테스트만 unstaged 수정 상태다.
+- 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
+  로컬 집중 검증을 통과했다.
+- exact-SHA Ubuntu run `33365421750`, job `99404957729`은 runner 할당 전에 종료됐다. steps가 없어
+  real-Docker conformance와 residue audit은 미실행이다.
 - `WEB-002D` 구현은 exact conformance commit `975bf7876a186cefae66c289d09f530f3e0fe7aa` 이후 불변이며,
   해당 commit의 Ubuntu 24.04 run `33310558350`, job `99254722600`에서 real-Docker 검증을 통과함
 - 기준 체크포인트의 repo-wide Ubuntu 24.04 CI run `33316840636`은 Quality와 24개 pytest shard가
   모두 성공했다. 선택 합계는 `7,609 passed, 69 skipped`, 실패·취소 0, 전체 1시간 39분 7초이며
   최장 shard 17은 `5,925.98s (1:38:45)`의 pytest와 1시간 39분 3초 job으로 끝났다.
-- Phase 22 Exit Gate는 완료됐으며 product entrypoint와 production/external probing 권위는 여전히 없음
-- 현재 우선순위: ADR-0257의 Phase 23 `UX-009A` sealed measured-Web product-flow projection
-- 다음 우선순위: Phase 23 `UX-009B` deployment-pinned contextful product reader
+- Phase 22 Exit Gate는 완료됐다. UX-009C의 별도 Operator 소비 경로가 추가됐지만 UX-009A wire 자체,
+  production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
+- 현재 우선순위: Phase 23 `UX-009D` exact-commit real-Docker conformance verification
+- 다음 우선순위: Phase 23 Exit Gate
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
-  문서 동기화 시작 시 unstaged 변경은 루트 운영 문서 4개, WEB benchmark 계약 2개와 multi-domain RFC
-  1개뿐이었으며, 이후 CI 검증에서 식별한 두 test/CI 보정은 위 선행·기준 체크포인트로 커밋·push했다.
+  UX-009A~D의 새 원격 run은 위 pre-run runner-allocation 실패뿐이며 성공 CI 증거로 취급하지 않는다.
 
 문서보다 Git과 파일시스템의 실제 상태를 우선한다. 재개 즉시 아래 Git 명령으로 다시 확인한다.
 
@@ -348,9 +353,6 @@
   LF→CRLF warning만 보고했다.
 - 기본 Docker test는 opt-in 경계를 확인하며 `1 skipped in 2.70s`; real-Docker conformance 증거가 아니다.
 - 수정 전 opt-in real-Docker가 식별한 fresh JSON tuple/list strict decoding bug는 수정·집중 회귀를 통과했다.
-  Docker Desktop 4.87.0의 stale AF_UNIX endpoint 5개는 오류 프로세스 10개 종료 뒤 삭제 없이
-  `20260829T213753707689852Z.bak` suffix로 이동했고 기존 backup도 보존했다. 재기동한 Engine 29.7.2/API 1.55는
-  정상 응답했다.
 - 이 prior-tree 로컬 실행의 exact image ID는 Target `sha256:94800e670415d1ec44045b6ed76a7f41953d5632a84cbdeda2060962f4e607d6`,
   benchmark Worker `sha256:047fb728394c4c363b371deb736aeb81fdddefd6f99088b99f0501f9fa6f8a9d`,
   ZAP `sha256:781a2bdaea47324e7bab583e2263f21d257b0aee61ed51521a5be45f5f5081ef`, Worker
@@ -414,11 +416,6 @@
 - 독립 API/테스트/문서 review가 찾은 cached provider replay canonical-wire 우회, outer artifact canonical
   JSON 및 시작/완료 audit payload 공백, journal record-chain 이식, authority-reference ID/digest와 transient
   ADR 상태 문제를 수정했다. 최신 tree 재검토에서 남은 P1/P2는 없다.
-- 2026-08-29 Docker Desktop 4.87.0은 오래된 AF_UNIX reparse endpoint 때문에 시작 시 종료됐다.
-  Docker 프로세스가 없는 상태에서 해당 endpoint만 같은 디렉터리의 `.stale-20260829-*` 이름으로
-  이동해 복구 가능하게 격리했고, Docker API Server 29.7.2와 위 live conformance 성공을 확인했다.
-  저장소 밖 backup endpoint는 보존했으며 repository 파일이나 Docker image/container/network를 삭제하지
-  않았다.
 
 ### WEB-002A
 
@@ -446,10 +443,9 @@
   false authority marker에 대조했다. 세 개의 독립 read-only 검토도 Phase 13 Web을 전체 후보 중 가장
   높은 재사용성과 가장 작은 새 runtime 경계로 평가했다.
 - bundled Python과 project site-packages로
-  `tests/test_benchmark_target_catalog.py tests/test_benchmark_zap_scanner.py`를 실행했다. 첫 실행은
-  default `%TEMP%\\pytest-of-<user>` ACL `WinError 5`로 `tmp_path` setup 4건이 막혀 `12 passed,
-  1 skipped, 4 errors`였다. 저장소 내부 전용 `--basetemp`로 격리한 재실행은 `16 passed, 1 skipped in
-  11.29s`였다.
+  `tests/test_benchmark_target_catalog.py tests/test_benchmark_zap_scanner.py`를 실행했다. 관리형 Windows
+  임시 루트 정책이 첫 실행의 `tmp_path` setup 4건을 막았고, 격리한 전용 `--basetemp` 재실행은
+  `16 passed, 1 skipped in 11.29s`였다.
 - skip 1건은 opt-in real Docker ZAP conformance다. 이번 재평가에서는 실제 Docker daemon, image build/pull,
   Target/Scanner 실행을 수행하지 않았으므로 runnable contract와 현재 머신의 live conformance를 구분한다.
 - 독립 review의 endpoint/network-route, floor/Finding identity 공백과 direct Worker attachment 충돌을 코드에
@@ -500,21 +496,9 @@
   WEB-002C knowledge-only Graph admission과 WEB-002D controlled execution/floor/Finding 구현은 exact
   conformance commit `975bf787` 이후 불변이며 그 commit의 Ubuntu run `33310558350`을 통과했다. 이는
   product entrypoint, production/external probing, report/Graph admission 또는 일반 Domain runtime 권위를 부여하지 않는다.
-- Docker Desktop은 현재 중지돼 있다. `sailor-ingest.sock`, `dockerInference` 두 0-byte endpoint의 tag는
-  `IO_REPARSE_TAG_AF_UNIX`(`0x80000023`)다. 일반·관리자 권한의 reparse-point open, metadata delete,
-  immediate move가 모두 Win32 1920으로 실패했고 원본·metadata는 그대로이며 새 backup은 생성되지 않았다.
-  사용자 승인으로 전체 WSL 종료와 정상 Windows reboot를 완료한 뒤 Ubuntu·`docker-desktop`이 `Stopped`,
-  Docker process가 0인 상태에서 read-only open을 재시도했지만 두 항목 모두 다시 Win32 1920이었다.
-  C:는 `NTFS/Healthy/OK`, storage 오류 0건, `afunix.sys`는 `RUNNING`이다. 자동 UAC와 사용자가 확인한
-  관리자 `True` Terminal 모두 `chkdsk.exe /?` process create가 `Access is denied`로 차단돼 scan·repair는
-  실행되지 않았다. executable 서명·ACL은 정상이고 IFEO/SRP deny와 표준 CI/AppLocker/Defender 차단 event는
-  없다. Device Guard enforcement가 활성인 환경 정책/EDR 제약으로 분류하며 우회하지 않는다.
-  승인된 post-reboot Docker Desktop 1회 시작은 backend log에서 `sailor-ingest.sock` 제거의
-  `The file cannot be accessed by the system`으로 crash했다. Engine pipe와 `docker-desktop` WSL은
-  시작되지 않았고 reset/data cleanup은 수행하지 않았다. non-force Desktop stop IPC도 응답하지 않아 우리가
-  만든 stop/status client 2개만 종료했다. 이후 supported force stop은 Desktop이 이미 running이 아니라고
-  반환했고 Docker process 0, Ubuntu·`docker-desktop` 모두 `Stopped`를 확인했다. 추가 endpoint 변경·새
-  backup은 없다.
+- 현재 로컬 Windows container runtime은 host file-access policy 제약으로 시작되지 않는다. 저장소나
+  runtime data를 삭제하거나 security policy를 우회하지 않았으며, host-specific incident와 repair 기록은
+  저장소 밖에서 관리한다. real-Docker conformance의 권위는 Ubuntu committed-ref workflow다.
 - FORENSICS-001A~B는 source 또는 provenance를 resolve/read/mount/copy하지 않는다. FORENSICS-001C는
   deployment-owned root 아래 두 signed/digest-only Evidence 파일만 bounded read하며 parser, target 또는 raw
   result body를 실행·조회하지 않는다.
@@ -555,11 +539,110 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 `051cad4bb67b021dc998a60b1502c7425834ea0b`로 각각 커밋·push했고, run `33316840636`에서 전체 성공을
 확인했다. 현재 문서 변경과 Git 상태는 재개 시 다시 대조한다.
 
+## UX-009A~D 로컬 체크포인트
+
+- `src/pajin/workflow/web_measured_product_flow.py`는 exact
+  `load_web_controlled_validation_authority`를 publication과 reload 전에 각각 호출하고, 별도 sealed Run에
+  measured-case Scope, content-free Evidence reference, 14개 public floor metric, bounded
+  `benchmark-ground-truth-match` Finding과 unavailable report state만 투영한다.
+- `tests/test_web_measured_product_flow.py`는 exact reopen-context 값 배선, source-before-product ordering,
+  canonical JSON roundtrip, strict boolean·claim ceiling, source/product substitution, artifact/event tamper와
+  Run 재사용 거부를 검증한다. WEB-002C Graph predecessor, raw/private content, route·Permit·path,
+  Graph/report/HTTP/UI와 Target/provider/Docker/Worker/network/credential side effect 권위는 모두 false다.
+- 새 영어 versioned contract는
+  `docs/orchestration/UX-009A-sealed-measured-web-product-flow-projection.md`다. README, multi-domain RFC와
+  PLAN은 현재 구현과 UX-009C/UX-009D 우선순위로 동기화했다.
+- `src/pajin/workflow/web_measured_product_reader.py`는 frozen/slotted registration과 reader,
+  `MappingProxyType` registry 및 deployment-owned resolver TCB를 제공한다. zero-argument `read()`는
+  등록된 기존 product/source Run 경로와 모든 content identity를 매번 canonicalize하고 exact UX-009A
+  loader를 호출한 뒤 bounded projection만 반환한다.
+- caller root/path/provider/adapter/trust anchor/ledger/journal/private mapping/source/projection/bare JSON,
+  중복 deployment/product Run/flow, product/source alias·reuse, foreign runtime type와 등록 후 remap은
+  fail closed한다. contextual WEB-002D reload의 provider DB와 Docker inspector 조회는 read-only Evidence
+  재검증이며 Target/provider mutation, controlled execution 또는 target-network action이 아니다.
+- 새 영어 versioned contract는
+  `docs/orchestration/UX-009B-deployment-pinned-contextful-product-reader.md`다. 실제 새 OS process에서의
+  repeated canonical read와 전체 durable-state call audit는 계약과 ADR-0257에 따라 UX-009D가 검증한다.
+- `create_app(..., web_measured_product_reader=...)`는 exact UX-009B concrete reader만 process-local로
+  주입한다. 항상 등록되는 fixed `GET /v1/products/web-measured-flow`는 인증 뒤 Operator만 허용하고,
+  body/query는 reader 호출 전에 400, reader 미구성은 503, 무결성 실패는 private context를 반사하지 않는
+  fixed 409로 닫는다. 성공 응답은 wrapper 없이 unchanged UX-009A alias wire다. UX-009B resolver는
+  thread-safety를 계약하지 않으므로 동시 HTTP read는 app-local lock 안에서 직렬화하되 매 요청마다
+  별도의 reader 무결성 재검증을 수행한다.
+- same-origin Web Console은 입력 없는 명시적 load button, fixed GET, memory-only bearer, no-store/omit/error
+  request options를 사용한다. exact nested schema, 14/11/3 metric의 code-owned 순서·ID·digest·unit·
+  applicability·comparison·N/A reason·signed-64 rational, reference equality, strict boolean과
+  claim/impact/severity/report/disclosure/authority ceiling을 검증한 뒤 `textContent`로만 표시하고
+  credential 교체, lock, `pagehide`와 stale response에서 결과를 제거한다.
+- 새 영어 versioned contract는
+  `docs/orchestration/UX-009C-operator-only-measured-web-product-view.md`다. UX-009A의
+  `httpEntrypointAvailable=false`와 `uiEntrypointAvailable=false`는 projection 자체가 transport authority를
+  주지 않는다는 의미로 그대로 보존한다. application durable file은 만들지 않지만 UX-009B loader의
+  mandatory ephemeral `.pajin-run-locks` coordination과 read-only provider/inspector Evidence check는 유지한다.
+- UX-009A 집중 전체 테스트 재실행: `15 passed in 664.79s`.
+- UX-009B 집중 전체 테스트: `3 passed in 254.68s`. 이후 추가한 중복·foreign type·alias·deployment
+  fail-closed assertion 영향 2건은 `2 passed, 1 deselected in 218.09s`로 다시 통과했다.
+- 인접 WEB-002D production authority guard: `2 passed in 210.48s`.
+- `.venv\Scripts\python.exe -m ruff check . --no-cache`: 통과. UX-009C route/test Python format check:
+  `3 files already formatted`. `src/pajin/control_plane/api.py`의 전체 format check가 보고하는 기존
+  두 formatting hunk는 HEAD에도 동일하게 재현되므로 이번 범위에서 무관한 줄을 재format하지 않았다.
+- `.venv\Scripts\python.exe -m mypy --platform linux src`: `372 source files` 통과.
+- 문서 계약: `3 passed in 0.17s`.
+- tracked `git diff --check`: 통과.
+- 관리형 Windows 임시 디렉터리 정책으로 기본 pytest root와 lock 쓰기가 제한됐다. 허용된 격리 임시
+  루트와 `-p no:cacheprovider`를 사용한 재실행은 통과했으며 코드 실패와 구분한다.
+- 독립 리뷰에서 발견한 mutable registry/reader, concurrent reader, metric identity/rational drift와 lossless
+  BigInt P2는 frozen composition, app-local serialization, exact protocol validation과 회귀로 수정했다.
+  provider/network 경계 문구도 실제 read-only inspector 동작에 맞췄으며 최종 재리뷰에는 P1/P2가 없다.
+- UX-009C endpoint 통합 테스트는 실제 UX-009A/B chain과 4-way concurrent read로
+  `3 passed in 184.07s`, 전체 기존 Web Console CSP/source/runtime/API 회귀는 `18 passed in 5.85s`였다.
+  dependency-free Node runtime 직접 실행과 실제 FastAPI 응답의 strict protocol 재검증도 성공했고
+  출력·외부 의존성은 없었다.
+- `tests/web_measured_product_fresh_process.py`는 `spawn` child에서 production provider, adapter, route
+  context, exact registry/reader와 Control Plane app을 재구성한다. 두 successful read와 auth/role/query/
+  body/method denial을 검증하고, 별도 child에서 isolated sealed failure copy 13개를 fixed `409`로 거부한다.
+  failure set은 strict boolean, claim/impact/severity, metric, product/source rehashed/resealed event, stale
+  product/source, foreign Run/path pair와 non-canonical/duplicate-key/oversized JSON을 포함하며 13개 ID와
+  순서는 별도 상수로 고정돼 producer-derived assertion이 누락을 숨길 수 없다.
+- whole-call audit는 exact execution-label container/network 조회와 exact Worker/proxy image inspect만
+  허용한다. provider/adapter/Worker/Graph/report/delivery mutation method, 다른 subprocess/process launch,
+  socket/DNS, lock 경로 밖 filesystem mutation을 즉시 거부하고 audit root bytes/mtime와 six-way Docker
+  inventory를 전후 비교한다. exact `.pajin-run-locks[-uid]/<64hex>.lock` 생성·갱신만 예외이며 다른 이름,
+  nested entry, link와 특수 파일은 거부한다.
+- `tests/test_web_controlled_validation_docker.py`의 기존 dedicated test는 WEB-002D lifecycle을 한 번만
+  완료한 뒤 두 UX-009A publication과 hash seed가 다른 두 success child, 13-case integrity child를 실행한다.
+  success child는 각각 300초, integrity child는 1200초 상한을 사용해 60분 job budget 안에서 startup과
+  case 수를 반영하고 timeout diagnostic에 hash seed와 integrity case 수를 남긴다.
+  `.github/workflows/web-002d-conformance.yml`의 기존 selector가 UX-009D도 실행한다. 로컬 container
+  runtime을 사용할 수 없어 real-Docker test는 실행하지 않았다.
+- UX-009D supplemental local regression 최신 재실행은 `3 passed in 224.05s`; D Python Ruff lint와
+  format, compile 및 real-Docker test collection은 통과했다.
+- exact code checkpoint run `33365421750`, job `99404957729`은 head SHA를 올바르게 결박했지만
+  runner 할당 전에 종료됐다. steps 0개라 conformance와 residue audit 증거는 없다.
+- 새 영어 versioned contract는
+  `docs/orchestration/UX-009D-fresh-session-deterministic-product-read-conformance.md`다.
+- UX-009A~D는 `6b8faad`, `ee8b0ed`, `b50f81b`, exact code checkpoint
+  `509e6544960e48dfbc6c0841b6aee4d9c89a329e`로 `main`에 push됐다.
+
 ## 다음 한 단계
 
-현재 host의 `chkdsk`, ACL, CI policy, EDR과 AF_UNIX endpoint 우회는 중단하고 로컬 환경 제약으로 유지한다.
-Phase 22 committed-ref conformance와 repo-wide Linux CI는 완료됐으므로 다음 구현은 ADR-0257의 Phase 23
-`UX-009A`다. 첫 구체 작업은 exact `load_web_controlled_validation_authority`로 source Run, WEB-002A/B,
-floor, denial, cleanup과 bounded Finding chain을 publication/reload 양쪽에서 재검증하는 sealed read-only
-projection 계약과 회귀를 구현하는 것이다. deterministic 24-shard/120분 CI는 이미 검증됐으며 별도 후속
-작업이 아니다.
+로컬 real-Docker 검증은 host 환경 제약으로 미실행했다. public-safe 운영 문서와 보안 신고 정책은
+working tree에 반영했고, 기존 Actions run 184개의 artifact metadata를 전수 확인해 보존 artifact가 없음을
+확인했다. 사용자는 기존 Git history 공개를 수용하고 Apache-2.0 적용을 승인했으며, root `LICENSE`,
+package metadata와 README에 해당 라이선스를 반영했다. `main`에는 branch protection과 ruleset이 없고
+Git history에는 non-noreply email metadata가 남아 있다. future commit용 repository-local identity는
+public owner login, ID-based noreply email과 `user.useConfigOnly=true`로 설정했으며 실제 기존 email 값은
+저장소 문서에 기록하지 않는다.
+Apache 공식 원문과 canonical text가 일치하고 문서 회귀는 `4 passed`, Ruff lint/format과
+`uv lock --check --offline`은 통과했다. generated wheel metadata는 `License-Expression: Apache-2.0`,
+`License-File: LICENSE`와 packaged license를 포함한다.
+
+사용자는 pre-run failure Actions run `33365421750`, `33365209333` 삭제와 이 working tree의 로컬
+commit을 승인했다. 현재 환경에서는 인증된 browser control process가 sandbox ACL 오류로 시작되지 않아
+삭제를 실행하지 못했고 read-only API로 두 run이 여전히 존재함을 재확인했다. 인증을 우회하지 않으며
+visibility 변경 전에 지원되는 인증 UI에서 삭제를 완료해야 한다. push, 보호 ruleset, private vulnerability
+reporting과 visibility 변경은 아직 승인되지 않았다. 이후 runner 할당이 가능한 상태에서 원격 `main`의
+exact code checkpoint
+`509e6544960e48dfbc6c0841b6aee4d9c89a329e` workflow를 confirmation `true`로 재실행한다. test와 residue
+audit이 모두 성공하기 전에는 UX-009D/Phase 23을 완료로 표시하지 않는다. 성공 뒤 run/job 증거를
+README/RFC/운영 문서에 동기화한다.

@@ -34,8 +34,8 @@ verified against Git and the filesystem before use.
 1. README, RFC, ADR, versioned contracts, and other technical documentation use one canonical
    English file per subject.
 2. The five root operational-state documents use Korean so the primary operator and subsequent
-   agents share one unambiguous working language. Keep commands, paths, identifiers, schemas, and
-   quoted diagnostics in their original form.
+   agents share one unambiguous working language. Keep repository-relative commands, public
+   identifiers, schemas, and disclosure-safe diagnostics in their original form.
 3. Do not add sibling `.en.md` or `.ko.md` files. Translation belongs in a generated publication
    pipeline.
 4. Keep operational state only in the five root documents defined above. Do not create additional
@@ -48,6 +48,11 @@ verified against Git and the filesystem before use.
 8. Keep `DECISIONS.md` as an index; do not duplicate ADR bodies or rationale there.
 9. Add another document only when code review, release reproducibility, offline operation, or
    security auditability would be materially weaker without it.
+10. Treat every tracked document as potentially public. Do not record absolute local checkout
+    paths, personal identifiers, endpoint-security product/process/driver/socket details, account
+    or billing state, private support identifiers, or repository-external backup names. Preserve
+    only the reproducible effect, its classification, and the public-safe validation or recovery
+    path. Keep private workstation and account incident records outside the repository.
 
 The former Notion roadmap remains available as historical context but is not updated as a parallel
 source of truth after the repository cutover.

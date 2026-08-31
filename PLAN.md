@@ -4,8 +4,8 @@
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
 - 현재 단계: Phase 23 — Bounded Measured Web Operator Product Read
-- 현재 우선순위: Phase 23 `UX-009A` sealed measured-Web product-flow projection
-- 다음 우선순위: Phase 23 `UX-009B` deployment-pinned contextful product reader
+- 현재 우선순위: Phase 23 `UX-009D` exact-commit real-Docker conformance verification
+- 다음 우선순위: Phase 23 Exit Gate
 
 ## 제품 목표
 
@@ -717,26 +717,28 @@ WEB-002A~D wire를 변경하지 않고 exact WEB-002D authority를 Operator가 �
 flow로 투영한다. 이 Phase는 새 Web runtime이 아니며, Network는 이후 fresh checkpoint review의 다음
 new-domain runtime 우선순위로 유지한다.
 
-- [ ] `UX-009A` sealed measured-Web product-flow projection — planned
+- [x] `UX-009A` sealed measured-Web product-flow projection — complete
   - exact `load_web_controlled_validation_authority`로 source Run과 WEB-002A/002B, floor, denial,
     cleanup, bounded Finding chain을 publication과 reload 양쪽에서 contextfully 재검증
   - measured-case Scope, content-free Evidence reference, floor state, benchmark-ground-truth-match
     Finding과 unavailable report state만 새 content-addressed sealed Run에 projection
   - WEB-002C Graph Hypothesis를 인과적 predecessor로 결합하지 않고 HTTP/UI, report, delivery와
     Target/provider/Worker/network/additional execution 권위를 모두 false로 유지
-- [ ] `UX-009B` deployment-pinned contextful product reader — planned
+- [x] `UX-009B` deployment-pinned contextful product reader — complete
   - deployment-owned registry/resolver만 exact product Run과 complete WEB-002D reopen context를 선택
   - caller-selected root/path/provider/adapter/trust anchor/journal/private mapping과 bare outer JSON 거부
   - fresh process에서 source와 projection을 모두 재구성하며 read 자체는 어떤 durable state도 변경하지 않음
-- [ ] `UX-009C` Operator-only Control Plane and same-origin Web Console view — planned
-  - body-free, non-cacheable exact projection lookup 하나만 Operator에게 제공하고 다른 role은 fail closed
-  - strict text-only rendering을 사용하며 DB/file/approval/Permit/Run/Graph/report/delivery side effect 없음
-  - private Ground Truth, raw SARIF, controlled query와 route/approval/Permit/request/dispatch/network 좌표 비공개
-- [ ] `UX-009D` fresh-session deterministic product-read conformance — planned
-  - repeated projection과 independent reload의 canonical bytes/digest 일치, auth denial, tamper/substitution,
-    event equivocation, stale root, strict boolean과 claim-ceiling escalation 거부를 검증
-  - existing WEB-002D lifecycle 결과를 재사용할 수 있지만 product read가 Docker/provider/network/Graph/
-    report/external delivery를 새로 실행하지 않았음을 독립 확인
+- [x] `UX-009C` Operator-only Control Plane and same-origin Web Console view — complete
+  - body/query 없는 fixed non-cacheable GET만 Operator에게 제공하고 다른 role, foreign/unconfigured reader와
+    method substitution은 fail closed하며 concurrent request는 exact reader 주위에서 직렬화
+  - Console은 exact metric identity·signed-64 rational을 포함한 wire와 authority ceiling 검증 뒤
+    `textContent`만 쓰고 lock/token 교체/`pagehide`에서 폐기
+  - durable application state와 private/runtime 좌표 공개 없음. UX-009B의 ephemeral advisory lock과
+    read-only provider/inspector Evidence check는 유지
+- [ ] `UX-009D` fresh-session deterministic product-read conformance — code-complete; runner verification pending
+  - `spawn` production composition에서 두 publication/read, auth·transport와 isolated failure 13건을 검증
+  - audit code checkpoint `509e654`의 run `33365421750`, job `99404957729`은 runner 할당 전에
+    종료돼 test와 residue audit이 미실행임
 
 Phase 23 Exit Gate: planned. exact WEB-002D bounded Finding을 impact/severity가 미평가된
 `benchmark-ground-truth-match`로만 표시하고, publication·fresh-session reader·Operator endpoint·Web Console이
