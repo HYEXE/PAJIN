@@ -1,4 +1,6 @@
+import multiprocessing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -9,9 +11,15 @@ from pajin.workflow.web_measured_product_reader import (
     WebMeasuredProductReadRegistry,
 )
 from tests.web_measured_product_fresh_process import (
+    _fresh_child_stage,
+    _mark_fresh_child_stage,
     _start_call_monitoring,
     _stop_call_monitoring,
 )
+
+
+def _mark_first_read_in_spawn(progress: Any) -> None:
+    _mark_fresh_child_stage(progress, "first-product-read-complete")
 
 
 def test_fresh_product_monitor_is_code_local_and_restores_the_tool(
@@ -48,3 +56,32 @@ def test_fresh_product_monitor_is_code_local_and_restores_the_tool(
 
     allowed = RunStore.create(tmp_path / "allowed", "allowed-monitor-test")
     assert allowed.path.exists()
+
+
+def test_fresh_product_progress_reports_the_last_completed_stage() -> None:
+    class Progress:
+        value = 0
+
+    progress = Progress()
+
+    _mark_fresh_child_stage(progress, "first-product-read-complete")
+
+    assert _fresh_child_stage(progress) == "first-product-read-complete"
+
+    progress.value = 999
+    assert _fresh_child_stage(progress) == "unknown-999"
+
+
+def test_fresh_product_progress_crosses_the_spawn_boundary() -> None:
+    context = multiprocessing.get_context("spawn")
+    progress = context.RawValue("i", 0)
+    process = context.Process(target=_mark_first_read_in_spawn, args=(progress,))
+
+    process.start()
+    process.join(timeout=15)
+    if process.is_alive():
+        process.terminate()
+        process.join(timeout=10)
+
+    assert process.exitcode == 0
+    assert _fresh_child_stage(progress) == "first-product-read-complete"

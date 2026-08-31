@@ -8,6 +8,7 @@ reader, and application objects are always constructed in the child interpreter.
 from __future__ import annotations
 
 import base64
+import faulthandler
 import json
 import multiprocessing
 import os
@@ -344,6 +345,24 @@ class _TreeEntry:
     digest: str | None = None
 
 
+_FRESH_CHILD_STAGES = (
+    "not-started",
+    "child-entered",
+    "environment-prepared",
+    "applications-created",
+    "monitoring-started",
+    "clients-started",
+    "baseline-snapshotted",
+    "denial-requests-complete",
+    "first-product-read-complete",
+    "second-product-read-complete",
+    "integrity-cases-complete",
+    "post-read-audit-complete",
+    "clients-closed",
+    "result-built",
+)
+
+
 def run_fresh_web_measured_product_probe(
     recipe: FreshWebMeasuredProductRecipe,
     *,
@@ -358,11 +377,15 @@ def run_fresh_web_measured_product_probe(
     pickle.dumps(recipe, protocol=pickle.HIGHEST_PROTOCOL)
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
+    progress = context.RawValue("i", 0)
     previous_hash_seed = os.environ.get("PYTHONHASHSEED")
     previous_no_bytecode = os.environ.get("PYTHONDONTWRITEBYTECODE")
     os.environ["PYTHONHASHSEED"] = str(hash_seed)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    process = context.Process(target=_child_entry, args=(send, recipe))
+    process = context.Process(
+        target=_child_entry,
+        args=(send, recipe, progress, max(timeout_seconds - 15, 1)),
+    )
     try:
         process.start()
     finally:
@@ -370,12 +393,14 @@ def run_fresh_web_measured_product_probe(
         _restore_environment("PYTHONHASHSEED", previous_hash_seed)
         _restore_environment("PYTHONDONTWRITEBYTECODE", previous_no_bytecode)
     if not receive.poll(timeout_seconds):
+        last_stage = _fresh_child_stage(progress)
         process.terminate()
         process.join(timeout=10)
         raise TimeoutError(
             "fresh WEB measured product child did not finish within "
             f"{timeout_seconds}s (hash seed {hash_seed}, "
-            f"integrity cases {len(recipe.integrity_failure_cases)})"
+            f"integrity cases {len(recipe.integrity_failure_cases)}, "
+            f"last stage {last_stage})"
         )
     state, payload = receive.recv()
     receive.close()
@@ -398,16 +423,28 @@ def _restore_environment(name: str, previous: str | None) -> None:
         os.environ[name] = previous
 
 
-def _child_entry(send: Any, recipe: FreshWebMeasuredProductRecipe) -> None:
+def _child_entry(
+    send: Any,
+    recipe: FreshWebMeasuredProductRecipe,
+    progress: Any,
+    diagnostic_after_seconds: int,
+) -> None:
+    faulthandler.dump_traceback_later(diagnostic_after_seconds, repeat=False)
     try:
-        send.send(("ok", _run_child(recipe)))
+        _mark_fresh_child_stage(progress, "child-entered")
+        send.send(("ok", _run_child(recipe, progress=progress)))
     except BaseException:  # pragma: no cover - diagnostics cross the process boundary
         send.send(("error", traceback.format_exc()))
     finally:
+        faulthandler.cancel_dump_traceback_later()
         send.close()
 
 
-def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProductProbeResult:
+def _run_child(
+    recipe: FreshWebMeasuredProductRecipe,
+    *,
+    progress: Any,
+) -> FreshWebMeasuredProductProbeResult:
     recipe._validate()
     recipe.process_root.mkdir(parents=True, exist_ok=True)
     temp_root = recipe.process_root / "TEMP"
@@ -415,6 +452,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
     for name in ("TMPDIR", "TEMP", "TMP"):
         os.environ[name] = str(temp_root)
     tempfile.tempdir = str(temp_root)
+    _mark_fresh_child_stage(progress, "environment-prepared")
 
     measured_case, capability_bundle, lifecycle, private_profile, target_adapter = (
         measured_case_fixture(
@@ -560,6 +598,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
         recipe,
         reopen_context=reopen_context,
     )
+    _mark_fresh_child_stage(progress, "applications-created")
 
     counters: dict[str, int] = {}
     resolver_calls: list[str] = []
@@ -631,6 +670,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
         counters,
         resolver_calls=resolver_calls,
     )
+    _mark_fresh_child_stage(progress, "monitoring-started")
     try:
         with ExitStack() as stack:
             client = stack.enter_context(TestClient(app))
@@ -638,9 +678,11 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
                 (case, stack.enter_context(TestClient(failure_app)))
                 for case, failure_app in failure_apps
             )
+            _mark_fresh_child_stage(progress, "clients-started")
             counters.clear()
             before_tree = _tree_snapshot(recipe.audit_root, temp_root=temp_root)
             before_docker = _docker_inventory(real_subprocess_run)
+            _mark_fresh_child_stage(progress, "baseline-snapshotted")
             subprocess_module.run = audited_subprocess_run
             audit_active[0] = True
             try:
@@ -665,6 +707,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
                 )
                 post = client.post(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN), json={})
                 head = client.head(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN))
+                _mark_fresh_child_stage(progress, "denial-requests-complete")
                 if (
                     resolver_calls
                     or counters.get("resolver", 0)
@@ -673,7 +716,9 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
                 ):
                     raise AssertionError("denied WEB product requests reached the reader")
                 first = client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN))
+                _mark_fresh_child_stage(progress, "first-product-read-complete")
                 second = client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN))
+                _mark_fresh_child_stage(progress, "second-product-read-complete")
                 failure_statuses = _exercise_integrity_failure_cases(
                     recipe,
                     failure_clients=failure_clients,
@@ -682,6 +727,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
                     docker_argv=docker_argv,
                     expected_once=expected_once,
                 )
+                _mark_fresh_child_stage(progress, "integrity-cases-complete")
             finally:
                 audit_active[0] = False
                 subprocess_module.run = real_subprocess_run
@@ -764,6 +810,8 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
             after_tree = _tree_snapshot(recipe.audit_root, temp_root=temp_root)
             if before_tree != after_tree or before_docker != after_docker:
                 raise AssertionError("fresh WEB product read mutated durable or Docker state")
+            _mark_fresh_child_stage(progress, "post-read-audit-complete")
+        _mark_fresh_child_stage(progress, "clients-closed")
     finally:
         _stop_call_monitoring(monitoring_session)
         subprocess_module.run = real_subprocess_run
@@ -785,6 +833,7 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
         ).encode("utf-8")
         + b"\n"
     ).hexdigest()
+    _mark_fresh_child_stage(progress, "result-built")
     return FreshWebMeasuredProductProbeResult(
         process_id=os.getpid(),
         canonical_bytes_base64=base64.b64encode(canonical).decode("ascii"),
@@ -804,6 +853,17 @@ def _run_child(recipe: FreshWebMeasuredProductRecipe) -> FreshWebMeasuredProduct
         docker_argv=tuple(docker_argv),
         filesystem_write_events=tuple(filesystem_writes),
     )
+
+
+def _mark_fresh_child_stage(progress: Any, stage: str) -> None:
+    progress.value = _FRESH_CHILD_STAGES.index(stage)
+
+
+def _fresh_child_stage(progress: Any) -> str:
+    stage_index = int(progress.value)
+    if 0 <= stage_index < len(_FRESH_CHILD_STAGES):
+        return _FRESH_CHILD_STAGES[stage_index]
+    return f"unknown-{stage_index}"
 
 
 def _build_failure_apps(
