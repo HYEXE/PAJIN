@@ -149,6 +149,7 @@ The table distinguishes implemented runtime behavior from contract-only and plan
 | AI read-only analysis binding | Implemented, preparation only | AI-001B binds four existing REDTEAM-001A/B/D read-only CAP-002 identities to exact provider/model/RAG/MCP/Tool Surfaces, request/token/cost ceilings, and the DOMAIN-004 minimum AI Worker profile; it stops at `PreparedCapabilityAction` and grants no Profile, Scope, approval, Permit, budget, credential, Worker, network, Observation/Evidence, Graph, Finding, or execution authority |
 | AI sealed Observation admission | Implemented, bounded | AI-001C reverifies one successful sealed REDTEAM LLM, LLM/RAG, or registered MCP Capability Graph Run and admits only one neutral `ai.behavior-observation` plus exact Evidence through the existing Graph single writer; Surface references remain classification-only and grant no Tool, Scope, Permit, Worker, replay, Finding, or further execution authority |
 | AI Replay, Controls, and benchmark contract | Implemented, bounded | AI-001D binds one exact AI-001C M03/M06/A04 source to separately sealed KISA two-repetition fresh-session Replay, three-Control evidence, the matching REDTEAM-002 Capability contract, and the DOMAIN-006 AI plan; it binds no concrete Ground Truth case or measurement and grants no confirmation, Finding, Scope, Permit, Worker, network, credential, Replay, or execution authority |
+| AI M03 measured system-prompt disclosure | Implemented, registered and non-executable | [AI-002A](docs/benchmark/AI-002A-exact-m03-measured-case-authority.md) registers one neutral public M03 case plus separate private known-positive Ground Truth, the exact AI-001D predecessor requirement, immutable Target/Worker/proxy contracts, canonical source/two-Replay/three-Control protocol, and DOMAIN-006 AI floor. It builds or runs nothing, exposes no private prompt/check, and grants no application write, model call, measurement, product, Graph/Finding/report/delivery, caller configuration, external target/provider, credential, M06, A04, MCP, RAG, or general AI authority. AI-002B~D runtime and conformance remain planned under [ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md). |
 | Web / API | Implemented, bounded | HTTP/OpenAPI/auth/file-upload discovery, exact Pentest GET Recon, and REDTEAM-001C exact three-request Boolean SQLi profile against one fixed synthetic local endpoint; no general scanner or arbitrary target authority |
 | Web/API typed Surface | Implemented, registry only | WEB-001A binds the DOMAIN-002 `web.http-operation` semantics to existing concrete endpoint and bounded URI-template locator models; typed values remain `registered-not-authorized` and provide no Observation, Evidence, Graph, Scope, Capability, Permit, Worker, network, runtime, or execution authority |
 | Web/API read-only discovery binding | Implemented, preparation only | WEB-001B binds only a concrete WEB-001A GET Surface to the existing signed Pentest Recon CAP-002 and DOMAIN-004 minimum Web Worker profile; it stops at `PreparedCapabilityAction`, leaves pre-Gateway network disabled, and grants no Scope, approval, Permit, Worker selection, Observation/Evidence, Graph, Finding, runtime, or execution authority |
@@ -251,7 +252,15 @@ bounded sealed Observation/Evidence result without making Surface, Profile, Doma
 metadata authoritative. AI-001D adds a bounded semantic binding to independently sealed KISA
 fresh-session Replay and Controls plus the existing REDTEAM-002 benchmark contract. It does not
 claim a measured Ground Truth case, confirm the AI Observation, or provide general model, agent,
-RAG, MCP, or Tool discovery or execution support. NET-001A adds typed Network identity without scan
+RAG, MCP, or Tool discovery or execution support. The post-Phase 24 checkpoint
+[ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)
+selects only the deterministic single-turn KISA M03 case as the Phase 25 slice.
+[AI-002A](docs/benchmark/AI-002A-exact-m03-measured-case-authority.md) now adds the separate
+public/private measured-case authority, immutable image contracts, canonical operation protocol,
+and unevaluated DOMAIN-006 AI floor without runtime authority. The disposable internal Target
+lifecycle, independent measured Replay/Controls/floor, and bounded product conformance remain
+AI-002B through AI-002D work.
+NET-001A adds typed Network identity without scan
 authority. NET-001B adds one signed, Scope-bound passive TCP preparation and bounded
 Tool/Worker/Gateway adapter path. NET-001C admits only a neutral sealed protocol Observation with
 two Evidence references and, for one bounded label, an open Hypothesis requiring separately

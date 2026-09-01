@@ -49,14 +49,12 @@
 
 ## ARCH-002 multi-domain architecture 경계
 
-- DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
-- WEB-002A~D와 UX-009A~D는 단일 synthetic Web case의 measured validation과 bounded product read만
-  완료했다. production/external probing, Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
-- `NET-002A~D` exact synthetic six-case source/Replay/product read는 exact-commit Ubuntu real-Docker와
-  zero-residue audit을 통과했다. production/external target과 general Network scanning 권위는 없다.
-- AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
-  Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
-- registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
+- DOMAIN-001~006 registry는 일반 runtime 권위가 아니다.
+- WEB-002A~D/UX-009A~D는 단일 synthetic Web measured validation/product만 완료했다.
+- NET-002A~D는 exact synthetic six-case Docker conformance만 증명하며 general Network 권위가 없다.
+- AI-001A~D는 registry·admission·Replay/Control binding까지만 구현했다. ADR-0259는 exact M03를
+  Phase 25로 선정했을 뿐 concrete Ground Truth·measurement·Finding은 아직 없다.
+- registry, cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
 
 ## UX-006B authenticated external delivery 경계
 
@@ -769,17 +767,18 @@
 
 ## 로컬 Windows container runtime 가용성
 
-- 상태: maintainer host 정책상 NET-002B/C/D local real-Docker opt-in은 미실행이다. 정책 우회·runtime data
-  삭제는 하지 않는다.
-- 영향: exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`의 Ubuntu run `33494188536`이
-  source/Replay/product read와 zero-residue audit을 통과했으므로 Phase 24 blocker는 아니다. 추가 local
-  Docker 진단은 승인된 별도 환경에서만 수행한다.
+- 상태: host 정책상 NET-002B/C/D local real-Docker opt-in은 미실행이며 정책 우회·runtime data 삭제는 금지한다.
+- 영향: exact Ubuntu run `33494188536`이 Phase 24 conformance와 residue audit을 통과했다. 추가 local
+  Docker 진단은 승인된 환경에서만 수행한다.
 
-## repo-wide CI run 33449972466의 단일 shard 실패
+## current-main CI run 33495912088의 NET-002D child timeout
 
-- 상태: NET-002A/B 이전 HEAD의 run은 완료/실패다. shard 1 cancellation test가
-  `gateway.calls` 0을 관찰했다(기대 1).
-- 해소: Network green 근거가 아니다. 새 Linux CI 통과나 재현 가능한 원인 분류가 필요하다.
+- 상태: `c0a8805774d24a9d24eb7b1ab95e15bb0da8d72f`의 Quality와 23개 shard는 성공했지만 shard 0 job
+  `99818138841`에서 NET-002D fresh-process child가 고정 120초 제한을 넘어 실패했다.
+- 로컬 해소: child progress 진단과 기존 real-Docker와 같은 300초 bound를 적용했고 의미 assertion을 유지한
+  exact 재현은 `1 passed in 429.38s`다.
+- 잔여: local 보수 commit은 `6e8f91e`다. AI-002A checkpoint와 함께 push된 exact commit의 새 repo-wide
+  green을 확인하기 전에는 `AI-002B` runtime을 시작하지 않는다.
 
 ## Git OpenSSL CA 경로
 

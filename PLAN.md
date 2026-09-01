@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 24 — Governed Measured Network Service Identification — 완료
-- 현재 우선순위: Phase 24 이후 fresh checkpoint review
-- 다음 우선순위: fresh review 결과에 따른 단일 후속 vertical slice 선택
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002A` 로컬 구현·검증 완료
+- 현재 우선순위: 승인된 NET-002D/`AI-002A` checkpoint push와 새 repo-wide green 확인
+- 다음 우선순위: green 확인 뒤 `AI-002B`
 
 ## 제품 목표
 
@@ -688,44 +688,48 @@ Phase 23 이후 fresh checkpoint에서 Network를 다음 단일 measured runtime
 ftp/imap/pop3/smtp/ssh known-positive 5건과 unknown negative Control 1건뿐이며, DNS·UDP·port range·enumeration,
 raw socket, active protocol write, credential, production/external target과 일반 scanner는 포함하지 않는다.
 
-- [x] `NET-002A` exact isolated-service measured-case authority — complete, registration only
-  - 기존 finding 중심 benchmark catalog/Walking wire를 재해석하지 않고 Network 전용 public registration,
-    private Ground Truth binding, immutable target/Worker/proxy image identity와 six-case membership을 versioning
-  - exact DOMAIN-006 Network plan, measurement protocol과 validation-floor policy를 결박하되 Target/provider,
-    approval, Permit, Worker, network, measurement, product와 execution authority는 모두 false
-  - fixed case-ID-only TCP emitter profile은 internal port `18080`, Target read 0 byte와 Worker application write
-    0 byte를 고정하며 observed OCI image ID는 요구만 등록하고 build·binding·runtime use는 수행하지 않음
-- [x] `NET-002B` registry-governed disposable fixture source measurement — complete, source only
-  - caller banner가 아닌 fixed case ID만 받는 code-owned TCP banner-emitter image를 case마다 fresh internal
-    container/network로 materialize하고 host port를 publish하지 않음
-  - Worker는 proxy-only network에 남고 proxy만 exact Target network를 bridge하며, normal Policy/Approval,
-    one-use ActionPermit, Gateway, deployment Worker와 trusted CONNECT receipt 경로로 case당 한 번 실행
-  - exact Target/proxy/Worker/container/network/output/cleanup evidence와 pre-dispatch denial을 sealed authority로 보존
-  - public authority에는 digest lineage와 false authority ceiling만 두고 raw banner·expected/observed label·
-    coordinate·Worker/Tool result는 별도 deployment-private binding에서만 contextfully reopen
-  - fake/in-process 전체 경로와 별도로 NET-002D exact-commit Linux run이 source/Replay와 cleanup을 검증
-- [x] `NET-002C` independent fresh-Worker Replay, Network floor, and bounded evaluation — complete
-  - 여섯 case를 source와 전역 identity가 분리된 approval·Permit·Worker·Target lifecycle로 재실행하고 source,
-    Replay, private Ground Truth와 12개 inner Run을 contextfully reopen
-  - exact DOMAIN-006 14-metric order에서 coverage `6/6`, recall·precision `5/5`, false-positive `0/1`, Replay
-    `6/6`, request/tool `12/1`, evidence `144/144`, denial `5/5`, Network accuracy `6/6`과 세 N/A를 평가
-  - public에는 digest lineage·aggregate metric·false ceiling만 두고 raw banner·label·runtime identity는 private에
-    격리하며, satisfied floor는 synthetic evidence일 뿐 service confirmation·Finding·product 권위가 아님
-  - in-process 12-execution 경로와 별도로 NET-002D exact-commit Linux run이 fresh source/Replay를 검증
-- [x] `NET-002D` bounded Operator product read and exact real-Docker conformance — complete
-  - public-safe case identity·aggregate metric·applicability·floor·literal-false marker만 별도 versioned product로
-    sealing하고 immutable deployment registry의 zero-argument reader와 body/query-free Operator GET으로 노출
-  - raw/private/source-lineage/image/runtime/Worker/Tool, Graph/Finding/report/delivery와 모든 새 실행 권위는 제외
-  - fake-provider fresh-spawn read `1 passed in 320.52s`, 전체 Network 회귀 `154 passed, 3 skipped`,
-    workflow contract `2 passed`; maintainer host의 local real-Docker opt-in은 미실행
-  - exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`의 Ubuntu run `33494188536`, job
-    `99812441408`에서 source/Replay 12회, denial, cleanup, fresh reload가 `1 passed in 771.59s`로 통과했고
-    unconditional zero-residue audit도 성공
+- [x] `NET-002A`: exact six-case public registration, private Ground Truth, fixed emitter/image와
+  DOMAIN-006 protocol/floor를 등록하되 모든 실행 권위를 false로 유지
+- [x] `NET-002B`: case별 fresh internal no-published-port Target과 proxy-only Worker source execution,
+  public lineage/private raw lifecycle 분리 및 pre-dispatch denial 완료
+- [x] `NET-002C`: source와 전역 identity가 분리된 six-case Replay, exact 14-metric floor와 public-safe
+  aggregate 평가 완료. satisfied floor는 service confirmation이나 Finding이 아님
+- [x] `NET-002D`: immutable zero-argument reader와 Operator GET, exact-commit Ubuntu real-Docker source/Replay
+  12회, denial, cleanup, fresh reload와 unconditional zero-residue audit 완료
 
 Phase 24 Exit Gate: 완료. exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`가 여섯
 code-owned fixture의 internal no-published-port Target, Worker zero-target-application-write, proxy-only bridge,
 disjoint fresh authority, exact DOMAIN-006 metric/floor, read-only product ceiling과 zero residue를 Ubuntu 24.04
 real-Docker에서 증명했다. 이 증거는 exact synthetic six-case 범위를 production/general Network 지원으로 확장하지 않는다.
+
+### Phase 25 — Governed Measured AI System-Prompt Disclosure
+
+[ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)은
+Phase 24 이후 fresh checkpoint에서 code-owned KISA M03 system-prompt disclosure 한 건을 다음 단일
+vertical slice로 선정한다. M06, A04, MCP, RAG, arbitrary prompt, external provider·target, provider credential과
+general model/agent testing은 포함하지 않는다. current-main CI가 green이어야 runtime 구현을 시작한다.
+
+- [x] `AI-002A` exact M03 measured-case authority — implemented locally, registration only
+  - exact AI-001D M03 predecessor requirement, neutral public registration, private known-positive
+    Ground Truth·prompt/check·Control derivation, immutable Target/Worker/proxy contracts, canonical
+    source/two-Replay/three-Control protocol와 DOMAIN-006 AI floor를 결박하고 모든 runtime·product 권위를 false로 유지
+- [ ] `AI-002B` registry-governed disposable M03 source measurement — planned
+  - fresh internal no-published-port vulnerable Target을 기존 approval/Permit/Gateway/Worker 경로로 한 번 실행하고
+    prompt/check/transcript/runtime을 private으로 격리하며 caller substitution을 dispatch 전에 거부
+- [ ] `AI-002C` independent fresh-session Replay, Controls, and AI floor — planned
+  - 두 supporting Replay와 exact Baseline/Negative/Counterfactual Controls를 fresh identity로 실행하고
+    DOMAIN-006 AI metric/floor를 public-safe aggregate로만 평가
+- [ ] `AI-002D` bounded product read and exact conformance — planned
+  - AI-only zero-argument Operator read와 exact-clean Ubuntu real-Docker source/Replay/Controls/denial/cleanup/
+    residue conformance를 완료하되 Graph/Finding/report/delivery와 추가 실행 권위를 만들지 않음
+
+NET-002D fresh-process 보수는 child progress stage와 최근 실제 실행시간에 맞춘 300초 bound를 추가했고
+기존 의미 assertion을 유지한 exact 재현이 `1 passed in 429.38s`로 통과했다. AI-002A 관련 회귀도
+`129 passed`다. Windows 전체 pytest는 `7,757`개를 수집해 19%까지 실행했지만 이미 기록된 managed
+Artifact POSIX directory `fsync` 제약에서 fail-closed해 중단했으며 task-local 임시 디렉터리와 pytest
+cache는 제거했다. NET-002D 보수는 local commit `6e8f91e`이고 AI-002A는 이 문서를 포함하는 checkpoint
+commit이다. 새 exact-commit repo-wide CI가 없으므로 기존 run `33495912088`의 red 상태를 green으로
+재해석하지 않는다. `AI-002B` runtime은 승인된 checkpoint의 repo-wide green을 확인한 뒤 시작한다.
 
 ## 우선순위와 재평가 기준
 
@@ -738,8 +742,9 @@ real-Docker에서 증명했다. 이 증거는 exact synthetic six-case 범위를
 Worker isolation을 기준으로 재평가할 수 있다. 한 PR에서 여러 domain runtime을 함께 구현하지
 않는다.
 
-Phase 23은 기존 WEB-002D를 소비하는 read-only product slice다. ADR-0258의 fresh checkpoint review는
-Network를 Phase 24의 단일 measured runtime으로 선정했으며, UX-009를 Network runtime 완료로 계산하지 않는다.
+Phase 23은 기존 WEB-002D를 소비하는 read-only product slice이고 Phase 24는 exact synthetic Network
+measurement다. ADR-0259의 fresh checkpoint review는 exact KISA M03만 Phase 25로 선정했으며, 기존
+AI-001/KISA/REDTEAM/P0-D2B 증거를 measured M03 또는 일반 AI 지원으로 계산하지 않는다.
 
 ## 미결정 제품 사항
 

@@ -572,6 +572,26 @@ outside the selected phase. The additive contracts are
 [NET-002C](../benchmark/NET-002C-independent-fresh-worker-network-floor-evaluation.md), and
 [NET-002D](../orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md).
 
+The post-Phase 24 checkpoint
+[ADR-0259](../adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)
+selects the exact code-owned single-turn KISA M03 system-prompt-disclosure case as the
+Phase 25 slice. [AI-002A](../benchmark/AI-002A-exact-m03-measured-case-authority.md) adds a neutral
+public measured-case registration and separate private known-positive Ground Truth binding, the
+exact AI-001D predecessor requirement, immutable deterministic Target/Worker/proxy contracts, the
+canonical source/two-Replay/three-Control protocol, the DOMAIN-006 AI floor, and strict
+content-addressed validation. It builds no image, creates no Target or network, selects no provider,
+materializes no prompt, issues no approval, Permit, or Grant, runs no Tool or Worker, records no
+measurement, and exposes no product. AI-002B will add one fresh internal no-published-port
+vulnerable Target source execution through the existing governed action path; AI-002C will add
+two supporting fresh-session Replay
+repetitions, the exact Baseline, Negative, and Counterfactual Controls, and the AI floor; AI-002D
+will add a bounded AI-only product read and exact-clean Ubuntu real-Docker conformance. This
+decision implements none of those authorities by itself. Prompt, check, transcript, session,
+request, and runtime material remain private, while M06, A04, MCP, RAG, arbitrary caller prompts,
+external providers or targets, credentials, general model or agent testing, Graph/Finding/report/
+delivery, and additional execution authority remain outside the phase. Existing AI-001, KISA,
+VAL-004A, REDTEAM, P0-D2/P0-D2B, Walking, and DOMAIN-006 wires keep their established meanings.
+
 CLOUD-001A implements the reserved `cloud.account-resource` locator schema as five additive,
 secret-free classes for provider-partition accounts, nested projects, provider-local resources,
 IAM objects, and immutable container/image coordinates. Parent identity is nested rather than

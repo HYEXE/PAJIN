@@ -26,8 +26,18 @@
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
 - Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
 - Phase 24 Exit Gate도 exact NET-002D conformance와 residue audit으로 완료됐다.
-- 현재 우선순위: Phase 24 이후 fresh checkpoint review
-- 다음 우선순위: fresh review 결과에 따른 단일 후속 vertical slice 선택
+- fresh checkpoint review 시작 HEAD와 upstream은
+  `c0a8805774d24a9d24eb7b1ab95e15bb0da8d72f`로 같고 divergence는 `0/0`이었다.
+- current-main CI run `33495912088`은 Quality와 23개 pytest shard가 성공했지만 shard 0 job
+  `99818138841`의 NET-002D fresh-process child timeout 한 건으로 완료/실패다.
+- NET-002D local 보수는 child progress stage와 300초 bound를 추가했고 기존 의미 assertion을 유지한
+  exact 재현이 `1 passed in 429.38s`로 통과했다. 이 변경의 새 repo-wide CI는 아직 없다.
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002A` 등록 경계 구현·로컬 검증
+- NET-002D 보수는 local commit `6e8f91e`이며 AI-002A는 이 문서를 포함하는 다음 checkpoint commit이다.
+- 현재 우선순위: 승인된 두 local checkpoint commit을 push하고 새 exact-commit repo-wide green 확인
+- 다음 우선순위: green 확인 뒤 `AI-002B` disposable source runtime
+- 두 checkpoint commit 생성 직후 staged/unstaged/untracked 변경과 진행 중 Git 작업은 없다. 실제 branch,
+  upstream, push와 CI 상태는 재개 시 다시 확인한다. PR·merge·deploy는 수행하지 않았다.
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
@@ -635,72 +645,31 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 
 ## 다음 한 단계
 
-`NET-002A~D`가 `main`에 구현·push되고 exact Linux conformance를 통과했다. A는 exact
-ftp/imap/pop3/smtp/ssh positive 5건과 unknown
-negative Control 1건, private Ground Truth, fixed emitter/image contracts와 DOMAIN-006 protocol/floor를 등록한다.
-B는 case마다 fresh internal no-published-port Target/network와 proxy-only Worker를 normal
-Policy→Approval→one-use Permit→Gateway 경로로 한 번 실행하고 public lineage와 private raw output/lifecycle을
-분리한다. C는 다음 경계를 추가한다.
+[ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)의
+`AI-002A` 등록 경계를 구현했다. 새 `pajin.workflow.ai_measured_case_authority`는 exact M03 한 건의
+중립 public registry와 private known-positive Ground Truth·prompt/check·Control derivation을 분리한다.
+동적 AI-001D artifact를 가장하지 않고 exact predecessor API/scenario/Tool/Profile/Replay/Control 요구를
+content-addressed contract로 등록하며 실제 binding digest는 후속 측정에서 필수로 남긴다. 고정
+`POST /v1/chat` vulnerable Target, Target/Worker/proxy image contract, one source + two Replay + exact
+Baseline/Negative/Counterfactual order, request-unit·cost semantics와 14개 DOMAIN-006 AI floor를 묶되
+image build, Target/network/provider, prompt materialization, approval/Permit/Grant, application write,
+Tool/Worker/model call, measurement, product, Graph/Finding/report/delivery 권위는 모두 false다.
 
-- `network_replay_evaluation.py`는 source authority와 여섯 inner NET-001B Run을 먼저 contextfully reopen한 뒤,
-  같은 NET-002B runner로 여섯 fresh Replay lifecycle을 별도 approval·Permit·Worker·Target identity 아래 실행한다.
-- source와 Replay의 measurement/Run/request/envelope/Proposal/Decision/approval/Permit/dispatch/Worker/Evidence/
-  terminal/reconciliation/Target/container/network identity는 전역으로 disjoint해야 하며 source 재사용과 foreign
-  image·authorizer는 floor sealing 전에 거부한다.
-- private Ground Truth에서 positive 5건 exact label match와 unknown Control unresolved를 비교한다. public에는
-  case ref·digest lineage·14개 aggregate metric·false ceiling만 두고 raw banner·label·runtime identity는 별도
-  private binding에 보존한다.
-- exact DOMAIN-006 floor는 coverage `6/6`, recall·precision `5/5`, false-positive `0/1`, Replay `6/6`,
-  request/tool `12/1`, evidence `144/144`, denial `5/5`, Network accuracy `6/6`, measured time과 등록된 세 N/A다.
-  cleanup metric N/A와 별개로 12개 lifecycle의 zero residue는 admission에 필수다.
-- 새 계약은 `docs/benchmark/NET-002C-independent-fresh-worker-network-floor-evaluation.md`다. 기존
-  NET-001A~D, NET-002A/B, DOMAIN-006, generic benchmark/Walking wire와 accepted ADR identity는 변경하지 않았다.
-- D는 C를 완전히 다시 여는 별도 versioned public product에 canonical case reference·comparison state와
-  14개 aggregate metric·applicability·floor·literal-false ceiling만 봉인한다. raw/private/source lineage,
-  image/runtime/Worker/Tool, Graph/Finding/report/delivery는 포함하지 않는다.
-- immutable deployment registry와 zero-argument reader는 product/source identity·경로·complete verifier context를
-  고정하고 매 read마다 C와 product를 재검증한다. body/query-free Operator GET은 401/403/400/405/503/fixed
-  409로 닫히며 caller path/provider/profile/case/policy 또는 실행 설정을 받지 않는다.
-- fresh-spawn helper는 denial과 두 read 동안 Run/product/source/Replay/Worker/Target mutation을 차단하고 canonical
-  sealed bytes, exact reload count, filesystem stability와 read-only image inspect/residue query만 허용한다.
-  `.github/workflows/network-002d-conformance.yml`은 explicit manual confirmation, exact clean SHA, Ubuntu 24.04,
-  repository-built 세 image, source/Replay 12회와 unconditional residue audit을 고정한다.
-- 새 계약은
-  `docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md`다.
+AI-002A 집중 테스트는 `9 passed in 3.17s`, AI-001D/KISA Control/Target/DOMAIN-006 관련 회귀는
+task-local temp/lock root에서 `129 passed in 85.77s`다. 기본 Windows temp root 실행은 ACL 때문에
+6개 fixture setup이 중단됐고 같은 명령을 한정된 root로 재실행해 통과했으며 임시 디렉터리는 제거했다.
+전체 Ruff check와 변경 파일 format check가 통과했고 Linux 대상 strict mypy는 `379 source files`,
+문서 정책·링크는 `4 passed`, `git diff --check`는 통과했다. 전체 repository pytest는 Windows에서
+`7,757`개를 수집해 19%까지 실행했지만, 기존 `Windows managed Artifact POSIX durability` 제약으로
+`tests/test_control_plane_artifact_admission.py`부터 fail-closed 연쇄가 시작돼 중단했다. exact 격리 재현은
+`5 passed, 1 failed`였고 실패는 POSIX directory `fsync`가 없는 플랫폼에서 기대한 후속 metadata 검증 전에
+`staged source Artifact failed managed admission`이 발생하는 기존 경계다. task-local 임시 디렉터리와
+접근 불가 pytest cache는 ACL을 복구한 뒤 제거했다. 새 exact-commit repo-wide CI는 아직 실행하지 않았다.
 
-현재 검증 결과:
-
-- NET-001A~D와 NET-002A~D 전체 Network 회귀: `154 passed, 3 skipped in 946.65s`. skip은
-  `PAJIN_NETWORK_002B_REAL_DOCKER=1`, `PAJIN_NETWORK_002C_REAL_DOCKER=1`,
-  `PAJIN_NETWORK_002D_REAL_DOCKER=1` opt-in이다.
-- D fresh-spawn read: `1 passed in 320.52s`; 수집 후 바뀐 source digest/emitter profile/image substitution
-  단독 재검증: `1 passed in 273.73s`.
-- D workflow contract와 default Docker selector: `2 passed, 1 skipped in 2.89s`.
-- DOMAIN-006: `52 passed in 7.95s`.
-- Control Plane API compatibility: `21 passed in 51.63s`.
-- Docker Worker 기본 호환성: `96 passed in 0.58s`.
-- WEB-002D production adapter compatibility guard:
-  `11 passed, 7 deselected in 16.58s`. WEB 경로는 non-empty runtime image binding을 거부한다.
-- 문서 정책·링크: `4 passed`; `git diff --check` 통과.
-- `ruff check --no-cache src tests containers`: 통과. 이번 변경 Python 19개 format check도 통과했다.
-  `src/pajin/control_plane/api.py`의 whole-file format failure는 HEAD 원본에도 존재해 범위 밖 bulk rewrite를
-  수행하지 않았다.
-- Linux 대상 `mypy --no-sqlite-cache --strict --platform linux src/pajin`:
-  `378 source files` 통과.
-- local container runtime을 시작할 수 없어 NET-002B/C/D real-Docker opt-in은 실행하지 않았다. in-process
-  결과만으로는 Exit Gate 증거가 아니지만, 별도 exact Ubuntu run이 실제 Docker 경계를 통과했다.
-- 최초 exact run `33493671894`는 source 실행 전 Graph Store test parent가 owner-only가 아니어서 실패했으나
-  unconditional residue audit은 성공했다. `9b3d803`이 test authorizer parent를 POSIX `0700`으로 고정했고,
-  후속 run `33494188536`, job `99812441408`에서 exact conformance `1 passed in 771.59s`와 residue audit이
-  모두 성공했다.
-- 기존 repo-wide CI run `33449972466`은 완료/실패다. shard 1의
-  `test_provider_session_duration_cancels_in_flight_gateway_and_keeps_reservation`가 `gateway.calls == 1`
-  기대에 0으로 실패했고 로컬 단일 재현은 통과했다. 해당 run은 NET-002A/B 이전 HEAD 대상이다.
-
-다음 첫 단계는 Phase 24 완료 증거를 경계로 fresh checkpoint review를 수행하는 것이다. exact synthetic
-six-case Network slice를 production/external target, DNS·UDP·enumeration, active write, credential, service
-confirmation, general scanner, Graph/Finding/report/delivery 또는 추가 실행 권위로 확장하지 않고, 다음 단일
-vertical slice를 새 ADR에서 선택하거나 명시적으로 보류한다.
+다음 첫 단계는 승인된 두 local checkpoint commit을 `main`에 push하고 새 exact-commit repo-wide CI가
+green임을 확인하는 것이다. 그 전에는 `AI-002B` runtime을 시작하지 않는다. AI-002B는
+fresh internal no-published-port vulnerable Target 한 건과 existing governed action path만 열고 M06, A04,
+MCP, RAG, caller prompt, external provider·target, credential과 general model/agent testing을 계속 제외한다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤
