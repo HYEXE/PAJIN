@@ -62,7 +62,7 @@ from pajin.policy.scope import scope_matches
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.runtime.worker import EgressPolicy, NetworkMode, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeTool
+from pajin.tools.ai import AIChatProbeTool, AIM03SourceChatProbeTool
 from pajin.tools.base import Tool
 from pajin.tools.execution_receipts import safe_job_metadata
 from pajin.tools.gateway import GatewayOutcome
@@ -946,6 +946,7 @@ def load_verified_ai_analysis_observation_source(
     inputs: AIAnalysisObservationSourceInputs,
     *,
     graph_store: SQLiteGraphStore,
+    source_tool: AIM03SourceChatProbeTool | None = None,
 ) -> VerifiedAIAnalysisObservationSource:
     """Open one sealed REDTEAM Run and recheck its Permit-to-Tool bindings."""
 
@@ -1054,6 +1055,7 @@ def load_verified_ai_analysis_observation_source(
             evidence_path=evidence_path,
             reservation=reservation,
             expected_reservation=expected_reservation,
+            source_tool=source_tool,
         )
         return VerifiedAIAnalysisObservationSource(
             snapshot=snapshot,
@@ -1085,6 +1087,7 @@ def _validate_ai_execution_authority(
     evidence_path: str,
     reservation: object,
     expected_reservation: dict[str, object],
+    source_tool: AIM03SourceChatProbeTool | None,
 ) -> None:
     if not isinstance(permit, ActionPermit):
         raise TypeError("AI execution verification requires an ActionPermit")
@@ -1121,7 +1124,7 @@ def _validate_ai_execution_authority(
         raise AIAnalysisObservationAdmissionError(
             "sealed AI Tool evidence differs or is unsuccessful"
         )
-    tool = _ai_observation_tool(job)
+    tool = _ai_observation_tool(job, source_tool=source_tool)
     expected_result = tool.interpret(job.request, evidence.worker_result)
     if expected_result != evidence.result:
         raise AIAnalysisObservationAdmissionError(
@@ -1148,7 +1151,21 @@ def _validate_ai_execution_authority(
         )
 
 
-def _ai_observation_tool(job: CapabilityGraphCampaignJobInput) -> Tool:
+def _ai_observation_tool(
+    job: CapabilityGraphCampaignJobInput,
+    *,
+    source_tool: AIM03SourceChatProbeTool | None = None,
+) -> Tool:
+    if source_tool is not None:
+        if (
+            type(source_tool) is not AIM03SourceChatProbeTool
+            or job.profile != "redteam-llm-v1"
+            or job.request.tool_id != AIChatProbeTool.spec.tool_id
+        ):
+            raise AIAnalysisObservationAdmissionError(
+                "AI source Tool override is outside the exact M03 admission"
+            )
+        return source_tool
     if job.profile in {"redteam-llm-v1", "redteam-llm-rag-v1"}:
         return AIChatProbeTool()
     if job.profile == "redteam-mcp-v1":

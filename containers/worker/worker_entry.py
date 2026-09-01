@@ -9,10 +9,11 @@ import ssl
 import subprocess
 import sys
 import time
-from base64 import b64encode
+from base64 import b64encode, urlsafe_b64encode
 from collections.abc import Callable, Iterator
 from contextlib import suppress
 from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from hmac import compare_digest
 from http.client import HTTPResponse, HTTPSConnection
@@ -40,6 +41,8 @@ MAX_WORKER_INPUT_BYTES = 1_100_000
 MAX_MCP_RESPONSE_BYTES = 1_000_000
 MAX_MCP_STDERR_BYTES = 128_000
 MAX_NETWORK_SERVICE_BANNER_BYTES = 1_024
+AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
+AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
 _WORKER_INPUT_CHUNK_CHARS = 8_192
 _MCP_STREAM_CHUNK_BYTES = 65_536
 _MCP_READER_JOIN_SECONDS = 5
@@ -644,6 +647,8 @@ def ctf_crypto_single_byte_xor(payload: dict[str, Any]) -> dict[str, Any]:
 def _post_ai_turn(
     target: str,
     payload: dict[str, Any],
+    *,
+    source_target_challenge: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], float, str | None, str | None]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -651,15 +656,27 @@ def _post_ai_turn(
     if parsed.username or parsed.password:
         raise ValueError("AI target URL credentials are forbidden")
     encoded = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "PAJIN-AI-Probe/1.0",
+    }
+    if source_target_challenge is not None:
+        challenge_bytes = json.dumps(
+            source_target_challenge,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        headers["X-PAJIN-AI-Source-Challenge"] = (
+            urlsafe_b64encode(challenge_bytes).decode("ascii").rstrip("=")
+        )
     request = Request(
         target,
         data=encoded,
         method="POST",
-        headers={
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-            "User-Agent": "PAJIN-AI-Probe/1.0",
-        },
+        headers=headers,
     )
     started = time.perf_counter()
     try:
@@ -742,6 +759,90 @@ class _AIProbe:
     turns: list[Any]
     checks: list[Any]
     target_challenge: dict[str, Any] | None
+    source_target_challenge: dict[str, Any] | None
+
+
+def _validate_ai_source_challenge(
+    challenge: dict[str, Any],
+    *,
+    target: str,
+    probe: dict[str, Any],
+) -> None:
+    string_patterns = (
+        ("challenge_id", r"ai-source-target-challenge_[a-f0-9]{32}"),
+        ("permit_digest", r"[a-f0-9]{64}"),
+        ("source_request_id", r"tool_ai002b_source_[a-f0-9]{32}"),
+        ("source_operation_id", r"ai-source-operation_[a-f0-9]{64}"),
+        ("target_sha256", r"[a-f0-9]{64}"),
+        ("compiled_argument_digest", r"[a-f0-9]{64}"),
+    )
+    if (
+        target != AI_SOURCE_TARGET_URL
+        or challenge.get("api_version")
+        != "pajin.ai-source.target-execution-challenge/v1"
+        or any(
+            not isinstance(challenge.get(field), str)
+            or fullmatch(pattern, challenge[field]) is None
+            for field, pattern in string_patterns
+        )
+        or type(challenge.get("call_ordinal")) is not int
+        or challenge.get("call_ordinal") != 1
+        or challenge.get("method") != "POST"
+        or challenge.get("route_path") != "/v1/chat"
+        or challenge.get("target_sha256")
+        != sha256(AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        or challenge.get("compiled_argument_digest")
+        != sha256(
+            json.dumps(
+                probe,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+    ):
+        raise ValueError("sourceTargetChallenge is outside the exact AI-002B shape")
+    material = {key: value for key, value in challenge.items() if key != "challenge_id"}
+    expected_id = (
+        "ai-source-target-challenge_"
+        + sha256(
+            AI_SOURCE_CHALLENGE_DOMAIN
+            + json.dumps(
+                material,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+    )
+    if challenge["challenge_id"] != expected_id:
+        raise ValueError("sourceTargetChallenge identity differs")
+    issued_raw = challenge.get("issued_at")
+    expires_raw = challenge.get("expires_at")
+    if (
+        not isinstance(issued_raw, str)
+        or not isinstance(expires_raw, str)
+        or not issued_raw.endswith("Z")
+        or not expires_raw.endswith("Z")
+    ):
+        raise ValueError("sourceTargetChallenge time is invalid")
+    try:
+        issued_at = datetime.fromisoformat(issued_raw.replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("sourceTargetChallenge time is invalid") from exc
+    observed_at = datetime.now(UTC)
+    if (
+        issued_at.utcoffset() != timedelta(0)
+        or expires_at.utcoffset() != timedelta(0)
+        or issued_at.isoformat().replace("+00:00", "Z") != issued_raw
+        or expires_at.isoformat().replace("+00:00", "Z") != expires_raw
+        or not issued_at < expires_at <= issued_at + timedelta(seconds=120)
+        or not issued_at <= observed_at < expires_at
+    ):
+        raise ValueError("sourceTargetChallenge time is outside its exact bound")
 
 
 def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
@@ -785,6 +886,51 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         }
         if set(target_challenge) != required_challenge_fields:
             raise ValueError("targetChallenge fields are not canonical")
+    source_target_challenge = payload.get("sourceTargetChallenge")
+    if source_target_challenge is not None:
+        if not isinstance(source_target_challenge, dict):
+            raise TypeError("sourceTargetChallenge must be an object")
+        required_source_challenge_fields = {
+            "api_version",
+            "challenge_id",
+            "permit_digest",
+            "source_request_id",
+            "source_operation_id",
+            "call_ordinal",
+            "target_sha256",
+            "method",
+            "route_path",
+            "compiled_argument_digest",
+            "issued_at",
+            "expires_at",
+        }
+        if set(source_target_challenge) != required_source_challenge_fields:
+            raise ValueError("sourceTargetChallenge fields are not canonical")
+        _validate_ai_source_challenge(
+            source_target_challenge,
+            target=target,
+            probe=probe,
+        )
+        parsed_target = urlsplit(target)
+        if (
+            target_challenge is not None
+            or source_target_challenge.get("api_version")
+            != "pajin.ai-source.target-execution-challenge/v1"
+            or source_target_challenge.get("method") != "POST"
+            or source_target_challenge.get("route_path") != "/v1/chat"
+            or source_target_challenge.get("call_ordinal") != 1
+            or parsed_target.path != "/v1/chat"
+            or parsed_target.query
+            or parsed_target.fragment
+            or sha256(target.encode("utf-8")).hexdigest()
+            != source_target_challenge.get("target_sha256")
+            or scenario_id != "kisa.model.system-prompt-disclosure"
+            or threat_class != "M03"
+            or purpose != "attack"
+            or len(turns) != 1
+            or len(checks) != 1
+        ):
+            raise ValueError("sourceTargetChallenge is outside the exact AI-002B shape")
     return _AIProbe(
         target=target,
         scenario_id=scenario_id,
@@ -794,6 +940,7 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         turns=turns,
         checks=checks,
         target_challenge=target_challenge,
+        source_target_challenge=source_target_challenge,
     )
 
 
@@ -831,6 +978,7 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
         ) = _post_ai_turn(
             probe.target,
             request_payload,
+            source_target_challenge=probe.source_target_challenge,
         )
         response_latencies.append(response_latency)
         turn_records.append(

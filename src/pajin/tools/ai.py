@@ -12,6 +12,9 @@ from pydantic import Field, JsonValue, StrictBool, model_validator
 from pajin.domain.models import StrictModel, ToolRequest, ToolResult, ToolRiskTier
 from pajin.runtime.worker import NetworkMode, WorkerJob, WorkerResult, WorkerStatus
 from pajin.target_attestation import (
+    AISourceTargetExecutionChallenge,
+    AISourceTargetExecutionReceipt,
+    AISourceTargetProxyBinding,
     TargetExecutionChallenge,
     TargetExecutionProxyBinding,
     TargetExecutionReceipt,
@@ -40,6 +43,7 @@ from pajin.tools.base import (
 
 AI_CHAT_PROXY_RECEIPT_VERSION = EGRESS_HTTP_RECEIPT_VERSION
 MAX_AI_CHAT_NETWORK_LOG_BYTES = MAX_TRUSTED_NETWORK_LOG_BYTES
+_AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
 
 
 class ChatRole(StrEnum):
@@ -433,6 +437,69 @@ class AIChatProbeTool(Tool):
             raise ValueError("worker did not attest network execution")
 
 
+class AIM03SourceChatProbeTool(AIChatProbeTool):
+    """Inject one exact AI-002B source challenge without changing Tool identity."""
+
+    def __init__(
+        self,
+        *,
+        challenge: AISourceTargetExecutionChallenge,
+        expected_request: ToolRequest,
+    ) -> None:
+        self._challenge = AISourceTargetExecutionChallenge.model_validate_json(
+            challenge.model_dump_json()
+        )
+        self._expected_request = ToolRequest.model_validate_json(expected_request.model_dump_json())
+        parsed = urlsplit(self._expected_request.target)
+        if (
+            self._expected_request.request_id != self._challenge.source_request_id
+            or self._expected_request.method != "POST"
+            or self._expected_request.target != _AI_SOURCE_TARGET_URL
+            or parsed.scheme != "http"
+            or parsed.path != self._challenge.route_path
+            or parsed.query
+            or parsed.fragment
+            or sha256(self._expected_request.target.encode("utf-8")).hexdigest()
+            != self._challenge.target_sha256
+            or _canonical_json_sha256(self._expected_request.arguments)
+            != self._challenge.compiled_argument_digest
+        ):
+            raise ValueError("AI-002B source challenge differs from its exact Tool request")
+        probe = AIChatProbeInput.model_validate(self._expected_request.arguments)
+        if (
+            probe.scenario_id != "kisa.model.system-prompt-disclosure"
+            or probe.threat_class != "M03"
+            or len(probe.turns) != 1
+            or len(probe.checks) != 1
+        ):
+            raise ValueError("AI-002B source Tool accepts only the exact single-turn M03 shape")
+
+    @property
+    def source_challenge(self) -> AISourceTargetExecutionChallenge:
+        return self._challenge.model_copy(deep=True)
+
+    def prepare(self, request: ToolRequest) -> WorkerJob:
+        canonical = ToolRequest.model_validate_json(request.model_dump_json())
+        if canonical != self._expected_request:
+            raise ValueError("AI-002B source Tool request was substituted")
+        prepared = super().prepare(canonical)
+        payload = json.loads(prepared.stdin)
+        if not isinstance(payload, dict) or "sourceTargetChallenge" in payload:
+            raise ValueError("AI-002B source Worker challenge is ambiguous")
+        payload["sourceTargetChallenge"] = self._challenge.model_dump(mode="json")
+        return WorkerJob.model_validate(
+            {
+                **prepared.model_dump(mode="python"),
+                "stdin": json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    allow_nan=False,
+                ),
+            }
+        )
+
+
 class AIChatRegressionTool(AIChatProbeTool):
     """Verify normal chat behavior without contributing an attack finding."""
 
@@ -664,6 +731,101 @@ def verify_ai_chat_proxy_receipts(
         ):
             raise ValueError("AI transcript differs from its host-observed HTTPS CONNECT route")
     return True
+
+
+def ai_source_target_proxy_binding(
+    request: ToolRequest,
+    worker_result: WorkerResult,
+    output: AIChatProbeOutput,
+    *,
+    expected_challenge: AISourceTargetExecutionChallenge,
+    target_receipt: AISourceTargetExecutionReceipt,
+    network_log_trusted: bool,
+) -> AISourceTargetProxyBinding:
+    """Bind the private AI-002B Target receipt to one plaintext proxy exchange."""
+
+    receipts = _host_observed_ai_transport_receipts(
+        request,
+        worker_result,
+        network_log_trusted=network_log_trusted,
+        allow_target_attested_https=False,
+    )
+    if (
+        receipts is None
+        or len(receipts) != 1
+        or not isinstance(receipts[0], HTTPJSONProxyReceipt)
+        or len(output.turns) != 1
+    ):
+        raise ValueError("AI source Target receipt requires one plaintext proxy exchange")
+    if (
+        expected_challenge.source_request_id != request.request_id
+        or expected_challenge.target_sha256 != http_target_sha256(request.target)
+        or expected_challenge.method != request.method
+        or expected_challenge.compiled_argument_digest != _canonical_json_sha256(request.arguments)
+    ):
+        raise ValueError("AI source Target challenge differs from its exact Tool request")
+    try:
+        raw_output = decode_strict_worker_json_object(
+            worker_result,
+            label="raw AI source transcript",
+        )
+        raw_turns = raw_output["turns"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("AI source Worker transcript cannot be decoded") from exc
+    if (
+        not isinstance(raw_turns, list)
+        or len(raw_turns) != 1
+        or not isinstance(raw_turns[0], dict)
+        or not isinstance(raw_turns[0].get("request"), dict)
+        or not isinstance(raw_turns[0].get("response"), dict)
+    ):
+        raise ValueError("AI source Worker transcript turn is malformed")
+    raw_turn = raw_turns[0]
+    raw_request = raw_turn["request"]
+    raw_response = raw_turn["response"]
+    receipt = receipts[0]
+    statement = target_receipt.statement
+    request_digest = _canonical_json_sha256(raw_request)
+    response_digest = _canonical_json_sha256(raw_response)
+    if (
+        statement.challenge_id != expected_challenge.challenge_id
+        or statement.challenge_sha256 != expected_challenge.digest
+        or statement.permit_digest != expected_challenge.permit_digest
+        or statement.source_request_id != expected_challenge.source_request_id
+        or statement.source_operation_id != expected_challenge.source_operation_id
+        or statement.call_ordinal != 1
+        or statement.exchange_ordinal != 1
+        or statement.target_sha256 != expected_challenge.target_sha256
+        or statement.method != "POST"
+        or statement.route_path != "/v1/chat"
+        or statement.request_json_sha256 != request_digest
+        or statement.response_payload_sha256 != response_digest
+        or not expected_challenge.issued_at <= statement.issued_at < expected_challenge.expires_at
+        or receipt.sequence != 1
+        or receipt.method != "POST"
+        or receipt.target != audit_http_target(request.target)
+        or receipt.target_sha256 != http_target_sha256(request.target)
+        or receipt.status != statement.status
+        or receipt.request_json_sha256 != request_digest
+        or receipt.response_json_sha256 != response_digest
+    ):
+        raise ValueError(
+            "AI source Target receipt differs from its challenge, transcript, or proxy receipt"
+        )
+    return AISourceTargetProxyBinding(
+        source_request_id=request.request_id,
+        challenge_sha256=expected_challenge.digest,
+        target_receipt_sha256=target_receipt.digest,
+        proxy_sequence=1,
+        proxy_method="POST",
+        proxy_target=receipt.target,
+        proxy_target_sha256=receipt.target_sha256,
+        proxy_address=receipt.address,
+        proxy_status=receipt.status,
+        proxy_request_json_sha256=request_digest,
+        proxy_response_body_sha256=receipt.response_body_sha256,
+        proxy_response_json_sha256=response_digest,
+    )
 
 
 def _target_execution_tls_binding(

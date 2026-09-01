@@ -1,4 +1,4 @@
-"""Target-issued, challenge-bound receipts for exact Replay HTTP exchanges."""
+"""Target-issued, challenge-bound receipts for bounded HTTP exchanges."""
 
 from __future__ import annotations
 
@@ -26,6 +26,9 @@ from pajin.runtime.safe_files import parse_strict_json_bytes
 
 _SIGNATURE_DOMAIN = b"pajin.replay.target-execution-receipt/v1\0"
 _CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
+_AI_SOURCE_SIGNATURE_DOMAIN = b"pajin.ai-source.target-execution-receipt/v1\0"
+_AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
+_AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
 _REGISTRY_BUNDLE_SIGNATURE_DOMAIN = (
     b"pajin.replay.target-attestation-trust-registry-bundle/v1\0"
 )
@@ -1126,4 +1129,378 @@ def verify_target_execution_receipt(
         )
     except InvalidSignature as exc:
         raise ValueError("target receipt signature verification failed") from exc
+    return key.key_id
+
+
+class AISourceTargetExecutionChallenge(StrictModel):
+    """One short-lived normal ActionPermit-bound AI source exchange challenge."""
+
+    api_version: Literal["pajin.ai-source.target-execution-challenge/v1"] = (
+        "pajin.ai-source.target-execution-challenge/v1"
+    )
+    challenge_id: str = Field(pattern=r"^ai-source-target-challenge_[a-f0-9]{32}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_request_id: str = Field(pattern=r"^tool_ai002b_source_[0-9a-f]{32}$")
+    source_operation_id: str = Field(pattern=r"^ai-source-operation_[a-f0-9]{64}$")
+    call_ordinal: Literal[1] = 1
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: Literal["POST"]
+    route_path: Literal["/v1/chat"] = "/v1/chat"
+    compiled_argument_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    issued_at: datetime
+    expires_at: datetime
+
+    @field_validator("call_ordinal", mode="before")
+    @classmethod
+    def require_exact_call_ordinal(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI source Target challenge call ordinal must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_fresh_canonical_identity(self) -> Self:
+        issued_at = _require_aware_utc(
+            self.issued_at,
+            label="AI source Target challenge issue time",
+        )
+        expires_at = _require_aware_utc(
+            self.expires_at,
+            label="AI source Target challenge expiry time",
+        )
+        if (
+            not issued_at < expires_at <= issued_at + timedelta(seconds=120)
+            or self.target_sha256
+            != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        ):
+            raise ValueError("AI source Target challenge must have a bounded 120-second lifetime")
+        material = self.model_dump(mode="json", exclude={"challenge_id"})
+        expected = (
+            "ai-source-target-challenge_"
+            + sha256(_AI_SOURCE_CHALLENGE_DOMAIN + canonical_target_json(material)).hexdigest()[:32]
+        )
+        if self.challenge_id != expected:
+            raise ValueError("AI source Target challenge identity is inconsistent")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+def derive_ai_source_target_execution_challenge(
+    *,
+    permit_digest: str,
+    source_request_id: str,
+    source_operation_id: str,
+    target: str,
+    method: str,
+    compiled_argument_digest: str,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> AISourceTargetExecutionChallenge:
+    """Derive the exact single-call AI-002B source Target challenge."""
+
+    normalized_issued_at = _require_aware_utc(
+        issued_at,
+        label="AI source Target challenge issue time",
+    )
+    normalized_expires_at = _require_aware_utc(
+        expires_at,
+        label="AI source Target challenge expiry time",
+    )
+    if method.upper() != "POST":
+        raise ValueError("AI source Target challenge requires POST")
+    parsed = urlsplit(target)
+    if (
+        target != _AI_SOURCE_TARGET_URL
+        or parsed.scheme != "http"
+        or parsed.hostname != "host.docker.internal"
+        or parsed.port != 8080
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AI source Target challenge requires one exact HTTP route")
+    if parsed.path != "/v1/chat":
+        raise ValueError("AI source Target challenge route differs")
+    target_sha256 = sha256(target.encode("utf-8")).hexdigest()
+    provisional = AISourceTargetExecutionChallenge.model_construct(
+        challenge_id=f"ai-source-target-challenge_{'0' * 32}",
+        permit_digest=permit_digest,
+        source_request_id=source_request_id,
+        source_operation_id=source_operation_id,
+        call_ordinal=1,
+        target_sha256=target_sha256,
+        method="POST",
+        route_path="/v1/chat",
+        compiled_argument_digest=compiled_argument_digest,
+        issued_at=normalized_issued_at,
+        expires_at=normalized_expires_at,
+    )
+    material = provisional.model_dump(mode="json", exclude={"challenge_id"})
+    challenge_id = (
+        "ai-source-target-challenge_"
+        + sha256(_AI_SOURCE_CHALLENGE_DOMAIN + canonical_target_json(material)).hexdigest()[:32]
+    )
+    return AISourceTargetExecutionChallenge(
+        challenge_id=challenge_id,
+        permit_digest=permit_digest,
+        source_request_id=source_request_id,
+        source_operation_id=source_operation_id,
+        call_ordinal=1,
+        target_sha256=target_sha256,
+        method="POST",
+        route_path="/v1/chat",
+        compiled_argument_digest=compiled_argument_digest,
+        issued_at=normalized_issued_at,
+        expires_at=normalized_expires_at,
+    )
+
+
+class AISourceTargetExecutionReceiptStatement(StrictModel):
+    """Target-signed statement for the exact AI-002B source POST."""
+
+    api_version: Literal["pajin.ai-source.target-execution-statement/v1"] = (
+        "pajin.ai-source.target-execution-statement/v1"
+    )
+    predicate_type: Literal["pajin.ai-source.target-observed-http-exchange/v1"] = (
+        "pajin.ai-source.target-observed-http-exchange/v1"
+    )
+    trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+    issuer: str = Field(min_length=1, max_length=200)
+    target_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    challenge_id: str = Field(pattern=r"^ai-source-target-challenge_[a-f0-9]{32}$")
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_request_id: str = Field(pattern=r"^tool_ai002b_source_[0-9a-f]{32}$")
+    source_operation_id: str = Field(pattern=r"^ai-source-operation_[a-f0-9]{64}$")
+    call_ordinal: Literal[1] = 1
+    exchange_ordinal: Literal[1] = 1
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: Literal["POST"]
+    route_path: Literal["/v1/chat"] = "/v1/chat"
+    request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    response_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal[200] = 200
+    issued_at: datetime
+
+    @field_validator("call_ordinal", "exchange_ordinal", mode="before")
+    @classmethod
+    def require_exact_ordinals(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI source Target receipt ordinals must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_aware_issue_time(self) -> Self:
+        _require_aware_utc(
+            self.issued_at,
+            label="AI source Target receipt issue time",
+        )
+        if self.target_sha256 != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest():
+            raise ValueError("AI source Target receipt target differs")
+        return self
+
+
+class AISourceTargetExecutionReceipt(StrictModel):
+    """Ed25519 envelope for one AI-002B source Target statement."""
+
+    api_version: Literal["pajin.ai-source.target-execution-receipt/v1"] = (
+        "pajin.ai-source.target-execution-receipt/v1"
+    )
+    algorithm: Literal["Ed25519"] = "Ed25519"
+    key_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    statement: AISourceTargetExecutionReceiptStatement
+    statement_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    signature_base64url: str = Field(pattern=r"^[A-Za-z0-9_-]{86}$")
+
+    @model_validator(mode="after")
+    def require_canonical_envelope(self) -> Self:
+        canonical = canonical_target_json(self.statement.model_dump(mode="json"))
+        if sha256(canonical).hexdigest() != self.statement_sha256:
+            raise ValueError("AI source Target receipt statement digest is inconsistent")
+        _base64url_decode(
+            self.signature_base64url,
+            expected_length=64,
+            label="AI source Target receipt signature",
+        )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+class AISourceTargetProxyBinding(StrictModel):
+    """Host binding between one source Target receipt and plaintext proxy receipt."""
+
+    api_version: Literal["pajin.ai-source.target-proxy-binding/v1"] = (
+        "pajin.ai-source.target-proxy-binding/v1"
+    )
+    source_request_id: str = Field(pattern=r"^tool_ai002b_source_[0-9a-f]{32}$")
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_receipt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_sequence: Literal[1] = 1
+    proxy_method: Literal["POST"]
+    proxy_target: str = Field(min_length=1, max_length=2_000)
+    proxy_target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_address: str = Field(min_length=1, max_length=100)
+    proxy_status: int = Field(strict=True, ge=200, le=299)
+    proxy_request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_response_body_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_response_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("proxy_sequence", mode="before")
+    @classmethod
+    def require_exact_sequence(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI source proxy receipt sequence must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_fixed_proxy_target(self) -> Self:
+        expected_digest = sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        if (
+            self.proxy_target != _AI_SOURCE_TARGET_URL
+            or self.proxy_target_sha256 != expected_digest
+        ):
+            raise ValueError("AI source proxy binding target differs")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+@dataclass(frozen=True, slots=True)
+class AISourceTargetExecutionAttestor:
+    """Code-owned helper mirroring the deterministic Target's source signer."""
+
+    active_key_id: str
+    private_key: Ed25519PrivateKey
+    trust_anchor: TargetAttestationTrustAnchor
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+
+    @classmethod
+    def from_private_key_bytes(
+        cls,
+        *,
+        active_key_id: str,
+        private_key: bytes,
+        trust_anchor: TargetAttestationTrustAnchor,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> AISourceTargetExecutionAttestor:
+        if len(private_key) != 32:
+            raise ValueError("Ed25519 AI source Target key must contain 32 bytes")
+        return cls(
+            active_key_id=active_key_id,
+            private_key=Ed25519PrivateKey.from_private_bytes(private_key),
+            trust_anchor=trust_anchor,
+            clock=clock,
+        )
+
+    def __post_init__(self) -> None:
+        matching = [key for key in self.trust_anchor.keys if key.key_id == self.active_key_id]
+        if len(matching) != 1 or matching[0].state is not TargetAttestationKeyState.ACTIVE:
+            raise ValueError("AI source Target signer is not the active trust-anchor key")
+        public_bytes = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        expected = _base64url_decode(
+            matching[0].public_key_base64url,
+            expected_length=32,
+            label="AI source Target active public key",
+        )
+        if public_bytes != expected:
+            raise ValueError("AI source Target private key differs from its trust anchor")
+
+    def attest(
+        self,
+        statement_fields: dict[str, object],
+        *,
+        issued_at: datetime | None = None,
+    ) -> AISourceTargetExecutionReceipt:
+        timestamp = _require_aware_utc(
+            issued_at or self.clock(),
+            label="AI source Target receipt issue time",
+        )
+        active_key = next(key for key in self.trust_anchor.keys if key.key_id == self.active_key_id)
+        if timestamp < _require_aware_utc(active_key.not_before, label="key not-before time"):
+            raise ValueError("AI source Target signing key is not yet valid")
+        if active_key.not_after is not None and timestamp >= _require_aware_utc(
+            active_key.not_after,
+            label="key not-after time",
+        ):
+            raise ValueError("AI source Target signing key has expired")
+        statement = AISourceTargetExecutionReceiptStatement.model_validate(
+            {
+                **statement_fields,
+                "trust_domain": self.trust_anchor.trust_domain,
+                "issuer": self.trust_anchor.issuer,
+                "target_profile": self.trust_anchor.target_profile,
+                "issued_at": timestamp,
+            }
+        )
+        canonical = canonical_target_json(statement.model_dump(mode="json"))
+        return AISourceTargetExecutionReceipt(
+            key_id=self.active_key_id,
+            statement=statement,
+            statement_sha256=sha256(canonical).hexdigest(),
+            signature_base64url=_base64url_encode(
+                self.private_key.sign(_AI_SOURCE_SIGNATURE_DOMAIN + canonical)
+            ),
+        )
+
+
+def verify_ai_source_target_execution_receipt(
+    receipt: AISourceTargetExecutionReceipt,
+    *,
+    trust_anchor: TargetAttestationTrustAnchor,
+) -> str:
+    """Verify one AI source receipt against its deployment-private public anchor."""
+
+    statement = receipt.statement
+    if (
+        statement.trust_domain != trust_anchor.trust_domain
+        or statement.issuer != trust_anchor.issuer
+        or statement.target_profile != trust_anchor.target_profile
+    ):
+        raise ValueError("AI source Target receipt trust identity differs")
+    key = next((item for item in trust_anchor.keys if item.key_id == receipt.key_id), None)
+    if key is None:
+        raise ValueError("AI source Target receipt key is absent from the trust anchor")
+    if key.state is TargetAttestationKeyState.REVOKED:
+        raise ValueError("AI source Target receipt key is revoked")
+    issued_at = _require_aware_utc(
+        statement.issued_at,
+        label="AI source Target receipt issue time",
+    )
+    if issued_at < _require_aware_utc(key.not_before, label="key not-before time"):
+        raise ValueError("AI source Target receipt predates signing-key validity")
+    if key.not_after is not None and issued_at >= _require_aware_utc(
+        key.not_after,
+        label="key not-after time",
+    ):
+        raise ValueError("AI source Target receipt was issued after signing-key expiry")
+    canonical = canonical_target_json(statement.model_dump(mode="json"))
+    public_key = Ed25519PublicKey.from_public_bytes(
+        _base64url_decode(
+            key.public_key_base64url,
+            expected_length=32,
+            label="AI source Target public key",
+        )
+    )
+    try:
+        public_key.verify(
+            _base64url_decode(
+                receipt.signature_base64url,
+                expected_length=64,
+                label="AI source Target receipt signature",
+            ),
+            _AI_SOURCE_SIGNATURE_DOMAIN + canonical,
+        )
+    except InvalidSignature as exc:
+        raise ValueError("AI source Target receipt signature verification failed") from exc
     return key.key_id

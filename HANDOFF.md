@@ -2,7 +2,7 @@
 
 ## 현재 체크포인트
 
-- 기록일: 2026-09-01
+- 기록일: 2026-09-02
 - 작업 위치: 저장소 루트
 - 브랜치: `main`
 - UX-009D 성능 보정 체크포인트: `4440414` (`fix(benchmark): 도메인 레지스트리 반복 재구성 제거`)
@@ -26,18 +26,15 @@
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
 - Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
 - Phase 24 Exit Gate도 exact NET-002D conformance와 residue audit으로 완료됐다.
-- fresh checkpoint review 시작 HEAD와 upstream은
-  `c0a8805774d24a9d24eb7b1ab95e15bb0da8d72f`로 같고 divergence는 `0/0`이었다.
-- current-main CI run `33495912088`은 Quality와 23개 pytest shard가 성공했지만 shard 0 job
-  `99818138841`의 NET-002D fresh-process child timeout 한 건으로 완료/실패다.
-- NET-002D local 보수는 child progress stage와 300초 bound를 추가했고 기존 의미 assertion을 유지한
-  exact 재현이 `1 passed in 429.38s`로 통과했다. 이 변경의 새 repo-wide CI는 아직 없다.
-- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002A` 등록 경계 구현·로컬 검증
-- NET-002D 보수는 local commit `6e8f91e`이며 AI-002A는 이 문서를 포함하는 다음 checkpoint commit이다.
-- 현재 우선순위: 승인된 두 local checkpoint commit을 push하고 새 exact-commit repo-wide green 확인
-- 다음 우선순위: green 확인 뒤 `AI-002B` disposable source runtime
-- 두 checkpoint commit 생성 직후 staged/unstaged/untracked 변경과 진행 중 Git 작업은 없다. 실제 branch,
-  upstream, push와 CI 상태는 재개 시 다시 확인한다. PR·merge·deploy는 수행하지 않았다.
+- 현재 HEAD와 upstream은 AI-002A checkpoint
+  `1f49c6b0b68da9c2e360eabef7cf38a9d8428522`로 같고 divergence는 `0/0`이다.
+- 해당 SHA의 repo-wide CI run `33528649730`은 Quality와 24개 pytest shard가 모두
+  `completed/success`다.
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002B` 로컬 구현·검증 완료
+- 현재 우선순위: AI-002B checkpoint의 명시적 commit/push 승인과 새 exact-commit repo-wide green 확인
+- 다음 우선순위: green 확인 뒤 `AI-002C` independent Replay, Controls, and AI floor
+- AI-002B 변경은 모두 unstaged이고 새 source/test/contract 파일은 untracked다. staged 변경과 진행 중
+  merge/rebase/cherry-pick/revert/bisect는 없다. commit·push·PR·merge·deploy는 수행하지 않았다.
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
@@ -646,30 +643,31 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 ## 다음 한 단계
 
 [ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)의
-`AI-002A` 등록 경계를 구현했다. 새 `pajin.workflow.ai_measured_case_authority`는 exact M03 한 건의
-중립 public registry와 private known-positive Ground Truth·prompt/check·Control derivation을 분리한다.
-동적 AI-001D artifact를 가장하지 않고 exact predecessor API/scenario/Tool/Profile/Replay/Control 요구를
-content-addressed contract로 등록하며 실제 binding digest는 후속 측정에서 필수로 남긴다. 고정
-`POST /v1/chat` vulnerable Target, Target/Worker/proxy image contract, one source + two Replay + exact
-Baseline/Negative/Counterfactual order, request-unit·cost semantics와 14개 DOMAIN-006 AI floor를 묶되
-image build, Target/network/provider, prompt materialization, approval/Permit/Grant, application write,
-Tool/Worker/model call, measurement, product, Graph/Finding/report/delivery 권위는 모두 false다.
+`AI-002B` source 경계를 로컬 구현했다. `pajin.workflow.ai_fixture_runtime`은 AI-002A의 fixed
+Target/Worker/proxy image contract를 실제 관찰 OCI ID에 결박하고 fresh internal no-published-port
+vulnerable Target, proxy-only topology, signed Target receipt와 cleanup을 검증한다.
+`pajin.workflow.ai_source_measurement`는 exact M03 한 건을 기존 AI-001B preparation, external approval,
+one-use ActionPermit, Gateway, Docker Worker와 AI-001C reopen 경로로 한 번만 실행한다. scenario, prompt,
+check, mode, image, route, Scope, authority 여덟 substitution은 dispatch 전에 code-owned 순서로 거부된다.
+public authority에는 digest lineage와 denial만 남고 Ground Truth, prompt/check, transcript, session, request,
+approval/Permit body, raw Worker/Tool result, Target coordinate·receipt·trust anchor·topology는 별도 private
+binding에 남는다.
 
-AI-002A 집중 테스트는 `9 passed in 3.17s`, AI-001D/KISA Control/Target/DOMAIN-006 관련 회귀는
-task-local temp/lock root에서 `129 passed in 85.77s`다. 기본 Windows temp root 실행은 ACL 때문에
-6개 fixture setup이 중단됐고 같은 명령을 한정된 root로 재실행해 통과했으며 임시 디렉터리는 제거했다.
-전체 Ruff check와 변경 파일 format check가 통과했고 Linux 대상 strict mypy는 `379 source files`,
-문서 정책·링크는 `4 passed`, `git diff --check`는 통과했다. 전체 repository pytest는 Windows에서
-`7,757`개를 수집해 19%까지 실행했지만, 기존 `Windows managed Artifact POSIX durability` 제약으로
-`tests/test_control_plane_artifact_admission.py`부터 fail-closed 연쇄가 시작돼 중단했다. exact 격리 재현은
-`5 passed, 1 failed`였고 실패는 POSIX directory `fsync`가 없는 플랫폼에서 기대한 후속 metadata 검증 전에
-`staged source Artifact failed managed admission`이 발생하는 기존 경계다. task-local 임시 디렉터리와
-접근 불가 pytest cache는 ACL을 복구한 뒤 제거했다. 새 exact-commit repo-wide CI는 아직 실행하지 않았다.
+AI-002B 집중 파일은 `75 passed, 2 skipped in 13.75s`, AI-001A~D/KISA M03/Target/Worker/validation
+회귀는 `249 passed, 2 skipped in 396.56s`다. 스킵은 opt-in real-Docker 한 건과 Windows의 POSIX 전용
+cleanup 한 건이다. `src tests containers` 전체 Ruff, Linux 대상 strict mypy `381 source files`, 변경
+파일 구문 검사, 문서 정책·링크 `4 passed in 0.30s`, tracked `git diff --check`가 통과했다. 관리형
+Windows의 project Python 비동기 모듈 실행 제한과 기본 temp ACL은 코드 실패와 구분했고, 기존 Python
+3.14 lockfile 격리 환경과 task-local temp root에서 검증했다. 현재 container daemon이 없어
+`PAJIN_AI_002B_REAL_DOCKER=1`은 미실행이고,
+전체 repository pytest와 현재 변경의 새 exact-commit CI도 실행하지 않았다.
 
-다음 첫 단계는 승인된 두 local checkpoint commit을 `main`에 push하고 새 exact-commit repo-wide CI가
-green임을 확인하는 것이다. 그 전에는 `AI-002B` runtime을 시작하지 않는다. AI-002B는
-fresh internal no-published-port vulnerable Target 한 건과 existing governed action path만 열고 M06, A04,
-MCP, RAG, caller prompt, external provider·target, credential과 general model/agent testing을 계속 제외한다.
+새 영어 versioned contract는
+`docs/benchmark/AI-002B-registry-governed-disposable-m03-source-measurement.md`다. 다음 첫 단계는
+AI-002B diff와 Git 상태를 다시 검토한 뒤 명시적 승인으로 checkpoint를 commit/push하고 새 exact-commit
+repo-wide green을 확인하는 것이다. 그 전에는 AI-002C를 시작하지 않는다. AI-002C는 두 supporting
+fresh-session Replay, exact Baseline/Negative/Counterfactual Controls와 DOMAIN-006 AI floor만 추가하며,
+product와 exact-clean Ubuntu conformance는 AI-002D에 남긴다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤

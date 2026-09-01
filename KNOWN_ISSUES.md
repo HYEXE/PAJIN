@@ -52,8 +52,9 @@
 - DOMAIN-001~006 registry는 일반 runtime 권위가 아니다.
 - WEB-002A~D/UX-009A~D는 단일 synthetic Web measured validation/product만 완료했다.
 - NET-002A~D는 exact synthetic six-case Docker conformance만 증명하며 general Network 권위가 없다.
-- AI-001A~D는 registry·admission·Replay/Control binding까지만 구현했다. ADR-0259는 exact M03를
-  Phase 25로 선정했을 뿐 concrete Ground Truth·measurement·Finding은 아직 없다.
+- AI-002A/B는 exact synthetic M03 한 건의 private Ground Truth와 disposable source measurement까지만
+  구현했다. supporting Replay, benchmark Controls, DOMAIN-006 floor, product, Finding과 exact Ubuntu
+  real-Docker conformance는 아직 없으며 general AI 권위가 아니다.
 - registry, cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
 
 ## UX-006B authenticated external delivery 경계
@@ -767,18 +768,11 @@
 
 ## 로컬 Windows container runtime 가용성
 
-- 상태: host 정책상 NET-002B/C/D local real-Docker opt-in은 미실행이며 정책 우회·runtime data 삭제는 금지한다.
-- 영향: exact Ubuntu run `33494188536`이 Phase 24 conformance와 residue audit을 통과했다. 추가 local
-  Docker 진단은 승인된 환경에서만 수행한다.
-
-## current-main CI run 33495912088의 NET-002D child timeout
-
-- 상태: `c0a8805774d24a9d24eb7b1ab95e15bb0da8d72f`의 Quality와 23개 shard는 성공했지만 shard 0 job
-  `99818138841`에서 NET-002D fresh-process child가 고정 120초 제한을 넘어 실패했다.
-- 로컬 해소: child progress 진단과 기존 real-Docker와 같은 300초 bound를 적용했고 의미 assertion을 유지한
-  exact 재현은 `1 passed in 429.38s`다.
-- 잔여: local 보수 commit은 `6e8f91e`다. AI-002A checkpoint와 함께 push된 exact commit의 새 repo-wide
-  green을 확인하기 전에는 `AI-002B` runtime을 시작하지 않는다.
+- 상태: 현재 container daemon을 사용할 수 없어 AI-002B local real-Docker opt-in은 미실행이다. 정책 우회나
+  runtime data 삭제는 수행하지 않는다.
+- 영향: AI-002B의 in-process 검증은 실제 OCI lifecycle 증거가 아니다. 기존 exact Ubuntu run
+  `33494188536`은 Phase 24 Network conformance만 증명하며, AI source/Replay/Controls/floor/product와
+  residue는 AI-002D exact-clean Ubuntu conformance에서 별도로 검증해야 한다.
 
 ## Git OpenSSL CA 경로
 

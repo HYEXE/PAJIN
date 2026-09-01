@@ -9,10 +9,11 @@ import threading
 import time
 from base64 import urlsafe_b64decode, urlsafe_b64encode
 from collections.abc import Iterable
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from re import fullmatch
 from typing import Any
 
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
@@ -20,6 +21,10 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 MAX_REQUEST_BYTES = 65_536
 TARGET_RECEIPT_SIGNATURE_DOMAIN = b"pajin.replay.target-execution-receipt/v1\0"
 TARGET_CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
+AI_SOURCE_RECEIPT_SIGNATURE_DOMAIN = b"pajin.ai-source.target-execution-receipt/v1\0"
+AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
+AI_SOURCE_CHALLENGE_HEADER = "X-PAJIN-AI-Source-Challenge"
+AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
 TARGET_TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
 TARGET_TLS_SESSION_BINDING = "tls-unique-sha256"
 TARGET_CHALLENGE_FIELDS = {
@@ -34,6 +39,20 @@ TARGET_CHALLENGE_FIELDS = {
     "call_ordinal",
     "target_sha256",
     "method",
+    "compiled_argument_digest",
+    "issued_at",
+    "expires_at",
+}
+AI_SOURCE_CHALLENGE_FIELDS = {
+    "api_version",
+    "challenge_id",
+    "permit_digest",
+    "source_request_id",
+    "source_operation_id",
+    "call_ordinal",
+    "target_sha256",
+    "method",
+    "route_path",
     "compiled_argument_digest",
     "issued_at",
     "expires_at",
@@ -254,6 +273,139 @@ def _strict_json_object(raw: str | bytes, *, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise TypeError(f"{label} must be an object")
     return value
+
+
+def _ai_source_challenge_from_header(
+    encoded: str | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    if encoded is None:
+        return None
+    if not 1 <= len(encoded) <= 4_096 or encoded != encoded.strip():
+        raise ValueError("AI source Target challenge header size is invalid")
+    try:
+        raw = urlsafe_b64decode(encoded + ("=" * (-len(encoded) % 4)))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("AI source Target challenge header is not base64url") from exc
+    if _base64url(raw) != encoded:
+        raise ValueError("AI source Target challenge header is not canonical base64url")
+    challenge = _strict_json_object(raw, label="AI source Target challenge")
+    if raw != _canonical_json(challenge) or set(challenge) != AI_SOURCE_CHALLENGE_FIELDS:
+        raise ValueError("AI source Target challenge fields are not canonical")
+    string_patterns = (
+        ("challenge_id", r"ai-source-target-challenge_[a-f0-9]{32}"),
+        ("permit_digest", r"[a-f0-9]{64}"),
+        ("source_request_id", r"tool_ai002b_source_[a-f0-9]{32}"),
+        ("source_operation_id", r"ai-source-operation_[a-f0-9]{64}"),
+        ("target_sha256", r"[a-f0-9]{64}"),
+        ("compiled_argument_digest", r"[a-f0-9]{64}"),
+    )
+    if (
+        challenge.get("api_version") != "pajin.ai-source.target-execution-challenge/v1"
+        or any(
+            not isinstance(challenge.get(field), str)
+            or fullmatch(pattern, challenge[field]) is None
+            for field, pattern in string_patterns
+        )
+        or isinstance(challenge.get("call_ordinal"), bool)
+        or challenge.get("call_ordinal") != 1
+        or challenge.get("method") != "POST"
+        or challenge.get("route_path") != "/v1/chat"
+        or challenge.get("target_sha256")
+        != sha256(AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+    ):
+        raise ValueError("AI source Target challenge contract is unsupported")
+    material = {key: value for key, value in challenge.items() if key != "challenge_id"}
+    expected_challenge_id = (
+        "ai-source-target-challenge_"
+        + sha256(AI_SOURCE_CHALLENGE_DOMAIN + _canonical_json(material)).hexdigest()[:32]
+    )
+    if challenge["challenge_id"] != expected_challenge_id:
+        raise ValueError("AI source Target challenge identity is invalid")
+    issued_raw = challenge["issued_at"]
+    expires_raw = challenge["expires_at"]
+    if (
+        not isinstance(issued_raw, str)
+        or not isinstance(expires_raw, str)
+        or not issued_raw.endswith("Z")
+        or not expires_raw.endswith("Z")
+    ):
+        raise ValueError("AI source Target challenge time is invalid")
+    try:
+        issued_at = datetime.fromisoformat(issued_raw.replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AI source Target challenge time is invalid") from exc
+    if (
+        issued_at.tzinfo is None
+        or expires_at.tzinfo is None
+        or issued_at.utcoffset() != timedelta(0)
+        or expires_at.utcoffset() != timedelta(0)
+        or issued_at.isoformat().replace("+00:00", "Z") != issued_raw
+        or expires_at.isoformat().replace("+00:00", "Z") != expires_raw
+        or not issued_at < expires_at
+        or (expires_at - issued_at).total_seconds() > 120
+    ):
+        raise ValueError("AI source Target challenge lifetime is invalid")
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    if not issued_at.astimezone(UTC) <= observed_at < expires_at.astimezone(UTC):
+        raise ValueError("AI source Target challenge is not currently valid")
+    return challenge
+
+
+def _ai_source_target_receipt(
+    encoded_challenge: str | None,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    challenge = _ai_source_challenge_from_header(encoded_challenge, now=now)
+    if challenge is None:
+        return None
+    metadata = request_payload.get("metadata")
+    if isinstance(metadata, dict) and (
+        "targetChallenge" in metadata or "targetExchangeOrdinal" in metadata
+    ):
+        raise ValueError("AI source and Replay Target challenges cannot be combined")
+    signer = _target_signer_from_env()
+    if signer is None:
+        raise ValueError("AI source Target challenge requires a configured Target signer")
+    key_id, private_key, trust_domain, issuer, target_profile = signer
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    statement = {
+        "api_version": "pajin.ai-source.target-execution-statement/v1",
+        "predicate_type": "pajin.ai-source.target-observed-http-exchange/v1",
+        "trust_domain": trust_domain,
+        "issuer": issuer,
+        "target_profile": target_profile,
+        "challenge_id": challenge["challenge_id"],
+        "challenge_sha256": sha256(_canonical_json(challenge)).hexdigest(),
+        "permit_digest": challenge["permit_digest"],
+        "source_request_id": challenge["source_request_id"],
+        "source_operation_id": challenge["source_operation_id"],
+        "call_ordinal": 1,
+        "exchange_ordinal": 1,
+        "target_sha256": challenge["target_sha256"],
+        "method": "POST",
+        "route_path": "/v1/chat",
+        "request_json_sha256": sha256(_canonical_json(request_payload)).hexdigest(),
+        "response_payload_sha256": sha256(_canonical_json(response_payload)).hexdigest(),
+        "status": 200,
+        "issued_at": observed_at.isoformat().replace("+00:00", "Z"),
+    }
+    canonical_statement = _canonical_json(statement)
+    return {
+        "api_version": "pajin.ai-source.target-execution-receipt/v1",
+        "algorithm": "Ed25519",
+        "key_id": key_id,
+        "statement": statement,
+        "statement_sha256": sha256(canonical_statement).hexdigest(),
+        "signature_base64url": _base64url(
+            private_key.sign(AI_SOURCE_RECEIPT_SIGNATURE_DOMAIN + canonical_statement)
+        ),
+    }
 
 
 def _last_user_message(payload: dict[str, Any]) -> str:
@@ -608,6 +760,11 @@ class Handler(BaseHTTPRequestHandler):
             if profile not in {"vulnerable", "hardened"}:
                 raise ValueError("unsupported PAJIN_LAB_PROFILE")
             response_payload = respond(payload, profile=profile)
+            source_receipt = _ai_source_target_receipt(
+                self.headers.get(AI_SOURCE_CHALLENGE_HEADER),
+                payload,
+                response_payload,
+            )
             self._json(
                 HTTPStatus.OK,
                 _target_attested_response(
@@ -618,6 +775,18 @@ class Handler(BaseHTTPRequestHandler):
                     ),
                 ),
             )
+            if source_receipt is not None:
+                print(
+                    json.dumps(
+                        {
+                            "event": "ai-source-target-receipt",
+                            "receipt": source_receipt,
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
         except (json.JSONDecodeError, TypeError, ValueError):
             self._json(HTTPStatus.BAD_REQUEST, {"error": "invalid request"})
 

@@ -26,6 +26,8 @@ from pajin.control_plane.models import Principal, PrincipalRole
 from pajin.control_plane.security import CheckpointSigner
 from pajin.control_plane.service import ControlPlaneService, _target_transport_binding_matches
 from pajin.target_attestation import (
+    AISourceTargetExecutionAttestor,
+    AISourceTargetExecutionChallenge,
     TargetAttestationKeyState,
     TargetAttestationRegistryBundle,
     TargetAttestationRegistrySigner,
@@ -42,10 +44,12 @@ from pajin.target_attestation import (
     TargetExecutionTransportBinding,
     TargetExecutionVerificationSummary,
     canonical_target_json,
+    derive_ai_source_target_execution_challenge,
     derive_target_execution_challenge,
     parse_target_attestation_registry_bundle,
     parse_target_attestation_trust_registry,
     target_public_key_base64url,
+    verify_ai_source_target_execution_receipt,
     verify_target_attestation_registry_bundle,
     verify_target_execution_receipt,
 )
@@ -171,6 +175,116 @@ def test_target_challenge_is_deterministic_and_permit_bound() -> None:
     assert first == second
     assert changed.challenge_id != first.challenge_id
     assert changed.digest != first.digest
+
+
+def test_ai_source_target_challenge_is_fixed_content_addressed_and_strict() -> None:
+    now = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    arguments_digest = sha256(b"exact-ai002b-m03-arguments").hexdigest()
+    first = derive_ai_source_target_execution_challenge(
+        permit_digest="a" * 64,
+        source_request_id=f"tool_ai002b_source_{'1' * 32}",
+        source_operation_id=f"ai-source-operation_{'2' * 64}",
+        target="http://host.docker.internal:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest=arguments_digest,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+    second = derive_ai_source_target_execution_challenge(
+        permit_digest="a" * 64,
+        source_request_id=f"tool_ai002b_source_{'1' * 32}",
+        source_operation_id=f"ai-source-operation_{'2' * 64}",
+        target="http://host.docker.internal:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest=arguments_digest,
+        issued_at=now,
+        expires_at=now + timedelta(seconds=60),
+    )
+
+    assert first == second
+    assert first.call_ordinal == 1
+    assert first.route_path == "/v1/chat"
+
+    drifted = first.model_dump(mode="json")
+    drifted["permit_digest"] = "b" * 64
+    with pytest.raises(ValueError, match="identity is inconsistent"):
+        AISourceTargetExecutionChallenge.model_validate(drifted)
+    with pytest.raises(ValueError, match="one exact HTTP route"):
+        derive_ai_source_target_execution_challenge(
+            permit_digest="a" * 64,
+            source_request_id=f"tool_ai002b_source_{'1' * 32}",
+            source_operation_id=f"ai-source-operation_{'2' * 64}",
+            target="http://foreign.invalid:8080/v1/chat",
+            method="POST",
+            compiled_argument_digest=arguments_digest,
+            issued_at=now,
+            expires_at=now + timedelta(seconds=60),
+        )
+
+
+def test_ai_source_target_receipt_rejects_statement_and_trust_substitution() -> None:
+    now = datetime(2026, 9, 2, 1, 2, 3, tzinfo=UTC)
+    anchor, _ = _authority(now)
+    private_key = bytes(range(32))
+    attestor = AISourceTargetExecutionAttestor.from_private_key_bytes(
+        active_key_id="target-key-2026-01",
+        private_key=private_key,
+        trust_anchor=anchor,
+        clock=lambda: now,
+    )
+    challenge = derive_ai_source_target_execution_challenge(
+        permit_digest="a" * 64,
+        source_request_id=f"tool_ai002b_source_{'1' * 32}",
+        source_operation_id=f"ai-source-operation_{'2' * 64}",
+        target="http://host.docker.internal:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest="b" * 64,
+        issued_at=now - timedelta(seconds=1),
+        expires_at=now + timedelta(seconds=30),
+    )
+    receipt = attestor.attest(
+        {
+            "challenge_id": challenge.challenge_id,
+            "challenge_sha256": challenge.digest,
+            "permit_digest": challenge.permit_digest,
+            "source_request_id": challenge.source_request_id,
+            "source_operation_id": challenge.source_operation_id,
+            "call_ordinal": 1,
+            "exchange_ordinal": 1,
+            "target_sha256": challenge.target_sha256,
+            "method": "POST",
+            "route_path": "/v1/chat",
+            "request_json_sha256": "c" * 64,
+            "response_payload_sha256": "d" * 64,
+            "status": 200,
+        }
+    )
+
+    assert verify_ai_source_target_execution_receipt(
+        receipt,
+        trust_anchor=anchor,
+    ) == "target-key-2026-01"
+
+    changed_statement = receipt.statement.model_copy(
+        update={"request_json_sha256": "e" * 64}
+    )
+    tampered = receipt.model_copy(
+        update={
+            "statement": changed_statement,
+            "statement_sha256": sha256(
+                canonical_target_json(changed_statement.model_dump(mode="json"))
+            ).hexdigest(),
+        }
+    )
+    with pytest.raises(ValueError, match="signature verification failed"):
+        verify_ai_source_target_execution_receipt(tampered, trust_anchor=anchor)
+
+    foreign_anchor = anchor.model_copy(update={"target_profile": "foreign-profile"})
+    with pytest.raises(ValueError, match="trust identity differs"):
+        verify_ai_source_target_execution_receipt(
+            receipt,
+            trust_anchor=foreign_anchor,
+        )
 
 
 def test_target_receipt_signature_rejects_statement_tampering() -> None:

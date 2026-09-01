@@ -581,12 +581,16 @@ exact AI-001D predecessor requirement, immutable deterministic Target/Worker/pro
 canonical source/two-Replay/three-Control protocol, the DOMAIN-006 AI floor, and strict
 content-addressed validation. It builds no image, creates no Target or network, selects no provider,
 materializes no prompt, issues no approval, Permit, or Grant, runs no Tool or Worker, records no
-measurement, and exposes no product. AI-002B will add one fresh internal no-published-port
-vulnerable Target source execution through the existing governed action path; AI-002C will add
-two supporting fresh-session Replay
-repetitions, the exact Baseline, Negative, and Counterfactual Controls, and the AI floor; AI-002D
-will add a bounded AI-only product read and exact-clean Ubuntu real-Docker conformance. This
-decision implements none of those authorities by itself. Prompt, check, transcript, session,
+measurement, and exposes no product.
+[AI-002B](../benchmark/AI-002B-registry-governed-disposable-m03-source-measurement.md) now adds only
+one fresh internal no-published-port vulnerable Target source execution through the existing
+approval, one-use Permit, Gateway, proxy-only Worker, and Target-receipt path. It seals prompt,
+check, transcript, runtime, topology, and approval material privately; publishes only
+content-addressed lineage and eight canonical pre-dispatch denials; and grants no downstream
+authority. AI-002C will add two supporting fresh-session Replay repetitions, the exact Baseline,
+Negative, and Counterfactual Controls, and the AI floor; AI-002D will add a bounded AI-only
+product read and exact-clean Ubuntu real-Docker conformance. ADR-0259 implements none of those
+authorities by itself. Prompt, check, transcript, session,
 request, and runtime material remain private, while M06, A04, MCP, RAG, arbitrary caller prompts,
 external providers or targets, credentials, general model or agent testing, Graph/Finding/report/
 delivery, and additional execution authority remain outside the phase. Existing AI-001, KISA,
