@@ -2311,6 +2311,7 @@ _PRODUCTION_INSPECTOR_STATE = frozenset(
 _PRODUCTION_WORKER_BACKEND_STATE = frozenset(
     {
         "_allowed_images",
+        "_runtime_image_bindings",
         "_docker",
         "_egress_proxy_image",
         "_external_network",
@@ -2439,6 +2440,7 @@ def require_production_web_controlled_validation_adapter(
         or type(completed_topologies) is not dict
         or type(object.__getattribute__(backend, "_allowed_images")) is not set
         or object.__getattribute__(backend, "_allowed_images") != {policy.worker_image}
+        or object.__getattribute__(backend, "_runtime_image_bindings") != {}
         or object.__getattribute__(backend, "_docker") != inspector_executable
         or type(object.__getattribute__(backend, "_external_network_routes")) is not dict
         or object.__getattribute__(backend, "_egress_lifecycle_observer") is not inspector

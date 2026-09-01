@@ -8,8 +8,10 @@
 - UX-009D 성능 보정 체크포인트: `4440414` (`fix(benchmark): 도메인 레지스트리 반복 재구성 제거`)
 - UX-009D JSON wire 보정 체크포인트: `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`
   (`test(product): fresh 응답 JSON 검증 경로 수정`)
-- 현재 Git: local `main`과 `origin/main`은 이 체크포인트 문서 반영 뒤 동기화하며 staged, unstaged,
-  untracked 변경과 진행 중인 merge/rebase/cherry-pick이 없어야 한다.
+- 현재 Git: `main` HEAD와 `origin/main`은 `48d76251e93c592a24b1d984f41b6a8ede180aa9`로 같고 staged
+  변경과 진행 중인 merge/rebase/cherry-pick은 없다. Network fresh checkpoint 문서, ADR-0258,
+  NET-002A~D registration·source·Replay/floor·product/read runtime·테스트·계약·exact workflow는 의도된
+  unstaged/untracked 변경이며 staging·commit·push하지 않았다.
 - 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
   로컬 집중 검증을 통과했다.
 - UX-009D exact-SHA Ubuntu real-Docker run `33410801762`, job `99549584968`은 checkpoint
@@ -22,8 +24,9 @@
   최장 shard 17은 `5,925.98s (1:38:45)`의 pytest와 1시간 39분 3초 job으로 끝났다.
 - Phase 22 Exit Gate는 완료됐다. UX-009C의 별도 Operator 소비 경로가 추가됐지만 UX-009A wire 자체,
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
-- 현재 우선순위: Phase 23 이후 new-domain runtime fresh checkpoint review
-- 다음 우선순위: ADR-0250·ADR-0257 조건에 따른 Network runtime 후보의 authority gap 검토
+- Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
+- 현재 우선순위: Phase 24 `NET-002D` bounded Operator product read and exact real-Docker conformance
+- 다음 우선순위: Phase 24 Exit Gate와 post-Phase fresh checkpoint review
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
@@ -631,11 +634,67 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 
 ## 다음 한 단계
 
-UX-009D와 Phase 23은 exact Ubuntu real-Docker conformance 및 residue audit으로 완료됐다. 다음 작업은
-ADR-0250과 ADR-0257이 유보한 Network new-domain runtime의 fresh checkpoint review다. 기존 NET-001A~D
-계약과 passive-banner Worker action을 실제 코드에서 재검증하고, disposable service Target Factory,
-governed measurement, deterministic Ground Truth, product projection 및 rollback 경계를 한 개의 새 ADR에서
-선택하거나 명시적으로 보류한다. 이 검토 자체는 Target, network, Worker 또는 fixture 실행 권위가 아니다.
+`NET-002A~D`가 로컬 working tree에 구현됐다. A는 exact ftp/imap/pop3/smtp/ssh positive 5건과 unknown
+negative Control 1건, private Ground Truth, fixed emitter/image contracts와 DOMAIN-006 protocol/floor를 등록한다.
+B는 case마다 fresh internal no-published-port Target/network와 proxy-only Worker를 normal
+Policy→Approval→one-use Permit→Gateway 경로로 한 번 실행하고 public lineage와 private raw output/lifecycle을
+분리한다. C는 다음 경계를 추가한다.
+
+- `network_replay_evaluation.py`는 source authority와 여섯 inner NET-001B Run을 먼저 contextfully reopen한 뒤,
+  같은 NET-002B runner로 여섯 fresh Replay lifecycle을 별도 approval·Permit·Worker·Target identity 아래 실행한다.
+- source와 Replay의 measurement/Run/request/envelope/Proposal/Decision/approval/Permit/dispatch/Worker/Evidence/
+  terminal/reconciliation/Target/container/network identity는 전역으로 disjoint해야 하며 source 재사용과 foreign
+  image·authorizer는 floor sealing 전에 거부한다.
+- private Ground Truth에서 positive 5건 exact label match와 unknown Control unresolved를 비교한다. public에는
+  case ref·digest lineage·14개 aggregate metric·false ceiling만 두고 raw banner·label·runtime identity는 별도
+  private binding에 보존한다.
+- exact DOMAIN-006 floor는 coverage `6/6`, recall·precision `5/5`, false-positive `0/1`, Replay `6/6`,
+  request/tool `12/1`, evidence `144/144`, denial `5/5`, Network accuracy `6/6`, measured time과 등록된 세 N/A다.
+  cleanup metric N/A와 별개로 12개 lifecycle의 zero residue는 admission에 필수다.
+- 새 계약은 `docs/benchmark/NET-002C-independent-fresh-worker-network-floor-evaluation.md`다. 기존
+  NET-001A~D, NET-002A/B, DOMAIN-006, generic benchmark/Walking wire와 accepted ADR identity는 변경하지 않았다.
+- D는 C를 완전히 다시 여는 별도 versioned public product에 canonical case reference·comparison state와
+  14개 aggregate metric·applicability·floor·literal-false ceiling만 봉인한다. raw/private/source lineage,
+  image/runtime/Worker/Tool, Graph/Finding/report/delivery는 포함하지 않는다.
+- immutable deployment registry와 zero-argument reader는 product/source identity·경로·complete verifier context를
+  고정하고 매 read마다 C와 product를 재검증한다. body/query-free Operator GET은 401/403/400/405/503/fixed
+  409로 닫히며 caller path/provider/profile/case/policy 또는 실행 설정을 받지 않는다.
+- fresh-spawn helper는 denial과 두 read 동안 Run/product/source/Replay/Worker/Target mutation을 차단하고 canonical
+  sealed bytes, exact reload count, filesystem stability와 read-only image inspect/residue query만 허용한다.
+  `.github/workflows/network-002d-conformance.yml`은 explicit manual confirmation, exact clean SHA, Ubuntu 24.04,
+  repository-built 세 image, source/Replay 12회와 unconditional residue audit을 고정한다.
+- 새 계약은
+  `docs/orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md`다.
+
+현재 검증 결과:
+
+- NET-001A~D와 NET-002A~D 전체 Network 회귀: `154 passed, 3 skipped in 946.65s`. skip은
+  `PAJIN_NETWORK_002B_REAL_DOCKER=1`, `PAJIN_NETWORK_002C_REAL_DOCKER=1`,
+  `PAJIN_NETWORK_002D_REAL_DOCKER=1` opt-in이다.
+- D fresh-spawn read: `1 passed in 320.52s`; 수집 후 바뀐 source digest/emitter profile/image substitution
+  단독 재검증: `1 passed in 273.73s`.
+- D workflow contract와 default Docker selector: `2 passed, 1 skipped in 2.89s`.
+- DOMAIN-006: `52 passed in 7.95s`.
+- Control Plane API compatibility: `21 passed in 51.63s`.
+- Docker Worker 기본 호환성: `96 passed in 0.58s`.
+- WEB-002D production adapter compatibility guard:
+  `11 passed, 7 deselected in 16.58s`. WEB 경로는 non-empty runtime image binding을 거부한다.
+- 문서 정책·링크: `4 passed`; `git diff --check` 통과.
+- `ruff check --no-cache src tests containers`: 통과. 이번 변경 Python 19개 format check도 통과했다.
+  `src/pajin/control_plane/api.py`의 whole-file format failure는 HEAD 원본에도 존재해 범위 밖 bulk rewrite를
+  수행하지 않았다.
+- Linux 대상 `mypy --no-sqlite-cache --strict --platform linux src/pajin`:
+  `378 source files` 통과.
+- local container runtime을 시작할 수 없어 NET-002B/C/D real-Docker opt-in은 실행하지 않았다. in-process
+  결과는 Phase 24 Exit Gate 증거가 아니며 repo-wide/full pytest 또는 새 Linux CI도 실행하지 않았다.
+- 기존 repo-wide CI run `33449972466`은 완료/실패다. shard 1의
+  `test_provider_session_duration_cancels_in_flight_gateway_and_keeps_reservation`가 `gateway.calls == 1`
+  기대에 0으로 실패했고 로컬 단일 재현은 통과했다. 해당 run은 NET-002A/B 이전 HEAD 대상이다.
+
+다음 첫 단계는 명시적으로 승인된 commit/push 뒤 exact clean SHA에서 manual NET-002D Ubuntu workflow를
+실행하는 것이다. source/Replay 12회, denial, cleanup, fresh-process reload와 unconditional zero-residue audit이
+모두 성공해야 NET-002D와 Phase 24 Exit Gate를 complete로 전환할 수 있다. 그 전에는 코드와 fake-provider
+검증이 통과해도 conformance-pending을 유지한다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤

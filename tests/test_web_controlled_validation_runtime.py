@@ -553,6 +553,15 @@ def test_web_002d_production_adapter_rejects_class_shadow_and_state_drift(
             require_production_web_controlled_validation_adapter(adapter)
 
     with monkeypatch.context() as patch:
+        patch.setattr(
+            backend,
+            "_runtime_image_bindings",
+            {"pajin-worker:dev": "sha256:" + "d" * 64},
+        )
+        with pytest.raises(WebControlledValidationRuntimeError, match="state differs"):
+            require_production_web_controlled_validation_adapter(adapter)
+
+    with monkeypatch.context() as patch:
         patch.setattr(backend, "_egress_lifecycle_observer", object())
         with pytest.raises(WebControlledValidationRuntimeError, match="state differs"):
             require_production_web_controlled_validation_adapter(adapter)

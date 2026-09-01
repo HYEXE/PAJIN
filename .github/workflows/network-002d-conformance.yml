@@ -1,0 +1,106 @@
+name: NET-002D real-Docker conformance
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_network_002d_conformance:
+        description: Run the exact NET-002D real-Docker conformance
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: network-002d-conformance-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  conformance:
+    name: Ubuntu 24.04 / exact Network boundary
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+
+    steps:
+      - name: Require explicit confirmation
+        env:
+          CONFIRM_NETWORK_002D_CONFORMANCE: ${{ inputs.confirm_network_002d_conformance }}
+        run: test "$CONFIRM_NETWORK_002D_CONFORMANCE" = "true"
+
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version-file: .python-version
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+        with:
+          version: 0.11.28
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install locked dependencies
+        run: uv sync --locked --all-extras
+
+      - name: Record runtime context
+        run: |
+          git rev-parse HEAD
+          python --version
+          docker version
+          printf 'github_sha=%s\n' "$GITHUB_SHA"
+          printf 'runner_image_os=%s\n' "${ImageOS:-unknown}"
+          printf 'runner_image_version=%s\n' "${ImageVersion:-unknown}"
+
+      - name: Build exact repository images
+        run: |
+          docker build --pull --platform linux/amd64 --tag pajin-network-banner-emitter:dev containers/network-banner-emitter
+          docker build --pull --platform linux/amd64 --tag pajin-worker:dev containers/worker
+          docker build --pull --platform linux/amd64 --tag pajin-egress-proxy:dev containers/egress-proxy
+
+      - name: Record exact image identities
+        run: |
+          docker image inspect pajin-network-banner-emitter:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect pajin-worker:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+          docker image inspect pajin-egress-proxy:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
+
+      - name: Require exact clean commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
+      - name: Run NET-002D conformance
+        env:
+          PAJIN_NETWORK_002D_REAL_DOCKER: "1"
+        run: >-
+          uv run --locked pytest -q
+          tests/test_network_measured_product_docker.py::test_real_docker_net_002d_exact_commit_product_conformance
+
+      - name: Require zero PAJIN Network Docker residue
+        if: ${{ always() }}
+        run: |
+          set -euo pipefail
+          network_containers="$(docker container ls --all --quiet --filter label=pajin.network-fixture.managed=true)"
+          network_networks="$(docker network ls --quiet --filter label=pajin.network-fixture.managed=true)"
+          execution_containers="$(docker container ls --all --quiet --filter label=pajin.execution-id)"
+          execution_networks="$(docker network ls --quiet --filter label=pajin.execution-id)"
+          target_containers="$(docker container ls --all --quiet --filter name=^/pajin-net-target-)"
+          target_networks="$(docker network ls --quiet --filter name=^pajin-net-target-net-)"
+          proxy_containers="$(docker container ls --all --quiet --filter name=^/pajin-proxy-)"
+          egress_networks="$(docker network ls --quiet --filter name=^pajin-egress-)"
+
+          residue="${network_containers}${network_networks}${execution_containers}${execution_networks}"
+          residue+="${target_containers}${target_networks}${proxy_containers}${egress_networks}"
+          if [[ -n "$residue" ]]; then
+            printf '%s\n' \
+              "network_containers=$network_containers" "network_networks=$network_networks" \
+              "execution_containers=$execution_containers" "execution_networks=$execution_networks" \
+              "target_containers=$target_containers" "target_networks=$target_networks" \
+              "proxy_containers=$proxy_containers" "egress_networks=$egress_networks" >&2
+            exit 1
+          fi

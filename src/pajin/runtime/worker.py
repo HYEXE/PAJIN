@@ -587,6 +587,7 @@ class DockerWorkerBackend:
         egress_proxy_image: str = "pajin-egress-proxy:dev",
         external_network: str = "bridge",
         external_network_routes: Mapping[str, str] | None = None,
+        runtime_image_bindings: Mapping[str, str] | None = None,
         egress_lifecycle_observer: DockerEgressLifecycleObserver | None = None,
     ) -> None:
         if not allowed_images:
@@ -622,7 +623,18 @@ class DockerWorkerBackend:
             for action, network in routes.items()
         ):
             raise ValueError("external Docker network routes must use safe identifiers")
+        image_bindings = dict(runtime_image_bindings or {})
+        if any(
+            logical_image not in allowed_images
+            or not isinstance(observed_image_id, str)
+            or re.fullmatch(r"sha256:[a-f0-9]{64}", observed_image_id) is None
+            for logical_image, observed_image_id in image_bindings.items()
+        ):
+            raise ValueError(
+                "runtime Docker image bindings must map allowlisted images to OCI image IDs"
+            )
         self._allowed_images = set(allowed_images)
+        self._runtime_image_bindings = image_bindings
         self._docker = docker_executable
         self._egress_proxy_image = egress_proxy_image
         self._external_network = external_network
@@ -659,11 +671,16 @@ class DockerWorkerBackend:
             "egressProxyImage": self._egress_proxy_image,
             "externalNetwork": self._external_network,
         }
+        if self._runtime_image_bindings:
+            context["implementationVersion"] = "pajin.docker-worker/v4"
+            context["runtimeImageBindings"] = dict(sorted(self._runtime_image_bindings.items()))
         if self._external_network_routes:
-            context["implementationVersion"] = "pajin.docker-worker/v2"
+            if not self._runtime_image_bindings:
+                context["implementationVersion"] = "pajin.docker-worker/v2"
             context["externalNetworkRoutes"] = dict(sorted(self._external_network_routes.items()))
         if self._egress_observer_context is not None:
-            context["implementationVersion"] = "pajin.docker-worker/v3"
+            if not self._runtime_image_bindings:
+                context["implementationVersion"] = "pajin.docker-worker/v3"
             context["egressLifecycleObserver"] = json.loads(
                 json.dumps(
                     self._egress_observer_context,
@@ -1001,7 +1018,7 @@ class DockerWorkerBackend:
             "/tmp:rw,noexec,nosuid,nodev,mode=0700,uid=65532,gid=65532,size=16m",
             "--stop-timeout",
             "1",
-            job.image,
+            self._runtime_image_bindings.get(job.image, job.image),
             *job.command,
         ]
 

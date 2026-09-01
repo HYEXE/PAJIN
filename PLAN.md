@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 23 — Bounded Measured Web Operator Product Read — 완료
-- 현재 우선순위: Phase 23 이후 new-domain runtime fresh checkpoint review
-- 다음 우선순위: ADR-0250·ADR-0257의 조건에 따른 Network runtime 후보 검토
+- 현재 단계: Phase 24 — Governed Measured Network Service Identification
+- 현재 우선순위: Phase 24 `NET-002D` exact-commit real-Docker conformance
+- 다음 우선순위: Phase 24 Exit Gate와 post-Phase fresh checkpoint review
 
 ## 제품 목표
 
@@ -626,88 +626,23 @@ production 지원이나 credential/lateral movement/evidence mutation 권위의 
 
 ### Phase 22 — Governed Measured Web/API Validation
 
-[ADR-0252](docs/adr/0252-route-measured-web-validation-through-an-exact-egress-proxy-bridge.md)는
-Web 선정을 유지하고 additive identity·proxy route·floor·Finding 경계를 확정하며,
-[ADR-0253](docs/adr/0253-separate-zap-measurement-routing-from-controlled-validation-routing.md)은
-ZAP source measurement와 controlled-validation route를 별도 실행·Evidence 경계로 제한한다.
-[ADR-0254](docs/adr/0254-bind-web-source-measurement-to-a-fresh-registry-governed-zap-target-run.md)는
-WEB-002B를 fresh registry-governed Target lifecycle, completed journal과 cleanup evidence에 결박한다.
-[ADR-0255](docs/adr/0255-admit-sealed-web-source-measurement-without-execution-authority.md)는
-WEB-002B sealed source authority를 CapabilityGrant나 ActionPermit으로 오인하지 않는 additive
-knowledge-only Graph lineage를 확정한다.
+[ADR-0252](docs/adr/0252-route-measured-web-validation-through-an-exact-egress-proxy-bridge.md)부터
+[ADR-0255](docs/adr/0255-admit-sealed-web-source-measurement-without-execution-authority.md)까지가
+additive identity, source/controlled route 분리, fresh Target lifecycle, floor와 knowledge-only admission 경계를
+확정한다. 상세 authority와 검증 근거는 각 ADR 및 WEB-002 versioned contract가 담당한다.
 
-- [x] `WEB-002A` exact measured Web case authority
-  - 기존 REDTEAM endpoint/Profile/Capability를 변경하지 않고 P0-D1 internal endpoint 전용 additive
-    Profile, T2 read-only Capability와 complete seven-role authority set을 등록
-  - signed Capability release, exact P0-D1 private binding, P0-E2B scanner plan/registration과 DOMAIN-006
-    Web plan을 public-safe content-addressed measured case로 결박
-  - controlled validation 전용 deployment-signed route의 issuer/verifier가 caller snapshot 대신 read-only
-    durable approval store의 exact `ActionApprovalAuthorization`과 Target operation journal의
-    `current_open_attempt`·current effective fence, exact Scanner coordinate와 ordinal-1
-    reset/isolation/pending-execution sequence를 직접 재검증
-  - 같은 approval receipt·Permit은 nonce/operation/policy와 무관한 stable consumption slot에 수렴하고 route
-    interval은 Permit·approval·Envelope·Campaign authorization과 하나의 testing-window occurrence 안으로 제한
-  - verification loader가 live predecessor를 모두 다시 검증하고 exact wire equality를 요구하되 route
-    materialization·consumption·Docker/Worker/network 실행은 false이며 consumption ledger/runtime adapter는 없음
-  - DOMAIN-006 Web 14개 metric의 11 required·3 not-applicable, denominator·threshold·evidence requirement를
-    versioned floor policy로 등록하고 policy-denial denominator를 exact content-addressed code-owned
-    denial-Control registry에 결박하되 평가·floor satisfaction은 false
-  - private expected Finding reference를 별도 public content-addressed projection commitment에 mapping하되
-    raw expected ID/matcher는 공개하지 않고 Finding/product/report/Graph authority를 만들지 않음
-- [x] `WEB-002B` disposable registry-governed Web measurement execution
-  - exact WEB-002A case와 하나의 P0-E2B Scanner coordinate를 내부에서 재구성하고 fresh P0-D1
-    Target lifecycle만 실행
-  - immutable image, internal network/no published ports, raw SARIF, strict normalization, exact signed
-    registry distribution bundle, completed Target Run과 receipt-bound cleanup `resourcesAbsent=true`를
-    public-safe authority에 결박
-  - sealed loader가 Scanner/Harness/Target/provider/raw SARIF/completed 8-record journal을 contextfully 재검증
-  - controlled-validation route, private Ground Truth, floor, Graph, Finding, comparison, Supervisor,
-    product/report와 추가 실행 권위는 false
-  - WEB-002B wrapper path는 exact commit `975bf7876a186cefae66c289d09f530f3e0fe7aa`의 Ubuntu 24.04
-    combined run `33310558350`에서 exact-commit real-Docker 실행과 observed cleanup을 재검증
-- [x] `WEB-002C` measured Web Observation/Evidence admission and bounded Hypothesis
-  - WEB-002B outer Run과 모든 source/scanner predecessor를 contextfully 다시 열고 exact registered Web
-    Surface signal만 독립 재계산하되 `knownFindingMatched`와 private Ground Truth를 사용하지 않음. 두 번째
-    outer snapshot에서 canonical authority bytes와 세 audit event payload의 exact equality도 재검증
-  - current Graph Snapshot에 이미 존재하는 exact trusted-core Surface를 요구하고 기존 single writer/CAS로
-    Action·neutral Observation·authority-reference Evidence만 admission
-  - sealed-source authority와 CapabilityGrant/ActionPermit/Capability tuple을 상호 배타적으로 강제하고,
-    source lineage registration을 exact Proposal digest와 predecessor event-log head에 결박. direct submit과
-    cross-domain source-authority transfer는 거부
-  - Surface signal이 있을 때만 confidence 0.5 bounded open Hypothesis를 즉시 다음 event로 admission.
-    Observation 뒤 head가 바뀌면 Hypothesis는 거부하고 이미 기록된 neutral Observation은 보존
-  - raw SARIF, private Ground Truth, Target/provider runtime identity, controlled route, floor/Finding,
-    Scope/Capability/Permit/Worker/network/product/report와 추가 실행 권위는 모두 제외
-- [x] `WEB-002D` independently controlled validation, Profile floor and Finding projection
-  - source ZAP measurement와 identity가 분리된 fresh controlled-validation Target attempt, signed proxy route,
-    atomic single-use claim과 exact Worker Evidence를 separately authorized execution으로 결박
-  - 성공 route의 durable Worker Evidence와 cleanup, 실행되지 않은 별도 route의 append-only denial tombstone을
-    fresh-session loader에서 다시 열고 schema·journal·receipt·image·backend·resource drift를 fail closed
-  - source request-unit Observation, private matcher recomputation, observed 1/1 zero-side-effect denial과 실제
-    Evidence inventory에서 DOMAIN-006 floor를 독립 평가하고 claim ceiling이 제한된 public-safe Finding만 projection
-  - authority/proxy `20 passed in 573.18s`, route `58 passed, 2 skipped`, runtime `9 passed`, evaluation `7 passed`, Target/request/
-    JSON 집중 회귀 `15 passed, 34 deselected`와 관련 Ruff/format/strict mypy는 통과
-  - 독립 리뷰의 P1 provider trust-boundary gap은 exact source-owned production provider로 수정했고,
-    후속 통합 재평가에서 찾은 v1alpha1 provider Evidence wire/digest 호환성과 production Worker custody
-    class/state shadow 경계도 수정해 집중 pytest, Ruff, format과 Linux-target strict mypy를 통과
-  - commit `975bf7876a186cefae66c289d09f530f3e0fe7aa`를 exact checkout한 Ubuntu 24.04
-    GitHub run `33310558350`, job `99254722600`에서 exact-commit real-Docker conformance가
-    `1 passed in 666.82s (0:11:06)`로 통과했으며 전체 job은 12분 20초
-  - exact image ID는 Target `sha256:aeb4899873707dc5309cc4747f74047ab9700ce1b9e3c2d5023fdd1c574dbdfe`,
-    benchmark Worker `sha256:2efde77832be1f882edca86b6ee28c18fd11e2ba128bd53fe6b666b99e05699a`,
-    ZAP `sha256:6175579a46d477338e4b641dd9c3428936f30c3719809e2f4d36f58e60c4ddb7`
-    (registry digest `sha256:71db37cd5b75663b35758d10aaec05bf6fbac23f5020e3046c70e628a5f84efa`),
-    controlled Worker `sha256:69038a47c65e9881cf644d44c6fe63f30431f021293cf55be127e697c7e19864`,
-    proxy `sha256:875d8376a5ebdc435b6cce5ddeaa004e40aeb99dd2fea817d6760a02084fb027`
-  - success/denial lifecycle, cleanup, seal과 fresh-session reload가 통과했고, 성공한 audit step의
-    managed/execution label 및 `pajin-bench-` exact-name container/network 독립 조회 6건은 모두 비어 있음
-  - Ubuntu CI run `33316840636`(commit `051cad4`): Quality·24/24 shard 성공,
-    `7,609 passed, 69 skipped`, 실패·취소 0, 전체 `1:39:07`; shard 17 `5,925.98s`로 120분 경계 확인
+- [x] `WEB-002A` exact measured Web case authority — P0-D1/P0-E2B private binding, signed route,
+  DOMAIN-006 Web plan·floor·denial Control과 public-safe commitment를 실행 권위 없이 등록
+- [x] `WEB-002B` disposable registry-governed Web measurement execution — fresh internal Target, immutable
+  images, raw SARIF normalization, completed journal과 receipt-bound zero-residue cleanup을 sealed authority로 결박
+- [x] `WEB-002C` measured Web Observation/Evidence admission — source chain을 다시 검증해 neutral
+  Observation/Evidence와 bounded open Hypothesis만 Graph에 admission하고 Ground Truth·Finding·실행 권위는 제외
+- [x] `WEB-002D` independent controlled validation and floor — disjoint approved Worker execution, denial
+  tombstone, private matcher와 DOMAIN-006 floor를 재검증해 claim ceiling이 제한된 public-safe Finding만 projection
 
-Phase 22 Exit Gate: 완료. synthetic P0-D1 하나의 Target·scanner Evidence·Result·independent
-validation·floor·Finding을 sealed lineage로 연결했고, exact-commit Ubuntu real-Docker
-conformance와 독립 residue audit을 통과했다. Worker는 proxy-only network에 남고 proxy만 Target network를
-bridge한다. 위 Linux CI 증거는 repository conformance에 한정되며 임의 target/scanner,
+Phase 22 Exit Gate: 완료. exact commit `975bf7876a186cefae66c289d09f530f3e0fe7aa`의 Ubuntu run
+`33310558350`에서 real-Docker conformance와 독립 residue audit이 성공했다. synthetic P0-D1의 source,
+independent validation, floor와 Finding만 sealed lineage로 연결하며 Worker는 proxy-only이고 임의 target/scanner,
 production/external probing과 다른 Domain runtime은 제외한다.
 
 ### Phase 23 — Bounded Measured Web Operator Product Read
@@ -743,8 +678,53 @@ new-domain runtime 우선순위로 유지한다.
 
 Phase 23 Exit Gate: 완료. exact WEB-002D bounded Finding을 impact/severity가 미평가된
 `benchmark-ground-truth-match`로만 표시하고, publication·fresh-session reader·Operator endpoint·Web Console이
-동일한 false authority ceiling과 zero-side-effect를 유지한다. Phase 23 완료 뒤에도 Network는 다음
-new-domain runtime 후보이며, 별도 ADR·Target Factory·governed measurement·product 경계 없이는 실행하지 않는다.
+동일한 false authority ceiling과 zero-side-effect를 유지한다. Phase 23 자체는 Network runtime 증거가 아니며,
+후속 선정·Target Factory·governed measurement·product 경계 없이는 Network를 실행하지 않는다.
+
+### Phase 24 — Governed Measured Network Service Identification
+
+[ADR-0258](docs/adr/0258-select-governed-measured-network-service-identification-after-phase-23.md)은
+Phase 23 이후 fresh checkpoint에서 Network를 다음 단일 measured runtime으로 선정한다. 범위는 NET-001D의
+ftp/imap/pop3/smtp/ssh known-positive 5건과 unknown negative Control 1건뿐이며, DNS·UDP·port range·enumeration,
+raw socket, active protocol write, credential, production/external target과 일반 scanner는 포함하지 않는다.
+
+- [x] `NET-002A` exact isolated-service measured-case authority — complete, registration only
+  - 기존 finding 중심 benchmark catalog/Walking wire를 재해석하지 않고 Network 전용 public registration,
+    private Ground Truth binding, immutable target/Worker/proxy image identity와 six-case membership을 versioning
+  - exact DOMAIN-006 Network plan, measurement protocol과 validation-floor policy를 결박하되 Target/provider,
+    approval, Permit, Worker, network, measurement, product와 execution authority는 모두 false
+  - fixed case-ID-only TCP emitter profile은 internal port `18080`, Target read 0 byte와 Worker application write
+    0 byte를 고정하며 observed OCI image ID는 요구만 등록하고 build·binding·runtime use는 수행하지 않음
+- [x] `NET-002B` registry-governed disposable fixture source measurement — complete, source only
+  - caller banner가 아닌 fixed case ID만 받는 code-owned TCP banner-emitter image를 case마다 fresh internal
+    container/network로 materialize하고 host port를 publish하지 않음
+  - Worker는 proxy-only network에 남고 proxy만 exact Target network를 bridge하며, normal Policy/Approval,
+    one-use ActionPermit, Gateway, deployment Worker와 trusted CONNECT receipt 경로로 case당 한 번 실행
+  - exact Target/proxy/Worker/container/network/output/cleanup evidence와 pre-dispatch denial을 sealed authority로 보존
+  - public authority에는 digest lineage와 false authority ceiling만 두고 raw banner·expected/observed label·
+    coordinate·Worker/Tool result는 별도 deployment-private binding에서만 contextfully reopen
+  - fake/in-process 전체 경로는 검증했지만 local real-Docker opt-in은 실행하지 않았으며 source/Replay
+    exact-commit Linux conformance와 Phase 24 Exit Gate는 NET-002D까지 미완료
+- [x] `NET-002C` independent fresh-Worker Replay, Network floor, and bounded evaluation — complete
+  - 여섯 case를 source와 전역 identity가 분리된 approval·Permit·Worker·Target lifecycle로 재실행하고 source,
+    Replay, private Ground Truth와 12개 inner Run을 contextfully reopen
+  - exact DOMAIN-006 14-metric order에서 coverage `6/6`, recall·precision `5/5`, false-positive `0/1`, Replay
+    `6/6`, request/tool `12/1`, evidence `144/144`, denial `5/5`, Network accuracy `6/6`과 세 N/A를 평가
+  - public에는 digest lineage·aggregate metric·false ceiling만 두고 raw banner·label·runtime identity는 private에
+    격리하며, satisfied floor는 synthetic evidence일 뿐 service confirmation·Finding·product 권위가 아님
+  - in-process 12-execution 경로는 검증했지만 real-Docker source/Replay와 Exit Gate는 NET-002D까지 미완료
+- [ ] `NET-002D` bounded Operator product read and exact real-Docker conformance — conformance-pending
+  - public-safe case identity·aggregate metric·applicability·floor·literal-false marker만 별도 versioned product로
+    sealing하고 immutable deployment registry의 zero-argument reader와 body/query-free Operator GET으로 노출
+  - raw/private/source-lineage/image/runtime/Worker/Tool, Graph/Finding/report/delivery와 모든 새 실행 권위는 제외
+  - fake-provider fresh-spawn read `1 passed in 320.52s`, 전체 Network 회귀 `154 passed, 3 skipped`,
+    workflow contract `2 passed`; local real-Docker opt-in은 skip
+  - manual exact-commit Ubuntu workflow의 12개 source/Replay execution, denial, cleanup, fresh reload와
+    unconditional zero-residue audit이 성공해야 complete로 전환
+
+Phase 24 Exit Gate: conformance-pending. 여섯 code-owned fixture만 internal no-published-port Target으로 materialize하고
+Worker zero-target-application-write, proxy-only bridge, disjoint fresh authority, exact DOMAIN-006 metric/floor와
+read-only product ceiling을 증명해야 한다. fake socket·in-process classifier·non-Docker fixture는 exit evidence가 아니다.
 
 ## 우선순위와 재평가 기준
 
@@ -757,8 +737,8 @@ new-domain runtime 후보이며, 별도 ADR·Target Factory·governed measuremen
 Worker isolation을 기준으로 재평가할 수 있다. 한 PR에서 여러 domain runtime을 함께 구현하지
 않는다.
 
-Phase 23은 기존 WEB-002D를 소비하는 read-only product slice다. 이후 새 Domain runtime을 여는 첫 후보는
-ADR-0250의 fresh-review 조건을 유지한 Network이며, UX-009를 Network runtime 완료로 계산하지 않는다.
+Phase 23은 기존 WEB-002D를 소비하는 read-only product slice다. ADR-0258의 fresh checkpoint review는
+Network를 Phase 24의 단일 measured runtime으로 선정했으며, UX-009를 Network runtime 완료로 계산하지 않는다.
 
 ## 미결정 제품 사항
 

@@ -50,11 +50,10 @@
 ## ARCH-002 multi-domain architecture 경계
 
 - DOMAIN-001~006은 taxonomy·Graph·inventory·Worker·admission·metric registry이며 일반 runtime 권위가 없다.
-- WEB-002A~D는 exact case와 ZAP source measurement, 별도 controlled route/Worker 실행, durable
-  claim·denial·Evidence, 독립 floor 평가와 bounded benchmark Ground Truth match Finding까지 구현했다.
-  UX-009A~D의 bounded product read와 fresh-spawn audit는 exact checkpoint `6cb58c1`의 Ubuntu run
-  `33410801762`, job `99549584968`에서 conformance와 unconditional Docker residue audit을 통과했다.
-  Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
+- WEB-002A~D와 UX-009A~D는 단일 synthetic Web case의 measured validation과 bounded product read만
+  완료했다. production/external probing, Graph/report/delivery와 추가 실행 권위는 계속 닫혀 있다.
+- `NET-002A~D` local code와 fake-provider read는 구현됐다. exact-commit real-Docker와
+  Phase 24 Exit Gate는 미검증이다.
 - AI-001A~C는 registry·preparation·neutral admission을 구현한다. AI-001D는 M03/M06/A04 KISA fresh-session
   Replay·세 Control·REDTEAM contract만 결박하며 MCP Replay, concrete Ground Truth·measurement·Finding은 없다.
 - registry, 단일 cross-domain edge와 fixture는 Domain 지원 완료 증거가 아니다.
@@ -764,16 +763,22 @@
 
 ## 관리형 Windows interpreter 실행 제한
 
-- 상태: 일부 관리형 Windows 환경에서는 project interpreter와 console-script 실행이 제한된다.
-  허용된 interpreter, 격리 임시 루트와 `-p no:cacheprovider`를 사용한 검증은 통과한다.
-- 해소 조건: project Python, `pajin.exe`, installed wrapper를 Linux CI 또는 승인된 관리형 환경에서 검증한다.
+- 상태: 일부 관리형 Windows에서 project interpreter·console script가 제한된다. 허용된 interpreter,
+  격리 임시 루트와 `-p no:cacheprovider`는 통과한다.
+- 해소: project Python, `pajin.exe`, installed wrapper를 Linux CI나 승인된 환경에서 검증한다.
 
 ## 로컬 Windows container runtime 가용성
 
-- 상태: 현재 maintainer host에서는 OS-level file-access policy 제약으로 local container runtime을
-  시작할 수 없다. host security policy를 우회하거나 runtime data를 삭제하지 않는다.
-- 영향: Ubuntu 24.04 committed-ref conformance run `33310558350`이 통과했으므로 Phase 22 blocker는
-  아니다. 추가 real-Docker 검증은 GitHub-hosted Linux runner 또는 승인된 별도 Linux host에서 실행한다.
+- 상태: host 정책상 NET-002B/C/D real-Docker opt-in은 미실행이다. 정책 우회·runtime data 삭제는
+  하지 않는다.
+- 해소: fixed-image Linux NET-002D exact source/Replay/product read와 zero-residue audit이 필요하다.
+  fake-provider·fresh-process 결과는 Exit Gate가 아니다.
+
+## repo-wide CI run 33449972466의 단일 shard 실패
+
+- 상태: NET-002A/B 이전 HEAD의 run은 완료/실패다. shard 1 cancellation test가
+  `gateway.calls` 0을 관찰했다(기대 1).
+- 해소: Network green 근거가 아니다. 새 Linux CI 통과나 재현 가능한 원인 분류가 필요하다.
 
 ## Git OpenSSL CA 경로
 

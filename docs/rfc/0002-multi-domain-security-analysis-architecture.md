@@ -537,6 +537,39 @@ ssh positive banners and one unknown negative Control with disposable per-case i
 not select or provision a Target or publish a measurement. The exact contract is
 [NET-001D](../benchmark/NET-001D-fresh-worker-replay-isolated-service-fixtures.md).
 
+The post-Phase 23 fresh checkpoint selects
+[ADR-0258](../adr/0258-select-governed-measured-network-service-identification-after-phase-23.md)
+as the Phase 24 roadmap. NET-002A now adds a Network-specific content-addressed public six-case
+registration, separate private Ground Truth binding, fixed-case TCP emitter profile, immutable
+Target/Worker/proxy image-contract identities, exact DOMAIN-006 source/Replay protocol, and an
+unevaluated validation-floor policy. It builds no image, creates no Target or network, selects no
+provider, and grants no approval, Permit, Worker, measurement, product, or execution authority.
+NET-002B adds the source half of that protocol. It binds deployment-provided Target, Worker, and
+proxy references to independently observed OCI IDs, materializes one fresh internal
+no-published-port Target and network per case, keeps the Worker proxy-only while the proxy bridges
+the exact Target network, and consumes one ordinary Approval and one-use Permit through the
+existing Gateway. Public lineage is sealed separately from private raw banner, label,
+Worker/Tool, topology, journal, and cleanup evidence. Five code-owned substitutions are denied
+before dispatch. NET-002C runs a second fresh six-case set with globally disjoint
+Run/request/Decision/approval/Permit/Worker/Target identities, contextfully reopens both sets and
+private Ground Truth, and evaluates the exact fourteen-metric DOMAIN-006 floor. Its public artifact
+contains only case references, digest lineage, aggregate rational observations, and false-authority
+markers; raw banners, labels, and runtime identities remain private. A satisfied floor is synthetic
+benchmark evidence, not service confirmation or a Finding. NET-002D projects only the public-safe
+case references, ordered aggregate metrics, applicability, satisfied floor state, and literal-false
+ceiling into a separate versioned Network product. An immutable deployment registration pins the
+exact product, NET-002C source, and complete verifier context for a zero-argument non-cacheable
+Operator GET; callers cannot select paths, providers, profiles, cases, or metric policy. The manual
+exact-commit residue-free real-Docker conformance remains pending. Existing Finding-oriented
+benchmark catalog, Ground Truth, and Walking observation wires remain unchanged and cannot be
+relabeled as Network measurement authority. DNS, UDP, ranges, enumeration, active protocol writes,
+credentials, external targets, service confirmation, Findings, and general Network scanning remain
+outside the selected phase. The additive contracts are
+[NET-002A](../benchmark/NET-002A-exact-isolated-service-measured-case-authority.md),
+[NET-002B](../benchmark/NET-002B-registry-governed-disposable-network-source-measurement.md),
+[NET-002C](../benchmark/NET-002C-independent-fresh-worker-network-floor-evaluation.md), and
+[NET-002D](../orchestration/NET-002D-bounded-network-measurement-product-read-and-conformance.md).
+
 CLOUD-001A implements the reserved `cloud.account-resource` locator schema as five additive,
 secret-free classes for provider-partition accounts, nested projects, provider-local resources,
 IAM objects, and immutable container/image coordinates. Parent identity is nested rather than
