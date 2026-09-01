@@ -560,7 +560,9 @@ case references, ordered aggregate metrics, applicability, satisfied floor state
 ceiling into a separate versioned Network product. An immutable deployment registration pins the
 exact product, NET-002C source, and complete verifier context for a zero-argument non-cacheable
 Operator GET; callers cannot select paths, providers, profiles, cases, or metric policy. The manual
-exact-commit residue-free real-Docker conformance remains pending. Existing Finding-oriented
+exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a` passed Ubuntu 24.04
+real-Docker run `33494188536`, job `99812441408`, with twelve source/Replay executions and
+unconditional zero residue. Existing Finding-oriented
 benchmark catalog, Ground Truth, and Walking observation wires remain unchanged and cannot be
 relabeled as Network measurement authority. DNS, UDP, ranges, enumeration, active protocol writes,
 credentials, external targets, service confirmation, Findings, and general Network scanning remain

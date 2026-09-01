@@ -7,9 +7,9 @@ allows one deployment-selected Operator read. It adds no measurement, execution,
 confirmation, Finding, Graph, report, or delivery authority. The existing generic benchmark and
 Finding wires remain unchanged and are not reinterpreted as Network metrics or product authority.
 
-The implementation is complete locally, but Phase 24 remains conformance-pending until the
-dedicated exact-commit Ubuntu 24.04 real-Docker workflow succeeds with an unconditional
-zero-residue audit.
+The implementation and Phase 24 Exit Gate are complete. Exact checkpoint
+`9b3d8035252d26334d35caa55c0270356c71683a` passed the dedicated Ubuntu 24.04 real-Docker run
+`33494188536`, job `99812441408`, including the unconditional zero-residue audit.
 
 ## Versioned product
 
@@ -127,6 +127,9 @@ The opt-in test must:
    product Run; and
 6. finish with no managed, execution-labelled, or exact-name Target, proxy, or network residue.
 
+At exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`, run `33494188536` executed
+the test successfully in `771.59s`; job `99812441408` then passed the unconditional residue audit.
+
 An unrun, skipped, failed, non-exact-commit, non-Linux, fake-provider, or same-process result is not
 real-Docker conformance evidence and cannot complete the Phase 24 Exit Gate.
 
@@ -138,8 +141,8 @@ ActionPermit, Worker, Graph, report, or delivery contract.
 
 Rollback removes the NET-002D product, reader, route, tests, workflow, and this document. It does not
 rewrite or delete accepted source, Replay, or product Runs and does not weaken the A/B/C validators.
-A failed exact-commit workflow leaves Phase 24 conformance-pending rather than weakening or skipping
-the required assertions.
+A failed workflow at a later code checkpoint cannot replace this exact evidence or justify weakening
+or skipping the required assertions.
 
 ## Related documents
 

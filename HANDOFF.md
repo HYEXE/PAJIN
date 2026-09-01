@@ -8,10 +8,10 @@
 - UX-009D 성능 보정 체크포인트: `4440414` (`fix(benchmark): 도메인 레지스트리 반복 재구성 제거`)
 - UX-009D JSON wire 보정 체크포인트: `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`
   (`test(product): fresh 응답 JSON 검증 경로 수정`)
-- 현재 Git: `main` HEAD와 `origin/main`은 `48d76251e93c592a24b1d984f41b6a8ede180aa9`로 같고 staged
-  변경과 진행 중인 merge/rebase/cherry-pick은 없다. Network fresh checkpoint 문서, ADR-0258,
-  NET-002A~D registration·source·Replay/floor·product/read runtime·테스트·계약·exact workflow는 의도된
-  unstaged/untracked 변경이며 staging·commit·push하지 않았다.
+- Phase 24 구현 커밋은 `be94b713a4323dba971345bcb2524f6ce8395142`, Linux conformance 상태 경로 보정은
+  `9b3d8035252d26334d35caa55c0270356c71683a`이며 둘 다 `main`에 push됐다.
+- Phase 24 exact-SHA Ubuntu run `33494188536`, job `99812441408`은 `9b3d8035252d26334d35caa55c0270356c71683a`에서
+  conformance `1 passed in 771.59s`와 unconditional zero-residue audit을 통과했다.
 - 구현 상태: `DOMAIN-001~006`, 모든 `*-001A~D`, `WEB-002A~D`, `UX-009A~D` 코드·계약이 커밋·push됐고
   로컬 집중 검증을 통과했다.
 - UX-009D exact-SHA Ubuntu real-Docker run `33410801762`, job `99549584968`은 checkpoint
@@ -25,8 +25,9 @@
 - Phase 22 Exit Gate는 완료됐다. UX-009C의 별도 Operator 소비 경로가 추가됐지만 UX-009A wire 자체,
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
 - Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
-- 현재 우선순위: Phase 24 `NET-002D` bounded Operator product read and exact real-Docker conformance
-- 다음 우선순위: Phase 24 Exit Gate와 post-Phase fresh checkpoint review
+- Phase 24 Exit Gate도 exact NET-002D conformance와 residue audit으로 완료됐다.
+- 현재 우선순위: Phase 24 이후 fresh checkpoint review
+- 다음 우선순위: fresh review 결과에 따른 단일 후속 vertical slice 선택
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
@@ -634,7 +635,8 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 
 ## 다음 한 단계
 
-`NET-002A~D`가 로컬 working tree에 구현됐다. A는 exact ftp/imap/pop3/smtp/ssh positive 5건과 unknown
+`NET-002A~D`가 `main`에 구현·push되고 exact Linux conformance를 통과했다. A는 exact
+ftp/imap/pop3/smtp/ssh positive 5건과 unknown
 negative Control 1건, private Ground Truth, fixed emitter/image contracts와 DOMAIN-006 protocol/floor를 등록한다.
 B는 case마다 fresh internal no-published-port Target/network와 proxy-only Worker를 normal
 Policy→Approval→one-use Permit→Gateway 경로로 한 번 실행하고 public lineage와 private raw output/lifecycle을
@@ -686,15 +688,19 @@ Policy→Approval→one-use Permit→Gateway 경로로 한 번 실행하고 publ
 - Linux 대상 `mypy --no-sqlite-cache --strict --platform linux src/pajin`:
   `378 source files` 통과.
 - local container runtime을 시작할 수 없어 NET-002B/C/D real-Docker opt-in은 실행하지 않았다. in-process
-  결과는 Phase 24 Exit Gate 증거가 아니며 repo-wide/full pytest 또는 새 Linux CI도 실행하지 않았다.
+  결과만으로는 Exit Gate 증거가 아니지만, 별도 exact Ubuntu run이 실제 Docker 경계를 통과했다.
+- 최초 exact run `33493671894`는 source 실행 전 Graph Store test parent가 owner-only가 아니어서 실패했으나
+  unconditional residue audit은 성공했다. `9b3d803`이 test authorizer parent를 POSIX `0700`으로 고정했고,
+  후속 run `33494188536`, job `99812441408`에서 exact conformance `1 passed in 771.59s`와 residue audit이
+  모두 성공했다.
 - 기존 repo-wide CI run `33449972466`은 완료/실패다. shard 1의
   `test_provider_session_duration_cancels_in_flight_gateway_and_keeps_reservation`가 `gateway.calls == 1`
   기대에 0으로 실패했고 로컬 단일 재현은 통과했다. 해당 run은 NET-002A/B 이전 HEAD 대상이다.
 
-다음 첫 단계는 명시적으로 승인된 commit/push 뒤 exact clean SHA에서 manual NET-002D Ubuntu workflow를
-실행하는 것이다. source/Replay 12회, denial, cleanup, fresh-process reload와 unconditional zero-residue audit이
-모두 성공해야 NET-002D와 Phase 24 Exit Gate를 complete로 전환할 수 있다. 그 전에는 코드와 fake-provider
-검증이 통과해도 conformance-pending을 유지한다.
+다음 첫 단계는 Phase 24 완료 증거를 경계로 fresh checkpoint review를 수행하는 것이다. exact synthetic
+six-case Network slice를 production/external target, DNS·UDP·enumeration, active write, credential, service
+confirmation, general scanner, Graph/Finding/report/delivery 또는 추가 실행 권위로 확장하지 않고, 다음 단일
+vertical slice를 새 ADR에서 선택하거나 명시적으로 보류한다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤

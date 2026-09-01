@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 24 — Governed Measured Network Service Identification
-- 현재 우선순위: Phase 24 `NET-002D` exact-commit real-Docker conformance
-- 다음 우선순위: Phase 24 Exit Gate와 post-Phase fresh checkpoint review
+- 현재 단계: Phase 24 — Governed Measured Network Service Identification — 완료
+- 현재 우선순위: Phase 24 이후 fresh checkpoint review
+- 다음 우선순위: fresh review 결과에 따른 단일 후속 vertical slice 선택
 
 ## 제품 목표
 
@@ -703,8 +703,7 @@ raw socket, active protocol write, credential, production/external target과 일
   - exact Target/proxy/Worker/container/network/output/cleanup evidence와 pre-dispatch denial을 sealed authority로 보존
   - public authority에는 digest lineage와 false authority ceiling만 두고 raw banner·expected/observed label·
     coordinate·Worker/Tool result는 별도 deployment-private binding에서만 contextfully reopen
-  - fake/in-process 전체 경로는 검증했지만 local real-Docker opt-in은 실행하지 않았으며 source/Replay
-    exact-commit Linux conformance와 Phase 24 Exit Gate는 NET-002D까지 미완료
+  - fake/in-process 전체 경로와 별도로 NET-002D exact-commit Linux run이 source/Replay와 cleanup을 검증
 - [x] `NET-002C` independent fresh-Worker Replay, Network floor, and bounded evaluation — complete
   - 여섯 case를 source와 전역 identity가 분리된 approval·Permit·Worker·Target lifecycle로 재실행하고 source,
     Replay, private Ground Truth와 12개 inner Run을 contextfully reopen
@@ -712,19 +711,21 @@ raw socket, active protocol write, credential, production/external target과 일
     `6/6`, request/tool `12/1`, evidence `144/144`, denial `5/5`, Network accuracy `6/6`과 세 N/A를 평가
   - public에는 digest lineage·aggregate metric·false ceiling만 두고 raw banner·label·runtime identity는 private에
     격리하며, satisfied floor는 synthetic evidence일 뿐 service confirmation·Finding·product 권위가 아님
-  - in-process 12-execution 경로는 검증했지만 real-Docker source/Replay와 Exit Gate는 NET-002D까지 미완료
-- [ ] `NET-002D` bounded Operator product read and exact real-Docker conformance — conformance-pending
+  - in-process 12-execution 경로와 별도로 NET-002D exact-commit Linux run이 fresh source/Replay를 검증
+- [x] `NET-002D` bounded Operator product read and exact real-Docker conformance — complete
   - public-safe case identity·aggregate metric·applicability·floor·literal-false marker만 별도 versioned product로
     sealing하고 immutable deployment registry의 zero-argument reader와 body/query-free Operator GET으로 노출
   - raw/private/source-lineage/image/runtime/Worker/Tool, Graph/Finding/report/delivery와 모든 새 실행 권위는 제외
   - fake-provider fresh-spawn read `1 passed in 320.52s`, 전체 Network 회귀 `154 passed, 3 skipped`,
-    workflow contract `2 passed`; local real-Docker opt-in은 skip
-  - manual exact-commit Ubuntu workflow의 12개 source/Replay execution, denial, cleanup, fresh reload와
-    unconditional zero-residue audit이 성공해야 complete로 전환
+    workflow contract `2 passed`; maintainer host의 local real-Docker opt-in은 미실행
+  - exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`의 Ubuntu run `33494188536`, job
+    `99812441408`에서 source/Replay 12회, denial, cleanup, fresh reload가 `1 passed in 771.59s`로 통과했고
+    unconditional zero-residue audit도 성공
 
-Phase 24 Exit Gate: conformance-pending. 여섯 code-owned fixture만 internal no-published-port Target으로 materialize하고
-Worker zero-target-application-write, proxy-only bridge, disjoint fresh authority, exact DOMAIN-006 metric/floor와
-read-only product ceiling을 증명해야 한다. fake socket·in-process classifier·non-Docker fixture는 exit evidence가 아니다.
+Phase 24 Exit Gate: 완료. exact checkpoint `9b3d8035252d26334d35caa55c0270356c71683a`가 여섯
+code-owned fixture의 internal no-published-port Target, Worker zero-target-application-write, proxy-only bridge,
+disjoint fresh authority, exact DOMAIN-006 metric/floor, read-only product ceiling과 zero residue를 Ubuntu 24.04
+real-Docker에서 증명했다. 이 증거는 exact synthetic six-case 범위를 production/general Network 지원으로 확장하지 않는다.
 
 ## 우선순위와 재평가 기준
 
