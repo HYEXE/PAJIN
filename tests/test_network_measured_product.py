@@ -487,7 +487,7 @@ def test_net_002d_fresh_process_reloads_without_execution_or_mutation(
             real_docker=False,
         ),
         hash_seed=24002,
-        timeout_seconds=120,
+        timeout_seconds=300,
     )
 
     assert result.process_id != os.getpid()

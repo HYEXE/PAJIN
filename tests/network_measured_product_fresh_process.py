@@ -7,6 +7,7 @@ import os
 import pickle
 import re
 import stat
+import sys
 import tempfile
 import traceback
 from collections.abc import Sequence
@@ -74,6 +75,26 @@ _IMAGE_REFERENCES = frozenset(
     }
 )
 _MANAGED_FILTER = "label=pajin.network-fixture.managed=true"
+_FRESH_CHILD_STAGES = (
+    "not-started",
+    "child-entered",
+    "recipe-validated",
+    "environment-prepared",
+    "outcome-restored",
+    "provider-rebuilt",
+    "registration-rebuilt",
+    "application-created",
+    "guards-installed",
+    "baseline-snapshotted",
+    "denial-requests-complete",
+    "first-source-reload-entered",
+    "first-product-read-complete",
+    "second-source-reload-entered",
+    "second-product-read-complete",
+    "post-read-audit-complete",
+    "client-closed",
+    "result-built",
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -188,11 +209,12 @@ def run_fresh_network_measured_product_probe(
 
     context = multiprocessing.get_context("spawn")
     receive, send = context.Pipe(duplex=False)
+    progress = context.RawValue("i", 0)
     previous_hash_seed = os.environ.get("PYTHONHASHSEED")
     previous_no_bytecode = os.environ.get("PYTHONDONTWRITEBYTECODE")
     os.environ["PYTHONHASHSEED"] = str(hash_seed)
     os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
-    process = context.Process(target=_child_entry, args=(send, spawn_recipe))
+    process = context.Process(target=_child_entry, args=(send, spawn_recipe, progress))
     try:
         process.start()
     finally:
@@ -201,16 +223,22 @@ def run_fresh_network_measured_product_probe(
         _restore_environment("PYTHONDONTWRITEBYTECODE", previous_no_bytecode)
 
     if not receive.poll(timeout_seconds):
+        last_stage = _fresh_child_stage(progress)
         process.terminate()
         process.join(timeout=10)
         receive.close()
-        raise TimeoutError("fresh NET-002D product child did not finish")
+        raise TimeoutError(
+            "fresh NET-002D product child did not finish within "
+            f"{timeout_seconds}s (hash seed {hash_seed}, real Docker {recipe.real_docker}, "
+            f"last stage {last_stage})"
+        )
     try:
         state, payload = receive.recv()
     except EOFError as exc:
         process.join(timeout=10)
         raise RuntimeError(
-            f"fresh NET-002D product child exited without a result ({process.exitcode})"
+            "fresh NET-002D product child exited without a result "
+            f"({process.exitcode}, last stage {_fresh_child_stage(progress)})"
         ) from exc
     finally:
         receive.close()
@@ -218,7 +246,9 @@ def run_fresh_network_measured_product_probe(
     if process.is_alive():
         process.terminate()
         process.join(timeout=10)
-        raise RuntimeError("fresh NET-002D product child did not exit")
+        raise RuntimeError(
+            f"fresh NET-002D product child did not exit (last stage {_fresh_child_stage(progress)})"
+        )
     if state != "ok" or process.exitcode != 0:
         raise AssertionError(cast(str, payload))
     if type(payload) is not FreshNetworkMeasuredProductProbeResult:
@@ -226,9 +256,14 @@ def run_fresh_network_measured_product_probe(
     return payload
 
 
-def _child_entry(send: Any, recipe: FreshNetworkMeasuredProductRecipe) -> None:
+def _child_entry(
+    send: Any,
+    recipe: FreshNetworkMeasuredProductRecipe,
+    progress: Any,
+) -> None:
     try:
-        send.send(("ok", _run_child(recipe)))
+        _mark_fresh_child_stage(progress, "child-entered")
+        send.send(("ok", _run_child(recipe, progress=progress)))
     except BaseException:  # pragma: no cover - diagnostics cross the process boundary
         send.send(("error", traceback.format_exc()))
     finally:
@@ -237,8 +272,11 @@ def _child_entry(send: Any, recipe: FreshNetworkMeasuredProductRecipe) -> None:
 
 def _run_child(
     recipe: FreshNetworkMeasuredProductRecipe,
+    *,
+    progress: Any,
 ) -> FreshNetworkMeasuredProductProbeResult:
     recipe.validate()
+    _mark_fresh_child_stage(progress, "recipe-validated")
     process_root = recipe.process_root.resolve(strict=False)
     temp_root = process_root / "TEMP"
     temp_root.mkdir(parents=True, exist_ok=False)
@@ -246,10 +284,12 @@ def _run_child(
     os.environ["TMP"] = str(temp_root)
     os.environ["TMPDIR"] = str(temp_root)
     tempfile.tempdir = str(temp_root)
+    _mark_fresh_child_stage(progress, "environment-prepared")
     outcome = _restore_product_outcome(
         recipe.outcome,
         coordinates=recipe.graph_store_coordinates,
     )
+    _mark_fresh_child_stage(progress, "outcome-restored")
 
     if recipe.real_docker:
         delegate: Any = SubprocessNetworkDockerCommandRunner()
@@ -261,6 +301,7 @@ def _run_child(
         measured_cases=recipe.measured_cases,
         provider=provider,
     )
+    _mark_fresh_child_stage(progress, "provider-rebuilt")
     registration = NetworkMeasuredProductReadRegistration.from_outcome(
         deployment_id=_DEPLOYMENT_ID,
         outcome=outcome,
@@ -272,12 +313,19 @@ def _run_child(
         deployment_id=_DEPLOYMENT_ID,
         resolver=resolver,
     )
+    _mark_fresh_child_stage(progress, "registration-rebuilt")
     source_reload_calls = 0
     source_loader = network_measured_product_flow.load_network_replay_floor_evaluation
 
     def monitored_source_loader(*args: Any, **kwargs: Any) -> Any:
         nonlocal source_reload_calls
         source_reload_calls += 1
+        _mark_fresh_child_stage(
+            progress,
+            "first-source-reload-entered"
+            if source_reload_calls == 1
+            else "second-source-reload-entered",
+        )
         return source_loader(*args, **kwargs)
 
     def forbidden(*_args: Any, **_kwargs: Any) -> Any:
@@ -287,6 +335,7 @@ def _run_child(
         _settings(process_root / "control-plane.sqlite3"),
         network_measured_product_reader=reader,
     )
+    _mark_fresh_child_stage(progress, "application-created")
     with TestClient(app) as client, ExitStack() as stack:
         stack.enter_context(patch.object(RunStore, "create", forbidden))
         stack.enter_context(patch.object(NetworkMeasuredProductProjector, "project", forbidden))
@@ -302,8 +351,10 @@ def _run_child(
                 monitored_source_loader,
             )
         )
+        _mark_fresh_child_stage(progress, "guards-installed")
 
         before = _tree_snapshot(recipe.audit_root, temp_root=temp_root)
+        _mark_fresh_child_stage(progress, "baseline-snapshotted")
         denied = (
             client.get(_PRODUCT_PATH),
             client.get(_PRODUCT_PATH, headers=_auth("invalid-bearer")),
@@ -315,11 +366,15 @@ def _run_child(
             client.post(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN), json={}),
             client.head(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN)),
         )
-        successful = (
-            client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN)),
-            client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN)),
-        )
+        _mark_fresh_child_stage(progress, "denial-requests-complete")
+        first_success = client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN))
+        _mark_fresh_child_stage(progress, "first-product-read-complete")
+        second_success = client.get(_PRODUCT_PATH, headers=_auth(OPERATOR_TOKEN))
+        _mark_fresh_child_stage(progress, "second-product-read-complete")
+        successful = (first_success, second_success)
         after = _tree_snapshot(recipe.audit_root, temp_root=temp_root)
+        _mark_fresh_child_stage(progress, "post-read-audit-complete")
+    _mark_fresh_child_stage(progress, "client-closed")
 
     statuses = tuple(response.status_code for response in (*denied, *successful))
     if statuses != (401, 401, 403, 403, 403, 400, 400, 405, 405, 200, 200):
@@ -337,6 +392,7 @@ def _run_child(
     if not provider.managed_resources_absent():
         raise AssertionError("fresh NET-002D product read left managed Docker residue")
     product = outcome.product
+    _mark_fresh_child_stage(progress, "result-built")
     return FreshNetworkMeasuredProductProbeResult(
         process_id=os.getpid(),
         statuses=statuses,
@@ -538,6 +594,18 @@ def _restore_environment(name: str, previous: str | None) -> None:
         os.environ.pop(name, None)
     else:
         os.environ[name] = previous
+
+
+def _mark_fresh_child_stage(progress: Any, stage: str) -> None:
+    progress.value = _FRESH_CHILD_STAGES.index(stage)
+    print(f"fresh NET-002D product child stage: {stage}", file=sys.stderr, flush=True)
+
+
+def _fresh_child_stage(progress: Any) -> str:
+    stage_index = int(progress.value)
+    if 0 <= stage_index < len(_FRESH_CHILD_STAGES):
+        return _FRESH_CHILD_STAGES[stage_index]
+    return f"unknown-{stage_index}"
 
 
 __all__ = [
