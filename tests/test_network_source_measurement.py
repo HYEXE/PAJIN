@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 from base64 import b64decode, b64encode
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -191,7 +192,7 @@ def _approved_plan(
     request_id: str,
     clock_base: datetime,
 ) -> NetworkSourceApprovedAction:
-    root.mkdir(parents=True, exist_ok=True)
+    root.mkdir(parents=True, mode=0o700, exist_ok=True)
     activation, release = _activation()
     campaign = _exact_campaign(sample_campaign, target)
     preparation = prepare_network_service_identification(
@@ -563,6 +564,8 @@ async def test_predispatch_substitutions_configuration_and_reuse_never_dispatch(
         request_id="tool_net002b_predispatch",
         clock_base=NOW,
     )
+    if os.name == "posix":
+        assert stat.S_IMODE((tmp_path / "plan").stat().st_mode) == 0o700
     context, context_digest = _authority_context()
     inspector = provider.boundary_inspector(coordinate=live.coordinate, images=images)
     worker_image = images.role(NetworkMeasurementImageRole.WORKER)
