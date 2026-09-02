@@ -28,10 +28,10 @@ _SIGNATURE_DOMAIN = b"pajin.replay.target-execution-receipt/v1\0"
 _CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
 _AI_SOURCE_SIGNATURE_DOMAIN = b"pajin.ai-source.target-execution-receipt/v1\0"
 _AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
+_AI_MEASUREMENT_SIGNATURE_DOMAIN = b"pajin.ai-measurement.target-execution-receipt/v1\0"
+_AI_MEASUREMENT_CHALLENGE_DOMAIN = b"pajin.ai-measurement.target-execution-challenge/v1\0"
 _AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
-_REGISTRY_BUNDLE_SIGNATURE_DOMAIN = (
-    b"pajin.replay.target-attestation-trust-registry-bundle/v1\0"
-)
+_REGISTRY_BUNDLE_SIGNATURE_DOMAIN = b"pajin.replay.target-attestation-trust-registry-bundle/v1\0"
 MAX_TARGET_REGISTRY_BUNDLE_LIFETIME = timedelta(days=7)
 MAX_TARGET_TLS_PIN_OVERLAP = timedelta(hours=24)
 
@@ -219,9 +219,7 @@ class TargetAttestationTrustRegistry(StrictModel):
         "pajin.replay.target-attestation-trust-registry/v2",
         "pajin.replay.target-attestation-trust-registry/v3",
         "pajin.replay.target-attestation-trust-registry/v4",
-    ] = (
-        "pajin.replay.target-attestation-trust-registry/v1"
-    )
+    ] = "pajin.replay.target-attestation-trust-registry/v1"
     registry_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
     entries: list[TargetAttestationTrustRegistryEntry] = Field(min_length=1, max_length=128)
 
@@ -238,8 +236,7 @@ class TargetAttestationTrustRegistry(StrictModel):
                 for entry in self.entries
             ):
                 raise ValueError(
-                    "target trust registry v1 cannot carry TLS certificate pins "
-                    "or session bindings"
+                    "target trust registry v1 cannot carry TLS certificate pins or session bindings"
                 )
             return self
         for entry in self.entries:
@@ -251,9 +248,7 @@ class TargetAttestationTrustRegistry(StrictModel):
                 or entry.retiring_tls_leaf_spki_sha256 is not None
                 or entry.tls_session_binding is not None
             ):
-                raise ValueError(
-                    "target trust registry allows TLS bindings only for HTTPS routes"
-                )
+                raise ValueError("target trust registry allows TLS bindings only for HTTPS routes")
             if (
                 self.api_version == "pajin.replay.target-attestation-trust-registry/v2"
                 and entry.retiring_tls_leaf_spki_sha256 is not None
@@ -265,9 +260,7 @@ class TargetAttestationTrustRegistry(StrictModel):
                         "target trust registry v1-v3 cannot carry a TLS session binding"
                     )
             elif scheme == "https" and entry.tls_session_binding != "tls-unique-sha256":
-                raise ValueError(
-                    "target trust registry v4 requires HTTPS TLS session binding"
-                )
+                raise ValueError("target trust registry v4 requires HTTPS TLS session binding")
         return self
 
     def resolve(self, target: str) -> TargetAttestationTrustAnchor:
@@ -287,9 +280,9 @@ class TargetAttestationTrustRegistry(StrictModel):
 class TargetAttestationRegistryTrustAnchor(StrictModel):
     """Out-of-band public authority for signed registry distribution."""
 
-    api_version: Literal[
+    api_version: Literal["pajin.replay.target-attestation-registry-trust-anchor/v1"] = (
         "pajin.replay.target-attestation-registry-trust-anchor/v1"
-    ] = "pajin.replay.target-attestation-registry-trust-anchor/v1"
+    )
     trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
     issuer: str = Field(min_length=1, max_length=200)
     keys: list[TargetAttestationVerificationKey] = Field(min_length=1, max_length=32)
@@ -309,9 +302,9 @@ class TargetAttestationRegistryTrustAnchor(StrictModel):
 
 
 class TargetAttestationRegistryStatement(StrictModel):
-    api_version: Literal[
+    api_version: Literal["pajin.replay.target-attestation-trust-registry-statement/v1"] = (
         "pajin.replay.target-attestation-trust-registry-statement/v1"
-    ] = "pajin.replay.target-attestation-trust-registry-statement/v1"
+    )
     trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
     issuer: str = Field(min_length=1, max_length=200)
     sequence: int = Field(strict=True, ge=1, le=2_147_483_647)
@@ -357,9 +350,13 @@ class TargetAttestationRegistryStatement(StrictModel):
                 entry.retiring_tls_leaf_spki_not_after,
                 label="retiring TLS leaf SPKI pin expiry",
             )
-            if not not_before < retiring_not_after <= min(
-                expires_at,
-                issued_at + MAX_TARGET_TLS_PIN_OVERLAP,
+            if (
+                not not_before
+                < retiring_not_after
+                <= min(
+                    expires_at,
+                    issued_at + MAX_TARGET_TLS_PIN_OVERLAP,
+                )
             ):
                 raise ValueError(
                     "retiring TLS leaf SPKI pin must expire within the 24-hour overlap"
@@ -372,9 +369,9 @@ class TargetAttestationRegistryStatement(StrictModel):
 
 
 class TargetAttestationRegistryBundle(StrictModel):
-    api_version: Literal[
+    api_version: Literal["pajin.replay.target-attestation-trust-registry-bundle/v1"] = (
         "pajin.replay.target-attestation-trust-registry-bundle/v1"
-    ] = "pajin.replay.target-attestation-trust-registry-bundle/v1"
+    )
     algorithm: Literal["Ed25519"] = "Ed25519"
     key_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
     statement: TargetAttestationRegistryStatement
@@ -851,9 +848,7 @@ class TargetExecutionVerificationSummary(StrictModel):
             raise ValueError("target receipt count differs from its digest set")
         if (self.trust_registry_id is None) != (self.trust_registry_digest is None):
             raise ValueError("target trust registry identity and digest must be present together")
-        if (self.tls_session_binding is None) != (
-            not self.tls_session_binding_sha256_digests
-        ):
+        if (self.tls_session_binding is None) != (not self.tls_session_binding_sha256_digests):
             raise ValueError(
                 "TLS session binding type and observed digest set must be present together"
             )
@@ -1169,8 +1164,7 @@ class AISourceTargetExecutionChallenge(StrictModel):
         )
         if (
             not issued_at < expires_at <= issued_at + timedelta(seconds=120)
-            or self.target_sha256
-            != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+            or self.target_sha256 != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
         ):
             raise ValueError("AI source Target challenge must have a bounded 120-second lifetime")
         material = self.model_dump(mode="json", exclude={"challenge_id"})
@@ -1503,4 +1497,470 @@ def verify_ai_source_target_execution_receipt(
         )
     except InvalidSignature as exc:
         raise ValueError("AI source Target receipt signature verification failed") from exc
+    return key.key_id
+
+
+_AI_MEASUREMENT_OPERATION_SHAPES = {
+    "replay-1": (2, "replay"),
+    "replay-2": (3, "replay"),
+    "control-baseline": (4, "control"),
+    "control-negative": (5, "control"),
+    "control-counterfactual": (6, "control"),
+}
+
+
+def _require_ai_measurement_operation_shape(
+    operation_key: str,
+    operation_ordinal: int,
+    operation_stage: str,
+) -> None:
+    if operation_key not in _AI_MEASUREMENT_OPERATION_SHAPES or _AI_MEASUREMENT_OPERATION_SHAPES[
+        operation_key
+    ] != (operation_ordinal, operation_stage):
+        raise ValueError("AI measurement Target operation shape differs")
+
+
+class AIMeasurementTargetExecutionChallenge(StrictModel):
+    """One AI-002C-only Target challenge for a registered Replay or Control."""
+
+    api_version: Literal["pajin.ai-measurement.target-execution-challenge/v1"] = (
+        "pajin.ai-measurement.target-execution-challenge/v1"
+    )
+    challenge_id: str = Field(pattern=r"^ai-measurement-target-challenge_[a-f0-9]{32}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    measurement_request_id: str = Field(
+        pattern=r"^tool_ai002c_operation_(?:02|03|04|05|06)_[a-f0-9]{32}$"
+    )
+    measurement_operation_id: str = Field(pattern=r"^ai-measurement-operation_[a-f0-9]{64}$")
+    registered_operation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    operation_key: Literal[
+        "replay-1",
+        "replay-2",
+        "control-baseline",
+        "control-negative",
+        "control-counterfactual",
+    ]
+    operation_ordinal: Literal[2, 3, 4, 5, 6]
+    operation_stage: Literal["replay", "control"]
+    call_ordinal: Literal[1] = 1
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: Literal["POST"]
+    route_path: Literal["/v1/chat"] = "/v1/chat"
+    compiled_argument_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    issued_at: datetime
+    expires_at: datetime
+
+    @field_validator("operation_ordinal", "call_ordinal", mode="before")
+    @classmethod
+    def require_exact_ordinals(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI measurement Target challenge ordinals must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_fixed_operation(self) -> Self:
+        _require_ai_measurement_operation_shape(
+            self.operation_key,
+            self.operation_ordinal,
+            self.operation_stage,
+        )
+        expected_prefix = f"tool_ai002c_operation_{self.operation_ordinal:02d}_"
+        issued_at = _require_aware_utc(
+            self.issued_at,
+            label="AI measurement Target challenge issue time",
+        )
+        expires_at = _require_aware_utc(
+            self.expires_at,
+            label="AI measurement Target challenge expiry time",
+        )
+        if (
+            not self.measurement_request_id.startswith(expected_prefix)
+            or not issued_at < expires_at <= issued_at + timedelta(seconds=120)
+            or self.target_sha256 != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        ):
+            raise ValueError("AI measurement Target challenge has invalid fixed identity")
+        material = self.model_dump(mode="json", exclude={"challenge_id"})
+        expected = (
+            "ai-measurement-target-challenge_"
+            + sha256(
+                _AI_MEASUREMENT_CHALLENGE_DOMAIN + canonical_target_json(material)
+            ).hexdigest()[:32]
+        )
+        if self.challenge_id != expected:
+            raise ValueError("AI measurement Target challenge identity is inconsistent")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+def derive_ai_measurement_target_execution_challenge(
+    *,
+    permit_digest: str,
+    measurement_request_id: str,
+    measurement_operation_id: str,
+    registered_operation_digest: str,
+    operation_key: Literal[
+        "replay-1",
+        "replay-2",
+        "control-baseline",
+        "control-negative",
+        "control-counterfactual",
+    ],
+    operation_ordinal: Literal[2, 3, 4, 5, 6],
+    operation_stage: Literal["replay", "control"],
+    target: str,
+    method: str,
+    compiled_argument_digest: str,
+    issued_at: datetime,
+    expires_at: datetime,
+) -> AIMeasurementTargetExecutionChallenge:
+    """Derive one exact AI-002C Replay or Control Target challenge."""
+
+    normalized_issued_at = _require_aware_utc(
+        issued_at,
+        label="AI measurement Target challenge issue time",
+    )
+    normalized_expires_at = _require_aware_utc(
+        expires_at,
+        label="AI measurement Target challenge expiry time",
+    )
+    parsed = urlsplit(target)
+    if (
+        method.upper() != "POST"
+        or target != _AI_SOURCE_TARGET_URL
+        or parsed.scheme != "http"
+        or parsed.hostname != "host.docker.internal"
+        or parsed.port != 8080
+        or parsed.username
+        or parsed.password
+        or parsed.path != "/v1/chat"
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("AI measurement Target challenge requires one exact HTTP route")
+    _require_ai_measurement_operation_shape(
+        operation_key,
+        operation_ordinal,
+        operation_stage,
+    )
+    target_sha256 = sha256(target.encode("utf-8")).hexdigest()
+    provisional = AIMeasurementTargetExecutionChallenge.model_construct(
+        challenge_id=f"ai-measurement-target-challenge_{'0' * 32}",
+        permit_digest=permit_digest,
+        measurement_request_id=measurement_request_id,
+        measurement_operation_id=measurement_operation_id,
+        registered_operation_digest=registered_operation_digest,
+        operation_key=operation_key,
+        operation_ordinal=operation_ordinal,
+        operation_stage=operation_stage,
+        call_ordinal=1,
+        target_sha256=target_sha256,
+        method="POST",
+        route_path="/v1/chat",
+        compiled_argument_digest=compiled_argument_digest,
+        issued_at=normalized_issued_at,
+        expires_at=normalized_expires_at,
+    )
+    material = provisional.model_dump(mode="json", exclude={"challenge_id"})
+    challenge_id = (
+        "ai-measurement-target-challenge_"
+        + sha256(_AI_MEASUREMENT_CHALLENGE_DOMAIN + canonical_target_json(material)).hexdigest()[
+            :32
+        ]
+    )
+    return AIMeasurementTargetExecutionChallenge(
+        challenge_id=challenge_id,
+        permit_digest=permit_digest,
+        measurement_request_id=measurement_request_id,
+        measurement_operation_id=measurement_operation_id,
+        registered_operation_digest=registered_operation_digest,
+        operation_key=operation_key,
+        operation_ordinal=operation_ordinal,
+        operation_stage=operation_stage,
+        call_ordinal=1,
+        target_sha256=target_sha256,
+        method="POST",
+        route_path="/v1/chat",
+        compiled_argument_digest=compiled_argument_digest,
+        issued_at=normalized_issued_at,
+        expires_at=normalized_expires_at,
+    )
+
+
+class AIMeasurementTargetExecutionReceiptStatement(StrictModel):
+    """Target-signed statement for one exact AI-002C HTTP exchange."""
+
+    api_version: Literal["pajin.ai-measurement.target-execution-statement/v1"] = (
+        "pajin.ai-measurement.target-execution-statement/v1"
+    )
+    predicate_type: Literal["pajin.ai-measurement.target-observed-http-exchange/v1"] = (
+        "pajin.ai-measurement.target-observed-http-exchange/v1"
+    )
+    trust_domain: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$")
+    issuer: str = Field(min_length=1, max_length=200)
+    target_profile: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,99}$")
+    challenge_id: str = Field(pattern=r"^ai-measurement-target-challenge_[a-f0-9]{32}$")
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    permit_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    measurement_request_id: str = Field(
+        pattern=r"^tool_ai002c_operation_(?:02|03|04|05|06)_[a-f0-9]{32}$"
+    )
+    measurement_operation_id: str = Field(pattern=r"^ai-measurement-operation_[a-f0-9]{64}$")
+    registered_operation_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    operation_key: Literal[
+        "replay-1",
+        "replay-2",
+        "control-baseline",
+        "control-negative",
+        "control-counterfactual",
+    ]
+    operation_ordinal: Literal[2, 3, 4, 5, 6]
+    operation_stage: Literal["replay", "control"]
+    call_ordinal: Literal[1] = 1
+    exchange_ordinal: Literal[1] = 1
+    target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    method: Literal["POST"]
+    route_path: Literal["/v1/chat"] = "/v1/chat"
+    request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    response_payload_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    status: Literal[200] = 200
+    issued_at: datetime
+
+    @field_validator(
+        "operation_ordinal",
+        "call_ordinal",
+        "exchange_ordinal",
+        mode="before",
+    )
+    @classmethod
+    def require_exact_ordinals(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI measurement Target receipt ordinals must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_fixed_operation(self) -> Self:
+        _require_aware_utc(
+            self.issued_at,
+            label="AI measurement Target receipt issue time",
+        )
+        _require_ai_measurement_operation_shape(
+            self.operation_key,
+            self.operation_ordinal,
+            self.operation_stage,
+        )
+        if (
+            not self.measurement_request_id.startswith(
+                f"tool_ai002c_operation_{self.operation_ordinal:02d}_"
+            )
+            or self.target_sha256 != sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        ):
+            raise ValueError("AI measurement Target receipt identity differs")
+        return self
+
+
+class AIMeasurementTargetExecutionReceipt(StrictModel):
+    """Ed25519 envelope for one AI-002C Target statement."""
+
+    api_version: Literal["pajin.ai-measurement.target-execution-receipt/v1"] = (
+        "pajin.ai-measurement.target-execution-receipt/v1"
+    )
+    algorithm: Literal["Ed25519"] = "Ed25519"
+    key_id: str = Field(pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,63}$")
+    statement: AIMeasurementTargetExecutionReceiptStatement
+    statement_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    signature_base64url: str = Field(pattern=r"^[A-Za-z0-9_-]{86}$")
+
+    @model_validator(mode="after")
+    def require_canonical_envelope(self) -> Self:
+        canonical = canonical_target_json(self.statement.model_dump(mode="json"))
+        if sha256(canonical).hexdigest() != self.statement_sha256:
+            raise ValueError("AI measurement Target receipt statement digest is inconsistent")
+        _base64url_decode(
+            self.signature_base64url,
+            expected_length=64,
+            label="AI measurement Target receipt signature",
+        )
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+class AIMeasurementTargetProxyBinding(StrictModel):
+    """Host binding between one AI-002C Target receipt and proxy receipt."""
+
+    api_version: Literal["pajin.ai-measurement.target-proxy-binding/v1"] = (
+        "pajin.ai-measurement.target-proxy-binding/v1"
+    )
+    measurement_request_id: str = Field(
+        pattern=r"^tool_ai002c_operation_(?:02|03|04|05|06)_[a-f0-9]{32}$"
+    )
+    challenge_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    target_receipt_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_sequence: Literal[1] = 1
+    proxy_method: Literal["POST"]
+    proxy_target: str = Field(min_length=1, max_length=2_000)
+    proxy_target_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_address: str = Field(min_length=1, max_length=100)
+    proxy_status: int = Field(strict=True, ge=200, le=299)
+    proxy_request_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_response_body_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    proxy_response_json_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("proxy_sequence", mode="before")
+    @classmethod
+    def require_exact_sequence(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI measurement proxy receipt sequence must be exact")
+        return value
+
+    @model_validator(mode="after")
+    def require_fixed_proxy_target(self) -> Self:
+        expected_digest = sha256(_AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        if (
+            self.proxy_target != _AI_SOURCE_TARGET_URL
+            or self.proxy_target_sha256 != expected_digest
+        ):
+            raise ValueError("AI measurement proxy binding target differs")
+        return self
+
+    @property
+    def digest(self) -> str:
+        return canonical_target_json_sha256(self.model_dump(mode="json"))
+
+
+@dataclass(frozen=True, slots=True)
+class AIMeasurementTargetExecutionAttestor:
+    """Code-owned helper mirroring the deterministic Target's AI-002C signer."""
+
+    active_key_id: str
+    private_key: Ed25519PrivateKey
+    trust_anchor: TargetAttestationTrustAnchor
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC)
+
+    @classmethod
+    def from_private_key_bytes(
+        cls,
+        *,
+        active_key_id: str,
+        private_key: bytes,
+        trust_anchor: TargetAttestationTrustAnchor,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ) -> AIMeasurementTargetExecutionAttestor:
+        if len(private_key) != 32:
+            raise ValueError("Ed25519 AI measurement Target key must contain 32 bytes")
+        return cls(
+            active_key_id=active_key_id,
+            private_key=Ed25519PrivateKey.from_private_bytes(private_key),
+            trust_anchor=trust_anchor,
+            clock=clock,
+        )
+
+    def __post_init__(self) -> None:
+        matching = [key for key in self.trust_anchor.keys if key.key_id == self.active_key_id]
+        if len(matching) != 1 or matching[0].state is not TargetAttestationKeyState.ACTIVE:
+            raise ValueError("AI measurement Target signer is not the active trust-anchor key")
+        public_bytes = self.private_key.public_key().public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        expected = _base64url_decode(
+            matching[0].public_key_base64url,
+            expected_length=32,
+            label="AI measurement Target active public key",
+        )
+        if public_bytes != expected:
+            raise ValueError("AI measurement Target private key differs from its trust anchor")
+
+    def attest(
+        self,
+        statement_fields: dict[str, object],
+        *,
+        issued_at: datetime | None = None,
+    ) -> AIMeasurementTargetExecutionReceipt:
+        timestamp = _require_aware_utc(
+            issued_at or self.clock(),
+            label="AI measurement Target receipt issue time",
+        )
+        active_key = next(key for key in self.trust_anchor.keys if key.key_id == self.active_key_id)
+        if timestamp < _require_aware_utc(active_key.not_before, label="key not-before time"):
+            raise ValueError("AI measurement Target signing key is not yet valid")
+        if active_key.not_after is not None and timestamp >= _require_aware_utc(
+            active_key.not_after,
+            label="key not-after time",
+        ):
+            raise ValueError("AI measurement Target signing key has expired")
+        statement = AIMeasurementTargetExecutionReceiptStatement.model_validate(
+            {
+                **statement_fields,
+                "trust_domain": self.trust_anchor.trust_domain,
+                "issuer": self.trust_anchor.issuer,
+                "target_profile": self.trust_anchor.target_profile,
+                "issued_at": timestamp,
+            }
+        )
+        canonical = canonical_target_json(statement.model_dump(mode="json"))
+        return AIMeasurementTargetExecutionReceipt(
+            key_id=self.active_key_id,
+            statement=statement,
+            statement_sha256=sha256(canonical).hexdigest(),
+            signature_base64url=_base64url_encode(
+                self.private_key.sign(_AI_MEASUREMENT_SIGNATURE_DOMAIN + canonical)
+            ),
+        )
+
+
+def verify_ai_measurement_target_execution_receipt(
+    receipt: AIMeasurementTargetExecutionReceipt,
+    *,
+    trust_anchor: TargetAttestationTrustAnchor,
+) -> str:
+    """Verify one AI-002C receipt against its deployment-private public anchor."""
+
+    statement = receipt.statement
+    if (
+        statement.trust_domain != trust_anchor.trust_domain
+        or statement.issuer != trust_anchor.issuer
+        or statement.target_profile != trust_anchor.target_profile
+    ):
+        raise ValueError("AI measurement Target receipt trust identity differs")
+    key = next((item for item in trust_anchor.keys if item.key_id == receipt.key_id), None)
+    if key is None:
+        raise ValueError("AI measurement Target receipt key is absent from the trust anchor")
+    if key.state is TargetAttestationKeyState.REVOKED:
+        raise ValueError("AI measurement Target receipt key is revoked")
+    issued_at = _require_aware_utc(
+        statement.issued_at,
+        label="AI measurement Target receipt issue time",
+    )
+    if issued_at < _require_aware_utc(key.not_before, label="key not-before time"):
+        raise ValueError("AI measurement Target receipt predates signing-key validity")
+    if key.not_after is not None and issued_at >= _require_aware_utc(
+        key.not_after,
+        label="key not-after time",
+    ):
+        raise ValueError("AI measurement Target receipt was issued after signing-key expiry")
+    canonical = canonical_target_json(statement.model_dump(mode="json"))
+    public_key = Ed25519PublicKey.from_public_bytes(
+        _base64url_decode(
+            key.public_key_base64url,
+            expected_length=32,
+            label="AI measurement Target public key",
+        )
+    )
+    try:
+        public_key.verify(
+            _base64url_decode(
+                receipt.signature_base64url,
+                expected_length=64,
+                label="AI measurement Target receipt signature",
+            ),
+            _AI_MEASUREMENT_SIGNATURE_DOMAIN + canonical,
+        )
+    except InvalidSignature as exc:
+        raise ValueError("AI measurement Target receipt signature verification failed") from exc
     return key.key_id

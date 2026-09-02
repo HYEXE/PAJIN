@@ -43,6 +43,7 @@ MAX_MCP_STDERR_BYTES = 128_000
 MAX_NETWORK_SERVICE_BANNER_BYTES = 1_024
 AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
 AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
+AI_MEASUREMENT_CHALLENGE_DOMAIN = b"pajin.ai-measurement.target-execution-challenge/v1\0"
 _WORKER_INPUT_CHUNK_CHARS = 8_192
 _MCP_STREAM_CHUNK_BYTES = 65_536
 _MCP_READER_JOIN_SECONDS = 5
@@ -649,6 +650,7 @@ def _post_ai_turn(
     payload: dict[str, Any],
     *,
     source_target_challenge: dict[str, Any] | None = None,
+    measurement_target_challenge: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], float, str | None, str | None]:
     parsed = urlsplit(target)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -670,6 +672,19 @@ def _post_ai_turn(
             allow_nan=False,
         ).encode("utf-8")
         headers["X-PAJIN-AI-Source-Challenge"] = (
+            urlsafe_b64encode(challenge_bytes).decode("ascii").rstrip("=")
+        )
+    if measurement_target_challenge is not None:
+        if source_target_challenge is not None:
+            raise ValueError("AI source and measurement challenges cannot be combined")
+        challenge_bytes = json.dumps(
+            measurement_target_challenge,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+        headers["X-PAJIN-AI-Measurement-Challenge"] = (
             urlsafe_b64encode(challenge_bytes).decode("ascii").rstrip("=")
         )
     request = Request(
@@ -760,6 +775,7 @@ class _AIProbe:
     checks: list[Any]
     target_challenge: dict[str, Any] | None
     source_target_challenge: dict[str, Any] | None
+    measurement_target_challenge: dict[str, Any] | None
 
 
 def _validate_ai_source_challenge(
@@ -778,8 +794,7 @@ def _validate_ai_source_challenge(
     )
     if (
         target != AI_SOURCE_TARGET_URL
-        or challenge.get("api_version")
-        != "pajin.ai-source.target-execution-challenge/v1"
+        or challenge.get("api_version") != "pajin.ai-source.target-execution-challenge/v1"
         or any(
             not isinstance(challenge.get(field), str)
             or fullmatch(pattern, challenge[field]) is None
@@ -845,6 +860,156 @@ def _validate_ai_source_challenge(
         raise ValueError("sourceTargetChallenge time is outside its exact bound")
 
 
+def _validate_ai_measurement_challenge(
+    challenge: dict[str, Any],
+    *,
+    target: str,
+    probe: dict[str, Any],
+) -> None:
+    string_patterns = (
+        ("challenge_id", r"ai-measurement-target-challenge_[a-f0-9]{32}"),
+        ("permit_digest", r"[a-f0-9]{64}"),
+        (
+            "measurement_request_id",
+            r"tool_ai002c_operation_(?:02|03|04|05|06)_[a-f0-9]{32}",
+        ),
+        ("measurement_operation_id", r"ai-measurement-operation_[a-f0-9]{64}"),
+        ("registered_operation_digest", r"[a-f0-9]{64}"),
+        ("target_sha256", r"[a-f0-9]{64}"),
+        ("compiled_argument_digest", r"[a-f0-9]{64}"),
+    )
+    shapes = {
+        "replay-1": (2, "replay"),
+        "replay-2": (3, "replay"),
+        "control-baseline": (4, "control"),
+        "control-negative": (5, "control"),
+        "control-counterfactual": (6, "control"),
+    }
+    operation_key = challenge.get("operation_key")
+    operation_ordinal = challenge.get("operation_ordinal")
+    operation_stage = challenge.get("operation_stage")
+    if (
+        target != AI_SOURCE_TARGET_URL
+        or challenge.get("api_version") != "pajin.ai-measurement.target-execution-challenge/v1"
+        or any(
+            not isinstance(challenge.get(field), str)
+            or fullmatch(pattern, challenge[field]) is None
+            for field, pattern in string_patterns
+        )
+        or operation_key not in shapes
+        or type(operation_ordinal) is not int
+        or not isinstance(operation_stage, str)
+        or shapes[operation_key] != (operation_ordinal, operation_stage)
+        or not challenge["measurement_request_id"].startswith(
+            f"tool_ai002c_operation_{operation_ordinal:02d}_"
+        )
+        or type(challenge.get("call_ordinal")) is not int
+        or challenge.get("call_ordinal") != 1
+        or challenge.get("method") != "POST"
+        or challenge.get("route_path") != "/v1/chat"
+        or challenge.get("target_sha256")
+        != sha256(AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+        or challenge.get("compiled_argument_digest")
+        != sha256(
+            json.dumps(
+                probe,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()
+    ):
+        raise ValueError("measurementTargetChallenge is outside the exact AI-002C shape")
+    material = {key: value for key, value in challenge.items() if key != "challenge_id"}
+    expected_id = (
+        "ai-measurement-target-challenge_"
+        + sha256(
+            AI_MEASUREMENT_CHALLENGE_DOMAIN
+            + json.dumps(
+                material,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+                allow_nan=False,
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+    )
+    if challenge["challenge_id"] != expected_id:
+        raise ValueError("measurementTargetChallenge identity differs")
+    issued_raw = challenge.get("issued_at")
+    expires_raw = challenge.get("expires_at")
+    if (
+        not isinstance(issued_raw, str)
+        or not isinstance(expires_raw, str)
+        or not issued_raw.endswith("Z")
+        or not expires_raw.endswith("Z")
+    ):
+        raise ValueError("measurementTargetChallenge time is invalid")
+    try:
+        issued_at = datetime.fromisoformat(issued_raw.replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError("measurementTargetChallenge time is invalid") from exc
+    observed_at = datetime.now(UTC)
+    if (
+        issued_at.utcoffset() != timedelta(0)
+        or expires_at.utcoffset() != timedelta(0)
+        or issued_at.isoformat().replace("+00:00", "Z") != issued_raw
+        or expires_at.isoformat().replace("+00:00", "Z") != expires_raw
+        or not issued_at < expires_at <= issued_at + timedelta(seconds=120)
+        or not issued_at <= observed_at < expires_at
+    ):
+        raise ValueError("measurementTargetChallenge time is outside its exact bound")
+
+
+def _validate_fixed_m03_challenge_probe(
+    *,
+    target: str,
+    challenge: dict[str, Any],
+    scenario_id: str,
+    threat_class: str,
+    purpose: str,
+    turns: list[Any],
+    checks: list[Any],
+    incompatible_challenge_present: bool,
+    error_message: str,
+) -> None:
+    parsed_target = urlsplit(target)
+    if (
+        incompatible_challenge_present
+        or challenge.get("method") != "POST"
+        or challenge.get("route_path") != "/v1/chat"
+        or challenge.get("call_ordinal") != 1
+        or parsed_target.path != "/v1/chat"
+        or parsed_target.query
+        or parsed_target.fragment
+        or sha256(target.encode("utf-8")).hexdigest() != challenge.get("target_sha256")
+        or scenario_id != "kisa.model.system-prompt-disclosure"
+        or threat_class != "M03"
+        or purpose != "attack"
+        or len(turns) != 1
+        or len(checks) != 1
+    ):
+        raise ValueError(error_message)
+
+
+def _optional_exact_challenge(
+    payload: dict[str, Any],
+    *,
+    field: str,
+    required_fields: set[str],
+) -> dict[str, Any] | None:
+    challenge = payload.get(field)
+    if challenge is None:
+        return None
+    if not isinstance(challenge, dict):
+        raise TypeError(f"{field} must be an object")
+    if set(challenge) != required_fields:
+        raise ValueError(f"{field} fields are not canonical")
+    return challenge
+
+
 def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
     target = _required_string(payload, "target", label="AI target")
     probe = payload["probe"]
@@ -864,11 +1029,10 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         raise ValueError("probe turns must contain between 1 and 20 items")
     if not isinstance(checks, list) or not 1 <= len(checks) <= 20:
         raise ValueError("probe checks must contain between 1 and 20 items")
-    target_challenge = payload.get("targetChallenge")
-    if target_challenge is not None:
-        if not isinstance(target_challenge, dict):
-            raise TypeError("targetChallenge must be an object")
-        required_challenge_fields = {
+    target_challenge = _optional_exact_challenge(
+        payload,
+        field="targetChallenge",
+        required_fields={
             "api_version",
             "challenge_id",
             "permit_digest",
@@ -883,14 +1047,12 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
             "compiled_argument_digest",
             "issued_at",
             "expires_at",
-        }
-        if set(target_challenge) != required_challenge_fields:
-            raise ValueError("targetChallenge fields are not canonical")
-    source_target_challenge = payload.get("sourceTargetChallenge")
-    if source_target_challenge is not None:
-        if not isinstance(source_target_challenge, dict):
-            raise TypeError("sourceTargetChallenge must be an object")
-        required_source_challenge_fields = {
+        },
+    )
+    source_target_challenge = _optional_exact_challenge(
+        payload,
+        field="sourceTargetChallenge",
+        required_fields={
             "api_version",
             "challenge_id",
             "permit_digest",
@@ -903,34 +1065,72 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
             "compiled_argument_digest",
             "issued_at",
             "expires_at",
-        }
-        if set(source_target_challenge) != required_source_challenge_fields:
-            raise ValueError("sourceTargetChallenge fields are not canonical")
+        },
+    )
+    measurement_target_challenge = _optional_exact_challenge(
+        payload,
+        field="measurementTargetChallenge",
+        required_fields={
+            "api_version",
+            "challenge_id",
+            "permit_digest",
+            "measurement_request_id",
+            "measurement_operation_id",
+            "registered_operation_digest",
+            "operation_key",
+            "operation_ordinal",
+            "operation_stage",
+            "call_ordinal",
+            "target_sha256",
+            "method",
+            "route_path",
+            "compiled_argument_digest",
+            "issued_at",
+            "expires_at",
+        },
+    )
+    if source_target_challenge is not None and measurement_target_challenge is not None:
+        raise ValueError("AI Target challenges cannot be combined")
+    if source_target_challenge is not None:
         _validate_ai_source_challenge(
             source_target_challenge,
             target=target,
             probe=probe,
         )
-        parsed_target = urlsplit(target)
-        if (
-            target_challenge is not None
-            or source_target_challenge.get("api_version")
-            != "pajin.ai-source.target-execution-challenge/v1"
-            or source_target_challenge.get("method") != "POST"
-            or source_target_challenge.get("route_path") != "/v1/chat"
-            or source_target_challenge.get("call_ordinal") != 1
-            or parsed_target.path != "/v1/chat"
-            or parsed_target.query
-            or parsed_target.fragment
-            or sha256(target.encode("utf-8")).hexdigest()
-            != source_target_challenge.get("target_sha256")
-            or scenario_id != "kisa.model.system-prompt-disclosure"
-            or threat_class != "M03"
-            or purpose != "attack"
-            or len(turns) != 1
-            or len(checks) != 1
+        if source_target_challenge.get("api_version") != (
+            "pajin.ai-source.target-execution-challenge/v1"
         ):
             raise ValueError("sourceTargetChallenge is outside the exact AI-002B shape")
+        _validate_fixed_m03_challenge_probe(
+            target=target,
+            challenge=source_target_challenge,
+            scenario_id=scenario_id,
+            threat_class=threat_class,
+            purpose=purpose,
+            turns=turns,
+            checks=checks,
+            incompatible_challenge_present=target_challenge is not None,
+            error_message="sourceTargetChallenge is outside the exact AI-002B shape",
+        )
+    if measurement_target_challenge is not None:
+        _validate_ai_measurement_challenge(
+            measurement_target_challenge,
+            target=target,
+            probe=probe,
+        )
+        _validate_fixed_m03_challenge_probe(
+            target=target,
+            challenge=measurement_target_challenge,
+            scenario_id=scenario_id,
+            threat_class=threat_class,
+            purpose=purpose,
+            turns=turns,
+            checks=checks,
+            incompatible_challenge_present=(
+                target_challenge is not None or source_target_challenge is not None
+            ),
+            error_message=("measurementTargetChallenge is outside the exact AI-002C shape"),
+        )
     return _AIProbe(
         target=target,
         scenario_id=scenario_id,
@@ -941,6 +1141,7 @@ def _validate_ai_probe(payload: dict[str, Any]) -> _AIProbe:
         checks=checks,
         target_challenge=target_challenge,
         source_target_challenge=source_target_challenge,
+        measurement_target_challenge=measurement_target_challenge,
     )
 
 
@@ -979,6 +1180,7 @@ def _execute_ai_probe_turns(probe: _AIProbe) -> tuple[list[dict[str, Any]], list
             probe.target,
             request_payload,
             source_target_challenge=probe.source_target_challenge,
+            measurement_target_challenge=probe.measurement_target_challenge,
         )
         response_latencies.append(response_latency)
         turn_records.append(

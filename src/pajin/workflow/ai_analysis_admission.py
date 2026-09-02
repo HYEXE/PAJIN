@@ -15,7 +15,10 @@ from pajin.capabilities.activation import (
     capability_gateway_outcome_digest,
     capability_grant_digest,
 )
-from pajin.capabilities.ai_analysis import AIReadOnlyAnalysisPreparation
+from pajin.capabilities.ai_analysis import (
+    AIMeasurementOperationPreparation,
+    AIReadOnlyAnalysisPreparation,
+)
 from pajin.capabilities.reconciliation import (
     CapabilityDispatchReconciliation,
     CapabilityDispatchReconciliationStatus,
@@ -62,7 +65,11 @@ from pajin.policy.scope import scope_matches
 from pajin.runtime.safe_files import parse_strict_json_bytes
 from pajin.runtime.store import VerifiedRunSnapshot, load_verified_run_artifacts
 from pajin.runtime.worker import EgressPolicy, NetworkMode, WorkerResult, WorkerStatus
-from pajin.tools.ai import AIChatProbeTool, AIM03SourceChatProbeTool
+from pajin.tools.ai import (
+    AIChatProbeTool,
+    AIM03MeasurementChatProbeTool,
+    AIM03SourceChatProbeTool,
+)
 from pajin.tools.base import Tool
 from pajin.tools.execution_receipts import safe_job_metadata
 from pajin.tools.gateway import GatewayOutcome
@@ -251,7 +258,7 @@ class AIAnalysisObservationSourceInputs:
 
     run_path: Path
     expected_run_id: str
-    preparation: AIReadOnlyAnalysisPreparation
+    preparation: AIReadOnlyAnalysisPreparation | AIMeasurementOperationPreparation
     job: CapabilityGraphCampaignJobInput
 
 
@@ -622,7 +629,7 @@ class VerifiedAIAnalysisObservationSource:
     """One sealed, successful REDTEAM AI dispatch independently reverified."""
 
     snapshot: VerifiedRunSnapshot
-    preparation: AIReadOnlyAnalysisPreparation
+    preparation: AIReadOnlyAnalysisPreparation | AIMeasurementOperationPreparation
     job: CapabilityGraphCampaignJobInput
     terminal: CapabilityDispatchAuditEvent
     reconciliation: CapabilityDispatchReconciliation
@@ -747,6 +754,10 @@ class AIAnalysisObservationAdmissionGate:
             inputs,
             graph_store=self._graph_store,
         )
+        if not isinstance(source.preparation, AIReadOnlyAnalysisPreparation):
+            raise AIAnalysisObservationAdmissionError(
+                "AI measurement execution cannot become a Graph candidate"
+            )
         permit = next(
             item
             for item in self._graph_store.permit_store.permits()
@@ -947,6 +958,7 @@ def load_verified_ai_analysis_observation_source(
     *,
     graph_store: SQLiteGraphStore,
     source_tool: AIM03SourceChatProbeTool | None = None,
+    measurement_tool: AIM03MeasurementChatProbeTool | None = None,
 ) -> VerifiedAIAnalysisObservationSource:
     """Open one sealed REDTEAM Run and recheck its Permit-to-Tool bindings."""
 
@@ -955,9 +967,17 @@ def load_verified_ai_analysis_observation_source(
     if not isinstance(graph_store, SQLiteGraphStore):
         raise TypeError("AI source verification requires the exact SQLite Graph Store")
     try:
-        preparation = AIReadOnlyAnalysisPreparation.model_validate(
-            inputs.preparation.model_dump(mode="json", by_alias=True)
+        preparation_payload = inputs.preparation.model_dump(
+            mode="json",
+            by_alias=True,
         )
+        preparation: AIReadOnlyAnalysisPreparation | AIMeasurementOperationPreparation
+        if type(inputs.preparation) is AIReadOnlyAnalysisPreparation:
+            preparation = AIReadOnlyAnalysisPreparation.model_validate(preparation_payload)
+        elif type(inputs.preparation) is AIMeasurementOperationPreparation:
+            preparation = AIMeasurementOperationPreparation.model_validate(preparation_payload)
+        else:
+            raise TypeError("AI execution source preparation type is not registered")
         job = CapabilityGraphCampaignJobInput.model_validate(
             inputs.job.model_dump(mode="json", by_alias=True)
         )
@@ -1056,6 +1076,7 @@ def load_verified_ai_analysis_observation_source(
             reservation=reservation,
             expected_reservation=expected_reservation,
             source_tool=source_tool,
+            measurement_tool=measurement_tool,
         )
         return VerifiedAIAnalysisObservationSource(
             snapshot=snapshot,
@@ -1079,7 +1100,7 @@ def load_verified_ai_analysis_observation_source(
 
 def _validate_ai_execution_authority(
     *,
-    preparation: AIReadOnlyAnalysisPreparation,
+    preparation: AIReadOnlyAnalysisPreparation | AIMeasurementOperationPreparation,
     job: CapabilityGraphCampaignJobInput,
     permit: ActionPermit,
     terminal: CapabilityDispatchAuditEvent,
@@ -1088,6 +1109,7 @@ def _validate_ai_execution_authority(
     reservation: object,
     expected_reservation: dict[str, object],
     source_tool: AIM03SourceChatProbeTool | None,
+    measurement_tool: AIM03MeasurementChatProbeTool | None,
 ) -> None:
     if not isinstance(permit, ActionPermit):
         raise TypeError("AI execution verification requires an ActionPermit")
@@ -1124,7 +1146,11 @@ def _validate_ai_execution_authority(
         raise AIAnalysisObservationAdmissionError(
             "sealed AI Tool evidence differs or is unsuccessful"
         )
-    tool = _ai_observation_tool(job, source_tool=source_tool)
+    tool = _ai_observation_tool(
+        job,
+        source_tool=source_tool,
+        measurement_tool=measurement_tool,
+    )
     expected_result = tool.interpret(job.request, evidence.worker_result)
     if expected_result != evidence.result:
         raise AIAnalysisObservationAdmissionError(
@@ -1155,7 +1181,12 @@ def _ai_observation_tool(
     job: CapabilityGraphCampaignJobInput,
     *,
     source_tool: AIM03SourceChatProbeTool | None = None,
+    measurement_tool: AIM03MeasurementChatProbeTool | None = None,
 ) -> Tool:
+    if source_tool is not None and measurement_tool is not None:
+        raise AIAnalysisObservationAdmissionError(
+            "AI source and measurement Tool overrides are mutually exclusive"
+        )
     if source_tool is not None:
         if (
             type(source_tool) is not AIM03SourceChatProbeTool
@@ -1166,6 +1197,16 @@ def _ai_observation_tool(
                 "AI source Tool override is outside the exact M03 admission"
             )
         return source_tool
+    if measurement_tool is not None:
+        if (
+            type(measurement_tool) is not AIM03MeasurementChatProbeTool
+            or job.profile != "redteam-llm-v1"
+            or job.request.tool_id != AIChatProbeTool.spec.tool_id
+        ):
+            raise AIAnalysisObservationAdmissionError(
+                "AI measurement Tool override is outside the exact M03 admission"
+            )
+        return measurement_tool
     if job.profile in {"redteam-llm-v1", "redteam-llm-rag-v1"}:
         return AIChatProbeTool()
     if job.profile == "redteam-mcp-v1":

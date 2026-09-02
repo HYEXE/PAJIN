@@ -21,6 +21,7 @@ from pajin.benchmark.models import benchmark_digest
 from pajin.domain.models import StrictModel
 from pajin.runtime.worker import DockerEgressLifecycleObservation
 from pajin.target_attestation import (
+    AIMeasurementTargetExecutionReceipt,
     AISourceTargetExecutionReceipt,
     TargetAttestationKeyState,
     TargetAttestationTrustAnchor,
@@ -57,6 +58,9 @@ AI_FIXTURE_PROXY_TOPOLOGY_API_VERSION: Literal["pajin.dev/ai-fixture-proxy-topol
 AI_FIXTURE_LIFECYCLE_EVIDENCE_API_VERSION: Literal[
     "pajin.dev/ai-fixture-lifecycle-evidence/v1alpha1"
 ] = "pajin.dev/ai-fixture-lifecycle-evidence/v1alpha1"
+AI_MEASUREMENT_FIXTURE_LIFECYCLE_EVIDENCE_API_VERSION: Literal[
+    "pajin.dev/ai-measurement-fixture-lifecycle-evidence/v1alpha1"
+] = "pajin.dev/ai-measurement-fixture-lifecycle-evidence/v1alpha1"
 
 _MAX_CANONICAL_BYTES = 4 * 1024 * 1024
 _MAX_DOCKER_OUTPUT_BYTES = 1024 * 1024
@@ -525,6 +529,67 @@ class AIFixtureTargetLifecycleEvidence(_FrozenStrictModel):
         )
         if self.evidence_digest and self.evidence_digest != digest:
             raise ValueError("AI fixture lifecycle Evidence Digest differs")
+        object.__setattr__(self, "evidence_digest", digest)
+        return self
+
+
+class AIMeasurementFixtureTargetLifecycleEvidence(_FrozenStrictModel):
+    """Private AI-002C Target, topology, receipt, and cleanup evidence."""
+
+    api_version: Literal["pajin.dev/ai-measurement-fixture-lifecycle-evidence/v1alpha1"] = Field(
+        default=AI_MEASUREMENT_FIXTURE_LIFECYCLE_EVIDENCE_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["AIMeasurementFixtureTargetLifecycleEvidence"] = (
+        "AIMeasurementFixtureTargetLifecycleEvidence"
+    )
+    evidence_digest: str = Field(default="", alias="evidenceDigest", max_length=64)
+    attempt: AIFixtureTargetAttempt
+    coordinate: AIFixtureTargetCoordinate
+    topology: AIFixtureProxyTopologyObservation
+    target_receipt: AIMeasurementTargetExecutionReceipt = Field(alias="targetReceipt")
+    target_receipt_digest: _Sha256 = Field(alias="targetReceiptDigest")
+    target_resources_absent: Literal[True] = Field(
+        default=True,
+        alias="targetResourcesAbsent",
+    )
+    cleanup_completed_at: datetime = Field(alias="cleanupCompletedAt")
+
+    @field_validator("target_resources_absent", mode="before")
+    @classmethod
+    def require_literal_true(cls, value: object) -> object:
+        if type(value) is not bool or value is not True:
+            raise ValueError("AI measurement Target cleanup observation must be true")
+        return value
+
+    @model_validator(mode="after")
+    def bind_lifecycle(self) -> Self:
+        if (
+            self.coordinate.attempt_id != self.attempt.attempt_id
+            or self.coordinate.attempt_digest != self.attempt.attempt_digest
+            or self.coordinate.case != self.attempt.case
+            or self.coordinate.images != self.attempt.images
+            or self.topology.target_container_id != self.coordinate.target_container_id
+            or self.topology.target_image_id != self.coordinate.target_image_id
+            or self.topology.target_network_id != self.coordinate.target_network_id
+            or self.topology.target_network_name != self.coordinate.target_network_name
+            or self.target_receipt_digest != self.target_receipt.digest
+            or self.cleanup_completed_at.tzinfo is None
+            or self.cleanup_completed_at < self.topology.ephemeral_resources_absent_at
+        ):
+            raise ValueError("AI measurement fixture lifecycle Evidence differs")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"evidence_digest"},
+        )
+        digest = benchmark_digest(
+            "pajin.workflow.ai-measurement-fixture-lifecycle-evidence/v1",
+            material,
+            max_bytes=_MAX_CANONICAL_BYTES,
+        )
+        if self.evidence_digest and self.evidence_digest != digest:
+            raise ValueError("AI measurement lifecycle Evidence Digest differs")
         object.__setattr__(self, "evidence_digest", digest)
         return self
 
@@ -1092,6 +1157,33 @@ class AIFixtureDockerProvider:
         except (TypeError, ValidationError, ValueError) as exc:
             raise AIFixtureRuntimeError("AI fixture Target receipt is invalid") from exc
 
+    def measurement_target_receipt(
+        self,
+        live: AIFixtureLiveTarget,
+    ) -> AIMeasurementTargetExecutionReceipt:
+        lines = self._decode_log_lines(
+            self._require_success(("logs", live.coordinate.target_container_name))
+        )
+        ready = tuple(item for item in lines if item.get("event") == "ready")
+        receipts = tuple(
+            item for item in lines if item.get("event") == "ai-measurement-target-receipt"
+        )
+        if (
+            len(lines) != 2
+            or lines[0] != {"event": "ready", "port": 8080, "transport": "http"}
+            or lines[1].get("event") != "ai-measurement-target-receipt"
+            or ready != ({"event": "ready", "port": 8080, "transport": "http"},)
+            or len(receipts) != 1
+            or set(receipts[0]) != {"event", "receipt"}
+        ):
+            raise AIFixtureRuntimeError(
+                "AI fixture Target log lacks one exact ready and measurement receipt"
+            )
+        try:
+            return AIMeasurementTargetExecutionReceipt.model_validate(receipts[0]["receipt"])
+        except (TypeError, ValidationError, ValueError) as exc:
+            raise AIFixtureRuntimeError("AI fixture measurement Target receipt is invalid") from exc
+
     def finish(
         self,
         live: AIFixtureLiveTarget,
@@ -1107,6 +1199,30 @@ class AIFixtureDockerProvider:
             raise AIFixtureRuntimeError("AI fixture finish topology differs")
         self.abort(live)
         return AIFixtureTargetLifecycleEvidence(
+            attempt=live.attempt,
+            coordinate=live.coordinate,
+            topology=topology,
+            targetReceipt=target_receipt,
+            targetReceiptDigest=target_receipt.digest,
+            targetResourcesAbsent=True,
+            cleanupCompletedAt=datetime.now(UTC),
+        )
+
+    def finish_measurement(
+        self,
+        live: AIFixtureLiveTarget,
+        *,
+        topology: AIFixtureProxyTopologyObservation,
+        target_receipt: AIMeasurementTargetExecutionReceipt,
+    ) -> AIMeasurementFixtureTargetLifecycleEvidence:
+        if (
+            topology.target_container_id != live.coordinate.target_container_id
+            or topology.target_network_id != live.coordinate.target_network_id
+            or topology.target_image_id != live.coordinate.target_image_id
+        ):
+            raise AIFixtureRuntimeError("AI measurement fixture finish topology differs")
+        self.abort(live)
+        return AIMeasurementFixtureTargetLifecycleEvidence(
             attempt=live.attempt,
             coordinate=live.coordinate,
             topology=topology,
@@ -1433,6 +1549,7 @@ __all__ = [
     "AI_FIXTURE_PROXY_TOPOLOGY_API_VERSION",
     "AI_FIXTURE_TARGET_ATTEMPT_API_VERSION",
     "AI_FIXTURE_TARGET_COORDINATE_API_VERSION",
+    "AI_MEASUREMENT_FIXTURE_LIFECYCLE_EVIDENCE_API_VERSION",
     "AI_SOURCE_IMAGE_BINDING_API_VERSION",
     "AIDockerBoundaryInspector",
     "AIDockerCommandResult",
@@ -1445,6 +1562,7 @@ __all__ = [
     "AIFixtureTargetAttempt",
     "AIFixtureTargetCoordinate",
     "AIFixtureTargetLifecycleEvidence",
+    "AIMeasurementFixtureTargetLifecycleEvidence",
     "AISourceImageBinding",
     "AISourceImageBindingRef",
     "AISourceImageRoleBinding",

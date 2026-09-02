@@ -587,10 +587,16 @@ one fresh internal no-published-port vulnerable Target source execution through 
 approval, one-use Permit, Gateway, proxy-only Worker, and Target-receipt path. It seals prompt,
 check, transcript, runtime, topology, and approval material privately; publishes only
 content-addressed lineage and eight canonical pre-dispatch denials; and grants no downstream
-authority. AI-002C will add two supporting fresh-session Replay repetitions, the exact Baseline,
-Negative, and Counterfactual Controls, and the AI floor; AI-002D will add a bounded AI-only
-product read and exact-clean Ubuntu real-Docker conformance. ADR-0259 implements none of those
-authorities by itself. Prompt, check, transcript, session,
+authority.
+[AI-002C](../benchmark/AI-002C-independent-fresh-session-replay-controls-ai-floor.md) now adds two
+independently authorized supporting fresh-session Replay repetitions, the exact Baseline,
+Negative, and Counterfactual Controls, pairwise-disjoint source/Replay/Control execution
+identities, measured request/Tool/zero-cost accounting, mandatory cleanup, and the exact
+fourteen-observation DOMAIN-006 AI floor. Its additive operation preparation revalidates the
+current signed M03 Capability without widening the existing AI-001B catalog-only preparation, and
+the measurement reopen path cannot create an AI-001C Graph candidate. AI-002D will add a bounded
+AI-only product read and exact-clean Ubuntu real-Docker conformance. ADR-0259 implements none of
+those authorities by itself. Prompt, check, transcript, session,
 request, and runtime material remain private, while M06, A04, MCP, RAG, arbitrary caller prompts,
 external providers or targets, credentials, general model or agent testing, Graph/Finding/report/
 delivery, and additional execution authority remain outside the phase. Existing AI-001, KISA,

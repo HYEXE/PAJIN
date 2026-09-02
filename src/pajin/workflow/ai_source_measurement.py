@@ -692,6 +692,10 @@ class AISourceActionAuthorizer(Protocol):
     ) -> AISourceApprovedAction: ...
 
 
+class _AIActionAuthorityContext(Protocol):
+    def stable_authority_context(self) -> Mapping[str, object]: ...
+
+
 @dataclass(frozen=True, slots=True)
 class AISourceExecutionContext:
     source_inputs: AIAnalysisObservationSourceInputs
@@ -748,7 +752,7 @@ def ai_source_provider_registration(
 
 
 def _canonical_authority_context(
-    authorizer: AISourceActionAuthorizer,
+    authorizer: _AIActionAuthorityContext,
 ) -> tuple[dict[str, object], str]:
     try:
         raw = authorizer.stable_authority_context()

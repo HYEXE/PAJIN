@@ -26,14 +26,14 @@
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
 - Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
 - Phase 24 Exit Gate도 exact NET-002D conformance와 residue audit으로 완료됐다.
-- 현재 HEAD와 upstream은 AI-002A checkpoint
-  `1f49c6b0b68da9c2e360eabef7cf38a9d8428522`로 같고 divergence는 `0/0`이다.
-- 해당 SHA의 repo-wide CI run `33528649730`은 Quality와 24개 pytest shard가 모두
+- 현재 HEAD와 upstream은 AI-002B checkpoint
+  `5e6bd64879ad71f6cb836faec458647cd6ec6be0`로 같고 divergence는 `0/0`이다.
+- 해당 SHA의 repo-wide CI run `33568879047`은 Quality와 24개 pytest shard가 모두
   `completed/success`다.
-- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002B` 로컬 구현·검증 완료
-- 현재 우선순위: AI-002B checkpoint의 명시적 commit/push 승인과 새 exact-commit repo-wide green 확인
-- 다음 우선순위: green 확인 뒤 `AI-002C` independent Replay, Controls, and AI floor
-- AI-002B 변경은 모두 unstaged이고 새 source/test/contract 파일은 untracked다. staged 변경과 진행 중
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002C` 로컬 구현·검증 완료
+- 현재 우선순위: AI-002C checkpoint의 전체 diff와 Git 상태 검토
+- 다음 우선순위: 승인된 checkpoint와 새 exact-commit repo-wide green 확인 뒤 `AI-002D`
+- AI-002C 변경은 모두 unstaged이고 새 workflow/contract 파일은 untracked다. staged 변경과 진행 중
   merge/rebase/cherry-pick/revert/bisect는 없다. commit·push·PR·merge·deploy는 수행하지 않았다.
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
@@ -643,31 +643,35 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 ## 다음 한 단계
 
 [ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)의
-`AI-002B` source 경계를 로컬 구현했다. `pajin.workflow.ai_fixture_runtime`은 AI-002A의 fixed
-Target/Worker/proxy image contract를 실제 관찰 OCI ID에 결박하고 fresh internal no-published-port
-vulnerable Target, proxy-only topology, signed Target receipt와 cleanup을 검증한다.
-`pajin.workflow.ai_source_measurement`는 exact M03 한 건을 기존 AI-001B preparation, external approval,
-one-use ActionPermit, Gateway, Docker Worker와 AI-001C reopen 경로로 한 번만 실행한다. scenario, prompt,
-check, mode, image, route, Scope, authority 여덟 substitution은 dispatch 전에 code-owned 순서로 거부된다.
-public authority에는 digest lineage와 denial만 남고 Ground Truth, prompt/check, transcript, session, request,
-approval/Permit body, raw Worker/Tool result, Target coordinate·receipt·trust anchor·topology는 별도 private
-binding에 남는다.
+`AI-002C` Replay/Control/floor 경계를 로컬 구현했다. 새 `pajin.workflow.ai_replay_evaluation`은 AI-002B
+source를 contextfully reopen한 뒤 등록 순서 그대로 두 supporting Replay와 exact Baseline, Negative,
+Counterfactual Controls를 각각 fresh Target·Run·request·session·approval·Permit·Worker identity로 실행한다.
+각 operation은 observed OCI image를 재검사하고 separate measurement challenge/receipt, exact request와
+CAP-002 action, provider/model, private Ground Truth·Control derivation, cleanup과 zero-cost accounting을
+결박한다. source와 다섯 follow-up의 raw prompt/check/transcript/request/session/approval/Permit/receipt/runtime은
+private binding에만 남고, public artifact는 six-operation lineage, private commitment와 exact 14-metric
+DOMAIN-006 aggregate만 포함한다.
 
-AI-002B 집중 파일은 `75 passed, 2 skipped in 13.75s`, AI-001A~D/KISA M03/Target/Worker/validation
-회귀는 `249 passed, 2 skipped in 396.56s`다. 스킵은 opt-in real-Docker 한 건과 Windows의 POSIX 전용
-cleanup 한 건이다. `src tests containers` 전체 Ruff, Linux 대상 strict mypy `381 source files`, 변경
-파일 구문 검사, 문서 정책·링크 `4 passed in 0.30s`, tracked `git diff --check`가 통과했다. 관리형
-Windows의 project Python 비동기 모듈 실행 제한과 기본 temp ACL은 코드 실패와 구분했고, 기존 Python
-3.14 lockfile 격리 환경과 task-local temp root에서 검증했다. 현재 container daemon이 없어
-`PAJIN_AI_002B_REAL_DOCKER=1`은 미실행이고,
-전체 repository pytest와 현재 변경의 새 exact-commit CI도 실행하지 않았다.
+새 measurement preparation은 AI-001B catalog-only preparation을 변경하지 않고 runner가 이미 materialize한
+exact M03 operation에만 current signed release와 action Capability를 결박한다. AI-001C source verifier는 이
+exact preparation과 별도 Tool adapter를 reopen할 수 있지만 Graph candidate builder는 measurement preparation을
+명시적으로 거부한다. 완성된 public evaluation은 Target/network/approval/Gateway/Worker, 추가 Replay/Control,
+Graph/Finding/product/report/delivery, external/production, arbitrary Tool·prompt, plugin/RAG/MCP/memory,
+M06/A04와 추가 실행 권위를 모두 literal false로 유지한다.
+
+AI-002C 집중 파일은 `4 passed, 1 skipped in 46.99s`, AI-001A~D/KISA/Target/Worker/attestation 관련 18파일
+회귀는 `330 passed, 2 skipped in 475.80s`다. `src tests containers` 전체 Ruff와 변경 Python 12개 format
+check, Linux 대상 strict mypy `382 source files`, 문서 정책·링크 `4 passed in 0.30s`, tracked
+`git diff --check`가 통과했다. 스킵은 `PAJIN_AI_002B_REAL_DOCKER=1` opt-in 한 건과 Windows의 POSIX 전용
+cleanup 한 건이다. 기본 temp ACL 제약은 작업 전용 temp root로 격리했으며 코드 실패가 아니다. 현재
+container daemon이 없어 source/two-Replay/three-Control/floor real-Docker 검증은 실행하지 않았다. 전체
+repository pytest와 현재 변경의 새 exact-commit CI도 실행하지 않았다.
 
 새 영어 versioned contract는
-`docs/benchmark/AI-002B-registry-governed-disposable-m03-source-measurement.md`다. 다음 첫 단계는
-AI-002B diff와 Git 상태를 다시 검토한 뒤 명시적 승인으로 checkpoint를 commit/push하고 새 exact-commit
-repo-wide green을 확인하는 것이다. 그 전에는 AI-002C를 시작하지 않는다. AI-002C는 두 supporting
-fresh-session Replay, exact Baseline/Negative/Counterfactual Controls와 DOMAIN-006 AI floor만 추가하며,
-product와 exact-clean Ubuntu conformance는 AI-002D에 남긴다.
+`docs/benchmark/AI-002C-independent-fresh-session-replay-controls-ai-floor.md`다. 다음 첫 단계는 AI-002C 전체
+diff와 Git 상태를 다시 검토하는 것이다. 사용자의 별도 승인 뒤에만 checkpoint를 commit/push하고 새
+exact-commit repo-wide green을 확인한다. 그 뒤 AI-002D에서 AI-only bounded product read와 exact-clean
+Ubuntu real-Docker source/Replay/Controls/denial/product-read/cleanup/residue conformance를 구현한다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤

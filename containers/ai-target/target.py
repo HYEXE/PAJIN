@@ -24,6 +24,9 @@ TARGET_CHALLENGE_DOMAIN = b"pajin.replay.target-execution-challenge/v1\0"
 AI_SOURCE_RECEIPT_SIGNATURE_DOMAIN = b"pajin.ai-source.target-execution-receipt/v1\0"
 AI_SOURCE_CHALLENGE_DOMAIN = b"pajin.ai-source.target-execution-challenge/v1\0"
 AI_SOURCE_CHALLENGE_HEADER = "X-PAJIN-AI-Source-Challenge"
+AI_MEASUREMENT_RECEIPT_SIGNATURE_DOMAIN = b"pajin.ai-measurement.target-execution-receipt/v1\0"
+AI_MEASUREMENT_CHALLENGE_DOMAIN = b"pajin.ai-measurement.target-execution-challenge/v1\0"
+AI_MEASUREMENT_CHALLENGE_HEADER = "X-PAJIN-AI-Measurement-Challenge"
 AI_SOURCE_TARGET_URL = "http://host.docker.internal:8080/v1/chat"
 TARGET_TLS_UNIQUE_BINDING_DOMAIN = b"pajin.replay.target-tls-unique-binding/v1\0"
 TARGET_TLS_SESSION_BINDING = "tls-unique-sha256"
@@ -49,6 +52,24 @@ AI_SOURCE_CHALLENGE_FIELDS = {
     "permit_digest",
     "source_request_id",
     "source_operation_id",
+    "call_ordinal",
+    "target_sha256",
+    "method",
+    "route_path",
+    "compiled_argument_digest",
+    "issued_at",
+    "expires_at",
+}
+AI_MEASUREMENT_CHALLENGE_FIELDS = {
+    "api_version",
+    "challenge_id",
+    "permit_digest",
+    "measurement_request_id",
+    "measurement_operation_id",
+    "registered_operation_digest",
+    "operation_key",
+    "operation_ordinal",
+    "operation_stage",
     "call_ordinal",
     "target_sha256",
     "method",
@@ -408,6 +429,165 @@ def _ai_source_target_receipt(
     }
 
 
+def _ai_measurement_challenge_from_header(
+    encoded: str | None,
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    if encoded is None:
+        return None
+    if not 1 <= len(encoded) <= 4_096 or encoded != encoded.strip():
+        raise ValueError("AI measurement Target challenge header size is invalid")
+    try:
+        raw = urlsafe_b64decode(encoded + ("=" * (-len(encoded) % 4)))
+    except (ValueError, TypeError) as exc:
+        raise ValueError("AI measurement Target challenge header is not base64url") from exc
+    if _base64url(raw) != encoded:
+        raise ValueError("AI measurement Target challenge header is not canonical base64url")
+    challenge = _strict_json_object(raw, label="AI measurement Target challenge")
+    if raw != _canonical_json(challenge) or set(challenge) != AI_MEASUREMENT_CHALLENGE_FIELDS:
+        raise ValueError("AI measurement Target challenge fields are not canonical")
+    string_patterns = (
+        ("challenge_id", r"ai-measurement-target-challenge_[a-f0-9]{32}"),
+        ("permit_digest", r"[a-f0-9]{64}"),
+        (
+            "measurement_request_id",
+            r"tool_ai002c_operation_(?:02|03|04|05|06)_[a-f0-9]{32}",
+        ),
+        ("measurement_operation_id", r"ai-measurement-operation_[a-f0-9]{64}"),
+        ("registered_operation_digest", r"[a-f0-9]{64}"),
+        ("target_sha256", r"[a-f0-9]{64}"),
+        ("compiled_argument_digest", r"[a-f0-9]{64}"),
+    )
+    shapes = {
+        "replay-1": (2, "replay"),
+        "replay-2": (3, "replay"),
+        "control-baseline": (4, "control"),
+        "control-negative": (5, "control"),
+        "control-counterfactual": (6, "control"),
+    }
+    operation_key = challenge.get("operation_key")
+    operation_ordinal = challenge.get("operation_ordinal")
+    operation_stage = challenge.get("operation_stage")
+    if (
+        challenge.get("api_version") != "pajin.ai-measurement.target-execution-challenge/v1"
+        or any(
+            not isinstance(challenge.get(field), str)
+            or fullmatch(pattern, challenge[field]) is None
+            for field, pattern in string_patterns
+        )
+        or operation_key not in shapes
+        or isinstance(operation_ordinal, bool)
+        or not isinstance(operation_ordinal, int)
+        or not isinstance(operation_stage, str)
+        or shapes[operation_key] != (operation_ordinal, operation_stage)
+        or not challenge["measurement_request_id"].startswith(
+            f"tool_ai002c_operation_{operation_ordinal:02d}_"
+        )
+        or isinstance(challenge.get("call_ordinal"), bool)
+        or challenge.get("call_ordinal") != 1
+        or challenge.get("method") != "POST"
+        or challenge.get("route_path") != "/v1/chat"
+        or challenge.get("target_sha256")
+        != sha256(AI_SOURCE_TARGET_URL.encode("utf-8")).hexdigest()
+    ):
+        raise ValueError("AI measurement Target challenge contract is unsupported")
+    material = {key: value for key, value in challenge.items() if key != "challenge_id"}
+    expected_challenge_id = (
+        "ai-measurement-target-challenge_"
+        + sha256(AI_MEASUREMENT_CHALLENGE_DOMAIN + _canonical_json(material)).hexdigest()[:32]
+    )
+    if challenge["challenge_id"] != expected_challenge_id:
+        raise ValueError("AI measurement Target challenge identity is invalid")
+    issued_raw = challenge["issued_at"]
+    expires_raw = challenge["expires_at"]
+    if (
+        not isinstance(issued_raw, str)
+        or not isinstance(expires_raw, str)
+        or not issued_raw.endswith("Z")
+        or not expires_raw.endswith("Z")
+    ):
+        raise ValueError("AI measurement Target challenge time is invalid")
+    try:
+        issued_at = datetime.fromisoformat(issued_raw.replace("Z", "+00:00"))
+        expires_at = datetime.fromisoformat(expires_raw.replace("Z", "+00:00"))
+    except (TypeError, ValueError) as exc:
+        raise ValueError("AI measurement Target challenge time is invalid") from exc
+    if (
+        issued_at.tzinfo is None
+        or expires_at.tzinfo is None
+        or issued_at.utcoffset() != timedelta(0)
+        or expires_at.utcoffset() != timedelta(0)
+        or issued_at.isoformat().replace("+00:00", "Z") != issued_raw
+        or expires_at.isoformat().replace("+00:00", "Z") != expires_raw
+        or not issued_at < expires_at
+        or (expires_at - issued_at).total_seconds() > 120
+    ):
+        raise ValueError("AI measurement Target challenge lifetime is invalid")
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    if not issued_at.astimezone(UTC) <= observed_at < expires_at.astimezone(UTC):
+        raise ValueError("AI measurement Target challenge is not currently valid")
+    return challenge
+
+
+def _ai_measurement_target_receipt(
+    encoded_challenge: str | None,
+    request_payload: dict[str, Any],
+    response_payload: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> dict[str, Any] | None:
+    challenge = _ai_measurement_challenge_from_header(encoded_challenge, now=now)
+    if challenge is None:
+        return None
+    metadata = request_payload.get("metadata")
+    if isinstance(metadata, dict) and (
+        "targetChallenge" in metadata or "targetExchangeOrdinal" in metadata
+    ):
+        raise ValueError("AI measurement and Replay Target challenges cannot be combined")
+    signer = _target_signer_from_env()
+    if signer is None:
+        raise ValueError("AI measurement Target challenge requires a configured Target signer")
+    key_id, private_key, trust_domain, issuer, target_profile = signer
+    observed_at = (now or datetime.now(UTC)).astimezone(UTC)
+    statement = {
+        "api_version": "pajin.ai-measurement.target-execution-statement/v1",
+        "predicate_type": "pajin.ai-measurement.target-observed-http-exchange/v1",
+        "trust_domain": trust_domain,
+        "issuer": issuer,
+        "target_profile": target_profile,
+        "challenge_id": challenge["challenge_id"],
+        "challenge_sha256": sha256(_canonical_json(challenge)).hexdigest(),
+        "permit_digest": challenge["permit_digest"],
+        "measurement_request_id": challenge["measurement_request_id"],
+        "measurement_operation_id": challenge["measurement_operation_id"],
+        "registered_operation_digest": challenge["registered_operation_digest"],
+        "operation_key": challenge["operation_key"],
+        "operation_ordinal": challenge["operation_ordinal"],
+        "operation_stage": challenge["operation_stage"],
+        "call_ordinal": 1,
+        "exchange_ordinal": 1,
+        "target_sha256": challenge["target_sha256"],
+        "method": "POST",
+        "route_path": "/v1/chat",
+        "request_json_sha256": sha256(_canonical_json(request_payload)).hexdigest(),
+        "response_payload_sha256": sha256(_canonical_json(response_payload)).hexdigest(),
+        "status": 200,
+        "issued_at": observed_at.isoformat().replace("+00:00", "Z"),
+    }
+    canonical_statement = _canonical_json(statement)
+    return {
+        "api_version": "pajin.ai-measurement.target-execution-receipt/v1",
+        "algorithm": "Ed25519",
+        "key_id": key_id,
+        "statement": statement,
+        "statement_sha256": sha256(canonical_statement).hexdigest(),
+        "signature_base64url": _base64url(
+            private_key.sign(AI_MEASUREMENT_RECEIPT_SIGNATURE_DOMAIN + canonical_statement)
+        ),
+    }
+
+
 def _last_user_message(payload: dict[str, Any]) -> str:
     messages = payload.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -760,8 +940,17 @@ class Handler(BaseHTTPRequestHandler):
             if profile not in {"vulnerable", "hardened"}:
                 raise ValueError("unsupported PAJIN_LAB_PROFILE")
             response_payload = respond(payload, profile=profile)
+            source_challenge_header = self.headers.get(AI_SOURCE_CHALLENGE_HEADER)
+            measurement_challenge_header = self.headers.get(AI_MEASUREMENT_CHALLENGE_HEADER)
+            if source_challenge_header is not None and measurement_challenge_header is not None:
+                raise ValueError("AI source and measurement Target challenges cannot be combined")
             source_receipt = _ai_source_target_receipt(
-                self.headers.get(AI_SOURCE_CHALLENGE_HEADER),
+                source_challenge_header,
+                payload,
+                response_payload,
+            )
+            measurement_receipt = _ai_measurement_target_receipt(
+                measurement_challenge_header,
                 payload,
                 response_payload,
             )
@@ -770,9 +959,7 @@ class Handler(BaseHTTPRequestHandler):
                 _target_attested_response(
                     payload,
                     response_payload,
-                    tls_session_binding_sha256=_target_tls_session_binding(
-                        self.connection
-                    ),
+                    tls_session_binding_sha256=_target_tls_session_binding(self.connection),
                 ),
             )
             if source_receipt is not None:
@@ -781,6 +968,18 @@ class Handler(BaseHTTPRequestHandler):
                         {
                             "event": "ai-source-target-receipt",
                             "receipt": source_receipt,
+                        },
+                        separators=(",", ":"),
+                        sort_keys=True,
+                    ),
+                    flush=True,
+                )
+            if measurement_receipt is not None:
+                print(
+                    json.dumps(
+                        {
+                            "event": "ai-measurement-target-receipt",
+                            "receipt": measurement_receipt,
                         },
                         separators=(",", ":"),
                         sort_keys=True,

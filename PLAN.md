@@ -3,9 +3,9 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002B` 로컬 구현·검증 완료
-- 현재 우선순위: `AI-002B` checkpoint의 명시적 commit/push 승인과 새 exact-commit repo-wide green 확인
-- 다음 우선순위: green 확인 뒤 `AI-002C`
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002C` 로컬 구현·검증 완료
+- 현재 우선순위: `AI-002C` checkpoint diff와 Git 상태 검토
+- 다음 우선순위: 승인된 checkpoint와 새 exact-commit repo-wide green 확인 뒤 `AI-002D`
 
 ## 제품 목표
 
@@ -716,22 +716,24 @@ general model/agent testing은 포함하지 않는다. current-main CI가 green�
 - [x] `AI-002B` registry-governed disposable M03 source measurement — implemented locally
   - fresh internal no-published-port vulnerable Target을 기존 approval/Permit/Gateway/Worker 경로로 한 번 실행하고
     prompt/check/transcript/runtime을 private으로 격리하며 caller substitution을 dispatch 전에 거부
-- [ ] `AI-002C` independent fresh-session Replay, Controls, and AI floor — planned
+- [x] `AI-002C` independent fresh-session Replay, Controls, and AI floor — implemented locally
   - 두 supporting Replay와 exact Baseline/Negative/Counterfactual Controls를 fresh identity로 실행하고
     DOMAIN-006 AI metric/floor를 public-safe aggregate로만 평가
 - [ ] `AI-002D` bounded product read and exact conformance — planned
   - AI-only zero-argument Operator read와 exact-clean Ubuntu real-Docker source/Replay/Controls/denial/cleanup/
     residue conformance를 완료하되 Graph/Finding/report/delivery와 추가 실행 권위를 만들지 않음
 
-AI-002A checkpoint `1f49c6b0b68da9c2e360eabef7cf38a9d8428522`의 repo-wide CI run
-`33528649730`은 Quality와 24개 pytest shard가 모두 성공했다. 그 green을 전제로 AI-002B는 exact
-M03 source 한 건의 immutable image reinspection, fresh internal Target, normal approval과 one-use Permit,
-Gateway, proxy-only Worker, Target-signed receipt, eight pre-dispatch denial, private custody, cleanup과
-contextful reopen을 로컬 구현했다. 집중 검증은 `75 passed, 2 skipped`, AI-001A~D/KISA/Target/Worker/
-validation 관련 회귀는 `249 passed, 2 skipped`, 전체 Ruff와 Linux 대상 strict mypy `381 source files`,
-문서 정책·링크 `4 passed`, 변경 파일 구문 검사와 tracked `git diff --check`는 통과했다. 스킵은
-opt-in real-Docker와 Windows의 POSIX 전용 cleanup이며, container daemon이 없어 real-Docker source
-검증은 실행하지 않았다. 현재 변경의 전체 repository pytest와 새 exact-commit CI도 아직 실행하지 않았다.
+AI-002B checkpoint `5e6bd64879ad71f6cb836faec458647cd6ec6be0`의 repo-wide CI run
+`33568879047`은 Quality와 24개 pytest shard가 모두 성공했다. 그 green을 전제로 AI-002C는 source를
+contextfully reopen하고 두 supporting Replay와 exact Baseline/Negative/Counterfactual Controls를 각각
+fresh Target·Run·request·session·approval·Permit·Worker identity로 실행한다. separate measurement
+challenge/receipt, private raw custody, six-operation accounting, exact 14-metric DOMAIN-006 floor와 public
+false-authority ceiling을 결박하며 Graph candidate와 product projection은 만들지 않는다. 집중 파일은
+`4 passed, 1 skipped`, AI-001A~D/KISA/Target/Worker/attestation 관련 회귀는 `330 passed, 2 skipped`,
+`src tests containers` 전체 Ruff, 변경 Python 12개 format check, Linux 대상 strict mypy `382 source files`,
+문서 정책·링크 `4 passed`, tracked `git diff --check`가 통과했다. 스킵은 opt-in real-Docker와 Windows의
+POSIX 전용 cleanup이다. 현재 container daemon이 없어 AI source/Replay/Controls/floor의 real-Docker
+검증은 실행하지 않았고, 전체 repository pytest와 현재 변경의 새 exact-commit CI도 아직 실행하지 않았다.
 
 ## 우선순위와 재평가 기준
 

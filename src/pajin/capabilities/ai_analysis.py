@@ -12,6 +12,8 @@ from pajin.capabilities.activation import (
     ExistingModeCapabilityActivation,
     ExistingModeCapabilityActivationError,
     PreparedCapabilityAction,
+    capability_normalized_parameters_digest,
+    capability_tool_request_digest,
 )
 from pajin.capabilities.adapters import registered_action_capability
 from pajin.capabilities.authorities import CodeBackedCapabilityRef
@@ -90,18 +92,21 @@ from pajin.tools.mock import MockAgentProbe
 AI_READ_ONLY_ANALYSIS_CAPABILITY_BINDING_API_VERSION: Literal[
     "pajin.dev/ai-read-only-analysis-capability-binding/v1alpha1"
 ] = "pajin.dev/ai-read-only-analysis-capability-binding/v1alpha1"
-AI_PROVIDER_MODEL_BINDING_API_VERSION: Literal[
+AI_PROVIDER_MODEL_BINDING_API_VERSION: Literal["pajin.dev/ai-provider-model-binding/v1alpha1"] = (
     "pajin.dev/ai-provider-model-binding/v1alpha1"
-] = "pajin.dev/ai-provider-model-binding/v1alpha1"
-AI_ANALYSIS_BUDGET_CEILING_API_VERSION: Literal[
+)
+AI_ANALYSIS_BUDGET_CEILING_API_VERSION: Literal["pajin.dev/ai-analysis-budget-ceiling/v1alpha1"] = (
     "pajin.dev/ai-analysis-budget-ceiling/v1alpha1"
-] = "pajin.dev/ai-analysis-budget-ceiling/v1alpha1"
+)
 AI_READ_ONLY_ANALYSIS_BINDING_API_VERSION: Literal[
     "pajin.dev/ai-read-only-analysis-binding/v1alpha1"
 ] = "pajin.dev/ai-read-only-analysis-binding/v1alpha1"
 AI_READ_ONLY_ANALYSIS_PREPARATION_API_VERSION: Literal[
     "pajin.dev/ai-read-only-analysis-preparation/v1alpha1"
 ] = "pajin.dev/ai-read-only-analysis-preparation/v1alpha1"
+AI_MEASUREMENT_OPERATION_PREPARATION_API_VERSION: Literal[
+    "pajin.dev/ai-measurement-operation-preparation/v1alpha1"
+] = "pajin.dev/ai-measurement-operation-preparation/v1alpha1"
 
 _Identifier = Annotated[
     str,
@@ -124,6 +129,10 @@ _AnalysisBindingId = Annotated[
 _PreparationId = Annotated[
     str,
     Field(pattern=r"^ai-analysis-preparation_[a-f0-9]{64}$"),
+]
+_MeasurementPreparationId = Annotated[
+    str,
+    Field(pattern=r"^ai-measurement-operation-preparation_[a-f0-9]{64}$"),
 ]
 
 
@@ -242,15 +251,11 @@ class AIReadOnlyAnalysisCapabilityBinding(StrictModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
 
-    api_version: Literal[
-        "pajin.dev/ai-read-only-analysis-capability-binding/v1alpha1"
-    ] = Field(
+    api_version: Literal["pajin.dev/ai-read-only-analysis-capability-binding/v1alpha1"] = Field(
         default=AI_READ_ONLY_ANALYSIS_CAPABILITY_BINDING_API_VERSION,
         alias="apiVersion",
     )
-    kind: Literal["AIReadOnlyAnalysisCapabilityBinding"] = (
-        "AIReadOnlyAnalysisCapabilityBinding"
-    )
+    kind: Literal["AIReadOnlyAnalysisCapabilityBinding"] = "AIReadOnlyAnalysisCapabilityBinding"
     binding_id: str = Field(default="", alias="bindingId", max_length=95)
     binding_version: Literal["1.0.0"] = Field(default="1.0.0", alias="bindingVersion")
     binding_digest: str = Field(default="", alias="bindingDigest", max_length=64)
@@ -645,9 +650,7 @@ class AIReadOnlyAnalysisBindingRef(StrictModel):
 
     binding_id: _AnalysisBindingId = Field(alias="bindingId")
     binding_digest: _Sha256 = Field(alias="bindingDigest")
-    capability_binding: AIReadOnlyAnalysisCapabilityBindingRef = Field(
-        alias="capabilityBinding"
-    )
+    capability_binding: AIReadOnlyAnalysisCapabilityBindingRef = Field(alias="capabilityBinding")
 
 
 class AIReadOnlyAnalysisBinding(StrictModel):
@@ -662,9 +665,7 @@ class AIReadOnlyAnalysisBinding(StrictModel):
     kind: Literal["AIReadOnlyAnalysisBinding"] = "AIReadOnlyAnalysisBinding"
     binding_id: str = Field(default="", alias="bindingId", max_length=94)
     binding_digest: str = Field(default="", alias="bindingDigest", max_length=64)
-    capability_binding: AIReadOnlyAnalysisCapabilityBinding = Field(
-        alias="capabilityBinding"
-    )
+    capability_binding: AIReadOnlyAnalysisCapabilityBinding = Field(alias="capabilityBinding")
     provider_model: AIProviderModelBinding | None = Field(
         default=None,
         alias="providerModel",
@@ -819,9 +820,7 @@ class AIReadOnlyAnalysisPreparation(StrictModel):
     prepared_action: PreparedCapabilityAction = Field(alias="preparedAction")
     state: Literal["prepared-not-authorized"] = "prepared-not-authorized"
     capability_prepared: Literal[True] = Field(default=True, alias="capabilityPrepared")
-    provider_registration_reverified: bool = Field(
-        alias="providerRegistrationReverified"
-    )
+    provider_registration_reverified: bool = Field(alias="providerRegistrationReverified")
     product_profile_recheck_required: Literal[True] = Field(
         default=True,
         alias="productProfileRecheckRequired",
@@ -917,8 +916,171 @@ class AIReadOnlyAnalysisPreparation(StrictModel):
         return self
 
 
-def registered_ai_read_only_analysis_capability_bindings(
-) -> tuple[AIReadOnlyAnalysisCapabilityBinding, ...]:
+class AIMeasurementOperationPreparation(StrictModel):
+    """Additive preparation for one code-owned AI-002C Replay or Control request."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True, frozen=True)
+
+    api_version: Literal["pajin.dev/ai-measurement-operation-preparation/v1alpha1"] = Field(
+        default=AI_MEASUREMENT_OPERATION_PREPARATION_API_VERSION,
+        alias="apiVersion",
+    )
+    kind: Literal["AIMeasurementOperationPreparation"] = "AIMeasurementOperationPreparation"
+    preparation_id: str = Field(default="", alias="preparationId", max_length=110)
+    preparation_digest: str = Field(
+        default="",
+        alias="preparationDigest",
+        max_length=64,
+    )
+    binding: AIReadOnlyAnalysisBinding
+    release: CapabilityReleaseRef
+    prepared_action: PreparedCapabilityAction = Field(alias="preparedAction")
+    registered_operation_digest: _Sha256 = Field(alias="registeredOperationDigest")
+    operation_key: Literal[
+        "replay-1",
+        "replay-2",
+        "control-baseline",
+        "control-negative",
+        "control-counterfactual",
+    ] = Field(alias="operationKey")
+    operation_ordinal: Literal[2, 3, 4, 5, 6] = Field(alias="operationOrdinal")
+    operation_stage: Literal["replay", "control"] = Field(alias="operationStage")
+    materializer_id: Literal["pajin.ai002c.fixed-m03-operation"] = Field(
+        default="pajin.ai002c.fixed-m03-operation",
+        alias="materializerId",
+    )
+    materializer_version: Literal["1.0.0"] = Field(
+        default="1.0.0",
+        alias="materializerVersion",
+    )
+    state: Literal["prepared-measurement-operation-not-authorized"] = (
+        "prepared-measurement-operation-not-authorized"
+    )
+    capability_prepared: Literal[True] = Field(
+        default=True,
+        alias="capabilityPrepared",
+    )
+    provider_registration_reverified: Literal[True] = Field(
+        default=True,
+        alias="providerRegistrationReverified",
+    )
+    approval_satisfied: Literal[False] = Field(
+        default=False,
+        alias="approvalSatisfied",
+    )
+    permit_issuance_authorized: Literal[False] = Field(
+        default=False,
+        alias="permitIssuanceAuthorized",
+    )
+    worker_job_materialized: Literal[False] = Field(
+        default=False,
+        alias="workerJobMaterialized",
+    )
+    gateway_dispatch_authorized: Literal[False] = Field(
+        default=False,
+        alias="gatewayDispatchAuthorized",
+    )
+    execution_authorized: Literal[False] = Field(
+        default=False,
+        alias="executionAuthorized",
+    )
+
+    @field_validator("operation_ordinal", mode="before")
+    @classmethod
+    def require_exact_ordinal(cls, value: object) -> object:
+        if type(value) is not int:
+            raise ValueError("AI measurement operation ordinal must be exact")
+        return value
+
+    @field_validator(
+        "capability_prepared",
+        "provider_registration_reverified",
+        mode="before",
+    )
+    @classmethod
+    def require_true(cls, value: object) -> object:
+        if type(value) is not bool or value is not True:
+            raise ValueError("AI measurement preparation completion markers must be true")
+        return value
+
+    @field_validator(
+        "approval_satisfied",
+        "permit_issuance_authorized",
+        "worker_job_materialized",
+        "gateway_dispatch_authorized",
+        "execution_authorized",
+        mode="before",
+    )
+    @classmethod
+    def require_false(cls, value: object) -> object:
+        if type(value) is not bool or value is not False:
+            raise ValueError("AI measurement preparation authority markers must be false")
+        return value
+
+    @model_validator(mode="after")
+    def bind_preparation(self) -> Self:
+        matches = tuple(
+            item
+            for item in registered_ai_read_only_analysis_capability_bindings()
+            if item.scenario_id == "kisa.model.system-prompt-disclosure"
+            and item.threat_class == "M03"
+        )
+        provider_model = self.binding.provider_model
+        request = self.prepared_action.request
+        probe = AIChatProbeInput.model_validate(request.arguments)
+        expected_action = None
+        if len(matches) == 1:
+            spec = _analysis_spec_for_binding(matches[0])
+            definition, _capability = _registered_definition_and_capability(spec)
+            expected_action = registered_action_capability(definition).reference()
+        shapes = {
+            "replay-1": (2, "replay"),
+            "replay-2": (3, "replay"),
+            "control-baseline": (4, "control"),
+            "control-negative": (5, "control"),
+            "control-counterfactual": (6, "control"),
+        }
+        if (
+            len(matches) != 1
+            or self.binding.capability_binding != matches[0]
+            or provider_model is None
+            or self.prepared_action.release != self.release
+            or self.prepared_action.capability != expected_action
+            or request.tool_id != AIChatProbeTool.spec.tool_id
+            or request.target != provider_model.endpoint
+            or request.method != "POST"
+            or probe.scenario_id != "kisa.model.system-prompt-disclosure"
+            or probe.threat_class != "M03"
+            or len(probe.turns) != 1
+            or len(probe.checks) != 1
+            or shapes[self.operation_key] != (self.operation_ordinal, self.operation_stage)
+            or not request.request_id.startswith(
+                f"tool_ai002c_operation_{self.operation_ordinal:02d}_"
+            )
+        ):
+            raise ValueError("AI measurement preparation differs from its fixed M03 operation")
+        material = self.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude={"preparation_id", "preparation_digest"},
+        )
+        digest = capability_definition_digest(
+            "pajin.capability.ai-measurement-operation-preparation/v1",
+            material,
+        )
+        preparation_id: _MeasurementPreparationId = f"ai-measurement-operation-preparation_{digest}"
+        if self.preparation_digest and self.preparation_digest != digest:
+            raise ValueError("AI measurement preparation digest differs")
+        if self.preparation_id and self.preparation_id != preparation_id:
+            raise ValueError("AI measurement preparation ID differs")
+        object.__setattr__(self, "preparation_digest", digest)
+        object.__setattr__(self, "preparation_id", preparation_id)
+        return self
+
+
+def registered_ai_read_only_analysis_capability_bindings() -> tuple[
+    AIReadOnlyAnalysisCapabilityBinding, ...
+]:
     """Return the exact REDTEAM-001A/B/D read-only CAP-002 binding inventory."""
 
     return tuple(item.model_copy(deep=True) for item in _registered_capability_bindings())
@@ -1101,9 +1263,7 @@ def prepare_ai_read_only_analysis(
     elif provider_registration is not None:
         raise AIReadOnlyAnalysisError("MCP-only preparation cannot import Provider authority")
     try:
-        definition = activation.rollout.bundle.definitions.resolve(
-            static.capability.capability
-        )
+        definition = activation.rollout.bundle.definitions.resolve(static.capability.capability)
         manifest = next(
             item
             for item in activation.rollout.bundle.capabilities()
@@ -1135,6 +1295,92 @@ def prepare_ai_read_only_analysis(
         raise AIReadOnlyAnalysisError(
             "AI read-only analysis CAP-002 preparation failed closed"
         ) from exc
+
+
+def prepare_ai_measurement_operation(
+    *,
+    activation: ExistingModeCapabilityActivation,
+    release: CapabilityReleaseRef,
+    binding: AIReadOnlyAnalysisBinding,
+    request: ToolRequest,
+    provider_registration: ProviderRegistration,
+    registered_operation_digest: str,
+    operation_key: Literal[
+        "replay-1",
+        "replay-2",
+        "control-baseline",
+        "control-negative",
+        "control-counterfactual",
+    ],
+    operation_ordinal: Literal[2, 3, 4, 5, 6],
+    operation_stage: Literal["replay", "control"],
+) -> AIMeasurementOperationPreparation:
+    """Prepare one already code-materialized AI-002C request under current CAP-002."""
+
+    if not isinstance(activation, ExistingModeCapabilityActivation):
+        raise TypeError("AI measurement preparation requires current activation")
+    try:
+        canonical_release = CapabilityReleaseRef.model_validate(
+            release.model_dump(mode="json", by_alias=True)
+        )
+        canonical_binding = _canonical_analysis_binding(binding)
+        canonical_request = _canonical_tool_request(request)
+        provider = _canonical_provider_registration(provider_registration)
+        static = canonical_binding.capability_binding
+        expected_provider = canonical_binding.provider_model
+        if expected_provider is None or expected_provider != bind_ai_provider_model(
+            provider,
+            model_revision=expected_provider.model_revision,
+        ):
+            raise AIReadOnlyAnalysisError(
+                "AI measurement Provider registration differs from its binding"
+            )
+        candidates = tuple(
+            item
+            for item in activation.activation_set.bindings
+            if item.release == canonical_release and item.capability == static.capability
+        )
+        if len(candidates) != 1:
+            raise AIReadOnlyAnalysisError(
+                "AI measurement Capability release is not currently activated"
+            )
+        active = candidates[0]
+        resolved = activation.resolve_for_dispatch(active.action_capability.reference())
+        if (
+            resolved.release != canonical_release
+            or resolved.capability.reference() != static.capability
+        ):
+            raise AIReadOnlyAnalysisError(
+                "AI measurement current signed Capability resolution differs"
+            )
+        prepared = PreparedCapabilityAction(
+            activationSetDigest=activation.activation_set.activation_set_digest,
+            release=canonical_release,
+            capability=active.action_capability.reference(),
+            request=canonical_request,
+            requestDigest=capability_tool_request_digest(canonical_request),
+            normalizedParametersDigest=(
+                capability_normalized_parameters_digest(canonical_request.arguments)
+            ),
+        )
+        return AIMeasurementOperationPreparation(
+            binding=canonical_binding,
+            release=canonical_release,
+            preparedAction=prepared,
+            registeredOperationDigest=registered_operation_digest,
+            operationKey=operation_key,
+            operationOrdinal=operation_ordinal,
+            operationStage=operation_stage,
+        )
+    except (
+        AIReadOnlyAnalysisError,
+        ExistingModeCapabilityActivationError,
+        ValidationError,
+        ValueError,
+    ) as exc:
+        if isinstance(exc, AIReadOnlyAnalysisError):
+            raise
+        raise AIReadOnlyAnalysisError("AI measurement operation preparation failed closed") from exc
 
 
 def _analysis_spec(capability_id: str, capability_version: str) -> _AIAnalysisCapabilitySpec:
@@ -1241,9 +1487,7 @@ def _canonical_ai_surface(surface: AISecuritySurface) -> AISecuritySurface:
 
 def _canonical_budget(budget: AIAnalysisBudgetCeiling) -> AIAnalysisBudgetCeiling:
     try:
-        return AIAnalysisBudgetCeiling.model_validate(
-            budget.model_dump(mode="json", by_alias=True)
-        )
+        return AIAnalysisBudgetCeiling.model_validate(budget.model_dump(mode="json", by_alias=True))
     except (AttributeError, ValidationError) as exc:
         raise AIReadOnlyAnalysisError("AI analysis budget is not canonical") from exc
 
@@ -1327,12 +1571,14 @@ def _validate_prepared_request(
 
 __all__ = [
     "AI_ANALYSIS_BUDGET_CEILING_API_VERSION",
+    "AI_MEASUREMENT_OPERATION_PREPARATION_API_VERSION",
     "AI_PROVIDER_MODEL_BINDING_API_VERSION",
     "AI_READ_ONLY_ANALYSIS_BINDING_API_VERSION",
     "AI_READ_ONLY_ANALYSIS_CAPABILITY_BINDING_API_VERSION",
     "AI_READ_ONLY_ANALYSIS_PREPARATION_API_VERSION",
     "AIAnalysisBudgetCeiling",
     "AIAnalysisProfileRef",
+    "AIMeasurementOperationPreparation",
     "AIProviderModelBinding",
     "AIReadOnlyAnalysisBinding",
     "AIReadOnlyAnalysisBindingRef",
@@ -1343,6 +1589,7 @@ __all__ = [
     "ai_provider_registration_digest",
     "bind_ai_provider_model",
     "bind_ai_read_only_analysis",
+    "prepare_ai_measurement_operation",
     "prepare_ai_read_only_analysis",
     "registered_ai_read_only_analysis_capability_bindings",
     "resolve_ai_read_only_analysis_capability_binding",

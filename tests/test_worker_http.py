@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 from pajin.target_attestation import (
+    derive_ai_measurement_target_execution_challenge,
     derive_ai_source_target_execution_challenge,
     derive_target_execution_challenge,
 )
@@ -194,6 +195,112 @@ def test_ai_source_worker_uses_header_only_and_rejects_substitution(
         )
 
 
+def test_ai_measurement_worker_uses_separate_header_and_rejects_substitution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = _worker_entry()
+    source_payload, source_probe = _ai_source_worker_payload()
+    probe = json.loads(json.dumps(source_probe))
+    probe["session_id"] = "pajin:control:11111111111111111111111111111111:baseline"
+    arguments_digest = sha256(
+        json.dumps(
+            probe,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+    now = datetime.now(UTC)
+    challenge = derive_ai_measurement_target_execution_challenge(
+        permit_digest="a" * 64,
+        measurement_request_id=f"tool_ai002c_operation_04_{'1' * 32}",
+        measurement_operation_id=f"ai-measurement-operation_{'2' * 64}",
+        registered_operation_digest="b" * 64,
+        operation_key="control-baseline",
+        operation_ordinal=4,
+        operation_stage="control",
+        target="http://host.docker.internal:8080/v1/chat",
+        method="POST",
+        compiled_argument_digest=arguments_digest,
+        issued_at=now - timedelta(seconds=1),
+        expires_at=now + timedelta(seconds=60),
+    )
+    payload = {
+        "target": "http://host.docker.internal:8080/v1/chat",
+        "probe": probe,
+        "measurementTargetChallenge": challenge.model_dump(mode="json"),
+    }
+    parsed = worker._validate_ai_probe(payload)
+    assert parsed.measurement_target_challenge == payload["measurementTargetChallenge"]
+    request_payload = {
+        "sessionId": probe["session_id"],
+        "messages": probe["turns"][0]["messages"],
+        "metadata": {"scenarioId": probe["scenario_id"], "turn": 0},
+    }
+    captured: list[Request] = []
+
+    class Response:
+        status = 200
+
+        def __enter__(self) -> object:
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return json.dumps(
+                {
+                    "sessionId": probe["session_id"],
+                    "message": {
+                        "role": "assistant",
+                        "content": "PAJIN_SYSTEM_SENTINEL_COBALT",
+                    },
+                }
+            ).encode()
+
+    class Opener:
+        def open(self, request: Request, timeout: int) -> Response:
+            assert timeout == 10
+            captured.append(request)
+            return Response()
+
+    monkeypatch.setattr(worker, "_HTTP_OPENER", Opener())
+    worker._post_ai_turn(
+        payload["target"],
+        request_payload,
+        measurement_target_challenge=payload["measurementTargetChallenge"],
+    )
+
+    assert len(captured) == 1
+    header = captured[0].get_header("X-pajin-ai-measurement-challenge")
+    assert header is not None
+    decoded = urlsafe_b64decode(header + ("=" * (-len(header) % 4)))
+    assert decoded == json.dumps(
+        payload["measurementTargetChallenge"],
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+        allow_nan=False,
+    ).encode("utf-8")
+    assert json.loads(captured[0].data) == request_payload
+    assert b"measurementTargetChallenge" not in captured[0].data
+
+    foreign_operation = json.loads(json.dumps(payload))
+    foreign_operation["measurementTargetChallenge"]["operation_ordinal"] = 5
+    with pytest.raises(ValueError, match="exact AI-002C shape"):
+        worker._validate_ai_probe(foreign_operation)
+
+    with pytest.raises(ValueError, match="cannot be combined"):
+        worker._validate_ai_probe(
+            {
+                **payload,
+                "sourceTargetChallenge": source_payload["sourceTargetChallenge"],
+            }
+        )
+
+
 def _stub_linux_isolation_host(
     worker: ModuleType,
     monkeypatch: pytest.MonkeyPatch,
@@ -254,9 +361,10 @@ def test_http_worker_installs_verified_https_peer_observation() -> None:
         format=serialization.PublicFormat.SubjectPublicKeyInfo,
     )
 
-    assert worker._tls_leaf_spki_sha256(
-        certificate.public_bytes(serialization.Encoding.DER)
-    ) == sha256(expected_spki).hexdigest()
+    assert (
+        worker._tls_leaf_spki_sha256(certificate.public_bytes(serialization.Encoding.DER))
+        == sha256(expected_spki).hexdigest()
+    )
 
 
 def test_ai_worker_exports_verified_https_peer_leaf_spki(
@@ -324,9 +432,10 @@ def test_ai_worker_hashes_only_tls12_unique_channel_binding() -> None:
         def get_channel_binding(self, _binding_type: str) -> bytes:
             raise AssertionError("TLS 1.3 must not use RFC 5929 tls-unique")
 
-    assert worker._tls_unique_binding_sha256(TLS12Socket()) == sha256(
-        worker._TLS_UNIQUE_BINDING_DOMAIN + b"worker-and-target-finished"
-    ).hexdigest()
+    assert (
+        worker._tls_unique_binding_sha256(TLS12Socket())
+        == sha256(worker._TLS_UNIQUE_BINDING_DOMAIN + b"worker-and-target-finished").hexdigest()
+    )
     assert worker._tls_unique_binding_sha256(TLS13Socket()) is None
 
 
