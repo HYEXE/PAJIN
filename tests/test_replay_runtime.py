@@ -1984,7 +1984,8 @@ def test_reproducer_times_out_and_seals_without_additional_dispatch(tmp_path: Pa
 
 
 def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> None:
-    campaign = _campaign(duration_seconds=1)
+    # Leave enough headroom for dispatch to start on contended CI runners.
+    campaign = _campaign(duration_seconds=5)
 
     dispatch = _fixture(tmp_path / "dispatch", campaign=campaign, repetitions=1)
     dispatch_budget = BudgetController(campaign.spec.budgets)
@@ -1995,7 +1996,7 @@ def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> 
         model_prompt_tokens=0,
         model_completion_tokens=0,
         cost_usd=0,
-        elapsed_seconds=0.75,
+        elapsed_seconds=3,
     )
     dispatch_worker = HangingWorker()
     dispatch_result = _run(
@@ -2021,7 +2022,7 @@ def test_campaign_duration_bounds_replay_dispatch_and_oracle(tmp_path: Path) -> 
         model_prompt_tokens=0,
         model_completion_tokens=0,
         cost_usd=0,
-        elapsed_seconds=0.75,
+        elapsed_seconds=3,
     )
     oracle = HangingOracle(oracle_fixture.scenario)
     oracle_result = _run(
