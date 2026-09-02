@@ -26,15 +26,20 @@
   production/external probing, Graph/report와 추가 실행 권위는 여전히 없다.
 - Phase 23 Exit Gate도 exact UX-009D conformance와 residue audit으로 완료됐다.
 - Phase 24 Exit Gate도 exact NET-002D conformance와 residue audit으로 완료됐다.
-- 현재 HEAD와 upstream은 AI-002B checkpoint
-  `5e6bd64879ad71f6cb836faec458647cd6ec6be0`로 같고 divergence는 `0/0`이다.
-- 해당 SHA의 repo-wide CI run `33568879047`은 Quality와 24개 pytest shard가 모두
+- AI-002C checkpoint `f52331dea30b6aa655fdfaca7c3f28c29b88f22d`와 CI duration 경계 보정
+  `f2b8d695b6ae03d0858be892f63f18cebf623ad9`가 `main`에 push됐다.
+- 현재 HEAD, upstream과 실제 `origin/main`은 `f2b8d695b6ae03d0858be892f63f18cebf623ad9`로 같고
+  divergence는 `0/0`이다.
+- 해당 SHA의 repo-wide CI run `33603851321`은 Quality와 24개 pytest shard가 모두
   `completed/success`다.
-- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002C` 로컬 구현·검증 완료
-- 현재 우선순위: AI-002C checkpoint의 전체 diff와 Git 상태 검토
-- 다음 우선순위: 승인된 checkpoint와 새 exact-commit repo-wide green 확인 뒤 `AI-002D`
-- AI-002C 변경은 모두 unstaged이고 새 workflow/contract 파일은 untracked다. staged 변경과 진행 중
-  merge/rebase/cherry-pick/revert/bisect는 없다. commit·push·PR·merge·deploy는 수행하지 않았다.
+- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002D` 로컬 구현·결정론적
+  검증 완료, exact conformance 대기
+- 현재 우선순위: AI-002D checkpoint의 전체 diff와 Git 상태 검토
+- 다음 우선순위: 별도 승인된 checkpoint commit/push와 새 exact-commit repo-wide green 확인 뒤 manual
+  AI-002D conformance
+- AI-002D 변경은 모두 unstaged이고 새 workflow·contract·test 파일은 untracked다. staged 변경과 진행 중
+  merge/rebase/cherry-pick/revert/bisect는 없다. 이번 checkpoint의 commit·push·PR·merge·deploy는
+  수행하지 않았다.
 - deterministic 24-shard/120분 CI와 canonical 모바일 substitution fixture는 기준 체크포인트에 포함됐다.
   UX-009D 성공 workflow는 Phase 23 conformance 증거이며 다른 Domain runtime의 증거로 확장하지 않는다.
 
@@ -643,35 +648,33 @@ substitution fixture 보정은 `4208889bfc1b84ae50a2f8bbbff77109c342b3bc`, 24-sh
 ## 다음 한 단계
 
 [ADR-0259](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)의
-`AI-002C` Replay/Control/floor 경계를 로컬 구현했다. 새 `pajin.workflow.ai_replay_evaluation`은 AI-002B
-source를 contextfully reopen한 뒤 등록 순서 그대로 두 supporting Replay와 exact Baseline, Negative,
-Counterfactual Controls를 각각 fresh Target·Run·request·session·approval·Permit·Worker identity로 실행한다.
-각 operation은 observed OCI image를 재검사하고 separate measurement challenge/receipt, exact request와
-CAP-002 action, provider/model, private Ground Truth·Control derivation, cleanup과 zero-cost accounting을
-결박한다. source와 다섯 follow-up의 raw prompt/check/transcript/request/session/approval/Permit/receipt/runtime은
-private binding에만 남고, public artifact는 six-operation lineage, private commitment와 exact 14-metric
-DOMAIN-006 aggregate만 포함한다.
+`AI-002D` bounded product/read 경계를 로컬 구현했다. 새 `pajin.workflow.ai_measured_product_flow`는
+AI-002C evaluation, source measurement, source execution과 다섯 follow-up execution을 contextfully reopen하고
+서로 다른 여덟 source Run을 확인한 뒤 아홉 번째 product Run에 exact public M03 case reference, ordered
+14-metric DOMAIN-006 aggregate, applicability, floor state와 literal-false authority만 content-addressed wire로
+봉인한다. prompt/check/transcript/request/session/approval/Permit/receipt/runtime과 Ground Truth·Control material은
+private custody에만 남는다.
 
-새 measurement preparation은 AI-001B catalog-only preparation을 변경하지 않고 runner가 이미 materialize한
-exact M03 operation에만 current signed release와 action Capability를 결박한다. AI-001C source verifier는 이
-exact preparation과 별도 Tool adapter를 reopen할 수 있지만 Graph candidate builder는 measurement preparation을
-명시적으로 거부한다. 완성된 public evaluation은 Target/network/approval/Gateway/Worker, 추가 Replay/Control,
-Graph/Finding/product/report/delivery, external/production, arbitrary Tool·prompt, plugin/RAG/MCP/memory,
-M06/A04와 추가 실행 권위를 모두 literal false로 유지한다.
+immutable deployment registry와 zero-argument reader는 deployment/product/source identity와 digest를 고정하고
+모든 source path를 재검증한다. Control Plane은 authenticated Operator-only
+`GET /v1/products/ai-measured-system-prompt-disclosure`만 제공하며 query/body/method drift와 stale 또는 foreign
+artifact를 fail closed한다. fresh-spawn child는 두 read 동안 provider·adapter·Worker·Graph·report·delivery
+mutation, socket/DNS, 새 process와 파일 mutation을 거부하고 source 전체와 Docker inventory가 그대로인지
+확인한다. manual Ubuntu workflow는 exact clean SHA에서 AI-002B source, 두 Replay, 세 Controls, product read와
+unconditional residue audit을 실행하도록 추가했지만 아직 dispatch하지 않았다.
 
-AI-002C 집중 파일은 `4 passed, 1 skipped in 46.99s`, AI-001A~D/KISA/Target/Worker/attestation 관련 18파일
-회귀는 `330 passed, 2 skipped in 475.80s`다. `src tests containers` 전체 Ruff와 변경 Python 12개 format
-check, Linux 대상 strict mypy `382 source files`, 문서 정책·링크 `4 passed in 0.30s`, tracked
-`git diff --check`가 통과했다. 스킵은 `PAJIN_AI_002B_REAL_DOCKER=1` opt-in 한 건과 Windows의 POSIX 전용
-cleanup 한 건이다. 기본 temp ACL 제약은 작업 전용 temp root로 격리했으며 코드 실패가 아니다. 현재
-container daemon이 없어 source/two-Replay/three-Control/floor real-Docker 검증은 실행하지 않았다. 전체
+AI-002D product/workflow 집중 검증은 `10 passed, 1 skipped`, AI-002A~D authority·fixture·source·Replay/
+Controls·product 회귀는 `26 passed, 2 skipped`, 기존 Web/Network product 회귀는 `12 passed`다.
+`src tests containers` 전체 Ruff, Linux 대상 strict mypy `384 source files`, 문서 정책·링크 `4 passed`가
+통과했다. 기본 Windows-target mypy는 기존 POSIX `os` symbol 49건에서 실패했지만 `--platform linux`는
+green이다. 현재 container daemon을 사용할 수 없어 AI-002D real-Docker test는 실행하지 않았고, 전체
 repository pytest와 현재 변경의 새 exact-commit CI도 실행하지 않았다.
 
 새 영어 versioned contract는
-`docs/benchmark/AI-002C-independent-fresh-session-replay-controls-ai-floor.md`다. 다음 첫 단계는 AI-002C 전체
-diff와 Git 상태를 다시 검토하는 것이다. 사용자의 별도 승인 뒤에만 checkpoint를 commit/push하고 새
-exact-commit repo-wide green을 확인한다. 그 뒤 AI-002D에서 AI-only bounded product read와 exact-clean
-Ubuntu real-Docker source/Replay/Controls/denial/product-read/cleanup/residue conformance를 구현한다.
+`docs/orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md`다. 다음 첫 단계는 전체 diff와
+Git 상태를 다시 검토하는 것이다. 별도 승인 뒤에만 checkpoint를 commit/push하고 새 exact-commit
+repo-wide green을 확인한다. 그 green 뒤 별도 승인된 manual workflow로 exact source/Replay/Controls/
+denial/product-read/cleanup/residue conformance를 완료한다.
 
 저장소는 public, Apache-2.0이며 `main` protection과 private vulnerability reporting이 활성화돼 있다.
 exact workflow용 원격 임시 브랜치 `hyexe/ux-009d-json-wire-6cb58c1`은 검증된 SHA를 확인한 뒤

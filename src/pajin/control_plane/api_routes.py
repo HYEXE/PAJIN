@@ -140,6 +140,7 @@ from pajin.control_plane.validation_comparison import (
 from pajin.control_plane.web_console import console_asset_response, console_index_response
 
 if TYPE_CHECKING:
+    from pajin.workflow.ai_measured_product_reader import AIMeasuredProductReader
     from pajin.workflow.network_measured_product_reader import NetworkMeasuredProductReader
     from pajin.workflow.web_measured_product_reader import WebMeasuredProductReader
 
@@ -742,6 +743,60 @@ def register_network_measured_product_route(
             ) from exc
 
 
+def register_ai_measured_product_route(
+    app: FastAPI,
+    *,
+    reader: "AIMeasuredProductReader | None",
+    dependencies: ControlPlaneDependencies,
+) -> None:
+    """Register one body-free Operator read over the exact AI-002D reader."""
+
+    from pajin.workflow.ai_measured_product_flow import AIMeasuredProduct
+    from pajin.workflow.ai_measured_product_reader import (
+        AIMeasuredProductReader,
+        AIMeasuredProductReaderError,
+    )
+
+    if reader is not None and type(reader) is not AIMeasuredProductReader:
+        raise TypeError("Measured AI product reads require the exact AI-002D reader")
+
+    reader_lock = Lock()
+
+    def read_serialized(configured_reader: AIMeasuredProductReader) -> AIMeasuredProduct:
+        with reader_lock:
+            return configured_reader.read()
+
+    @app.get(
+        "/v1/products/ai-measured-system-prompt-disclosure",
+        response_model=AIMeasuredProduct,
+    )
+    async def get_ai_measured_system_prompt_disclosure(
+        request: Request,
+        _principal: Annotated[
+            Principal,
+            Depends(dependencies.require_roles(PrincipalRole.OPERATOR)),
+        ],
+    ) -> AIMeasuredProduct:
+        if request.scope.get("query_string", b"") or await request.body():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Measured AI product read accepts no query or request body",
+            )
+        configured_reader = reader
+        if configured_reader is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Measured AI product read is not configured",
+            )
+        try:
+            return await asyncio.to_thread(read_serialized, configured_reader)
+        except AIMeasuredProductReaderError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Measured AI product authority is not integrity-valid",
+            ) from exc
+
+
 def register_generic_worker_claim_route(
     app: FastAPI,
     *,
@@ -1250,6 +1305,7 @@ def register_control_plane_routes(
     decision_audit_reader: VerifiedGraphDecisionAuditViewReader,
     replay_comparison_reader: VerifiedReplayEvidenceComparisonReader,
     validation_comparison_reader: VerifiedWalkingControlComparisonReader,
+    ai_measured_product_reader: "AIMeasuredProductReader | None",
     network_measured_product_reader: "NetworkMeasuredProductReader | None",
     web_measured_product_reader: "WebMeasuredProductReader | None",
     pentest_recon_runtime: PentestReconDispatchRuntime | None,
@@ -1306,6 +1362,11 @@ def register_control_plane_routes(
     register_network_measured_product_route(
         app,
         reader=network_measured_product_reader,
+        dependencies=dependencies,
+    )
+    register_ai_measured_product_route(
+        app,
+        reader=ai_measured_product_reader,
         dependencies=dependencies,
     )
     register_public_replay_routes(

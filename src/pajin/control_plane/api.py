@@ -146,6 +146,7 @@ from pajin.target_attestation import (
 )
 
 if TYPE_CHECKING:
+    from pajin.workflow.ai_measured_product_reader import AIMeasuredProductReader
     from pajin.workflow.network_measured_product_reader import NetworkMeasuredProductReader
     from pajin.workflow.web_measured_product_reader import WebMeasuredProductReader
 
@@ -2112,6 +2113,7 @@ def create_app(
     pentest_workflow_coordination_runtime: (
         PentestWorkflowCoordinationDispatchRuntime | None
     ) = None,
+    ai_measured_product_reader: "AIMeasuredProductReader | None" = None,
     network_measured_product_reader: "NetworkMeasuredProductReader | None" = None,
     web_measured_product_reader: "WebMeasuredProductReader | None" = None,
 ) -> FastAPI:
@@ -2157,6 +2159,7 @@ def create_app(
         decision_audit_reader=context.decision_audit_reader,
         replay_comparison_reader=context.replay_comparison_reader,
         validation_comparison_reader=context.validation_comparison_reader,
+        ai_measured_product_reader=ai_measured_product_reader,
         network_measured_product_reader=network_measured_product_reader,
         web_measured_product_reader=web_measured_product_reader,
         pentest_recon_runtime=selected_pentest_recon_runtime,

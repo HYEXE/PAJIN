@@ -594,9 +594,13 @@ Negative, and Counterfactual Controls, pairwise-disjoint source/Replay/Control e
 identities, measured request/Tool/zero-cost accounting, mandatory cleanup, and the exact
 fourteen-observation DOMAIN-006 AI floor. Its additive operation preparation revalidates the
 current signed M03 Capability without widening the existing AI-001B catalog-only preparation, and
-the measurement reopen path cannot create an AI-001C Graph candidate. AI-002D will add a bounded
-AI-only product read and exact-clean Ubuntu real-Docker conformance. ADR-0259 implements none of
-those authorities by itself. Prompt, check, transcript, session,
+the measurement reopen path cannot create an AI-001C Graph candidate. AI-002D now implements the
+public-safe, content-addressed product, deployment-pinned zero-argument reader, authenticated
+Operator-only non-cacheable GET, and fresh-process no-mutation reload described in
+[its versioned contract](../orchestration/AI-002D-bounded-ai-measurement-product-read-and-conformance.md).
+The exact-clean Ubuntu real-Docker run and unconditional residue audit remain pending and are
+required for the Phase 25 Exit Gate. ADR-0259 implements none of those authorities by itself.
+Prompt, check, transcript, session,
 request, and runtime material remain private, while M06, A04, MCP, RAG, arbitrary caller prompts,
 external providers or targets, credentials, general model or agent testing, Graph/Finding/report/
 delivery, and additional execution authority remain outside the phase. Existing AI-001, KISA,
