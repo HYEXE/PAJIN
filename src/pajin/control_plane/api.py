@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import logging
 import math
 import os
 import re
@@ -88,6 +89,11 @@ from pajin.control_plane.identity import (
     OIDCHumanAuthenticator,
     OIDCHumanTrustPolicy,
     parse_oidc_human_trust_policy,
+)
+from pajin.control_plane.measured_product_settings import (
+    MEASURED_PRODUCT_DEPLOYMENT_PATH_ENV,
+    MEASURED_PRODUCT_DEPLOYMENT_SHA256_ENV,
+    validate_measured_product_deployment_settings,
 )
 from pajin.control_plane.models import (
     ControlPlaneConflictCode,
@@ -938,8 +944,14 @@ class ControlPlaneSettings:
     target_attestation_registry_bundle: TargetAttestationRegistryBundle | None = None
     target_attestation_registry_trust_anchor: TargetAttestationRegistryTrustAnchor | None = None
     request_body_timeout_seconds: float = _DEFAULT_CONTROL_PLANE_REQUEST_BODY_TIMEOUT_SECONDS
+    measured_product_deployment_path: Path | None = None
+    measured_product_deployment_sha256: str | None = None
 
     def __post_init__(self) -> None:
+        validate_measured_product_deployment_settings(
+            self.measured_product_deployment_path,
+            self.measured_product_deployment_sha256,
+        )
         if type(self.initialize_schema) is not bool or type(self.database_echo) is not bool:
             raise ValueError(
                 "Control Plane schema initialization and database echo flags must be booleans"
@@ -1537,6 +1549,7 @@ class ControlPlaneSettings:
                 "PAJIN_CP_REPLAY_EXECUTOR_PROFILES may authorize only the dedicated "
                 "Replay Worker subject"
             )
+        measured_deployment_path = os.environ.get(MEASURED_PRODUCT_DEPLOYMENT_PATH_ENV)
         return cls(
             database_url=os.environ.get(
                 "PAJIN_CP_DATABASE_URL", "sqlite:///./.pajin/control-plane.db"
@@ -1544,6 +1557,12 @@ class ControlPlaneSettings:
             credentials=credentials,
             checkpoint_keys={key_id: checkpoint_key.encode()},
             active_checkpoint_key_id=key_id,
+            measured_product_deployment_path=(
+                Path(measured_deployment_path) if measured_deployment_path is not None else None
+            ),
+            measured_product_deployment_sha256=os.environ.get(
+                MEASURED_PRODUCT_DEPLOYMENT_SHA256_ENV
+            ),
             oidc_human_trust_policy=oidc_human_trust_policy,
             worker_mtls_trust_policy=worker_mtls_trust_policy,
             pentest_recon_deployment_path=(
@@ -2117,7 +2136,40 @@ def create_app(
     network_measured_product_reader: "NetworkMeasuredProductReader | None" = None,
     web_measured_product_reader: "WebMeasuredProductReader | None" = None,
 ) -> FastAPI:
+    from pajin.control_plane.measured_product_deployment import load_measured_product_readers
+
     resolved = settings or ControlPlaneSettings.from_env()
+    if resolved.measured_product_deployment_path is not None and any(
+        reader is not None
+        for reader in (
+            web_measured_product_reader,
+            network_measured_product_reader,
+            ai_measured_product_reader,
+        )
+    ):
+        raise ValueError(
+            "measured product readers cannot be both injected and deployment-configured"
+        )
+    configured_readers = load_measured_product_readers(
+        resolved.measured_product_deployment_path,
+        resolved.measured_product_deployment_sha256,
+    )
+    web_measured_product_reader = web_measured_product_reader or configured_readers.web
+    network_measured_product_reader = network_measured_product_reader or configured_readers.network
+    ai_measured_product_reader = ai_measured_product_reader or configured_readers.ai
+    logging.getLogger(__name__).info(
+        "Measured product deployment: %s",
+        configured_readers.diagnostic()
+        if resolved.measured_product_deployment_path is not None
+        else {
+            domain: "injected" if reader is not None else "not-configured"
+            for domain, reader in (
+                ("web", web_measured_product_reader),
+                ("network", network_measured_product_reader),
+                ("ai", ai_measured_product_reader),
+            )
+        },
+    )
     context = _build_application_context(resolved)
     if pentest_recon_runtime is not None and context.pentest_recon_runtime is not None:
         raise ValueError("Pentest Recon runtime cannot be both injected and deployment-configured")

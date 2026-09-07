@@ -14,14 +14,21 @@ type ConsoleAsset = Literal[
     "app.js",
     "protocol.js",
     "render.js",
+    "measured-products.js",
+    "measured-product-contracts.js",
 ]
-type ConsolePublicAsset = Literal["app.css", "app.js", "protocol.js", "render.js"]
+type ConsolePublicAsset = Literal[
+    "app.css", "app.js", "protocol.js", "render.js", "measured-products.js",
+    "measured-product-contracts.js",
+]
 
 _PUBLIC_ASSET_MEDIA_TYPES: dict[ConsolePublicAsset, str] = {
     "app.css": "text/css",
     "app.js": "text/javascript",
     "protocol.js": "text/javascript",
     "render.js": "text/javascript",
+    "measured-products.js": "text/javascript",
+    "measured-product-contracts.js": "text/javascript",
 }
 _BASE_HEADERS = {
     "Cache-Control": "no-store, max-age=0",
@@ -54,7 +61,7 @@ _CONTENT_SECURITY_POLICY = "; ".join(
 )
 
 
-@lru_cache(maxsize=5)
+@lru_cache(maxsize=7)
 def _asset_text(name: ConsoleAsset) -> str:
     return files("pajin.control_plane.web").joinpath(name).read_text(encoding="utf-8")
 

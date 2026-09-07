@@ -5,6 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from pajin.control_plane.measured_product_deployment import (
+    MeasuredProductDeployment,
+    write_measured_product_deployment,
+)
+from pajin.control_plane.measured_product_sources import AIProductRecipe
 from pajin.workflow.ai_fixture_runtime import (
     AIFixtureDockerProvider,
     registered_ai_source_image_binding,
@@ -24,6 +29,7 @@ from tests.ai_measured_product_fresh_process import (
     FreshAIMeasuredProductRecipe,
     run_fresh_ai_measured_product_probe,
 )
+from tests.measured_product_deployment_probe import probe_fresh_deployment
 from tests.test_ai_source_measurement import (
     _MeasurementAuthorizer,
     _SourceAuthorizer,
@@ -69,6 +75,22 @@ async def test_real_docker_ai_002d_exact_commit_product_conformance(
         product = AIMeasuredProductProjector(output_root=tmp_path / "product-runs").project(
             replay,
             reopen_context=reopen,
+        )
+        deployment_path = tmp_path / "private-product-deployment.json"
+        deployment_digest = write_measured_product_deployment(
+            deployment_path,
+            MeasuredProductDeployment(
+                deploymentId="ai-conformance",
+                evidenceRoot=tmp_path.resolve(),
+                ai=AIProductRecipe.from_outcome(product),
+            ),
+        )
+        probe_fresh_deployment(
+            deployment_path,
+            deployment_digest,
+            "ai",
+            product.product.product_digest,
+            tmp_path / "fresh-deployment-process",
         )
         probe = run_fresh_ai_measured_product_probe(
             FreshAIMeasuredProductRecipe(

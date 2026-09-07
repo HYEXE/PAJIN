@@ -211,6 +211,8 @@ def test_distribution_artifacts_work_in_a_clean_no_dependency_install(tmp_path: 
     assert "pajin/control_plane/web/app.css" in wheel_members
     assert "pajin/control_plane/web/app.js" in wheel_members
     assert "pajin/control_plane/web/protocol.js" in wheel_members
+    assert "pajin/control_plane/web/measured-products.js" in wheel_members
+    assert "pajin/control_plane/web/measured-product-contracts.js" in wheel_members
     assert "pajin/control_plane/web/render.js" in wheel_members
     expected_python_modules = {
         path.relative_to("src").as_posix() for path in Path("src/pajin").rglob("*.py")

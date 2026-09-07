@@ -998,12 +998,16 @@ class _VerifiedGraphStoreState:
 class SQLiteGraphStore:
     """Own one Campaign's durable Graph and final ActionPermit authority."""
 
-    def __init__(self, path: Path, *, campaign_id: str) -> None:
+    def __init__(self, path: Path, *, campaign_id: str, initialize: bool = True) -> None:
         if fullmatch(r"^[a-z0-9][a-z0-9-]{2,79}$", campaign_id) is None:
             raise ValueError("SQLite Graph Store campaign ID is invalid")
         self.path = _absolute_path(path)
         self.campaign_id = campaign_id
-        _initialize(self.path, campaign_id)
+        if initialize:
+            _initialize(self.path, campaign_id)
+        else:
+            with _readonly_connection(self.path) as connection:
+                _validate_schema(connection, campaign_id=campaign_id)
         self.event_log = SQLiteGraphEventLog(self.path, campaign_id=campaign_id)
         self.projection_store = SQLiteGraphProjectionStore(
             self.path,

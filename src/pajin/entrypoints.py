@@ -17,9 +17,15 @@ class _RunnableModule(Protocol):
     def main(self) -> None: ...
 
 
-def _parse_daemon_arguments(*, program: str, description: str) -> None:
+def _parse_daemon_arguments(*, program: str, description: str) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog=program, description=description)
-    parser.parse_args()
+    if program == "pajin-control-plane":
+        parser.add_argument(
+            "--check-config",
+            action="store_true",
+            help="Verify configuration and measurement readers without starting a server",
+        )
+    return parser.parse_args()
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -58,13 +64,19 @@ def _run_daemon(
     module_name: str,
     required_imports: tuple[str, ...],
 ) -> None:
-    _parse_daemon_arguments(program=program, description=description)
+    arguments = _parse_daemon_arguments(program=program, description=description)
     try:
         module = _load_optional_module(
             module_name,
             required_imports=required_imports,
         )
-        module.main()
+        if getattr(arguments, "check_config", False):
+            checker = getattr(module, "check_configuration", None)
+            if not callable(checker):
+                raise RuntimeError("selected process has no configuration checker")
+            checker()
+        else:
+            module.main()
     except SystemExit:
         raise
     except Exception as exc:

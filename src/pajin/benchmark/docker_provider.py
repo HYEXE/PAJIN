@@ -478,7 +478,7 @@ class _DockerTargetFactoryAdapter:
         profile: DockerBugBountyTargetProfile,
         manifest: BenchmarkManifest,
         trust_anchor: BenchmarkMeasurementTrustAnchor,
-        measurement_private_key: bytes,
+        measurement_private_key: bytes | None,
         command_runner: DockerCommandRunner | None = None,
     ) -> None:
         profile_copy = DockerBugBountyTargetProfile.model_validate(
@@ -502,7 +502,7 @@ class _DockerTargetFactoryAdapter:
         profile: _DockerTargetProfile,
         manifest: BenchmarkManifest,
         trust_anchor: BenchmarkMeasurementTrustAnchor,
-        measurement_private_key: bytes,
+        measurement_private_key: bytes | None,
         command_runner: DockerCommandRunner | None,
         adapter_id: str,
         target_factory_id: str,
@@ -514,10 +514,14 @@ class _DockerTargetFactoryAdapter:
         self._trust_anchor = BenchmarkMeasurementTrustAnchor.model_validate(
             trust_anchor.model_dump(mode="json", by_alias=True)
         )
-        self._attestor = BenchmarkMeasurementAttestor.from_private_key_bytes(
-            active_key_id=self._trust_anchor.key_id,
-            private_key=measurement_private_key,
-            trust_anchor=self._trust_anchor,
+        self._attestor = (
+            None
+            if measurement_private_key is None
+            else BenchmarkMeasurementAttestor.from_private_key_bytes(
+                active_key_id=self._trust_anchor.key_id,
+                private_key=measurement_private_key,
+                trust_anchor=self._trust_anchor,
+            )
         )
         self._definition = RegisteredBenchmarkTargetFactoryAdapter(
             adapterId=adapter_id,
@@ -536,7 +540,13 @@ class _DockerTargetFactoryAdapter:
         ):
             raise DockerBenchmarkProviderError("Docker provider Manifest differs from its profile")
         self._state_path = Path(os.path.abspath(state_path))
-        _initialize_provider_state(self._state_path)
+        if self._attestor is None:
+            if not self._state_path.is_file():
+                raise DockerBenchmarkProviderError("read-only Docker provider state is unavailable")
+            with _provider_read_transaction(self._state_path) as connection:
+                _require_provider_schema(connection)
+        else:
+            _initialize_provider_state(self._state_path)
         self._docker = command_runner or SubprocessDockerCommandRunner()
 
     @property
@@ -641,6 +651,8 @@ class _DockerTargetFactoryAdapter:
         self,
         statement: BenchmarkMeasurementAttestationStatement,
     ) -> BenchmarkMeasurementAttestation:
+        if self._attestor is None:
+            raise DockerBenchmarkProviderError("read-only Docker provider cannot attest")
         return self._attestor.attest(statement)
 
     def _run_stage(
@@ -656,6 +668,8 @@ class _DockerTargetFactoryAdapter:
             ],
         ],
     ) -> tuple[BenchmarkTargetStageReceipt, WalkingBenchmarkRunObservation | None]:
+        if self._attestor is None:
+            raise DockerBenchmarkProviderError("read-only Docker provider cannot run a stage")
         with _provider_operation_lock(self._state_path):
             cached = _accept_provider_operation(self._state_path, operation)
             if cached is not None:

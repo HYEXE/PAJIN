@@ -914,6 +914,43 @@
           </p>
         </div>
       </section>
+      <section class="panel measured-benchmarks-panel" aria-labelledby="measured-benchmarks-heading">
+        <div class="section-heading">
+          <div>
+            <p class="section-kicker">13 / MEASURED BENCHMARKS</p>
+            <h2 id="measured-benchmarks-heading">Network and AI results</h2>
+          </div>
+        </div>
+        <p class="panel-intro">
+          Verify retained evidence from controlled benchmark cases. These results describe
+          the fixtures tested; they do not establish real-world detection performance or confirm
+          vulnerabilities in other targets.
+        </p>
+        <div class="measured-benchmarks-grid">
+          <article id="network-measured-panel" aria-labelledby="network-measured-heading" aria-busy="false">
+            <h3 id="network-measured-heading">Network service identification</h3>
+            <p>Five known service cases and one negative control, with independent Replay.</p>
+            <button id="network-measured-load" type="button" class="button button-primary" disabled>
+              Load Network result
+            </button>
+            <p id="network-measured-status" role="status" aria-live="polite">
+              Connect with an Operator credential to view this result.
+            </p>
+            <div id="network-measured-result" hidden></div>
+          </article>
+          <article id="ai-measured-panel" aria-labelledby="ai-measured-heading" aria-busy="false">
+            <h3 id="ai-measured-heading">AI system prompt disclosure</h3>
+            <p>A deterministic fixture with fresh-session Replay and comparison controls.</p>
+            <button id="ai-measured-load" type="button" class="button button-primary" disabled>
+              Load AI result
+            </button>
+            <p id="ai-measured-status" role="status" aria-live="polite">
+              Connect with an Operator credential to view this result.
+            </p>
+            <div id="ai-measured-result" hidden></div>
+          </article>
+        </div>
+      </section>
     </main>
 
     <footer>

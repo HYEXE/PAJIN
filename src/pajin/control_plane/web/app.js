@@ -1,5 +1,7 @@
 "use strict";
 
+import { createMeasuredProductPanels } from "./measured-products.js";
+
 import {
   ApiProtocolError,
   MAX_RENDERED_EVENTS,
@@ -280,6 +282,14 @@ const elements = {
   reviewQueueMore: document.querySelector("#review-queue-more"),
 };
 
+const measuredProductPanels = createMeasuredProductPanels({
+  document,
+  request: apiRequest,
+  isOperator: () => session.canOperate,
+  authEpoch: () => session.authEpoch,
+  announce,
+});
+
 function setBusy(element, busy) {
   element.setAttribute("aria-busy", busy ? "true" : "false");
 }
@@ -329,6 +339,7 @@ function setConnected(connected, roles = [], subject = null) {
   session.canOperate = connected && session.roles.has("operator");
   session.canApprove = connected && session.roles.has("approver");
   session.canSubmit = session.canOperate;
+  measuredProductPanels.updateAccess();
   elements.connectionState.classList.toggle("connected", connected);
   elements.connectionLabel.textContent = connected
     ? roles.map((role) => role.replace("-", " ")).join(" · ")
@@ -836,6 +847,7 @@ function replaceCredential(token) {
   session.validationComparisonLoading = false;
   session.webMeasuredProductRequestId += 1;
   session.webMeasuredProductLoading = false;
+  measuredProductPanels.clear();
   session.reviewQueueRequestId += 1;
   session.reviewQueueLoading = false;
   session.refreshTask = null;

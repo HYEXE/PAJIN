@@ -212,6 +212,14 @@ def register_health_and_ui_routes(
     def web_console_render_helpers() -> Response:
         return console_asset_response("render.js")
 
+    @app.get("/ui/assets/measured-products.js", include_in_schema=False)
+    def web_console_measured_products() -> Response:
+        return console_asset_response("measured-products.js")
+
+    @app.get("/ui/assets/measured-product-contracts.js", include_in_schema=False)
+    def web_console_measured_product_contracts() -> Response:
+        return console_asset_response("measured-product-contracts.js")
+
 
 def register_session_and_run_routes(
     app: FastAPI,

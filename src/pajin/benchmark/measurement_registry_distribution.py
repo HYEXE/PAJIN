@@ -446,9 +446,13 @@ def verify_benchmark_measurement_registry_distribution_bundle(
 class BenchmarkMeasurementRegistryActivationStore:
     """Host-local append-only SQLite checkpoint for accepted signed registry revisions."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = Path(os.path.abspath(path))
-        _initialize_activation_store(self.path)
+        if initialize:
+            _initialize_activation_store(self.path)
+        else:
+            with _activation_read_transaction(self.path):
+                pass
 
     def activate(
         self,
@@ -825,9 +829,9 @@ def _activation_read_transaction(path: Path) -> Iterator[sqlite3.Connection]:
     connection.row_factory = sqlite3.Row
     connection.execute(f"PRAGMA busy_timeout = {_BUSY_TIMEOUT_MS}")
     connection.execute("PRAGMA query_only = ON")
-    _require_activation_triggers(connection)
-    connection.execute("BEGIN")
     try:
+        _require_activation_triggers(connection)
+        connection.execute("BEGIN")
         yield connection
     finally:
         connection.rollback()

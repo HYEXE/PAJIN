@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import argparse
+import json
 import os
 import ssl
+import sys
 from dataclasses import dataclass
 
 import uvicorn
@@ -92,5 +95,32 @@ def main() -> None:
     )
 
 
+def check_configuration() -> None:
+    """Check host settings and retained products without opening a server or CP database."""
+    from pajin.control_plane.api import ControlPlaneSettings
+    from pajin.control_plane.measured_product_deployment import (
+        MeasuredProductDeploymentError,
+        load_measured_product_readers,
+    )
+
+    _server_tls_settings_from_env()
+    _limit_concurrency_from_env()
+    settings = ControlPlaneSettings.from_env()
+    try:
+        readers = load_measured_product_readers(
+            settings.measured_product_deployment_path,
+            settings.measured_product_deployment_sha256,
+        )
+    except MeasuredProductDeploymentError as exc:
+        sys.stderr.write(f"{exc}\n")
+        raise SystemExit(1) from None
+    print(json.dumps({"status": "valid", "measuredProducts": readers.diagnostic()}, sort_keys=True))
+
+
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Run the PAJIN Control Plane API server.")
+    parser.add_argument("--check-config", action="store_true")
+    if parser.parse_args().check_config:
+        check_configuration()
+    else:
+        main()

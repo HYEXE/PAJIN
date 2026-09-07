@@ -738,6 +738,21 @@ class CapabilityLifecycleRegistry:
             raise CapabilityLifecycleError("Capability lifecycle trust keys are empty")
         return keys
 
+    def verification_material(
+        self,
+    ) -> tuple[
+        CapabilityLifecyclePolicy,
+        tuple[CapabilityLifecycleTrustKey, ...],
+        tuple[CapabilityReleaseBundle, ...],
+    ]:
+        """Copy public verification inputs without exporting a signer or issuing a release."""
+
+        return (
+            self._policy.model_copy(deep=True),
+            tuple(self._keys[key].model_copy(deep=True) for key in sorted(self._keys)),
+            tuple(self._bundles[key].model_copy(deep=True) for key in sorted(self._bundles)),
+        )
+
     def resolve_release(self, reference: CapabilityReleaseRef) -> CapabilityReleaseBundle:
         """Inspect one exact historical release without granting execution authority."""
 

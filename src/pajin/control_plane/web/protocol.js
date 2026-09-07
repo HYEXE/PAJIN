@@ -1,5 +1,7 @@
 "use strict";
 
+import { MEASURED_PRODUCT_CONTRACTS } from "./measured-product-contracts.js";
+
 export const PAGE_SIZE = 25;
 export const MAX_RENDERED_EVENTS = 200;
 export const REVIEW_QUEUE_LIMIT = 50;
@@ -859,6 +861,73 @@ function validateProductInteger(value, label, minimum) {
     protocolFailure(label);
   }
   return normalized;
+}
+
+function requireStaticProductValue(value, expected, label) {
+  if (Array.isArray(expected)) {
+    if (!Array.isArray(value) || value.length !== expected.length) protocolFailure(label);
+    expected.forEach((item, index) => requireStaticProductValue(value[index], item, label));
+  } else if (expected !== null && typeof expected === "object") {
+    const record = exactProductRecord(value, label, Object.keys(expected));
+    Object.keys(expected).forEach((key) => requireStaticProductValue(record[key], expected[key], label));
+  } else if (value !== expected) {
+    protocolFailure(label);
+  }
+}
+
+export function validateMeasuredBenchmarkProduct(value, domain) {
+  const contract = MEASURED_PRODUCT_CONTRACTS[domain];
+  const label = "Measured benchmark product";
+  if (!contract || !["ai", "network"].includes(domain)) protocolFailure(label);
+  boundedJsonShape(value, label);
+  const view = exactProductRecord(value, label, [
+    "apiVersion", "kind", "productId", "productDigest", "sourceEvaluation", "cases", "floor",
+    "authorityBoundary",
+  ]);
+  if (view.apiVersion !== contract.apiVersion || view.kind !== contract.kind
+    || !SHA256_PATTERN.test(view.productDigest)
+    || view.productId !== `${contract.productPrefix}${view.productDigest}`) protocolFailure(label);
+  const evaluation = exactProductRecord(view.sourceEvaluation, label, ["evaluationId", "evaluationDigest"]);
+  if (!SHA256_PATTERN.test(evaluation.evaluationDigest)
+    || evaluation.evaluationId !== `${contract.evaluationPrefix}${evaluation.evaluationDigest}`) {
+    protocolFailure(label);
+  }
+  requireStaticProductValue(view.cases, contract.cases, label);
+  requireStaticProductValue(view.authorityBoundary, contract.authorityBoundary, label);
+  const floor = exactProductRecord(view.floor, label, [
+    "evaluation", "policy", "observations", "state", "requiredMetricCount",
+    "notApplicableMetricCount", "validationFloorSatisfied", "syntheticBenchmarkOnly",
+  ]);
+  requireStaticProductValue(floor.evaluation, evaluation, label);
+  requireStaticProductValue(floor.policy, contract.policy, label);
+  if (floor.state !== contract.floorState || floor.requiredMetricCount !== contract.requiredMetricCount
+    || floor.notApplicableMetricCount !== contract.notApplicableMetricCount || floor.validationFloorSatisfied !== true
+    || floor.syntheticBenchmarkOnly !== true || !Array.isArray(floor.observations)
+    || floor.observations.length !== contract.metrics.length) protocolFailure(label);
+  floor.observations.forEach((raw, index) => {
+    const expected = contract.metrics[index];
+    const observation = exactProductRecord(raw, label, [
+      "metric", "unit", "applicability", "notApplicableReason", "comparison", "numerator",
+      "denominator", contract.satisfactionField,
+    ]);
+    for (const key of Object.keys(expected.binding)) {
+      requireStaticProductValue(observation[key], expected.binding[key], label);
+    }
+    if (observation[contract.satisfactionField] !== true) protocolFailure(label);
+    if (observation.applicability === "not-applicable") {
+      if (observation.numerator !== null || observation.denominator !== null) protocolFailure(label);
+    } else {
+      const numerator = validateProductInteger(observation.numerator, label, 0);
+      const denominator = validateProductInteger(observation.denominator, label, 1);
+      if (expected.rational !== null) {
+        if (numerator !== BigInt(expected.rational[0]) || denominator !== BigInt(expected.rational[1])) {
+          protocolFailure(label);
+        }
+      } else if (observation.metric.metricId !== "common.time-to-first-valid-result"
+        || denominator !== 1_000_000n) protocolFailure(label);
+    }
+  });
+  return view;
 }
 
 export function validateWebMeasuredProductProjection(value) {

@@ -5,6 +5,11 @@ from pathlib import Path
 
 import pytest
 
+from pajin.control_plane.measured_product_deployment import (
+    MeasuredProductDeployment,
+    write_measured_product_deployment,
+)
+from pajin.control_plane.measured_product_sources import NetworkProductRecipe
 from pajin.domain.models import CampaignManifest
 from pajin.workflow.network_fixture_runtime import (
     NetworkFixtureDockerProvider,
@@ -25,6 +30,7 @@ from pajin.workflow.network_replay_evaluation import (
     load_network_replay_floor_evaluation,
 )
 from pajin.workflow.network_source_measurement import NetworkSourceMeasurementRunner
+from tests.measured_product_deployment_probe import probe_fresh_deployment
 from tests.network_measured_product_fresh_process import (
     FreshNetworkMeasuredProductRecipe,
     run_fresh_network_measured_product_probe,
@@ -75,6 +81,22 @@ async def test_real_docker_net_002d_exact_commit_product_conformance(
         )
         product = NetworkMeasuredProductProjector(output_root=tmp_path / "product-runs").project(
             replay, reopen_context=reopen
+        )
+        deployment_path = tmp_path / "private-product-deployment.json"
+        deployment_digest = write_measured_product_deployment(
+            deployment_path,
+            MeasuredProductDeployment(
+                deploymentId="network-conformance",
+                evidenceRoot=tmp_path.resolve(),
+                network=NetworkProductRecipe.from_outcome(product),
+            ),
+        )
+        probe_fresh_deployment(
+            deployment_path,
+            deployment_digest,
+            "network",
+            product.product.product_digest,
+            tmp_path / "fresh-deployment-process",
         )
         probe = run_fresh_network_measured_product_probe(
             FreshNetworkMeasuredProductRecipe(

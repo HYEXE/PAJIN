@@ -343,7 +343,7 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
         plan: ScannerBaselineMeasurementPlanAuthority,
         registration: ZAPScannerRegistration,
         trust_anchor: BenchmarkMeasurementTrustAnchor,
-        measurement_private_key: bytes,
+        measurement_private_key: bytes | None,
         command_runner: DockerCommandRunner | None = None,
     ) -> None:
         authoritative_plan = ScannerBaselineMeasurementPlanAuthority.model_validate(
@@ -374,6 +374,22 @@ class DockerZAPScannerTargetFactoryAdapter(_DockerTargetFactoryAdapter):
         self._scanner_registration = authoritative_registration
         state_parent = Path(os.path.abspath(state_path)).parent
         self._scanner_artifact_root = state_parent / f"{Path(state_path).stem}-zap-artifacts"
+        if measurement_private_key is None:
+            if (
+                self._scanner_artifact_root.resolve(strict=True) != self._scanner_artifact_root
+                or not self._scanner_artifact_root.is_dir()
+            ):
+                raise DockerBenchmarkProviderError("ZAP read-only artifact root is unavailable")
+            if os.name == "posix":
+                metadata = self._scanner_artifact_root.stat()
+                if (
+                    metadata.st_uid != os.geteuid()
+                    or stat.S_IMODE(metadata.st_mode) != _PRIVATE_ARTIFACT_DIRECTORY_MODE
+                ):
+                    raise DockerBenchmarkProviderError(
+                        "ZAP artifact root ownership or mode differs"
+                    )
+            return
         self._scanner_artifact_root.mkdir(
             mode=_PRIVATE_ARTIFACT_DIRECTORY_MODE, parents=True, exist_ok=True
         )

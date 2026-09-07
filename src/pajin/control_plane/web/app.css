@@ -1447,6 +1447,48 @@ footer {
   }
 }
 
+.measured-benchmarks-panel {
+  padding: clamp(1.15rem, 2.5vw, 2rem);
+  margin-top: 1.25rem;
+  scroll-margin-top: 152px;
+}
+
+.measured-benchmarks-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+}
+
+.measured-benchmarks-grid article {
+  min-width: 0;
+  padding: 1.25rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--bg-raised);
+  overflow-wrap: anywhere;
+  scroll-margin-top: 152px;
+}
+
+.measured-benchmarks-grid article > p {
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.measured-metrics {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.75rem 1rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
+  font-size: 0.85rem;
+}
+
+.measured-metrics dd { margin: 0; }
+
+@media (max-width: 760px) {
+  .measured-benchmarks-grid { grid-template-columns: 1fr; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

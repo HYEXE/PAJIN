@@ -5,6 +5,7 @@
 
 ## 현재 작업과 관련된 결정
 
+- [ADR-0260: Compose Measured Readers from Pinned Deployment Inventory](docs/adr/0260-compose-measured-readers-from-pinned-deployment-inventory.md) — 채택
 - [ADR-0259: Select Governed Measured AI System-Prompt Disclosure after Phase 24](docs/adr/0259-select-governed-measured-ai-system-prompt-disclosure-after-phase-24.md)
 - [ADR-0258: Select Governed Measured Network Service Identification after Phase 23](docs/adr/0258-select-governed-measured-network-service-identification-after-phase-23.md)
 - [ADR-0257: Project WEB-002D through a Read-only Operator Product Flow](docs/adr/0257-project-web-002d-through-a-read-only-operator-product-flow.md)

@@ -291,9 +291,13 @@ class WebControlledValidationRouteDenialReceipt(StrictModel):
 class WebControlledValidationRouteClaimLedger:
     """SQLite-backed compare-and-set ledger for one-shot route authority."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = Path(os.path.abspath(path))
-        self._initialize()
+        if initialize:
+            self._initialize()
+        else:
+            with self._read_transaction():
+                pass
 
     def identity_digest(self, *, deployment_id: str) -> str:
         """Return the opaque deployment/path identity signed into route policy."""

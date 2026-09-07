@@ -614,9 +614,13 @@ FROM web_controlled_worker_evidence
 class _WebControlledValidationWorkerEvidenceStore:
     """Production host-owned append-only Worker Evidence provenance store."""
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, initialize: bool = True) -> None:
         self.path = Path(os.path.abspath(path))
-        _initialize_worker_evidence_store(self.path)
+        if initialize:
+            _initialize_worker_evidence_store(self.path)
+        else:
+            with _worker_evidence_read_transaction(self.path):
+                pass
 
     def append(
         self,
@@ -1664,6 +1668,7 @@ class DockerWebControlledValidationAdapter:
         gateway_policy_version: str,
         worker_backend_id: str,
         worker_backend_version: str,
+        initialize_evidence_store: bool = True,
     ) -> None:
         if type(backend) is not DockerWorkerBackend:
             raise TypeError("WEB controlled adapter requires the exact Docker Worker backend")
@@ -1684,6 +1689,7 @@ class DockerWebControlledValidationAdapter:
             worker_backend_version=worker_backend_version,
             now=_system_utc_now,
             production_boundary_verified=True,
+            initialize_evidence_store=initialize_evidence_store,
         )
         require_production_web_controlled_validation_adapter(self)
 
@@ -1736,6 +1742,7 @@ class DockerWebControlledValidationAdapter:
         worker_backend_version: str,
         now: Callable[[], datetime],
         production_boundary_verified: bool,
+        initialize_evidence_store: bool = True,
     ) -> None:
         if type(backend) is not DockerWorkerBackend:
             raise TypeError("WEB controlled adapter requires the exact Docker Worker backend")
@@ -1784,7 +1791,8 @@ class DockerWebControlledValidationAdapter:
                     "WEB controlled route claims and Worker Evidence require distinct stores"
                 )
             evidence_store = _WebControlledValidationWorkerEvidenceStore(
-                normalized_evidence_store_path
+                normalized_evidence_store_path,
+                initialize=initialize_evidence_store,
             )
         else:
             if evidence_store_path is not None:

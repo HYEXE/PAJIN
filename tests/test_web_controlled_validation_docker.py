@@ -20,6 +20,12 @@ from pajin.benchmark.target_factory import (
     benchmark_target_coordinate,
 )
 from pajin.benchmark.target_recovery import BenchmarkTargetOperationJournal
+from pajin.control_plane.measured_product_deployment import (
+    MeasuredProductDeployment,
+    load_measured_product_readers,
+    write_measured_product_deployment,
+)
+from pajin.control_plane.web_measured_product_deployment import WebProductRecipe
 from pajin.runtime.store import AuditEvent, RunStore
 from pajin.runtime.worker import DockerWorkerBackend
 from pajin.workflow.web_controlled_validation_authority import (
@@ -951,6 +957,32 @@ def test_real_docker_web_002d_controlled_validation_conformance(
         assert first_product.run_id != second_product.run_id
         assert first_product.projection == second_product.projection
         assert first_bytes == second_bytes
+        deployment = MeasuredProductDeployment(
+            deploymentId=_DEPLOYMENT_ID,
+            evidenceRoot=tmp_path.resolve(),
+            web=WebProductRecipe.from_outcome(
+                outcome=first_product,
+                reopen_context=product_reopen_context,
+                provider_state_path=source_context.provider_state_path,
+                worker_evidence_store_path=evidence_store_path,
+                coordinate=coordinate,
+                success_route=_live_route_context(success_context),
+            ),
+        )
+        deployment_path = tmp_path / "private-product-deployment.json"
+        deployment_hash = write_measured_product_deployment(deployment_path, deployment)
+        deployed = load_measured_product_readers(deployment_path, deployment_hash)
+        assert deployed.web is not None
+        assert deployed.web.read() == first_product.projection
+        from tests.measured_product_deployment_probe import probe_fresh_deployment
+
+        probe_fresh_deployment(
+            deployment_path,
+            deployment_hash,
+            "web",
+            first_product.projection.flow_digest,
+            tmp_path / "fresh-deployment-process",
+        )
         failure_cases = _fresh_product_integrity_failure_cases(
             first_product,
             foreign=second_product,

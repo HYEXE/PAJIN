@@ -84,6 +84,8 @@ class FakeElement {
 }
 
 const selectors = [
+  "#network-measured-panel", "#network-measured-load", "#network-measured-status", "#network-measured-result",
+  "#ai-measured-panel", "#ai-measured-load", "#ai-measured-status", "#ai-measured-result",
   "#token-form",
   "#token-input",
   "#lock-button",
@@ -1094,6 +1096,48 @@ assert.ok(applicationPath, "app.js path is required");
 const applicationUrl = pathToFileURL(applicationPath);
 const protocol = await import(new URL("./protocol.js", applicationUrl).href);
 const rendering = await import(new URL("./render.js", applicationUrl).href);
+const { MEASURED_PRODUCT_CONTRACTS } = await import(new URL("./measured-product-contracts.js", applicationUrl).href);
+
+function measuredBenchmark(domain) {
+  const contract = MEASURED_PRODUCT_CONTRACTS[domain];
+  const evaluation = { evaluationId: `${contract.evaluationPrefix}${"b".repeat(64)}`, evaluationDigest: "b".repeat(64) };
+  return structuredClone({
+    apiVersion: contract.apiVersion, kind: contract.kind,
+    productId: `${contract.productPrefix}${"a".repeat(64)}`, productDigest: "a".repeat(64),
+    sourceEvaluation: evaluation, cases: contract.cases,
+    authorityBoundary: contract.authorityBoundary,
+    floor: {
+      evaluation, policy: contract.policy, state: contract.floorState,
+      requiredMetricCount: contract.requiredMetricCount,
+      notApplicableMetricCount: contract.notApplicableMetricCount,
+      validationFloorSatisfied: true, syntheticBenchmarkOnly: true,
+      observations: contract.metrics.map((metric) => ({
+        ...metric.binding,
+        numerator: metric.binding.applicability === "not-applicable" ? null : (metric.rational?.[0] ?? 123),
+        denominator: metric.binding.applicability === "not-applicable" ? null : (metric.rational?.[1] ?? 1_000_000),
+        [contract.satisfactionField]: true,
+      })),
+    },
+  });
+}
+
+for (const domain of ["ai", "network"]) {
+  const value = measuredBenchmark(domain);
+  assert.equal(protocol.validateMeasuredBenchmarkProduct(value, domain), value);
+  for (const mutate of [
+    (item) => { item.authorityBoundary.findingAuthority = true; },
+    (item) => { item.authorityBoundary.extraAuthority = false; },
+    (item) => { item.floor.observations[0].numerator = 0; },
+    (item) => { item.floor.observations.reverse(); },
+    (item) => { item.cases[0].case.caseId = "<img src=x onerror=alert(1)>"; },
+    (item) => { item.floor.syntheticBenchmarkOnly = 1; },
+    (item) => { item.floor.policy.policyDigest = "0".repeat(64); },
+  ]) {
+    const invalid = measuredBenchmark(domain);
+    mutate(invalid);
+    assert.throws(() => protocol.validateMeasuredBenchmarkProduct(invalid, domain), protocol.ApiProtocolError);
+  }
+}
 
 assert.equal(protocol.PAGE_SIZE, 25);
 assert.equal(protocol.MAX_RENDERED_EVENTS, 200);
@@ -1545,6 +1589,28 @@ assert.equal(elements.get("#validation-comparison-lanes").children.length, 4);
 assert.equal(elements.get("#validation-comparison-form").attributes.get("aria-busy"), "false");
 assert.match(elements.get("#status-message").textContent, /six disjoint VAL-004C coordinates/);
 
+for (const [domain, endpoint] of [
+  ["network", "/v1/products/network-measured-service-identification"],
+  ["ai", "/v1/products/ai-measured-system-prompt-disclosure"],
+]) {
+  assert.equal(elements.get(`#${domain}-measured-load`).disabled, false);
+  assert.match(elements.get(`#${domain}-measured-status`).textContent, /Load the retained benchmark/);
+  enqueueFetch(endpoint, (_url, options) => {
+    assert.equal(options.body, undefined);
+    assert.equal(options.cache, "no-store");
+    return jsonResponse(measuredBenchmark(domain));
+  });
+  await elements.get(`#${domain}-measured-load`).dispatch("click");
+  assert.equal(elements.get(`#${domain}-measured-result`).hidden, false);
+  assert.equal(elements.get(`#${domain}-measured-result`).children[2].children[1].children.length, 28);
+  assert.equal(elements.get(`#${domain}-measured-panel`).attributes.get("aria-busy"), "false");
+  enqueueFetch(endpoint, () => jsonResponse({ detail: "Product reader is not configured" }, 503));
+  await elements.get(`#${domain}-measured-load`).dispatch("click");
+  assert.equal(elements.get(`#${domain}-measured-result`).hidden, true);
+  assert.equal(elements.get(`#${domain}-measured-load`).disabled, false);
+  assert.match(elements.get(`#${domain}-measured-status`).textContent, /unavailable/i);
+}
+
 enqueueFetch(
   "/v1/products/web-measured-flow",
   (_url, options) => {
@@ -1675,12 +1741,20 @@ enqueueFetch("/v1/products/web-measured-flow", (_url, options) => {
   return staleLockedProduct.promise;
 });
 const lockedProductRead = elements.get("#web-measured-product-load-button").dispatch("click");
+const staleAIProduct = deferred();
+enqueueFetch("/v1/products/ai-measured-system-prompt-disclosure", () => staleAIProduct.promise);
+const lockedAIRead = elements.get("#ai-measured-load").dispatch("click");
 await settle();
 assert.ok(staleLockedProductOptions);
 await elements.get("#lock-button").dispatch("click");
 assert.equal(staleLockedProductOptions.signal.aborted, true);
 staleLockedProduct.resolve(jsonResponse(webMeasuredProduct()));
+staleAIProduct.resolve(jsonResponse(measuredBenchmark("ai")));
 await lockedProductRead;
+await lockedAIRead;
+assert.equal(elements.get("#ai-measured-result").hidden, true);
+assert.equal(elements.get("#ai-measured-load").disabled, true);
+assert.equal(elements.get("#ai-measured-panel").attributes.get("aria-busy"), "false");
 assert.equal(elements.get("#connection-label").textContent, "Locked");
 assert.equal(elements.get("#web-measured-product-result").hidden, true);
 assert.match(elements.get("#status-message").textContent, /Console locked/);

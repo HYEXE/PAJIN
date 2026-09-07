@@ -689,6 +689,11 @@ Optional processes are installed as `pajin-control-plane`, `pajin-worker-daemon`
 live in the relevant versioned contracts under [docs/orchestration](docs/orchestration/), not in a
 milestone history embedded in this README.
 
+Measured Web, Network, and AI results can be configured through a private, digest-pinned deployment
+inventory. Run `pajin-control-plane --check-config` before starting the server; see the
+[measured product deployment and Console contract](docs/orchestration/UX-010-measured-product-deployment-and-console.md)
+for environment settings, inventory preparation, and retained-evidence requirements.
+
 ## Verification
 
 ```powershell
