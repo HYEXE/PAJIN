@@ -158,7 +158,9 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
     }
     quality_steps = _named_steps(quality)
     test_steps = _named_steps(tests)
-    assert set(quality_steps) == expected_common_steps | {"Lint", "Type check"}
+    assert set(quality_steps) == expected_common_steps | {
+        "Lint", "Type check", "Report measured conformance requirements"
+    }
     assert set(test_steps) == expected_common_steps | {"Test"}
 
     for steps in (quality_steps, test_steps):
@@ -179,8 +181,22 @@ def test_main_ci_workflow_separates_quality_from_twenty_four_test_shards() -> No
         }
         assert steps["Install locked dependencies"]["run"] == "uv sync --locked --all-extras"
 
-    assert quality_steps["Lint"]["run"] == "uv run --locked ruff check src tests containers"
-    assert quality_steps["Type check"]["run"] == "uv run --locked mypy src"
+    assert quality_steps["Lint"]["run"] == (
+        "uv run --locked ruff check src tests containers scripts/measured_conformance.py"
+    )
+    assert quality_steps["Type check"]["run"] == (
+        "uv run --locked mypy src scripts/measured_conformance.py"
+    )
+    assert quality_steps["Check out repository"]["with"] == {"fetch-depth": "2"}
+    report = quality_steps["Report measured conformance requirements"]
+    assert report["env"] == {
+        "PAJIN_CONFORMANCE_BASE": (
+            "${{ github.event.pull_request.base.sha || github.event.before }}"
+        )
+    }
+    assert 'python scripts/measured_conformance.py' in report["run"]
+    assert '--base "$PAJIN_CONFORMANCE_BASE" --head "$GITHUB_SHA"' in report["run"]
+    assert '--format summary >> "$GITHUB_STEP_SUMMARY"' in report["run"]
     assert test_steps["Test"]["run"] == (
         "uv run --locked pytest --ci-shard-index ${{ matrix.shard }} "
         "--ci-shard-total 24 --durations=25"

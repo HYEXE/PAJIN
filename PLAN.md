@@ -3,9 +3,33 @@
 - 상태 권위: 이 파일
 - 아키텍처 권위: `docs/rfc/0001-pajin-architecture-v2.md`,
   `docs/rfc/0002-multi-domain-security-analysis-architecture.md`
-- 현재 단계: Phase 25 — Governed Measured AI System-Prompt Disclosure — `AI-002D` 로컬 구현·결정론적 검증 완료, exact conformance 대기
-- 현재 우선순위: `AI-002D` checkpoint 전체 diff와 Git 상태 검토
-- 다음 우선순위: 별도 승인된 checkpoint commit/push와 새 exact-commit repo-wide green 확인 뒤 manual `AI-002D` conformance
+- 현재 단계: 제품·운영 개선 — 사용자 승인된 8개 개선 항목을 아래 순서로 진행
+- 현재 우선순위: 2단계 재검증 기준·세 도메인 로컬 Docker 검증 완료, exact-commit Ubuntu gate 대기
+- 다음 우선순위: 승인된 checkpoint commit/push·전체 CI 후 최신 Ubuntu Web/Network/AI conformance
+
+## 순차 개선 목표
+
+2026-09-07 검토 후 사용자가 아래 전체 개선 목표의 순차 구현을 요청했다. 각 단계는 기존
+공개 wire와 권한 경계를 보존하는 독립 변경으로 검증한다. 외부 실행·비용·Git 원격 작업에
+대한 기존 승인 요구는 유지한다. 상태 문서는 각 체크포인트에서 실제 상태에 맞춘다.
+
+1. [x] `UX-010A~C`: 기본 Control Plane 시작 경로의 Web/Network/AI reader 구성, 설정 진단,
+   Network/AI Console과 새 프로세스 회귀 검증. 설정만으로 실행·Finding 권한을 만들지 않는다.
+2. [ ] 최신 AI 실환경 conformance 및 공통 Worker 변경 시 Web/Network 재검증 기준.
+   exact clean commit·Ubuntu·실제 Docker·residue gate를 통과한 기록만 완료 증거로 인정한다.
+3. [ ] 미사용 평가 사례, 모델/설정, 오탐·미탐, 반복 편차, 비용·시간을 구분하는 효과 벤치마크.
+   실행·데이터·provider 권한 없이 외부 평가를 시작하지 않으며 합성 결과와 실제 모델 결과를 구분한다.
+4. [ ] 근거 열람, 사람의 영향·심각도 검토, 수정 권고, 재검증을 연결하는 보고 흐름.
+   기존 측정 결과의 claim ceiling을 자동 확장하지 않는다.
+5. [ ] 단일 호스트 재시작·중복 요청·백업 복원·키 교체·긴급 중단 연결과 장애 검증.
+6. [ ] exact Snapshot에 결박된 Graph 페이지 조회와 bounded Supervisor 입력 전달 확장.
+7. [ ] 실행 시간 프로파일링에 근거한 fixture·검증 비용 및 유지보수 개선.
+8. [ ] 전체 개선 결과에 맞는 운영 문서 최종 정합성 검토와 현재 체크포인트 정리.
+
+1단계의 완료 조건은 별도 Python application 작성 없이 명시적인 배포 설정으로 기존 검증기를
+구성하고, 잘못된 설정을 시작 시 거부하며, 기존 Operator 인증·응답·비권위 경계를 유지한 채
+세 측정 결과를 읽을 수 있는 것이다. 원본 설정은 배포자만 선택하며 HTTP 요청에 경로,
+trust anchor, provider, verifier 또는 registry 선택을 허용하지 않는다.
 
 ## 제품 목표
 
@@ -647,39 +671,17 @@ production/external probing과 다른 Domain runtime은 제외한다.
 
 ### Phase 23 — Bounded Measured Web Operator Product Read
 
-[ADR-0257](docs/adr/0257-project-web-002d-through-a-read-only-operator-product-flow.md)은 완료된
-WEB-002A~D wire를 변경하지 않고 exact WEB-002D authority를 Operator가 읽을 수 있는 bounded product
-flow로 투영한다. 이 Phase는 새 Web runtime이 아니며, Network는 이후 fresh checkpoint review의 다음
-new-domain runtime 우선순위로 유지한다.
+[ADR-0257](docs/adr/0257-project-web-002d-through-a-read-only-operator-product-flow.md)과
+UX-009A~D 계약이 완료된 Web 읽기 경계의 상세 권위다.
 
-- [x] `UX-009A` sealed measured-Web product-flow projection — complete
-  - exact `load_web_controlled_validation_authority`로 source Run과 WEB-002A/002B, floor, denial,
-    cleanup, bounded Finding chain을 publication과 reload 양쪽에서 contextfully 재검증
-  - measured-case Scope, content-free Evidence reference, floor state, benchmark-ground-truth-match
-    Finding과 unavailable report state만 새 content-addressed sealed Run에 projection
-  - WEB-002C Graph Hypothesis를 인과적 predecessor로 결합하지 않고 HTTP/UI, report, delivery와
-    Target/provider/Worker/network/additional execution 권위를 모두 false로 유지
-- [x] `UX-009B` deployment-pinned contextful product reader — complete
-  - deployment-owned registry/resolver만 exact product Run과 complete WEB-002D reopen context를 선택
-  - caller-selected root/path/provider/adapter/trust anchor/journal/private mapping과 bare outer JSON 거부
-  - fresh process에서 source와 projection을 모두 재구성하며 read 자체는 어떤 durable state도 변경하지 않음
-- [x] `UX-009C` Operator-only Control Plane and same-origin Web Console view — complete
-  - body/query 없는 fixed non-cacheable GET만 Operator에게 제공하고 다른 role, foreign/unconfigured reader와
-    method substitution은 fail closed하며 concurrent request는 exact reader 주위에서 직렬화
-  - Console은 exact metric identity·signed-64 rational을 포함한 wire와 authority ceiling 검증 뒤
-    `textContent`만 쓰고 lock/token 교체/`pagehide`에서 폐기
-  - durable application state와 private/runtime 좌표 공개 없음. UX-009B의 ephemeral advisory lock과
-    read-only provider/inspector Evidence check는 유지
-- [x] `UX-009D` fresh-session deterministic product-read conformance — complete
-  - `spawn` production composition에서 두 publication/read, auth·transport와 isolated failure 13건을 검증
-  - exact checkpoint `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`의 Ubuntu run
-    `33410801762`, job `99549584968`에서 fresh-spawn conformance `1 passed in 836.08s`와
-    unconditional PAJIN Docker residue audit이 모두 성공
+- [x] `UX-009A`: contextful source reload에 결박된 sealed measured-Web projection.
+- [x] `UX-009B`: deployment-pinned zero-argument reader; 매번 source·approval·journal·Evidence 재검증.
+- [x] `UX-009C`: Operator-only non-cacheable GET과 exact public wire를 검증하는 Console.
+- [x] `UX-009D`: production `spawn`에서 publication/read·인증·13개 변조 조건·residue conformance.
 
-Phase 23 Exit Gate: 완료. exact WEB-002D bounded Finding을 impact/severity가 미평가된
-`benchmark-ground-truth-match`로만 표시하고, publication·fresh-session reader·Operator endpoint·Web Console이
-동일한 false authority ceiling과 zero-side-effect를 유지한다. Phase 23 자체는 Network runtime 증거가 아니며,
-후속 선정·Target Factory·governed measurement·product 경계 없이는 Network를 실행하지 않는다.
+Phase 23 Exit Gate는 당시 exact commit `6cb58c1cf69795c86a4ccb6614b4e6fdf445ecbf`의 Ubuntu run
+`33410801762`에서 통과했다. Finding의 상한은 impact/severity 미평가 `benchmark-ground-truth-match`이며
+report·delivery·추가 실행 권한은 없다. 이 과거 성공은 현재 변경이나 다른 Domain의 검증 증거가 아니다.
 
 ### Phase 24 — Governed Measured Network Service Identification
 

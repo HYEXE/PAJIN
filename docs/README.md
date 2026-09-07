@@ -15,6 +15,8 @@ the root [agent instructions](../AGENTS.md), [plan](../PLAN.md), [handoff](../HA
 - [Canonical Graph contracts](graph/)
 - [Discovery contracts](discovery/)
 - [Orchestration contracts](orchestration/)
+- [Measured product deployment and Console](orchestration/UX-010-measured-product-deployment-and-console.md)
+- [Measured Docker conformance rerun policy](orchestration/MEASURED-CONFORMANCE.md)
 - [Benchmark contracts](benchmark/)
 - [KISA traceability matrix](KISA_TRACEABILITY.md)
 - [Project README](../README.md)

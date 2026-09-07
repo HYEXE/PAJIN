@@ -23,6 +23,8 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -40,10 +42,19 @@ jobs:
         run: uv sync --locked --all-extras
 
       - name: Lint
-        run: uv run --locked ruff check src tests containers
+        run: uv run --locked ruff check src tests containers scripts/measured_conformance.py
 
       - name: Type check
-        run: uv run --locked mypy src
+        run: uv run --locked mypy src scripts/measured_conformance.py
+
+      - name: Report measured conformance requirements
+        env:
+          PAJIN_CONFORMANCE_BASE: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          set -euo pipefail
+          python scripts/measured_conformance.py \
+            --base "$PAJIN_CONFORMANCE_BASE" --head "$GITHUB_SHA" \
+            --format summary >> "$GITHUB_STEP_SUMMARY"
 
   tests:
     name: Tests / Python 3.12 / shard ${{ matrix.shard }} of 24

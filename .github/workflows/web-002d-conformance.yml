@@ -80,6 +80,11 @@ jobs:
           docker image inspect pajin-worker:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
           docker image inspect pajin-egress-proxy:dev --format 'Id={{.Id}} RepoDigests={{json .RepoDigests}} Platform={{.Os}}/{{.Architecture}}'
 
+      - name: Require exact clean commit
+        run: |
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain=v1 --untracked-files=all)"
+
       - name: Run WEB-002D conformance
         env:
           PAJIN_TEST_DOCKER_WEB_002D: "1"

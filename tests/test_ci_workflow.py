@@ -107,6 +107,10 @@ def test_web_002d_conformance_builds_and_runs_the_exact_boundary() -> None:
     assert identities.count("RepoDigests={{json .RepoDigests}}") == 5
     assert identities.count("Platform={{.Os}}/{{.Architecture}}") == 5
 
+    exact = named_steps["Require exact clean commit"]["run"]
+    assert 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"' in exact
+    assert "git status --porcelain=v1 --untracked-files=all" in exact
+
     conformance = named_steps["Run WEB-002D conformance"]
     assert conformance["env"] == {"PAJIN_TEST_DOCKER_WEB_002D": "1"}
     assert (

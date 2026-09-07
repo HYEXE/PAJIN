@@ -766,14 +766,13 @@
   격리 임시 루트와 `-p no:cacheprovider`는 통과한다.
 - 해소: project Python, `pajin.exe`, installed wrapper를 Linux CI나 승인된 환경에서 검증한다.
 
-## 로컬 Windows container runtime 가용성
+## UX-010과 최신 Docker conformance
 
-- 상태: 현재 container daemon을 사용할 수 없어 AI-002B source opt-in과 AI-002D exact
-  source/Replay/Controls/product/residue real-Docker 검증은 미실행이다. 정책 우회나 runtime data 삭제는
-  수행하지 않는다.
-- 영향: AI-002B~D의 in-process·fresh-process 검증은 실제 OCI lifecycle 증거가 아니다. 기존 exact Ubuntu
-  run `33494188536`은 Phase 24 Network conformance만 증명하며, AI source/Replay/Controls/floor/product와
-  residue는 AI-002D exact-clean Ubuntu conformance에서 별도로 검증해야 한다.
+- UX-010은 host-local 증거·고정 이미지에 의존한다. inventory hash는 독립 서명이 아니며 hot revocation과
+  rollback 방지는 ADR-0260 범위 밖이다.
+- 현재 로컬 Web·Network·AI Docker·새 프로세스 reader 검증은 통과했다. arm64 로컬 실행은 exact clean-commit
+  Ubuntu gate의 대체 증거가 아니다. 최신 Web/Network와 AI source·Replay·Controls·product·residue의
+  Ubuntu 검증은 2단계에 남아 있으며 과거 Network run `33494188536`을 현재 증거로 확대하지 않는다.
 
 ## Git OpenSSL CA 경로
 
